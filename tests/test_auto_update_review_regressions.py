@@ -298,8 +298,8 @@ Assert-LabelStartupUpdateSettings (Get-Content -LiteralPath {quote(path)} -Raw -
     assert output == "COMPANY_ACCEPTED"
 
 @pytest.mark.parametrize("name,phrase", [
-    ("INSTALL_THIS_PC.ps1", "자동 업데이트 후 수동 교체"),
-    ("INSTALL_CANONICAL_PORTABLE.ps1", "자동 업데이트 후 수동 교체"),
+    ("INSTALL_THIS_PC.ps1", "지원 제거"),
+    ("INSTALL_CANONICAL_PORTABLE.ps1", "지원 제거"),
 ])
 def test_powershell51_decodes_actual_korean_installer_with_bom(tmp_path, name, phrase):
     raw = (ROOT / name).read_bytes()

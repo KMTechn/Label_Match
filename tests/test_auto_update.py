@@ -685,11 +685,15 @@ def test_manual_user_lifecycle_after_auto_update_refuses_before_mutation(monkeyp
     before={p.relative_to(tmp_path):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     monkeypatch.setattr(fence,'canonical_control_root',lambda:tmp_path/'isolated-fence')
     monkeypatch.setattr(fence,'active_fence',lambda *_args,**_kwargs:None)
-    assert updates.startup_gate(current/'app',[mode])==20
-    result=json.loads(capsys.readouterr().out)
-    assert result['status']=='RECOVERY_REQUIRED' and result['data_preserved'] is True
-    assert result['code']=='ACTIVE_CODE_REQUIRES_COORDINATED_RECOVERY'
-    assert '담당자' in result['message']
+    if mode == '--remove-current-user-setup':
+        assert updates.startup_gate(current/'app',[mode]) is None
+        assert not capsys.readouterr().out
+    else:
+        assert updates.startup_gate(current/'app',[mode])==20
+        result=json.loads(capsys.readouterr().out)
+        assert result['status']=='RECOVERY_REQUIRED' and result['data_preserved'] is True
+        assert result['code']=='SUPPORTED_REMOVAL_REQUIRED'
+        assert '지원 제거' in result['message']
     assert before=={p.relative_to(tmp_path):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
 
 
@@ -704,7 +708,7 @@ def test_manual_lifecycle_exact_existing_delegation_is_preserved(monkeypatch,tmp
     seen=[]
     monkeypatch.setattr(fence,'_delegation_matches',lambda *_args,**kw:seen.append(kw['source']) or True)
     assert updates.manual_lifecycle_gate(control,'--remove-current-user-setup') is None
-    assert seen==['current_user_setup_removal']
+    assert seen==[]  # User removal no longer interprets machine deployment state.
 
 
 @pytest.mark.parametrize('settings',[

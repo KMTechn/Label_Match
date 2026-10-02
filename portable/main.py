@@ -55,6 +55,9 @@ def _portable_smoke() -> int:
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--label-match-lifecycle-context"]:
+        from auto_update import lifecycle_context_main
+        return lifecycle_context_main(sys.argv[2:])
     if "--zero-pe-portable-smoke" in sys.argv[1:]:
         return _portable_smoke()
     from auto_update import startup_gate

@@ -1787,7 +1787,7 @@ $parameterNames = @(
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
-    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256')) }).Count -ne 0
+    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit')) }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
 $expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
 $expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
@@ -1798,6 +1798,7 @@ if ($expectedSourceByteCount -lt 0) {
     throw 'External integer is outside the supported range: ExpectedSourceByteCount'
 }
 $invokeParameters = @{
+    ExpectedActiveCommit = [string]$payload.parameters.ExpectedActiveCommit
     SourceRoot = [string]$payload.parameters.SourceRoot
     InstallRoot = [string]$payload.parameters.InstallRoot
     ElevationLogPath = [string]$payload.parameters.ElevationLogPath
@@ -2547,22 +2548,21 @@ function Save-FirstRegistrationAttempt($Record, [string]$Path) {
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
 . (Get-LabelSharedPortableLeafPath $SourceRoot)
 $source = Full $SourceRoot 'SourceRoot'
-function Assert-CanonicalStartupLifecycleBoundary([string]$Root) {
-    $control = Join-Path (Split-Path -Parent $Root) 'update-control'
-    if (-not (Test-Path -LiteralPath (Join-Path $control 'policy.json'))) { return }
-    $active = Get-Content -LiteralPath (Join-Path $control 'active.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    $installed = Get-Content -LiteralPath (Join-Path $Root 'portable-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    $transition = Get-Content -LiteralPath (Join-Path $control 'transition.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$active.sha -cnotmatch '^[0-9a-f]{40}$' -or [string]$installed.source_commit -cnotmatch '^[0-9a-f]{40}$' -or [string]$active.sha -cne [string]$installed.source_commit -or [string]$transition.phase -cnotin @('CONFIRMED','ROLLED_BACK','DEFERRED')) {
-        Write-Output 'startup_update_lifecycle_status=RECOVERY_REQUIRED'
-        Write-Output 'user_state_preserved=true'
-        $failure = New-Object InvalidOperationException('자동 업데이트 후 수동 교체·제거는 아직 지원되지 않습니다. 데이터와 설치 상태를 보존하고 담당자에게 복구를 요청하세요.')
-        $failure.Data['code'] = 'ACTIVE_CODE_REQUIRES_COORDINATED_RECOVERY'
-        throw $failure
-    }
+function Read-CanonicalStartupLifecycle([string]$HostRoot, [string]$Root) {
+    $parent = Split-Path -Parent $Root
+    if (-not (Test-Path -LiteralPath (Join-Path $parent 'update-control')) -and
+        -not (Test-Path -LiteralPath (Join-Path $parent 'removed.json'))) { return $null }
+    $output = @(& (Join-Path $HostRoot 'runtime\python.exe') -I -B `
+        (Join-Path $HostRoot 'app\main.py') --label-match-lifecycle-context --install-root $parent --operation install)
+    if ($LASTEXITCODE -ne 0) { throw ('SUPPORTED_REMOVAL_REQUIRED:' + ($output -join "`n")) }
+    $context = ($output -join "`n") | ConvertFrom-Json
+    if ([string]$context.status -cne 'PASS') { throw 'SUPPORTED_REMOVAL_REQUIRED' }
+    return $context
 }
 $install = Full $InstallRoot 'InstallRoot'
-Assert-CanonicalStartupLifecycleBoundary $install
+$startupLifecycle = $null
+$lifecycleInstalled = $install
+
 if (-not $testMode -and -not (Same $install $CanonicalRoot)) {
     throw 'InstallRoot is not canonical.'
 }
@@ -2570,6 +2570,12 @@ $serverBaseUrl = ServerBaseUrlOrigin $ServerBaseUrl
 $onboardingArguments = OnboardingArguments $serverBaseUrl
 $serverBaseUrlSource = if ($serverBaseUrl) { 'explicit' } else { 'product_default' }
 $sourceManifest = Manifest $source $SkipSignatureValidationForTest
+if (-not $testMode -and -not $PlanOnly) {
+    $startupLifecycle = Read-CanonicalStartupLifecycle $source $install
+    if ($null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
+        $lifecycleInstalled = [string]$startupLifecycle.active_code_root
+    }
+}
 $receiptSource = $null
 $conflictReceiptSupplied = (
     -not [string]::IsNullOrWhiteSpace(
@@ -2730,18 +2736,18 @@ $existingVerified = $false
 $installedPreimageInventory = $null
 $candidate = $sourceManifest
 if (Test-Path -LiteralPath $install) {
-    $candidate = Manifest $install $SkipSignatureValidationForTest
+    $candidate = Manifest $lifecycleInstalled $SkipSignatureValidationForTest
     InvokeFrozenIntegrityProbe ([pscustomobject]@{
         root = $source
         integrity_sha256 = [string]$receiptSource.critical_file_sha256.bootstrap_integrity_helper
-    }) $install
-    $installedPreimageInventory = PortableInventory $install
+    }) $lifecycleInstalled
+    $installedPreimageInventory = PortableInventory $lifecycleInstalled
     $existingVerified = $true
     if ([string]$candidate.source_commit -ceq [string]$sourceManifest.source_commit) {
         $placement = 'REUSED_VERIFIED'
     }
 }
-$writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $install } else { $source })
+$writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $lifecycleInstalled } else { $source })
 $legacyFirstRegistration = $false
 $firstRegistrationStateVerified = $false
 $firstRegistrationStarted = $false
@@ -2768,7 +2774,7 @@ if ($null -ne $firstRegistrationResume) {
 elseif ($legacyFirstRegistration) {
     $firstRegistrationAbsentAncestors = @(FirstRegistrationAbsentAncestors $firstRegistrationStatePaths)
 }
-if (-not $conflictReceiptSupplied -and -not $pristineInstall -and -not $legacyFirstRegistration) {
+if ($null -eq $startupLifecycle -and -not $conflictReceiptSupplied -and -not $pristineInstall -and -not $legacyFirstRegistration) {
     $healthyLifecycle = HealthyLifecycle $source $install
 }
 $healthyWithoutCode = $null -ne $healthyLifecycle -and -not $existingVerified
@@ -3125,9 +3131,11 @@ try {
             -AttemptId $writerAttemptId `
             -ReplacementTransactionId $writerTransactionId `
             -DelegationToken $writerDelegationToken `
-            -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
+            -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage',`
+            'auto_update_supported_lifecycle_transition','auto_update_persist_switch','auto_update_write_json_durable','auto_update_fixed_helper') `
             -LifetimeSeconds 600)
         $helperParameters = @{
+            ExpectedActiveCommit = $(if ($null -ne $startupLifecycle) { [string]$startupLifecycle.from_commit } else { "" })
             SourceRoot = $source
             InstallRoot = $install
             ElevationLogPath = $elevationLogPath
@@ -3152,7 +3160,7 @@ try {
                 Where-Object { $_.Name -like '.current.rollback.*' } | ForEach-Object { $_.FullName })
         }
         $placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters
-        if ($existingVerified) {
+        if ($existingVerified -and $null -eq $startupLifecycle) {
             $replacementRollbackRoot = ReplacementPreimage $install $installedPreimageInventory $replacementBackupsBefore
             if ($legacyFirstRegistration) {
                 $firstRegistrationAttempt.code_backup_root = $replacementRollbackRoot
@@ -3162,11 +3170,16 @@ try {
         if ($placementExitCode -ne 0) { throw "Code placement failed: $placementExitCode" }
         $placement = 'PASS'
     }
-    $installedManifest = Manifest $install $SkipSignatureValidationForTest
+    $productInstall = $install
+    if ($null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
+        $accepted = Read-CanonicalStartupLifecycle $source $install
+        $productInstall = [string]$accepted.active_code_root
+    }
+    $installedManifest = Manifest $productInstall $SkipSignatureValidationForTest
     if ([string]$installedManifest.source_commit -cne [string]$sourceManifest.source_commit) {
         throw 'Installed identity differs.'
     }
-    $installedInventory = PortableInventory $install
+    $installedInventory = PortableInventory $productInstall
     if (
         [string]$installedInventory.schema_version -cne [string]$receiptSource.schema_version -or
         [string]$installedInventory.algorithm -cne [string]$receiptSource.algorithm -or
@@ -3213,7 +3226,7 @@ try {
         $firstRegistrationAttempt.registration_started = $true
         Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
     }
-    try { Product $install '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start') }
+    try { Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start') }
     catch { $onboardingFailure = $_ }
     if ($null -ne $onboardingFailure -and -not (Test-Path -LiteralPath $onboardingPath)) {
         throw $onboardingFailure
@@ -3338,6 +3351,13 @@ try {
     "elevation_log_path=$elevationLogPath"
 }
 catch {
+    if ($null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
+        $audit.status = 'FAILED_SUPPORTED_REMOVAL_REQUIRED'
+        $audit.failure = $_.Exception.GetType().Name
+        $audit.recovery_guidance = '자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요.'
+        Save $auditPath $audit
+        throw
+    }
     $original = $_
     if (-not $mutated) { throw $original }
     try {

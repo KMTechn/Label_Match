@@ -19,6 +19,7 @@ param(
     [string]$WriterFenceAttemptId = "",
     [string]$WriterFenceReplacementTransactionId = "",
     [string]$WriterFenceDelegationToken = "",
+    [string]$ExpectedActiveCommit = "",
     [string]$StartupUpdateRestorePreimage = "",
     [string]$StartupUpdateRestoreSha256 = "",
     [switch]$ReplaceExistingVerifiedPortable,
@@ -617,7 +618,7 @@ function Initialize-LabelStartupUpdate([string]$Root) {
     foreach ($directory in @($control,$versions)) {
         if (-not (Test-Path -LiteralPath $directory)) { New-Item -ItemType Directory -Path $directory | Out-Null }
         Assert-NoReparsePoint $directory 'startup update protected directory'
-        Set-HardenedCodeAcl $directory -Recursive
+        Set-HardenedCodeAcl $directory
     }
     $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $manifest = Get-Content -LiteralPath (Join-Path $Root 'portable-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -875,11 +876,8 @@ function Assert-LabelStartupUpdateLifecycleOwnership([string]$Root) {
         }
         [void](Get-LabelStartupUpdateTaskPreimage $Root)
     }
-}
-if (-not $DryRun -and -not $testOverride) {
+}if ($Uninstall.IsPresent) {
     Assert-LabelStartupUpdateLifecycleOwnership $installRootFull
-}
-if ($Uninstall.IsPresent) {
     if ($DryRun.IsPresent) {
         Write-Output "uninstall_status=DRY_RUN_CODE_ONLY"
         Write-Output "user_state_preserved=true"
@@ -975,6 +973,30 @@ if (-not $testOverride) {
 }
 
 $applicationParent = Split-Path -Parent $installRootFull
+$supportedContext = $null
+if (-not $testOverride -and ((Test-Path -LiteralPath (Join-Path $applicationParent 'update-control')) -or
+    (Test-Path -LiteralPath (Join-Path $applicationParent 'removed.json')))) {
+    $healthOutput = @(& (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
+        (Join-Path $sourceRootFull 'app\main.py') --label-match-lifecycle-context `
+        --install-root $applicationParent --operation install)
+    if ($LASTEXITCODE -ne 0) { throw ('자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요. ' + ($healthOutput -join "`n")) }
+    $supportedContext = ($healthOutput -join "`n") | ConvertFrom-Json
+    if ([string]$supportedContext.status -cne 'PASS') { throw 'SUPPORTED_REMOVAL_REQUIRED' }
+}
+$versionedPlacement = ($null -ne $supportedContext -and [string]$supportedContext.lifecycle_state -ceq 'INSTALLED')
+if ($versionedPlacement -and ([string]$ExpectedActiveCommit -cnotmatch '^[0-9a-f]{40}$' -or
+    [string]$supportedContext.from_commit -cne $ExpectedActiveCommit)) { throw 'SUPPORTED_FROM_COMMIT_DIFFERS' }
+$placementRoot = $installRootFull
+if ($versionedPlacement) {
+    $nextCommit = [string](Get-Content -LiteralPath (Join-Path $sourceRootFull 'portable-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json).source_commit
+    if ($nextCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'SUPPORTED_TARGET_COMMIT_INVALID' }
+    $placementRoot = Join-Path $applicationParent ('versions\' + $nextCommit)
+    Assert-NoReparsePoint $placementRoot 'supported version destination'
+    if (Test-Path -LiteralPath $placementRoot) {
+        [void](Assert-BootstrapIntegrityRecord $placementRoot)
+        if ((Get-InventoryAggregate @(Get-CodeInventory $placementRoot)) -cne $sourceAggregate) { throw 'SUPPORTED_TARGET_ALREADY_DIFFERS' }
+    }
+}
 $stagingRoot = Join-Path $applicationParent ('.current.bootstrap.' + [Guid]::NewGuid().ToString('N'))
 $replacementRollbackRoot = ''
 $replacementApplied = $false
@@ -996,7 +1018,7 @@ try {
     }
     $record = Write-BootstrapIntegrityRecord `
         -Root $stagingRoot `
-        -CodeRoot $installRootFull `
+        -CodeRoot $placementRoot `
         -Inventory $stagedInventory `
         -IntegrityFileName $IntegrityFileName `
         -IntegritySchema $IntegritySchema
@@ -1006,14 +1028,14 @@ try {
     if ($applyHardenedAcl) {
         Set-HardenedCodeAcl $stagingRoot -Recursive
     }
-    if (Test-Path -LiteralPath $installRootFull) {
-        $existingRecordPath = Join-Path $installRootFull $IntegrityFileName
+    if (Test-Path -LiteralPath $placementRoot) {
+        $existingRecordPath = Join-Path $placementRoot $IntegrityFileName
         $existingAggregate = ''
         $existingCodeAggregate = ''
         if (Test-Path -LiteralPath $existingRecordPath -PathType Leaf) {
             try {
                 $existingAggregate = [string]((Get-Content -LiteralPath $existingRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json).aggregate_sha256)
-                $existingCodeAggregate = Get-InventoryAggregate @(Get-CodeInventory $installRootFull)
+                $existingCodeAggregate = Get-InventoryAggregate @(Get-CodeInventory $placementRoot)
             }
             catch {
                 $existingAggregate = ''
@@ -1024,11 +1046,12 @@ try {
             $existingAggregate -cne $sourceAggregate -or
             $existingCodeAggregate -cne $sourceAggregate
         ) {
+            if ($versionedPlacement) { throw "SUPPORTED_TARGET_ALREADY_DIFFERS" }
             if (-not $ReplaceExistingVerifiedPortable.IsPresent) {
                 throw "A different or damaged hardened code placement exists; remove it explicitly before replacement."
             }
-            [void](Assert-BootstrapIntegrityRecord -Root $installRootFull)
-            $existingManifestPath = Join-Path $installRootFull 'portable-manifest.json'
+            [void](Assert-BootstrapIntegrityRecord -Root $placementRoot)
+            $existingManifestPath = Join-Path $placementRoot 'portable-manifest.json'
             if (-not (Test-Path -LiteralPath $existingManifestPath -PathType Leaf)) {
                 throw "Verified replacement requires an existing portable manifest."
             }
@@ -1045,19 +1068,19 @@ try {
             $replacementRollbackRoot = Join-Path $applicationParent (
                 '.current.rollback.' + [Guid]::NewGuid().ToString('N')
             )
-            Move-Item -LiteralPath $installRootFull -Destination $replacementRollbackRoot
+            Move-Item -LiteralPath $placementRoot -Destination $replacementRollbackRoot
             try {
-                Move-Item -LiteralPath $stagingRoot -Destination $installRootFull
+                Move-Item -LiteralPath $stagingRoot -Destination $placementRoot
                 $replacementApplied = $true
                 $bootstrapStatus = 'REPLACED_VERIFIED'
             }
             catch {
-                $replacementTargetAbsent = -not (Test-Path -LiteralPath $installRootFull)
+                $replacementTargetAbsent = -not (Test-Path -LiteralPath $placementRoot)
                 $replacementRollbackPresent = Test-Path `
                     -LiteralPath $replacementRollbackRoot `
                     -PathType Container
                 if ($replacementTargetAbsent -and $replacementRollbackPresent) {
-                    Move-Item -LiteralPath $replacementRollbackRoot -Destination $installRootFull
+                    Move-Item -LiteralPath $replacementRollbackRoot -Destination $placementRoot
                 }
                 throw
             }
@@ -1068,14 +1091,14 @@ try {
         }
     }
     else {
-        Move-Item -LiteralPath $stagingRoot -Destination $installRootFull
+        Move-Item -LiteralPath $stagingRoot -Destination $placementRoot
         $bootstrapStatus = 'PASS'
     }
     if ($applyHardenedAcl) {
-        Set-HardenedCodeAcl $installRootFull -Recursive
+        Set-HardenedCodeAcl $placementRoot -Recursive
         $aclReadbackStatus = 'PASS'
     }
-    $installedAggregate = Get-InventoryAggregate @(Get-CodeInventory $installRootFull)
+    $installedAggregate = Get-InventoryAggregate @(Get-CodeInventory $placementRoot)
     if ($installedAggregate -cne $sourceAggregate) {
         throw "Installed code integrity readback failed."
     }
@@ -1085,10 +1108,16 @@ try {
         Write-Output "acl_owner_sid=S-1-5-32-544"
         Write-Output "dacl_normalized=true"
     }
-    Write-Output "code_root=$installRootFull"
+    Write-Output "code_root=$placementRoot"
     Write-Output "release_layout=$releaseLayout"
-    Write-Output "integrity_record=$(Join-Path $installRootFull $IntegrityFileName)"
-    Initialize-LabelStartupUpdate $installRootFull
+    Write-Output "integrity_record=$(Join-Path $placementRoot $IntegrityFileName)"
+    if ($versionedPlacement) {
+        $activation = @(& (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
+            (Join-Path $sourceRootFull 'app\main.py') --label-match-lifecycle-context `
+            --install-root $applicationParent --expected-from-commit $ExpectedActiveCommit `
+            --activate-supported-commit $nextCommit)
+        if ($LASTEXITCODE -ne 0) { throw ('SUPPORTED_ACTIVATION_FAILED:' + ($activation -join "`n")) }
+    } else { Initialize-LabelStartupUpdate $placementRoot }
     $tlsCaBootstrap = Install-CurrentUserTlsCaBootstrap $TlsCaBundlePath $OperatorLocalAppDataRoot
     if ($null -eq $tlsCaBootstrap) { Write-Output "tls_ca_bootstrap_status=ABSENT" }
     else { Write-Output "tls_ca_bootstrap_status=PASS"; Write-Output "tls_ca_bootstrap_path=$tlsCaBootstrap" }

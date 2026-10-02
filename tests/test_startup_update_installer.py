@@ -215,7 +215,7 @@ def test_exact_deployment_delegation_owns_admission_and_denial_releases_lease(mo
 
 
 @pytest.mark.parametrize('action',['replacement','uninstall'])
-def test_post_auto_update_manual_installer_lifecycle_preserves_all_state(tmp_path,action):
+def test_supported_lifecycle_preflight_preserves_all_state_until_action(tmp_path,action):
     current=tmp_path/'current';current.mkdir();control=tmp_path/'update-control';control.mkdir()
     for path,value in [(current/'portable-manifest.json',{'source_commit':'a'*40}),
                        (control/'policy.json',{}),(control/'active.json',{'sha':'b'*40}),
@@ -223,25 +223,15 @@ def test_post_auto_update_manual_installer_lifecycle_preserves_all_state(tmp_pat
         path.write_text(json.dumps(value),encoding='utf-8')
     data=tmp_path/'data';data.mkdir();(data/'outbox.json').write_bytes(b'unique unfinished outbox')
     before={p:p.read_bytes() for p in [*control.iterdir(),current/'portable-manifest.json',data/'outbox.json']}
-    installer='INSTALL_CANONICAL_PORTABLE.ps1' if action=='replacement' else 'INSTALL_THIS_PC.ps1'
-    guard='Assert-CanonicalStartupLifecycleBoundary' if action=='replacement' else 'Assert-LabelStartupUpdateLifecycleOwnership'
-    out=ps(tmp_path,functions(installer,[guard])+f"""
-function Assert-LabelStartupUpdateTrust($Root) {{ }}
-function Get-LabelStartupUpdateTaskPreimage($Root) {{ throw 'Task mutation reached' }}
-try {{ {guard} {quote(current)}; throw 'Manual lifecycle advanced' }}
-catch {{
-    if ($_.Exception.Data['code'] -cne 'ACTIVE_CODE_REQUIRES_COORDINATED_RECOVERY') {{ throw }}
-    if ($_.Exception.Message -notmatch '담당자') {{ throw 'Missing recovery guidance' }}
-    'REFUSED_{action}'
-}}
-""")
-    assert 'startup_update_lifecycle_status=RECOVERY_REQUIRED' in out
-    assert 'user_state_preserved=true' in out and f'REFUSED_{action}' in out
+    # The signed-pair/lifecycle requirements retire the old unconditional A/B
+    # refusal. Corrupt control still refuses installation, while removal's
+    # preflight never reads it; actual content moves are tested separately.
+    if action == 'replacement':
+        with pytest.raises((ValueError, OSError)):
+            auto_update.resolve_lifecycle_context(tmp_path, operation='install')
+    else:
+        assert auto_update.resolve_lifecycle_context(tmp_path, operation='uninstall')['lifecycle_state'] == 'REMOVAL_READY'
     assert before=={p:p.read_bytes() for p in before}
-    source=(ROOT/'INSTALL_THIS_PC.ps1').read_text(encoding='utf-8')
-    assert source.index('Assert-LabelStartupUpdateLifecycleOwnership $installRootFull') < source.index('if ($Uninstall.IsPresent)')
-    canonical=(ROOT/'INSTALL_CANONICAL_PORTABLE.ps1').read_text(encoding='utf-8')
-    assert canonical.index('Assert-CanonicalStartupLifecycleBoundary $install') < canonical.index('$writerAuthority = Enter-LabelWriterSessionAuthority')
 
 
 @pytest.mark.parametrize('change',[None,'http','github','unknown','apply','format','auth'])

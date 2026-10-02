@@ -1049,8 +1049,6 @@ builder는 승인 공개 키와 `--auto-update-settings` JSON을 사용한다. �
 
 canonical onboarding은 fence 안에서 신원·Run을 준비하고 relay 시작을 연기한다. fence 해제 뒤 native 일반 토큰 시작과 상태 readback을 한다. Run 복원만 성공하고 relay 시작이 실패하면 RUN_RESTORED_RELAY_NEXT_LOGON이며 설치는 실패다. 정상 removal 보고서를 복원/정리하기 전 고유 실패 증거를 보존한다.
 
-자동 업데이트로 active와 current source가 다르거나 전이가 미완료면 수동 교체·제거 및 사용자 제거·재등록을 RECOVERY_REQUIRED로 거절한다. 데이터·미완료·outbox·설치 상태를 그대로 보존하고 담당자에게 복구를 요청한다. 첫 현장 설치 전 canonical host의 active code root 선택과 고정 app-root 제거 보고서 소유권을 교정하고 랩에서 검증해야 한다. 현재 CONFIRMED 상태를 수동으로 수정하거나 임의 옛 packet을 설치하는 복구는 지원되지 않는다.
+정상 current owner A/active B 설치는 실제 B를 확인해 C를 versions에 배치하고 보호 포인터를 전환한다. 손상/중간 상태는 자료·등록·대기 전송 보존과 지원 제거 후 재설치를 안내한다. 사용자 제거는 machine control을 읽지 않고 자기 Run/relay만 정리한다. managed 등록은 actual active code와 코드 밖 자료 경로를 사용한다. [지원 수명주기](LIFECYCLE-DESIGN.md)·[쌍 계약](PAIR-RULE-CONTRACT.md)의 source 구현과 실제 Windows NOT TESTED를 구별한다. 기계 제거 내용 증명 구현은 다음 단위다.
 
 2026-10-02 Windows 호스트의 격리 known-folder·독립 .git 순수/주입 집중 시험만 수행한다. 실제 로그온·전원 손실·빠른 시작·토큰·작업 ACL·옛 packet(6479eca 첫 등록 포함)·수동 lifecycle·stock packet·전체 suite·독립 검토는 중앙 NOT TESTED다. 정확한 결과와 원 실패는 sub-88 REPORT.md 및 원 로그에 남긴다.
-
-10/03 sub-128 쌍 단위: 검증된 stock version이 없는 옛 자동 업데이트 입력은 지원 재설치로 안내한다. 모듈 literal은 빌드 정합성 검사이며 판 권한은 서명 manifest다. [서명 쌍 계약](PAIR-RULE-CONTRACT.md)과 sub-128의 focused 로그를 따르고 실제 feed/SYSTEM/stock 수용은 NOT TESTED다.

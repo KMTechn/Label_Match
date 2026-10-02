@@ -539,6 +539,193 @@ def version_manifest(bundle: Path) -> dict[str, Any]:
     return value
 
 
+def installation_root(code_root: Path | None = None) -> Path | None:
+    root = (code_root or Path(__file__).resolve().parent).absolute()
+    if root.name.casefold() == "app":
+        root = root.parent
+    if root.name.casefold() == "current":
+        return root.parent
+    if root.parent.name.casefold() == "versions" and re.fullmatch(r"[0-9a-f]{40}", root.name):
+        return root.parent.parent
+    return None
+
+
+def assert_registration_storage(code_root: Path, paths) -> None:
+    """Check storage before registration can write into machine-owned code."""
+    managed = installation_root(code_root)
+    roots = [Path("C:/KMTech/Apps/Label_Match")]
+    if managed is not None and managed not in roots:
+        roots.append(managed)
+    for value in paths:
+        candidate = Path(value).expanduser().absolute()
+        _assert_no_reparse_components(candidate)
+        for machine in roots:
+            for slot in ("current", "versions", "update-control", "removal-evidence", "removed.json"):
+                boundary = machine / slot
+                if candidate == boundary or candidate.is_relative_to(boundary) or boundary.is_relative_to(candidate):
+                    raise ValueError(f"등록 자료 경로가 코드 또는 control 영역과 겹칩니다: {candidate}")
+
+
+def lifecycle_task_observation(root: Path) -> dict[str, Any]:
+    """External supported stock can observe task absence after code removal."""
+    import subprocess
+    helper = Path(__file__).resolve().parent.parent / "tools/apply_prepared_update.ps1"
+    completed = subprocess.run([system_executable("WindowsPowerShell/v1.0/powershell.exe"),
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-File", str(helper),
+        "-InstallRoot", str(root / "current"), "-Mode", "ObserveLifecycle", "-SupportedLifecycle"],
+        capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if completed.returncode:
+        error = RuntimeError("supported task observation failed")
+        error.child_output = child_failure_output(completed)
+        raise error
+    return json.loads(completed.stdout)
+
+
+def _supported_removal_artifacts(root: Path) -> list[Path]:
+    result = []
+    for name in ("versions", "update-control"):
+        parent = root / name
+        if not (parent.exists() or parent.is_symlink() or parent.is_junction()):
+            continue
+        if parent.is_symlink() or parent.is_junction() or not parent.is_dir():
+            result.append(parent)
+            continue
+        for child in parent.iterdir():
+            if name == "versions":
+                if re.fullmatch(r"[0-9a-f]{40}", child.name):
+                    result.append(child)
+            elif child.name in {"policy.json", "active.json", "transition.json"} or re.fullmatch(
+                    r"(?:packet|failure|policy-before)-[0-9a-f]{32}(?:\.json)?", child.name):
+                result.append(child)
+    try:
+        marker = read_json(root / "removed.json")
+        if marker.get("schema") == "label-match-supported-removal-v1" and marker.get("lifecycle_state") == "REMOVED":
+            retained = marker.get("retained_paths", ())
+            if isinstance(retained, list):
+                result = [path for path in result if not any(isinstance(value, str)
+                    and (path.is_relative_to(root / "versions") or path.name.startswith("packet-"))
+                    and (Path(value) == path or Path(value).is_relative_to(path)) for value in retained)]
+    except (OSError, ValueError):
+        pass
+    return result
+
+
+def resolve_lifecycle_context(root: Path, *, expected_from_commit: str | None = None,
+                              operation: str = "inspect") -> dict[str, Any]:
+    if operation not in {"inspect", "install", "uninstall", "user_remove", "register"}:
+        raise ValueError("supported lifecycle operation is malformed")
+    fixed = root / "current"
+    base = dict(status="PASS", fixed_root=str(fixed), owner_app_root=str(fixed / "app"),
+                from_commit=None, active_code_root=None, active_app_root=None)
+    if operation in {"uninstall", "user_remove"}:
+        return {**base, "lifecycle_state": "REMOVAL_READY"}
+    control = root / "update-control"
+    for output in (fixed, root / "versions", control):
+        _assert_no_reparse_components(output)
+        if output.exists() and not output.is_dir():
+            raise ValueError(f"설치가 만드는 경로와 남긴 항목이 겹칩니다. 자료를 보존하고 경로를 확인하세요: {output}")
+    policy_path = control / "policy.json"
+    if not fixed.exists() and not _supported_removal_artifacts(root):
+        if expected_from_commit is not None or operation == "register":
+            raise ValueError("supported bootstrap was removed")
+        observation = lifecycle_task_observation(root)
+        if observation.get("task_exists") is not False:
+            raise ValueError("supported removal task absence is unproven")
+        return {**base, "lifecycle_state": "REMOVED"}
+    if not policy_path.is_file():
+        raise ValueError(f"설치가 만드는 경로와 남긴 항목이 겹칩니다. 자료를 보존하고 경로를 확인하세요: {fixed}")
+    _assert_no_reparse_components(fixed)
+    if not fixed.is_dir():
+        raise ValueError("supported bootstrap is absent")
+    policy = load_policy(control)
+    pointer = read_json(control / "active.json")
+    state = read_json(control / "transition.json")
+    if pointer.get("schema") != SCHEMA or state.get("schema") != SCHEMA:
+        raise ValueError("supported control identity differs")
+    active = _sha(pointer.get("sha"))
+    if state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
+        raise ValueError("supported transition requires removal and reinstall")
+    if expected_from_commit is not None and _sha(expected_from_commit) != active:
+        raise ValueError("supported from identity differs")
+    if state.get("candidate_sha") is not None and recovery_sha(state, pointer_sha=active) != active:
+        raise ValueError("supported transition and pointer differ")
+    fixed_helper(control, "Verify", code_root=fixed)
+    fixed_identity = version_manifest(fixed)
+    selected = version_bundle(control, active)
+    fixed_helper(control, "Verify", code_root=selected)
+    actual = version_manifest(selected)
+    if actual["source_commit"] != active:
+        raise ValueError("supported active code identity differs")
+    integrity = read_json(fixed / "bootstrap-integrity.json")
+    if lifecycle_task_observation(root).get("task_exists") is not True:
+        raise ValueError("supported installed task is absent or unknown")
+    if read_json(control / "active.json") != pointer or read_json(control / "transition.json") != state:
+        raise ValueError("supported lifecycle changed during observation")
+    return {**base, "lifecycle_state": "INSTALLED", "from_commit": active,
+            "bootstrap_commit": fixed_identity["source_commit"], "phase": state["phase"],
+            "active_code_root": str(selected), "active_app_root": str(selected / "app"),
+            "bootstrap_aggregate_sha256": _sha(integrity.get("aggregate_sha256"), length=64)}
+
+
+@writer_sink("auto_update_supported_lifecycle_transition")
+def supported_lifecycle_transition(root: Path, *, expected_from_commit: str, candidate_commit: str) -> dict[str, Any]:
+    from writer_session_fence import active_fence, canonical_control_root, _delegation_matches
+    security = process_security(os.getpid())
+    if security.get("elevated") is not True:
+        raise ValueError("supported placement requires the elevated installer")
+    fence = active_fence(canonical_control_root(), environ=os.environ)
+    if fence is None or not _delegation_matches(fence, source="canonical_placement", environ=os.environ):
+        raise ValueError("supported placement requires exact installer delegation")
+    control = root / "update-control"
+    with update_lock(control, load_policy(control)["operator_sid"]):
+        context = resolve_lifecycle_context(root, expected_from_commit=expected_from_commit)
+        candidate_commit = _sha(candidate_commit)
+        control = root / "update-control"
+        pointer = read_json(control / "active.json")
+        state = read_json(control / "transition.json")
+        target = version_bundle(control, candidate_commit)
+        fixed_helper(control, "Verify", code_root=target)
+        identity = version_manifest(target)
+        if identity["source_commit"] != candidate_commit:
+            raise ValueError("supported candidate identity differs")
+        fixed = Path(context["fixed_root"])
+        for name in ("update-manifest-key-config.json", "auto-update-settings.json"):
+            if (target / "app" / name).read_bytes() != (fixed / "app" / name).read_bytes():
+                raise ValueError("supported candidate trust/settings differ from fixed bootstrap")
+        if read_json(control / "active.json") != pointer or read_json(control / "transition.json") != state:
+            raise ValueError("supported lifecycle changed during placement")
+        next_state = dict(schema=SCHEMA, phase="DEFERRED", failed_shas=list(state.get("failed_shas", [])),
+                          deferred_at=now_utc(), reason="supported placement", transition_id=uuid.uuid4().hex)
+        persist_switch(control, next_state, candidate_commit)
+        return resolve_lifecycle_context(root, expected_from_commit=candidate_commit)
+
+
+def lifecycle_context_main(arguments: list[str]) -> int:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--install-root", type=Path, required=True)
+    parser.add_argument("--expected-from-commit")
+    parser.add_argument("--operation", default="inspect")
+    parser.add_argument("--activate-supported-commit")
+    args = parser.parse_args(arguments)
+    try:
+        if args.install_root.absolute() != Path("C:/KMTech/Apps/Label_Match").absolute():
+            raise ValueError("supported lifecycle requires the canonical installation")
+        if args.activate_supported_commit:
+            result = supported_lifecycle_transition(args.install_root,
+                expected_from_commit=args.expected_from_commit, candidate_commit=args.activate_supported_commit)
+        else:
+            result = resolve_lifecycle_context(args.install_root,
+                expected_from_commit=args.expected_from_commit, operation=args.operation)
+    except Exception as error:
+        message = str(error) if str(error).startswith("설치가 만드는") else "자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요."
+        print(json.dumps(dict(status="FAILED", message=message,
+                             errors=launch_failure_details(error, include_original=True)), ensure_ascii=True))
+        return 1
+    print(json.dumps(result, ensure_ascii=True))
+    return 0
+
+
 def verify_prepared_packet(
     stage: Path, *, key_config: str, current_version: str, channel: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1407,10 +1594,13 @@ def runtime_matches(app_root: Path) -> bool:
 
 def assert_version_writer(app_root: Path, *, source: str, environ: Mapping[str, str]) -> None:
     """Fence old tools too; deployment delegation is checked by the caller."""
-    if source.startswith("auto_update_"):
+    if source.startswith("auto_update_") or source == "current_user_setup_removal":
         return
     control = control_root(app_root)
     if control is None:
+        return
+    if source == "current_user_onboarding":
+        resolve_lifecycle_context(control.parent, operation="register")
         return
     if not runtime_matches(app_root):
         raise ValueError("writer must use its protected packet runtime")
@@ -1659,34 +1849,39 @@ def confirmed_trial(app_root: Path) -> bool:
 
 
 def manual_lifecycle_gate(control: Path, mode: str) -> int | None:
-    """Preserve post-update ownership until the canonical lifecycle supports it."""
-    active = read_json(control / "active.json")
-    installed = read_json(control.parent / "current/portable-manifest.json")
-    state = read_json(control / "transition.json")
-    if _sha(active.get("sha")) == _sha(installed.get("source_commit")) and state.get("phase") in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
+    """User removal owns only its Run/relay; registration requires health."""
+    if mode == "--remove-current-user-setup":
         return None
     from writer_session_fence import active_fence, canonical_control_root, _delegation_matches
     fence = active_fence(canonical_control_root(), environ=os.environ)
-    source = "current_user_setup_removal" if mode == "--remove-current-user-setup" else "current_user_onboarding"
+    source = "current_user_onboarding"
     if fence is not None and _delegation_matches(fence, source=source, environ=os.environ):
         return None
+    try:
+        resolve_lifecycle_context(control.parent, operation="register")
+        return None
+    except Exception as error:
+        details = launch_failure_details(error, include_original=True)
     print(json.dumps({
-        "status": "RECOVERY_REQUIRED", "code": "ACTIVE_CODE_REQUIRES_COORDINATED_RECOVERY",
+        "status": "RECOVERY_REQUIRED", "code": "SUPPORTED_REMOVAL_REQUIRED",
         "data_preserved": True,
-        "message": "자동 업데이트 후 수동 교체·제거·사용자 재등록은 아직 지원되지 않습니다. 데이터와 설치 상태를 보존하고 담당자에게 복구를 요청하세요.",
+        "message": "자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요.",
+        "errors": details,
     }, ensure_ascii=False))
     return 20
 
 
 def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> int | None:
+    if arguments[:1] == ["--remove-current-user-setup"]:
+        return None
     if arguments[:1] in (["--label-match-user-relay"], ["--label-match-direct-sync-relay"]):
         role = "relay"
     control = control_root(app_root)
     if control is None:
         return None
-    policy = load_policy(control)
     if arguments and arguments[0] in {"--onboard-current-user", "--remove-current-user-setup", "--restore-current-user-lifecycle-after-replacement"}:
         return manual_lifecycle_gate(control, arguments[0])
+    policy = load_policy(control)
     if not ordinary_user_context(policy["operator_sid"]):
         return 20
     with update_lock(control, policy["operator_sid"]):

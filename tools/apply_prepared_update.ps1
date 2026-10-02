@@ -1,11 +1,57 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$InstallRoot,
-    [ValidateSet('Apply','Observe','Verify','Authority')][string]$Mode = 'Apply',
-    [string]$CodeRoot = ''
+    [ValidateSet('Apply','Observe','Verify','Authority','ObserveLifecycle')][string]$Mode = 'Apply',
+    [string]$CodeRoot = '',
+    [switch]$SupportedLifecycle
 )
 $ErrorActionPreference = 'Stop'
 
+function Get-LabelSupportedStartupTasks([string]$Root) {
+    $full = [IO.Path]::GetFullPath($Root)
+    $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        [string]$_.TaskName -cmatch '^KMTech\.LabelMatch\.StartupUpdate\.[0-9a-f]{24}$'
+    })
+    $owned = @()
+    foreach ($task in $tasks) {
+        $actions = @($task.Actions); $triggers = @($task.Triggers)
+        if ($actions.Count -ne 1 -or $triggers.Count -ne 1) { throw 'SUPPORTED_TASK_OWNERSHIP_UNKNOWN' }
+        $sid = [string]$triggers[0].UserId
+        if ($sid -cnotmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$') { throw 'SUPPORTED_TASK_USER_UNKNOWN' }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($full.ToLowerInvariant()+[char]10+$sid)))).Replace('-','').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        $expectedName = 'KMTech.LabelMatch.StartupUpdate.' + $digest.Substring(0,24)
+        if ([string]$task.TaskName -cne $expectedName) { throw 'SUPPORTED_TASK_NAME_DIFFERS' }
+        $expectedCommand = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+        $helper = Join-Path $full 'tools\apply_prepared_update.ps1'
+        $expectedArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + $helper + '" -InstallRoot "' + $full + '"'
+        if ([string]$task.TaskPath -cne '\' -or
+            [string]$task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
+            [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+            [string]$task.Principal.RunLevel -cne 'Highest' -or
+            -not ([string]$actions[0].Execute).Equals($expectedCommand,[StringComparison]::OrdinalIgnoreCase) -or
+            [string]$actions[0].Arguments -cne $expectedArguments -or
+            -not [string]::IsNullOrEmpty([string]$actions[0].WorkingDirectory)) {
+            throw 'SUPPORTED_TASK_ACTION_DIFFERS'
+        }
+        $owned += $task
+    }
+    return $owned
+}
+if ($SupportedLifecycle -and $Mode -cne 'ObserveLifecycle') { throw 'SUPPORTED_OBSERVATION_ONLY' }
+if ($Mode -ceq 'ObserveLifecycle') {
+    if (-not $SupportedLifecycle -or $CodeRoot -or
+        -not ([IO.Path]::GetFullPath($InstallRoot)).Equals('C:\KMTech\Apps\Label_Match\current',[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'SUPPORTED_OBSERVATION_ROOT_DIFFERS'
+    }
+    $tasks = @(Get-LabelSupportedStartupTasks $InstallRoot)
+    $legacy = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        [string]$_.TaskName -ieq 'direct-sync-relay-label-match-current-pc'
+    })
+    @{task_exists=($tasks.Count -gt 0 -or $legacy.Count -gt 0)} | ConvertTo-Json -Compress
+    exit 0
+}
 function Assert-Protected([string]$Path, [switch]$Recursive, [hashtable]$Verified = $null) {
     if ($null -eq $Verified) { $Verified = @{} }
     $full = [IO.Path]::GetFullPath($Path)

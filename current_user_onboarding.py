@@ -928,7 +928,14 @@ def onboard_current_user(
     ] = start_user_relay_process,
     defer_canonical_relay_start: bool = False,
 ) -> dict[str, Any]:
+    from auto_update import installation_root, resolve_lifecycle_context, assert_registration_storage
+    managed = installation_root(Path(app_root))
+    if managed is not None and (managed / "update-control").exists():
+        context = resolve_lifecycle_context(managed, operation="register")
+        app_root = context["active_code_root"]
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
+    assert_registration_storage(Path(app_root), (paths.data_root, paths.settings_path,
+        paths.direct_sync_root, paths.logistics_profile_path, paths.ledger_path))
     tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
     for directory in (
         paths.data_root,
