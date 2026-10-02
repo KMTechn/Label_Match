@@ -417,3 +417,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - sub-104 충돌 해소 마감: legacy/scan/nextfix의 동일값 중복 선언 5개를 제거했다. 전후 모든 literal mapping 동일·BOM 유지이며 source/writer/companion pin 재생성은 이식 뒤 중앙 단계로 유보한다.
 
 - sub-128 중앙 잔여: 동결 뒤 exact-after/추가 asset 선언, Python·PowerShell inventory/fence pin, app/tools companion 및 설치기·stock source digest를 같은 최종 입력으로 한 번 재생성한다. 기존 선언 대기 40건은 원 실패를 보존하고 새 선언으로 수용해야 한다. 독립 검토와 실제 설치/작업/로그온/제거/전원 단절/relay·credential·옛 첫 등록·업무 자료 불변 수용까지 Ready로 올리지 않는다. 중앙 hub 반영은 코디네이터 소유다.
+
+- sub-130 N1: 건강한 A/A·A/B 및 다음 C에서 사용자 제거→재등록의 표식 검증을 고정 owner/actual active 문맥으로 교정했다. 정상 제거의 정확한 ID/SHA·부재 증거를 요구하고 credential handoff·conflict receipt의 권한은 유지한다. source headless 검증과 원 실패는 sub-130 REPORT.md이며 실제 Windows 설치·relay/Run·credential 수용은 OPEN이다.

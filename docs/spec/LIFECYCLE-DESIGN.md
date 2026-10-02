@@ -10,6 +10,8 @@
 
 managed 등록은 actual active code를 사용한다. 새 자료·설정·direct-sync·profile·ledger 및 직접 등록 도구의 출력 경로는 current/versions/update-control/removal-evidence/removed.json과 모든 깊이에서 겹칠 수 없다. 기본 사용자 onboarding 자료는 LOCALAPPDATA/KMTech/Label_Match/data이며 standalone 등록의 ProgramData 자료와 DirectSync 기본 경로는 코드 바깥이다. 사용자 제거는 자기 Run/relay 정지만 수행하고 machine control을 해석하지 않으며 신원·profile·원장·대기 전송을 보존한다.
 
+사용자 제거의 보고와 persistence는 active A/B/C가 아니라 고정 current owner에 결속한다. 재등록은 건강한 actual active를 재확인하고 owner의 canonical manifest·runtime·installer·bootstrap inventory를 확인한다. 정상 제거의 PASS_DATA_PRESERVED·Run/task/relay 부재 및 정확한 stop request ID/SHA가 일치하면 그 표식만 해제한다. 보호 credential handoff와 pinned EXACT_CLONE_RUNTIME_CONFLICT receipt는 기존 검증을 유지하며 owner stock에 결속한다. receipt가 지정되었으나 틀리면 정상 제거로 우회하지 않는다. 부재/UNKNOWN/다른 표식·다른 root는 보존하고, 해제 직전에도 표식 ID/SHA를 다시 확인한다.
+
 ## 내용으로 증명한 제거
 
 지원 제거는 현재·판·packet의 readable 목록이 선언한 상대 경로와 SHA가 같은 일반 파일만 개별 이동한다. current/version/packet 디렉터리 통째 이동은 금지한다. 읽을 수 없는 목록·이름만 같은 다른 내용·미상 파일·reparse는 보존하며 하위 reparse를 따라가지 않는다. incoming packet은 manifest의 artifact SHA로만 증명하고 해시가 없는 signature는 보존한다.

@@ -1,5 +1,6 @@
 """Actual lifecycle resolver/publisher and Label default storage boundaries."""
 import json
+import hashlib
 from pathlib import Path
 import pytest
 from contextlib import nullcontext
@@ -9,6 +10,134 @@ from tests.test_auto_update import OLD, NEW, NOW, bind_test_packet_settings
 from tests.test_supported_removal_convergence import _owned_artifact, _run_removal, _new_stock, tmp_path
 
 CANDIDATE = "3" * 40
+
+
+def _canonical_user_setup(root, monkeypatch, active=NEW):
+    from tests.test_current_user_onboarding import (_environment, _ready_state,
+        _write_bootstrap_inventory_record)
+    fixed, selected, control, verified = healthy(root, monkeypatch, active=active)
+    (fixed / "runtime").mkdir()
+    runtime = fixed / "runtime/pythonw.exe"
+    runtime.write_bytes(b"synthetic-stock-runtime")
+    installer = fixed / "INSTALL_CANONICAL_PORTABLE.ps1"
+    installer.write_bytes(b"synthetic-stock-installer")
+    (fixed / "portable-manifest.json").write_text(json.dumps(dict(
+        schema="label-match-portable-tree-v1", entrypoint="runtime/pythonw.exe app/main.py",
+        source_commit=OLD, source_tree="b" * 40, allowed_unsigned_app_pe=[], forbidden_package_roots=[],
+        canonical_installer=installer.name,
+        canonical_installer_sha256=hashlib.sha256(installer.read_bytes()).hexdigest(),
+        runtime_pythonw_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest())))
+    _write_bootstrap_inventory_record(fixed)
+    monkeypatch.setattr(onboarding, "CANONICAL_PORTABLE_ROOT", fixed)
+    environment = _environment(root.parent / "user")
+    paths = onboarding.resolve_current_user_onboarding_paths(selected, environ=environment)
+    _ready_state(paths)
+    paths.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ledger_path.write_bytes(b"durable quantity=7; UNKNOWN=pending")
+    return fixed, selected, environment, paths
+
+
+def _resume_user(root, environment, *, launcher=None, autostart=None):
+    from tests.test_current_user_onboarding import (_profile_loader, _credential_loader,
+        _ledger_factory, _autostart, _relay_start, _scheduled_task_absent, _legacy_task_quiescent)
+    return onboarding.onboard_current_user(root, environ=environment,
+        require_bootstrap_integrity=False, profile_loader=_profile_loader,
+        credential_loader=_credential_loader,
+        ledger_factory=lambda p: _ledger_factory(p) if not p.exists() else None,
+        autostart_installer=autostart or _autostart, relay_launcher=launcher or _relay_start,
+        scheduled_task_remover=_scheduled_task_absent,
+        legacy_task_quiescence_reader=_legacy_task_quiescent)
+
+
+@pytest.mark.parametrize("active", [OLD, NEW, CANDIDATE])
+@pytest.mark.parametrize("caller", ["owner", "active"])
+def test_supported_user_removal_then_registration_resumes_healthy_active(tmp_path, monkeypatch, active, caller):
+    from user_relay import user_relay_stop_path
+    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch, active)
+    root = fixed if caller == "owner" else selected
+    original = {p: p.read_bytes() for p in (paths.identity_path, paths.producer_manifest_path,
+        paths.credential_path, paths.logistics_profile_path, paths.ledger_path)}
+    removal = onboarding.remove_current_user_setup(root, environ=environment,
+        autostart_remover=lambda: {"status": "ABSENT"},
+        scheduled_task_remover=lambda _p: {"status": "ABSENT"})
+    assert removal["status"] == "PASS_DATA_PRESERVED"
+    marker = user_relay_stop_path(paths.direct_sync_root)
+    assert marker.is_file()
+    report = _resume_user(root, environment)
+    assert report["status"] == "READY"
+    assert report["stop_marker_release"]["status"] == "SUPPORTED_USER_REMOVAL_PROVEN"
+    assert not marker.exists()
+    assert all(p.read_bytes() == raw for p, raw in original.items())
+
+
+@pytest.mark.parametrize("damage", ["missing", "root", "request", "hash", "unknown"])
+def test_managed_resume_preserves_marker_when_removal_proof_differs(tmp_path, monkeypatch, damage):
+    from user_relay import user_relay_stop_path
+    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch)
+    onboarding.remove_current_user_setup(selected, environ=environment,
+        autostart_remover=lambda: {"status": "ABSENT"}, scheduled_task_remover=lambda _p: {"status": "ABSENT"})
+    marker = user_relay_stop_path(paths.direct_sync_root)
+    raw = marker.read_bytes()
+    proof = json.loads(paths.removal_report_path.read_text())
+    if damage == "missing":
+        paths.removal_report_path.unlink()
+    else:
+        if damage == "root": proof["machine_code_root"] = str(tmp_path / "foreign")
+        if damage == "request": proof["relay_process"]["request_id"] = "f" * 32
+        if damage == "hash": proof["relay_process"]["stop_request_sha256"] = "f" * 64
+        if damage == "unknown": proof["status"] = "UNKNOWN"
+        paths.removal_report_path.write_text(json.dumps(proof))
+    with pytest.raises(onboarding.CurrentUserOnboardingError):
+        _resume_user(fixed, environment)
+    assert marker.read_bytes() == raw
+
+
+def test_managed_resume_rechecks_exact_marker_before_release(tmp_path, monkeypatch):
+    from user_relay import request_user_relay_stop, user_relay_stop_path
+    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch)
+    onboarding.remove_current_user_setup(fixed, environ=environment,
+        autostart_remover=lambda: {"status": "ABSENT"}, scheduled_task_remover=lambda _p: {"status": "ABSENT"})
+    def changed(_root):
+        request_user_relay_stop(paths.direct_sync_root, timeout_seconds=0)
+        return {"status": "PASS"}
+    with pytest.raises(onboarding.CurrentUserOnboardingError, match="marker changed"):
+        _resume_user(selected, environment, autostart=changed)
+    assert user_relay_stop_path(paths.direct_sync_root).is_file()
+
+
+@pytest.mark.parametrize("active", [OLD, NEW])
+def test_managed_conflict_receipt_remains_bound_to_fixed_owner(tmp_path, monkeypatch, active):
+    from user_relay import request_user_relay_stop, user_relay_stop_path
+    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch, active)
+    stopped = request_user_relay_stop(paths.direct_sync_root, timeout_seconds=0)
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text('{"status":"RESOLVED"}')
+    environment[onboarding.CONFLICT_RECEIPT_PATH_ENV] = str(receipt)
+    environment[onboarding.CONFLICT_RECEIPT_SHA256_ENV] = hashlib.sha256(receipt.read_bytes()).hexdigest()
+    calls = []
+    def validated(_receipt, **kwargs):
+        calls.append(kwargs)
+        return {"stop_marker_lineage": {"current_request_id": stopped["request_id"],
+            "current_sha256": stopped["stop_request_sha256"]}}
+    monkeypatch.setattr(onboarding, "validate_resolution_receipt", validated)
+    assert _resume_user(selected, environment)["status"] == "READY"
+    assert calls[0]["portable_root"] == fixed
+    assert calls[0]["allow_portable_relocation"] is True
+    assert not user_relay_stop_path(paths.direct_sync_root).exists()
+
+
+def test_managed_resume_does_not_bypass_bad_conflict_receipt_with_normal_removal(tmp_path, monkeypatch):
+    from user_relay import user_relay_stop_path
+    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch)
+    onboarding.remove_current_user_setup(fixed, environ=environment,
+        autostart_remover=lambda: {"status": "ABSENT"}, scheduled_task_remover=lambda _p: {"status": "ABSENT"})
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text('{"status":"RESOLVED"}')
+    environment[onboarding.CONFLICT_RECEIPT_PATH_ENV] = str(receipt)
+    environment[onboarding.CONFLICT_RECEIPT_SHA256_ENV] = "f" * 64
+    with pytest.raises(onboarding.CurrentUserOnboardingError, match="receipt pin differs"):
+        _resume_user(selected, environment)
+    assert user_relay_stop_path(paths.direct_sync_root).exists()
 
 
 def healthy(root, monkeypatch, active=NEW):

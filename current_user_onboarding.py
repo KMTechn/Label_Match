@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -115,15 +115,25 @@ def _portable_stop_marker_release_preflight(
     marker = user_relay_stop_path(paths.direct_sync_root)
     if not marker.exists():
         return {"status": "NOT_REQUIRED", "marker_present": False}
-    if os.path.normcase(str(paths.app_root)) != os.path.normcase(
+    from auto_update import installation_root, resolve_lifecycle_context
+    owner_root = paths.app_root
+    managed = installation_root(paths.app_root)
+    if managed is not None and (managed / "update-control").exists():
+        context = resolve_lifecycle_context(managed, operation="register")
+        if _resolved(context["active_code_root"]) != paths.app_root:
+            raise ValueError("relay resume active code changed during registration")
+        owner_root = _resolved(context["fixed_root"])
+    owner_paths = replace(paths, app_root=owner_root,
+        bootstrap_integrity_path=owner_root / "bootstrap-integrity.json")
+    if os.path.normcase(str(owner_root)) != os.path.normcase(
         str(CANONICAL_PORTABLE_ROOT)
     ):
         raise ValueError(
             "relay stop marker is a safety fence until the canonical portable root is installed"
         )
-    manifest_path = paths.app_root / "portable-manifest.json"
-    installer_path = paths.app_root / "INSTALL_CANONICAL_PORTABLE.ps1"
-    integrity_path = paths.app_root / "bootstrap-integrity.json"
+    manifest_path = owner_root / "portable-manifest.json"
+    installer_path = owner_root / "INSTALL_CANONICAL_PORTABLE.ps1"
+    integrity_path = owner_root / "bootstrap-integrity.json"
     if not all(
         path.is_file() for path in (manifest_path, installer_path, integrity_path)
     ) or manifest_path.stat().st_size > 64 * 1024:
@@ -133,7 +143,7 @@ def _portable_stop_marker_release_preflight(
     manifest = _read_json(manifest_path, "canonical portable manifest")
     source_commit = str(manifest.get("source_commit") or "").lower()
     source_tree = str(manifest.get("source_tree") or "").lower()
-    runtime = paths.app_root / "runtime" / "pythonw.exe"
+    runtime = owner_root / "runtime" / "pythonw.exe"
     expected_runtime_hash = str(manifest.get("runtime_pythonw_sha256") or "").lower()
     if (
         manifest.get("schema") != "label-match-portable-tree-v1"
@@ -156,10 +166,10 @@ def _portable_stop_marker_release_preflight(
     integrity = _read_json(integrity_path, "canonical bootstrap integrity record")
     rows: list[dict[str, Any]] = []
     for file_path in sorted(
-        (path for path in paths.app_root.rglob("*") if path.is_file()),
-        key=lambda path: path.relative_to(paths.app_root).as_posix().encode("utf-16-be"),
+        (path for path in owner_root.rglob("*") if path.is_file()),
+        key=lambda path: path.relative_to(owner_root).as_posix().encode("utf-16-be"),
     ):
-        relative = file_path.relative_to(paths.app_root).as_posix()
+        relative = file_path.relative_to(owner_root).as_posix()
         if relative.casefold() == integrity_path.name.casefold():
             continue
         file_stat = file_path.lstat()
@@ -179,7 +189,7 @@ def _portable_stop_marker_release_preflight(
     if (
         integrity.get("schema_version") != PORTABLE_BOOTSTRAP_INTEGRITY_VERSION
         or integrity.get("status") != "PASS"
-        or str(integrity.get("code_root") or "") not in {".", str(paths.app_root)}
+        or str(integrity.get("code_root") or "") not in {".", str(owner_root)}
         or integrity.get("file_count") != len(rows)
         or aggregate is None
         or integrity.get("identity_profile_created") is not False
@@ -193,10 +203,15 @@ def _portable_stop_marker_release_preflight(
         values.get(CONFLICT_RECEIPT_SHA256_ENV) or ""
     ).strip().lower()
     if not receipt_value and not expected_receipt_hash:
-        from registration_relay_recovery import recovered_stop_release
-        recovered = recovered_stop_release(paths)
+        from registration_relay_recovery import recovered_stop_release, _normal_stop
+        recovered = recovered_stop_release(owner_paths)
         if recovered is not None:
             return recovered
+        if paths.removal_report_path.is_file():
+            normal = _normal_stop(paths.direct_sync_root, owner_root)
+            return {"status": "SUPPORTED_USER_REMOVAL_PROVEN", "marker_present": True,
+                "current_stop_marker_request_id": normal["request_id"],
+                "current_stop_marker_sha256": normal["sha256"]}
     if not receipt_value or len(expected_receipt_hash) != 64 or any(
         character not in "0123456789abcdef" for character in expected_receipt_hash
     ):
@@ -222,7 +237,7 @@ def _portable_stop_marker_release_preflight(
         identity_path=paths.identity_path,
         credential_path=paths.credential_path,
         stop_marker_path=marker,
-        portable_root=paths.app_root,
+        portable_root=owner_root,
         allow_portable_relocation=True,
     )
     return {
@@ -1288,6 +1303,12 @@ def remove_current_user_setup(
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = request_user_relay_stop,
 ) -> dict[str, Any]:
+    from auto_update import installation_root
+    managed = installation_root(Path(app_root))
+    if managed is not None:
+        # User removal must work even when machine control cannot be decoded.
+        # Its report and persistence belong to the stable owner, not active B.
+        app_root = managed / "current"
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
     paths.status_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
