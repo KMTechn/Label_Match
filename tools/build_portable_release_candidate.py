@@ -456,7 +456,7 @@ def build(
     update_manifest_public_key_config: str,
     auto_update_settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    from auto_update import policy_from_settings
+    from auto_update import policy_from_settings, source_version_literal
     startup_policy=policy_from_settings(auto_update_settings or {})
     repo_root = repo_root.resolve()
     python_home = python_home.resolve()
@@ -512,7 +512,10 @@ def build(
         output.mkdir(parents=True)
         _runtime_source(python_home, output / "runtime")
         app_root = output / "app"
+        version = source_version_literal((repo_root / "Label_Match.py").read_bytes())
         tool_sources = _copy_application(repo_root, app_root)
+        if source_version_literal((app_root / "Label_Match.py").read_bytes()) != version:
+            raise PortableBuildError("copied application version differs")
         update_key_config_sha256 = _write_update_key_config(
             app_root,
             update_manifest_public_key_config,
@@ -580,6 +583,7 @@ def build(
             "source_commit": source_commit,
             "source_tree": source_tree,
             "startup_update_protocol": 1,
+            "version": version,
             "startup_update_helper_sha256": _sha256(output / "tools/apply_prepared_update.ps1"),
             "helper_sha256": _sha256(output / "INSTALL_THIS_PC.ps1"),
             "integrity_helper_sha256": _sha256(output / "tools/bootstrap_integrity.ps1"),

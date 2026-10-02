@@ -410,7 +410,7 @@ SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부�
 
 요구: 로그온 SYSTEM 작업은 보호된 `current/tools/apply_prepared_update.ps1`만 실행한다. 고정 `current` bootstrap은 `versions/<source SHA>`의 활성 코드를 선택한다. 사용자 데이터·장비 신원·미완료·outbox·대기 전송은 복사하거나 되돌리지 않는다. 준비 패킷과 내구 전이 기록을 GUI/relay 시작 전에 확인한다. 업무 중 적용은 기본 끔이며 켜기를 거절한다.
 
-구현: `auto_update.py`는 기존 LM HTTPS·ES256 manifest·archive 검증을 재사용한다. 회사 feed는 기존 사용자 장비 인증과 같은 HTTPS origin만 사용한다. `authorize_feed_transition`은 신뢰 키로 인증된 manifest의 정확한 두 방향 from/to source commit·실제 재계산 writer contract SHA, 실제 후보 APP_VERSION과 서명 version의 일치, 실제 현재 판보다 높은 기존 version을 요구한다. 설치 당시 알려진 쌍 목록을 policy에 요구하지 않는다. 소비자 원문 data/API SHA와 같음/다름은 전이 증거이며 원문 동일성은 승인 gate가 아니다. wildcard·단방향·다른 실제 from·같거나 낮은 버전·옛 feed 재생·다른 키·손상 패킷은 거절한다.
+구현: `auto_update.py`는 기존 LM HTTPS·ES256 manifest·archive 검증을 재사용한다. 회사 feed는 기존 사용자 장비 인증과 같은 HTTPS origin만 사용한다. `authorize_feed_transition`은 신뢰 키로 인증된 manifest의 정확한 두 방향 from/to source commit·실제 재계산 계약 원문 SHA, 검증된 stock version 및 빌드 literal과 서명 version의 일치, 현재 stock 판보다 엄격히 높은 숫자 version을 요구한다. 설치 당시 알려진 쌍 목록을 policy에 요구하지 않는다. 소비자 원문 data/API SHA와 같음/다름은 전이 증거이며 원문 동일성은 승인 gate가 아니다. wildcard·단방향·다른 실제 from·같거나 낮은 버전·옛 feed 재생·다른 키·손상 패킷은 거절한다.
 
 쌍 승인은 출시 컷 `w9setupprep`의 독립 검토와 중앙 서명으로 표현한다. 독립 검토는 데이터 형식·API의 양방향 불변과 보존을 확인한다. 이는 GUI 핫픽스의 정확한 미래 쌍을 승인하는 방식이며 schema/API 변경의 일반 승인이 아니다. 별도 승인 의식·receipt 체계는 추가하지 않는다. policy는 설치기가 packet의 feed/channel/user/staging 설정으로 초기화하고 기존 preimage를 보존한다. SYSTEM apply는 policy를 읽고 SHA를 기록하며 확인된 역방향 권한은 transition에 남긴다. policy 승인 목록을 쓰지 않는다.
 
@@ -423,3 +423,5 @@ SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부�
 수동 수명주기 제한: 자동 업데이트 후 active 코드가 current bootstrap과 다르면 수동 교체·제거·사용자 제거·재등록은 RECOVERY_REQUIRED로 차단한다. 데이터와 설치 상태를 보존하고 담당자 복구를 안내한다. 기존 정확한 deployment delegation은 유지한다. 이 상태를 지원하는 canonical lifecycle 교정과 실기 수용은 첫 현장 설치 전 필수 OPEN 항목이다.
 
 증거: 새 순수/주입 경계·독립 clone 집중 비교와 기존 source-derived inventory 핀 확인만 이 레인의 PROVEN 대상이다. 전체 suite·stock builder·실제 packet·작업 등록/ACL·CreateProcessWithTokenW·GUI·VM 수명주기·독립 검토는 NOT TESTED이며 중앙 랩 수용이 필요하다.
+
+서명 manifest의 쌍·stock version·raw bytes·PREPARED 재인증의 현재 요구/구현은 [쌍 계약](PAIR-RULE-CONTRACT.md)을 따른다. 이 소스 이식의 focused 증거와 실제 Windows 한계는 sub-128 REPORT.md에 기록하며 선언/pin 재생성은 동결 뒤 중앙 단계다.

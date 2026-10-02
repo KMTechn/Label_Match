@@ -112,6 +112,13 @@ def test_power_loss_between_record_and_pointer_write_replays_recorded_code():
         updates.recovery_sha(rollback, pointer_sha="9" * 40)
 
 
+def signed_pair():
+    forward, reverse = pins()
+    return dict(from_commit=OLD, to_commit=NEW,
+                forward_contract_sha256=updates.directional_pin([forward], **forward),
+                rollback_contract_sha256=updates.directional_pin([reverse], **reverse))
+
+
 def pins():
     return [
         dict(zip(updates.PIN_FIELDS, (OLD, NEW, "a" * 64, "b" * 64))),
@@ -138,8 +145,8 @@ def test_approval_rejects_wildcards_and_malformed_entries(change):
 
 
 def test_both_reviewed_directions_authorize_even_when_consumer_bytes_change():
-    current = dict(source_commit=OLD, writer_sink_inventory_contract_sha256="a" * 64, data_api_contract_sha256="c" * 64)
-    candidate = dict(source_commit=NEW, writer_sink_inventory_contract_sha256="b" * 64, data_api_contract_sha256="c" * 64)
+    current = dict(source_commit=OLD, contract_sha256="a" * 64, writer_sink_inventory_contract_sha256="a" * 64, data_api_contract_sha256="c" * 64)
+    candidate = dict(source_commit=NEW, contract_sha256="b" * 64, writer_sink_inventory_contract_sha256="b" * 64, data_api_contract_sha256="c" * 64)
     assert len(updates.bidirectional_pins(pins(), current=current, candidate=candidate)) == 2
     with pytest.raises(ValueError, match="no exact approval"):
         updates.bidirectional_pins(pins()[:1], current=current, candidate=candidate)
@@ -260,8 +267,8 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
     monkeypatch.setattr(updates, "update_lock", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(updates, "fixed_helper", lambda _control, mode, **kwargs: verified.append((mode, kwargs.get("code_root"))) or "")
     monkeypatch.setattr(updates, "now_utc", lambda: LATER)
-    monkeypatch.setattr(updates, "version_manifest", lambda bundle: dict(source_commit=OLD if bundle.name == OLD else NEW, version="v2.0.98" if bundle.name == OLD else "v2.0.99", writer_sink_inventory_contract_sha256="a" * 64 if bundle.name == OLD else "b" * 64, data_api_contract_sha256="c" * 64 if bundle.name == OLD else "d" * 64))
-    monkeypatch.setattr(updates, "verify_prepared_packet", lambda *_args, **_kwargs: ({"source_commit": NEW, "version": "v2.0.99", "approved_transitions": pins()}, {"archive": {}, "sha256": "3" * 64}))
+    monkeypatch.setattr(updates, "version_manifest", lambda bundle: dict(source_commit=OLD if bundle.name == OLD else NEW, version="v2.0.98" if bundle.name == OLD else "v2.0.99", writer_sink_inventory_contract_sha256="a" * 64 if bundle.name == OLD else "b" * 64, contract_sha256="a" * 64 if bundle.name == OLD else "b" * 64, data_api_contract_sha256="c" * 64 if bundle.name == OLD else "d" * 64))
+    monkeypatch.setattr(updates, "verify_prepared_packet", lambda *_args, **_kwargs: ({"source_commit": NEW, "version": "v2.0.99", "approved_transitions": pins(), "auto_update": signed_pair()}, {"archive": {}, "sha256": "3" * 64}))
     monkeypatch.setattr(updates, "copy_prepared_file", lambda source, target, **_kwargs: target.write_bytes(source.read_bytes()))
     monkeypatch.setattr(updates, "preserve_candidate_version", lambda *_args: None)
     monkeypatch.setattr(updates, "extract_prepared_code", lambda *_args, **_kwargs: None)
@@ -354,8 +361,8 @@ def test_portable_relay_gate_does_not_require_the_gui_pid(monkeypatch, tmp_path)
 
 
 def manifests():
-    current = dict(source_commit=OLD, writer_sink_inventory_contract_sha256="a" * 64, data_api_contract_sha256="c" * 64)
-    candidate = dict(source_commit=NEW, writer_sink_inventory_contract_sha256="b" * 64, data_api_contract_sha256="c" * 64)
+    current = dict(source_commit=OLD, contract_sha256="a" * 64, writer_sink_inventory_contract_sha256="a" * 64, data_api_contract_sha256="c" * 64)
+    candidate = dict(source_commit=NEW, contract_sha256="b" * 64, writer_sink_inventory_contract_sha256="b" * 64, data_api_contract_sha256="c" * 64)
     return current, candidate
 
 
@@ -564,7 +571,7 @@ def test_reviewed_gui_hotfix_changes_raw_consumer_evidence_without_weakening_exa
     for name,commit,ui in [('old',OLD,'old wording'),('new',NEW,'hotfix wording')]:
         root=tmp_path/name;root.mkdir()
         (root/'Label_Match.py').write_text(f'APP_VERSION="v2.0.94"\nUI_TEXT={ui!r}\n@writer_sink("fixture_write")\ndef write(): return {{"api": 1}}\n',encoding='utf-8')
-        versions.append(dict(source_commit=commit,writer_sink_inventory_contract_sha256=writer_sink_inventory_sha256(derive_writer_sink_inventory(root)),data_api_contract_sha256=updates.data_api_contract_sha256(root)))
+        versions.append(dict(source_commit=commit,contract_sha256=writer_sink_inventory_sha256(derive_writer_sink_inventory(root)),writer_sink_inventory_contract_sha256=writer_sink_inventory_sha256(derive_writer_sink_inventory(root)),data_api_contract_sha256=updates.data_api_contract_sha256(root)))
     current,candidate=versions
     pair=dict(zip(updates.PIN_FIELDS,(OLD,NEW,current['writer_sink_inventory_contract_sha256'],candidate['writer_sink_inventory_contract_sha256'])))
     reverse=dict(zip(updates.PIN_FIELDS,(NEW,OLD,candidate['writer_sink_inventory_contract_sha256'],current['writer_sink_inventory_contract_sha256'])))
@@ -581,8 +588,9 @@ def test_packet_writer_pin_is_recomputed_from_actual_bytes_without_importing_can
     source.write_text('APP_VERSION="v2.0.94"\nraise RuntimeError("candidate must never execute")\n@writer_sink("fixture_write")\ndef write(): return 1\n',encoding='utf-8')
     (tmp_path/'INSTALL_THIS_PC.ps1').write_text('# pure fixture\n',encoding='utf-8')
     monkeypatch.setattr(updates,'DATA_API_FILES',('Label_Match.py',))
+    monkeypatch.setattr(updates,'CONTRACT_FILES',('app/Label_Match.py',))
     pin=updates.version_writer_inventory_sha256(tmp_path)
-    (tmp_path/'portable-manifest.json').write_text(json.dumps({'startup_update_protocol':1,'source_commit':NEW,'writer_sink_inventory_contract_sha256':pin}),encoding='utf-8')
+    (tmp_path/'portable-manifest.json').write_text(json.dumps({'schema':'label-match-portable-tree-v1','version':'v2.0.94','startup_update_protocol':1,'source_commit':NEW,'writer_sink_inventory_contract_sha256':pin}),encoding='utf-8')
     assert updates.version_manifest(tmp_path)['writer_sink_inventory_contract_sha256']==pin
     source.write_text(source.read_text().replace('return 1','return 2'),encoding='utf-8')
     with pytest.raises(ValueError,match='actual source bytes'):updates.version_manifest(tmp_path)
@@ -597,7 +605,7 @@ def test_signed_future_pair_needs_no_install_time_allowlist():
     current,candidate=feed_versions()
     policy=updates.policy_from_settings({'feed_url':'https://company.test/lm'})
     assert 'approved_transitions' not in policy
-    manifest={'source_commit':NEW,'version':candidate['version'],'approved_transitions':pins()}
+    manifest={'source_commit':NEW,'version':candidate['version'],'approved_transitions':pins(),'auto_update':signed_pair()}
     result=updates.authorize_feed_transition(manifest,current=current,candidate=candidate)
     assert result[3]=='SIGNED_EXACT_PAIR'
     assert result[4]=={'previous_data_api_sha256':'c'*64,'candidate_data_api_sha256':'d'*64,'consumer_bytes_equal':False}
@@ -606,7 +614,7 @@ def test_signed_future_pair_needs_no_install_time_allowlist():
 @pytest.mark.parametrize('change',['same_version','lower_version','reverse_feed','wrong_from','wrong_contract','no_pair','one_direction','target_identity','same_commit'])
 def test_feed_authority_rejects_replay_downgrade_and_actual_identity_mismatch(change):
     current,candidate=feed_versions()
-    manifest={'source_commit':NEW,'version':candidate['version'],'approved_transitions':pins()}
+    manifest={'source_commit':NEW,'version':candidate['version'],'approved_transitions':pins(),'auto_update':signed_pair()}
     if change in {'same_version','lower_version'}:
         candidate={**candidate,'version':current['version'] if change=='same_version' else 'v2.0.21'}
         manifest['version']=candidate['version']
@@ -614,7 +622,7 @@ def test_feed_authority_rejects_replay_downgrade_and_actual_identity_mismatch(ch
         current,candidate=candidate,current
         manifest.update(source_commit=candidate['source_commit'],version=candidate['version'])
     elif change=='wrong_from':current={**current,'source_commit':'9'*40}
-    elif change=='wrong_contract':candidate={**candidate,'writer_sink_inventory_contract_sha256':'e'*64}
+    elif change=='wrong_contract':candidate={**candidate,'contract_sha256':'e'*64}
     elif change=='no_pair':manifest['approved_transitions']=[]
     elif change=='one_direction':manifest['approved_transitions']=pins()[:1]
     elif change=='target_identity':manifest['source_commit']='9'*40
@@ -629,8 +637,9 @@ def test_old_feed_cannot_raise_its_version_only_in_portable_metadata(monkeypatch
     (app/'Label_Match.py').write_text('APP_VERSION="v2.0.22"\n@writer_sink("fixture_write")\ndef write(): return 1\n',encoding='utf-8')
     (tmp_path/'INSTALL_THIS_PC.ps1').write_text('# pure fixture\n',encoding='utf-8')
     monkeypatch.setattr(updates,'DATA_API_FILES',('Label_Match.py',))
+    monkeypatch.setattr(updates,'CONTRACT_FILES',('app/Label_Match.py',))
     pin=updates.version_writer_inventory_sha256(tmp_path)
-    (tmp_path/'portable-manifest.json').write_text(json.dumps({'startup_update_protocol':1,'source_commit':OLD,'writer_sink_inventory_contract_sha256':pin,'version':'v9.0.0'}),encoding='utf-8')
+    (tmp_path/'portable-manifest.json').write_text(json.dumps({'schema':'label-match-portable-tree-v1','startup_update_protocol':1,'source_commit':OLD,'writer_sink_inventory_contract_sha256':pin,'version':'v9.0.0'}),encoding='utf-8')
     with pytest.raises(ValueError,match='actual application literal'):updates.version_manifest(tmp_path)
 
 
@@ -641,7 +650,7 @@ def test_future_feed_uses_existing_es256_packet_verification_before_authority(tm
     import Label_Match
     from kmtech_zero_pe.cng_p256 import P256KeyPair
     from tests.test_update_manifest import canonical_manifest
-    manifest=canonical_manifest();manifest.update(source_commit=NEW,signature_version='es256-v1',approved_transitions=pins())
+    manifest=canonical_manifest();manifest.update(source_commit=NEW,signature_version='es256-v1',approved_transitions=pins(),auto_update=signed_pair())
     packet=tmp_path/'packet.zip'
     with zipfile.ZipFile(packet,'w') as archive:
         for name in manifest['archive']['required_files']:archive.writestr(name,b'never executed fixture')

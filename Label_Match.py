@@ -3826,7 +3826,10 @@ def _assert_https_update_url(url, *, require_zip=False):
     parsed = urlparse(str(url or ""))
     if parsed.scheme.lower() != "https" or not parsed.netloc:
         raise ValueError("Update URL must be HTTPS")
-    if parsed.username or parsed.password:
+    if not parsed.hostname or not parsed.hostname.isascii():
+        raise ValueError("업데이트 주소의 호스트는 ASCII IP 또는 도메인이어야 합니다.")
+    parsed.port
+    if parsed.username is not None or parsed.password is not None:
         raise ValueError("Update URL must not include userinfo")
     if parsed.fragment:
         raise ValueError("Update URL must not include fragments")

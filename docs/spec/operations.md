@@ -1052,3 +1052,5 @@ canonical onboarding은 fence 안에서 신원·Run을 준비하고 relay 시작
 자동 업데이트로 active와 current source가 다르거나 전이가 미완료면 수동 교체·제거 및 사용자 제거·재등록을 RECOVERY_REQUIRED로 거절한다. 데이터·미완료·outbox·설치 상태를 그대로 보존하고 담당자에게 복구를 요청한다. 첫 현장 설치 전 canonical host의 active code root 선택과 고정 app-root 제거 보고서 소유권을 교정하고 랩에서 검증해야 한다. 현재 CONFIRMED 상태를 수동으로 수정하거나 임의 옛 packet을 설치하는 복구는 지원되지 않는다.
 
 2026-10-02 Windows 호스트의 격리 known-folder·독립 .git 순수/주입 집중 시험만 수행한다. 실제 로그온·전원 손실·빠른 시작·토큰·작업 ACL·옛 packet(6479eca 첫 등록 포함)·수동 lifecycle·stock packet·전체 suite·독립 검토는 중앙 NOT TESTED다. 정확한 결과와 원 실패는 sub-88 REPORT.md 및 원 로그에 남긴다.
+
+10/03 sub-128 쌍 단위: 검증된 stock version이 없는 옛 자동 업데이트 입력은 지원 재설치로 안내한다. 모듈 literal은 빌드 정합성 검사이며 판 권한은 서명 manifest다. [서명 쌍 계약](PAIR-RULE-CONTRACT.md)과 sub-128의 focused 로그를 따르고 실제 feed/SYSTEM/stock 수용은 NOT TESTED다.

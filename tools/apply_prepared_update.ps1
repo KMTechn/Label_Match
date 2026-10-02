@@ -1,10 +1,11 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$InstallRoot,
     [ValidateSet('Apply','Observe','Verify','Authority')][string]$Mode = 'Apply',
     [string]$CodeRoot = ''
 )
 $ErrorActionPreference = 'Stop'
+
 function Assert-Protected([string]$Path, [switch]$Recursive, [hashtable]$Verified = $null) {
     if ($null -eq $Verified) { $Verified = @{} }
     $full = [IO.Path]::GetFullPath($Path)
@@ -44,7 +45,7 @@ Assert-Protected $trustedBootstrap -Recursive
 Assert-Protected $PSCommandPath
 foreach ($directory in @('update-control','versions')) {
     $trustedDirectory = Join-Path $trustedApplication $directory
-    if (Test-Path -LiteralPath $trustedDirectory) { Assert-Protected $trustedDirectory -Recursive }
+    if (Test-Path -LiteralPath $trustedDirectory) { Assert-Protected $trustedDirectory -Recursive:($Mode -cne 'Verify') }
 }
 $IntegrityHelper = Join-Path $PSScriptRoot 'bootstrap_integrity.ps1'
 . $IntegrityHelper
@@ -59,12 +60,12 @@ function Enter-LabelStartupUpdateAuthority {
     }
     [void](Assert-BootstrapIntegrityRecord $root)
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    if ($Mode -cne 'Observe' -and $sid -cne 'S-1-5-18') { throw 'STARTUP_UPDATE_SYSTEM_REQUIRED' }
+    if ($Mode -cnotin @('Observe','Verify') -and $sid -cne 'S-1-5-18') { throw 'STARTUP_UPDATE_SYSTEM_REQUIRED' }
     $policyPath = Join-Path (Split-Path -Parent $root) 'update-control\policy.json'
     Assert-BootstrapNoReparsePoint $policyPath 'startup update policy'
     if ((Get-Item -LiteralPath $policyPath).Length -gt 65536) { throw 'STARTUP_UPDATE_POLICY_OVERSIZED' }
     $policy = Get-Content -LiteralPath $policyPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($Mode -ceq 'Observe' -and $sid -cne 'S-1-5-18' -and $sid -cne [string]$policy.operator_sid) {
+    if ($Mode -cin @('Observe','Verify') -and $sid -cne 'S-1-5-18' -and $sid -cne [string]$policy.operator_sid) {
         throw 'STARTUP_UPDATE_OPERATOR_DIFFERS'
     }
     return [pscustomobject]@{ root=$root; policy=$policy }
@@ -163,7 +164,7 @@ function Assert-StartupUpdateVersion([string]$Root, [string]$Candidate) {
     Assert-BootstrapNoReparsePoint $full 'startup update version'
     $versionPrefix = Join-Path $managed 'versions'
     $packetPrefix = Join-Path $managed 'update-control'
-    if (-not $full.StartsWith($versionPrefix + '\',[StringComparison]::OrdinalIgnoreCase) -and
+    if (-not (Test-SamePath $full $Root) -and -not $full.StartsWith($versionPrefix + '\',[StringComparison]::OrdinalIgnoreCase) -and
         -not $full.StartsWith($packetPrefix + '\packet-',[StringComparison]::OrdinalIgnoreCase)) {
         throw 'STARTUP_UPDATE_VERSION_OUTSIDE_PROTECTED_ROOT'
     }
@@ -199,7 +200,7 @@ function Assert-StartupUpdateVersion([string]$Root, [string]$Candidate) {
         if (Test-Path -LiteralPath (Join-Path $full 'bootstrap-integrity.json')) { throw 'STARTUP_UPDATE_PACKET_HAS_INSTALL_RECORD' }
         $finalIdentity = Join-Path $versionPrefix ([string]$manifest.source_commit)
         [void](Write-BootstrapIntegrityRecord -Root $full -CodeRoot $finalIdentity)
-    } elseif ((Split-Path -Leaf $full) -cne [string]$manifest.source_commit) {
+    } elseif (-not (Test-SamePath $full $Root) -and (Split-Path -Leaf $full) -cne [string]$manifest.source_commit) {
         throw 'STARTUP_UPDATE_VERSION_DIRECTORY_DIFFERS'
     } elseif (Test-Path -LiteralPath (Join-Path $full 'bootstrap-integrity.json') -PathType Leaf) {
         [void](Assert-BootstrapIntegrityRecord $full)
