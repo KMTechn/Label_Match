@@ -265,8 +265,10 @@ def test_declared_nextfix_pair_is_exactly_e88011c_and_this_tree():
 
 @pytest.fixture(scope="module")
 def nextfix_archive_layouts(tmp_path_factory):
-    root = tmp_path_factory.mktemp("nextfix-source-archives")
     head = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+    dirty = subprocess.check_output(["git", "-C", str(ROOT), "diff", "HEAD", "--name-only"], text=True).strip()
+    assert not dirty, "archive verification requires a clean committed candidate"
+    root = tmp_path_factory.mktemp("nextfix-source-archives")
     layouts = []
     for name, revision in (("old", NEXTFIX_BASE), ("candidate", head)):
         archive = root / (name + ".zip")
@@ -294,13 +296,35 @@ def nextfix_archive_layouts(tmp_path_factory):
         if name == "candidate":
             (layout / "app/auto-update-settings.json").write_text(json.dumps({"feed_url":"", "channel":"stable",
                 "apply_during_work":False, "profile_auth":False}, sort_keys=True, indent=2)+"\n", encoding="utf-8", newline="\n")
-            public=json.loads((ROOT / "config/update-manifest-key-config.json").read_text(encoding="utf-8-sig"))
+            public=json.loads((source / "config/update-manifest-key-config.json").read_text(encoding="utf-8-sig"))
             (layout / "app/update-manifest-key-config.json").write_text(json.dumps(public,ensure_ascii=True,sort_keys=True,indent=2)+"\n",encoding="utf-8")
-            shutil.copyfile(ROOT / "tools/apply_prepared_update.ps1",layout / "tools/apply_prepared_update.ps1")
+            shutil.copyfile(source / "tools/apply_prepared_update.ps1",layout / "tools/apply_prepared_update.ps1")
         else:
             shutil.copyfile(ROOT / "tests/fixtures/LM-e88011c-public-key-config.json",layout / "app/update-manifest-key-config.json")
         layouts.append(layout)
     return tuple(layouts)
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_nextfix_archive_refuses_uncommitted_candidate(tmp_path, tmp_path_factory, monkeypatch, staged):
+    # Exercise the real fixture against its own .git, never the shared repository.
+    candidate = tmp_path / "candidate-source"
+    candidate.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(candidate), *args], check=True,
+            capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    git("init", "--quiet")
+    source = candidate / "candidate.py"
+    source.write_text("committed = True\n", encoding="utf-8")
+    git("add", "candidate.py")
+    git("-c", "user.name=isolated-fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "--quiet", "-m", "isolated candidate")
+    source.write_text("committed = False\n", encoding="utf-8")
+    if staged:
+        git("add", "candidate.py")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", candidate)
+    with pytest.raises(AssertionError, match="clean committed candidate"):
+        nextfix_archive_layouts.__wrapped__(tmp_path_factory)
 
 
 def _nextfix_probe(tmp_path, source, installed):
