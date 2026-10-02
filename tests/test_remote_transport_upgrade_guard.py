@@ -43,4 +43,9 @@ def test_transport_guard_refuses_changed_bytes_on_either_side(tmp_path, nextfix_
     result = _nextfix_probe(tmp_path, changed if side == 'candidate' else candidate,
         changed if side == 'installed' else old)
     assert result.returncode != 0
-    assert 'WRITER_TRANSITION_SEMANTICS_DIFFER' in result.stderr
+    # A changed signed-transport pair cannot authorize the roster's exact
+    # post -> _post_path writer identity mapping; identity validation now
+    # rejects either side before the per-file semantics comparison.
+    reason = ('WRITER_TRANSITION_SOURCE_SET_DIFFERS' if name == 'label_admin_pin.py'
+              else 'WRITER_TRANSITION_SEMANTICS_DIFFER')
+    assert reason in result.stderr

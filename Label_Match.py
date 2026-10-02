@@ -6856,6 +6856,9 @@ class Label_Match(tk.Tk):
     def _worker_roster_choices(self):
         recent = self.app_settings.get("recent_worker_ids", [])
         recent = recent if isinstance(recent, list) else []
+        identity = self.__dict__.get("worker_id")
+        if not recent and type(identity) is str:
+            recent = [identity]
         return label_worker_roster.choices(
             self.__dict__.get("_worker_roster"), recent, self._recent_worker_names())
 
@@ -6878,7 +6881,7 @@ class Label_Match(tk.Tk):
             return True
         name = str(self.__dict__.get("worker_name", "") or "")
         roster = self.__dict__.get("_worker_roster")
-        if roster is None:
+        if label_worker_roster.uses_legacy_names(roster):
             return label_worker_roster.valid_name(name)
         identity = self.__dict__.get("worker_id")
         matches = [worker for worker in self._worker_roster_choices()
@@ -6966,7 +6969,7 @@ class Label_Match(tk.Tk):
             self.worker_name_var.set("")
         self._roster_choice_note.configure(text=(
             "명단을 받지 못해 이 PC 에 저장된 이름을 씁니다\n"
-            if self.__dict__.get("_worker_roster") is None and choices else ""
+            if label_worker_roster.uses_legacy_names(self.__dict__.get("_worker_roster")) and choices else ""
         ) + "관리자에게 명단 등록을 요청하세요")
 
     def _remember_worker_name(self, worker_name):

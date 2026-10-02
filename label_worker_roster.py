@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import unicodedata
@@ -15,7 +16,8 @@ MAX_CACHE_BYTES = 2 * 1024 * 1024
 
 def valid_name(value):
     return (type(value) is str and bool(value.strip())
-            and not any(unicodedata.category(char) == "Cc" for char in value))
+            and not any(unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"}
+                        for char in value))
 
 
 def _unique_object(pairs):
@@ -29,7 +31,7 @@ def _unique_object(pairs):
 
 def _digest(payload):
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True,
-                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+                     separators=(",", ":"), allow_nan=False).encode("utf-8", errors="backslashreplace")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -46,11 +48,29 @@ def validate_roster(payload, scope):
             raise ValueError("invalid worker")
         identity = worker.get("worker_id")
         if (type(identity) is not str or str(uuid.UUID(identity)) != identity
-                or identity in seen or not valid_name(worker.get("display_name"))
+                or identity in seen or type(worker.get("display_name")) is not str
                 or worker.get("status") not in {"ACTIVE", "DISABLED"}):
             raise ValueError("invalid worker")
         seen.add(identity)
     return payload
+
+
+def _usable_roster(payload):
+    received = payload["workers"]
+    workers = [{**worker, "display_name": worker["display_name"].strip()}
+               for worker in received if valid_name(worker["display_name"])]
+    if received == workers:
+        return payload
+    discarded = len(received) - len(workers)
+    if discarded:
+        logging.getLogger(__name__).warning("Worker roster discarded invalid-name rows: %d", discarded)
+    # Keep the received rows for cache bytes, same-version comparison and the
+    # distinction between a truly empty roster and an unusable nonempty one.
+    return {**payload, "workers": workers, "_received_workers": received}
+
+
+def uses_legacy_names(roster):
+    return roster is None or not roster.get("_received_workers", roster["workers"])
 
 
 def _read_cache(path, scope):
@@ -69,7 +89,7 @@ def _read_cache(path, scope):
     unsigned = {name: value for name, value in payload.items() if name != "sha256"}
     if payload["sha256"] != _digest(unsigned):
         raise ValueError("cache digest mismatch")
-    return payload
+    return _usable_roster(payload)
 
 
 def load_cache(path, scope):
@@ -93,7 +113,7 @@ def _atomic_write(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp-" + uuid.uuid4().hex)
     try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        with temporary.open("w", encoding="utf-8", errors="backslashreplace", newline="\n") as handle:
             json.dump(payload, handle, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"), allow_nan=False)
             handle.flush()
@@ -108,12 +128,14 @@ def save_cache(path, payload, scope):
     validate_roster(payload, scope)
     cached = {name: payload[name] for name in (
         "contract_version", "authority_scope_id", "version", "workers")}
+    cached["workers"] = payload.get("_received_workers", payload["workers"])
+    validate_roster(cached, scope)
     cached["fetched_at"] = datetime.now(timezone.utc).isoformat()
     cached["sha256"] = _digest(cached)
     # Two atomic copies give the next offline launch a verified fallback.
     _atomic_write(Path(path).with_name("roster.last-good.json"), cached)
     _atomic_write(path, cached)
-    return cached
+    return _usable_roster(cached)
 
 
 def apply_response(answer, previous, scope):
@@ -132,16 +154,19 @@ def apply_response(answer, previous, scope):
     if previous is not None and answer["version"] < previous["version"]:
         raise ValueError("older response")
     if previous is not None and answer["version"] == previous["version"]:
-        if answer["workers"] != previous["workers"]:
+        if answer["workers"] != previous.get("_received_workers", previous["workers"]):
             raise ValueError("changed workers without a new version")
         return previous
-    return answer
+    # Private cache-view metadata never comes from the remote response.
+    return _usable_roster({name: value for name, value in answer.items()
+                           if name != "_received_workers"})
 
 
 def choices(roster, recent_ids, legacy_names):
-    if roster is None:
+    if uses_legacy_names(roster):
         return [{"worker_id": None, "display_name": name, "legacy_local": True}
-                for name in dict.fromkeys(legacy_names) if valid_name(name)]
+                for name in dict.fromkeys(name.strip() for name in legacy_names if valid_name(name))]
+    roster = _usable_roster(roster)
     recent_ids = list(dict.fromkeys(identity for identity in recent_ids if type(identity) is str))
     order = {identity: index for index, identity in enumerate(recent_ids)}
     active = [dict(worker) for worker in roster["workers"] if worker["status"] == "ACTIVE"]

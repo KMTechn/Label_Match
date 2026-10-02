@@ -315,6 +315,91 @@ def test_old_settings_ignore_malformed_recent_identity_entries(tmp_path):
     assert [worker["worker_id"] for worker in app._worker_roster_choices()] == [BOB, ALICE]
 
 
+@pytest.mark.parametrize("invalid", ["", " \u3000 ", "\u0001", "이\u200b", "이\ud800", "이\u2028", "이\u2029"])
+def test_invalid_name_row_keeps_valid_worker_through_cache_restart(tmp_path, caplog, invalid):
+    app = app_with_roster(tmp_path, {"worker_name": "김철"}, answer(name=invalid))
+    assert app._roster_worker_allowed() and app.worker_id == BOB
+    assert [worker["display_name"] for worker in app._worker_roster_choices()] == ["김철"]
+    assert any("invalid-name rows: 1" in record.message for record in caplog.records)
+    stored = json.loads(Path(app._roster_cache_path).read_text(encoding="utf-8"))
+    assert set(stored) == {"contract_version", "authority_scope_id", "version", "workers", "fetched_at", "sha256"}
+    assert stored["workers"] == answer(name=invalid)["workers"]
+    app._init_worker_roster()
+    assert app._roster_worker_allowed()
+    assert [worker["worker_id"] for worker in app._worker_roster_choices()] == [BOB]
+
+
+def test_trimmed_name_binds_remembered_worker_without_changing_received_version(tmp_path):
+    app = app_with_roster(tmp_path, {"worker_name": "Nguyễn Thị Mai"}, answer(name="  Nguyễn Thị Mai\u3000"))
+    assert app._roster_worker_allowed() and app.worker_id == ALICE
+    assert app._worker_roster_choices()[0]["display_name"] == "Nguyễn Thị Mai"
+    before = Path(app._roster_cache_path).read_bytes()
+    assert app._apply_worker_roster_answer(0, SCOPE, answer(name="  Nguyễn Thị Mai\u3000"))
+    assert Path(app._roster_cache_path).read_bytes() == before
+    with pytest.raises(ValueError, match="changed workers"):
+        app._apply_worker_roster_answer(0, SCOPE, answer(name="Nguyễn Thị Mai"))
+    app._init_worker_roster()
+    assert app._roster_worker_allowed()
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("remembered", [False, True])
+def test_zero_received_rows_allow_local_choice_and_notice(tmp_path, restart, remembered):
+    settings = {"worker_history": [{"name": "김철"}], "worker_name": "김철" if remembered else ""}
+    response = answer()
+    response["workers"] = []
+    app = app_with_roster(tmp_path, settings, response)
+    if restart:
+        app._init_worker_roster()
+    assert app._roster_worker_allowed() is remembered
+    assert app._worker_roster_choices() == [{"worker_id": None, "display_name": "김철", "legacy_local": True}]
+    notes = {}
+    app._roster_selection_window = object()
+    app._roster_choice_widget = SimpleNamespace(configure=lambda **values: notes.update(values))
+    app._roster_choice_note = SimpleNamespace(configure=lambda **values: notes.update(values))
+    app.worker_name_var = SimpleNamespace(get=lambda: "", set=lambda value: None)
+    app._refresh_worker_roster_selection()
+    assert "이 PC 에 저장된 이름을 씁니다" in notes["text"]
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("invalid_names", [False, True])
+def test_nonempty_unusable_roster_never_allows_local_fallback(tmp_path, restart, invalid_names):
+    response = answer()
+    for worker in response["workers"]:
+        if invalid_names:
+            worker["display_name"] = "\u200b"
+        else:
+            worker["status"] = "DISABLED"
+    app = app_with_roster(tmp_path, {"worker_name": "김철"}, response)
+    if restart:
+        app._init_worker_roster()
+    assert app._worker_roster_choices() == [] and not app._roster_worker_allowed()
+    notes = {}
+    app._roster_selection_window = object()
+    app._roster_choice_widget = SimpleNamespace(configure=lambda **values: notes.update(values))
+    app._roster_choice_note = SimpleNamespace(configure=lambda **values: notes.update(values))
+    app.worker_name_var = SimpleNamespace(get=lambda: "김철", set=lambda value: None)
+    app._refresh_worker_roster_selection()
+    assert notes["text"] == "관리자에게 명단 등록을 요청하세요"
+
+
+def test_dropped_name_does_not_hide_duplicate_identity_or_cache_damage(tmp_path):
+    response = answer(name="\u200b")
+    response["workers"][0]["worker_id"] = BOB
+    with pytest.raises(ValueError):
+        roster.apply_response(response, None, SCOPE)
+    app = app_with_roster(tmp_path, {"worker_name": "김철"}, answer(name="\u200b"))
+    path = Path(app._roster_cache_path)
+    damaged = json.loads(path.read_text(encoding="utf-8"))
+    damaged["workers"][0]["display_name"] = "\u200c"
+    original = json.dumps(damaged).encode("utf-8")
+    path.write_bytes(original)
+    app._init_worker_roster()
+    assert app._roster_worker_allowed()
+    assert next(path.parent.glob("roster.json.invalid-*")).read_bytes() == original
+
+
 @pytest.mark.parametrize("name", ["김철", "김민수", "Li", "Nguyễn Thị Mai", "長い名前" * 80])
 def test_full_name_survives_csv_header_display_and_safe_filename(tmp_path, name):
     manager = module.DataManager(str(tmp_path), "포장실", name, "PC-NAME")
