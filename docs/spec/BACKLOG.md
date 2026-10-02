@@ -412,3 +412,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - PROVEN 범위: 독립 clone 집중 기존 비교, 새 순수/주입 경계, source-derived inventory와 공개 키 정확 쌍. 개수·버전·환경·원 실패·한계는 w9setupprep sub-88 REPORT.md에 기록한다.
 - 첫 현장 설치 전 필수 OPEN: 자동 업데이트로 active와 current bootstrap source가 달라진 뒤 수동 교체·제거·사용자 제거·재등록의 canonical lifecycle 소유권 교정. 현재 RECOVERY_REQUIRED로 거절하고 데이터/상태를 보존한다. CONFIRMED 후 수동 복귀는 지원되지 않는다. LIFECYCLE-AFTER-AUTO-UPDATE.md의 설계 범위와 중앙 랩 수용이 필요하다.
 - OPEN / NOT TESTED: 중앙 전체 suite·stock builder/실제 packet·독립 검토 및 로그온/빠른 시작/전원 손실/옛 판 등록/교체/제거/재설치/복귀 랩. 작업 ACL readback, 실제 0x18B 토큰의 모든 native 시작 자리, 실패 진단·Run 다음 로그온 복구, 데이터/미완료/outbox 보존을 확인한다. 실제 w9next packet matching-key·feed/manifest 게시·최종 병합은 중앙 담당이다.
+
+- 10/02 w9setupprep sub-104: 통합 기준 `134bab3`와 이식판 `3104b0e`에서 같은 invalid-receipt restart 시험의 GUI 없는 `__new__` fixture가 실제 scanner notice의 Tk 속성으로 들어가 RecursionError를 냈다. notice만 수집하는 fixture로 고치고 OPERATOR_REVIEW·재전송 금지·다음 스캔 차단 단언을 유지하면서 안내 제목/내용도 확인한다. 제품/수량/멤버십/receipt 계약은 변경하지 않는다. 원 FAILED와 최종 focused/collect 근거는 `D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-104/REPORT.md`에 보존하며 실제 GUI 수용은 NOT TESTED다.
