@@ -14,10 +14,15 @@ CONTRACT_VERSION = "worker-roster.v1"
 MAX_CACHE_BYTES = 2 * 1024 * 1024
 
 
-def valid_name(value):
-    return (type(value) is str and bool(value.strip())
-            and not any(unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"}
-                        for char in value))
+def valid_name(value, *, remote=False):
+    if not (type(value) is str and bool(value.strip())
+            and not any(unicodedata.category(char) == "Cc" for char in value)):
+        return False
+    if not remote:
+        return True
+    name = value.strip()
+    return (len(name) <= 64 and name[0] not in "=+-@"
+            and not any(ch in r'\/:*?"<>|' or unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp") for ch in value))
 
 
 def _unique_object(pairs):
@@ -58,7 +63,7 @@ def validate_roster(payload, scope):
 def _usable_roster(payload):
     received = payload["workers"]
     workers = [{**worker, "display_name": worker["display_name"].strip()}
-               for worker in received if valid_name(worker["display_name"])]
+               for worker in received if valid_name(worker["display_name"], remote=True)]
     if received == workers:
         return payload
     discarded = len(received) - len(workers)
@@ -165,7 +170,7 @@ def apply_response(answer, previous, scope):
 def choices(roster, recent_ids, legacy_names):
     if uses_legacy_names(roster):
         return [{"worker_id": None, "display_name": name, "legacy_local": True}
-                for name in dict.fromkeys(name.strip() for name in legacy_names if valid_name(name))]
+                for name in dict.fromkeys(legacy_names) if valid_name(name)]
     roster = _usable_roster(roster)
     recent_ids = list(dict.fromkeys(identity for identity in recent_ids if type(identity) is str))
     order = {identity: index for index, identity in enumerate(recent_ids)}

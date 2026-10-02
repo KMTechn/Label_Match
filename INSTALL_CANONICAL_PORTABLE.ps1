@@ -719,7 +719,7 @@ remote_transport_transition = (
     for relative, (befores, after) in remote_transport_replacements.items()
 )
 
-roster_additions = {'app/label_worker_roster.py': '1d0c15fe392761baa194faf1ff4c17030da666daed1a3c25cb3e2b4b55af52dc'}
+roster_additions = {'app/label_worker_roster.py': '17b35efc3fb9f9a4589590d1cc8b0accaf2eba1cb9a482ffeaf669e12dc6ce32'}
 # This feature's exact reviewed branch baseline is independent of the older
 # accepted release tables; never broaden their historical preimages.
 roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062',

@@ -4,6 +4,7 @@ import csv
 import hashlib
 import hmac
 import json
+import uuid
 import queue
 import threading
 import time
@@ -415,6 +416,36 @@ def test_full_name_survives_csv_header_display_and_safe_filename(tmp_path, name)
         assert all(set(row) == {"timestamp", "worker_name", "event", "details"} for row in rows)
     finally:
         manager.close(timeout=None)
+
+
+@pytest.mark.parametrize("name", ["A" * 65, *["Name" + char for char in '\\/:*?"<>|'], *[char + "Name" for char in "=+-@"]])
+def test_server_name_limits_drop_only_the_bad_row_online_and_offline(tmp_path, name):
+    payload = answer(name=name)
+    invalid = payload["workers"][0]
+    valid = dict(invalid, worker_id=str(uuid.uuid4()), display_name="정상")
+    payload["workers"] = [invalid, valid]
+    scope = payload["authority_scope_id"]
+    result = roster.apply_response(payload, None, scope)
+    assert result["workers"] == [valid]
+    assert not roster.uses_legacy_names(result)
+    path = tmp_path / "roster.json"
+    roster.save_cache(path, result, scope)
+    cached = roster.load_cache(path, scope)
+    assert cached["workers"] == [valid]
+    assert not roster.uses_legacy_names(cached)
+
+
+@pytest.mark.parametrize("name", ["A" * 64, "  " + "A" * 64 + "  ", "김찬", "José", "A+B-@"])
+def test_server_name_boundary_language_and_interior_operators_remain_usable(name):
+    payload = answer(name=name)
+    result = roster.apply_response(payload, None, payload["authority_scope_id"])
+    assert result["workers"][0]["display_name"] == name.strip()
+
+
+@pytest.mark.parametrize("name", ["A" * 65, "A" * 128, "Name/Old", "=Old", "Old\u200bName"])
+def test_legacy_local_name_validation_keeps_the_baseline_rules(name):
+    assert roster.valid_name(name)
+    assert roster.choices(None, [], [name])[0]["display_name"] == name
 
 
 def test_disabled_worker_finishes_actual_package_then_next_scan_requests_selection(packaging, tmp_path):
