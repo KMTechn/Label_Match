@@ -402,6 +402,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 ## LM-StartupUpdate1 · 로그온 자동 코드 적용의 실기 수용
 
+- sub-141 상위 바탕 준비: 공유 두 폴더의 관측 기본→보호 ACL, SID 신뢰·ACE 집합 비교·전파 뒤 재읽기·중간 상태/멱등·사전 검사→상승 준비→앱 부모→신뢰 재검사·종료 코드 61–66을 옮겼다. D: 격리 실제 NTFS와 PS5.1/PS7 source 회귀를 REPORT에 기록한다. exact-after/companion/source/writer 선언은 재생성하지 않았으며 목록과 독립 검토·빈 W9R-lab-ready-01 새 packet 설치 1회는 중앙 OPEN이다. 이적의 증거 위치·메모리 wrapper·ACL reset 범위·실패 복구·재진입은 이 단위 밖이다.
+
 - 10/02 sub-99: R1 native 일반 사용자 mutex 재열기, R2 전체 placement 함수 묶음, R3 실패→검증 복귀/UNKNOWN·claim, R5 세 feed gate, R6 실제 PS5.1 BOM decode를 좁은 회귀로 교정했다. (g) Python bootstrap PID 소비자는 실제 active relay readback으로 교정했고 canonical (g)(h)는 기존 defer/일반 시작을 유지한다. R4 유한 자식 진단은 교정했으나 상주 stream은 1차 결정으로 OPEN이다. 별도 relay bounded/masked startup log·설치기 exit/log 회수와 logger 초기화 전 crash 랩 증거가 필요하다. 핀 재생성·재검토·실제 Windows 수용은 중앙 잔여다.
 
 - R4 유한 자식 helper/task/relay-cycle의 원 출력·exit와 준비/전이/ready-read/persistent-cycle 원 예외 사슬은 가림·상한을 두어 보존한다. 상주 자식 stream은 부모 종료 뒤에도 가림·상한·handle 수명을 유지할 logging/launcher 작업이 OPEN이다. 기존 실제 native/설치 수용을 이 headless 교정으로 완료 처리하지 않는다.

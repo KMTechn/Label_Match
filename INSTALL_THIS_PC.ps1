@@ -82,7 +82,10 @@ if ($BootstrapIntegrityPreloaded.IsPresent) {
         'Get-BootstrapCodeInventory',
         'Get-BootstrapInventoryAggregate',
         'Write-BootstrapIntegrityRecord',
-        'Assert-BootstrapIntegrityRecord'
+        'Assert-BootstrapIntegrityRecord',
+        'Protect-KmtechCodeAncestors',
+        'Assert-LabelProtectedInstallPath',
+        'Get-InstallationPreparationExitCode'
     )) {
         if (-not (Get-Command $functionName -CommandType Function -ErrorAction SilentlyContinue)) {
             throw "Preloaded bootstrap integrity producer is incomplete."
@@ -392,6 +395,10 @@ function Set-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
 }
 
 function Assert-ProtectedCodeAncestors([string]$Path) {
+    if (Get-Command Assert-LabelProtectedInstallPath -CommandType Function -ErrorAction SilentlyContinue) {
+        Assert-LabelProtectedInstallPath $Path
+        return
+    }
     $full = [IO.Path]::GetFullPath($Path)
     $leaf = $true
     while ($full) {
@@ -399,7 +406,7 @@ function Assert-ProtectedCodeAncestors([string]$Path) {
             $entry = Get-Item -LiteralPath $full -ErrorAction Stop
             if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe update path component.' }
             $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
-            if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @('S-1-5-18','S-1-5-32-544')) {
+            if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')) {
                 throw 'Update path component owner is not privileged.'
             }
             $mask = if ($leaf) { 0x500D0156 } else { 0x500D0150 }
@@ -414,6 +421,27 @@ function Assert-ProtectedCodeAncestors([string]$Path) {
         $full = [IO.Path]::GetDirectoryName($full)
         $leaf = $false
     }
+}
+
+
+function Initialize-LabelProtectedInstallBase([string]$InstallRoot) {
+    $application = Split-Path -Parent $InstallRoot
+    $Script:LabelAncestorPreparationEvents = [Collections.Generic.List[object]]::new()
+    Assert-LabelProtectedInstallPath $application -AllowSupportedPreparation
+    [void](Protect-KmtechCodeAncestors $application -BeforeAppCreation)
+    try {
+        if (-not (Test-Path -LiteralPath $application)) {
+            [void](New-Item -ItemType Directory -Path $application -ErrorAction Stop)
+            Set-HardenedCodeAcl $application
+        }
+    }
+    catch {
+        if ((Get-InstallationPreparationExitCode $_) -eq 66) {
+            $_.Exception.Data['installation_preparation_exit_code'] = 64
+        }
+        throw
+    }
+    Assert-ProtectedCodeAncestors $application
 }
 
 
@@ -1175,6 +1203,24 @@ if (
 ) { throw "Trusted portable source inventory pins are required." }
 if (-not $DryRun.IsPresent -and -not $testOverride) {
     Assert-AlreadyElevated
+    if (-not $Uninstall.IsPresent -and -not $StartupUpdateRestorePreimage) {
+        try {
+            Initialize-LabelProtectedInstallBase $installRootFull
+            Write-ElevationLog 'PREPARATION' ($Script:LabelAncestorPreparationEvents.ToArray() | ConvertTo-Json -Depth 8 -Compress)
+        }
+        catch {
+            # Keep the admission exception/code even if existing audit IO fails.
+            $preparationFailure = $_
+            $preparationFailure.Exception.Data['installation_preparation_exit_code'] = Get-InstallationPreparationExitCode $preparationFailure
+            try {
+                Write-ElevationLog 'PREPARATION_FAILED' ([ordered]@{
+                    message = $preparationFailure.Exception.Message
+                    events = $Script:LabelAncestorPreparationEvents.ToArray()
+                } | ConvertTo-Json -Depth 8 -Compress)
+            } catch { }
+            throw $preparationFailure
+        }
+    }
     Write-ElevationLog 'STARTED' 'Elevated Label code placement started.'
 }
 

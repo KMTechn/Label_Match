@@ -1838,7 +1838,19 @@ if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
     }
     $invokeParameters.Uninstall = $true
 }
-& $helper @invokeParameters
+try { & $helper @invokeParameters }
+catch {
+    if (Get-Command Get-InstallationPreparationExitCode -CommandType Function -ErrorAction SilentlyContinue) {
+        $preparationException = $_.Exception
+        for ($depth = 0; $null -ne $preparationException -and $depth -lt 8; $depth++) {
+            if ($preparationException.Data.Contains('installation_preparation_exit_code')) {
+                exit (Get-InstallationPreparationExitCode $_)
+            }
+            $preparationException = $preparationException.InnerException
+        }
+    }
+    throw
+}
 if (-not $?) { exit 4 }
 exit 0
 '@.Replace('@@payload-base64@@', $payloadBase64)
@@ -2871,6 +2883,22 @@ $frozenPlacement = FreezePlacementHelper `
     $localAuditRoot `
     $runId `
     $receiptSource.critical_file_sha256
+# The ordinary preflight uses only the already pinned/frozen integrity helper.
+$preparationIntegrityBytes = PinnedFileBytes (Join-Path ([string]$frozenPlacement.root) 'tools\bootstrap_integrity.ps1') ([string]$frozenPlacement.integrity_sha256)
+. ([ScriptBlock]::Create(([Text.UTF8Encoding]::new($false, $true)).GetString($preparationIntegrityBytes))) -SharedCodeRoot ([string]$frozenPlacement.root)
+if (-not $testMode) {
+    try { Assert-LabelProtectedInstallPath (Split-Path -Parent $install) -AllowSupportedPreparation }
+    catch {
+        $admissionFailure = $_
+        $audit.status = 'FAILED_PREPARATION_ADMISSION'
+        $audit.preparation_failure = [ordered]@{
+            exit_code = Get-InstallationPreparationExitCode $admissionFailure
+            message = $admissionFailure.Exception.Message
+        }
+        try { Save $auditPath $audit } catch { }
+        throw $admissionFailure
+    }
+}
 . ([string]$frozenPlacement.writer_fence_path)
 
 $writerSessionId = [Guid]::NewGuid().ToString('N')
@@ -3170,7 +3198,15 @@ try {
                 Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
             }
         }
-        if ($placementExitCode -ne 0) { throw "Code placement failed: $placementExitCode" }
+        if ($placementExitCode -ne 0) {
+            $preparationDiagnostic = Get-InstallationPreparationDiagnostic $placementExitCode
+            if ($null -ne $preparationDiagnostic) {
+                $failure = [InvalidOperationException]::new(($preparationDiagnostic.message + ' [' + $preparationDiagnostic.code + ']'))
+                $failure.Data['installation_preparation_exit_code'] = $placementExitCode
+                throw $failure
+            }
+            throw "Code placement failed: $placementExitCode"
+        }
         $placement = 'PASS'
     }
     $productInstall = $install

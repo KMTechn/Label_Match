@@ -1033,6 +1033,10 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 
 ## StartupUpdate1 · 자동 업데이트 준비·시작·복구
 
+상위 폴더 바탕 준비는 일반 사전 검사에서 없는 앱 부모와 지원 기본 ACL을 상승 단계로 넘긴 뒤, 상승 placement 첫 단계에서 문자 그대로 `C:\KMTech`·`C:\KMTech\Apps` 두 폴더만 비재귀로 강화한다. 소유자 Administrators 및 관측된 상속 5 ACE 집합일 때만 상속을 명시 복사하고 Authenticated Users 자신의 0x1301BF를 0x1200AF로 바꾼다. 하위 상속 권한은 유지하며 이미 목표 집합이면 변경하지 않는다. ACE 순서는 비교하지 않고 부모 변경 후 자식을 다시 읽는다. 다른 모양·재분석 지점·신뢰 밖 소유자는 한국어 폴더/이유로 거절하며 도중의 권한 집합 변경도 멈춘다. 신뢰 소유자는 SYSTEM·Administrators·TrustedInstaller SID로 판정한다. 그 뒤 없는 앱 부모를 기존 보호 ACL로 만들고 신뢰를 재검사한 다음 기존 설치 단계로 간다. 두 공유 폴더의 강화는 설치 실패·제거로 되돌리지 않는다.
+
+전·후 SDDL은 기존 `canonical-portable-<run>-elevated.jsonl`의 PREPARATION에 보존한다. 바탕 준비의 원 예외는 유지하고 child 61–66을 부모의 한국어 INSTALLATION_PREPARATION 진단으로 전달한다(61 기본/목표 집합 밖, 62 재분석, 63 소유자, 64 앱 부모 생성, 65 control 생성 예약, 66 기타). 이 변경은 control/evidence 위치·실행 wrapper·배치 ACL 재설정·실패 복구를 이적 방식으로 옮기지 않는다. 격리 D: 실제 NTFS/PS5.1·PS7 함수 회귀는 source 범위이며 선언 재생성·새 packet·빈 guest 설치는 중앙 랩 수용 전 NOT TESTED다.
+
 Python relay 시작은 임시 bootstrap 종료 뒤에도 최대 75초(기존 canonical relay 상태 대기와 같은 상한) 안에서 fresh active-version relay 증거를 기다린다. launcher의 0 exit·생존만을 ALIVE로 반환하지 않으며 timeout/비정상 exit는 실패로 남기고 실제 자식을 강제 종료하지 않는다. 실제 느린 첫 cycle·두 번 시작·native 수명은 랩 NOT TESTED다.
 
 한국어 안내를 가진 INSTALL_THIS_PC.ps1·INSTALL_CANONICAL_PORTABLE.ps1은 UTF-8 BOM을 유지한다. 호스트 Windows PowerShell 5.1이 실제 두 파일을 ParseFile로 읽고 한국어 문자열과 전체 decoded source를 보존한 회귀는 PROVEN이다. 기본 codepage 65001 환경이며 다른 ANSI codepage의 실제 -File 설치/안내는 랩 NOT TESTED다. stock packet·companion의 최종 byte 선언은 중앙 출시 컷에서 다시 고정한다.
