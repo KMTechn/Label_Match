@@ -172,6 +172,8 @@ $writerTransition | ConvertTo-Json -Compress
     # Re-pinning a writer module now disables the exact release set before
     # the legacy leaf addition can be admitted.
     ("unrelated-module", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
+    ("roster-addition-changed", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
+    ("roster-addition-missing", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("data", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/assets/Item.csv"),
 ])
 def test_stock_3f4574a_guard_still_refuses_everything_else(tmp_path, legacy_label_packages, change, reason):
@@ -191,6 +193,15 @@ def test_stock_3f4574a_guard_still_refuses_everything_else(tmp_path, legacy_labe
         source = _tree(candidate, tmp_path / "candidate", [name])
         with (source / name).open("a", encoding="utf-8") as stream:
             stream.write(CHANGED_LINE)
+        _pin(source)
+    elif change in {"roster-addition-changed", "roster-addition-missing"}:
+        source = _tree(candidate, tmp_path / "candidate", ["app/label_worker_roster.py"])
+        leaf = source / "app/label_worker_roster.py"
+        if change == "roster-addition-missing":
+            leaf.unlink()
+        else:
+            with leaf.open("a", encoding="utf-8") as stream:
+                stream.write(CHANGED_LINE)
         _pin(source)
     elif change == "second-addition":
         source = _tree(candidate, tmp_path / "candidate")
