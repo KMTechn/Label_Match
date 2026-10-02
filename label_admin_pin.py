@@ -104,10 +104,17 @@ class AdminPinClient:
     def from_credential_path(cls, path: str | Path, *, tls_ca_bundle_path: str = ""):
         return cls(load_credentials_from_json(path), tls_ca_bundle_path=tls_ca_bundle_path)
 
+    def post(self, route: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._post_path("/api/admin-pin/v1/" + route, payload)
+
+    def query_roster(self, authority_scope_id: str, known_version: int | None):
+        return self._post_path("/api/worker-roster/v1/query", {
+            "authority_scope_id": authority_scope_id, "known_version": known_version,
+        }, response_limit=262144)
+
     @writer_sink("label_admin_pin_request")
     @remote_request()
-    def post(self, route: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-        path = "/api/admin-pin/v1/" + route
+    def _post_path(self, path: str, payload: Mapping[str, Any], *, response_limit: int = 8192) -> dict[str, Any]:
         body = canonical_json(payload).encode("utf-8")
         if len(body) > 8192:
             raise AdminPinError("REQUEST_TOO_LARGE")
@@ -144,12 +151,12 @@ class AdminPinClient:
                     response = exc
                 if response.geturl() != self.origin + path:
                     raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True)
-                status, raw = int(response.status), response.read(8193)
+                status, raw = int(response.status), response.read(response_limit + 1)
         except AdminPinError:
             raise
         except Exception:
             raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True) from None
-        if len(raw) > 8192:
+        if len(raw) > response_limit:
             raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True)
         try:
             answer = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)

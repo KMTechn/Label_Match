@@ -498,6 +498,10 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 
 ## 설정 위치와 우선순위
 
+작업자 선택은 사용자 `app_settings.json` 옆 `roster.json`의 공용 명단을 사용한다. 캐시 필드는 `contract_version, authority_scope_id, version, workers, fetched_at, sha256`이며 SHA-256은 `sha256`을 제외한 정렬·공백 없는 UTF-8 JSON의 손상 검출값이다. 각 저장은 임시 파일 flush/fsync 뒤 원자 교체하고 `roster.last-good.json` 정상본도 유지한다. 형식·현장·번호 중복·digest가 잘못된 파일은 `.invalid-<고유값>`으로 원 bytes를 보존한 뒤 정상본을 사용한다. 조회 실패와 잘못된 응답은 캐시를 빈 명단으로 덮지 않는다. 오프라인 만료 때문에 전체 작업을 멈추지 않는다.
+
+설정의 작업자 목록은 선택만 가능하며 최근 사용 번호가 먼저 나온다. 명단이 없으면 “명단을 받지 못해 이 PC 에 저장된 이름을 씁니다”, 후보가 없으면 “관리자에게 명단 등록을 요청하세요” 안내를 따른다. 중지된 이름은 새 선택에 나오지 않는다. 작업 중 중지된 사람이 맡은 현재 묶음은 계속하고 다음 묶음은 ACTIVE 작업자를 고른다. `worker_id`는 로컬 설정의 기억·최근 순에만 저장하고 CSV·현재 상태·중앙 전송 형식은 이름 문자열 계약을 유지한다. 관리자는 이름 정정 대신 중지 후 새 등록을 사용하며 기존 기록을 소급 변경하지 않는다.
+
 <a id="legacy-label-transition"></a>
 ### 과도기 모드: 모든 현품표를 받고 종류별로 기록 (`KMTECH_LEGACY_LABEL_TRANSITION`)
 

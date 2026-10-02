@@ -11,6 +11,7 @@ _STARTUP_WORKFLOW_NOTICES = []
 import carrier_identity_port as carrier_identity
 import label_history
 import label_completion
+import label_worker_roster
 import label_transition
 import label_workbench_context
 import label_workbench_history
@@ -390,9 +391,11 @@ def _label_match_sanitize_worker_settings(payload):
     if not isinstance(payload, dict):
         return {}
     sanitized = sanitize_persistent_value(dict(payload))
-    worker_name = str(sanitized.get("worker_name") or "").strip()
+    raw_worker_name = sanitized.get("worker_name")
+    worker_name = str(raw_worker_name or "").strip()
     if (
-        is_protected_admin_code(worker_name)
+        (raw_worker_name is not None and not label_worker_roster.valid_name(raw_worker_name))
+        or is_protected_admin_code(worker_name)
         or worker_name in {PROTECTED_ADMIN_OPERATOR_ID, PROTECTED_ADMIN_DISPLAY_NAME}
     ):
         sanitized.pop("worker_name", None)
@@ -405,7 +408,8 @@ def _label_match_sanitize_worker_settings(payload):
             raw_name = item.get("name") if isinstance(item, dict) else item
             name = str(raw_name or "").strip()
             if (
-                is_protected_admin_code(name)
+                not label_worker_roster.valid_name(raw_name)
+                or is_protected_admin_code(name)
                 or name in {PROTECTED_ADMIN_OPERATOR_ID, PROTECTED_ADMIN_DISPLAY_NAME}
             ):
                 continue
@@ -5033,8 +5037,8 @@ class Label_Match(tk.Tk):
         self.items_data = {}
         self.unique_id = _label_match_local_log_id()
         self.worker_name = str(
-            self.app_settings.get("worker_name", self.Worker.PACKAGING)
-        ).strip() or self.Worker.PACKAGING
+            self.app_settings.get("worker_name", "")
+        ).strip()
         self._admin_pin_login_epoch = uuid.uuid4().hex
         self.worker_role = "PACKAGING"
         self._authenticated_protected_admin = False
@@ -5061,6 +5065,7 @@ class Label_Match(tk.Tk):
             )
         )
         self.package_logistics_client = startup_package_logistics_client
+        self._init_worker_roster()
         self._logistics_authoritative_required = startup_logistics_required
         self._legacy_label_transition_enabled = legacy_label_transition_enabled()
         self.deferred_intent_capture = None
@@ -6426,6 +6431,12 @@ class Label_Match(tk.Tk):
             self._load_history_and_rebuild_summary()
             self._process_history_queue()
             self._load_current_set_state()
+            self._request_worker_roster_refresh()
+            self._poll_worker_roster()
+            if not self._roster_worker_allowed():
+                self.open_settings_window()
+            else:
+                self._save_app_settings()
             if result.get("replacement_waiting_recovery_failed"):
                 self._publish_durable_commit_block(
                     RuntimeError("replacement-waiting recovery failed"),
@@ -6701,7 +6712,12 @@ class Label_Match(tk.Tk):
                 and os.path.normcase(os.path.abspath(template_path))
                 != os.path.normcase(os.path.abspath(self.app_settings_path))
             ):
-                shutil.copyfile(template_path, self.app_settings_path)
+                with open(template_path, encoding="utf-8-sig") as handle:
+                    settings = _label_match_sanitize_worker_settings(json.load(handle))
+                # Packaged settings are a template, not this PC's worker history.
+                for field in ("worker_name", "worker_history", "worker_id", "recent_worker_ids"):
+                    settings.pop(field, None)
+                label_worker_roster._atomic_write(self.app_settings_path, settings)
 
     def _update_save_directory(self):
         self.save_directory = self.custom_save_path
@@ -6821,6 +6837,138 @@ class Label_Match(tk.Tk):
     def _recent_worker_names(self):
         return [entry["name"] for entry in self._worker_history_entries()]
 
+    def _init_worker_roster(self):
+        self._roster_enabled = True
+        config = getattr(self.__dict__.get("package_logistics_client"), "config", None)
+        self._roster_scope = str(getattr(config, "authority_scope_id", "") or "")
+        self._roster_cache_path = os.path.join(os.path.dirname(self.app_settings_path), "roster.json")
+        self._worker_roster = label_worker_roster.load_cache(self._roster_cache_path, self._roster_scope)
+        self.worker_id = self.app_settings.get("worker_id")
+        self._bind_remembered_roster_worker()
+        self._roster_request_serial = 0
+        self._roster_result_queue = queue.Queue()
+        self._roster_thread = None
+        self._roster_refresh_pending = False
+        self._roster_next_refresh = 0.0
+        self._roster_poll_after_id = None
+        self._roster_selection_window = None
+
+    def _worker_roster_choices(self):
+        recent = self.app_settings.get("recent_worker_ids", [])
+        recent = recent if isinstance(recent, list) else []
+        return label_worker_roster.choices(
+            self.__dict__.get("_worker_roster"), recent, self._recent_worker_names())
+
+    def _bind_remembered_roster_worker(self):
+        if self.__dict__.get("worker_id") is not None:
+            return
+        matches = [worker for worker in self._worker_roster_choices()
+                   if worker["worker_id"] is not None
+                   and worker["display_name"] == self.__dict__.get("worker_name", "")]
+        if len(matches) == 1:
+            self.worker_id = matches[0]["worker_id"]
+            self.app_settings["worker_id"] = self.worker_id
+
+    def _roster_worker_allowed(self):
+        if not self.__dict__.get("_roster_enabled", False):
+            return True
+        if self.__dict__.get("current_set_info", {}).get("id"):
+            return True  # Current work and recovery keep their original owner.
+        if self.__dict__.get("_authenticated_protected_admin", False):
+            return True
+        name = str(self.__dict__.get("worker_name", "") or "")
+        roster = self.__dict__.get("_worker_roster")
+        if roster is None:
+            return label_worker_roster.valid_name(name)
+        identity = self.__dict__.get("worker_id")
+        matches = [worker for worker in self._worker_roster_choices()
+                   if worker["display_name"] == name
+                   and (identity is None or worker["worker_id"] == identity)]
+        return len(matches) == 1
+
+    def _apply_worker_roster_answer(self, serial, scope, answer):
+        if (serial != self._roster_request_serial or scope != self._roster_scope
+                or self.__dict__.get("_tk_shutdown_requested", False)):
+            return False
+        previous = self.__dict__.get("_worker_roster")
+        accepted = label_worker_roster.apply_response(answer, previous, scope)
+        if accepted is not previous:
+            self._worker_roster = label_worker_roster.save_cache(
+                self._roster_cache_path, accepted, scope)
+            self._bind_remembered_roster_worker()
+        self._refresh_worker_roster_selection()
+        if (self.__dict__.get("initialized_successfully", False)
+                and not self._roster_worker_allowed()):
+            self.open_settings_window()
+        return True
+
+    def _request_worker_roster_refresh(self):
+        if (not self.__dict__.get("_roster_enabled", False)
+                or self.__dict__.get("_tk_shutdown_requested", False)):
+            return
+        running = self.__dict__.get("_roster_thread")
+        self._roster_request_serial += 1
+        if running is not None and running.is_alive():
+            self._roster_refresh_pending = True
+            return
+        self._roster_refresh_pending = False
+        serial, scope = self._roster_request_serial, self._roster_scope
+        snapshot = self.__dict__.get("_worker_roster")
+        version = snapshot["version"] if snapshot is not None else None
+        results = self._roster_result_queue
+        query = self._worker_roster_query
+        def fetch():
+            try:
+                result = query(scope, version)
+            except Exception:
+                result = None
+            results.put((serial, scope, result))
+        self._roster_next_refresh = time.monotonic() + 60
+        self._roster_thread = threading.Thread(target=fetch, name="label-worker-roster", daemon=True)
+        self._roster_thread.start()
+
+    def _worker_roster_query(self, scope, known_version):
+        if not scope:
+            raise ValueError("roster scope unavailable")
+        return self._package_pin_client().query_roster(scope, known_version)
+
+    def _poll_worker_roster(self, *, schedule=True):
+        self._roster_poll_after_id = None
+        if (not self.__dict__.get("_roster_enabled", False)
+                or self.__dict__.get("_tk_shutdown_requested", False)):
+            return
+        while True:
+            try:
+                serial, scope, result = self._roster_result_queue.get_nowait()
+            except queue.Empty:
+                break
+            if result is not None:
+                try:
+                    self._apply_worker_roster_answer(serial, scope, result)
+                except (ValueError, TypeError, OSError):
+                    pass  # Failed fetches never empty the verified cache.
+        if schedule:
+            running = self.__dict__.get("_roster_thread")
+            if (time.monotonic() >= self._roster_next_refresh
+                    or (self._roster_refresh_pending
+                        and (running is None or not running.is_alive()))):
+                self._request_worker_roster_refresh()
+            self._roster_poll_after_id = self.after(250, self._poll_worker_roster)
+
+    def _refresh_worker_roster_selection(self):
+        window = self.__dict__.get("_roster_selection_window")
+        if window is None:
+            return
+        choices = self._worker_roster_choices()
+        names = [worker["display_name"] for worker in choices]
+        self._roster_choice_widget.configure(values=names)
+        if self.worker_name_var.get() not in names:
+            self.worker_name_var.set("")
+        self._roster_choice_note.configure(text=(
+            "명단을 받지 못해 이 PC 에 저장된 이름을 씁니다\n"
+            if self.__dict__.get("_worker_roster") is None and choices else ""
+        ) + "관리자에게 명단 등록을 요청하세요")
+
     def _remember_worker_name(self, worker_name):
         name = str(worker_name or "").strip()
         if not name:
@@ -6834,6 +6982,15 @@ class Label_Match(tk.Tk):
         entries = [entry for entry in self._worker_history_entries() if entry["name"] != name]
         entries.insert(0, {"name": name, "last_used_at": datetime.now().astimezone().isoformat(timespec="seconds")})
         self.app_settings["worker_history"] = entries[:self.WORKER_HISTORY_LIMIT]
+        identity = self.__dict__.get("worker_id")
+        if identity:
+            previous = self.app_settings.get("recent_worker_ids", [])
+            previous = previous if isinstance(previous, list) else []
+            self.app_settings["recent_worker_ids"] = [identity, *(
+                item for item in previous if item != identity)][:self.WORKER_HISTORY_LIMIT]
+            self.app_settings["worker_id"] = identity
+        elif self.__dict__.get("_roster_enabled", False):
+            self.app_settings.pop("worker_id", None)
 
     def _load_ui_persistence_settings(self):
         persistence_settings = self.app_settings.get("ui_persistence", {})
@@ -8125,6 +8282,7 @@ class Label_Match(tk.Tk):
             "_initial_load_after_id",
             "_history_after_id",
             "_update_check_after_id",
+            "_roster_poll_after_id",
             "_deferred_validation_after_id",
             "_deferred_observability_poll_after_id",
             "_relay_screen_status_after_id",
@@ -14137,6 +14295,12 @@ class Label_Match(tk.Tk):
             if locked:
                 self._show_ui_lane_rejection("busy_scan_dropped")
             return
+        if not self._roster_worker_allowed() and raw_input != "KMCMD:UNDO":
+            consume_input()
+            self._show_scanner_notice(
+                "작업자 선택", "작업자를 고른 뒤 다시 스캔하세요. 관리자에게 명단 등록을 요청하세요.")
+            self.open_settings_window()
+            return
         if self._sealed_transfer_exchange_blocks_local_action("다음 스캔"):
             return
         test_tools_enabled = label_match_test_tools_enabled(
@@ -18730,10 +18894,20 @@ class Label_Match(tk.Tk):
     def open_settings_window(self):
         if self._app_close_blocks_local_action():
             return
+        self._request_worker_roster_refresh()
+        previous_window = self.__dict__.get("_roster_selection_window")
+        if previous_window is not None:
+            previous_window.lift()
+            return
         if self.current_set_info.get('id'):
             if not self.run_tests:
                 messagebox.showwarning("작업 중 경고", "현재 스캔 작업이 진행 중입니다.\n현재 작업을 완료하거나 취소한 뒤 설정을 저장하세요.")
         settings_window = tk.Toplevel(self)
+        self._roster_selection_window = settings_window
+        def clear_selection_window(event):
+            if event.widget is settings_window:
+                self._roster_selection_window = None
+        settings_window.bind("<Destroy>", clear_selection_window)
         settings_window.title("설정")
         settings_window.resizable(False, False)
         settings_window.transient(self)
@@ -18745,27 +18919,24 @@ class Label_Match(tk.Tk):
         main_frame.grid_columnconfigure(1, weight=1)
         ttk.Label(main_frame, text="작업자 이름", font=(self.default_font_name, 12, "bold")).grid(row=0, column=0, sticky='w', pady=(8,5), padx=(0, 10))
         ttk.Label(main_frame, text="작업이 끝나고 설정을 저장하면 다음 작업부터 로그 작업자명이 변경됩니다.", style="Status.TLabel").grid(row=1, column=0, columnspan=3, sticky='w', pady=(0, 10))
-        self.worker_name_var = tk.StringVar(value=display_operator_name(self.worker_name))
+        names = [worker["display_name"] for worker in self._worker_roster_choices()]
+        current_name = display_operator_name(self.worker_name)
+        self.worker_name_var = tk.StringVar(value=current_name if current_name in names else "")
         worker_entry = ttk.Combobox(
             main_frame,
             textvariable=self.worker_name_var,
-            values=self._recent_worker_names(),
-            state="normal",
+            values=names,
+            state="readonly",
             font=(self.default_font_name, 12),
         )
         worker_entry.grid(row=2, column=0, columnspan=3, sticky='ew')
-        def update_worker_entry_mask(event=None):
-            value = str(self.worker_name_var.get() or "").strip()
-            mask = "●" if value.isascii() and value.isdecimal() else ""
-            try:
-                worker_entry.configure(show=mask)
-            except (TypeError, TclError):
-                pass
-        worker_entry.bind("<KeyRelease>", update_worker_entry_mask)
-        worker_entry.bind("<<ComboboxSelected>>", update_worker_entry_mask)
-        update_worker_entry_mask()
+        self._roster_choice_widget = worker_entry
+        self._roster_choice_note = ttk.Label(main_frame, style="Status.TLabel")
+        self._roster_choice_note.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self._refresh_worker_roster_selection()
         button_frame = ttk.Frame(main_frame, padding=(0, 20, 0, 0), style="TFrame")
-        button_frame.grid(row=3, column=0, columnspan=3, sticky='e', pady=(20,0))
+        button_frame.grid(row=4, column=0, columnspan=3, sticky='e', pady=(20,0))
+        ttk.Button(button_frame, text="관리자", command=lambda: self._open_protected_admin_login(settings_window)).pack(side=tk.LEFT, padx=5)
         save_button = ttk.Button(button_frame, text="저장", command=lambda: self._save_settings_and_close(settings_window, self.worker_name_var.get()))
         save_button.pack(side=tk.LEFT, padx=5)
         cancel_button = ttk.Button(button_frame, text="취소", command=lambda: self._destroy_modal_and_refocus(settings_window))
@@ -18778,7 +18949,12 @@ class Label_Match(tk.Tk):
         elif hasattr(worker_entry, "selection_range"):
             worker_entry.selection_range(0, tk.END)
 
-    def _save_settings_and_close(self, window: tk.Toplevel, new_worker_name: str):
+    def _open_protected_admin_login(self, window):
+        entered = simpledialog.askstring("관리자 인증", "관리자 코드", show="*", parent=window)
+        if entered is not None:
+            self._save_settings_and_close(window, entered, _protected_admin_login=True)
+
+    def _save_settings_and_close(self, window: tk.Toplevel, new_worker_name: str, *, _protected_admin_login=False):
         if self._app_close_blocks_local_action():
             return
         active_set = bool(getattr(self, 'current_set_info', {}).get('id'))
@@ -18790,13 +18966,24 @@ class Label_Match(tk.Tk):
             return
         if self._block_duplicate_history_load(parent=window):
             return
-        if not new_worker_name.strip():
+        if not label_worker_roster.valid_name(new_worker_name):
             if not self.run_tests:
                 messagebox.showerror("입력 오류", "작업자 이름은 비워둘 수 없습니다.", parent=window)
             return
-        submitted_worker_name = new_worker_name.strip()
+        managed_choice = self.__dict__.get("_roster_enabled", False) and not _protected_admin_login
+        selected_worker = None
+        if managed_choice:
+            matches = [worker for worker in self._worker_roster_choices()
+                       if worker["display_name"] == new_worker_name]
+            if len(matches) != 1:
+                self._refresh_worker_roster_selection()
+                return
+            selected_worker = matches[0]
+        submitted_worker_name = new_worker_name if managed_choice else new_worker_name.strip()
         authenticated_admin = False
-        if is_protected_admin_candidate(submitted_worker_name):
+        if managed_choice:
+            requested_worker_name = selected_worker["display_name"]
+        elif is_protected_admin_candidate(submitted_worker_name):
             if not is_protected_admin_code(submitted_worker_name):
                 worker_name_var = self.__dict__.get("worker_name_var")
                 if worker_name_var is not None:
@@ -18831,6 +19018,8 @@ class Label_Match(tk.Tk):
                 )
             return
         else:
+            if _protected_admin_login:
+                return
             requested_worker_name = submitted_worker_name
         worker_name_var = self.__dict__.get("worker_name_var")
         if authenticated_admin:
@@ -18861,6 +19050,12 @@ class Label_Match(tk.Tk):
             return
 
         self.worker_name = requested_worker_name
+        if managed_choice:
+            self.worker_id = selected_worker["worker_id"]
+        elif self.__dict__.get("_roster_enabled", False):
+            self.worker_id = None
+            self.app_settings.pop("worker_id", None)
+        self._roster_request_serial = self.__dict__.get("_roster_request_serial", 0) + 1
         self._admin_pin_login_epoch = uuid.uuid4().hex
         self._authenticated_protected_admin = authenticated_admin
         self.worker_role = PROTECTED_ADMIN_ROLE if authenticated_admin else "PACKAGING"
@@ -18880,12 +19075,6 @@ class Label_Match(tk.Tk):
         operator_context = self.__dict__.get("operator_header_context_label")
         if operator_context is not None:
             operator_context.configure(text=_label_match_operator_context(self.worker_name))
-        if not self.run_tests:
-            messagebox.showinfo(
-                "저장 완료",
-                f"설정이 변경되었습니다.\n- 작업자: {display_operator_name(self.worker_name)}",
-                parent=self,
-            )
         self._destroy_modal_and_refocus(window)
 
     def _show_about_window(self):

@@ -244,6 +244,10 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 <a id="c-00"></a>
 ## C-00 공통 명령·권한
 
+작업자 이름은 `worker-roster.v1` 공용 명단의 ACTIVE 목록에서 선택한다. 직접 입력·PC에서 등록하는 경로는 없다. 조회는 기존 생산자 HTTPS/HMAC 신원으로 `POST /api/worker-roster/v1/query`에 `authority_scope_id`, `known_version`을 보내며 사람 PIN은 요구하지 않는다. 같은 판의 `unchanged`는 검증된 같은 현장·같은 판 캐시가 있을 때만 수용한다. 시작·이름 변경·작업 중 갱신은 별도 배경 스레드에서 수행하며 조회 동안 스캔 내구 저장과 시작은 원격 응답을 기다리지 않는다. 쓰기 잠금 안에서 조회하지 않고 다른 시도·현장 또는 종료 뒤의 늦은 응답은 적용하지 않는다.
+
+1단 기록·전송·복구 소유 대조에는 선택한 `display_name` 이름 문자열을 그대로 사용한다. `worker_id`와 최근 번호는 로컬 설정에만 둔다. 기억한 ACTIVE 이름은 선택 없이 시작하고, 중지·누락·이름 변경이 확인되면 다음 묶음부터 재선택한다. 진행 중인 묶음과 복구·보류·재전송은 원래 귀속으로 끝낼 수 있다. 명단과 캐시가 모두 없으면 기억한 이름으로 시작하거나 PC의 기존 최근 이름을 한시적으로 선택한다. 목록도 없으면 관리자 등록 안내를 표시한다. 빈 이름·공백뿐인 이름·제어문자는 거부하고 글자 수·언어는 제한하지 않는다. 설치 등록, 장비 권한, 보호 관리자 인증과 `operator.local_id` 계약은 유지한다.
+
 관리자 복구 CLI는 pc/producer/source-host/install ID와 expected-active-manifest-hash의 명시 입력을 후보 생성 전에 검사한다. 누락 안내는 필요한 옵션·서버 readback 출처만 포함하며 승인 토큰이나 기존 자격의 값을 출력하지 않는다. portable 등록기는 앱과 같은 `app`·`app/site-packages` 검색 경로를 사용하며 인증·권한 조건은 동일하다.
 
 부분 등록의 명시 복구는 기존 root 일회용 승인·명시 identity·candidate manifest hash·TLS CA에 더해 현재 MachineGuid/SID로 유도한 install ID와 남은 파일의 해석 가능한 신원·소유 키를 대조한다. 공유 `KMTech.DirectSync.Possession.v1`은 기존 키 열기만 허용한다. current-user DPAPI journal에 경로·CA hash·신원·키·승인·request/commit ID를 결속하고 각 원본의 이동 의도·SHA를 먼저 내구 저장한 뒤 별도 슬롯으로 이동·재대조한다. 준비 자격을 보호 저장한 뒤 중앙 commit하며 ACK 유실은 서명된 status로 확인한다. 로컬 쓰기·승인 파일 정리 중단은 같은 transaction으로 재개한다. 새 root 승인은 같은 경로나 새 승인 경로로 전달하되, 기존 prepare ID가 있으면 신원이 결속된 status의 EXPIRED·ABORTED·COMMITTED만 전환을 허용한다. prepare ID가 없으면 별도 보호 후보를 먼저 저장하고 새 승인의 검증된 prepare 성공으로만 superseded를 확정한다. 서버는 root 발급 시 기존 pending 승인을 취소하고 RESERVED 발급·경쟁 PREPARED prepare를 거부한다. 실패·불명 응답은 terminal 증거가 아니며 기존 journal·원본을 보존하고 후보 request로 재확인한다. 이전 journal bytes/SHA·대체 시각·transaction 연결을 보관한 뒤 활성 journal을 전환하고, 이전 원본 슬롯을 이어받아 준비 자격은 새 슬롯에 저장한다. 다른 신원·사용자·PC·키·CA·출력 경로와 진행 중 승인의 교체는 거부한다. 검증된 committed response와 보호된 prepare를 조합한 receipt를 기존 등록 readback에 전달하며 READY나 첫 업무 ACK를 추정하지 않는다([지원 절차](operations.md#partial-registration-recovery)).

@@ -561,6 +561,9 @@ def test_settings_login_rejects_identity_text_clears_failures_and_authenticates_
     app.worker_role = "PACKAGING"
     app._authenticated_protected_admin = False
     app.worker_name_var = _Variable("")
+    # Stage-one names are selected; this test exercises the separate administrator entry.
+    app._roster_enabled = True
+    app.app_settings = {}
     app.save_directory = str(tmp_path / "data")
     app.unique_id = "local-test"
     app.data_manager = _ClosableManager()
@@ -583,6 +586,7 @@ def test_settings_login_rejects_identity_text_clears_failures_and_authenticates_
         app,
         object(),
         PROTECTED_ADMIN_OPERATOR_ID,
+        _protected_admin_login=True,
     )
     assert app.worker_name == "포장실"
     assert not created
@@ -592,6 +596,7 @@ def test_settings_login_rejects_identity_text_clears_failures_and_authenticates_
         app,
         object(),
         OTHER_SIX_DIGIT_VALUE,
+        _protected_admin_login=True,
     )
     assert app.worker_name_var.get() == ""
     assert app.worker_name == "포장실"
@@ -602,6 +607,7 @@ def test_settings_login_rejects_identity_text_clears_failures_and_authenticates_
         app,
         object(),
         SYNTHETIC_ADMIN_CODE,
+        _protected_admin_login=True,
     )
     assert app.worker_name == PROTECTED_ADMIN_OPERATOR_ID
     assert app.worker_role == PROTECTED_ADMIN_ROLE
