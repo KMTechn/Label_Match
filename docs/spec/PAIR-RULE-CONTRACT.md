@@ -9,4 +9,6 @@
 - 사용자 준비와 SYSTEM 최초 적용 및 PREPARED 재개는 `authorize_feed_transition`의 동일 규칙을 사용한다. 재개는 보호 packet, 설치 신뢰 키, 이전·후보 stock 및 기록의 두 방향 pin을 다시 확인한다. READY 실패의 PC 내부 코드 복귀만 기존 역방향 권한을 사용한다. CONFIRMED 뒤 임의 feed 하향은 지원하지 않는다.
 - feed와 packet 주소는 ASCII IP/도메인(명시적 punycode 포함), HTTPS, 정확한 응답 URL만 사용한다. Unicode 원 호스트·userinfo·fragment·redirect와 기존 GitHub 호스팅 계열은 거절한다. 기존 장비 인증·같은 origin·CA 조건을 유지한다.
 
+runtime 설정과 canonical 설치기의 내장 release-pair gate는 같은 URL 규칙을 사용한다. 빈 userinfo도 거절하고 port 형식/범위를 검증한다. PC 설치기의 순수 설정 검사도 빈 userinfo를 거절한다. 정상 사내 도메인·ASCII IPv4/IPv6·명시적 punycode 주소는 허용하며 요청·응답 주소에 별도의 정규화나 변환을 추가하지 않는다.
+
 구현: `auto_update.py`의 `version_identity`, `packet_version_identity`, `authorize_feed_transition`, `authorize_prepared_replay`, 사용자 준비 및 SYSTEM caller; `Label_Match.py`의 URL 검사; portable builder와 PowerShell 설정 검사. focused 회귀·원 실패·판·환경은 sub-128 REPORT.md에 기록한다. stock/전체/실제 SYSTEM·feed·전원 손실·독립 검토는 NOT TESTED다.

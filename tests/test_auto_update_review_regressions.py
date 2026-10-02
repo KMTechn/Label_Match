@@ -13,6 +13,47 @@ import auto_update as updates
 
 ROOT = Path(__file__).resolve().parents[1]
 
+FEED_URL_CASES = [
+    ("https://company.test/feed", True), ("https://updates.factory/feed", True),
+    ("https://192.0.2.10:8443/feed", True), ("https://[2001:db8::1]:8443/feed", True),
+    ("https://xn--bcher-kva.test/feed", True), ("HTTPS://COMPANY.TEST/feed", True),
+    ("https://bücher.test/feed", False), ("https://@company.test/feed", False),
+    ("https://:password@company.test/feed", False), ("https://company.test:bad/feed", False),
+    ("https://company.test:65536/feed", False), ("http://company.test/feed", False),
+    ("https://company.test/feed#fragment", False), ("https://github.com/feed", False),
+    ("https://alias.github.com/feed", False), ("https://raw.githubusercontent.com/feed", False),
+    ("https://alias.github.io./feed", False),
+]
+
+
+@pytest.mark.parametrize("url,accepted", FEED_URL_CASES)
+def test_installer_embedded_and_runtime_feed_url_contract(url, accepted):
+    source = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
+    pure = source.split("from typing import Any, Mapping", 1)[1].split("startup_release_replacements =", 1)[0]
+    namespace = {"Any": object, "Mapping": dict, "re": __import__("re"), "json": json}
+    exec(pure, namespace)
+    for validator in (updates.policy_from_settings, namespace["policy_from_settings"]):
+        if accepted:
+            assert validator({"feed_url": url})["feed_url"] == url
+        else:
+            with pytest.raises(ValueError):
+                validator({"feed_url": url})
+
+
+def test_pc_installer_feed_url_contract_without_installing(tmp_path):
+    from tests.test_startup_update_installer import functions
+    cases = tmp_path / "urls.json"
+    cases.write_text(json.dumps([url for url, _accepted in FEED_URL_CASES]), encoding="utf-8")
+    body = functions("INSTALL_THIS_PC.ps1", ["Assert-LabelStartupUpdateSettings"])
+    result = powershell(tmp_path, body + f"""
+$urls=Get-Content -LiteralPath {quote(cases)} -Raw -Encoding UTF8 | ConvertFrom-Json
+foreach ($url in $urls) {{
+    try {{ Assert-LabelStartupUpdateSettings ([pscustomobject]@{{feed_url=$url;channel='stable';apply_during_work=$false;profile_auth=$true}}); 'ACCEPT' }}
+    catch {{ 'REJECT' }}
+}}
+""")
+    assert result.splitlines() == ["ACCEPT" if accepted else "REJECT" for _url, accepted in FEED_URL_CASES]
+
 
 def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
