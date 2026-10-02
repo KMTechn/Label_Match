@@ -17,6 +17,7 @@ FEED_URL_CASES = [
     ("https://company.test/feed", True), ("https://updates.factory/feed", True),
     ("https://192.0.2.10:8443/feed", True), ("https://[2001:db8::1]:8443/feed", True),
     ("https://xn--bcher-kva.test/feed", True), ("HTTPS://COMPANY.TEST/feed", True),
+    ("hTtPs://CoMpAnY.TeSt/feed", True),
     ("https://bücher.test/feed", False), ("https://@company.test/feed", False),
     ("https://:password@company.test/feed", False), ("https://company.test:bad/feed", False),
     ("https://company.test:65536/feed", False), ("http://company.test/feed", False),
@@ -57,6 +58,24 @@ foreach ($url in $urls) {{
 
 def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
+
+
+@pytest.mark.parametrize("scheme", ["HTTPS", "hTtPs"])
+@pytest.mark.parametrize("authority", ["@company.test", "bücher.test"])
+def test_feed_invalid_authority_rejected_across_scheme_case(tmp_path, scheme, authority):
+    from tests.test_startup_update_installer import functions
+
+    url = f"{scheme}://{authority}/feed"
+    test_installer_embedded_and_runtime_feed_url_contract(url, False)
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"feed_url": url, "channel": "stable",
+        "apply_during_work": False, "profile_auth": True}), encoding="utf-8")
+    body = functions("INSTALL_THIS_PC.ps1", ["Assert-LabelStartupUpdateSettings"])
+    result = powershell(tmp_path, body + f"""
+$settings=Get-Content -LiteralPath {quote(settings)} -Raw -Encoding UTF8 | ConvertFrom-Json
+try {{ Assert-LabelStartupUpdateSettings $settings; 'ACCEPT' }} catch {{ 'REJECT' }}
+""")
+    assert result == "REJECT", f"PC/runtime authority mismatch for {url}: {result}"
 
 
 def powershell(tmp_path, code):

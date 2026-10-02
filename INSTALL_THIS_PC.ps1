@@ -597,7 +597,7 @@ function Assert-LabelStartupUpdateSettings([object]$Settings) {
     if ($Settings.feed_url) {
         $uri=$null
         if (-not [Uri]::TryCreate($Settings.feed_url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -cne 'https' -or -not $uri.Host -or $uri.UserInfo -or $uri.Fragment) { throw 'STARTUP_UPDATE_SETTINGS_HTTPS_REQUIRED' }
-        $feedAuthority=[regex]::Match([string]$Settings.feed_url,'^https://([^/?#]+)').Groups[1].Value
+        $feedAuthority=[regex]::Match([string]$Settings.feed_url,'^https://([^/?#]+)',[Text.RegularExpressions.RegexOptions]::IgnoreCase).Groups[1].Value
         if ($feedAuthority.Contains('@')) { throw 'STARTUP_UPDATE_SETTINGS_HTTPS_REQUIRED' }
         if ($feedAuthority -match '[^\x00-\x7f]') { throw '업데이트 주소의 호스트는 ASCII IP 또는 도메인이어야 합니다.' }
         $hostName=$uri.DnsSafeHost.ToLowerInvariant().TrimEnd('.')
