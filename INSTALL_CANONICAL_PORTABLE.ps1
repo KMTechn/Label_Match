@@ -719,17 +719,42 @@ remote_transport_transition = (
     for relative, (befores, after) in remote_transport_replacements.items()
 )
 
-candidate_pin, candidate_sources = identity(source)
-installed_pin, installed_sources = identity(installed)
-if candidate_sources != installed_sources:
-    raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 roster_additions = {'app/label_worker_roster.py': '09e9621710cb4027b7c714ff6a105572a81eb25232954d0a900798bd86f0e7aa'}
-roster_transition = remote_transport_transition and all(
+roster_transport_path = 'app/label_admin_pin.py'
+roster_transport_befores, roster_transport_after = remote_transport_replacements[roster_transport_path]
+roster_transport_pair = (installed / roster_transport_path).is_file() and (source / roster_transport_path).is_file()
+roster_transport_forward = roster_transport_pair and (
+    release_digest(installed / roster_transport_path) in roster_transport_befores
+    and release_digest(source / roster_transport_path) == roster_transport_after
+)
+roster_transport_reverse = roster_transport_pair and (
+    release_digest(installed / roster_transport_path) == roster_transport_after
+    and release_digest(source / roster_transport_path) in roster_transport_befores
+)
+if roster_transport_reverse:
+    # Refuse a downgrade before the new leaf's file-set difference obscures
+    # the original directional Label_Match rejection.
+    reverse_path = 'app/Label_Match.py'
+    if not all((root / reverse_path).is_file() for root in (source, installed)) or release_digest(source / reverse_path) == release_digest(installed / reverse_path):
+        reverse_path = roster_transport_path
+    raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: ' + reverse_path)
+roster_transition = roster_transport_forward and all(
     not (installed / relative).exists() and (source / relative).is_file()
     and release_digest(source / relative) == expected
     for relative, expected in roster_additions.items()
 )
-if remote_transport_transition and not roster_transition:
+if roster_transport_forward and not roster_transition:
+    raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
+candidate_pin, candidate_sources = identity(source)
+installed_pin, installed_sources = identity(installed)
+if roster_transition:
+    # This exact signed-transport pair moves the existing decorated request
+    # into the common route helper. Every other writer identity stays equal;
+    # executable deltas still require the complete reviewed release below.
+    old_request = ('label_admin_pin_request', 'label_admin_pin.py', 'AdminPinClient.post', 'decorator')
+    new_request = ('label_admin_pin_request', 'label_admin_pin.py', 'AdminPinClient._post_path', 'decorator')
+    installed_sources = [new_request if row == old_request else row for row in installed_sources]
+if candidate_sources != installed_sources:
     raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 for directory in ('app', 'runtime'):
     left, right = files(source, directory), files(installed, directory)

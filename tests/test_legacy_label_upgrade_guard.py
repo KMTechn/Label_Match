@@ -174,6 +174,7 @@ $writerTransition | ConvertTo-Json -Compress
     ("unrelated-module", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("roster-addition-changed", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("roster-addition-missing", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
+    ("roster-transport-changed", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("data", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/assets/Item.csv"),
 ])
 def test_stock_3f4574a_guard_still_refuses_everything_else(tmp_path, legacy_label_packages, change, reason):
@@ -188,8 +189,9 @@ def test_stock_3f4574a_guard_still_refuses_everything_else(tmp_path, legacy_labe
         installed = _tree(old, tmp_path / "installed")
         shutil.copy2(candidate / "app/label_transition.py", installed / "app/label_transition.py")
         _pin(installed)
-    elif change in {"other-candidate", "unrelated-module"}:
-        name = "app/user_relay.py" if change == "unrelated-module" else "app/Label_Match.py"
+    elif change in {"other-candidate", "unrelated-module", "roster-transport-changed"}:
+        name = ("app/label_admin_pin.py" if change == "roster-transport-changed" else
+                "app/user_relay.py" if change == "unrelated-module" else "app/Label_Match.py")
         source = _tree(candidate, tmp_path / "candidate", [name])
         with (source / name).open("a", encoding="utf-8") as stream:
             stream.write(CHANGED_LINE)
