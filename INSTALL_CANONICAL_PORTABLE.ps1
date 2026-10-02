@@ -513,8 +513,7 @@ shared_transition = all(
 # module and changes these modules. Writer membership, runtime, contracts and
 # every other file stay checked. Persisted state gains only optional keys the
 # preimage ignores, so no data migration; downgrade is not admitted.
-legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', 'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
-'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
+legacy_label_replacements = {'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
                         '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -528,9 +527,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
                              '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
  'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757',
                                'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
- 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
-                                        '64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02'),
- 'app/label_recovery_schema.py': ('52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90',
+  'app/label_recovery_schema.py': ('52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90',
                                   '01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7'),
  'app/label_workbench_context.py': ('95b57100a5bf2014a8dc7685455342233fb8bcd9f78e04a92332ae2fab320422',
                                     '32835bfbd588afd84fae494aabeab2add65f2ecb0b22aa0bb2478951107afe51'),
@@ -550,9 +547,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
                                      '74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c'),
  'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
                                      'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
- 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
-                                                    'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
- 'app/ui/workflow_snapshot_adapter.py': ('f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411',
+  'app/ui/workflow_snapshot_adapter.py': ('f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411',
                                          '661d0167c8966d510dc85233e32b4ee5dda781ff3d9b4fca20a1f0c797a5a4d2'),
  'app/ui/workflow_view_state.py': ('6959c71768296a68d88de2d46a76b80f177ab7c5e2bff0fde0cddb3fa9ada718',
                                    'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
@@ -587,8 +582,7 @@ scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9
   '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e'),
  ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
   '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e')}
-scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', 'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
-'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+scan_input_companions = {'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
@@ -633,8 +627,7 @@ scan_input_transition = (
 # through the existing recovery schema. Downgrade is not admitted.
 nextfix_label_path = 'app/Label_Match.py'
 nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938', '883dbd2317d75345c553906d7dc52668c710df3154881b59cbf66dbe3d3e8f3e')
-nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', 'eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec'),
-'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
+nextfix_companions = {'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492',
                              '7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55'),
