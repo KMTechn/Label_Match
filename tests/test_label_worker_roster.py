@@ -63,7 +63,7 @@ def test_query_versions_cache_offline_restart_and_recent_identity(tmp_path):
     assert [w["worker_id"] for w in restored._worker_roster_choices()] == [BOB]
 
 
-@pytest.mark.parametrize("fault", ["digest", "scope", "duplicate", "shape", "json"])
+@pytest.mark.parametrize("fault", ["digest", "scope", "duplicate", "shape", "json", "deep-json"])
 def test_damaged_cache_preserves_original_and_uses_good_copy(tmp_path, fault):
     path = tmp_path / "roster.json"
     roster.save_cache(path, answer(), SCOPE)
@@ -77,6 +77,8 @@ def test_damaged_cache_preserves_original_and_uses_good_copy(tmp_path, fault):
     elif fault == "shape":
         payload["version"] = True
     damaged = b"{broken" if fault == "json" else json.dumps(payload).encode()
+    if fault == "deep-json":
+        damaged = b'{"workers":' + b'[' * 2000 + b'0' + b']' * 2000 + b'}'
     path.write_bytes(damaged)
     assert roster.load_cache(path, SCOPE)["workers"] == answer()["workers"]
     preserved = list(tmp_path.glob("roster.json.invalid-*"))

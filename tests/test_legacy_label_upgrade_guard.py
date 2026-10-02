@@ -45,10 +45,15 @@ def _declared_pair():
 
 @pytest.fixture(scope="module")
 def legacy_label_packages(tmp_path_factory):
-    root = tmp_path_factory.mktemp("legacy-label-stock")
+    return _stock_label_packages(tmp_path_factory, "legacy-label-stock", BASE)
+
+
+def _stock_label_packages(tmp_path_factory, prefix, baseline, candidate=None):
+    root = tmp_path_factory.mktemp(prefix)
     head = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     packages = []
-    for name, revision in (("old", BASE), ("candidate", head)):
+    revisions = [("old", baseline)] + ([("candidate", head)] if candidate is None else [])
+    for name, revision in revisions:
         source = root / (name + "-source")
         subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", "--no-checkout",
                         "-c", "core.autocrlf=false", str(ROOT), str(source)], check=True, capture_output=True)
@@ -60,7 +65,7 @@ def legacy_label_packages(tmp_path_factory):
                         "--update-manifest-public-key-config", "11" * 32],
                        check=True, capture_output=True, timeout=600)
         packages.append(package)
-    return tuple(packages)
+    return tuple(packages) if candidate is None else (packages[0], candidate)
 
 
 def _tree(package: Path, target: Path, rewritten=()) -> Path:
@@ -435,5 +440,61 @@ def test_nextfix_archive_guard_refuses_other_changes(tmp_path, nextfix_archive_l
                          CHANGED_LINE.encode() if change == "other-label" else b"X")
         _pin(source)  # Refusal is semantic/contract evidence, rather than a stale-pin failure.
     result = _nextfix_probe(tmp_path, source, installed)
+    assert result.returncode != 0, result.stdout
+    assert reason in result.stderr, result.stdout + result.stderr
+
+
+ROSTER_BASELINE = "134bab3c2059ce500f752a3ba09eb83a6d2c0b40"
+
+
+@pytest.fixture(scope="module")
+def roster_baseline_packages(tmp_path_factory, legacy_label_packages):
+    return _stock_label_packages(tmp_path_factory, "roster-baseline-stock",
+                                 ROSTER_BASELINE, legacy_label_packages[1])
+
+
+def test_roster_baseline_declares_only_exact_changed_files():
+    pairs = _declared_current_user_profile_pairs("roster_baseline_replacements")
+    assert set(pairs) == {"app/Label_Match.py", "app/label_admin_pin.py",
+                          "app/writer_session_fence.py", "tools/label_writer_fence.ps1"}
+    for relative, (before, after) in pairs.items():
+        name = relative.removeprefix("app/")
+        original = subprocess.check_output(["git", "-C", str(ROOT), "show", f"{ROSTER_BASELINE}:{name}"])
+        assert _release_digest(original) == before
+        assert _release_digest((ROOT / name).read_bytes()) == after != before
+
+
+def test_roster_baseline_stock_upgrades_forward_and_refuses_reverse(tmp_path, roster_baseline_packages):
+    old, candidate = roster_baseline_packages
+    env = _environment(tmp_path)
+    before = _seed_base_work(env)
+    result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(candidate)} {_quote(old)}", env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+    reverse = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(old)} {_quote(candidate)}", env)
+    assert reverse.returncode != 0
+    assert "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py" in reverse.stderr
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+
+
+@pytest.mark.parametrize("relative,reason", [
+    ("app/Label_Match.py", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
+    ("app/label_admin_pin.py", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
+    ("app/writer_session_fence.py", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
+    ("tools/label_writer_fence.ps1", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
+    ("app/label_worker_roster.py", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
+    ("roster-missing", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
+])
+def test_roster_baseline_refuses_unreviewed_bytes(tmp_path, roster_baseline_packages, relative, reason):
+    old, candidate = roster_baseline_packages
+    name = "app/label_worker_roster.py" if relative == "roster-missing" else relative
+    source = _tree(candidate, tmp_path / "candidate", [name])
+    if relative == "roster-missing":
+        (source / name).unlink()
+    else:
+        with (source / name).open("ab") as stream:
+            stream.write(b"\n$UnreviewedRuntimeChange = $true\n" if name.endswith(".ps1") else CHANGED_LINE.encode())
+    _pin(source)
+    result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(source)} {_quote(old)}", _environment(tmp_path))
     assert result.returncode != 0, result.stdout
     assert reason in result.stderr, result.stdout + result.stderr

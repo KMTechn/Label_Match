@@ -720,8 +720,25 @@ remote_transport_transition = (
 )
 
 roster_additions = {'app/label_worker_roster.py': '09e9621710cb4027b7c714ff6a105572a81eb25232954d0a900798bd86f0e7aa'}
+# This feature's exact reviewed branch baseline is independent of the older
+# accepted release tables; never broaden their historical preimages.
+roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062',
+                        '7ea75f682a1fc2cf0ea2c1cc020e85d85bf20ab51a0fd0a4b2a42c4a3449d5a6'),
+ 'app/label_admin_pin.py': ('159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8',
+                            '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'),
+ 'app/writer_session_fence.py': ('8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6',
+                                 'f9c4bc88bad29655a30e17c5234835850fb32a76279036d47e52b1fb7edd30dc'),
+ 'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a',
+                                  '20df3336cbd6c1c86297716b725002c53e0d49d0a380eb0d4cf2261940e9cc5b')}
+roster_baseline_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file()
+    and release_digest(installed / relative) == before
+    and release_digest(source / relative) == after
+    for relative, (before, after) in roster_baseline_replacements.items()
+)
 roster_transport_path = 'app/label_admin_pin.py'
 roster_transport_befores, roster_transport_after = remote_transport_replacements[roster_transport_path]
+roster_transport_befores = roster_transport_befores | {roster_baseline_replacements[roster_transport_path][0]}
 roster_transport_pair = (installed / roster_transport_path).is_file() and (source / roster_transport_path).is_file()
 roster_transport_forward = roster_transport_pair and (
     release_digest(installed / roster_transport_path) in roster_transport_befores
@@ -776,6 +793,8 @@ for directory in ('app', 'runtime'):
             continue
         if roster_transition and relative in roster_additions:
             continue
+        if roster_baseline_transition and relative in roster_baseline_replacements:
+            continue
         if remote_transport_transition and relative in remote_transport_replacements:
             continue
         if current_user_profile_transition and relative in current_user_profile_replacements:
@@ -811,14 +830,18 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = Join-Path $Source 'runtime\python.exe'
     # Windows argv quoting; the probe is literal source, never shell input.
-    $startInfo.Arguments = '-I -B -c "' + $probe.Replace('"', '\"') + '" ' +
+    $startInfo.Arguments = '-I -B - ' +
         (Arg $Source) + ' ' + (Arg $Installed)
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.RedirectStandardInput = $true
     $process = [Diagnostics.Process]::Start($startInfo)
     try {
+        $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe)
+        $process.StandardInput.BaseStream.Write($probeBytes, 0, $probeBytes.Length)
+        $process.StandardInput.Close()
         $stdout = $process.StandardOutput.ReadToEnd()
         $stderr = $process.StandardError.ReadToEnd()
         $process.WaitForExit()
