@@ -10,7 +10,17 @@
 
 managed 등록은 actual active code를 사용한다. 새 자료·설정·direct-sync·profile·ledger 및 직접 등록 도구의 출력 경로는 current/versions/update-control/removal-evidence/removed.json과 모든 깊이에서 겹칠 수 없다. 기본 사용자 onboarding 자료는 LOCALAPPDATA/KMTech/Label_Match/data이며 standalone 등록의 ProgramData 자료와 DirectSync 기본 경로는 코드 바깥이다. 사용자 제거는 자기 Run/relay 정지만 수행하고 machine control을 해석하지 않으며 신원·profile·원장·대기 전송을 보존한다.
 
-기계 지원 제거의 파일 내용 증명/수렴은 다음 제거 단위에서 완성한다. 이 단위는 정상 설치와 사용자 제거/등록 경계를 구현한다.
+## 내용으로 증명한 제거
+
+지원 제거는 현재·판·packet의 readable 목록이 선언한 상대 경로와 SHA가 같은 일반 파일만 개별 이동한다. current/version/packet 디렉터리 통째 이동은 금지한다. 읽을 수 없는 목록·이름만 같은 다른 내용·미상 파일·reparse는 보존하며 하위 reparse를 따라가지 않는다. incoming packet은 manifest의 artifact SHA로만 증명하고 해시가 없는 signature는 보존한다.
+
+목록 메타데이터는 원문 SHA를 기록하고 가장 마지막에 직전 대조 후 이동한다. 선언 파일의 SHA를 읽을 수 없으면 미확정이므로 제거 미완을 알리고 목록과 완료 표식을 유지한다. 이동 전/후에는 SHA와 원 경로 부재를 확인한다. 제거 도중 중단 뒤 다시 실행하면 같은 규칙으로 수렴하며 제거한 code/task를 보상으로 되살리지 않는다.
+
+자기 파일 이동으로 비운 완전히 빈 부모만 비재귀 정리하고 필요한 ReadOnly만 해제한다. 정리 거절은 EMPTY_OWNED_PARENT_RETAINED/retained_paths에 기록한다. 코드 처리가 끝났다면 REMOVED이며 current 잔재가 새 설치와 충돌하면 안내로 멈춘다. 기존 자료·등록·credential·업무 원장·전송 대기는 소유 파일로 분류하지 않는다. 알려진 control 파일은 내용과 관계없이 복구 증거로 개별 격리하고 directory/미상 control 항목은 보존한다.
+
+포장 standalone 지원 제거는 기존 상승 권한과 보호 부모·quiescence를 확인하고 설치된 helper/control을 읽어 실행하지 않는다. canonical caller가 preloaded 위임을 제공하면 기존 정확한 위임을 유지한다. 검사 앱의 keeper/release-owner 자동 제외는 포장에 해당 consumer가 없으므로 추가하지 않는다.
+
+실제 startup task 이름은 root 소문자 + LF + operator SID의 SHA256 앞 24자리다. 정상 API metadata의 SYSTEM/service/highest·한 action·한 SID logon trigger·고정 protected helper 명령과 일치한 작업만 증거를 남기고 중지·삭제·부재 확인한다. 역사적 relay task는 기존 검증 함수를 유지한다. process 관측 불가 또는 제품 process 생존은 제거를 멈춘다. 모든 phase/손상 control에서 제거 출구와 재설치 경계를 시험한다.
 
 ## 증거와 남은 수용
 

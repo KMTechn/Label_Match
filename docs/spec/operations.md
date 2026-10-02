@@ -1049,6 +1049,8 @@ builder는 승인 공개 키와 `--auto-update-settings` JSON을 사용한다. �
 
 canonical onboarding은 fence 안에서 신원·Run을 준비하고 relay 시작을 연기한다. fence 해제 뒤 native 일반 토큰 시작과 상태 readback을 한다. Run 복원만 성공하고 relay 시작이 실패하면 RUN_RESTORED_RELAY_NEXT_LOGON이며 설치는 실패다. 정상 removal 보고서를 복원/정리하기 전 고유 실패 증거를 보존한다.
 
-정상 current owner A/active B 설치는 실제 B를 확인해 C를 versions에 배치하고 보호 포인터를 전환한다. 손상/중간 상태는 자료·등록·대기 전송 보존과 지원 제거 후 재설치를 안내한다. 사용자 제거는 machine control을 읽지 않고 자기 Run/relay만 정리한다. managed 등록은 actual active code와 코드 밖 자료 경로를 사용한다. [지원 수명주기](LIFECYCLE-DESIGN.md)·[쌍 계약](PAIR-RULE-CONTRACT.md)의 source 구현과 실제 Windows NOT TESTED를 구별한다. 기계 제거 내용 증명 구현은 다음 단위다.
+정상 current owner A/active B 설치는 실제 B를 확인해 C를 versions에 배치하고 보호 포인터를 전환한다. 손상·미완료 상태의 새 설치는 자료·등록·대기 전송을 보존한 채 지원 제거 후 재설치를 안내한다. 지원 제거는 control 기록 없이 소유 task·process 정지와 내용 증명 파일 이동으로 수렴한다. 목록 불가용·미상/reparse는 보존하고 해시 읽기 불가는 제거 미완이며 목록/표식을 유지한다. current 잔재가 있으면 새 설치가 경로를 안내하며 멈춘다. 사용자 제거는 control을 해석하지 않고 자기 Run/relay만 정리한다. [지원 수명주기](LIFECYCLE-DESIGN.md)와 [서명 쌍 계약](PAIR-RULE-CONTRACT.md)의 자세한 경계 및 실제 Windows NOT TESTED 구간을 따른다.
 
 2026-10-02 Windows 호스트의 격리 known-folder·독립 .git 순수/주입 집중 시험만 수행한다. 실제 로그온·전원 손실·빠른 시작·토큰·작업 ACL·옛 packet(6479eca 첫 등록 포함)·수동 lifecycle·stock packet·전체 suite·독립 검토는 중앙 NOT TESTED다. 정확한 결과와 원 실패는 sub-88 REPORT.md 및 원 로그에 남긴다.
+
+2026-10-03 sub-128은 위 규칙의 source 이식이다. 독립 .git, 격리 known-folder 및 Tk/DPAPI/WinCred/KSP 차단·숨김 자식 harness로 같은 기준/변경 선택을 비교했다. 정확한 판·수치·실패 집합·제외 노드는 sub-128 REPORT.md와 원 로그에 남긴다. 기존 sub-88/99/104 FAILED 및 native NOT TESTED를 승계 해결로 처리하지 않는다. 선언·pin 재생성은 중앙 동결 뒤 한 번 수행한다.

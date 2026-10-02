@@ -420,6 +420,6 @@ SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부�
 
 기존 release-pair/companion/fence 선언을 갱신한다. 실제 e88011c 공개 설정에서 승인 LM ES256 공개 설정으로의 정확한 SHA256 쌍만 첫 수동 설치의 별도 회전으로 허용한다. 같은 공개 키 전이는 유지하고 임의 회전은 거절한다. w9next 소스에는 공개 설정이 추적되지 않으므로 실제 w9next packet matching-key 확인은 중앙 NOT TESTED 항목이다. 개인 키·런타임 데이터는 소스에 넣지 않는다.
 
-지원 수명주기: 정상 current-owner A/active B에서 실제 B→C 설치·managed 등록을 허용하고, 손상/중간 상태의 설치는 지원 제거 후 재설치를 안내한다. 사용자 제거는 machine control을 해석하지 않는다. 기존 정확한 deployment delegation과 옛 첫 등록 경계를 유지한다. 새 등록 자료 경로는 기계 code/control과 겹칠 수 없다. [쌍 계약](PAIR-RULE-CONTRACT.md)·[지원 수명주기](LIFECYCLE-DESIGN.md)를 따른다. 기계 제거 내용 증명 단위와 실제 Windows 수용은 남는다.
+지원 수명주기: 정상 current-owner A/active B에서 실제 B→C 설치·managed 등록을 허용하고, 손상/중간 상태의 설치는 지원 제거 후 재설치를 안내한다. 지원 제거와 사용자 제거는 control 기록의 일관성을 요구하지 않는다. 지원 제거는 내용 SHA가 증명한 파일만 이동하고 목록 메타데이터는 마지막에 대조한다. 미확정 파일은 표식·목록을 보존하고 제거 미완을 알린다. 기존 정확한 deployment delegation과 옛 첫 등록 경계를 유지한다. [쌍 계약](PAIR-RULE-CONTRACT.md)·[지원 수명주기](LIFECYCLE-DESIGN.md)의 구현과 실제 Windows 수용을 구별한다.
 
 증거: 새 순수/주입 경계·독립 clone 집중 비교와 기존 source-derived inventory 핀 확인만 이 레인의 PROVEN 대상이다. 전체 suite·stock builder·실제 packet·작업 등록/ACL·CreateProcessWithTokenW·GUI·VM 수명주기·독립 검토는 NOT TESTED이며 중앙 랩 수용이 필요하다.

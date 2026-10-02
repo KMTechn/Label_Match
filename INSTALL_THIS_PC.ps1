@@ -807,6 +807,330 @@ function Test-CurrentUserRelayPersistencePresent {
     }
 }
 
+function Get-LabelSupportedStartupTasks([string]$Root) {
+    $full = [IO.Path]::GetFullPath($Root)
+    $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        [string]$_.TaskName -cmatch '^KMTech\.LabelMatch\.StartupUpdate\.[0-9a-f]{24}$'
+    })
+    $owned = @()
+    foreach ($task in $tasks) {
+        $actions = @($task.Actions); $triggers = @($task.Triggers)
+        if ($actions.Count -ne 1 -or $triggers.Count -ne 1) { throw 'SUPPORTED_TASK_OWNERSHIP_UNKNOWN' }
+        $sid = [string]$triggers[0].UserId
+        if ($sid -cnotmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$') { throw 'SUPPORTED_TASK_USER_UNKNOWN' }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($full.ToLowerInvariant()+[char]10+$sid)))).Replace('-','').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        $expectedName = 'KMTech.LabelMatch.StartupUpdate.' + $digest.Substring(0,24)
+        if ([string]$task.TaskName -cne $expectedName) { throw 'SUPPORTED_TASK_NAME_DIFFERS' }
+        $expectedCommand = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+        $helper = Join-Path $full 'tools\apply_prepared_update.ps1'
+        $expectedArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + $helper + '" -InstallRoot "' + $full + '"'
+        if ([string]$task.TaskPath -cne '\' -or
+            [string]$task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
+            [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+            [string]$task.Principal.RunLevel -cne 'Highest' -or
+            -not ([string]$actions[0].Execute).Equals($expectedCommand,[StringComparison]::OrdinalIgnoreCase) -or
+            [string]$actions[0].Arguments -cne $expectedArguments -or
+            -not [string]::IsNullOrEmpty([string]$actions[0].WorkingDirectory)) {
+            throw 'SUPPORTED_TASK_ACTION_DIFFERS'
+        }
+        $owned += $task
+    }
+    return $owned
+}
+
+function Remove-LabelScheduledTasks($Folder, [string]$EvidenceRoot, [string]$Current) {
+    foreach ($task in @(Get-LabelSupportedStartupTasks $Current)) {
+        $name = [string]$task.TaskName
+        $native = $Folder.GetTask($name)
+        Write-LabelStartupUpdateRecord -Path (Join-Path $EvidenceRoot ($name + '.json')) -Payload @{
+            name=$name;xml=$native.Xml;sddl=$native.GetSecurityDescriptor(7)
+        }
+        $native.Stop(0)
+        $Folder.DeleteTask($name,0)
+        try { [void]$Folder.GetTask($name); throw 'REMOVAL_TASK_ABSENCE_NOT_PROVEN' }
+        catch [Runtime.InteropServices.COMException] { if ($_.Exception.HResult -ne -2147024894) { throw } }
+    }
+    $legacy = Get-OwnedLegacyTaskRetirementSnapshot 'direct-sync-relay-label-match-current-pc'
+    if ($null -ne $legacy) {
+        Write-LabelStartupUpdateRecord -Path (Join-Path $EvidenceRoot 'legacy-task.json') -Payload $legacy
+        Remove-OwnedLegacyTask 'direct-sync-relay-label-match-current-pc'
+    }
+    if (@(Get-LabelSupportedStartupTasks $Current).Count -ne 0) { throw 'REMOVAL_TASK_ABSENCE_NOT_PROVEN' }
+}
+function Get-LabelRemovalIoPath([string]$Path) {
+    if ($Path.Length -lt 240 -or $Path.StartsWith('\\?\')) { return $Path }
+    $native = $Path.Replace('/','\')
+    if ($native.StartsWith('\\')) { return '\\?\UNC\' + $native.Substring(2) }
+    return '\\?\' + $native
+}
+
+function Assert-LabelRemovalBoundary([string]$Path) {
+    # Inspect ancestors, never enumerate opaque control/code children.
+    $component = [IO.Path]::GetFullPath((Get-LabelRemovalIoPath $Path))
+    while ($component) {
+        if (Test-Path -LiteralPath (Get-LabelRemovalIoPath $component) -ErrorAction Stop) {
+            $item = Get-Item -LiteralPath (Get-LabelRemovalIoPath $component) -Force -ErrorAction Stop
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'REMOVAL_BOUNDARY_REDIRECTED' }
+        }
+        $component = [IO.Path]::GetDirectoryName($component)
+    }
+}
+
+function Assert-LabelRemovalQuiescent([string]$ApplicationRoot, [int[]]$ExcludeProcessIds = @()) {
+    $prefix = (Get-StrictFullPath $ApplicationRoot 'removal process root') + '\'
+    $rows = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    if ($rows.Count -eq 0) { throw 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN' }
+    foreach ($row in $rows) {
+        if ($null -eq $row.ProcessId) { throw 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN' }
+        if ([int]$row.ProcessId -eq $PID -or [int]$row.ProcessId -in $ExcludeProcessIds) { continue }
+        if (([string]$row.ExecutablePath).StartsWith($prefix, 'OrdinalIgnoreCase') -or
+            ([string]$row.CommandLine).IndexOf($prefix, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            throw 'REMOVAL_REQUIRES_PRODUCT_PROCESS_STOP'
+        }
+    }
+}
+
+function Test-LabelRemovalFile([string]$Path, [string]$Sha256) {
+    try {
+        Assert-LabelRemovalBoundary $Path
+        if (-not (Test-Path -LiteralPath (Get-LabelRemovalIoPath $Path) -ErrorAction Stop)) { return $false }
+        $file = Get-Item -LiteralPath (Get-LabelRemovalIoPath $Path) -Force -ErrorAction Stop
+        if ($file.PSIsContainer -or $Sha256 -cnotmatch '^[0-9a-f]{64}$') { return $false }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        $reader = $null
+        try {
+            $reader = [IO.File]::OpenRead((Get-LabelRemovalIoPath $Path))
+            return ([BitConverter]::ToString($sha.ComputeHash($reader))).Replace('-','').ToLowerInvariant() -ceq $Sha256
+        } finally { if ($null -ne $reader) { $reader.Dispose() }; $sha.Dispose() }
+    } catch {
+        if ($_.Exception.Message -ceq 'REMOVAL_BOUNDARY_REDIRECTED') { return $false }
+        # Unknown content cannot retire the inventory needed for the next try.
+        throw "제거 미완 — 사용 중인 파일: $Path [REMOVAL_FILE_OBSERVATION_UNKNOWN]"
+    }
+}
+
+function Get-LabelArtifactFilePlan([string]$Path, [switch]$Incoming) {
+    # No registration census can prove that an opaque tree contains only code.
+    # Read only the manifest and its declared files, never unknown subtrees.
+    $empty = @{artifacts=@();hashes=@{};metadata_roots=@{};directories=@();retained_paths=@($Path);
+        decisions=@(@{path=$Path;disposition='UNREADABLE_INVENTORY_RETAINED'})}
+    try {
+        Assert-LabelRemovalBoundary $Path
+        $folder = Get-Item -LiteralPath (Get-LabelRemovalIoPath $Path) -Force -ErrorAction Stop
+        if (-not $folder.PSIsContainer) { return $empty }
+        $inventoryName = if ($Incoming) { 'manifest.json' } else { 'bootstrap-integrity.json' }
+        $inventoryPath = Join-Path $Path $inventoryName
+        Assert-LabelRemovalBoundary $inventoryPath
+        $inventoryFile = Get-Item -LiteralPath (Get-LabelRemovalIoPath $inventoryPath) -Force -ErrorAction Stop
+        if ($inventoryFile.PSIsContainer -or $inventoryFile.Length -gt 1048576) { return $empty }
+        $raw = [IO.File]::ReadAllBytes((Get-LabelRemovalIoPath $inventoryPath))
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $inventoryHash = ([BitConverter]::ToString($sha.ComputeHash($raw))).Replace('-','').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        $inventory = [Text.Encoding]::UTF8.GetString($raw).TrimStart([char]0xfeff) | ConvertFrom-Json -ErrorAction Stop
+        if ($Incoming) {
+            if ([string]$inventory.app_id -cne 'Label_Match') { return $empty }
+            $packetHash = [string]$inventory.artifact.sha256
+            if (-not $packetHash) { $packetHash = [string]$inventory.packet_sha256 }
+            $rows = @(@{path='packet.zip';sha256=$packetHash})
+        } elseif ([string]$inventory.schema_version -ceq 'label-match-bootstrap-integrity-v1' -and
+            [string]$inventory.status -ceq 'PASS' -and $inventory.files -is [Array] -and $inventory.files.Count) {
+            $rows = @($inventory.files)
+        } else { return $empty }
+        $hashes = @{}; $directories = @{}
+        foreach ($row in $rows) {
+            $relative = [string]$row.path; $hash = [string]$row.sha256
+            if ($relative -cnotmatch '^[^:/\\]+(?:/[^:/\\]+)*$' -or
+                @($relative.Split('/') | Where-Object { $_ -in @('.','..') -or $_.EndsWith('.') -or $_.EndsWith(' ') }).Count -or
+                $hash -cnotmatch '^[0-9a-f]{64}$') { return $empty }
+            $filePath = Join-Path $Path $relative
+            if ($hashes.ContainsKey($filePath)) { return $empty }
+            $hashes[$filePath] = $hash
+            $parent = [IO.Path]::GetDirectoryName($filePath)
+            while (-not (Test-SamePath $parent $Path)) {
+                $directories[$parent] = $true
+                $parent = [IO.Path]::GetDirectoryName($parent)
+            }
+        }
+    } catch { return $empty }
+    $owned = @($hashes.Keys | Sort-Object | Where-Object { Test-LabelRemovalFile $_ $hashes[$_] })
+    # Explicit metadata exception: the readable list itself is retired last,
+    # only while its bytes still match the exact snapshot used for this plan.
+    # Unlisted signatures have no such authority and stay in place.
+    $ordered = @($owned | Sort-Object { if ((Split-Path -Leaf $_) -cin @('portable-manifest.json','bootstrap-integrity.json','manifest.json')) { 1 } else { 0 } })
+    $hashes[$inventoryPath] = $inventoryHash
+    $ordered = @($ordered | Where-Object { -not (Test-SamePath $_ $inventoryPath) }) + @($inventoryPath)
+    return @{artifacts=$ordered;hashes=$hashes;metadata_roots=@{$inventoryPath=$Path};directories=(@($directories.Keys) + @($Path));
+        retained_paths=@($Path);decisions=@(@{path=$Path;disposition='HASH_MATCHED_FILES_AND_LAST_METADATA'})}
+}
+
+function Get-LabelRemovalArtifacts([string]$ApplicationRoot, [string[]]$RetainedArtifactRoots = @()) {
+    $artifacts = @(); $hashes = @{}; $metadataRoots = @{}; $directories = @(); $retained = @(); $decisions = @()
+    foreach ($name in @('current', 'versions', 'update-control')) {
+        $parent = Join-Path $ApplicationRoot $name
+        if (-not (Test-Path -LiteralPath $parent -ErrorAction Stop)) { continue }
+        try {
+            Assert-LabelRemovalBoundary $parent
+            $container = Get-Item -LiteralPath $parent -Force -ErrorAction Stop
+        } catch { $retained += $parent; continue }
+        if (-not $container.PSIsContainer) { $retained += $parent; continue }
+        if ($name -ceq 'current') {
+            if ($parent -in $RetainedArtifactRoots) { $retained += $parent; continue }
+            $plan = Get-LabelArtifactFilePlan $parent
+            $artifacts += $plan.artifacts; $retained += $plan.retained_paths; $directories += $plan.directories
+            $decisions += $plan.decisions
+            foreach ($path in $plan.hashes.Keys) { $hashes[$path] = $plan.hashes[$path] }
+            foreach ($path in $plan.metadata_roots.Keys) { $metadataRoots[$path] = $plan.metadata_roots[$path] }
+            continue
+        }
+        foreach ($child in @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop)) {
+            if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { $retained += $child.FullName; continue }
+            if ($name -ceq 'versions') {
+                if ($child.Name -cmatch '^[0-9a-f]{40}$' -and $child.PSIsContainer) {
+                    if ($child.FullName -in $RetainedArtifactRoots) { $retained += $child.FullName; continue }
+                    $plan = Get-LabelArtifactFilePlan $child.FullName
+                    $artifacts += $plan.artifacts; $retained += $plan.retained_paths; $directories += $plan.directories
+                    $decisions += $plan.decisions
+                    foreach ($path in $plan.hashes.Keys) { $hashes[$path] = $plan.hashes[$path] }
+                    foreach ($path in $plan.metadata_roots.Keys) { $metadataRoots[$path] = $plan.metadata_roots[$path] }
+                } else { $retained += $child.FullName }
+            } elseif (-not $child.PSIsContainer) {
+                if ($child.Name -cin @('policy.json','active.json','transition.json') -or
+                    $child.Name -cmatch '^(?:policy-before|failure)-[0-9a-f]{32}\.json$' -or
+                    $child.Name -cmatch '^failed-[0-9a-f]{32}-(?:policy|active)\.json$') {
+                    $artifacts += $child.FullName
+                } else { $retained += $child.FullName }
+            } elseif ($child.Name -cmatch '^packet-[0-9a-f]{32}$') {
+                if ($child.FullName -in $RetainedArtifactRoots) { $retained += $child.FullName; continue }
+                foreach ($item in @(@{path=(Join-Path $child.FullName 'extracted\Label_Match');incoming=$false},
+                                    @{path=$child.FullName;incoming=$true})) {
+                    $plan = Get-LabelArtifactFilePlan $item.path -Incoming:([bool]$item.incoming)
+                    $artifacts += $plan.artifacts; $retained += $plan.retained_paths; $directories += $plan.directories
+                    $decisions += $plan.decisions
+                    foreach ($path in $plan.hashes.Keys) { $hashes[$path] = $plan.hashes[$path] }
+                    foreach ($path in $plan.metadata_roots.Keys) { $metadataRoots[$path] = $plan.metadata_roots[$path] }
+                }
+            } elseif ($child.Name -cin @('incoming','failures')) {
+                foreach ($entry in @(Get-ChildItem -LiteralPath $child.FullName -Force -ErrorAction Stop)) {
+                    if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { $retained += $entry.FullName; continue }
+                    if ($child.Name -ceq 'incoming' -and $entry.PSIsContainer -and $entry.Name -cmatch '^[0-9a-f]{32}$') {
+                        if ($entry.FullName -in $RetainedArtifactRoots) { $retained += $entry.FullName; continue }
+                        $plan = Get-LabelArtifactFilePlan $entry.FullName -Incoming
+                        $artifacts += $plan.artifacts; $retained += $plan.retained_paths; $directories += $plan.directories
+                        $decisions += $plan.decisions
+                        foreach ($path in $plan.hashes.Keys) { $hashes[$path] = $plan.hashes[$path] }
+                        foreach ($path in $plan.metadata_roots.Keys) { $metadataRoots[$path] = $plan.metadata_roots[$path] }
+                    } elseif ($child.Name -ceq 'failures' -and -not $entry.PSIsContainer -and $entry.Name -cmatch '^[0-9a-f]{32}\.json$') {
+                        $artifacts += $entry.FullName
+                    } else { $retained += $entry.FullName }
+                }
+            } else { $retained += $child.FullName }
+        }
+    }
+    return @{artifacts=@($artifacts);hashes=$hashes;metadata_roots=$metadataRoots;directories=$directories;retained_paths=@($retained);decisions=@($decisions)}
+}
+
+function Remove-LabelEmptiedParents([string]$Path, [string[]]$Directories) {
+    $parent = [IO.Path]::GetDirectoryName($Path)
+    while ($parent -in $Directories) {
+        try {
+            Assert-LabelRemovalBoundary $parent
+            $io = Get-LabelRemovalIoPath $parent
+            if (-not (Test-Path -LiteralPath $io -ErrorAction Stop)) {
+                $parent = [IO.Path]::GetDirectoryName($parent); continue
+            }
+            $folder = Get-Item -LiteralPath $io -Force -ErrorAction Stop
+            if (-not $folder.PSIsContainer -or @(Get-ChildItem -LiteralPath $io -Force -ErrorAction Stop).Count) { return }
+            # Only a proven file move authorizes this now-empty parent.
+            # Never change attributes of a preexisting or nonempty directory.
+            if ($folder.Attributes -band [IO.FileAttributes]::ReadOnly) {
+                $folder.Attributes = $folder.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
+            }
+            Remove-Item -LiteralPath $io -ErrorAction Stop
+        } catch {
+            # Empty-directory cleanup is best effort; report a surviving path.
+            return $parent
+        }
+        $parent = [IO.Path]::GetDirectoryName($parent)
+    }
+}
+
+function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]]$ExcludeProcessIds = @()) {
+    $current = Get-StrictFullPath $InstallRoot 'removal current'
+    if ((Split-Path -Leaf $current) -cne 'current') { throw 'REMOVAL_CURRENT_PATH_INVALID' }
+    $application = Get-StrictFullPath (Split-Path -Parent $current) 'removal application'
+    Assert-LabelRemovalBoundary $application
+    Assert-LabelRemovalQuiescent $application $ExcludeProcessIds
+    $markerPath = Join-Path $application 'removed.json'
+    if (Test-Path -LiteralPath $markerPath -ErrorAction Stop) {
+        Assert-LabelRemovalBoundary $markerPath
+        $markerFile = Get-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+        if ($markerFile.PSIsContainer) {
+            throw "제거 표식을 만드는 경로와 자료가 겹칩니다. 자료를 보존하고 경로를 확인하세요: $markerPath"
+        }
+    }
+    $evidenceParent = Join-Path $application 'removal-evidence'
+    Assert-LabelRemovalBoundary $evidenceParent
+    New-Item -ItemType Directory -Path $evidenceParent -Force | Out-Null
+    $evidence = Join-Path $evidenceParent ([Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $evidence | Out-Null
+    if ($null -eq $TaskFolder -and -not $testOverride) { throw 'REMOVAL_TASK_OBSERVATION_UNKNOWN' }
+    if ($null -ne $TaskFolder) { Remove-LabelScheduledTasks $TaskFolder $evidence $current }
+    Assert-LabelRemovalQuiescent $application $ExcludeProcessIds
+    $plan = Get-LabelRemovalArtifacts $application
+    if (Test-Path -LiteralPath $markerPath) { $plan.artifacts += $markerPath }
+    $changedMetadataRoots = @(); $cleanupRetained = @()
+    foreach ($path in $plan.artifacts) {
+        $prefix = $application.TrimEnd('\') + '\'
+        if (-not $path.StartsWith($prefix, 'OrdinalIgnoreCase')) { throw 'REMOVAL_PATH_ESCAPED' }
+        if ($plan.hashes.ContainsKey($path) -and -not (Test-LabelRemovalFile $path $plan.hashes[$path])) {
+            if ($plan.metadata_roots.ContainsKey($path)) {
+                $changedMetadataRoots += $plan.metadata_roots[$path]
+                $plan.decisions += @{path=$plan.metadata_roots[$path];disposition='METADATA_CHANGED_RETAINED'}
+            }
+            continue
+        }
+        Assert-LabelRemovalBoundary $path
+        if ((Get-Item -LiteralPath (Get-LabelRemovalIoPath $path) -Force -ErrorAction Stop).PSIsContainer) { throw 'REMOVAL_DIRECTORY_MOVE_FORBIDDEN' }
+        $destination = Join-Path $evidence $path.Substring($prefix.Length)
+        # Evidence adds a UUID segment; normal source paths can cross MAX_PATH
+        # at the destination. The literal extended path stays inside evidence.
+        $destinationIo = Get-LabelRemovalIoPath $destination
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destinationIo) -Force | Out-Null
+        try {
+            Move-Item -LiteralPath (Get-LabelRemovalIoPath $path) -Destination $destinationIo -ErrorAction Stop
+            if (Test-Path -LiteralPath (Get-LabelRemovalIoPath $path) -ErrorAction Stop) { throw 'REMOVAL_PATH_ABSENCE_NOT_PROVEN' }
+        } finally {
+            # A rename may succeed before the caller receives its exception.
+            # Clean only parents of that proven move, including on retry cuts.
+            if ($plan.hashes.ContainsKey($path) -and
+                -not (Test-Path -LiteralPath (Get-LabelRemovalIoPath $path) -ErrorAction Stop) -and
+                (Test-LabelRemovalFile $destination $plan.hashes[$path])) {
+                $cleanupRetained += @(Remove-LabelEmptiedParents $path $plan.directories)
+            }
+        }
+    }
+    $remaining = Get-LabelRemovalArtifacts $application -RetainedArtifactRoots $changedMetadataRoots
+    if ($remaining.artifacts.Count) { throw 'REMOVAL_MACHINE_ARTIFACT_REMAINS' }
+    foreach ($path in @($cleanupRetained | Sort-Object -Unique)) {
+        if (Test-Path -LiteralPath (Get-LabelRemovalIoPath $path) -ErrorAction Stop) {
+            $remaining.retained_paths += $path
+            $plan.decisions += @{path=$path;disposition='EMPTY_OWNED_PARENT_RETAINED'}
+        }
+    }
+    Write-LabelStartupUpdateRecord -Path $markerPath -Payload @{
+        schema='label-match-supported-removal-v1'; lifecycle_state='REMOVED';
+        evidence_root=$evidence; business_data_and_registration_preserved=$true
+        retained_paths=@($remaining.retained_paths); artifact_dispositions=@($plan.decisions)
+    }
+    $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$marker.lifecycle_state -cne 'REMOVED') { throw 'REMOVAL_MARKER_READBACK_FAILED' }
+    return @{status='PASS';lifecycle_state='REMOVED';evidence_root=$evidence;retained_paths=@($remaining.retained_paths)}
+}
+
+
 $OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $testOverride = $earlyTestOverride
 if ([string]::IsNullOrWhiteSpace($OperatorLocalAppDataRoot)) {
@@ -860,60 +1184,31 @@ if ($StartupUpdateRestorePreimage) {
     finally { Exit-LabelWriterAdmission $lease }
     return
 }
-function Assert-LabelStartupUpdateLifecycleOwnership([string]$Root) {
-    $control = Join-Path (Split-Path -Parent $Root) 'update-control'
-    if (Test-Path -LiteralPath (Join-Path $control 'policy.json')) {
-        Assert-LabelStartupUpdateTrust $Root
-        $active = Get-Content -LiteralPath (Join-Path $control 'active.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-        $installed = Get-Content -LiteralPath (Join-Path $Root 'portable-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-        $transition = Get-Content -LiteralPath (Join-Path $control 'transition.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ([string]$active.sha -cnotmatch '^[0-9a-f]{40}$' -or [string]$installed.source_commit -cnotmatch '^[0-9a-f]{40}$' -or [string]$active.sha -cne [string]$installed.source_commit -or [string]$transition.phase -cnotin @('CONFIRMED','ROLLED_BACK','DEFERRED')) {
-            Write-Output 'startup_update_lifecycle_status=RECOVERY_REQUIRED'
-            Write-Output 'user_state_preserved=true'
-            $failure = New-Object InvalidOperationException('자동 업데이트 후 수동 교체·제거는 아직 지원되지 않습니다. 데이터와 설치 상태를 보존하고 담당자에게 복구를 요청하세요.')
-            $failure.Data['code'] = 'ACTIVE_CODE_REQUIRES_COORDINATED_RECOVERY'
-            throw $failure
-        }
-        [void](Get-LabelStartupUpdateTaskPreimage $Root)
+if ($Uninstall.IsPresent) {
+    if ($DryRun.IsPresent) { 'uninstall_status=DRY_RUN_CODE_ONLY'; 'user_state_preserved=true'; exit 0 }
+    $lease = $null
+    # Standalone supported removal is elevated and does not load installed helpers.
+    # A canonical caller retains its exact, preloaded deployment delegation.
+    if (-not $testOverride -and $WriterFenceFunctionsPreloaded.IsPresent) {
+        $lease = Enter-LabelWriterDelegatedOperation -ControlRoot $WriterFenceControlRoot `
+            -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId `
+            -ReplacementTransactionId $WriterFenceReplacementTransactionId `
+            -DelegationToken $WriterFenceDelegationToken -Source 'canonical_placement'
     }
-}if ($Uninstall.IsPresent) {
-    Assert-LabelStartupUpdateLifecycleOwnership $installRootFull
-    if ($DryRun.IsPresent) {
-        Write-Output "uninstall_status=DRY_RUN_CODE_ONLY"
-        Write-Output "user_state_preserved=true"
-        exit 0
-    }
-    [void](Get-StrictFullPath $installRootFull "uninstall target")
-    Assert-NoReparsePoint $installRootFull "Label_Match code root"
-    if (-not $testOverride) {
-        Remove-OwnedLegacyTask $LegacyRelayTaskName
-        $settings = Join-Path $installRootFull 'app\auto-update-settings.json'
-        if (Test-Path -LiteralPath $settings) {
-            $OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            $Script:StartupUpdatePreimage=Save-LabelStartupUpdatePreimage $installRootFull 'uninstall'
-            $task=$Script:StartupUpdatePreimage
-            $spec=Get-LabelStartupUpdateTaskSpec $installRootFull $OperatorSid
-            Invoke-LabelStartupUpdateTaskMutation {
-                $existing=Get-LabelStartupUpdateTask ([string]$spec.name)
-                if ($null -ne $existing) { Unregister-ScheduledTask -TaskName $spec.name -Confirm:$false }
-                if ($null -ne (Get-LabelStartupUpdateTask ([string]$spec.name))) { throw 'Startup update task removal unproven.' }
-            }
-        }
-    }
-    if (Test-Path -LiteralPath $installRootFull) {
-        Remove-Item -LiteralPath $installRootFull -Recurse -ErrorAction Stop
-    }
-    if (Test-Path -LiteralPath $installRootFull) {
-        throw "Hardened code root removal postcondition failed."
-    }
-    Write-Output "uninstall_status=PASS_CODE_REMOVED_STATE_PRESERVED"
-    Write-Output "application_root_status=ABSENT"
-    Write-Output "system_task_status=ABSENT"
-    Write-Output "user_state_preserved=true"
-    Write-Output "current_user_setup_removal_command=Label_Match.exe --remove-current-user-setup"
-    if (-not $testOverride) {
-        Write-ElevationLog 'PASS' 'Elevated Label code removal completed.'
-    }
+    try {
+        $application = Split-Path -Parent $installRootFull
+        if (-not (Test-Path -LiteralPath $application)) { New-Item -ItemType Directory -Path $application | Out-Null }
+        if (-not $testOverride) { Assert-ProtectedCodeAncestors $application }
+        $folder = $null
+        if (-not $testOverride) { $scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\') }
+        $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder
+        'uninstall_status=PASS_CODE_REMOVED_STATE_PRESERVED'
+        'application_root_status=RETAINED_FOR_EVIDENCE_AND_RETAINED_ITEMS'
+        if ($testOverride) { 'system_task_status=NOT_TESTED' } else { 'system_task_status=ABSENT' }
+        'user_state_preserved=true'
+        "removal_evidence_root=$($removed.evidence_root)"
+        foreach ($retained in $removed.retained_paths) { "removal_retained_path=$retained" }
+    } finally { if ($null -ne $lease) { Exit-LabelWriterAdmission $lease } }
     exit 0
 }
 

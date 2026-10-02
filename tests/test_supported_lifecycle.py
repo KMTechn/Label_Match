@@ -6,6 +6,7 @@ from contextlib import nullcontext
 import auto_update as update
 import current_user_onboarding as onboarding
 from tests.test_auto_update import OLD, NEW, NOW, bind_test_packet_settings
+from tests.test_supported_removal_convergence import _owned_artifact, _run_removal, _new_stock, tmp_path
 
 CANDIDATE = "3" * 40
 
@@ -68,6 +69,39 @@ def test_unsettled_install_refuses_without_mutation_but_removal_has_exit(tmp_pat
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
 
+@pytest.mark.parametrize("phase", ["CONFIRMED", "DEFERRED", "PREPARED", "APPLIED_PENDING_READY",
+    "ROLLBACK_PENDING", "ROLLBACK_PENDING_READY", "ROLLED_BACK", "UNKNOWN", "FAILED", "absent"])
+@pytest.mark.parametrize("damage", ["normal", "missing", "truncated", "mismatch", "directory"])
+def test_every_label_phase_and_corrupt_control_has_remove_install_exit(tmp_path, monkeypatch, phase, damage):
+    root = tmp_path / "r"
+    _owned_artifact(root, "current")
+    control = root / "update-control"; control.mkdir()
+    for name in ("policy.json", "active.json", "transition.json"):
+        path = control / name
+        if damage == "missing" or phase == "absent":
+            continue
+        if damage == "directory":
+            path.mkdir(); (path / "foreign-registration").write_bytes(b"unique-registration")
+        else:
+            path.write_bytes(b'{"cut":' if damage == "truncated" else
+                json.dumps(dict(schema=update.SCHEMA, phase=phase, sha=OLD if damage == "normal" else NEW)).encode())
+    data = root / "user-data/pending"; data.parent.mkdir(); data.write_bytes(b"quantity=7;pending=UNKNOWN")
+    unknown = control / "unknown-credential-bytes"; unknown.write_bytes(b"unique-synthetic-identity")
+    retained = {p: p.read_bytes() for p in (data, unknown)}
+    for path in control.glob("*/foreign-registration"):
+        retained[path] = path.read_bytes()
+    assert _run_removal(root, tmp_path, install=False)["status"] == "PASS"
+    assert update.read_json(root / "removed.json")["lifecycle_state"] == "REMOVED"
+    monkeypatch.setattr(update, "lifecycle_task_observation", lambda _root: dict(task_exists=False))
+    if damage == "directory" and phase != "absent":
+        with pytest.raises(ValueError):
+            update.resolve_lifecycle_context(root, operation="install")
+    else:
+        assert update.resolve_lifecycle_context(root, operation="install")["lifecycle_state"] == "REMOVED"
+        _new_stock(root)
+        assert _run_removal(root, tmp_path)["installed"] is True
+        assert update.read_json(root / "current/portable-manifest.json")["source_commit"] == NEW
+    assert all(path.read_bytes() == raw for path, raw in retained.items())
 
 
 @pytest.mark.parametrize("operation", ["uninstall", "user_remove"])

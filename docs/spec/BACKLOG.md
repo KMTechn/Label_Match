@@ -410,8 +410,10 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 - 구현: 내구 상태기계·서명된 미래 exact 양방향 쌍·실제 기존 version 상승·READY·코드만 복귀, 고정 SYSTEM helper·작업 preimage, GUI/relay 토큰 경계, 정확한 공개 키 회전과 기존 release 핀을 추가했다. 소비자 원문 SHA는 전이 증거다. policy 미래 allowlist나 추가 승인 체계는 없다. 빈 feed·업무 중 적용 끔이 기본이다.
 - PROVEN 범위: 독립 clone 집중 기존 비교, 새 순수/주입 경계, source-derived inventory와 공개 키 정확 쌍. 개수·버전·환경·원 실패·한계는 w9setupprep sub-88 REPORT.md에 기록한다.
-- 10/03 sub-128 지원 설치/사용자 단위: 정상 A/B→C·actual active 등록·control 비의존 사용자 제거·자료 경로 경계를 구현했다. [지원 수명주기](LIFECYCLE-DESIGN.md)와 [쌍 계약](PAIR-RULE-CONTRACT.md), focused 근거는 sub-128 REPORT.md를 따른다. 기계 내용 증명 제거 단위·동결 뒤 선언/pin·실제 Windows 수용은 OPEN이다.
+- 10/03 sub-128 구현: [서명 쌍 계약](PAIR-RULE-CONTRACT.md)과 [지원 수명주기](LIFECYCLE-DESIGN.md)를 이식했다. 정상 A/B→C, control 비의존 제거·사용자 제거, 내용 증명 개별 이동·미확정/목록 보존 및 자료 경로 거절을 구현했다. headless 회귀 판/수치/원 실패는 sub-128 REPORT.md이며 실제 Windows 수용은 OPEN이다. CONFIRMED 후 임의 feed 하향은 지원하지 않는다.
 - OPEN / NOT TESTED: 중앙 전체 suite·stock builder/실제 packet·독립 검토 및 로그온/빠른 시작/전원 손실/옛 판 등록/교체/제거/재설치/복귀 랩. 작업 ACL readback, 실제 0x18B 토큰의 모든 native 시작 자리, 실패 진단·Run 다음 로그온 복구, 데이터/미완료/outbox 보존을 확인한다. 실제 w9next packet matching-key·feed/manifest 게시·최종 병합은 중앙 담당이다.
 
 - 10/02 w9setupprep sub-104: 통합 기준 `134bab3`와 이식판 `3104b0e`에서 같은 invalid-receipt restart 시험의 GUI 없는 `__new__` fixture가 실제 scanner notice의 Tk 속성으로 들어가 RecursionError를 냈다. notice만 수집하는 fixture로 고치고 OPERATOR_REVIEW·재전송 금지·다음 스캔 차단 단언을 유지하면서 안내 제목/내용도 확인한다. 제품/수량/멤버십/receipt 계약은 변경하지 않는다. 원 FAILED와 최종 focused/collect 근거는 `D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-104/REPORT.md`에 보존하며 실제 GUI 수용은 NOT TESTED다.
 - sub-104 충돌 해소 마감: legacy/scan/nextfix의 동일값 중복 선언 5개를 제거했다. 전후 모든 literal mapping 동일·BOM 유지이며 source/writer/companion pin 재생성은 이식 뒤 중앙 단계로 유보한다.
+
+- sub-128 중앙 잔여: 동결 뒤 exact-after/추가 asset 선언, Python·PowerShell inventory/fence pin, app/tools companion 및 설치기·stock source digest를 같은 최종 입력으로 한 번 재생성한다. 기존 선언 대기 40건은 원 실패를 보존하고 새 선언으로 수용해야 한다. 독립 검토와 실제 설치/작업/로그온/제거/전원 단절/relay·credential·옛 첫 등록·업무 자료 불변 수용까지 Ready로 올리지 않는다. 중앙 hub 반영은 코디네이터 소유다.
