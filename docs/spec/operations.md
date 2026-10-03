@@ -1,6 +1,6 @@
 # Label_Match 운영·복구·검증
 
-상위 바탕의 최종 admission은 문자 경로 `C:\KMTech`와 `C:\KMTech\Apps`에만 설치기의 ACE 집합·Administrators SID 소유·상속 차단·재분석 거절 판정을 재사용한다. 일반 설치 사전 준비는 없는 폴더를 만들지 않고 기존 기본/보호 모양을 읽으며, 직접 admission은 없는 폴더를 거절한다. daily는 원 코드 신뢰 확인→helper 로드→두 조상의 보호 목표 확인을 업무 변경보다 먼저 수행한다. 다른 경로의 strict leaf mask는 유지한다. standalone code-only removal의 helper 없는 판정은 별도 신뢰 경계로 남으며 중앙 결정이 필요하다. sub-150의 D: NTFS/PS5.1·PS7 회귀는 owner 읽기 seam 범위이고 실제 설치·예약 작업·relay·상승·최종 선언/packet은 NOT TESTED다.
+상위 바탕의 최종 admission은 문자 경로 `C:\KMTech`와 `C:\KMTech\Apps`에만 설치기의 ACE 집합·Administrators SID 소유·상속 차단·재분석 거절 판정을 재사용한다. 일반 설치 사전 준비는 없는 폴더를 만들지 않고 기존 기본/보호 모양을 읽으며, 직접 admission은 없는 폴더를 거절한다. daily는 원 코드 신뢰 확인→helper 로드→두 조상의 보호 목표 확인을 업무 변경보다 먼저 수행한다. 다른 경로의 strict leaf mask는 유지한다. standalone code-only removal은 설치된·소스 helper를 로드하지 않고 공유 순수 ACL 판정의 정확한 사본을 사용하며 AST 본문 대조 회귀가 두 정의의 차이를 거절한다. sub-153의 D: NTFS/PS5.1·PS7 회귀는 owner 읽기 seam 범위이고 실제 설치·예약 작업·relay·상승·최종 선언/packet은 NOT TESTED다.
 
 <a id="remote-writer-admission"></a>
 

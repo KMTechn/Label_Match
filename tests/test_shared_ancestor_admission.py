@@ -14,17 +14,20 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
 @pytest.mark.parametrize('entry,scenario', [
     (entry, scenario)
-    for entry in ('shared_parent', 'shared_apps', 'placement', 'startup', 'daily')
+    for entry in ('shared_parent', 'shared_apps', 'placement', 'startup', 'daily',
+                  'standalone', 'standalone_parent', 'standalone_apps')
     for scenario in ('target', 'default', 'extra_write', 'extra_read', 'user_owner', 'reparse')
 ] + [('other_leaf', 'target'), ('admission', 'missing_parent'),
-     ('admission', 'missing_apps'), ('selected_admission', 'missing_apps')])
+     ('admission', 'missing_apps'), ('selected_admission', 'missing_apps'),
+     ('standalone_other', 'target'), ('standalone', 'missing_apps'),
+     ('standalone_parent', 'missing_parent')])
 def test_shared_ancestor_admission_actual_calls(tmp_path, engine, entry, scenario):
     native_root = Path(os.environ.get('LM_NTFS_TEST_ROOT', str(tmp_path))) / ('a-'+uuid.uuid4().hex[:8])
     result = run_functions(tmp_path, ROOT/'INSTALL_THIS_PC.ps1',
                            ['Assert-ProtectedCodeAncestors', 'Assert-LabelStartupUpdateTrust'], r'''
 $helperAst=[Management.Automation.Language.Parser]::ParseFile($env:LM_ADMISSION_HELPER,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'Bootstrap parse failed.'}
-foreach($name in @('Protect-KmtechCodeAncestors','Assert-LabelProtectedInstallPath','Write-LabelAncestorPreparationEvent')){
+foreach($name in $(if($env:LM_ADMISSION_ENTRY -like 'standalone*'){@()}else{@('Protect-KmtechCodeAncestors','Assert-LabelProtectedInstallPath','Write-LabelAncestorPreparationEvent')})){
  $definition=@($helperAst.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
  if($definition.Count -ne 1){throw 'Expected actual ancestor predicate.'}
  $body=$definition[0].Extent.Text
@@ -44,7 +47,7 @@ $definition=@($dailyAst.FindAll({param($n)$n -is [Management.Automation.Language
 $nativeRoot=[IO.Path]::GetFullPath($env:LM_ADMISSION_ROOT)
 $application='C:\KMTech\Apps\Label_Match'
 $current=$application+'\current'
-$testedAncestor=if($env:LM_ADMISSION_ENTRY -ceq 'shared_parent'){'C:\KMTech'}else{'C:\KMTech\Apps'}
+$testedAncestor=if($env:LM_ADMISSION_ENTRY -in @('shared_parent','standalone_parent')){'C:\KMTech'}else{'C:\KMTech\Apps'}
 $mapped=@{'C:\'=$nativeRoot;'C:\KMTech'=Join-Path $nativeRoot 'KMTech';
  'C:\KMTech\Apps'=Join-Path $nativeRoot 'KMTech\Apps';
  'C:\KMTech\Apps\Label_Match'=Join-Path $nativeRoot 'KMTech\Apps\Label_Match';
@@ -118,6 +121,18 @@ $beforePaths=@(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $nativ
 $failed=$false;$failure=$null;$calls=0
 try{
  switch($env:LM_ADMISSION_ENTRY){
+  {$_ -like 'standalone*'} {
+   foreach($name in @('Protect-KmtechCodeAncestors','Assert-LabelProtectedInstallPath','Write-LabelAncestorPreparationEvent')){
+    if(Get-Command $name -CommandType Function -ErrorAction SilentlyContinue){throw 'Standalone loaded a helper.'}
+   }
+   $path=switch($env:LM_ADMISSION_ENTRY){
+    'standalone_parent' {'C:\KMTech'}
+    'standalone_apps' {'C:\KMTech\Apps\'}
+    'standalone_other' {'D:\SameShape'}
+    default {$application}
+   }
+   Assert-ProtectedCodeAncestors $path;$calls=1
+  }
   'shared_parent' {Assert-LabelProtectedInstallPath 'C:\KMTech';$calls=1}
   'shared_apps' {Assert-LabelProtectedInstallPath 'C:\KMTech\Apps\';$calls=1}
   'placement' {
@@ -144,7 +159,7 @@ try{
   'selected_admission' {Protect-KmtechCodeAncestors $application -AdmissionOnly -AncestorPath 'C:\KMTech\Apps' -RequireProtected;$calls=1}
  }
 }catch{$failed=$true;$failure=$_}
-$expectedFailure=$env:LM_ADMISSION_SCENARIO -cne 'target' -or $env:LM_ADMISSION_ENTRY -ceq 'other_leaf'
+$expectedFailure=$env:LM_ADMISSION_SCENARIO -cne 'target' -or $env:LM_ADMISSION_ENTRY -in @('other_leaf','standalone_other')
 if($failed -ne $expectedFailure){throw ('Actual caller admitted/rejected wrong NTFS shape: '+$env:LM_ADMISSION_ENTRY+'/'+$env:LM_ADMISSION_SCENARIO+' failure='+$failure)}
 if($expectedFailure -and $script:strictCodeChecks){throw 'Rejected ancestor reached startup operations.'}
 if($expectedFailure -and $env:LM_ADMISSION_ENTRY -eq 'selected_admission' -and $failure.Exception.Message -match 'parameter cannot be found'){throw 'Missing admission was rejected only by a missing test parameter.'}
@@ -162,4 +177,22 @@ if(($beforePaths -join '|') -cne ($afterPaths -join '|')){throw 'Read-only admis
     assert result.returncode == 0, result.stdout + result.stderr
     proof = json.loads((native_root/'proof.json').read_text(encoding='utf-8'))
     assert proof['actual_ntfs'] and proof['directory_set_unchanged']
-    assert proof['rejected'] == (scenario != 'target' or entry == 'other_leaf')
+    assert proof['rejected'] == (scenario != 'target' or entry in ('other_leaf', 'standalone_other'))
+
+
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+def test_standalone_uses_exact_pure_shared_predicate(tmp_path, engine):
+    result = run_functions(tmp_path, ROOT/'INSTALL_THIS_PC.ps1', ['Assert-ProtectedCodeAncestors'], r'''
+$helper=[Management.Automation.Language.Parser]::ParseFile($env:LM_ADMISSION_HELPER,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Helper parse failed.'}
+$predicate='Get-KmtechSharedAncestorAclState'
+$shared=@($helper.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $predicate},$true))
+$standalone=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $predicate},$true))
+if($shared.Count -ne 1 -or $standalone.Count -ne 1){throw 'Expected one predicate per trust boundary.'}
+if($shared[0].Body.Extent.Text -cne $standalone[0].Body.Extent.Text){throw 'Standalone/shared admission rules drifted.'}
+# The complete copied predicate and its nested shape key have no IO/mutation commands.
+$commands=@($shared[0].FindAll({param($n)$n -is [Management.Automation.Language.CommandAst]},$true) | ForEach-Object {$_.GetCommandName()})
+foreach($name in $commands){if($name -notin @('ForEach-Object','Sort-Object','Get-KmtechAncestorAclShapeKey')){throw ('Predicate gained side effects: '+$name)}}
+'PASS'
+''', engine=engine, values={'LM_ADMISSION_HELPER': str(ROOT/'tools/bootstrap_integrity.ps1')})
+    assert result.returncode == 0, result.stdout + result.stderr

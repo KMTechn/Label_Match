@@ -399,10 +399,46 @@ function Assert-ProtectedCodeAncestors([string]$Path) {
         Assert-LabelProtectedInstallPath $Path
         return
     }
-    $full = [IO.Path]::GetFullPath($Path)
+    function Get-KmtechSharedAncestorAclState($Acl,[IO.FileAttributes]$Attributes,[switch]$RequireProtected) {
+        # Pure admission rule. The helper-free removal copy is checked by AST.
+        function Get-KmtechAncestorAclShapeKey($Value) {
+            (@($Value.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object {
+                [string]$_.IdentityReference.Value+'|'+[int64]$_.FileSystemRights+'|'+[string]$_.AccessControlType+'|'+[int]$_.InheritanceFlags+'|'+[int]$_.PropagationFlags+'|'+[int]$_.IsInherited
+            } | Sort-Object) -join ';')
+        }
+        $reason=''
+        if($Attributes -band [IO.FileAttributes]::ReparsePoint){$reason='폴더가 재분석 지점입니다'}
+        $owner=$Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        $rules=@($Acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+        $shape=@(
+            'S-1-5-32-544|2032127|Allow|3|0', 'S-1-5-18|2032127|Allow|3|0',
+            'S-1-5-32-545|1179817|Allow|3|0', 'S-1-5-11|-536805376|Allow|3|2'
+        )
+        foreach($rule in $rules){if([string]$rule.AccessControlType -cne 'Allow'){$reason='거부 권한 항목이 있습니다'}}
+        $actualKey=Get-KmtechAncestorAclShapeKey $Acl
+        $defaultKey=(@(($shape+@('S-1-5-11|1245631|Allow|0|0')) | ForEach-Object {$_+'|1'} | Sort-Object) -join ';')
+        $targetKey=(@(($shape+@('S-1-5-11|1179823|Allow|0|0')) | ForEach-Object {$_+'|0'} | Sort-Object) -join ';')
+        $defaultShape=($rules.Count -eq 5 -and -not $Acl.AreAccessRulesProtected -and $actualKey -ceq $defaultKey)
+        $targetShape=($rules.Count -eq 5 -and $Acl.AreAccessRulesProtected -and $actualKey -ceq $targetKey)
+        if($owner -cne 'S-1-5-32-544'){$reason='폴더 소유자가 예상과 다릅니다'}
+        if(-not $reason -and -not $defaultShape -and -not $targetShape){$reason='권한 모양이 지원하는 기본값 또는 보호된 값과 다릅니다'}
+        if(-not $reason -and $RequireProtected -and -not $targetShape){$reason='상위 폴더가 보호된 목표 모양이 아닙니다'}
+        return [pscustomobject]@{reason=$reason;owner=$owner;shape_key=$actualKey;target_key=$targetKey;
+            default_shape=$defaultShape;target_shape=$targetShape}
+    }
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if($full -cmatch '^[A-Za-z]:$'){$full+='\'}
     $leaf = $true
     while ($full) {
-        if (Test-Path -LiteralPath $full) {
+        if($full -in @('C:\KMTech','C:\KMTech\Apps')) {
+            # No installed/source helper is loaded at the standalone boundary.
+            # Get-Item fails closed for missing/denied paths; admission is read-only.
+            $entry=Get-Item -LiteralPath $full -ErrorAction Stop
+            $acl=Get-Acl -LiteralPath $full -ErrorAction Stop
+            $state=Get-KmtechSharedAncestorAclState $acl $entry.Attributes -RequireProtected
+            if($state.reason){throw "설치 폴더 권한을 확인하세요: $full ($($state.reason)). 지원 담당자에게 문의하세요."}
+        }
+        elseif (Test-Path -LiteralPath $full) {
             $entry = Get-Item -LiteralPath $full -ErrorAction Stop
             if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe update path component.' }
             $acl = Get-Acl -LiteralPath $full -ErrorAction Stop

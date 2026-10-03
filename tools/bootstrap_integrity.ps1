@@ -41,10 +41,32 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
         throw 'Selected ancestor admission requires a literal shared path and read-only admission.'
     }
     $records=@(); $plans=@()
-    function Get-KmtechAncestorAclShapeKey($Acl) {
-        (@($Acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object {
-            [string]$_.IdentityReference.Value+'|'+[int64]$_.FileSystemRights+'|'+[string]$_.AccessControlType+'|'+[int]$_.InheritanceFlags+'|'+[int]$_.PropagationFlags+'|'+[int]$_.IsInherited
-        } | Sort-Object) -join ';')
+    function Get-KmtechSharedAncestorAclState($Acl,[IO.FileAttributes]$Attributes,[switch]$RequireProtected) {
+        # Pure admission rule. The helper-free removal copy is checked by AST.
+        function Get-KmtechAncestorAclShapeKey($Value) {
+            (@($Value.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object {
+                [string]$_.IdentityReference.Value+'|'+[int64]$_.FileSystemRights+'|'+[string]$_.AccessControlType+'|'+[int]$_.InheritanceFlags+'|'+[int]$_.PropagationFlags+'|'+[int]$_.IsInherited
+            } | Sort-Object) -join ';')
+        }
+        $reason=''
+        if($Attributes -band [IO.FileAttributes]::ReparsePoint){$reason='폴더가 재분석 지점입니다'}
+        $owner=$Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        $rules=@($Acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+        $shape=@(
+            'S-1-5-32-544|2032127|Allow|3|0', 'S-1-5-18|2032127|Allow|3|0',
+            'S-1-5-32-545|1179817|Allow|3|0', 'S-1-5-11|-536805376|Allow|3|2'
+        )
+        foreach($rule in $rules){if([string]$rule.AccessControlType -cne 'Allow'){$reason='거부 권한 항목이 있습니다'}}
+        $actualKey=Get-KmtechAncestorAclShapeKey $Acl
+        $defaultKey=(@(($shape+@('S-1-5-11|1245631|Allow|0|0')) | ForEach-Object {$_+'|1'} | Sort-Object) -join ';')
+        $targetKey=(@(($shape+@('S-1-5-11|1179823|Allow|0|0')) | ForEach-Object {$_+'|0'} | Sort-Object) -join ';')
+        $defaultShape=($rules.Count -eq 5 -and -not $Acl.AreAccessRulesProtected -and $actualKey -ceq $defaultKey)
+        $targetShape=($rules.Count -eq 5 -and $Acl.AreAccessRulesProtected -and $actualKey -ceq $targetKey)
+        if($owner -cne 'S-1-5-32-544'){$reason='폴더 소유자가 예상과 다릅니다'}
+        if(-not $reason -and -not $defaultShape -and -not $targetShape){$reason='권한 모양이 지원하는 기본값 또는 보호된 값과 다릅니다'}
+        if(-not $reason -and $RequireProtected -and -not $targetShape){$reason='상위 폴더가 보호된 목표 모양이 아닙니다'}
+        return [pscustomobject]@{reason=$reason;owner=$owner;shape_key=$actualKey;target_key=$targetKey;
+            default_shape=$defaultShape;target_shape=$targetShape}
     }
     $ancestorPaths=if($AncestorPath){@($AncestorPath)}else{@('C:\KMTech','C:\KMTech\Apps')}
     foreach ($path in $ancestorPaths) {
@@ -63,23 +85,10 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
         if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { $reason='폴더가 재분석 지점입니다' }
         $acl=Get-Acl -LiteralPath $path -ErrorAction Stop
         $before=$acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access)
-        $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-        $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
-        $shape=@(
-            'S-1-5-32-544|2032127|Allow|3|0', 'S-1-5-18|2032127|Allow|3|0',
-            'S-1-5-32-545|1179817|Allow|3|0', 'S-1-5-11|-536805376|Allow|3|2'
-        )
-        foreach($rule in $rules) {
-            if ([string]$rule.AccessControlType -cne 'Allow') { $reason='거부 권한 항목이 있습니다' }
-        }
-        $actualKey=Get-KmtechAncestorAclShapeKey $acl
-        $defaultKey=(@(($shape+@('S-1-5-11|1245631|Allow|0|0')) | ForEach-Object {$_+'|1'} | Sort-Object) -join ';')
-        $targetKey=(@(($shape+@('S-1-5-11|1179823|Allow|0|0')) | ForEach-Object {$_+'|0'} | Sort-Object) -join ';')
-        $defaultShape=($rules.Count -eq 5 -and -not $acl.AreAccessRulesProtected -and $actualKey -ceq $defaultKey)
-        $targetShape=($rules.Count -eq 5 -and $acl.AreAccessRulesProtected -and $actualKey -ceq $targetKey)
-        if($owner -cne 'S-1-5-32-544'){$reason='폴더 소유자가 예상과 다릅니다'}
-        if(-not $reason -and -not $defaultShape -and -not $targetShape){$reason='권한 모양이 지원하는 기본값 또는 보호된 값과 다릅니다'}
-        if(-not $reason -and $RequireProtected -and -not $targetShape){$reason='상위 폴더가 보호된 목표 모양이 아닙니다'}
+        $state=Get-KmtechSharedAncestorAclState $acl $entry.Attributes -RequireProtected:$RequireProtected
+        $owner=$state.owner; $actualKey=$state.shape_key; $targetKey=$state.target_key
+        $defaultShape=$state.default_shape; $targetShape=$state.target_shape
+        if($state.reason){$reason=$state.reason}
         if($reason) {
             Write-LabelAncestorPreparationEvent ([ordered]@{event='ANCESTOR_ACL_REJECTED';path=$path;reason=$reason;before_sddl=$before;changed=$false})
             $failure=[InvalidOperationException]::new("설치 폴더 권한을 확인하세요: $path ($reason). 지원 담당자에게 문의하세요.")
@@ -102,7 +111,7 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
         $freshSddl=$fresh.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access)
         # Our preceding parent write can reorder this child's inherited ACEs.
         # Reject changed permissions/identity/flags, then transform the fresh ACL.
-        if((Get-KmtechAncestorAclShapeKey $fresh) -cne $plan.shape_key -or
+        if((Get-KmtechSharedAncestorAclState $fresh $entry.Attributes).shape_key -cne $plan.shape_key -or
             $fresh.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $plan.owner -or
             $fresh.GetGroup([Security.Principal.SecurityIdentifier]).Value -cne $plan.group -or
             $fresh.AreAccessRulesProtected -ne $plan.protected){throw 'Ancestor ACL changed during protection admission.'}
@@ -129,7 +138,7 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
         $afterAcl=Get-Acl -LiteralPath $path -ErrorAction Stop
         $after=$afterAcl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access)
         $afterRules=@($afterAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
-        $afterKey=Get-KmtechAncestorAclShapeKey $afterAcl
+        $afterKey=(Get-KmtechSharedAncestorAclState $afterAcl $entry.Attributes).shape_key
         if($afterAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne 'S-1-5-32-544' -or -not $afterAcl.AreAccessRulesProtected -or $afterRules.Count -ne 5 -or $afterKey -cne $targetKey){throw 'Ancestor ACL protected readback failed.'}
         $record=[ordered]@{path=$path;before_sddl=$before;after_sddl=$after;changed=$plan.default_shape;intentional_persistent_change=$true}
         $records+=$record

@@ -402,7 +402,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 ## LM-StartupUpdate1 · 로그온 자동 코드 적용의 실기 수용
 
-- sub-150 strict leaf: 두 literal 상위 폴더를 bootstrap/검증된 daily의 기존 exact ACL 규칙으로 통일하고 직접 admission의 없는 폴더 생성·허용을 거절한다. ordinary 준비의 기본 모양/없는 바탕 사전 읽기와 다른 leaf mask는 유지한다. 실제 NTFS 회귀와 기준 대비 집중 실패 집합은 sub-150 REPORT에 기록한다. standalone helper 없는 제거의 단일 predicate 결합, 최종 선언/pin 재생성·독립 확인·빈 guest 새 설치/공개 v2.0.38 업그레이드는 중앙 OPEN이다.
+- sub-150/153 strict leaf: 두 literal 상위 폴더를 bootstrap/검증된 daily의 기존 exact ACL 규칙으로 통일하고 직접 admission의 없는 폴더 생성·허용을 거절한다. standalone 제거도 helper를 로드하지 않는 경계 안에서 공유 순수 판정의 정확한 사본과 AST 대조 회귀를 사용한다. ordinary 준비의 기본 모양/없는 바탕 사전 읽기와 다른 leaf mask는 유지한다. 실제 NTFS 회귀와 기준 대비 집중 실패 집합은 sub-153 REPORT에 기록한다. 최종 선언/pin 재생성·독립 확인·빈 guest 새 설치/공개 v2.0.38 업그레이드는 중앙 OPEN이다.
 
 - sub-141 상위 바탕 준비: 공유 두 폴더의 관측 기본→보호 ACL, SID 신뢰·ACE 집합 비교·전파 뒤 재읽기·중간 상태/멱등·사전 검사→상승 준비→앱 부모→신뢰 재검사·종료 코드 61–66을 옮겼다. D: 격리 실제 NTFS와 PS5.1/PS7 source 회귀를 REPORT에 기록한다. exact-after/companion/source/writer 선언은 재생성하지 않았으며 목록과 독립 검토·빈 W9R-lab-ready-01 새 packet 설치 1회는 중앙 OPEN이다. 이적의 증거 위치·메모리 wrapper·ACL reset 범위·실패 복구·재진입은 이 단위 밖이다.
 
