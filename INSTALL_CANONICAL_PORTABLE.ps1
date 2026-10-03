@@ -730,11 +730,13 @@ roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3
                                  '00a74d1045091f04a9840e9aba5d37d606892223e59b07c5b6fc14b057856a53'),
  'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a',
                                   'e935dd402f5a900e4670eb22ab4b4d31590ff18995e1abce8320452b0e9b9195')}
+# Exact additional runtime changes for the already accepted roster baseline.
+roster_baseline_companions = {'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', '900a68715012d8808383eb548f8e2dc27340717905b395514f3323946c1c8287'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '8265ff9a24d40a9847040c80bdc6ced69c0e17513b1448b721b09354f449ec95'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755')}
 roster_baseline_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
     and release_digest(source / relative) == after
-    for relative, (before, after) in roster_baseline_replacements.items()
+    for relative, (before, after) in {**roster_baseline_replacements, **roster_baseline_companions}.items()
 )
 roster_transport_path = 'app/label_admin_pin.py'
 roster_transport_befores, roster_transport_after = remote_transport_replacements[roster_transport_path]
@@ -830,6 +832,8 @@ for directory in ('app', 'runtime'):
         if roster_transition and relative in roster_additions:
             continue
         if roster_baseline_transition and relative in roster_baseline_replacements:
+            continue
+        if roster_baseline_transition and relative in roster_baseline_companions:
             continue
         if remote_transport_transition and relative in remote_transport_replacements:
             continue

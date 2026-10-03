@@ -517,6 +517,32 @@ def test_roster_baseline_declares_only_exact_changed_files():
         assert _release_digest((ROOT / name).read_bytes()) == after != before
 
 
+def test_roster_baseline_stage_two_companions_match_only_changed_runtime():
+    pairs = _declared_current_user_profile_pairs('roster_baseline_companions')
+    assert set(pairs) == {'app/label_completion.py', 'app/label_data_manager.py',
+        'app/label_recovery_schema.py', 'app/package_command_draft.py',
+        'app/package_outbox_processor.py', 'app/sealed_transfer_exchange.py'}
+    for relative, (before, after) in pairs.items():
+        name = relative.removeprefix('app/')
+        original = subprocess.check_output(['git', '-C', str(ROOT), 'show', f'{ROSTER_BASELINE}:{name}'])
+        assert before == _release_digest(original)
+        assert after == _release_digest((ROOT / name).read_bytes()) != before
+
+
+@pytest.mark.parametrize('relative', ['app/label_completion.py', 'app/label_data_manager.py',
+    'app/label_recovery_schema.py', 'app/package_command_draft.py',
+    'app/package_outbox_processor.py', 'app/sealed_transfer_exchange.py'])
+def test_roster_baseline_stage_two_companions_refuse_unreviewed_bytes(tmp_path, roster_baseline_packages, relative):
+    old, candidate = roster_baseline_packages
+    source = _tree(candidate, tmp_path / 'candidate', [relative])
+    with (source / relative).open('ab') as stream:
+        stream.write(CHANGED_LINE.encode('utf-8'))
+    _pin(source)
+    result = _ps(tmp_path, _definitions() + f'\nAssert-WriterTransition {_quote(source)} {_quote(old)}', _environment(tmp_path))
+    assert result.returncode != 0
+    assert 'WRITER_TRANSITION_' in result.stderr
+
+
 def test_roster_baseline_stock_upgrades_forward_and_refuses_reverse(tmp_path, roster_baseline_packages):
     old, candidate = roster_baseline_packages
     env = _environment(tmp_path)
