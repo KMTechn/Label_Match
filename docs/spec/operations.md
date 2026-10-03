@@ -1039,7 +1039,7 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 
 ## StartupUpdate1 · 자동 업데이트 준비·시작·복구
 
-상위 폴더 바탕 준비는 일반 사전 검사에서 없는 앱 부모와 지원 기본 ACL을 상승 단계로 넘긴 뒤, 상승 placement 첫 단계에서 문자 그대로 `C:\KMTech`·`C:\KMTech\Apps` 두 폴더만 비재귀로 강화한다. 소유자 Administrators 및 관측된 상속 5 ACE 집합일 때만 상속을 명시 복사하고 Authenticated Users 자신의 0x1301BF를 0x1200AF로 바꾼다. 하위 상속 권한은 유지하며 이미 목표 집합이면 변경하지 않는다. ACE 순서는 비교하지 않고 부모 변경 후 자식을 다시 읽는다. 다른 모양·재분석 지점·신뢰 밖 소유자는 한국어 폴더/이유로 거절하며 도중의 권한 집합 변경도 멈춘다. 신뢰 소유자는 SYSTEM·Administrators·TrustedInstaller SID로 판정한다. 그 뒤 없는 앱 부모를 기존 보호 ACL로 만들고 신뢰를 재검사한 다음 기존 설치 단계로 간다. 두 공유 폴더의 강화는 설치 실패·제거로 되돌리지 않는다.
+상위 폴더 바탕 준비는 일반 사전 검사에서 없는 앱 부모와 지원 기본 ACL을 상승 단계로 넘긴 뒤, 상승 placement 첫 단계에서 문자 그대로 `C:\KMTech`·`C:\KMTech\Apps` 두 폴더만 비재귀로 강화한다. 소유자가 SYSTEM·Administrators·TrustedInstaller의 SID 셋에 속하고 관측된 상속 5 ACE 집합일 때만 상속을 명시 복사하고 Authenticated Users 자신의 0x1301BF를 0x1200AF로 바꾼다. 하위 상속 권한은 유지하며 이미 목표 집합이면 변경하지 않는다. ACE 순서는 비교하지 않고 부모 변경 후 자식을 다시 읽는다. 다른 모양·재분석 지점·신뢰 밖 소유자는 한국어 폴더/이유로 거절하며 도중의 권한 집합 변경도 멈춘다. 신뢰 소유자는 SYSTEM·Administrators·TrustedInstaller SID로 판정한다. 그 뒤 없는 앱 부모를 기존 보호 ACL로 만들고 신뢰를 재검사한 다음 기존 설치 단계로 간다. 두 공유 폴더의 강화는 설치 실패·제거로 되돌리지 않는다.
 
 전·후 SDDL은 기존 `canonical-portable-<run>-elevated.jsonl`의 PREPARATION에 보존한다. 바탕 준비의 원 예외는 유지하고 child 61–66을 부모의 한국어 INSTALLATION_PREPARATION 진단으로 전달한다(61 기본/목표 집합 밖, 62 재분석, 63 소유자, 64 앱 부모 생성, 65 control 생성 예약, 66 기타). 이 변경은 control/evidence 위치·실행 wrapper·배치 ACL 재설정·실패 복구를 이적 방식으로 옮기지 않는다. 격리 D: 실제 NTFS/PS5.1·PS7 함수 회귀는 source 범위이며 선언 재생성·새 packet·빈 guest 설치는 중앙 랩 수용 전 NOT TESTED다.
 
@@ -1070,3 +1070,5 @@ canonical onboarding은 fence 안에서 신원·Run을 준비하고 relay 시작
 2026-10-03 sub-128은 위 규칙의 source 이식이다. 독립 .git, 격리 known-folder 및 Tk/DPAPI/WinCred/KSP 차단·숨김 자식 harness로 같은 기준/변경 선택을 비교했다. 정확한 판·수치·실패 집합·제외 노드는 sub-128 REPORT.md와 원 로그에 남긴다. 기존 sub-88/99/104 FAILED 및 native NOT TESTED를 승계 해결로 처리하지 않는다. 선언·pin 재생성은 중앙 동결 뒤 한 번 수행한다.
 
 예약 작업의 주체와 로그온 trigger 계정은 해당 PC에서 SID로 해석해 비교한다. 해석 실패·다른 SID는 거절하고 원 XML preimage는 재작성하지 않는다. 비교용 XML 사본의 두 UserId만 정규화하며 기존 구조·속성·중복·action 검사를 유지한다. 같은 순수 해석 함수가 설치·되읽기·복원·제거·daily·사용자 task와 lifecycle 소유 확인에서 사용되며, helper를 신뢰할 수 없는 경계는 정확한 사본을 회귀로 대조한다. PS5.1/7 함수 회귀와 실제 scheduler 수용은 구별한다.
+
+설치·공유 조상 준비·code trust·daily·업데이트 적용·지원 제거/복구가 쓰는 특권 소유자 검사는 Test-KmtechPrivilegedOwnerSid의 같은 SID 셋을 사용한다. helper 로드 전 신뢰 경계는 순수 함수의 정확한 사본을 갖고 AST body 회귀로 대조한다. ACL 권한/형태/재분석/원 소유자 race 검사는 유지하고 새 소유자를 설정하지 않는다. 격리 D NTFS 시험의 소유자 읽기 seam과 실제 소유자 불변을 구분하며 특권 소유권 설정·실제 설치 수용은 NOT TESTED다.

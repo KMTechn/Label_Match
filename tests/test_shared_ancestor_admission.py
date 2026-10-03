@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
     (entry, scenario)
     for entry in ('shared_parent', 'shared_apps', 'placement', 'startup', 'daily',
                   'standalone', 'standalone_parent', 'standalone_apps')
-    for scenario in ('target', 'default', 'extra_write', 'extra_read', 'user_owner', 'reparse')
+    for scenario in ('target', 'default', 'extra_write', 'extra_read', 'user_owner', 'reparse', 'system_owner', 'trusted_owner')
 ] + [('other_leaf', 'target'), ('admission', 'missing_parent'),
      ('admission', 'missing_apps'), ('selected_admission', 'missing_apps'),
      ('standalone_other', 'target'), ('standalone', 'missing_apps'),
@@ -105,7 +105,12 @@ function Get-Acl {param($LiteralPath,$ErrorAction)
   }
  }
  # Only owner reading is translated: actual owner/DACL persistence is preserved.
- $owner=if($env:LM_ADMISSION_SCENARIO -ceq 'user_owner' -and $LiteralPath.TrimEnd('\') -ceq $testedAncestor){'S-1-5-21-1-2-3-1000'}else{'S-1-5-32-544'}
+ $owner=switch($env:LM_ADMISSION_SCENARIO){
+ 'user_owner' {if($LiteralPath.TrimEnd('\') -ceq $testedAncestor){'S-1-5-21-1-2-3-1000'}else{'S-1-5-32-544'}}
+ 'system_owner' {'S-1-5-18'}
+ 'trusted_owner' {'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'}
+ default {'S-1-5-32-544'}
+}
  $acl.SetOwner([Security.Principal.SecurityIdentifier]::new($owner));return $acl
 }
 function Set-Acl {throw 'Admission attempted an ACL write.'}
@@ -159,7 +164,7 @@ try{
   'selected_admission' {Protect-KmtechCodeAncestors $application -AdmissionOnly -AncestorPath 'C:\KMTech\Apps' -RequireProtected;$calls=1}
  }
 }catch{$failed=$true;$failure=$_}
-$expectedFailure=$env:LM_ADMISSION_SCENARIO -cne 'target' -or $env:LM_ADMISSION_ENTRY -in @('other_leaf','standalone_other')
+$expectedFailure=$env:LM_ADMISSION_SCENARIO -notin @('target','system_owner','trusted_owner') -or $env:LM_ADMISSION_ENTRY -in @('other_leaf','standalone_other')
 if($failed -ne $expectedFailure){throw ('Actual caller admitted/rejected wrong NTFS shape: '+$env:LM_ADMISSION_ENTRY+'/'+$env:LM_ADMISSION_SCENARIO+' failure='+$failure)}
 if($expectedFailure -and $script:strictCodeChecks){throw 'Rejected ancestor reached startup operations.'}
 if($expectedFailure -and $env:LM_ADMISSION_ENTRY -eq 'selected_admission' -and $failure.Exception.Message -match 'parameter cannot be found'){throw 'Missing admission was rejected only by a missing test parameter.'}
@@ -177,7 +182,8 @@ if(($beforePaths -join '|') -cne ($afterPaths -join '|')){throw 'Read-only admis
     assert result.returncode == 0, result.stdout + result.stderr
     proof = json.loads((native_root/'proof.json').read_text(encoding='utf-8'))
     assert proof['actual_ntfs'] and proof['directory_set_unchanged']
-    assert proof['rejected'] == (scenario != 'target' or entry in ('other_leaf', 'standalone_other'))
+    assert proof['rejected'] == (scenario not in ('target', 'system_owner', 'trusted_owner')
+                                 or entry in ('other_leaf', 'standalone_other'))
 
 
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
@@ -192,7 +198,7 @@ if($shared.Count -ne 1 -or $standalone.Count -ne 1){throw 'Expected one predicat
 if($shared[0].Body.Extent.Text -cne $standalone[0].Body.Extent.Text){throw 'Standalone/shared admission rules drifted.'}
 # The complete copied predicate and its nested shape key have no IO/mutation commands.
 $commands=@($shared[0].FindAll({param($n)$n -is [Management.Automation.Language.CommandAst]},$true) | ForEach-Object {$_.GetCommandName()})
-foreach($name in $commands){if($name -notin @('ForEach-Object','Sort-Object','Get-KmtechAncestorAclShapeKey')){throw ('Predicate gained side effects: '+$name)}}
+foreach($name in $commands){if($name -notin @('ForEach-Object','Sort-Object','Get-KmtechAncestorAclShapeKey','Test-KmtechPrivilegedOwnerSid')){throw ('Predicate gained side effects: '+$name)}}
 'PASS'
 ''', engine=engine, values={'LM_ADMISSION_HELPER': str(ROOT/'tools/bootstrap_integrity.ps1')})
     assert result.returncode == 0, result.stdout + result.stderr

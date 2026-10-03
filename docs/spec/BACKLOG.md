@@ -432,3 +432,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - sub-130 N3: archive 후보 fixture는 staged/unstaged 변경이 있는 입력을 거절하며 candidate의 공개 설정·적용 helper도 해당 committed archive에서 읽는다. 검증 집계는 실제 실행 XML과 입력 SHA·clean 상태로 계산하고 RED/중간/재사용 증거를 최종 합계에 중복 가산하지 않는다. 최종 source SHA·판정·선언 대기 목록은 sub-130 REPORT.md에 기록한다.
 
 - LM-T1: 예약 작업의 계정 표현을 SID로 결속하고 raw XML/기존 구조 거절을 유지한다. PS5.1/7 격리 함수 회귀와 원 실패는 sub-158 REPORT에 기록한다. 실제 등록·로그온·제거 수용과 최종 선언/pin은 중앙 후속 OPEN이다.
+
+- sub-158 소유자 규칙: 특권 SID 셋 순수 함수를 설치/준비/daily/적용/제거 경계에 통일하고 D NTFS 회귀와 경계 사본 동등성을 확인한다. 실제 SYSTEM/TrustedInstaller 소유권 설정·랩 설치와 최종 pin 수용은 OPEN이다.

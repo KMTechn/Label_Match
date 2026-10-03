@@ -1,5 +1,9 @@
 ﻿param([string]$SharedCodeRoot = "")
 
+function Test-KmtechPrivilegedOwnerSid([string]$Sid) {
+    return $Sid -cin @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+}
+
 function Write-LabelAncestorPreparationEvent($Payload) {
     if ($null -eq $Script:LabelAncestorPreparationEvents) {
         $Script:LabelAncestorPreparationEvents = [Collections.Generic.List[object]]::new()
@@ -62,7 +66,7 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
         $targetKey=(@(($shape+@('S-1-5-11|1179823|Allow|0|0')) | ForEach-Object {$_+'|0'} | Sort-Object) -join ';')
         $defaultShape=($rules.Count -eq 5 -and -not $Acl.AreAccessRulesProtected -and $actualKey -ceq $defaultKey)
         $targetShape=($rules.Count -eq 5 -and $Acl.AreAccessRulesProtected -and $actualKey -ceq $targetKey)
-        if($owner -cne 'S-1-5-32-544'){$reason='폴더 소유자가 예상과 다릅니다'}
+        if(-not(Test-KmtechPrivilegedOwnerSid $owner)){$reason='폴더 소유자가 예상과 다릅니다'}
         if(-not $reason -and -not $defaultShape -and -not $targetShape){$reason='권한 모양이 지원하는 기본값 또는 보호된 값과 다릅니다'}
         if(-not $reason -and $RequireProtected -and -not $targetShape){$reason='상위 폴더가 보호된 목표 모양이 아닙니다'}
         return [pscustomobject]@{reason=$reason;owner=$owner;shape_key=$actualKey;target_key=$targetKey;
@@ -94,7 +98,7 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
             $failure=[InvalidOperationException]::new("설치 폴더 권한을 확인하세요: $path ($reason). 지원 담당자에게 문의하세요.")
             $failure.Data['canonical_code']='LABEL_PLACEMENT_ANCESTOR_TRUST_FAILED'
             $failure.Data['ancestor_trust_failure']=$failure.Message
-            $failure.Data['installation_preparation_exit_code']=if($entry.Attributes -band [IO.FileAttributes]::ReparsePoint){62}elseif($owner -cne 'S-1-5-32-544'){63}else{61}
+            $failure.Data['installation_preparation_exit_code']=if($entry.Attributes -band [IO.FileAttributes]::ReparsePoint){62}elseif(-not(Test-KmtechPrivilegedOwnerSid $owner)){63}else{61}
             throw $failure
         }
         $plans+=@{path=$path;shape_key=$actualKey;owner=$owner;group=$acl.GetGroup([Security.Principal.SecurityIdentifier]).Value;
@@ -139,7 +143,7 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
         $after=$afterAcl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access)
         $afterRules=@($afterAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
         $afterKey=(Get-KmtechSharedAncestorAclState $afterAcl $entry.Attributes).shape_key
-        if($afterAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne 'S-1-5-32-544' -or -not $afterAcl.AreAccessRulesProtected -or $afterRules.Count -ne 5 -or $afterKey -cne $targetKey){throw 'Ancestor ACL protected readback failed.'}
+        if(-not(Test-KmtechPrivilegedOwnerSid ($afterAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value)) -or $afterAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $plan.owner -or -not $afterAcl.AreAccessRulesProtected -or $afterRules.Count -ne 5 -or $afterKey -cne $targetKey){throw 'Ancestor ACL protected readback failed.'}
         $record=[ordered]@{path=$path;before_sddl=$before;after_sddl=$after;changed=$plan.default_shape;intentional_persistent_change=$true}
         $records+=$record
         Write-LabelAncestorPreparationEvent ([ordered]@{event='ANCESTOR_ACL_AFTER';record=$record})
@@ -180,9 +184,7 @@ function Assert-LabelProtectedInstallPath([string]$Path,[switch]$AllowSupportedP
             $failure.Data['installation_preparation_exit_code']=62;throw $failure
         }
         $acl=Get-Acl -LiteralPath $full -ErrorAction Stop
-        if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cnotin @(
-            'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
-        )){
+        if(-not(Test-KmtechPrivilegedOwnerSid ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value))){
             $failure=[InvalidOperationException]::new('설치 경로 소유자를 신뢰할 수 없습니다.')
             $failure.Data['installation_preparation_exit_code']=63;throw $failure
         }

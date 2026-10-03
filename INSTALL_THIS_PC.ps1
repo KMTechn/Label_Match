@@ -32,6 +32,10 @@ $ExpectedInstallRoot = "C:\KMTech\Apps\Label_Match\current"
 $IntegrityFileName = "bootstrap-integrity.json"
 $IntegritySchema = "label-match-bootstrap-integrity-v1"
 
+function Test-KmtechPrivilegedOwnerSid([string]$Sid) {
+    return $Sid -cin @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+}
+
 function Get-EarlyFileSha256([string]$Path) {
     $stream = [IO.File]::OpenRead($Path)
     $hash = [Security.Cryptography.SHA256]::Create()
@@ -314,8 +318,8 @@ function Assert-HardenedCodeAcl([string]$Path, [switch]$Recursive) {
         $isRoot = Test-SamePath $target.FullName $Path
         $acl = Get-Acl -LiteralPath $target.FullName -ErrorAction Stop
         $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
-        if ([string]$owner.Value -cne 'S-1-5-32-544') {
-            throw "Hardened code ACL owner is not BUILTIN\Administrators: $($target.FullName)"
+        if (-not (Test-KmtechPrivilegedOwnerSid ([string]$owner.Value))) {
+            throw "Hardened code ACL owner is not privileged: $($target.FullName)"
         }
         if ($isRoot -and -not $acl.AreAccessRulesProtected) {
             throw "Hardened code root still inherits access rules: $($target.FullName)"
@@ -420,7 +424,7 @@ function Assert-ProtectedCodeAncestors([string]$Path) {
         $targetKey=(@(($shape+@('S-1-5-11|1179823|Allow|0|0')) | ForEach-Object {$_+'|0'} | Sort-Object) -join ';')
         $defaultShape=($rules.Count -eq 5 -and -not $Acl.AreAccessRulesProtected -and $actualKey -ceq $defaultKey)
         $targetShape=($rules.Count -eq 5 -and $Acl.AreAccessRulesProtected -and $actualKey -ceq $targetKey)
-        if($owner -cne 'S-1-5-32-544'){$reason='폴더 소유자가 예상과 다릅니다'}
+        if(-not(Test-KmtechPrivilegedOwnerSid $owner)){$reason='폴더 소유자가 예상과 다릅니다'}
         if(-not $reason -and -not $defaultShape -and -not $targetShape){$reason='권한 모양이 지원하는 기본값 또는 보호된 값과 다릅니다'}
         if(-not $reason -and $RequireProtected -and -not $targetShape){$reason='상위 폴더가 보호된 목표 모양이 아닙니다'}
         return [pscustomobject]@{reason=$reason;owner=$owner;shape_key=$actualKey;target_key=$targetKey;
@@ -442,7 +446,7 @@ function Assert-ProtectedCodeAncestors([string]$Path) {
             $entry = Get-Item -LiteralPath $full -ErrorAction Stop
             if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe update path component.' }
             $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
-            if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')) {
+            if (-not (Test-KmtechPrivilegedOwnerSid ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value))) {
                 throw 'Update path component owner is not privileged.'
             }
             $mask = if ($leaf) { 0x500D0156 } else { 0x500D0150 }

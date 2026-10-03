@@ -8,6 +8,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $script:LabelStartupBootstrapLoaded=$false
 
+function Test-KmtechPrivilegedOwnerSid([string]$Sid) {
+    return $Sid -cin @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+}
+
 function ConvertTo-LabelTaskSid([string]$Identity) {
     if ([string]::IsNullOrWhiteSpace($Identity)) { throw 'TASK_USER_ID_UNRESOLVED' }
     if ($Identity -match '^S-1-') {
@@ -72,7 +76,7 @@ function Assert-Protected([string]$Path, [switch]$Recursive, [hashtable]$Verifie
         if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point in update storage.' }
         $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
         $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-        if ($owner -notin @('S-1-5-18','S-1-5-32-544')) { throw 'Update storage owner is not privileged.' }
+        if (-not (Test-KmtechPrivilegedOwnerSid $owner)) { throw 'Update storage owner is not privileged.' }
         if($script:LabelStartupBootstrapLoaded -and $full -in @('C:\KMTech','C:\KMTech\Apps')){
             [void](Protect-KmtechCodeAncestors 'C:\KMTech\Apps\Label_Match' -AdmissionOnly -AncestorPath $full -RequireProtected)
             $Verified[$full]=$leaf
