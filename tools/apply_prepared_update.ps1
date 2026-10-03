@@ -8,6 +8,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $script:LabelStartupBootstrapLoaded=$false
 
+function ConvertTo-LabelTaskSid([string]$Identity) {
+    if ([string]::IsNullOrWhiteSpace($Identity)) { throw 'TASK_USER_ID_UNRESOLVED' }
+    if ($Identity -match '^S-1-') {
+        return [Security.Principal.SecurityIdentifier]::new($Identity).Value
+    }
+    return [Security.Principal.NTAccount]::new($Identity).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
 function Get-LabelSupportedStartupTasks([string]$Root) {
     $full = [IO.Path]::GetFullPath($Root)
     $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
@@ -17,7 +25,7 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
     foreach ($task in $tasks) {
         $actions = @($task.Actions); $triggers = @($task.Triggers)
         if ($actions.Count -ne 1 -or $triggers.Count -ne 1) { throw 'SUPPORTED_TASK_OWNERSHIP_UNKNOWN' }
-        $sid = [string]$triggers[0].UserId
+        $sid = ConvertTo-LabelTaskSid ([string]$triggers[0].UserId)
         if ($sid -cnotmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$') { throw 'SUPPORTED_TASK_USER_UNKNOWN' }
         $sha = [Security.Cryptography.SHA256]::Create()
         try { $digest = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($full.ToLowerInvariant()+[char]10+$sid)))).Replace('-','').ToLowerInvariant() }
@@ -28,7 +36,7 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
         $helper = Join-Path $full 'tools\apply_prepared_update.ps1'
         $expectedArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + $helper + '" -InstallRoot "' + $full + '"'
         if ([string]$task.TaskPath -cne '\' -or
-            [string]$task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
+            (ConvertTo-LabelTaskSid ([string]$task.Principal.UserId)) -cne 'S-1-5-18' -or
             [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
             [string]$task.Principal.RunLevel -cne 'Highest' -or
             -not ([string]$actions[0].Execute).Equals($expectedCommand,[StringComparison]::OrdinalIgnoreCase) -or

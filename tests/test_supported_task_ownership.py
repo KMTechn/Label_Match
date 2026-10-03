@@ -13,13 +13,17 @@ $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'parse failed' }
+$sidFn=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ConvertTo-LabelTaskSid'},$true))
+if($sidFn.Count -eq 1){. ([scriptblock]::Create($sidFn[0].Extent.Text))}
 $fn=$ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-LabelSupportedStartupTasks'},$true)
 if ($fn.Count -ne 1) { throw 'missing function' }
 . ([scriptblock]::Create($fn[0].Extent.Text))
 $specObject=Get-Content -LiteralPath $Spec -Raw | ConvertFrom-Json
 [xml]$xml=$specObject.xml
 $task=[pscustomobject]@{TaskName=$specObject.name;TaskPath='\';
- Principal=[pscustomobject]@{UserId=[string]$xml.Task.Principals.Principal.UserId;LogonType=[string]$xml.Task.Principals.Principal.LogonType;RunLevel=$(if ([string]$xml.Task.Principals.Principal.RunLevel -ceq 'HighestAvailable') {'Highest'} else {'Limited'})};
+ # The scheduler CIM principal reports registration mode 5 as ServiceAccount;
+ # the unsupported optional XML element is absent from the emitted definition.
+ Principal=[pscustomobject]@{UserId=[string]$xml.Task.Principals.Principal.UserId;LogonType='ServiceAccount';RunLevel=$(if ([string]$xml.Task.Principals.Principal.RunLevel -ceq 'HighestAvailable') {'Highest'} else {'Limited'})};
  Actions=@([pscustomobject]@{Execute=[string]$xml.Task.Actions.Exec.Command;Arguments=[string]$xml.Task.Actions.Exec.Arguments;WorkingDirectory=[string]$xml.Task.Actions.Exec.WorkingDirectory});
  Triggers=@([pscustomobject]@{UserId=[string]$xml.Task.Triggers.LogonTrigger.UserId})}
 switch ($Mutation) {

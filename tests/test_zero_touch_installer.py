@@ -28,7 +28,9 @@ def _run_legacy_task_removal_harness(tmp_path: Path, scenario: str):
     start = installer_text.index("function Get-LegacyTaskByNameFailClosed")
     end = installer_text.index("function Test-CurrentUserRelayPersistencePresent")
     harness = tmp_path / f"legacy-task-{scenario}.ps1"
-    harness.write_text(installer_text[start:end] + r"""
+    resolver_start = installer_text.index("function ConvertTo-LabelTaskSid")
+    resolver_end = installer_text.index("function Assert-LabelStartupUpdateTaskDefinition", resolver_start)
+    harness.write_text(installer_text[resolver_start:resolver_end] + installer_text[start:end] + r"""
 $ErrorActionPreference = 'Stop'
 $scenario = $env:KMTECH_LEGACY_TASK_SCENARIO
 $script:queryCalls = 0

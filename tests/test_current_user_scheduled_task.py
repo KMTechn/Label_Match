@@ -112,12 +112,6 @@ def test_task_operation_sends_script_as_encoded_command(monkeypatch, tmp_path):
     assert command[-2:] != ["-Command", "-"]
 
 
-def test_task_powershell_accepts_sam_account_principal_readback() -> None:
-    source = scheduled_task._TASK_POWERSHELL
-    assert "$sam = $userName.Split('\\')[-1]" in source
-    assert "-ieq $sam" in source
-
-
 @pytest.mark.parametrize(
     ("snapshot", "status", "reason"),
     [

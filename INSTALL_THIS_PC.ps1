@@ -503,7 +503,28 @@ function Invoke-LabelStartupUpdateTaskMutation([scriptblock]$Action) {
     $lease=Enter-LabelWriterDelegatedOperation -ControlRoot $WriterFenceControlRoot -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId -ReplacementTransactionId $WriterFenceReplacementTransactionId -DelegationToken $WriterFenceDelegationToken -Source 'auto_update_task_mutation'
     try { & $Action } finally { Exit-LabelWriterAdmission $lease }
 }
+function ConvertTo-LabelTaskSid([string]$Identity) {
+    if ([string]::IsNullOrWhiteSpace($Identity)) { throw 'TASK_USER_ID_UNRESOLVED' }
+    if ($Identity -match '^S-1-') {
+        return [Security.Principal.SecurityIdentifier]::new($Identity).Value
+    }
+    return [Security.Principal.NTAccount]::new($Identity).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
 function Assert-LabelStartupUpdateTaskDefinition([xml]$Actual, [xml]$Expected) {
+    # Bind identity on copies; preserve the raw preimage and all other XML.
+    $Actual = $Actual.CloneNode($true)
+    $Expected = $Expected.CloneNode($true)
+    foreach ($document in @($Actual, $Expected)) {
+        $identityNamespace = [Xml.XmlNamespaceManager]::new($document.NameTable)
+        $identityNamespace.AddNamespace('t','http://schemas.microsoft.com/windows/2004/02/mit/task')
+        foreach ($xpath in @('/t:Task/t:Principals/t:Principal/t:UserId','/t:Task/t:Triggers/t:LogonTrigger/t:UserId')) {
+            $nodes = @($document.SelectNodes($xpath,$identityNamespace))
+            if ($nodes.Count -ne 1 -or $nodes[0].ChildNodes.Count -ne 1 -or
+                $nodes[0].FirstChild.NodeType -ne [Xml.XmlNodeType]::Text) { throw 'STARTUP_UPDATE_OWNED_TASK_DIFFERS' }
+            $nodes[0].InnerText = ConvertTo-LabelTaskSid ([string]$nodes[0].InnerText)
+        }
+    }
     $namespace=New-Object Xml.XmlNamespaceManager($Actual.NameTable)
     $namespace.AddNamespace('t','http://schemas.microsoft.com/windows/2004/02/mit/task')
     foreach ($pair in @(@('/t:Task/t:Actions/*',1),@('/t:Task/t:Triggers/*',1),@('/t:Task/t:Principals/*',1))) {
@@ -807,7 +828,7 @@ function Get-OwnedLegacyTaskRetirementSnapshot([string]$Name) {
     $ownedCmdLauncher = 'C:\ProgramData\KMTech\DirectSync\label-match-margin-r2\bin\run_direct-sync-relay-label-match-current-pc.ps1'
     if (
         $actions.Count -ne 1 -or [string]$task.TaskPath -cne '\' -or
-        [string]$task.Principal.UserId -notin @('SYSTEM', 'NT AUTHORITY\SYSTEM', 'S-1-5-18') -or
+        (ConvertTo-LabelTaskSid ([string]$task.Principal.UserId)) -cne 'S-1-5-18' -or
         [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
         [string]$task.Principal.RunLevel -notin @('Limited', 'Highest') -or
         $null -eq $task.Settings.Enabled -or
@@ -894,7 +915,7 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
     foreach ($task in $tasks) {
         $actions = @($task.Actions); $triggers = @($task.Triggers)
         if ($actions.Count -ne 1 -or $triggers.Count -ne 1) { throw 'SUPPORTED_TASK_OWNERSHIP_UNKNOWN' }
-        $sid = [string]$triggers[0].UserId
+        $sid = ConvertTo-LabelTaskSid ([string]$triggers[0].UserId)
         if ($sid -cnotmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$') { throw 'SUPPORTED_TASK_USER_UNKNOWN' }
         $sha = [Security.Cryptography.SHA256]::Create()
         try { $digest = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($full.ToLowerInvariant()+[char]10+$sid)))).Replace('-','').ToLowerInvariant() }
@@ -905,7 +926,7 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
         $helper = Join-Path $full 'tools\apply_prepared_update.ps1'
         $expectedArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + $helper + '" -InstallRoot "' + $full + '"'
         if ([string]$task.TaskPath -cne '\' -or
-            [string]$task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
+            (ConvertTo-LabelTaskSid ([string]$task.Principal.UserId)) -cne 'S-1-5-18' -or
             [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
             [string]$task.Principal.RunLevel -cne 'Highest' -or
             -not ([string]$actions[0].Execute).Equals($expectedCommand,[StringComparison]::OrdinalIgnoreCase) -or

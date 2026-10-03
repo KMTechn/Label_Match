@@ -2242,6 +2242,14 @@ print(json.dumps(result, sort_keys=True))
     finally { $process.Dispose() }
 }
 
+function ConvertTo-LabelTaskSid([string]$Identity) {
+    if ([string]::IsNullOrWhiteSpace($Identity)) { throw 'TASK_USER_ID_UNRESOLVED' }
+    if ($Identity -match '^S-1-') {
+        return [Security.Principal.SecurityIdentifier]::new($Identity).Value
+    }
+    return [Security.Principal.NTAccount]::new($Identity).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
 function Assert-HealthyLifecycleOwnership($Run, $RelayValues, $Tasks, [string]$Installed) {
     if ($Run.exists -and ([string]$Run.kind -cne 'String' -or [string]$Run.data -cne (Command $Installed))) {
         throw 'Healthy lifecycle autostart belongs to another command.'
@@ -2258,10 +2266,7 @@ function Assert-HealthyLifecycleOwnership($Run, $RelayValues, $Tasks, [string]$I
         }
     }
     foreach ($task in $Tasks) {
-        $owner = New-Object Security.Principal.NTAccount([string]$task.Principal.UserId)
-        $taskSid = if ([string]$task.Principal.UserId -match '^S-1-') {
-            [string]$task.Principal.UserId
-        } else { $owner.Translate([Security.Principal.SecurityIdentifier]).Value }
+        $taskSid = ConvertTo-LabelTaskSid ([string]$task.Principal.UserId)
         if ($taskSid -cne $userSid -or [string]$task.Principal.RunLevel -cne 'Limited' -or
             [string]$task.Principal.LogonType -cne 'Interactive') {
             throw 'Healthy lifecycle task belongs to another principal.'

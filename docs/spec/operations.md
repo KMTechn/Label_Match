@@ -1068,3 +1068,5 @@ canonical onboarding은 fence 안에서 신원·Run을 준비하고 relay 시작
 2026-10-02 Windows 호스트의 격리 known-folder·독립 .git 순수/주입 집중 시험만 수행한다. 실제 로그온·전원 손실·빠른 시작·토큰·작업 ACL·옛 packet(6479eca 첫 등록 포함)·수동 lifecycle·stock packet·전체 suite·독립 검토는 중앙 NOT TESTED다. 정확한 결과와 원 실패는 sub-88 REPORT.md 및 원 로그에 남긴다.
 
 2026-10-03 sub-128은 위 규칙의 source 이식이다. 독립 .git, 격리 known-folder 및 Tk/DPAPI/WinCred/KSP 차단·숨김 자식 harness로 같은 기준/변경 선택을 비교했다. 정확한 판·수치·실패 집합·제외 노드는 sub-128 REPORT.md와 원 로그에 남긴다. 기존 sub-88/99/104 FAILED 및 native NOT TESTED를 승계 해결로 처리하지 않는다. 선언·pin 재생성은 중앙 동결 뒤 한 번 수행한다.
+
+예약 작업의 주체와 로그온 trigger 계정은 해당 PC에서 SID로 해석해 비교한다. 해석 실패·다른 SID는 거절하고 원 XML preimage는 재작성하지 않는다. 비교용 XML 사본의 두 UserId만 정규화하며 기존 구조·속성·중복·action 검사를 유지한다. 같은 순수 해석 함수가 설치·되읽기·복원·제거·daily·사용자 task와 lifecycle 소유 확인에서 사용되며, helper를 신뢰할 수 없는 경계는 정확한 사본을 회귀로 대조한다. PS5.1/7 함수 회귀와 실제 scheduler 수용은 구별한다.
