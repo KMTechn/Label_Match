@@ -794,6 +794,10 @@ def _commit_finalized_set_durable(
                 'identity_enabled': bool(current.get('completion_worker_identity'))} if identity else {}),
         )
         self._flush_data_manager_if_supported()
+    if identity:
+        archive = getattr(self.data_manager, '_save_completed_worker_identity', None)
+        if callable(archive):
+            archive(current)
     if (
         central_inherit_all
         and package_logistics
@@ -842,6 +846,9 @@ def _apply_ui_lane_completion_snapshot(self, snapshot, *, deepcopy):
     ):
         return False
     for key in (
+        "worker_id",
+        "worker_name_snapshot",
+        "completion_worker_identity",
         "central_inherit_all",
         "operation_lease_id",
         "operation_lease_fence",
@@ -907,6 +914,9 @@ def _submit_finalized_set_on_lane(
             str(live.get("id") or "") == str(current_snapshot.get("id") or "")
             and tuple(live.get("raw") or ()) == tuple(current_snapshot.get("raw") or ())
         ):
+            for key in ("worker_id", "worker_name_snapshot", "completion_worker_identity"):
+                if key in current_snapshot:
+                    live[key] = deepcopy(current_snapshot[key])
             if "transition_row_key" in current_snapshot:
                 live["transition_row_key"] = current_snapshot["transition_row_key"]
             if current_snapshot.get("transition_class") in label_transition.LOCAL_CLASSES:

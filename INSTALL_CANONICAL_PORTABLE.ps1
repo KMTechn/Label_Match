@@ -505,7 +505,7 @@ shared_transition = all(
 # module and changes these modules. Writer membership, runtime, contracts and
 # every other file stay checked. Persisted state gains only optional keys the
 # preimage ignores, so no data migration; downgrade is not admitted.
-legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '8265ff9a24d40a9847040c80bdc6ced69c0e17513b1448b721b09354f449ec95'),
+legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912'),
  'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
                         'f545084ddb64cc74ab8bdba3b6b4a4c9a5eab958bc4b7cc85c1531ebec179f8a'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
@@ -515,7 +515,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
                              'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'),
  'app/label_completion.py': ('25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d',
-                             '900a68715012d8808383eb548f8e2dc27340717905b395514f3323946c1c8287'),
+                             '894c58e9acd6b69769fff49308223124e04430a280053917850f5e3507142564'),
  'app/label_recovery_schema.py': ('52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90',
                                   '5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349'),
  'app/label_workbench_context.py': ('95b57100a5bf2014a8dc7685455342233fb8bcd9f78e04a92332ae2fab320422',
@@ -575,13 +575,13 @@ scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9
   'f545084ddb64cc74ab8bdba3b6b4a4c9a5eab958bc4b7cc85c1531ebec179f8a'),
  ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
   'f545084ddb64cc74ab8bdba3b6b4a4c9a5eab958bc4b7cc85c1531ebec179f8a')}
-scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '8265ff9a24d40a9847040c80bdc6ced69c0e17513b1448b721b09354f449ec95'),
+scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
  'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8',
-                             '900a68715012d8808383eb548f8e2dc27340717905b395514f3323946c1c8287'),
+                             '894c58e9acd6b69769fff49308223124e04430a280053917850f5e3507142564'),
  'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
                                   '5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349'),
  'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
@@ -620,11 +620,11 @@ scan_input_transition = (
 nextfix_label_path = 'app/Label_Match.py'
 nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
  'f545084ddb64cc74ab8bdba3b6b4a4c9a5eab958bc4b7cc85c1531ebec179f8a')
-nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '8265ff9a24d40a9847040c80bdc6ced69c0e17513b1448b721b09354f449ec95'),
+nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492',
-                             '900a68715012d8808383eb548f8e2dc27340717905b395514f3323946c1c8287'),
+                             '894c58e9acd6b69769fff49308223124e04430a280053917850f5e3507142564'),
  'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
                                   '5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349'),
  'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9',
@@ -731,7 +731,7 @@ roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3
  'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a',
                                   'e935dd402f5a900e4670eb22ab4b4d31590ff18995e1abce8320452b0e9b9195')}
 # Exact additional runtime changes for the already accepted roster baseline.
-roster_baseline_companions = {'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', '900a68715012d8808383eb548f8e2dc27340717905b395514f3323946c1c8287'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '8265ff9a24d40a9847040c80bdc6ced69c0e17513b1448b721b09354f449ec95'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755')}
+roster_baseline_companions = {'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', '894c58e9acd6b69769fff49308223124e04430a280053917850f5e3507142564'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755')}
 roster_baseline_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
@@ -807,7 +807,7 @@ if f5_retirement_transition:
 if candidate_sources != installed_sources:
     raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 # Exact stage-one 0cf0414 to stage-two bytes; state and pending stay additive.
-worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f58eaf3f9f5841d9de2fbfd5a74a63c969e38c92', 'f545084ddb64cc74ab8bdba3b6b4a4c9a5eab958bc4b7cc85c1531ebec179f8a'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', '900a68715012d8808383eb548f8e2dc27340717905b395514f3323946c1c8287'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '8265ff9a24d40a9847040c80bdc6ced69c0e17513b1448b721b09354f449ec95'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349'), 'app/label_worker_roster.py': ('17b35efc3fb9f9a4589590d1cc8b0accaf2eba1cb9a482ffeaf669e12dc6ce32', '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/writer_session_fence.py': ('e649873611c442930e8d635c5836752ea1203273676a3269443a9bf403755bca', '00a74d1045091f04a9840e9aba5d37d606892223e59b07c5b6fc14b057856a53'), 'tools/label_writer_fence.ps1': ('e3256e6129ab819075d38cb582559a25d312683c57995e1cfde92dbae66feb89', 'e935dd402f5a900e4670eb22ab4b4d31590ff18995e1abce8320452b0e9b9195')}
+worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f58eaf3f9f5841d9de2fbfd5a74a63c969e38c92', 'f545084ddb64cc74ab8bdba3b6b4a4c9a5eab958bc4b7cc85c1531ebec179f8a'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', '894c58e9acd6b69769fff49308223124e04430a280053917850f5e3507142564'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349'), 'app/label_worker_roster.py': ('17b35efc3fb9f9a4589590d1cc8b0accaf2eba1cb9a482ffeaf669e12dc6ce32', '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/writer_session_fence.py': ('e649873611c442930e8d635c5836752ea1203273676a3269443a9bf403755bca', '00a74d1045091f04a9840e9aba5d37d606892223e59b07c5b6fc14b057856a53'), 'tools/label_writer_fence.ps1': ('e3256e6129ab819075d38cb582559a25d312683c57995e1cfde92dbae66feb89', 'e935dd402f5a900e4670eb22ab4b4d31590ff18995e1abce8320452b0e9b9195')}
 worker_record_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before

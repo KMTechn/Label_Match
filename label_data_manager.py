@@ -462,32 +462,37 @@ class DataManager:
                     raise ValueError('current business state exceeds recovery size limit')
                 write_checked_bytes(state_path, encoded.encode('utf-8'),
                                     allowed_root=self.save_directory)
-                if identity and current.get('id') and 'completion_worker_identity' in current:
-                    # The wire gate can be off even for a completed legacy set.
-                    # Keep its local identity and exchange evidence after the
-                    # active checkpoint is cleared, without changing that CSV.
-                    completed = {'current_set_info': {
-                        'id': str(current.get('completion_identity') or current['id']),
-                        'raw': list(current.get('raw') or []),
-                        'scanner_exchanges': list(current.get('scanner_exchanges') or []),
-                        'completion_worker_identity': current['completion_worker_identity'], **identity}, **identity}
-                    require_recovery_record('current', completed)
-                    payload = json.dumps(completed, ensure_ascii=False, sort_keys=True,
-                                         cls=self._datetime_encoder()).encode('utf-8')
-                    record_path = Path(self.save_directory) / '_worker_record_identity' / (
-                        hashlib.sha256(completed['current_set_info']['id'].encode('utf-8')).hexdigest() + '.json')
-                    try:
-                        original = read_checked_bytes(record_path, allowed_root=self.save_directory)
-                    except FileNotFoundError:
-                        write_checked_bytes(record_path, payload, allowed_root=self.save_directory, replace=False)
-                    else:
-                        if original != payload:
-                            raise ValueError('completed worker record identity differs')
                 self._audit_outbox = list(pending.values())
                 return True
             except Exception as e:
                 print(f"임시 상태 저장 실패: {e}")
                 return False
+    def _save_completed_worker_identity(self, current):
+        """Archive a durable CSV completion, never an editable checkpoint."""
+        with self._state_lock:
+            current = sanitize_persistent_value(dict(current or {}))
+            identity = label_worker_roster.record_identity(current)
+            if not identity or not current.get('id') or 'completion_worker_identity' not in current:
+                return
+            # The current checkpoint already froze the decision before CSV.
+            # Only its committed event has immutable scan/exchange evidence.
+            completed = {'current_set_info': {
+                'id': str(current.get('completion_identity') or current['id']),
+                'raw': list(current.get('raw') or []),
+                'scanner_exchanges': list(current.get('scanner_exchanges') or []),
+                'completion_worker_identity': current['completion_worker_identity'], **identity}, **identity}
+            require_recovery_record('current', completed)
+            payload = json.dumps(completed, ensure_ascii=False, sort_keys=True,
+                                 cls=self._datetime_encoder()).encode('utf-8')
+            record_path = Path(self.save_directory) / '_worker_record_identity' / (
+                hashlib.sha256(completed['current_set_info']['id'].encode('utf-8')).hexdigest() + '.json')
+            try:
+                original = read_checked_bytes(record_path, allowed_root=self.save_directory)
+            except FileNotFoundError:
+                write_checked_bytes(record_path, payload, allowed_root=self.save_directory, replace=False)
+            else:
+                if original != payload:
+                    raise ValueError('completed worker record identity differs')
     def load_current_state(self, *, verified_bytes=None):
         state_path = os.path.join(self.save_directory, self._current_state_filename())
         try:
