@@ -27,7 +27,15 @@ if($errors.Count){throw 'Bootstrap parse failed.'}
 foreach($name in @('Protect-KmtechCodeAncestors','Assert-LabelProtectedInstallPath','Write-LabelAncestorPreparationEvent')){
  $definition=@($helperAst.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
  if($definition.Count -ne 1){throw 'Expected actual ancestor predicate.'}
- . ([scriptblock]::Create($definition[0].Extent.Text))
+ $body=$definition[0].Extent.Text
+ if($name -ceq 'Protect-KmtechCodeAncestors'){
+  # A missing-path regression must create only in the owned fixture, and fail
+  # the directory-set check. Translate the .NET creation argument as well as
+  # cmdlet paths; otherwise that regression could touch the real C: base.
+  if(-not $body.Contains('[IO.Directory]::CreateDirectory($path)')){throw 'Native creation path seam changed.'}
+  $body=$body.Replace('[IO.Directory]::CreateDirectory($path)','[IO.Directory]::CreateDirectory((Native-Path $path))')
+ }
+ . ([scriptblock]::Create($body))
 }
 $dailyAst=[Management.Automation.Language.Parser]::ParseFile($env:LM_ADMISSION_DAILY,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'Daily parse failed.'}
