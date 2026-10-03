@@ -1,5 +1,8 @@
 # Label_Match 진행·공백·추가 제안
 
+새 PC 판정은 정해진 bootstrap CA 디렉터리의 ca-bundle.pem 한 파일만 있을 때 기존 bounded certificate-only 검사로 공개 인증서만 확인하여 새 설치를 허용한다. 개인키·잘못된 인증서·다른 파일·빈 디렉터리·재분석 경로·정체/credential/profile/설치 영수증 흔적은 이 예외에 해당하지 않으며 기존 수명주기/복구 판정을 유지한다. 기존 release-pair와 writer inventory 선언은 정식 가지에서 재생성하지 않는다. PS5.1·PS7 회귀와 실제 guest 설치 결과는 별도 근거다.
+
+
 canonical probe의 명령줄 길이 결함은 고정 SHA256 검사 후 동일 UTF-8 bytes stdin 실행으로 교정한다. PS5.1/PS7 실제 자식 회귀·정식 기준 대비 guard 실패 집합·stock packet·빈 guest 1회 예행은 `D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-166/REPORT.md`에서 PROVEN/FAILED/NOT TESTED로 구분하며 출시 수용은 별도다. w9next 교정 이식은 coordinator 소유다.
 
 LM-A1/LM-B4: 빈 화면 종료 확인과 정상 F5 진입을 숨겼다. 기준일 전 날짜 교환의 비복구 기능·시험은 journal 복구 소비자와 설치 목록을 대조한 뒤 제거한다.

@@ -1936,3 +1936,57 @@ def test_server_base_url_is_validated_first_and_reaches_only_onboarding() -> Non
     ]
     assert "ServerBaseUrl" not in launcher_parameters
     assert "ServerBaseUrl" not in _source(HELPER)
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("scenario", (
+    "public-ca", "private-key", "identity", "credential", "extra-file",
+    "empty-directory", "invalid-certificate", "receipt", "credential-only", "absent-ca",
+))
+def test_pristine_public_bootstrap_ca_preserves_other_residue(tmp_path, engine, scenario):
+    from tests.test_logistics_runtime_profile import _private_ca_pem
+    from tests.test_shared_ancestor_protection import run_functions
+
+    ca = tmp_path / "bootstrap" / "ca-bundle.pem"
+    if scenario not in {"credential-only", "absent-ca"}:
+        ca.parent.mkdir()
+    if scenario not in {"empty-directory", "credential-only", "absent-ca"}:
+        content = _private_ca_pem()
+        if scenario == "private-key":
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric import ec
+            content += ec.generate_private_key(ec.SECP256R1()).private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        elif scenario == "invalid-certificate":
+            content = b"-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n"
+        ca.write_bytes(content)
+    identity = tmp_path / "direct-sync" / "producer_identity.json"
+    credential = tmp_path / "direct-sync" / "credential.json"
+    receipt = tmp_path / "install-audit" / "receipt.json"
+    if scenario in {"identity", "credential", "credential-only", "receipt", "extra-file"}:
+        residue = {"identity": identity, "credential": credential, "receipt": receipt,
+                   "credential-only": credential, "extra-file": ca.parent / "unexpected.json"}[scenario]
+        residue.parent.mkdir(parents=True, exist_ok=True)
+        residue.write_text("{}", encoding="utf-8")
+    before = {p.relative_to(tmp_path).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+              for p in tmp_path.rglob("*") if p.is_file()}
+    result = run_functions(tmp_path, INSTALLER, ["Test-PristineInstallState"], r'''
+$ca=$env:LM_PRISTINE_CA
+$paths=@((Split-Path -Parent $ca),$ca,$env:LM_PRISTINE_IDENTITY,
+ $env:LM_PRISTINE_CREDENTIAL,(Split-Path -Parent $env:LM_PRISTINE_RECEIPT))
+$actual=Test-PristineInstallState $env:LM_PRISTINE_INSTALL `
+ ([pscustomobject]@{exists=$false}) @() @() $paths `
+ $ca $env:LM_PRISTINE_PYTHON $env:LM_PRISTINE_APP
+[pscustomobject]@{pristine=[bool]$actual}|ConvertTo-Json -Compress
+''', engine=engine, values={
+        "LM_PRISTINE_CA": str(ca), "LM_PRISTINE_INSTALL": str(tmp_path / "current"),
+        "LM_PRISTINE_IDENTITY": str(identity), "LM_PRISTINE_CREDENTIAL": str(credential),
+        "LM_PRISTINE_RECEIPT": str(receipt), "LM_PRISTINE_PYTHON": sys.executable,
+        "LM_PRISTINE_APP": str(ROOT),
+    })
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert json.loads(result.stdout)["pristine"] is (scenario in {"public-ca", "absent-ca"})
+    assert {name: hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            for name in before} == before

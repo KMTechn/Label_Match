@@ -2317,15 +2317,63 @@ function Test-PristineInstallState(
     $RunSnapshotValue,
     [object[]]$RelaySnapshotValue,
     [object[]]$ScheduledTaskValues,
-    [string[]]$ResiduePaths
+    [string[]]$ResiduePaths,
+    [string]$BootstrapCaPath = "",
+    [string]$PythonPath = "",
+    [string]$AppRoot = ""
 ) {
     if (Test-Path -LiteralPath $InstallRootValue) { return $false }
     if ([bool]$RunSnapshotValue.exists) { return $false }
     if (@($RelaySnapshotValue).Count -ne 0) { return $false }
     if (@($ScheduledTaskValues).Count -ne 0) { return $false }
+    # A public trust bundle is not producer registration. Admit only the
+    # expected leaf in its otherwise empty directory, using the existing
+    # bounded, certificate-only profile validator. Nothing is removed.
+    $publicCaOnly = $false
+    $caParent = ''
+    if (-not [string]::IsNullOrWhiteSpace($BootstrapCaPath)) {
+        $BootstrapCaPath = [IO.Path]::GetFullPath($BootstrapCaPath)
+        $caParent = [IO.Path]::GetDirectoryName($BootstrapCaPath)
+        $ancestor = $BootstrapCaPath
+        while ($ancestor) {
+            try { $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop }
+            catch [Management.Automation.ItemNotFoundException] { $item = $null }
+            if ($null -ne $item -and
+                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                return $false
+            }
+            $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+        }
+        if (Test-Path -LiteralPath $caParent) {
+            if (-not (Test-Path -LiteralPath $caParent -PathType Container)) { return $false }
+            $entries = @(Get-ChildItem -LiteralPath $caParent -Force -ErrorAction Stop)
+            if ($entries.Count -ne 1 -or $entries[0].PSIsContainer -or
+                -not [StringComparer]::OrdinalIgnoreCase.Equals($entries[0].FullName, $BootstrapCaPath) -or
+                [string]::IsNullOrWhiteSpace($PythonPath) -or [string]::IsNullOrWhiteSpace($AppRoot)) {
+                return $false
+            }
+            $certificateProbe = @'
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    from tools.install_logistics_runtime_profile import _resolve_tls_ca_bundle
+    _resolve_tls_ca_bundle(sys.argv[2], sys.argv[2])
+except Exception:
+    sys.exit(1)
+'@
+            $output = @(& $PythonPath -I -B -c $certificateProbe $AppRoot $BootstrapCaPath)
+            if ($LASTEXITCODE -ne 0 -or $output.Count -ne 0) { return $false }
+            $publicCaOnly = $true
+        }
+    }
     foreach ($path in $ResiduePaths) {
         if ([string]::IsNullOrWhiteSpace($path)) {
             throw 'Pristine-install residue path is empty.'
+        }
+        if ($publicCaOnly -and
+            ([StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($path), $BootstrapCaPath) -or
+             [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($path), $caParent))) {
+            continue
         }
         if (Test-Path -LiteralPath $path) { return $false }
     }
@@ -2704,6 +2752,8 @@ $pristineResiduePaths = @(
     $stop,
     (Join-Path $selectedDirectSyncRoot 'control\label_match_user_relay.stop.json'),
     (Join-Path $selectedDirectSyncRoot 'credential.json'),
+    # Receipts/recovery evidence are existing state, even without a credential.
+    (Join-Path $lad 'KMTech\Label_Match\install-audit'),
     # User data/settings are preserved by removal, so their presence still means the PC is not pristine.
     $defaultDataRoot,
     $selectedDataRoot,
@@ -2759,7 +2809,10 @@ $pristineInstall = Test-PristineInstallState `
     $before `
     $old `
     $scheduledTasksAtPreflight `
-    $pristineResiduePaths
+    $pristineResiduePaths `
+    $bootstrapCaPath `
+    (Join-Path $source 'runtime\python.exe') `
+    (Join-Path $source 'app')
 $healthyLifecycle = $null
 if (-not $conflictReceiptSupplied -and -not $pristineInstall) {
     if (-not (Same $selectedDirectSyncRoot $defaultDirectSyncRoot) -or
