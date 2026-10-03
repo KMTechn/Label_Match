@@ -192,5 +192,3 @@ if(-not $failed -and [bool]$actual.exists -ne ($env:LM_FRESH_SCENARIO -ceq 'pres
 'PASS'
 ''', engine=engine, values={'LM_FRESH_SCENARIO': scenario})
     assert result.returncode == 0, result.stdout + result.stderr
-
-

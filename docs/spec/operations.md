@@ -4,6 +4,8 @@
 
 새 설치·제거의 부재 관측은 성공한 예약 작업 전체 조회의 정확한 이름/루트 필터, 레지스트리 키 부재 또는 성공한 값 이름 조회의 누락으로 판정한다. 접근 거부·일반 IO/인수 오류·관측 중 값 소실은 실패이며 빈 relay Run 값도 부재로 취급하지 않는다. 제거 뒤 task 되읽기는 COMException 또는 FileNotFoundException의 정확한 `0x80070002`만 부재로 인정한다. 선택적 업데이트 설정은 경로가 없을 때만 건너뛰고 디렉터리·조회 오류는 거절한다. sub-153의 주입 PS5.1·PS7 회귀와 실제 랩의 native API 수용은 구별한다.
 
+SYSTEM 로그온 작업 XML은 `S-1-5-18`·HighestAvailable·기존 SID trigger/action/조건을 유지하고 optional LogonType을 생략한다. `ServiceAccount`는 ScheduledTasks/COM enum이며 [정식 XML schema](https://learn.microsoft.com/en-us/windows/win32/taskschd/task-scheduler-schema)의 값이 아니다. Principal/Settings/Task의 all 요소 순서는 바꾸지 않는다. sub-153 회귀는 생성 XML의 emitted principal schema·필수 업무 필드·logon base/extension 순서를 검증하며 실제 Task 1.4 등록·되읽기는 랩 NOT TESTED다.
+
 <a id="remote-writer-admission"></a>
 
 예외: 건별 복구에서 재개하는 숨긴 F5 날짜 교환의 원격 호출은 writer admission을 유지한다(코디 결정 2026-10-02). 기존 busy gate가 거절한 스캔은 응답 뒤 다시 입력하며 미리 입력된 값은 보존한다. 계측 등록은 F5 writer 함수와 해당 client 메서드의 조합만 면제한다.
