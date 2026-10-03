@@ -132,8 +132,13 @@ function Get-Item {
   if($env:LM_FRESH_SCENARIO -ceq 'missing_value'){return @()}
   return @('KMTech.LabelMatch.Relay')
  }
+ $key | Add-Member ScriptMethod GetValue {param($Name,$Default,$Options) return Get-ItemPropertyValue -LiteralPath 'fixture' -Name $Name}
  $key | Add-Member ScriptMethod Dispose {}
  return $key
+}
+function Open-LabelRunKey {param($SubKey)
+ if($env:LM_FRESH_SCENARIO -ceq 'missing_key'){return $null}
+ return Get-Item -LiteralPath 'fixture'
 }
 function Get-ItemPropertyValue {
  [CmdletBinding()]param($LiteralPath,$Name)
@@ -181,7 +186,7 @@ $fixture | Add-Member ScriptMethod Dispose {}
 $script:FixtureKey=if($env:LM_FRESH_SCENARIO -ceq 'missing_key'){$null}else{$fixture}
 $RunName='fixture'
 $definition=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Snapshot'},$true))[0].Extent.Text
-$native='[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($RunKey, $false)'
+$native=if($definition.Contains('Open-LabelRunKey $RunKey')){'Open-LabelRunKey $RunKey'}else{'[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($RunKey, $false)'}
 if(-not $definition.Contains($native)){throw 'Registry read seam changed'}
 . ([scriptblock]::Create($definition.Replace($native,'$script:FixtureKey')))
 $failed=$false;$actual=$null

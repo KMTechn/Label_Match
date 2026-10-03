@@ -897,13 +897,35 @@ function Remove-OwnedLegacyTask([string]$Name) {
     }
 }
 
+function Open-LabelRunKey([string]$SubKey) {
+    # OpenSubKey can hide native errors as null. Only Win32 code 2 is absence.
+    if (-not ('KmtechLabelRunRegistryNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class KmtechLabelRunRegistryNative {
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
+    public static extern int RegOpenKeyExW(IntPtr root, string subKey, uint options, uint access, out IntPtr key);
+}
+'@
+    }
+    $handle = [IntPtr]::Zero
+    $status = [KmtechLabelRunRegistryNative]::RegOpenKeyExW([IntPtr]::new(-2147483647), $SubKey, 0, 1, [ref]$handle)
+    if ($status -eq 2) { return $null }
+    if ($status -ne 0) { throw [ComponentModel.Win32Exception]::new($status) }
+    if ($handle -eq [IntPtr]::Zero) { throw 'RUN_REGISTRY_HANDLE_INVALID' }
+    $ownedHandle = [Microsoft.Win32.SafeHandles.SafeRegistryHandle]::new($handle, $true)
+    try { return [Microsoft.Win32.RegistryKey]::FromHandle($ownedHandle) }
+    catch { $ownedHandle.Dispose(); throw }
+}
+
 function Test-CurrentUserRelayPersistencePresent {
-    $runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
-    try { $key = Get-Item -LiteralPath $runKey -ErrorAction Stop }
-    catch [System.Management.Automation.ItemNotFoundException] { return $false }
+    $runKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+    $key = Open-LabelRunKey $runKey
+    if ($null -eq $key) { return $false }
     try {
         if ('KMTech.LabelMatch.Relay' -notin $key.GetValueNames()) { return $false }
-        $value = Get-ItemPropertyValue -LiteralPath $runKey -Name 'KMTech.LabelMatch.Relay' -ErrorAction Stop
+        $value = $key.GetValue('KMTech.LabelMatch.Relay', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
         if ([string]::IsNullOrWhiteSpace([string]$value)) { throw 'Current-user relay Run value is empty.' }
         return $true
     }

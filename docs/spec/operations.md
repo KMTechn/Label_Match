@@ -1072,3 +1072,5 @@ canonical onboarding은 fence 안에서 신원·Run을 준비하고 relay 시작
 예약 작업의 주체와 로그온 trigger 계정은 해당 PC에서 SID로 해석해 비교한다. 해석 실패·다른 SID는 거절하고 원 XML preimage는 재작성하지 않는다. 비교용 XML 사본의 두 UserId만 정규화하며 기존 구조·속성·중복·action 검사를 유지한다. 같은 순수 해석 함수가 설치·되읽기·복원·제거·daily·사용자 task와 lifecycle 소유 확인에서 사용되며, helper를 신뢰할 수 없는 경계는 정확한 사본을 회귀로 대조한다. PS5.1/7 함수 회귀와 실제 scheduler 수용은 구별한다.
 
 설치·공유 조상 준비·code trust·daily·업데이트 적용·지원 제거/복구가 쓰는 특권 소유자 검사는 Test-KmtechPrivilegedOwnerSid의 같은 SID 셋을 사용한다. helper 로드 전 신뢰 경계는 순수 함수의 정확한 사본을 갖고 AST body 회귀로 대조한다. ACL 권한/형태/재분석/원 소유자 race 검사는 유지하고 새 소유자를 설정하지 않는다. 격리 D NTFS 시험의 소유자 읽기 seam과 실제 소유자 불변을 구분하며 특권 소유권 설정·실제 설치 수용은 NOT TESTED다.
+
+Run key 읽기는 RegOpenKeyExW의 반환 코드 2만 정확한 부재로 받는다. 접근 거부·삭제 중 key·다른 오류는 native code를 보존해 실패하며 query-only handle을 SafeRegistryHandle/RegistryKey로 소유·폐기한다. 성공한 값 이름 관측의 정확한 누락만 value 부재이며 kind/data 오류·관측 뒤 소실은 실패한다. 실제 호스트 registry 오류는 실행하지 않았으며 PS5.1/7 native status 주입 회귀와 실제 API 수용을 구별한다.

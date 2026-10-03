@@ -19,7 +19,7 @@ $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'Product PowerShell parse failed.'}
-foreach($dependency in @('ConvertTo-LabelTaskSid','Test-KmtechPrivilegedOwnerSid')){
+foreach($dependency in @('ConvertTo-LabelTaskSid','Test-KmtechPrivilegedOwnerSid','Open-LabelRunKey')){
  $definitions=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $dependency},$true))
  if($definitions.Count -eq 1){. ([scriptblock]::Create($definitions[0].Extent.Text))}
 }
