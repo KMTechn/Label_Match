@@ -1451,8 +1451,6 @@ def test_program_close_bypasses_f5_pending_gate_for_lane_drain():
     app, root = _app_with_lane()
     app.run_tests = True
     app._phs_label_exchange_pending = True
-    app._phs_label_candidate_pending = True
-    app._phs_reconciliation_lookup_pending = True
     app._phs_label_scan_lookup_in_progress = True
 
     assert (
@@ -1503,18 +1501,11 @@ def test_confirmed_close_blocks_f5_and_deferred_admission_while_active_drains(
         root.run_until(lambda: not app.ui_lane.is_busy())
 
         if admission_kind == "f5":
-            app._phs_reconciliation_lookup_pending = False
-            app._phs_reconciliation_scope = lambda: "PACKAGING"
             app.phs_label_exchange_coordinator = SimpleNamespace(
-                resolve_reconciliation_actions=lambda **_kwargs: {"actions": []}
+                recover_reconciliation=lambda **_kwargs: None
             )
             app._show_phs_replacement_required_notice_once = lambda _value: None
-            app._show_phs_reconciliation_action_window = (
-                lambda _value, **_kwargs: None
-            )
-            admitted_during_close = app._begin_phs_reconciliation_lookup(
-                "PHS2-DURING-CLOSE"
-            )
+            admitted_during_close = app._start_phs_reconciliation_recovery()
             rejection_reason = "closing"
         else:
             trigger_options = {}
@@ -1624,15 +1615,10 @@ def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
     )
     app._save_app_settings = lambda: pytest.fail("settings should not save")
     app.destroy = lambda: pytest.fail("window should not close")
-    app._phs_reconciliation_lookup_pending = False
-    app._phs_reconciliation_scope = lambda: "PACKAGING"
     app.phs_label_exchange_coordinator = SimpleNamespace(
-        resolve_reconciliation_actions=lambda **_kwargs: {"actions": []}
+        recover_reconciliation=lambda **_kwargs: None
     )
     app._show_phs_replacement_required_notice_once = lambda _value: None
-    app._show_phs_reconciliation_action_window = (
-        lambda _value, **_kwargs: None
-    )
 
     admitted_after_resume = False
     lane_state_after_failure = None
@@ -1657,9 +1643,7 @@ def test_close_failure_keeps_lane_alive_for_resumed_f5_submit():
         assert "_app_close_resume_deferred_validation" not in app.__dict__
         root.after_cancel(app._deferred_validation_after_id)
         app._deferred_validation_after_id = None
-        admitted_after_resume = app._begin_phs_reconciliation_lookup(
-            "PHS2-AFTER-CLOSE-FAILURE"
-        )
+        admitted_after_resume = app._start_phs_reconciliation_recovery()
         if admitted_after_resume:
             root.run_until(lambda: not app.ui_lane.is_busy())
 
@@ -2307,95 +2291,11 @@ def test_pending_job_cleanup_preserves_lane_pump_until_final_close():
     assert cancelled == ["ordinary-app-job"]
 
 
-def test_f5_popup_busy_rejection_preserves_popup_and_raw(monkeypatch):
-    app, root = _app_with_lane()
-    gate = threading.Event()
-    popup = Mock()
-    scan_entry = Mock()
-    scan_entry.get.return_value = "PHS2-F5-PRESERVE"
-    monkeypatch.setattr(
-        label_module.tk,
-        "Toplevel",
-        lambda _parent: popup,
-    )
-    monkeypatch.setattr(
-        label_module.tk,
-        "StringVar",
-        lambda **_kwargs: Mock(),
-    )
-    monkeypatch.setattr(
-        label_module.ttk,
-        "Frame",
-        lambda *_args, **_kwargs: Mock(),
-    )
-    monkeypatch.setattr(
-        label_module.ttk,
-        "Label",
-        lambda *_args, **_kwargs: Mock(),
-    )
-    monkeypatch.setattr(
-        label_module.ttk,
-        "Entry",
-        lambda *_args, **_kwargs: scan_entry,
-    )
-
-    app.default_font_name = "Test Font"
-    app.colors = {}
-    app._phs_reconciliation_lookup_pending = False
-    app._phs_reconciliation_scope = lambda: "PACKAGING"
-    app.phs_label_exchange_coordinator = SimpleNamespace(
-        resolve_reconciliation_actions=lambda **_kwargs: {"actions": []}
-    )
-    assert app.ui_lane.submit(
-        LaneTask(
-            "blocking-deferred-validation",
-            0,
-            lambda: gate.wait(timeout=2.0),
-            lambda _value: None,
-            pytest.fail,
-        )
-    ).accepted
-
-    popup_after_rejection = None
-    raw_after_rejection = None
-    try:
-        assert app._show_phs_reconciliation_scan_window() is True
-        submit = next(
-            call.args[1]
-            for call in scan_entry.bind.call_args_list
-            if call.args[0] == "<Return>"
-        )
-        submit()
-        popup_after_rejection = app._phs_reconciliation_scan_window
-        raw_after_rejection = scan_entry.get()
-    finally:
-        gate.set()
-        root.run_until(lambda: not app.ui_lane.is_busy())
-        _close_lane(app, root)
-
-    popup.destroy.assert_not_called()
-    popup.grab_release.assert_not_called()
-    assert popup_after_rejection is popup
-    assert raw_after_rejection == "PHS2-F5-PRESERVE"
 
 
-@pytest.mark.parametrize(
-    "method_name",
-    (
-        "_begin_phs_reconciliation_lookup",
-        "_start_phs_reconciliation_exchange",
-        "_begin_phs_label_candidate_lookup",
-        "_start_phs_label_exchange",
-    ),
-)
-def test_f5_slow_paths_have_no_per_operation_thread(method_name):
-    source = inspect.getsource(getattr(label_module.Label_Match, method_name))
-
-    assert "threading.Thread" not in source
-    assert "_submit_ui_lane_task" in source
 
 
-def test_all_four_f5_slow_paths_share_the_tracked_lane_worker():
+def test_both_saved_f5_recoveries_share_the_tracked_lane_worker():
     app, root = _app_with_lane()
     owner = root.owner_thread_id
     trace = []
@@ -2403,18 +2303,9 @@ def test_all_four_f5_slow_paths_share_the_tracked_lane_worker():
     app.run_tests = True
     app.worker_name = "operator"
     app._phs_label_guidance_notice = None
-    app._phs_reconciliation_lookup_pending = False
-    app._phs_label_candidate_pending = False
     app._phs_label_exchange_pending = False
-    app._phs_reconciliation_scope = lambda: "PACKAGING"
     app._show_phs_replacement_required_notice_once = (
         lambda value: trace.append(("resolve-apply", threading.get_ident(), value))
-    )
-    app._show_phs_reconciliation_action_window = lambda value, **_kwargs: (
-        trace.append(("resolve-window", threading.get_ident(), value))
-    )
-    app._show_phs_label_candidate_window = lambda value: trace.append(
-        ("candidate-window", threading.get_ident(), value)
     )
     app._focus_scan_entry_if_available = lambda: trace.append(
         ("focus", threading.get_ident())
@@ -2428,14 +2319,9 @@ def test_all_four_f5_slow_paths_share_the_tracked_lane_worker():
     )
 
     class Coordinator:
-        @staticmethod
-        def resolve_reconciliation_actions(**_kwargs):
-            trace.append(("resolve-work", threading.get_ident()))
-            return {"actions": []}
 
         @staticmethod
-        def execute_reconciliation(
-            _resolution,
+        def recover_reconciliation(
             *,
             current_set,
             persist_current_set,
@@ -2446,15 +2332,10 @@ def test_all_four_f5_slow_paths_share_the_tracked_lane_worker():
             current_set["active_label_qr_payload"] = "PHS=2|CLC=ITEM"
             return result
 
-        @staticmethod
-        def list_candidates(_current, _business_date):
-            trace.append(("candidate-work", threading.get_ident()))
-            return [{"instruction_id": "instruction-1"}]
 
         @staticmethod
-        def execute_single(
+        def _resume_current(
             current_set,
-            _target,
             *,
             persist_current_set,
             **_kwargs,
@@ -2477,24 +2358,12 @@ def test_all_four_f5_slow_paths_share_the_tracked_lane_worker():
     app.phs_label_exchange_coordinator = Coordinator()
     app.data_manager = DataManager()
 
-    assert app._begin_phs_reconciliation_lookup("PHS2-SCAN") is True
-    root.run_until(
-        lambda: not app._phs_reconciliation_lookup_pending
-        and any(row[0] == "resolve-window" for row in trace)
-    )
-    assert app._start_phs_reconciliation_exchange({"actions": []}) is True
+    assert app._start_phs_reconciliation_recovery() is True
     root.run_until(
         lambda: not app._phs_label_exchange_pending
         and any(row[0] == "reconcile-work" for row in trace)
     )
-    assert app._begin_phs_label_candidate_lookup("2026-09-02") is True
-    root.run_until(
-        lambda: not app._phs_label_candidate_pending
-        and any(row[0] == "candidate-window" for row in trace)
-    )
-    assert app._start_phs_label_exchange(
-        {"instruction_id": "instruction-1"}
-    ) is True
+    assert app._start_phs_label_recovery() is True
     root.run_until(
         lambda: not app._phs_label_exchange_pending
         and any(row[0] == "single-work" for row in trace)
@@ -2505,13 +2374,7 @@ def test_all_four_f5_slow_paths_share_the_tracked_lane_worker():
         row[0]
         for row in trace
         if len(row) > 1 and row[1] == worker_id
-    } >= {
-        "resolve-work",
-        "reconcile-work",
-        "candidate-work",
-        "single-work",
-        "persist",
-    }
+    } >= {'reconcile-work', 'single-work', 'persist'}
     for row in trace:
         if row[0] in {"resolve-apply", "resolve-window", "candidate-window"}:
             assert row[1] == owner

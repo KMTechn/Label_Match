@@ -46,6 +46,9 @@ def test_transport_guard_refuses_changed_bytes_on_either_side(tmp_path, nextfix_
     # A changed signed-transport pair cannot authorize the roster's exact
     # post -> _post_path writer identity mapping; identity validation now
     # rejects either side before the per-file semantics comparison.
-    reason = ('WRITER_TRANSITION_SOURCE_SET_DIFFERS' if name == 'label_admin_pin.py'
+    # F5 retirement also needs the exact logistics/workflow pair. A mutation
+    # on either side invalidates that source-identity adapter, so these two
+    # modules now fail the same identity check before ordinary AST comparison.
+    reason = ('WRITER_TRANSITION_SOURCE_SET_DIFFERS' if name in {'label_admin_pin.py', 'package_logistics.py', 'phs_label_workflow.py'}
               else 'WRITER_TRANSITION_SEMANTICS_DIFFER')
     assert reason in result.stderr

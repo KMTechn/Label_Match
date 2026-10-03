@@ -51,15 +51,13 @@ def register_lm_mutex(monkeypatch, guard):
     monkeypatch.setattr(fence._NamedMutexLease, 'release', released)
     monkeypatch.setattr(fence._NamedMutexLease, 'suspend', suspended)
     monkeypatch.setattr(fence._NamedMutexLease, 'resume', resumed)
-    # Coordinator 2026-10-02: only hidden F5 date-exchange calls retain admission.
+    # Coordinator 2026-10-02: only saved F5 recovery calls retain admission.
     from package_logistics import PackageLogisticsClient
     f5_sources = {
-        'phs_single_exchange', 'phs_reconciliation_exchange',
         'phs_current_recovery', 'phs_reconciliation_recovery',
     }
     for name in (
-        'list_phs_work_instruction_candidates', 'resolve_phs_reconciliation_actions',
-        'resolve_active_phs_label', 'adopt_phs_label', 'prepare_phs_label_exchange',
+        'prepare_phs_label_exchange',
         'prepare_phs_reconciliation_label_exchange', 'get_phs_label_exchange',
         'request_phs_label_print', 'complete_phs_label_print',
         'activate_phs_label_exchange',

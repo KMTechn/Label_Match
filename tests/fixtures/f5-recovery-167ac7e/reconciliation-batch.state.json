@@ -1,0 +1,59 @@
+{
+  "after": {
+    "active_label_business_date": "2026-07-28",
+    "active_label_id": "LBL-TARGET-1",
+    "active_label_instruction_id": "INSTRUCTION-TARGET-1",
+    "active_label_qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-TARGET-1|HSH=9999999999999999",
+    "active_label_resolution": "OVERLAY_REPLACED",
+    "active_label_version": 2,
+    "active_label_worker_code": "7월28일-1",
+    "active_membership_version": 1,
+    "canonical_input_tag_qr": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+    "central_inherit_all": true,
+    "id": "SET-CURRENT",
+    "package_source_snapshot": {
+      "authority_scope_id": "TEST1-GOAL-20260722-EXACT-SIX",
+      "member_count": 2,
+      "membership_hash": "6c61af5a2d6e5c0e79207bc68716be9cc7d84b8c4d02fa8f9655d0a107a61ea6"
+    },
+    "package_submission_status": "",
+    "parsed": [
+      "AAA2270730200"
+    ],
+    "phs_label_guidance": "현재 ACTIVE 현품표 7월28일-1 (2026-07-28)",
+    "phs_label_replaced_scan": true,
+    "progress_marker": "KEEP",
+    "raw": [
+      "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111"
+    ]
+  },
+  "before": {
+    "active_label_business_date": "2026-07-27",
+    "active_label_id": "LBL-SOURCE-1",
+    "active_label_instruction_id": "INSTRUCTION-SOURCE-1",
+    "active_label_qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+    "active_label_resolution": "OVERLAY_ACTIVE",
+    "active_label_version": 1,
+    "active_label_worker_code": "7월27일-1",
+    "active_membership_version": 1,
+    "canonical_input_tag_qr": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+    "central_inherit_all": true,
+    "id": "SET-CURRENT",
+    "package_source_snapshot": {
+      "authority_scope_id": "TEST1-GOAL-20260722-EXACT-SIX",
+      "member_count": 2,
+      "membership_hash": "6c61af5a2d6e5c0e79207bc68716be9cc7d84b8c4d02fa8f9655d0a107a61ea6"
+    },
+    "package_submission_status": "",
+    "parsed": [
+      "AAA2270730200"
+    ],
+    "progress_marker": "KEEP",
+    "raw": [
+      "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111"
+    ]
+  },
+  "journal_sha256": "4413efe22aedd41e659698464b6eac08456132e0d9076aded079c9ee8c64e54b",
+  "source_commit": "167ac7e33ae11dd87d86dd99e86f5f98f7ded58e",
+  "status": "COMMITTED"
+}

@@ -1999,48 +1999,6 @@ def _label_match_phs_replacement_notice_pair(resolution):
     return old_label_id, new_label_id
 
 
-def _label_match_phs_reconciliation_display_lines(resolution):
-    """Return worker-facing topology lines without internal ledger IDs."""
-
-    action_names = {
-        "EXCHANGE_DATE": "날짜 교체",
-        "SPLIT": "현품표 분할",
-        "MERGE": "현품표 병합",
-    }
-
-    def compact(value):
-        return (
-            f"{value.get('business_date')} · "
-            f"{value.get('item_daily_ordinal')}번째 현품표 · "
-            f"{value.get('worker_code')} · "
-            f"{value.get('qty_pcs')} Pcs"
-        )
-
-    lines = []
-    for action in list((resolution or {}).get("actions") or []):
-        if not isinstance(action, dict):
-            continue
-        action_type = str(action.get("action_type") or "").upper()
-        sources = [
-            compact(value)
-            for value in list(action.get("sources") or [])
-            if isinstance(value, dict)
-        ]
-        targets = [
-            compact(value)
-            for value in list(action.get("targets") or [])
-            if isinstance(value, dict)
-        ]
-        lines.append(
-            (
-                f"{action_names.get(action_type, '현품표 교체')}\n"
-                f"  현재: {' / '.join(sources)}\n"
-                f"  변경: {' / '.join(targets)}"
-            )
-        )
-    return lines
-
-
 def _label_match_decode_possible_base64_label(raw_value):
     return carrier_identity.decode_carrier_scan(raw_value)
 
@@ -4624,7 +4582,6 @@ class Label_Match(tk.Tk):
     COMPLETED_TRAY_CANCEL_BUTTON_TEXT = f"{COMPLETED_TRAY_CANCEL_ACTION_TEXT} (F2)"
     MANUAL_COMPLETE_BUTTON_TEXT = "현재 세트 완료 (F3)"
     EXACT_RESCAN_BUTTON_TEXT = "전체 재스캔 시작 (F4)"
-    PHS_LABEL_EXCHANGE_BUTTON_TEXT = "현품표 교체 (F5)"
     CURRENT_SET_CANCEL_BUTTON_STYLE = "Danger.Action.TButton"
     COMPLETED_TRAY_CANCEL_BUTTON_STYLE = "Danger.Action.TButton"
     MANUAL_COMPLETE_BUTTON_STYLE = "Action.TButton"
@@ -5113,11 +5070,7 @@ class Label_Match(tk.Tk):
             ),
         )
         self._phs_label_scan_lookup_in_progress = False
-        self._phs_label_candidate_pending = False
         self._phs_label_exchange_pending = False
-        self._phs_label_candidate_window = None
-        self._phs_reconciliation_scan_window = None
-        self._phs_reconciliation_lookup_pending = False
         self._phs_reconciliation_confirm_reprint_ids = set()
         self._phs_replacement_notice_pairs = set()
         self.package_outbox_processor = (
@@ -8079,8 +8032,8 @@ class Label_Match(tk.Tk):
             or current.get("shortage_undo_snapshot")
             or self.__dict__.get("_scanner_shortage_undo")
             or any(self.__dict__.get(name) for name in (
-                "_phs_label_scan_lookup_in_progress", "_phs_label_candidate_pending",
-                "_phs_reconciliation_lookup_pending", "_phs_label_exchange_pending",
+                "_phs_label_scan_lookup_in_progress",
+                "_phs_label_exchange_pending",
             ))
         ):
             return True
@@ -10995,7 +10948,7 @@ class Label_Match(tk.Tk):
         ttk.Button(buttons, text="실물 현품표 스캔·중앙 조회", command=scan_physical).pack(side="left", padx=4)
         ttk.Button(
             frame, text="미완료 현품표 교환 복구",
-            command=lambda: self._handle_phs_label_exchange_shortcut(recovery_only=True),
+            command=self._recover_phs_label_exchange,
         ).pack(anchor="w", pady=4)
         def retry_pin():
             item = selected()
@@ -13492,8 +13445,8 @@ class Label_Match(tk.Tk):
             and not any(self.__dict__.get(name) for name in (
                 "_app_close_in_progress", "_ui_lane_busy_task", "is_blinking",
                 "_central_seal_lookup_in_progress", "_central_package_preflight_in_progress",
-                "_phs_label_scan_lookup_in_progress", "_phs_label_candidate_pending",
-                "_phs_reconciliation_lookup_pending", "_phs_label_exchange_pending",
+                "_phs_label_scan_lookup_in_progress",
+                "_phs_label_exchange_pending",
             ))
         )
 
@@ -15082,10 +15035,6 @@ class Label_Match(tk.Tk):
             return True
         if (
             self.__dict__.get("_phs_label_scan_lookup_in_progress", False)
-            or self.__dict__.get("_phs_label_candidate_pending", False)
-            or self.__dict__.get(
-                "_phs_reconciliation_lookup_pending", False
-            )
             or self.__dict__.get("_phs_label_exchange_pending", False)
         ):
             self._show_scanner_notice(
@@ -15789,7 +15738,6 @@ class Label_Match(tk.Tk):
         return self._scanner_command("KMCMD:EXCHANGE")
 
 
-
     def _phs_label_exchange_enabled_for_current(self):
         coordinator = self.__dict__.get(
             "phs_label_exchange_coordinator"
@@ -15804,33 +15752,8 @@ class Label_Match(tk.Tk):
             and not self.__dict__.get(
                 "_phs_label_exchange_pending", False
             )
-            and not self.__dict__.get(
-                "_phs_reconciliation_lookup_pending", False
-            )
         )
 
-    def _phs_reconciliation_scope(self):
-        snapshot = (
-            self.current_set_info.get("package_source_snapshot")
-            if isinstance(
-                self.current_set_info.get("package_source_snapshot"),
-                dict,
-            )
-            else {}
-        )
-        return str(
-            snapshot.get("authority_scope_id")
-            or getattr(
-                getattr(
-                    self.package_logistics_client,
-                    "config",
-                    None,
-                ),
-                "authority_scope_id",
-                "",
-            )
-            or ""
-        ).strip()
 
     def _project_phs_replacement_waiting_event(self, dedupe_key):
         outbox = self.__dict__.get("package_outbox")
@@ -16051,291 +15974,14 @@ class Label_Match(tk.Tk):
         self._render_operator_workbench()
         return True
 
-    def _show_phs_reconciliation_scan_window(self):
-        existing = self.__dict__.get(
-            "_phs_reconciliation_scan_window"
-        )
-        if existing is not None:
-            try:
-                existing.lift()
-                existing.focus_force()
-                return True
-            except (TclError, AttributeError):
-                self._phs_reconciliation_scan_window = None
-        popup = tk.Toplevel(self)
-        self._phs_reconciliation_scan_window = popup
-        popup.title("현품표 교체")
-        popup.transient(self)
-        popup.grab_set()
-        popup.geometry("760x280")
-        frame = ttk.Frame(popup, padding=24)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(
-            frame,
-            text="교체할 현품표를 스캔하세요",
-            style="Title.TLabel",
-        ).pack(anchor="w")
-        ttk.Label(
-            frame,
-            text=(
-                "현재 포장 중이거나 이미 포장 완료된 현품표 모두 가능합니다. "
-                "서버가 적용 가능한 날짜 교체·분할·병합을 결정합니다."
-            ),
-            wraplength=700,
-        ).pack(anchor="w", pady=(8, 18))
-        scan_entry = ttk.Entry(
-            frame,
-            font=(self.default_font_name, 17),
-        )
-        scan_entry.pack(fill="x")
-        status_var = tk.StringVar(value="스캔 후 Enter")
-        ttk.Label(
-            frame,
-            textvariable=status_var,
-            foreground=self.colors.get("text_subtle", "#6B7280"),
-        ).pack(anchor="w", pady=(10, 0))
 
-        def close(event=None):
-            try:
-                popup.grab_release()
-            except TclError:
-                pass
-            popup.destroy()
-            self._phs_reconciliation_scan_window = None
-            self._focus_scan_entry_if_available()
-            return "break"
-
-        def submit(event=None):
-            value = str(scan_entry.get() or "").strip()
-            if not value:
-                status_var.set("현품표를 스캔해야 합니다.")
-                scan_entry.focus_set()
-                return "break"
-            if not self._begin_phs_reconciliation_lookup(value):
-                scan_entry.focus_set()
-                return "break"
-            try:
-                popup.grab_release()
-            except TclError:
-                pass
-            popup.destroy()
-            self._phs_reconciliation_scan_window = None
-            return "break"
-
-        scan_entry.bind("<Return>", submit)
-        scan_entry.bind("<KP_Enter>", submit)
-        popup.bind("<Escape>", close)
-        popup.protocol("WM_DELETE_WINDOW", close)
-        scan_entry.focus_set()
-        return True
-
-    def _begin_phs_reconciliation_lookup(self, scan_payload):
-        if self.__dict__.get(
-            "_phs_reconciliation_lookup_pending", False
-        ):
-            return False
-        if self._label_recovery_source_is_held(scan_payload):
-            return False
-        captured = _label_match_capture_current_set(self.current_set_info)
-        scope = self._phs_reconciliation_scope()
-
-        def work():
-            return (
-                self.phs_label_exchange_coordinator
-                .resolve_reconciliation_actions(
-                    authority_scope_id=scope,
-                    scan_payload=scan_payload,
-                    limit=20,
-                )
-            )
-
-        def settle(_value, _error):
-            self._phs_reconciliation_lookup_pending = False
-
-        def finish(value):
-            unchanged = _label_match_current_set_unchanged(
-                self.current_set_info,
-                captured,
-            )
-            self._render_operator_workbench()
-            if not unchanged:
-                self._phs_label_guidance_notice = WorkflowNotice(
-                    title="현품표 교체 조회 취소",
-                    message=(
-                        "조회 중 포장 상태가 바뀌었습니다. "
-                        "건별 복구에서 현품표 상태를 확인하세요."
-                    ),
-                    kind="phs_label_exchange",
-                    tone="danger",
-                )
-                self._render_operator_workbench()
-                self._focus_scan_entry_if_available()
-                return
-            self._show_phs_replacement_required_notice_once(value)
-            self._show_phs_reconciliation_action_window(
-                value,
-                captured_current_set=captured,
-            )
-
-        def fail(error):
-            print(f"F5 reconciliation lookup diagnostic: {error}")
-            self._phs_label_guidance_notice = WorkflowNotice(
-                title="현품표 교체 작업 없음",
-                message=(
-                    "현품표 교체 작업을 확인하지 못했습니다. "
-                    "건별 복구에서 현품표 상태를 확인하세요."
-                ),
-                kind="phs_label_exchange",
-                tone="danger",
-            )
-            self._render_operator_workbench()
-            self._focus_scan_entry_if_available()
-
-        admission = self._submit_ui_lane_task(
-            name="f5-reconciliation-lookup",
-            busy_text="현품표 교체 작업 조회 중",
-            work=work,
-            finish=finish,
-            fail=fail,
-            settle=settle,
-            failure_adapter=lambda error: Failure.from_exception(
-                error,
-                category="transient",
-                commit_state="not_started",
-                retryable=True,
-                safe_operator_code="F5_LOOKUP_FAILED",
-            ),
-        )
-        if admission is not None and admission.accepted:
-            self._phs_reconciliation_lookup_pending = True
-            return True
-        return False
-
-    def _show_phs_reconciliation_action_window(
+    def _start_phs_reconciliation_recovery(
         self,
-        resolution,
         *,
-        captured_current_set=None,
-    ):
-        existing = self.__dict__.get(
-            "_phs_label_candidate_window"
-        )
-        if existing is not None:
-            try:
-                existing.destroy()
-            except (TclError, AttributeError):
-                pass
-        popup = tk.Toplevel(self)
-        self._phs_label_candidate_window = popup
-        popup.title("현품표 교체 확인")
-        popup.transient(self)
-        popup.geometry("840x520")
-        frame = ttk.Frame(popup, padding=22)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(
-            frame,
-            text="서버가 확정한 현품표 교체",
-            style="Title.TLabel",
-        ).pack(anchor="w")
-        ttk.Label(
-            frame,
-            text=(
-                "Enter로 실행합니다. 모든 새 현품표가 실제 출력된 뒤 "
-                "기존 표를 새 현품표로 교체해 주세요."
-            ),
-            wraplength=790,
-        ).pack(anchor="w", pady=(6, 12))
-        buttons = ttk.Frame(frame)
-        buttons.pack(side="bottom", fill="x", pady=(12, 0))
-        text = tk.Text(
-            frame,
-            height=16,
-            wrap="word",
-            font=(self.default_font_name, 14),
-            padx=12,
-            pady=12,
-        )
-        text.pack(fill="both", expand=True)
-        lines = _label_match_phs_reconciliation_display_lines(
-            resolution
-        )
-        text.insert("1.0", "\n\n".join(lines))
-        if bool(
-            (resolution.get("scan") or {}).get(
-                "replacement_required"
-            )
-        ):
-            text.insert(
-                "end",
-                "\n\n※ 새 현품표가 출력되면 기존 표를 교체해 주세요.",
-            )
-        text.configure(state="disabled")
-
-        def close(event=None):
-            popup.destroy()
-            self._phs_label_candidate_window = None
-            self._focus_scan_entry_if_available()
-            return "break"
-
-        def execute(event=None):
-            popup.destroy()
-            self._phs_label_candidate_window = None
-            self._start_phs_reconciliation_exchange(
-                resolution,
-                expected_current_set=captured_current_set,
-            )
-            return "break"
-
-        ttk.Button(
-            buttons,
-            text="실행 (Enter)",
-            command=execute,
-            style="Action.TButton",
-        ).pack(side=tk.RIGHT)
-        ttk.Button(
-            buttons,
-            text="취소 (Esc)",
-            command=close,
-        ).pack(side=tk.RIGHT, padx=(0, 8))
-        popup.bind("<Return>", execute)
-        popup.bind("<KP_Enter>", execute)
-        popup.bind("<Escape>", close)
-        popup.protocol("WM_DELETE_WINDOW", close)
-        self._focus_scan_entry_if_available()
-        return True
-
-    def _start_phs_reconciliation_exchange(
-        self,
-        resolution=None,
-        *,
-        expected_current_set=None,
         retry_failed_target_ids=(),
         confirm_ambiguous_reprint_target_ids=(),
     ):
         if self.__dict__.get("_phs_label_exchange_pending", False):
-            return False
-        if resolution is not None and self._label_recovery_source_is_held(
-            str(resolution.get("scan_payload") or "")
-        ):
-            return False
-        if (
-            expected_current_set is not None
-            and not _label_match_current_set_unchanged(
-                self.current_set_info,
-                expected_current_set,
-            )
-        ):
-            self._phs_label_guidance_notice = WorkflowNotice(
-                title="현품표 교체 실행 취소",
-                message=(
-                    "조회 후 포장 상태가 바뀌어 교체 실행을 취소했습니다. "
-                    "건별 복구에서 현품표 상태를 확인하세요."
-                ),
-                kind="phs_label_exchange",
-                tone="warning",
-            )
-            self._render_operator_workbench()
-            self._focus_scan_entry_if_available()
             return False
         captured = _label_match_capture_current_set(self.current_set_info)
         working = copy.deepcopy(self.current_set_info)
@@ -16354,8 +16000,7 @@ class Label_Match(tk.Tk):
             try:
                 result = (
                     self.phs_label_exchange_coordinator
-                    .execute_reconciliation(
-                        resolution,
+                    .recover_reconciliation(
                         current_set=working,
                         persist_current_set=persist_working,
                         retry_failed_target_ids=(
@@ -16378,6 +16023,8 @@ class Label_Match(tk.Tk):
                         "kind": "reprint_confirmation_required",
                         "target_label_id": target_id,
                     }
+                return {"kind": "business_failure"}
+            if result is None:
                 return {"kind": "business_failure"}
             return {"kind": "result", "result": result}
 
@@ -16533,175 +16180,9 @@ class Label_Match(tk.Tk):
             return True
         return False
 
-    def _show_phs_label_candidate_window(self, candidates):
-        existing = self.__dict__.get(
-            "_phs_label_candidate_window"
-        )
-        if existing is not None:
-            try:
-                existing.destroy()
-            except (TclError, AttributeError):
-                pass
-        popup = tk.Toplevel(self)
-        self._phs_label_candidate_window = popup
-        popup.title("현품표 날짜 교환 작업지시")
-        popup.transient(self)
-        popup.grab_set()
-        popup.geometry("720x390")
-        frame = ttk.Frame(popup, padding=20)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(
-            frame,
-            text="교환할 작업지시 선택",
-            style="Title.TLabel",
-        ).pack(anchor="w")
-        ttk.Label(
-            frame,
-            text=(
-                "↑/↓로 선택하고 Enter를 누르세요. 실제 출력 성공 전까지 "
-                "기존 현품표를 계속 사용합니다."
-            ),
-            wraplength=670,
-        ).pack(anchor="w", pady=(6, 14))
-        button_frame = ttk.Frame(frame)
-        button_frame.pack(side="bottom", fill="x", pady=(12, 0))
-        listbox = tk.Listbox(
-            frame,
-            font=(self.default_font_name, 15),
-            activestyle="dotbox",
-            exportselection=False,
-        )
-        listbox.pack(fill="both", expand=True)
-        for candidate in candidates:
-            listbox.insert(
-                tk.END,
-                (
-                    f"{candidate.get('business_date')}  ·  "
-                    f"{candidate.get('worker_code')}  ·  "
-                    f"{candidate.get('target_qty_pcs')} Pcs"
-                ),
-            )
-        listbox.selection_set(0)
-        listbox.activate(0)
 
-        def close(event=None):
-            try:
-                popup.grab_release()
-            except TclError:
-                pass
-            popup.destroy()
-            self._phs_label_candidate_window = None
-            self._focus_scan_entry_if_available()
-            return "break"
-
-        def choose(event=None):
-            selected = listbox.curselection()
-            if not selected:
-                return "break"
-            target = dict(candidates[int(selected[0])])
-            close()
-            self._start_phs_label_exchange(target)
-            return "break"
-
-        ttk.Button(
-            button_frame,
-            text="선택 (Enter)",
-            command=choose,
-            style="Action.TButton",
-        ).pack(side=tk.RIGHT)
-        ttk.Button(
-            button_frame,
-            text="취소 (Esc)",
-            command=close,
-        ).pack(side=tk.RIGHT, padx=(0, 8))
-        listbox.bind("<Return>", choose)
-        listbox.bind("<KP_Enter>", choose)
-        popup.bind("<Escape>", close)
-        popup.protocol("WM_DELETE_WINDOW", close)
-        listbox.focus_set()
-        return True
-
-    def _begin_phs_label_candidate_lookup(self, business_date):
-        if self.__dict__.get("_phs_label_candidate_pending", False):
-            return False
-        coordinator = self.phs_label_exchange_coordinator
-        captured_set_id = str(
-            self.current_set_info.get("id") or ""
-        )
-        captured_raw = tuple(
-            self.current_set_info.get("raw") or ()
-        )
-        current_copy = copy.deepcopy(self.current_set_info)
-
-        def work():
-            return coordinator.list_candidates(
-                current_copy,
-                business_date,
-            )
-
-        def settle(_value, _error):
-            self._phs_label_candidate_pending = False
-
-        def finish(value):
-            if (
-                str(self.current_set_info.get("id") or "")
-                != captured_set_id
-                or tuple(self.current_set_info.get("raw") or ())
-                != captured_raw
-            ):
-                self._render_operator_workbench()
-                return
-            if not value:
-                messagebox.showinfo(
-                    "교환 가능한 작업지시 없음",
-                    (
-                        f"{business_date}에 현재 품목·수량과 일치하는 "
-                        "PLANNED 현품표가 없습니다."
-                    ),
-                    parent=self,
-                )
-                self._render_operator_workbench()
-                self._focus_scan_entry_if_available()
-                return
-            self._render_operator_workbench()
-            self._show_phs_label_candidate_window(value)
-
-        def fail(error):
-            print(f"F5 label candidate lookup diagnostic: {error}")
-            messagebox.showerror(
-                "현품표 교환 후보 조회 실패",
-                (
-                    "교환할 작업지시를 확인하지 못했습니다. "
-                    "잠시 후 다시 시도하고 계속 실패하면 관리자에게 문의하세요."
-                ),
-                parent=self,
-            )
-            self._render_operator_workbench()
-            self._focus_scan_entry_if_available()
-
-        admission = self._submit_ui_lane_task(
-            name="f5-label-candidate-lookup",
-            busy_text="교환할 작업지시 조회 중",
-            work=work,
-            finish=finish,
-            fail=fail,
-            settle=settle,
-            failure_adapter=lambda error: Failure.from_exception(
-                error,
-                category="transient",
-                commit_state="not_started",
-                retryable=True,
-                safe_operator_code="F5_LOOKUP_FAILED",
-            ),
-        )
-        if admission is not None and admission.accepted:
-            self._phs_label_candidate_pending = True
-            return True
-        return False
-
-    def _start_phs_label_exchange(
+    def _start_phs_label_recovery(
         self,
-        target_instruction=None,
         *,
         confirm_ambiguous_reprint=False,
     ):
@@ -16738,9 +16219,8 @@ class Label_Match(tk.Tk):
 
         def work():
             try:
-                result = self.phs_label_exchange_coordinator.execute_single(
+                result = self.phs_label_exchange_coordinator._resume_current(
                     working,
-                    target_instruction,
                     persist_current_set=persist_working,
                     confirm_ambiguous_reprint=(
                         confirm_ambiguous_reprint
@@ -16752,6 +16232,8 @@ class Label_Match(tk.Tk):
                     == "PHS_PRINT_REPRINT_CONFIRMATION_REQUIRED"
                 ):
                     return {"kind": "reprint_confirmation_required"}
+                return {"kind": "business_failure"}
+            if result is None:
                 return {"kind": "business_failure"}
             return {"kind": "result", "result": result}
 
@@ -16819,8 +16301,7 @@ class Label_Match(tk.Tk):
                     if confirmed:
                         self.after(
                             0,
-                            lambda: self._start_phs_label_exchange(
-                                target_instruction,
+                            lambda: self._start_phs_label_recovery(
                                 confirm_ambiguous_reprint=True,
                             ),
                         )
@@ -16920,7 +16401,7 @@ class Label_Match(tk.Tk):
             return True
         return False
 
-    def _handle_phs_label_exchange_shortcut(self, event=None, *, recovery_only=False):
+    def _recover_phs_label_exchange(self):
         if not self._phs_label_exchange_enabled_for_current():
             if not self.run_tests:
                 messagebox.showwarning(
@@ -16960,14 +16441,10 @@ class Label_Match(tk.Tk):
                         )
                     )
                     self._phs_reconciliation_confirm_reprint_ids = set()
-                    self._start_phs_reconciliation_exchange(
-                        None,
+                    self._start_phs_reconciliation_recovery(
                         retry_failed_target_ids=retry_ids,
                         confirm_ambiguous_reprint_target_ids=confirm_ids,
                     )
-                    return "break"
-                elif not recovery_only:
-                    self._show_phs_reconciliation_scan_window()
                     return "break"
             except PHSLabelWorkflowError:
                 self._phs_label_guidance_notice = WorkflowNotice(
@@ -16992,36 +16469,13 @@ class Label_Match(tk.Tk):
                 )
             return "break"
         if recoverable:
-            self._start_phs_label_exchange(None)
+            self._start_phs_label_recovery()
             return "break"
-        if recovery_only:
-            self._focus_scan_entry_if_available()
-            return "break"
-        initial_date = str(
-            self.current_set_info.get(
-                "active_label_business_date"
-            )
-            or date.today().isoformat()
-        )
-        if self.run_tests:
-            return "break"
-        business_date = simpledialog.askstring(
-            "현품표 날짜 교환",
-            "교환할 작업일을 입력하세요. (YYYY-MM-DD)",
-            parent=self,
-            initialvalue=initial_date,
-        )
-        if business_date:
-            self._begin_phs_label_candidate_lookup(
-                str(business_date).strip()
-            )
-        else:
-            self._focus_scan_entry_if_available()
+        self._focus_scan_entry_if_available()
         return "break"
 
     def _handle_f4_action(self):
         return self._scanner_command("KMCMD:EXCHANGE")
-
 
 
     def _process_exact_rescan_product(self, raw_input):
@@ -20203,9 +19657,6 @@ class Label_Match(tk.Tk):
                 font=action_font,
                 padding=(4, 6),
             )
-            self.style.configure(
-                "PhsLabel.Operator.Action.TButton", padding=(0, 6),
-            )
             for button_name, (
                 compact_text,
                 compact_style,
@@ -20489,8 +19940,6 @@ class Label_Match(tk.Tk):
             self._central_inherit_all_active()
             or self._standard_phs2_workflow_expected(current)
         )
-        layout = self.__dict__.get("operator_layout_metrics")
-        narrow_f5 = layout is not None and layout.panes.right_width < 360
         return {
             "manual_complete_button": (
                 "방금 스캔\n되돌리기",
@@ -20499,10 +19948,6 @@ class Label_Match(tk.Tk):
             "exact_rescan_button": (
                 "교환\n(제품)",
                 "Operator.Action.TButton",
-            ),
-            "phs_label_exchange_button": (
-                "현품표\n교체 (F5)" if narrow_f5 else "현품표 교체\n(F5)",
-                "PhsLabel.Operator.Action.TButton" if narrow_f5 else "Operator.Action.TButton",
             ),
             "reset_button": (
                 "현재 세트\n취소 (F1)",
@@ -21348,12 +20793,6 @@ class Label_Match(tk.Tk):
                     "_phs_label_scan_lookup_in_progress", False
                 )
                 and not self.__dict__.get(
-                    "_phs_label_candidate_pending", False
-                )
-                and not self.__dict__.get(
-                    "_phs_reconciliation_lookup_pending", False
-                )
-                and not self.__dict__.get(
                     "_phs_label_exchange_pending", False
                 )
                 and (completion_queue_open or not self._ui_lane_is_busy())
@@ -21385,10 +20824,6 @@ class Label_Match(tk.Tk):
             ("exact_rescan_button", view.f4_enabled),
             ("reset_button", view.cancel_current_enabled or self._refused_capture_cancel_enabled(view)),
             ("cancel_tray_button", view.cancel_completed_enabled),
-            (
-                "phs_label_exchange_button",
-                self._phs_label_exchange_enabled_for_current(),
-            ),
         ):
             button = self.__dict__.get(name)
             if button is not None:
@@ -21409,13 +20844,6 @@ class Label_Match(tk.Tk):
                             False,
                         )
                         or self.__dict__.get(
-                            "_phs_label_candidate_pending", False
-                        )
-                        or self.__dict__.get(
-                            "_phs_reconciliation_lookup_pending",
-                            False,
-                        )
-                        or self.__dict__.get(
                             "_phs_label_exchange_pending", False
                         )
                     ):
@@ -21425,10 +20853,7 @@ class Label_Match(tk.Tk):
                         and name != "exact_rescan_button"
                     ):
                         enabled = False
-                    elif (
-                        phs_label_recovery_pending
-                        and name != "phs_label_exchange_button"
-                    ):
+                    elif phs_label_recovery_pending:
                         enabled = False
                     button.configure(state="normal" if enabled else "disabled")
                 except (TclError, AttributeError):

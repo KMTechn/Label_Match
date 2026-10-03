@@ -1,0 +1,100 @@
+{
+  "after": {
+    "active_label_business_date": "",
+    "active_label_id": "",
+    "active_label_instruction_id": "",
+    "active_label_qr_payload": "",
+    "active_label_resolution": "TOPOLOGY_REFRESH_REQUIRED",
+    "active_label_version": 0,
+    "active_label_worker_code": "",
+    "active_membership_version": 0,
+    "canonical_input_tag_qr": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+    "central_inherit_all": true,
+    "id": "SET-CURRENT",
+    "package_source_snapshot": {
+      "authority_scope_id": "TEST1-GOAL-20260722-EXACT-SIX",
+      "member_count": 4,
+      "membership_hash": "e145e206b48415b45f921e56a5989c6bcce7b0aa6f3b3737ff91ee9ddb213d7a"
+    },
+    "package_submission_status": "",
+    "parsed": [
+      "AAA2270730200"
+    ],
+    "phs_label_exchange_id": "EXCHANGE-1",
+    "phs_label_guidance": "SPLIT 완료: successor 현품표 2장이 생성됐습니다. 현재 포장은 완료 차단 상태로 보존되며 새 현품표별 작업을 확인해야 합니다.",
+    "phs_label_topology_refresh_required": true,
+    "phs_label_topology_successors": [
+      {
+        "business_date": "2026-07-28",
+        "display_item_code": "30200",
+        "group_id": "TARGET-GROUP-1",
+        "hash_prefix": "9999999999999999",
+        "instruction_id": "INSTRUCTION-TARGET-1",
+        "item_daily_ordinal": 1,
+        "item_id": "AAA2270730200",
+        "label_id": "LBL-TARGET-1",
+        "label_instance_hash": "9999999999999999000000000000000000000000000000000000000000000000",
+        "label_version": 2,
+        "member_count": 2,
+        "membership_hash": "6c61af5a2d6e5c0e79207bc68716be9cc7d84b8c4d02fa8f9655d0a107a61ea6",
+        "membership_version": 1,
+        "qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-TARGET-1|HSH=9999999999999999",
+        "scan_anchor_input_tag_id": "ITAG-PACK-1",
+        "state": "ACTIVE",
+        "worker_code": "7월28일-1"
+      },
+      {
+        "business_date": "2026-07-28",
+        "display_item_code": "30200",
+        "group_id": "TARGET-GROUP-2",
+        "hash_prefix": "aaaaaaaaaaaaaaaa",
+        "instruction_id": "INSTRUCTION-TARGET-2",
+        "item_daily_ordinal": 2,
+        "item_id": "AAA2270730200",
+        "label_id": "LBL-TARGET-2",
+        "label_instance_hash": "aaaaaaaaaaaaaaaa000000000000000000000000000000000000000000000000",
+        "label_version": 2,
+        "member_count": 2,
+        "membership_hash": "8a40ce8ace06a054b773bd555ddd90723a1e44aaced83cef6ee437592aa3df56",
+        "membership_version": 1,
+        "qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-TARGET-2|HSH=aaaaaaaaaaaaaaaa",
+        "scan_anchor_input_tag_id": "ITAG-PACK-1",
+        "state": "ACTIVE",
+        "worker_code": "7월28일-2"
+      }
+    ],
+    "progress_marker": "KEEP",
+    "raw": [
+      "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111"
+    ]
+  },
+  "before": {
+    "active_label_business_date": "2026-07-27",
+    "active_label_id": "LBL-SOURCE-1",
+    "active_label_instruction_id": "INSTRUCTION-SOURCE-1",
+    "active_label_qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+    "active_label_resolution": "OVERLAY_ACTIVE",
+    "active_label_version": 1,
+    "active_label_worker_code": "7월27일-1",
+    "active_membership_version": 1,
+    "canonical_input_tag_qr": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+    "central_inherit_all": true,
+    "id": "SET-CURRENT",
+    "package_source_snapshot": {
+      "authority_scope_id": "TEST1-GOAL-20260722-EXACT-SIX",
+      "member_count": 4,
+      "membership_hash": "e145e206b48415b45f921e56a5989c6bcce7b0aa6f3b3737ff91ee9ddb213d7a"
+    },
+    "package_submission_status": "",
+    "parsed": [
+      "AAA2270730200"
+    ],
+    "progress_marker": "KEEP",
+    "raw": [
+      "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111"
+    ]
+  },
+  "journal_sha256": "f320929ea31dd5b07f1f97e14c11bf91b1be7bc6feee2444b8f6b40d80054c8b",
+  "source_commit": "167ac7e33ae11dd87d86dd99e86f5f98f7ded58e",
+  "status": "COMMITTED"
+}

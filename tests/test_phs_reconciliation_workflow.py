@@ -1,3 +1,4 @@
+from tests._f5_recovery_fixture import restore_saved_f5_journal
 import copy
 import hashlib
 import json
@@ -351,9 +352,6 @@ class _Client:
                 },
             )
 
-    def resolve_phs_reconciliation_actions(self, **kwargs):
-        self.calls.append(("resolve", kwargs))
-        return copy.deepcopy(self.resolution)
 
     def prepare_phs_reconciliation_label_exchange(
         self,
@@ -616,16 +614,18 @@ def _current_set(resolution):
 
 
 def _coordinator(tmp_path, client, printer=None):
-    return PHSLabelExchangeCoordinator(
+    coordinator = PHSLabelExchangeCoordinator(
         client,
         PHSLabelExchangeJournal(tmp_path / "journal.json"),
         _Renderer(tmp_path / "rendered"),
         printer or _Printer(),
     )
+    restore_saved_f5_journal(coordinator, name="reconciliation-" + client.kind.lower())
+    return coordinator
 
 
 @pytest.mark.parametrize("kind", ["SINGLE", "BATCH", "SPLIT", "MERGE"])
-def test_reconciliation_topologies_print_all_then_activate_once(
+def test_saved_reconciliation_topologies_print_all_then_activate_once(
     tmp_path,
     kind,
 ):
@@ -635,8 +635,7 @@ def test_reconciliation_topologies_print_all_then_activate_once(
     before = copy.deepcopy(current)
     coordinator = _coordinator(tmp_path, client)
 
-    result = coordinator.execute_reconciliation(
-        resolution,
+    result = coordinator.recover_reconciliation(
         current_set=current,
         persist_current_set=lambda: True,
     )
@@ -673,8 +672,7 @@ def test_completed_packaging_label_runs_without_mutating_current_set(tmp_path):
     unrelated = {"id": "UNRELATED", "raw": [], "progress": 7}
     before = copy.deepcopy(unrelated)
 
-    result = _coordinator(tmp_path, client).execute_reconciliation(
-        resolution,
+    result = _coordinator(tmp_path, client).recover_reconciliation(
         current_set=None,
         persist_current_set=None,
     )
@@ -684,52 +682,6 @@ def test_completed_packaging_label_runs_without_mutating_current_set(tmp_path):
     assert [call[0] for call in client.calls].count("activate") == 1
 
 
-@pytest.mark.parametrize(
-    "mutator,code",
-    [
-        (
-            lambda value: value.update(
-                {"authority_scope_id": "WRONG-SCOPE"}
-            ),
-            "PHS_RECONCILIATION_RESPONSE_INVALID",
-        ),
-        (
-            lambda value: value["actions"][0]["process_membership"][0].update(
-                {"location_code": "PHS_GOOD"}
-            ),
-            "PHS_RECONCILIATION_PROCESS_INVALID",
-        ),
-        (
-            lambda value: value["actions"][0].update(
-                {"source_member_union_hash": "f" * 64}
-            ),
-            "PHS_RECONCILIATION_MEMBERSHIP_INVALID",
-        ),
-        (
-            lambda value: value["actions"][0]["targets"].append(
-                _target(8, 2)
-            ),
-            "PHS_RECONCILIATION_TOPOLOGY_INVALID",
-        ),
-    ],
-)
-def test_wrong_scope_process_hash_or_topology_fails_before_prepare(
-    tmp_path,
-    mutator,
-    code,
-):
-    resolution = _resolution("SINGLE")
-    mutator(resolution)
-    client = _Client(_resolution("SINGLE"))
-    coordinator = _coordinator(tmp_path, client)
-
-    with pytest.raises(PHSLabelWorkflowError) as error:
-        coordinator.execute_reconciliation(resolution)
-
-    assert error.value.code == code
-    assert not any(call[0] == "prepare" for call in client.calls)
-
-
 def test_partial_print_retry_only_reprints_failed_target(tmp_path):
     resolution = _resolution("BATCH")
     client = _Client(resolution)
@@ -737,7 +689,7 @@ def test_partial_print_retry_only_reprints_failed_target(tmp_path):
     printer = _Printer(fail_once_label_id=failed_id)
     coordinator = _coordinator(tmp_path, client, printer)
 
-    first = coordinator.execute_reconciliation(resolution)
+    first = coordinator.recover_reconciliation()
 
     assert first.success is False
     assert first.journal_state["failed_target_label_id"] == failed_id
@@ -766,9 +718,10 @@ def test_lost_prepare_ack_restarts_with_same_key_and_one_server_write(tmp_path):
         _Renderer(tmp_path / "rendered"),
         _Printer(),
     )
+    restore_saved_f5_journal(first, name="reconciliation-" + client.kind.lower())
 
     with pytest.raises(RuntimeError, match="lost prepare ACK"):
-        first.execute_reconciliation(resolution)
+        first.recover_reconciliation()
 
     recovered = PHSLabelExchangeCoordinator(
         client,
@@ -788,8 +741,7 @@ def test_lost_activate_ack_recovers_committed_exchange_by_get(tmp_path):
     resolution = _resolution("SINGLE")
     client = _Client(resolution, lose_activate_ack=True)
 
-    result = _coordinator(tmp_path, client).execute_reconciliation(
-        resolution
+    result = _coordinator(tmp_path, client).recover_reconciliation(
     )
 
     assert result.success is True
@@ -814,10 +766,10 @@ def test_committed_local_failure_recovers_by_get_without_second_prepare(
         _Renderer(tmp_path / "rendered"),
         _Printer(),
     )
+    restore_saved_f5_journal(coordinator, name="reconciliation-" + client.kind.lower())
 
     with pytest.raises(PHSLabelWorkflowError) as first_error:
-        coordinator.execute_reconciliation(
-            resolution,
+        coordinator.recover_reconciliation(
             current_set=current,
             persist_current_set=lambda: False,
         )
@@ -854,8 +806,7 @@ def test_prepare_projection_membership_corruption_blocks_all_prints(
     client._projection = corrupt_projection
 
     with pytest.raises(PHSLabelWorkflowError) as error:
-        _coordinator(tmp_path, client).execute_reconciliation(
-            resolution
+        _coordinator(tmp_path, client).recover_reconciliation(
         )
 
     assert error.value.code == "PHS_RECONCILIATION_TARGET_INVALID"
@@ -882,9 +833,10 @@ def test_lost_print_complete_ack_reuses_attempt_without_reprinting(
         _Renderer(tmp_path / "rendered"),
         printer,
     )
+    restore_saved_f5_journal(coordinator, "reconciliation-" + client.kind.lower())
 
     with pytest.raises(RuntimeError, match="lost complete ACK"):
-        coordinator.execute_reconciliation(resolution)
+        coordinator.recover_reconciliation()
 
     assert (
         journal.load()["target_prints"][target_id]["status"]
@@ -919,9 +871,10 @@ def test_restart_requires_explicit_confirmation_after_ambiguous_spool(
         _Renderer(tmp_path / "rendered"),
         _CrashDuringSpoolPrinter(),
     )
+    restore_saved_f5_journal(first, "reconciliation-" + client.kind.lower())
 
     with pytest.raises(KeyboardInterrupt):
-        first.execute_reconciliation(resolution)
+        first.recover_reconciliation()
 
     target_id = "LBL-TARGET-1"
     assert (

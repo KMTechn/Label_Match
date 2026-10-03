@@ -14,8 +14,9 @@ from package_logistics import PackageClientConfig, PackageLogisticsClient, _defa
 from phs_label_workflow import PHSLabelExchangeCoordinator, PHSLabelExchangeJournal
 from tests.conftest import register_lm_mutex
 from tests.lock_remote_guard import LockRemoteGuard, RemoteWhileLocked
+from tests._f5_recovery_fixture import restore_saved_f5_journal
 from tests.test_phs_label_workflow import (
-    SCOPE, TARGET_INSTRUCTION, _Client, _Printer, _Renderer, _current_set,
+    SCOPE, _Client, _Printer, _Renderer, _current_set,
 )
 from tests.test_legacy_label_transition import MASTER
 from tests.test_label_match_core import _FakeEntry
@@ -25,7 +26,6 @@ from tk_serial_ui_lane import LaneTask, TkSerialUiLane
 
 
 @pytest.mark.parametrize('source', [
-    'phs_single_exchange', 'phs_reconciliation_exchange',
     'phs_current_recovery', 'phs_reconciliation_recovery',
 ])
 def test_only_f5_client_calls_are_exempt_while_f5_admission_is_held(source, lock_remote):
@@ -123,9 +123,10 @@ def test_f5_activation_blocks_new_generation_and_preserves_busy_entry(
         _Renderer(tmp_path / 'first.png'), _Printer())
     second = PHSLabelExchangeCoordinator(central, PHSLabelExchangeJournal(journal_path),
         _Renderer(tmp_path / 'second.png'), _Printer())
+    restore_saved_f5_journal(first, "single")
     def run_old():
         try:
-            results['old'] = first.execute_single(current, TARGET_INSTRUCTION,
+            results['old'] = first.recover_current(current,
                 persist_current_set=persist).status
         except BaseException as error:
             errors.append(type(error).__name__)

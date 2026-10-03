@@ -525,14 +525,8 @@ def test_offline_explicit_park_blocks_claimed_f5_and_allows_other(tmp_path, monk
     assert app._label_recovery_source_is_held(SOURCE_A) is True
     assert app._label_recovery_source_is_held(SOURCE_B) is False
     assert app._active_label_recovery_state() == {}
-    started = []
-    app.phs_label_exchange_coordinator.reconciliation_available = lambda: True
-    app.phs_label_exchange_coordinator.has_pending_reconciliation = lambda: False
-    app._sealed_transfer_exchange_blocks_local_action = lambda _action: False
-    app._show_phs_reconciliation_scan_window = lambda: started.append("F5")
-    assert app._handle_phs_label_exchange_shortcut() == "break"
-    assert started == ["F5"]
     assert not journal.path.exists()
+    assert journal.load() == {}
     journal.save({
         "workflow_mode": "RECONCILIATION", "status": "PREPARE_PENDING",
         "set_id": "", "scan_payload": SOURCE_B,

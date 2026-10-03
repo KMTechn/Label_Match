@@ -1,3 +1,4 @@
+from tests._f5_recovery_fixture import restore_saved_f5_journal
 import copy
 from pathlib import Path
 
@@ -197,17 +198,6 @@ def _current_set():
     }
 
 
-TARGET_INSTRUCTION = {
-    "instruction_id": "INS-NEW",
-    "business_date": "2026-07-28",
-    "item_id": ITEM_ID,
-    "uom": "PCS",
-    "target_qty_pcs": 2,
-    "item_daily_ordinal": 2,
-    "worker_code": "2270730200-2",
-    "entity_version": 4,
-    "state": "PLANNED",
-}
 
 
 class _Renderer:
@@ -265,40 +255,6 @@ class _Client:
             membership_version=1,
         )
 
-    def list_phs_work_instruction_candidates(self, **kwargs):
-        self.calls.append(("candidates", kwargs))
-        return {
-            "authority_scope_id": SCOPE,
-            "business_date": "2026-07-28",
-            "item_id": ITEM_ID,
-            "uom": "PCS",
-            "target_qty_pcs": 2,
-            "candidate_count": 1,
-            "candidates": [dict(TARGET_INSTRUCTION)],
-        }
-
-    def resolve_active_phs_label(self, input_tag_id, **kwargs):
-        self.calls.append(("resolve_active", input_tag_id))
-        return {
-            "status": "ACTIVE",
-            "resolution": "OVERLAY_ACTIVE",
-            "input_tag": {"qr_payload": CANONICAL_QR},
-            "active_label": _label(
-                label_id="LBL-OLD",
-                qr_payload=CANONICAL_QR,
-                hash_prefix="aaaaaaaaaaaaaaaa",
-            ),
-        }
-
-    def adopt_phs_label(self, **kwargs):
-        self.calls.append(("adopt", kwargs))
-        return {
-            "label": _label(
-                label_id="LBL-OLD",
-                qr_payload=CANONICAL_QR,
-                hash_prefix="aaaaaaaaaaaaaaaa",
-            )
-        }
 
     def prepare_phs_label_exchange(self, **kwargs):
         self.calls.append(("prepare", kwargs))
@@ -497,7 +453,7 @@ def test_pending_or_ambiguous_successor_is_fail_closed():
     )
 
 
-def test_single_exchange_prints_then_activates_without_changing_packaging_state(
+def test_saved_single_exchange_recovers_without_changing_packaging_state(
     tmp_path,
 ):
     current = _current_set()
@@ -513,11 +469,11 @@ def test_single_exchange_prints_then_activates_without_changing_packaging_state(
         _Renderer(tmp_path / "label.png"),
         _Printer(),
     )
+    restore_saved_f5_journal(coordinator, "single")
     persisted = []
 
-    result = coordinator.execute_single(
+    result = coordinator.recover_current(
         current,
-        TARGET_INSTRUCTION,
         persist_current_set=lambda: (
             persisted.append(copy.deepcopy(current)) or True
         ),
@@ -555,11 +511,11 @@ def test_committed_remote_local_failure_reuses_exchange_without_second_write(
         _Renderer(tmp_path / "label.png"),
         _Printer(),
     )
+    restore_saved_f5_journal(coordinator, "single")
 
     with pytest.raises(PHSLabelWorkflowError) as first:
-        coordinator.execute_single(
+        coordinator.recover_current(
             working,
-            TARGET_INSTRUCTION,
             persist_current_set=lambda: False,
         )
     assert first.value.code == "PHS_LOCAL_STATE_WRITE_FAILED"
@@ -569,9 +525,8 @@ def test_committed_remote_local_failure_reuses_exchange_without_second_write(
     assert [name for name, *_rest in client.calls].count("activate") == 1
 
     recovered = copy.deepcopy(visible)
-    result = coordinator.execute_single(
+    result = coordinator.recover_current(
         recovered,
-        TARGET_INSTRUCTION,
         persist_current_set=lambda: True,
     )
 
@@ -590,10 +545,10 @@ def test_print_failure_keeps_old_label_active_and_never_activates(tmp_path):
         _Renderer(tmp_path / "label.png"),
         _FailingPrinter(),
     )
+    restore_saved_f5_journal(coordinator, "single")
 
-    result = coordinator.execute_single(
+    result = coordinator.recover_current(
         current,
-        TARGET_INSTRUCTION,
         persist_current_set=lambda: True,
     )
 
@@ -614,11 +569,11 @@ def test_source_target_membership_mismatch_blocks_print_and_activation(tmp_path)
         _Renderer(tmp_path / "label.png"),
         _Printer(),
     )
+    restore_saved_f5_journal(coordinator, "single")
 
     with pytest.raises(PHSLabelWorkflowError) as error:
-        coordinator.execute_single(
+        coordinator.recover_current(
             current,
-            TARGET_INSTRUCTION,
             persist_current_set=lambda: True,
         )
 
@@ -641,9 +596,8 @@ def test_corrupt_journal_blocks_second_prepare(tmp_path):
     )
 
     with pytest.raises(PHSLabelWorkflowError) as error:
-        coordinator.execute_single(
+        coordinator.recover_current(
             _current_set(),
-            TARGET_INSTRUCTION,
             persist_current_set=lambda: True,
         )
     assert error.value.code == "PHS_LABEL_JOURNAL_CORRUPT"

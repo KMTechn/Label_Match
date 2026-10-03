@@ -1,0 +1,22 @@
+{
+  "single": {
+    "sha256": "4e72ab0afa422ecaa4c15a76011053e4dd584b28ea55f02164614fe07396022b",
+    "bytes": 1128
+  },
+  "reconciliation-single": {
+    "sha256": "6fc1c4ddb9e12018fd294d33bdea2a35e1ac19b2b213096b9fa4a33b5f8b4b38",
+    "bytes": 4686
+  },
+  "reconciliation-batch": {
+    "sha256": "4413efe22aedd41e659698464b6eac08456132e0d9076aded079c9ee8c64e54b",
+    "bytes": 7331
+  },
+  "reconciliation-split": {
+    "sha256": "f320929ea31dd5b07f1f97e14c11bf91b1be7bc6feee2444b8f6b40d80054c8b",
+    "bytes": 5959
+  },
+  "reconciliation-merge": {
+    "sha256": "2f305066d45ac698bc64f2bf5c19f9e597314620ea3ee83c0f70b054f398ce5a",
+    "bytes": 6177
+  }
+}

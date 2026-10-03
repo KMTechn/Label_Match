@@ -14,7 +14,7 @@ DESIGN §1.2와 코디 추가 결정에 따라 품목 불일치·입력 오류�
 
 보류 현품표·중앙/교환 대기·음향/이력 callback 오류는 창 안 안내와 기존 소리를 사용한다. 미완료 저장본은 질문 없이 현재 교대 작업자에게 복원하며 원 스캔·접수와 과거 작업자 귀속을 보존한다. 복원 안내 자체는 입력을 잠그지 않고 다음 정상 제품 뒤 사라진다. 작업자 선택/등록, 설치·기준 파일 수리, 미완료 현품표 교환 복구·완료 이력 취소/삭제·설정·켜진 시뮬레이션의 PC 앞 창은 유지한다.
 
-빈 작업대는 종료 확인 없이 기존 저장·lane drain·전송 정리를 실행한다. 현재 세트 raw·교환 단계·미달 UNDO 또는 현품표 교환 미완료 상태가 있을 때만 종료를 묻는다. 내구 전송 대기열만 있는 것은 확인 사유가 아니다. 정상 화면의 F5 키·날짜 교환 단추·안내는 숨기며 저장된 교환은 `건별 복구 → 미완료 현품표 교환 복구`에서 같은 요청으로 재개한다.
+빈 작업대는 종료 확인 없이 기존 저장·lane drain·전송 정리를 실행한다. 현재 세트 raw·교환 단계·미달 UNDO 또는 현품표 교환 미완료 상태가 있을 때만 종료를 묻는다. 내구 전송 대기열만 있는 것은 확인 사유가 아니다. 정상 화면의 F5 키·날짜 교환 단추·새 교환 코드와 전용 조회는 제거했으며 저장된 교환은 `건별 복구 → 미완료 현품표 교환 복구`에서 같은 요청으로 재개한다.
 
 교환·일반 UNDO·미달 release·자동 source 검토 감사는 current-state의 scanner_audit_outbox에 업무 checkpoint와 함께 저장한다. 고정 key·원 시각·작업자·이벤트 내용을 보존하고 직후·다음 스캔 전·저장 재시도·기동 때 기존 CSV writer로 재생한다. 같은 key의 동일 CSV 행은 재append하지 않고 fsync하며, CSV와 outbox 제거 checkpoint가 모두 성공한 항목만 목록에서 지운다. CSV 실패는 입력을 막지 않고 pending을 유지한다; 업무 checkpoint 실패만 기존 차단한다. UNDO·reset·완료 후에도 미전송 감사는 보존하므로 교환과 그 UNDO가 모두 남는다. 목표 수량에 도달하지 않은 재시도를 PASS 완료하지 않는다. 기동·복구는 기존 DB 보류 snapshot과 검증된 archive의 pending 감사도 읽어서 같은 ID로 재생한다. 보류 원본·PIN에 결속된 현재 파일은 재작성하지 않고, 활성 파일이 없으면 만들지 않는다; 보류 감사의 재생 여부는 CSV readback으로 판정한다. 큰 감사 목록은 `_scanner_audit_outbox/<SHA256>.json`의 내구 조각을 먼저 저장한 뒤 `scanner_audit_segments` 참조와 업무 checkpoint를 원자 저장한다. 재기동은 SHA·스키마가 맞는 조각을 기록 순서대로 재생하며, 손상·소실 조각의 원본과 참조는 보존한 채 다른 감사와 입력을 계속한다. 이전 8MiB 초과 inline 감사도 업무 본문 검증 뒤 읽는다. 백업·보류 복원에는 checkpoint와 `_scanner_audit_outbox` 폴더를 함께 보존하며, 완료된 조각도 자동 삭제하지 않는다.
 
@@ -173,7 +173,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 | --- | --- | --- |
 | 기본 중앙 업무 | `Label_Match.py:main` → onboarding/guard → Tk, [portable/main.py:main](../../portable/main.py)도 같은 앱 진입 | 원본 compact PHS2 1회 → 필요 시 F4 → 랩핑 → F3. 중앙 프로필·멤버십 확인 필요; 설치 형태·활성 설정 미확인 |
 | 조건부 F4 | 전체 단일 TRANSFER를 대표하는 현재 작업, 교체 capability·버전·적합 donor | 대상 멤버 수 이내의 목록을 확인·일괄 적용 후 새 **전자** 봉인 QR 확인. 부분/복수 transfer work-group은 F3 가능해도 F4 불가 |
-| 현품표 교환 복구 | 저장된 교환 journal과 중앙 API, Windows 프린터 | 정상 F5는 숨기고 건별 복구에서 같은 요청의 출력·ACK·활성화만 재개 |
+| 현품표 교환 복구 | 저장된 교환 journal과 중앙 API, Windows 프린터 | 새 교환 진입·전용 조회는 제거했고 건별 복구에서 저장 요청의 출력·ACK·활성화만 재개 |
 | 호환 | 명시적으로 분류된 과거 입력 및 membership mode | 현품표+제품 표본 3개+최종 라벨, F4 전체 재스캔 분기가 남아 있음. 미분류 중앙 입력의 자동 fallback 아님 |
 | 현재 사용하는 이름 | `legacy_packaging_csv` | producer 전송 dataset 식별자. `legacy`라는 이름 때문에 폐기로 분류하지 않음 |
 | 이력·제외 | [README.txt](../../README.txt), 오래된 OUTLINE/UI; Syncthing·`C:\Sync` | 과거 문서는 현행 절차 근거로 쓰지 않음. 운영 전송은 HTTPS/direct-sync([정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md)) |
@@ -216,7 +216,7 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 | [LM-07 중앙 ACK·충돌](#lm-07) | [PackageOutboxProcessor.drain](../../package_logistics.py) |
 | [LM-08 중단·날짜 복구](#lm-08) | [_load_current_set_state](../../Label_Match.py) |
 | [LM-09 초기화·완료 취소](#lm-09) | [PackageCancellationOutbox](../../package_logistics.py) |
-| [LM-10 F5 인쇄·조정](#lm-10) | [execute_single / recover_current](../../phs_label_workflow.py) |
+| [LM-10 F5 인쇄·조정](#lm-10) | [recover_current / recover_reconciliation](../../phs_label_workflow.py) |
 | [LM-11 관측·세트 집계](#lm-11) | [direct_sync_push](../../direct_sync_push.py) |
 | [LM-12 화면·입력 gate](#lm-12) | [TkSerialUiLane](../../tk_serial_ui_lane.py) |
 
@@ -318,13 +318,13 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 - 근거: [F1/F2 handlers](../../Label_Match.py), [PackageCancellationOutbox/processor](../../package_logistics.py). [C-06](contracts.md#c-06), [LM-B05](BACKLOG.md#lm-b05), [LM-B06](BACKLOG.md#lm-b06).
 
 <a id="lm-10"></a>
-### LM-10 F5 현품표 교환·인쇄·조정
+### LM-10 저장된 F5 현품표 교환·인쇄 복구
 
-- 시작/입력: 정상 화면의 F5 단축키·현품표 날짜 교환 단추는 숨긴다. 건별 복구의 `미완료 현품표 교환 복구`로 저장 journal의 같은 요청만 재개한다. 새 날짜 입력·새 reconciliation 조회는 이 예외 경로에서 열지 않는다.
+- 시작/입력: 정상 화면의 F5 단축키·현품표 날짜 교환 단추와 새 교환 실행·후보/action 조회는 제거했다. 건별 복구의 `미완료 현품표 교환 복구`로 저장 journal의 같은 요청만 재개한다. 새 날짜 입력·새 reconciliation 조회는 없다. 이전 판의 v1 미완료 journal·hold·PIN intent는 보존하고 같은 요청만 복구한다.
 - 쓰기/결과: 로컬 journal, 중앙 prepare/status/print attempt/activate를 연결한다. Windows GDI 출력 proof는 printer·job ID·문서·시각·EndDoc를 기록한다.
 - 실패/복구: 출력 실패와 출력 후 ACK 유실을 구분해 `recover_current`/`recover_reconciliation`으로 조정한다. 결과가 불명확하면 무조건 새 출력부터 반복하지 않는다.
 - 수용 기준: 재시작 후 준비/인쇄/활성화 단계가 일치하고 중복 출력을 통제하며 기본 프린터 설정을 보존한다. 큐 접수와 실물 종이·QR 가독성을 각각 관찰한다.
-- 근거: [PhysicalPrintEvidence/execute_single/recover_current](../../phs_label_workflow.py). [C-07](contracts.md#c-07), [장비](operations.md#devices), [LM-B04](BACKLOG.md#lm-b04).
+- 근거: [PhysicalPrintEvidence/recover_current/recover_reconciliation](../../phs_label_workflow.py). [C-07](contracts.md#c-07), [장비](operations.md#devices), [LM-B04](BACKLOG.md#lm-b04).
 
 <a id="lm-11"></a>
 ### LM-11 관측 전송·포장 세트 집계
@@ -339,14 +339,14 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 <a id="lm-12"></a>
 ### LM-12 작업 화면·이력·입력 gate
 
-- 시작/입력: 현재/과거 날짜 조회, 히스토리·집계, 스캔 Enter와 업무 버튼/단축키. F1–F4는 날짜·busy·교체/복구 상태의 공통 action gate를 사용하며, 숨긴 F5의 저장 교환 복구는 건별 복구에서 기존 진입 조건을 검사한다.
+- 시작/입력: 현재/과거 날짜 조회, 히스토리·집계, 스캔 Enter와 업무 버튼/단축키. F1–F4는 날짜·busy·교체/복구 상태의 공통 action gate를 사용하며, 이전 판 F5의 저장 교환 복구는 건별 복구에서 기존 진입 조건을 검사한다.
 - 효과: 업무 비동기는 UI lane, 이력 읽기는 별도 worker/queue를 사용하며 오래된 generation의 결과 적용을 차단한다. 완전한 이력 결과의 논리 색인을 먼저 설치하고 오늘 읽기 gate를 해제한 뒤 Treeview 삭제·삽입·집계를 after 배치로 적용한다. 적용 중 새 스캔·완료·취소를 보존하며 새 조회 generation은 이전 배치를 중단한다. 읽기 진행 중 및 과거 조회의 기존 업무 gate는 유지한다.
 - 처리 중 스캔: lane이 일하는 동안 입력칸은 잠겨 스캐너 글자가 들어가지 않는다. 그때의 Enter는 `이전 작업 처리 중 · 스캔 안 받음`·`처리 중이라 이번 스캔은 받지 않았습니다. 끝나면 다시 스캔하세요.`와 경고음을 낸다. 처리 시작 전 입력칸에 이미 있던 값만 지우지 않고 `입력 보존`으로 안내한다. 스캔 없이 시작하는 뒤 작업(저장된 현품표 중앙 확인)은 입력칸이 비어 있고 마지막 Enter 뒤 1초가 지나야 시작하며, 그 전에는 1초 뒤 다시 확인한다(작업은 버리지 않는다). PHS2 현품표의 로컬 캡처 저장이 실패하면 입력칸을 비운다: 끔은 `저장 실패—다시 스캔 필요` 안내대로 다시 스캔한 값만, 켬은 그 현품표로 시작한 로컬 세트의 다음 제품만 받는다. 남은 값이 다음 스캔과 붙어 한 값으로 접수되지 않게 하기 위해서다(w9scanflow). 화면이 입력칸을 잠근 다른 상태(이력 불러오기·지난 이력 보기·차단 안내·중앙 1/1 F3 대기·조회 중·종료 중)의 스캔도 조용히 버리지 않는다: 경고음과 그 상태의 안내(안내가 없으면 `스캔 안 받음 · <다음 행동>`, 조회 중은 `스캔 안 받음` 안내, 종료 중은 `처리 완료 후 종료합니다`)를 낸다. 값·세트·기록은 바뀌지 않는다(w9lmscanmsg). 예외는 F3 완료 저장(lane `f3-package-completion`, 측정 1.2–2.6초)이다: 화면 gate가 없으면(이력·차단 안내·오류) 입력칸을 열어 두고 각 Enter 값을 입력칸에서 꺼내 순서 대기열에 넣는다(`포장 완료 저장 뒤 이어서 처리할 스캔 N건`, 중앙 1/1의 F3 대기도 이 저장이 끝내므로 연다; 처리 중 상태줄 꼬리 문구는 M7 캡처 계약 때문에 그대로 — BACKLOG). 대기열은 그 완료가 durable하게 끝나 세트가 초기화된 뒤에만 다음 세트 입력으로 차례로 처리한다(그 사이 들어온 Enter도 뒤에 선다). 완료 실패·보류, 저장 중 종료, F1·작업 초기화·세대 변경, lane 고장, 처리한 스캔이 다른 lane 작업을 시작하거나 화면 gate를 닫으면 남은 대기 스캔을 모두 경고음과 `… 이어서 들어온 스캔 N건은 받지 않았습니다 … 다시 스캔하세요`로 거절한다(조용한 유실 없음). 원장·전송함·lease·단일 writer 계약과 완료 저장 순서는 바뀌지 않는다(w9lmscanmsg B).
 - 이력 읽기 실패: timestamp·JSON syntax/shape·파일 오류는 불완전 조회다. 마지막 완전한 활성 집계·중복·완료 색인을 보존하고 손상 행 수를 경고하며 이력 상세에 파일·행 위치를 표시한다. 오늘 조회 실패는 작업을 차단하지만 재조회는 허용하고 완전한 오늘 결과로만 해제한다([C-08](contracts.md#c-08)).
 - 이력 적용 최적화: 빈 보조 스캔 셀은 열 너비를 조회하지 않고, 날짜 모드에서 이미 반영한 workbench를 결과 callback 끝에서 다시 그리지 않는다. 후속 LM-A2는 오늘 모드와 호환 전체 재스캔의 상태 갱신 직후 중복 render 3곳을 추가 제거하며, 복구 ACK 반영의 명시 render는 유지한다. 현품표 원문·비어 있지 않은 셀의 축약, 과거 조회 details와 오늘의 중복 색인은 보존한다. [합성·실제 Tk 측정과 남은 VM 업무 검증](operations.md#history-optimization).
 - 실패/취소/종료: BROKEN lane은 추가 입력을 차단한다. 처리 중 종료 요청은 drain 후 종료하며 타임아웃의 강제 중단을 정상 저장 증거로 삼지 않는다.
 - 수용 기준: 버튼/키보드 gate가 일치하고 busy 중 스캔 거절 안내·처리 전 값 보존·idle 재제출·stale 결과 무시·종료 경계가 대응한다. 실장비 입력과 화면 배율의 가독성은 별도 확인한다.
-- busy·BROKEN 안내 본문은 레이아웃 갱신 중에도 표시하고 실제 idle에서 일상 화면으로 복귀한다. 좁은 F5는 같은 문구를 두 줄로 재배치하고 가로 본문 여백만 줄이며 입력·글자 크기·gate는 유지한다. 작은 화면/큰 글씨의 실제 가독성은 별도 확인한다.
+- busy·BROKEN 안내 본문은 레이아웃 갱신 중에도 표시하고 실제 idle에서 일상 화면으로 복귀한다. 작은 화면/큰 글씨의 실제 가독성은 별도 확인한다.
 - 근거: [앱 workflow handlers](../../Label_Match.py), [TkSerialUiLane](../../tk_serial_ui_lane.py), [관련 테스트 설계](../../tests/test_label_ui_lane_integration.py). [LM-B04](BACKLOG.md#lm-b04), [LM-B05](BACKLOG.md#lm-b05).
 
 <a id="specification-coverage"></a>

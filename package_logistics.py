@@ -1665,40 +1665,6 @@ class PackageLogisticsClient:
         evidence["bundle"] = projection
         return evidence
 
-    def list_phs_work_instruction_candidates(
-        self,
-        *,
-        authority_scope_id: str,
-        business_date: str,
-        item_id: str,
-        target_qty_pcs: int,
-        limit: int = 20,
-    ) -> dict[str, Any]:
-        scope = str(
-            authority_scope_id
-            or self.config.authority_scope_id
-            or ""
-        ).strip()
-        if not scope:
-            raise PackageLogisticsError(
-                "authority scope is required for PHS work instructions"
-            )
-        self._assert_authority(scope)
-        query = urlencode(
-            {
-                "authority_scope_id": scope,
-                "business_date": str(business_date or "").strip(),
-                "item_id": str(item_id or "").strip(),
-                "target_qty_pcs": int(target_qty_pcs),
-                "limit": int(limit),
-            }
-        )
-        return self._data(
-            self._request(
-                "GET",
-                f"/logistics/api/v1/phs-work-instructions/candidates?{query}",
-            )
-        )
 
     def resolve_active_phs_label(
         self,
@@ -1722,52 +1688,6 @@ class PackageLogisticsClient:
             )
         )
 
-    def resolve_phs_reconciliation_actions(
-        self,
-        *,
-        authority_scope_id: str,
-        scan_payload: str,
-        process_context: str = "packaging",
-        limit: int = 20,
-    ) -> dict[str, Any]:
-        scope = str(
-            authority_scope_id
-            or self.config.authority_scope_id
-            or ""
-        ).strip()
-        self._assert_authority(scope)
-        scan = str(scan_payload or "").strip()
-        context = str(process_context or "").strip().lower()
-        bounded_limit = int(limit)
-        if not scan:
-            raise PackageLogisticsError(
-                "PHS reconciliation scan_payload is required"
-            )
-        if context != "packaging":
-            raise PackageLogisticsError(
-                "PHS reconciliation process_context must be packaging"
-            )
-        if bounded_limit < 1 or bounded_limit > 20:
-            raise PackageLogisticsError(
-                "PHS reconciliation limit must be between 1 and 20"
-            )
-        query = urlencode(
-            {
-                "authority_scope_id": scope,
-                "scan_payload": scan,
-                "process_context": context,
-                "limit": bounded_limit,
-            }
-        )
-        return self._data(
-            self._request(
-                "GET",
-                (
-                    "/logistics/api/v1/phs-work-reconciliations/"
-                    f"actions/resolve?{query}"
-                ),
-            )
-        )
 
     @writer_sink("phs_label_adopt")
     def adopt_phs_label(

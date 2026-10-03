@@ -168,7 +168,7 @@ def test_label_exchange_writer_denial_precedes_renderer_and_png_write(tmp_path, 
 
     @contextmanager
     def denied(source, **kwargs):
-        assert source == "phs_single_exchange"
+        assert source == "phs_current_recovery"
         raise fence.WriterFencedError("TEST_DENIED", "synthetic admission denied")
         yield
 
@@ -179,7 +179,7 @@ def test_label_exchange_writer_denial_precedes_renderer_and_png_write(tmp_path, 
     monkeypatch.setattr(PHSLabelRenderer, "render", forbidden)
     monkeypatch.setattr(facade.RasterImage, "save_png", forbidden)
     with pytest.raises(fence.WriterFencedError, match="synthetic admission denied"):
-        PHSLabelExchangeCoordinator.execute_single(object(), {}, {}, persist_current_set=lambda: True)
+        PHSLabelExchangeCoordinator._resume_current(object(), {}, persist_current_set=lambda: True)
     assert list(tmp_path.iterdir()) == []
 
 

@@ -1,0 +1,29 @@
+{
+  "schema_version": "label-match-phs-label-exchange-v1",
+  "state": {
+    "authority_scope_id": "TEST1-GOAL-20260722-EXACT-SIX",
+    "canonical_input_tag_qr": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-TEST-LABEL-MATCH|CLC=AAA2270730200|LBL=LBL-OLD|HSH=aaaaaaaaaaaaaaaa",
+    "input_tag_id": "ITAG-TEST-LABEL-MATCH",
+    "prepare_idempotency_key": "label-match-phs-label-single-prepare:da29e82547cac4a6ee6ac4ce1155e7069c3c5054355a66fceb81551dc4fb1cf2",
+    "print_attempt_no": 0,
+    "set_id": "SET-ONE",
+    "source_label_id": "LBL-OLD",
+    "source_label_version": 1,
+    "source_membership_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "source_membership_version": 1,
+    "status": "PREPARE_PENDING",
+    "target_instruction": {
+      "business_date": "2026-07-28",
+      "entity_version": 4,
+      "instruction_id": "INS-NEW",
+      "item_daily_ordinal": 2,
+      "item_id": "AAA2270730200",
+      "state": "PLANNED",
+      "target_qty_pcs": 2,
+      "uom": "PCS",
+      "worker_code": "2270730200-2"
+    },
+    "target_instruction_id": "INS-NEW",
+    "updated_at": "2026-10-02T23:43:19Z"
+  }
+}

@@ -1,5 +1,4 @@
 import csv
-import inspect
 import json
 import threading
 from types import SimpleNamespace
@@ -52,54 +51,6 @@ def _replacement_csv_events(root):
     return events
 
 
-def test_worker_summary_hides_internal_instruction_and_label_ids():
-    resolution = {
-        "actions": [
-            {
-                "action_id": "ACTION-INTERNAL-1",
-                "action_type": "SPLIT",
-                "sources": [
-                    {
-                        "source_label_id": "LABEL-INTERNAL-1",
-                        "instruction_id": "INSTRUCTION-INTERNAL-1",
-                        "business_date": "2026-07-27",
-                        "item_daily_ordinal": 3,
-                        "worker_code": "7월27일-3",
-                        "qty_pcs": 4,
-                    }
-                ],
-                "targets": [
-                    {
-                        "instruction_id": "INSTRUCTION-INTERNAL-2",
-                        "business_date": "2026-07-28",
-                        "item_daily_ordinal": 1,
-                        "worker_code": "7월28일-1",
-                        "qty_pcs": 2,
-                    },
-                    {
-                        "instruction_id": "INSTRUCTION-INTERNAL-3",
-                        "business_date": "2026-07-28",
-                        "item_daily_ordinal": 2,
-                        "worker_code": "7월28일-2",
-                        "qty_pcs": 2,
-                    },
-                ],
-            }
-        ]
-    }
-
-    text = "\n".join(
-        label_module._label_match_phs_reconciliation_display_lines(
-            resolution
-        )
-    )
-
-    assert "현품표 분할" in text
-    assert "3번째 현품표" in text
-    assert "7월28일-2" in text
-    assert "ACTION-INTERNAL" not in text
-    assert "LABEL-INTERNAL" not in text
-    assert "INSTRUCTION-INTERNAL" not in text
 
 
 def test_topology_refresh_blocks_package_complete_without_losing_progress():
@@ -120,33 +71,8 @@ def test_topology_refresh_blocks_package_complete_without_losing_progress():
     assert current["progress_marker"] == "KEEP"
 
 
-def test_f5_scan_and_background_exchange_restore_scanner_focus():
-    scan_source = inspect.getsource(
-        label_module.Label_Match._show_phs_reconciliation_scan_window
-    )
-    exchange_source = inspect.getsource(
-        label_module.Label_Match._start_phs_reconciliation_exchange
-    )
-
-    assert 'bind("<Return>", submit)' in scan_source
-    assert "scan_entry.focus_set()" in scan_source
-    assert "threading.Thread" not in exchange_source
-    assert "_submit_ui_lane_task" in exchange_source
-    assert "_focus_scan_entry_if_available()" in exchange_source
-    assert "messagebox.showinfo" not in exchange_source
 
 
-def test_replacement_action_window_is_non_modal_and_uses_operator_language():
-    source = inspect.getsource(
-        label_module.Label_Match._show_phs_reconciliation_action_window
-    )
-
-    assert ".grab_set(" not in source
-    assert "popup.focus_set()" not in source
-    assert "_focus_scan_entry_if_available()" in source
-    assert "ACTIVE successor" not in source
-    assert "ACTIVE로 전환" not in source
-    assert "새 현품표가 출력되면 기존 표를 교체해 주세요." in source
 
 
 def test_replacement_required_notice_is_yellow_and_once_per_pair(tmp_path):
@@ -317,35 +243,6 @@ def test_replacement_waiting_csv_fsync_crash_recovers_without_duplicate(tmp_path
     assert row["local_csv_committed"] == 1
 
 
-def test_exchange_execute_rechecks_lookup_capture_before_starting_worker():
-    calls = []
-    app = label_module.Label_Match.__new__(label_module.Label_Match)
-    app.current_set_info = {
-        "id": "SET-1",
-        "raw": ["PHS2"],
-        "parsed": ["ITEM"],
-        "package_source_snapshot": {"version": 1},
-    }
-    captured = label_module._label_match_capture_current_set(
-        app.current_set_info
-    )
-    app.current_set_info["raw"].append("PRODUCT-1")
-    app._phs_label_exchange_pending = False
-    app._phs_label_guidance_notice = None
-    app._render_operator_workbench = lambda: calls.append("render")
-    app._focus_scan_entry_if_available = lambda: calls.append("focus")
-
-    started = app._start_phs_reconciliation_exchange(
-        _replacement_resolution(),
-        expected_current_set=captured,
-    )
-
-    assert started is False
-    assert app.current_set_info["raw"] == ["PHS2", "PRODUCT-1"]
-    assert app.current_set_info["parsed"] == ["ITEM"]
-    assert calls == ["render", "focus"]
-    assert app._phs_label_guidance_notice.tone == "warning"
-    assert "포장 상태가 바뀌어" in app._phs_label_guidance_notice.message
 
 
 def test_direct_replaced_label_scan_uses_exact_operator_notice(tmp_path):

@@ -2,7 +2,7 @@
 
 <a id="remote-writer-admission"></a>
 
-예외: 건별 복구에서 재개하는 숨긴 F5 날짜 교환의 원격 호출은 writer admission을 유지한다(코디 결정 2026-10-02). 기존 busy gate가 거절한 스캔은 응답 뒤 다시 입력하며 미리 입력된 값은 보존한다. 계측 등록은 F5 writer 함수와 해당 client 메서드의 조합만 면제한다.
+예외: 건별 복구에서 이전 판 journal로 재개하는 F5 날짜 교환의 원격 호출은 writer admission을 유지한다(코디 결정 2026-10-02). 기존 busy gate가 거절한 스캔은 응답 뒤 다시 입력하며 미리 입력된 값은 보존한다. 계측 등록은 phs_current_recovery/phs_reconciliation_recovery와 기존 prepare/status/print/activate client 메서드의 조합만 면제한다. 새 교환·후보/action 조회는 제거했다.
 
 relay 업로드·runtime lease·package client·PIN client는 HTTP 동안 writer lease를 일시 반환한다. 설치/fence 변화로 재획득 또는 재검증이 거부되면 UNKNOWN을 확정하지 않고 저장된 원 요청을 배경 재대조한다. lease 획득·쓰기 guard는 계속 적용되며, 로컬 체크포인트/완료 CSV → 표시 → 배경 전송 순서를 유지한다. `tests/lock_remote_guard.py`는 앱 독립 원본이며 `tests/conftest.py`가 실제 mutex·outbox/전송기 lock과 HTTP를 등록한다.
 
@@ -711,7 +711,7 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 | QR/문자 | compact PHS2의 여섯 필드·순서·HSH를 검사. 첫 입력에는 조건부 encoded 문자열 UTF-8 decode 호환도 존재하지만 decode 자체는 중앙 유효성 승인이 아님 | scanner model·펌웨어·문자 인코딩·제어문자 보존·길이·QR 표시 배율. Tab·직렬 장비 지원을 이번 검색으로 보장하지 않음 |
 | 소리 | `LABEL_MATCH_AUDIO_ENABLED`로 비활성 가능하며 automated-test mode는 무음. 성공음 호출은 F3 durable 경계 후에 있음 | 실제 소리 장치·볼륨·환경 소음·고장 시 시각 피드백. 소리만으로 중앙 ACK를 판정하지 않음 |
 | F4 전자 QR | 중앙 교체 뒤 새 전자 QR을 화면에서 스캔해 확인하고 원본 물리 PHS2는 유지 | 화면 반사·해상도·배율에서 판독, 잘못된 QR 거부와 재시작 후 확인 단계 복구 |
-| F5 물리 출력 | Windows GDI proof는 printer/job/document/time/EndDoc를 저장하는 spool 증거 | 용지 크기·driver·실제 배출·QR 가독성·기본 프린터 보존·paper-out. 큐 접수 성공은 실물 출력 성공과 별도 |
+| 이전 판 F5 복구의 물리 출력 | Windows GDI proof는 printer/job/document/time/EndDoc를 저장하는 spool 증거 | 용지 크기·driver·실제 배출·QR 가독성·기본 프린터 보존·paper-out. 큐 접수 성공은 실물 출력 성공과 별도 |
 
 근거: [입력·단축키·audio](../../Label_Match.py) `process_input/_handle_scan_enter/_handle_workflow_shortcut/_label_match_audio_enabled`, [F4 확인](../../Label_Match.py) `_prompt_new_seal_verification`, [F5 프린터](../../phs_label_workflow.py) `WindowsGDIPhysicalLabelPrinter/PhysicalPrintEvidence`. 전체 장비 수용은 [LM-B04](BACKLOG.md#lm-b04), 업무 기준은 [LM-05/10/12](README.md#lm-05)에서 연결한다.
 

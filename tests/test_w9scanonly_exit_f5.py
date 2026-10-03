@@ -72,10 +72,7 @@ def test_pending_date_exchange_exit_asks_once(monkeypatch):
     app.data_manager.close.assert_not_called()
 
 
-@pytest.mark.parametrize("state", [
-    "_phs_label_scan_lookup_in_progress", "_phs_label_candidate_pending",
-    "_phs_reconciliation_lookup_pending", "_phs_label_exchange_pending", "_scanner_shortage_undo",
-])
+@pytest.mark.parametrize("state", ['_phs_label_scan_lookup_in_progress', '_phs_label_exchange_pending', '_scanner_shortage_undo'])
 def test_transient_work_without_raw_still_protects_declined_exit(monkeypatch, state):
     app, question = _closing_app(monkeypatch, {"raw": []}, answer=False)
     setattr(app, state, {"raw": ["MASTER"]} if state == "_scanner_shortage_undo" else True)
@@ -87,7 +84,7 @@ def test_transient_work_without_raw_still_protects_declined_exit(monkeypatch, st
 
 def test_normal_screen_has_no_f5_action_or_key(operator_workbench):
     app = operator_workbench
-    assert not app.phs_label_exchange_button.winfo_ismapped()
+    assert "phs_label_exchange_button" not in app.__dict__
     assert all(sequence != "<F5>" for sequence, *_ in app._root_bindings)
     for widget in app.operator_action_frame.children:
         if widget.winfo_ismapped():
@@ -104,35 +101,31 @@ def test_exception_recovery_resumes_saved_exchange_without_fresh_lookup(mode):
     app._sealed_transfer_exchange_blocks_local_action = lambda action: False
     app._show_scanner_notice = Mock()
     app._focus_scan_entry_if_available = Mock()
-    app._start_phs_label_exchange = Mock()
-    app._start_phs_reconciliation_exchange = Mock()
-    app._show_phs_reconciliation_scan_window = Mock()
-    app._begin_phs_label_candidate_lookup = Mock()
+    app._start_phs_label_recovery = Mock()
+    app._start_phs_reconciliation_recovery = Mock()
     app.phs_label_exchange_coordinator = SimpleNamespace(
         reconciliation_available=lambda: mode != "single",
         has_pending_reconciliation=lambda: mode == "reconciliation",
         blocks_other_action=lambda current: mode.startswith("single"),
         journal=SimpleNamespace(load=lambda: {"status": "PRINT_FAILED", "failed_target_label_id": "saved-target"}),
     )
-    assert app._handle_phs_label_exchange_shortcut(recovery_only=True) == "break"
-    app._show_phs_reconciliation_scan_window.assert_not_called()
-    app._begin_phs_label_candidate_lookup.assert_not_called()
+    assert app._recover_phs_label_exchange() == "break"
     if mode.startswith("single"):
-        app._start_phs_label_exchange.assert_called_once_with(None)
+        app._start_phs_label_recovery.assert_called_once_with()
     elif mode == "reconciliation":
-        app._start_phs_reconciliation_exchange.assert_called_once_with(
-            None, retry_failed_target_ids={"saved-target"}, confirm_ambiguous_reprint_target_ids=set(),
+        app._start_phs_reconciliation_recovery.assert_called_once_with(
+            retry_failed_target_ids={"saved-target"}, confirm_ambiguous_reprint_target_ids=set(),
         )
     else:
-        app._start_phs_label_exchange.assert_not_called()
-        app._start_phs_reconciliation_exchange.assert_not_called()
+        app._start_phs_label_recovery.assert_not_called()
+        app._start_phs_reconciliation_recovery.assert_not_called()
 
 
 def test_exception_workbench_exposes_recovery_only_action(operator_workbench, monkeypatch):
     app = operator_workbench
     app.run_tests = False
     app._package_recovery_candidates = lambda: []
-    app._handle_phs_label_exchange_shortcut = Mock()
+    app._recover_phs_label_exchange = Mock()
     window = FakeWidget(kind="exception-window")
     window.title = Mock()
     monkeypatch.setattr(lm.tk, "Toplevel", lambda parent: window)
@@ -147,4 +140,4 @@ def test_exception_workbench_exposes_recovery_only_action(operator_workbench, mo
             buttons.append(widget)
     assert len(buttons) == 1
     buttons[0].cget("command")()
-    app._handle_phs_label_exchange_shortcut.assert_called_once_with(recovery_only=True)
+    app._recover_phs_label_exchange.assert_called_once_with()

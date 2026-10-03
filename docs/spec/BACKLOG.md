@@ -1,6 +1,6 @@
 # Label_Match 진행·공백·추가 제안
 
-LM-A1/LM-B4: 빈 화면 종료 확인과 정상 F5 진입을 숨겼다. 기준일 전 날짜 교환의 비복구 기능·시험은 journal 복구 소비자와 설치 목록을 대조한 뒤 제거한다.
+LM-A1/LM-B4: 빈 화면 종료 확인을 줄였고 F5의 새 날짜 교환·전용 조회·단추·선택 창·전용 시험은 제거했다. 이전 판이 미완료 journal을 남길 수 있으므로 건별 복구·hold·PIN intent·v1 형식과 같은 요청의 prepare/print/activate는 보존한다. 잠금 면제는 복구 두 source만 남는다.
 
 <a id="busy-scan-durable-fifo"></a>
 
@@ -305,7 +305,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - 근거: [운영 구성·설정](operations.md#configuration), [장비](operations.md#devices), [LM-01/02/05/10/12](README.md#lm-01). Machine anchor, current-user profile/DPAPI, packaged settings와 실제 쓰기 위치, F4 capability, F5 driver·spool을 구분한다.
 - 상태/다음: **실제 조합 미확인**. 릴리스·Label·현장 담당이 기존 후보 근거에서 artifact/source/test 식별, 실제 module/provider/overlay·Python/라이브러리, 비밀 없는 profile identity·권한·flags, scanner·프린터·사운드·화면 조건을 연결한다.
 - 2026-09-09 최종 Label native continuation: [receipt12 최종 native continuation](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/RECEIPT12-NATIVE.md)은 수용 source `da60e05e9bf07855f701fff328df70c10db0a094` / ZIP `782d585bf09396da8c33fbb3f1c3b24afc6a8716f73e0b4983b951a896633d6e` / manifest `829f5f2230add6f0245106c5b4dac40547f56941792c2da46dbf5318effa6111`에 결속된다. 원 assigned VM에서 동일 artifact의 정상 설치 attempt02 native0, exact retained14의 지원 `ack-reviewed` native0, 지원 current-user 제거·code-only 제거, 수용 timing06 prior-code 설치/보존, 최종 receipt12 복귀 설치03:42:16Z/native0와 readback0을 완료했다. GUI13은 기존 resident를 재사용하여 PHS2 대기·이전 완료 이력을 표시하고03:44:40Z/native0으로 정상 종료했다. 실제 정상 shutdown 뒤 Off/uptime0을 관측하고 새 boot03:46:01Z·Explorer4640/session1에서 원 SID의 resident7556이 03:46:22Z에 자동 시작한 것을 확인했다. 수동 product 시작 전 단일 resident·정상 HKCU Run·canonical task0·stop/fence 없음이며 postboot native0은 payload3,391개와 보호 파일25개, 최신 post-review backup의 업무11 tables/40 rows를 확인한다. 전체 상태 메타데이터는 40/51개 동일하며 나머지 11개 status/control/settings/log 변경을 기록했다. app_settings 필드별 차이는 미확인이고 전체 config/DB/schema/hidden-rowid 동일성이나 새 대상 설치를 주장하지 않는다. [최종 보존 readback0](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/RECEIPT12-FINAL-PRESERVATION02.json)은 원 receipt/metadata/spool/attempt1·audit1과 inserted10/quarantined4를 유지하고 queue11ACKED를 기록한다. 원 event CSV prefix 두 개가 동일하며 APP_START1·APP_CLOSE1만 추가됐다. 원 F1/F4/F3·shipping·로컬7 업무나 pre-F3 DB 복원을 반복하지 않았다. 첫 설치 native1/UAC 취소·지원 rollback, 별도 pre-execution policy rejection과 reader 실패는 이력으로 보존한다. [Main의 선택 범위 최종 native 수용](E:/KMTech/resume-after-input-20260908/LABEL-RECEIPT12-FINAL-NATIVE-ACCEPTED.json)은 `PROVEN_SELECTED_LABEL_FINAL_NATIVE_ACCEPTED`이며 Main msg_b42de21979ea 승인에 따른 정상 guest shutdown 뒤 [최종 VM Off/uptime0](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/RECEIPT12-FINAL-VM-OFF.json)을 03:58:51Z에 확인했다. 이 수용은 기존 assigned VM의 선택된 Label 범위에 한정한다. 전체 제품 Ready는 **0/6**이며 여섯 프로그램의 현재 조합 판정과 다음 S05 source workspace 결정은 Main 소유다.
-- 완료 기준: 지정 조합의 시작/품목 cache/권한 거부, Enter·종료문자·IME·busy/포커스·배율, F4 전자 QR, 조건부 F5 실물 출력이 각 수용 결과와 연결된다. spool 성공과 종이·판독은 별도 판단하고 비적용 장비는 이유를 기록한다.
+- 완료 기준: 지정 조합의 시작/품목 cache/권한 거부, Enter·종료문자·IME·busy/포커스·배율, F4 전자 QR, 이전 판 F5 복구의 실물 출력이 각 수용 결과와 연결된다. spool 성공과 종이·판독은 별도 판단하고 비적용 장비는 이유를 기록한다.
 - 의존/병렬: Main의 목표 후보·장비 범위와 LM-B10 선택 일치 확인 필요. 설정·기존 증거 정리는 VM/장비 실행과 독립 가능. 실제 실행은 현행 qualification 작업이 소유한다.
 
 <a id="lm-b05"></a>
@@ -354,11 +354,11 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - 의존/병렬: LM-B04 후보 구성, LM-B02 운영 목표, 중앙 [Q07](../../../Program_Spec_Hub/BACKLOG.md#qualification). 정책·기존 증거 대조는 장비 실행과 독립 가능.
 
 <a id="lm-b08"></a>
-## LM-B08 · 호환 경로·조건부 F5·미조사 기능의 지원 범위
+## LM-B08 · 호환 경로·이전 판 F5 복구·미조사 기능의 지원 범위
 
 - 유형/우선: **지원 계약·조사 공백 · P1**. 코드 잔존을 현장 지원으로 오해하거나 대표 12기능을 전체 범위로 세면 안내가 어긋난다.
 - 근거: [지원 경로](README.md#supported-workflows), [미조사 범위](README.md#specification-coverage), [C-07](contracts.md#c-07), [RELEASE_GATE_CONTRACT](../../RELEASE_GATE_CONTRACT.md).
-- 상태/다음: **대표 기준선 완료 / 전수 확인 남음**. Label·운영 담당이 명시 legacy 5단계/EXACT_RESCAN, F5 reconciliation payload·capability, 관리자/수정·메뉴/단축키, product-host 잔존 mode, 상류 PHS2 발행→출고의 실제 지원 조건·제외를 확정한다.
+- 상태/다음: **대표 기준선 완료 / 전수 확인 남음**. Label·운영 담당이 명시 legacy 5단계/EXACT_RESCAN, 저장된 F5 reconciliation의 복구 payload·capability, 관리자/수정·메뉴/단축키, product-host 잔존 mode, 상류 PHS2 발행→출고의 실제 지원 조건·제외를 확정한다.
 - 완료 기준: 각 지원 분기에 진입점·설정/권한·설치 활성 여부·업무/예외·수용 기준 또는 미확인 사유가 연결된다. 미분류 중앙 입력을 호환 성공으로 바꾸지 않는다. ERPnext는 별도 범위다.
 - 의존/병렬: LM-B04 실제 구성, 중앙 [지원 경로 지도](../../../Program_Spec_Hub/INTEGRATIONS.md). 추가 조사 범위는 담당이 정하며 이번 작업에서 넓은 소스 조사를 재시작하지 않았다.
 

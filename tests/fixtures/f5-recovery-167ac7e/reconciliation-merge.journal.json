@@ -1,0 +1,172 @@
+{
+  "schema_version": "label-match-phs-label-exchange-v1",
+  "state": {
+    "action_ids": [
+      "ACTION-1"
+    ],
+    "action_resolution": {
+      "actions": [
+        {
+          "action_id": "ACTION-1",
+          "action_index": 1,
+          "action_state": "PROPOSED",
+          "action_type": "MERGE",
+          "after_qty_pcs": 4,
+          "before_qty_pcs": 4,
+          "display": {
+            "item_id": "AAA2270730200",
+            "sources": [],
+            "targets": []
+          },
+          "exchange_id": null,
+          "item_id": "AAA2270730200",
+          "process_membership": [
+            {
+              "bundle_state": "AVAILABLE",
+              "bundle_type": "TRANSFER",
+              "location_code": "TRANSFER",
+              "owner_id": "TRANSFER-UNIT-001",
+              "owner_type": "PACKAGE",
+              "unit_id": "UNIT-001",
+              "unit_state": "AVAILABLE"
+            },
+            {
+              "bundle_state": "AVAILABLE",
+              "bundle_type": "TRANSFER",
+              "location_code": "TRANSFER",
+              "owner_id": "TRANSFER-UNIT-002",
+              "owner_type": "PACKAGE",
+              "unit_id": "UNIT-002",
+              "unit_state": "AVAILABLE"
+            },
+            {
+              "bundle_state": "AVAILABLE",
+              "bundle_type": "TRANSFER",
+              "location_code": "TRANSFER",
+              "owner_id": "TRANSFER-UNIT-003",
+              "owner_type": "PACKAGE",
+              "unit_id": "UNIT-003",
+              "unit_state": "AVAILABLE"
+            },
+            {
+              "bundle_state": "AVAILABLE",
+              "bundle_type": "TRANSFER",
+              "location_code": "TRANSFER",
+              "owner_id": "TRANSFER-UNIT-004",
+              "owner_type": "PACKAGE",
+              "unit_id": "UNIT-004",
+              "unit_state": "AVAILABLE"
+            }
+          ],
+          "source_member_ids": [
+            "UNIT-001",
+            "UNIT-002",
+            "UNIT-003",
+            "UNIT-004"
+          ],
+          "source_member_union_count": 4,
+          "source_member_union_hash": "e145e206b48415b45f921e56a5989c6bcce7b0aa6f3b3737ff91ee9ddb213d7a",
+          "sources": [
+            {
+              "business_date": "2026-07-27",
+              "display_item_code": "30200",
+              "group_id": "GROUP-1",
+              "instruction_id": "INSTRUCTION-SOURCE-1",
+              "item_daily_ordinal": 1,
+              "item_id": "AAA2270730200",
+              "label_version": 1,
+              "member_ids": [
+                "UNIT-001",
+                "UNIT-002"
+              ],
+              "membership_hash": "6c61af5a2d6e5c0e79207bc68716be9cc7d84b8c4d02fa8f9655d0a107a61ea6",
+              "membership_version": 1,
+              "qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+              "qty_pcs": 2,
+              "source_label_id": "LBL-SOURCE-1",
+              "worker_code": "7월27일-1"
+            },
+            {
+              "business_date": "2026-07-27",
+              "display_item_code": "30200",
+              "group_id": "GROUP-2",
+              "instruction_id": "INSTRUCTION-SOURCE-2",
+              "item_daily_ordinal": 2,
+              "item_id": "AAA2270730200",
+              "label_version": 1,
+              "member_ids": [
+                "UNIT-003",
+                "UNIT-004"
+              ],
+              "membership_hash": "8a40ce8ace06a054b773bd555ddd90723a1e44aaced83cef6ee437592aa3df56",
+              "membership_version": 1,
+              "qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-2|CLC=AAA2270730200|LBL=LBL-SOURCE-2|HSH=2222222222222222",
+              "qty_pcs": 2,
+              "source_label_id": "LBL-SOURCE-2",
+              "worker_code": "7월27일-2"
+            }
+          ],
+          "split_member_ids_by_target": {},
+          "targets": [
+            {
+              "business_date": "2026-07-28",
+              "display_item_code": "30200",
+              "instruction_id": "INSTRUCTION-TARGET-1",
+              "item_daily_ordinal": 1,
+              "item_id": "AAA2270730200",
+              "qty_pcs": 4,
+              "worker_code": "7월28일-1"
+            }
+          ]
+        }
+      ],
+      "authority_scope_id": "TEST1-GOAL-20260722-EXACT-SIX",
+      "contract_version": "phs-work-control-v1",
+      "process_context": "packaging",
+      "reconciliation": {
+        "business_date": "2026-07-27",
+        "entity_version": 4,
+        "proposed_at": "2026-07-28T00:00:00Z",
+        "reconciliation_id": "RECONCILIATION-1",
+        "reconciliation_no": 1,
+        "state": "PROPOSED"
+      },
+      "scan": {
+        "active_label_id": "LBL-SOURCE-1",
+        "active_qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+        "replacement_required": false,
+        "resolution": "OVERLAY_ACTIVE",
+        "scanned_label_id": "LBL-SOURCE-1"
+      },
+      "scan_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+      "selection": {
+        "action_ids": [
+          "ACTION-1"
+        ],
+        "expected_reconciliation_version": 4,
+        "mode": "SINGLE_TOPOLOGY",
+        "reconciliation_id": "RECONCILIATION-1"
+      }
+    },
+    "active_scan_label_id": "LBL-SOURCE-1",
+    "authority_scope_id": "TEST1-GOAL-20260722-EXACT-SIX",
+    "exchange_id": "",
+    "expected_reconciliation_version": 4,
+    "prepare_idempotency_key": "label-match-phs-reconciliation-prepare:595828356eed3165ee4f3dae09527378db6374d2635cf949d5f97c5ac5c5597b",
+    "process_context": "packaging",
+    "reconciliation_id": "RECONCILIATION-1",
+    "render_context": {
+      "item_name_override": "",
+      "package_source_snapshot": {},
+      "parsed": [
+        "AAA2270730200"
+      ]
+    },
+    "scan_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-PACK-1|CLC=AAA2270730200|LBL=LBL-SOURCE-1|HSH=1111111111111111",
+    "set_id": "SET-CURRENT",
+    "status": "PREPARE_PENDING",
+    "target_prints": {},
+    "updated_at": "2026-10-02T23:43:19Z",
+    "workflow_mode": "RECONCILIATION"
+  }
+}

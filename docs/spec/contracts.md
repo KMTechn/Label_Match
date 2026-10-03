@@ -2,7 +2,7 @@
 
 <a id="scanner-only-packaging"></a>
 
-예외: 숨긴 F5 날짜 교환의 활성화·출력 완료/취소·reconciliation 및 저장 교환 복구는 원격 응답과 로컬 적용까지 writer admission을 보유한다(코디 결정 2026-10-02). 화면의 기존 busy gate는 스캔을 거절하고 미리 입력된 값은 보존하며, 응답 뒤 다시 Enter하면 저장한다.
+예외: 이전 판에서 저장된 F5 교환의 recover_current/recover_reconciliation만 원격 응답과 로컬 적용까지 writer admission을 보유한다(코디 결정 2026-10-02). 화면의 기존 busy gate는 스캔을 거절하고 미리 입력된 값은 보존하며, 응답 뒤 다시 Enter하면 저장한다.
 
 원격 HTTP 구간은 공용 writer mutex와 writer depth를 보유하지 않는다. 반환 직후 같은 lease를 재획득하고 설치 fence·delegation을 다시 검사하며, 변화가 있으면 로컬 결과 적용을 거부한다. 기존 로컬 intent·명령·idempotency key는 보존한다. 포장/취소 명령 저장 및 모든 결과는 SENDING·expected attempt_count·command_json·보류 없음의 SQL transaction CAS로만 적용한다. stale 실패는 상태·감사·lease를 바꾸지 않는다. 검증된 stale 성공은 동일 불변 명령에만 receipt 재확인 표식을 내구 저장한다. 다음 drain은 재POST 없이 기존 key로 receipt를 조회하고, exact COMMITTED 증거가 있을 때만 현재 SENDING/PENDING/CONFLICT·attempt·명령·보류 및 표식을 CAS 대조하여 ACKED로 전이한다. receipt가 없거나 불명확하면 상태·표식을 보존하며 일반 CONFLICT는 자동 재대조 대상이 아니다. 기존 검토 감사는 보존하고 표식의 완료 감사에 이전 상태·오류와 중앙 receipt를 덧붙인다. 교환도 attempt·명령 hash·상태·로컬 적용 세대를 CAS로 대조하고 stale 성공만 같은 receipt 조회로 복구한다. runtime lease는 아직 동일 pending request인 응답만 검증 결과를 쓰며 F5 journal은 읽은 파일 SHA가 유지된 경우에만 원자 저장한다. 전송기 중복 실행은 짧은 lock으로 busy flag만 설정하고 HTTP 동안 lock을 보유하지 않는다.
 
@@ -379,9 +379,9 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 `POST L/packages/cancel` / `CANCEL_PACKAGE`는 package ID·사유·비어 있지 않은 evidence와 예상 version을 요구한다. 로컬 취소 outbox는 원래 CREATE 명령 ACK에 의존하며 동일 취소 command/key로 재시도한다. 서버는 포장 완료 유효성을 취소하고 **재고는 SHIPPING-WAIT에 유지**한다. 이를 TRANSFER 재고 반환이나 실제 포장 해체라고 해석하지 않는다. 집계의 취소 제외는 별도 projection 소비 결과다. 근거: [PackageCancellationOutbox/processor](../../package_logistics.py), [API](../../../WorkerAnalysisGUI-web/blueprints/logistics/api.py), [service.cancel_package](../../../WorkerAnalysisGUI-web/logistics_ledger/service.py). [LM-09](README.md#lm-09), [LM-B05](BACKLOG.md#lm-b05).
 
 <a id="c-07"></a>
-## C-07 F5 현품표 출력·활성화
+## C-07 저장된 F5 현품표 출력·활성화 복구
 
-`L/phs-label-exchanges/prepare`, exchange별 status/`prints`/print-attempt complete/`activate`와 reconciliation 경로가 준비·출력·활성화를 분리한다. 로컬 `label-match-phs-label-exchange-v1` journal과 `execute_single`, `recover_current`, `recover_reconciliation`은 서버 결과·물리 출력 증거·로컬 적용을 조정한다. Windows proof의 `proof_kind=WINDOWS_GDI_SPOOL`, printer/job/document/submitted_at와 `windows_gdi_end_doc=true`는 큐 접수 증거이며 종이 배출·QR 가독성 측정이 아니다. 상세 분기 payload와 설치 capability 조합의 전수 검증은 미완료다. 양쪽 근거: [phs_label_workflow](../../phs_label_workflow.py), [서버 phs-label-exchanges API](../../../WorkerAnalysisGUI-web/blueprints/logistics/api.py). [LM-10](README.md#lm-10), [LM-B04](BACKLOG.md#lm-b04).
+`L/phs-label-exchanges/prepare`, exchange별 status/`prints`/print-attempt complete/`activate`와 reconciliation 경로가 준비·출력·활성화를 분리한다. 로컬 `label-match-phs-label-exchange-v1` journal과 `recover_current`, `recover_reconciliation`은 서버 결과·물리 출력 증거·로컬 적용을 조정한다. 새 날짜 교환 실행·candidate 조회·reconciliation action resolve는 제거했으며, 기존 journal의 원 prepare key·source/target 신원·수량·구성원과 요청 형식을 유지한다. Windows proof의 `proof_kind=WINDOWS_GDI_SPOOL`, printer/job/document/submitted_at와 `windows_gdi_end_doc=true`는 큐 접수 증거이며 종이 배출·QR 가독성 측정이 아니다. 상세 분기 payload와 설치 capability 조합의 전수 검증은 미완료다. 양쪽 근거: [phs_label_workflow](../../phs_label_workflow.py), [서버 phs-label-exchanges API](../../../WorkerAnalysisGUI-web/blueprints/logistics/api.py). [LM-10](README.md#lm-10), [LM-B04](BACKLOG.md#lm-b04).
 
 <a id="c-08"></a>
 ## C-08 이력 읽기 완전성

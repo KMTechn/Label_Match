@@ -42,7 +42,7 @@ TEST_MODE_ENV = "KMTECH_LABEL_WRITER_TEST_MODE"
 
 # The code-derived scanner normalizes this literal to zero before hashing its
 # own source closure, so updating the pin is deterministic rather than cyclic.
-WRITER_INVENTORY_SHA256 = "0c061dbbffa269e484eb8fbf407cd01baec971546990a74b6f7babfa41d5389a"
+WRITER_INVENTORY_SHA256 = "a9babc27551b2c4d711e0bd3e6d870f42e0d65f267c093a6a88ef7e53b4e349e"
 
 DELEGATION_TOKEN_ENV = "KMTECH_LABEL_WRITER_DELEGATION_TOKEN"
 DELEGATION_SESSION_ENV = "KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID"
@@ -587,7 +587,6 @@ def remote_request() -> Iterator[None]:
         raise WriterFencedError("WRITER_REMOTE_CONTEXT_INVALID", "remote writer context is inexact")
     # Coordinator 2026-10-02: hidden F5 recovery retains admission through HTTP.
     if saved["source"] in {
-        "phs_single_exchange", "phs_reconciliation_exchange",
         "phs_current_recovery", "phs_reconciliation_recovery",
     }:
         yield

@@ -1,0 +1,67 @@
+{
+  "after": {
+    "active_label_business_date": "2026-07-28",
+    "active_label_id": "LBL-NEW",
+    "active_label_instruction_id": "INS-NEW",
+    "active_label_qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-TEST-LABEL-MATCH|CLC=AAA2270730200|LBL=LBL-NEW|HSH=bbbbbbbbbbbbbbbb",
+    "active_label_resolution": "OVERLAY_REPLACED",
+    "active_label_version": 1,
+    "active_label_worker_code": "2270730200-2",
+    "active_membership_version": 1,
+    "canonical_input_tag_qr": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-TEST-LABEL-MATCH|CLC=AAA2270730200|LBL=LBL-OLD|HSH=aaaaaaaaaaaaaaaa",
+    "central_inherit_all": true,
+    "id": "SET-ONE",
+    "package_source_snapshot": {
+      "authority_scope_id": "TEST1-GOAL-20260722-EXACT-SIX",
+      "bundle_id": "TRANSFER-ONE",
+      "member_count": 2,
+      "membership_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "package_submission_status": "",
+    "parsed": [
+      "AAA2270730200"
+    ],
+    "phs_label_guidance": "현재 ACTIVE 현품표 2270730200-2 (2026-07-28)",
+    "phs_label_replaced_scan": true,
+    "physical_scanned_qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-TEST-LABEL-MATCH|CLC=AAA2270730200|LBL=LBL-OLD|HSH=aaaaaaaaaaaaaaaa",
+    "raw": [
+      "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-TEST-LABEL-MATCH|CLC=AAA2270730200|LBL=LBL-OLD|HSH=aaaaaaaaaaaaaaaa"
+    ],
+    "sealed_transfer": {
+      "SID": "SEAL-ONE"
+    }
+  },
+  "before": {
+    "active_label_business_date": "2026-07-27",
+    "active_label_id": "LBL-OLD",
+    "active_label_instruction_id": "INS-OLD",
+    "active_label_qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-TEST-LABEL-MATCH|CLC=AAA2270730200|LBL=LBL-OLD|HSH=aaaaaaaaaaaaaaaa",
+    "active_label_resolution": "OVERLAY_ACTIVE",
+    "active_label_version": 1,
+    "active_label_worker_code": "2270730200-1",
+    "active_membership_version": 1,
+    "canonical_input_tag_qr": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-TEST-LABEL-MATCH|CLC=AAA2270730200|LBL=LBL-OLD|HSH=aaaaaaaaaaaaaaaa",
+    "central_inherit_all": true,
+    "id": "SET-ONE",
+    "package_source_snapshot": {
+      "authority_scope_id": "TEST1-GOAL-20260722-EXACT-SIX",
+      "bundle_id": "TRANSFER-ONE",
+      "member_count": 2,
+      "membership_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "package_submission_status": "",
+    "parsed": [
+      "AAA2270730200"
+    ],
+    "physical_scanned_qr_payload": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-TEST-LABEL-MATCH|CLC=AAA2270730200|LBL=LBL-OLD|HSH=aaaaaaaaaaaaaaaa",
+    "raw": [
+      "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITAG-TEST-LABEL-MATCH|CLC=AAA2270730200|LBL=LBL-OLD|HSH=aaaaaaaaaaaaaaaa"
+    ],
+    "sealed_transfer": {
+      "SID": "SEAL-ONE"
+    }
+  },
+  "journal_sha256": "4e72ab0afa422ecaa4c15a76011053e4dd584b28ea55f02164614fe07396022b",
+  "source_commit": "167ac7e33ae11dd87d86dd99e86f5f98f7ded58e",
+  "status": "COMMITTED"
+}
