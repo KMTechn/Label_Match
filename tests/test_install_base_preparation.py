@@ -106,6 +106,10 @@ if($errors.Count){throw 'Canonical parse failed.'}
 $checks=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -ceq '$placementExitCode -ne 0'},$true))
 if($checks.Count -ne 1){throw 'Canonical placement check missing/ambiguous.'}
 $check=[scriptblock]::Create($checks[0].Extent.Text)
+$audit=@{};$auditPath='isolated-audit';$Script:LabelPlacementChildFailure=$null
+function Save {param($Path,$Value)
+ if($Path -cne 'isolated-audit' -or $Value -ne $audit){throw 'Wrong placement audit target.'}
+}
 foreach($placementExitCode in 0,4,61,62,63,64,65,66){
  $failure=$null;try{. $check}catch{$failure=$_}
  if($placementExitCode -eq 0){if($null -ne $failure){throw 'Success was rejected.'};continue}
