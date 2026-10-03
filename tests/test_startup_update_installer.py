@@ -17,6 +17,7 @@ def quote(value):
 def functions(path, names):
     # PowerShell's parser supplies only function definitions; installer top-level
     # code is never evaluated. The returned bodies may then be tested with mocks.
+    names = ['ConvertTo-LabelTaskSid', *names]
     return f"""
 $tokens=$null; $errors=$null
 $tree=[Management.Automation.Language.Parser]::ParseFile({quote(ROOT/path)},[ref]$tokens,[ref]$errors)
