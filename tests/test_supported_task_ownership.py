@@ -66,6 +66,9 @@ param([string]$Source,[string]$Root,[string]$Delegated,[string]$Fail)
 $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+$admission=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Enter-LabelCanonicalPlacement'},$true))
+if($admission.Count -gt 1){throw 'canonical admission is duplicated'}
+if($admission.Count -eq 1){. ([scriptblock]::Create($admission[0].Extent.Text))}
 $caller=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.StartsWith('if ($Uninstall.IsPresent) {')},$true))
 if ($caller.Count -ne 1) {throw 'missing actual caller'}
 $Uninstall=[switch]$true;$DryRun=[switch]$false;$testOverride=$false
@@ -75,8 +78,11 @@ $WriterFenceReplacementTransactionId='fixture';$WriterFenceDelegationToken='synt
 $installRootFull=Join-Path $Root 'current';$script:entered=$false;$script:released=$false;$script:converged=$false
 function Assert-ProtectedCodeAncestors { }
 function Enter-LabelWriterDelegatedOperation {
- param($ControlRoot,$SessionId,$AttemptId,$ReplacementTransactionId,$DelegationToken,$Source)
+ param($ControlRoot,$SessionId,$AttemptId,$ReplacementTransactionId,$DelegationToken,$Source,[int]$TimeoutMilliseconds=5000)
  if($Source -cne 'canonical_placement') { throw 'wrong authority' }
+ if($ControlRoot -cne 'fixture' -or $SessionId -cne 'fixture' -or $AttemptId -cne 'fixture' -or
+    $ReplacementTransactionId -cne 'fixture' -or $DelegationToken -cne 'synthetic-local-only' -or
+    $TimeoutMilliseconds -ne 5000){throw 'wrong delegation tuple or timeout'}
  $script:entered=$true;return [pscustomobject]@{fixture=$true}
 }
 function Exit-LabelWriterAdmission { $script:released=$true }
@@ -99,11 +105,12 @@ try { & ([scriptblock]::Create($text)) | Out-Null } catch {if($_.Exception.Messa
 '''
 
 
+@pytest.mark.parametrize('engine', ('powershell.exe','pwsh.exe'))
 @pytest.mark.parametrize('delegated', [False, True])
 @pytest.mark.parametrize('failure', [False, True])
-def test_actual_supported_removal_caller_preserves_optional_exact_delegation(tmp_path, delegated, failure):
+def test_actual_supported_removal_caller_preserves_optional_exact_delegation(tmp_path, delegated, failure, engine):
     script=tmp_path/'caller.ps1';script.write_text(CALLER_SCRIPT, encoding='ascii')
-    completed=subprocess.run([shutil.which('powershell.exe'), '-NoProfile', '-NonInteractive', '-File', str(script), str(REPO/'INSTALL_THIS_PC.ps1'), str(tmp_path), str(delegated), str(failure)], capture_output=True, text=True,
+    completed=subprocess.run([shutil.which(engine), '-NoProfile', '-NonInteractive', '-File', str(script), str(REPO/'INSTALL_THIS_PC.ps1'), str(tmp_path), str(delegated), str(failure)], capture_output=True, text=True,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     assert completed.returncode == 0, completed.stderr
     result=json.loads(completed.stdout)

@@ -1074,3 +1074,5 @@ canonical onboarding은 fence 안에서 신원·Run을 준비하고 relay 시작
 설치·공유 조상 준비·code trust·daily·업데이트 적용·지원 제거/복구가 쓰는 특권 소유자 검사는 Test-KmtechPrivilegedOwnerSid의 같은 SID 셋을 사용한다. helper 로드 전 신뢰 경계는 순수 함수의 정확한 사본을 갖고 AST body 회귀로 대조한다. ACL 권한/형태/재분석/원 소유자 race 검사는 유지하고 새 소유자를 설정하지 않는다. 격리 D NTFS 시험의 소유자 읽기 seam과 실제 소유자 불변을 구분하며 특권 소유권 설정·실제 설치 수용은 NOT TESTED다.
 
 Run key 읽기는 RegOpenKeyExW의 반환 코드 2만 정확한 부재로 받는다. 접근 거부·삭제 중 key·다른 오류는 native code를 보존해 실패하며 query-only handle을 SafeRegistryHandle/RegistryKey로 소유·폐기한다. 성공한 값 이름 관측의 정확한 누락만 value 부재이며 kind/data 오류·관측 뒤 소실은 실패한다. 실제 호스트 registry 오류는 실행하지 않았으며 PS5.1/7 native status 주입 회귀와 실제 API 수용을 구별한다.
+
+canonical placement와 지원 제거는 Enter-LabelCanonicalPlacement 한 함수의 기존 delegated source를 공유한다. 정확한 control/session/attempt/transaction/token과 제거 5000ms·배치 15000ms·기존 lease 해제를 유지한다. 코드 유도 inventory의 중복 거절을 유지하며 root의 canonical_placement가 한 행으로 나온다. pin/선언 갱신·stock·실제 설치는 중앙 후속이다.

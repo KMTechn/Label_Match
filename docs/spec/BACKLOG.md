@@ -436,3 +436,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - sub-158 소유자 규칙: 특권 SID 셋 순수 함수를 설치/준비/daily/적용/제거 경계에 통일하고 D NTFS 회귀와 경계 사본 동등성을 확인한다. 실제 SYSTEM/TrustedInstaller 소유권 설정·랩 설치와 최종 pin 수용은 OPEN이다.
 
 - LM-O1: canonical Snapshot과 현재 사용자 relay 관측의 key 없음 판단을 native RegOpenKeyExW 코드 2로 한정하고 나머지 오류/race 실패를 보존한다. PS5.1/7 격리 회귀는 sub-158 REPORT; 실제 registry 오류·Run/설치 수용과 최종 선언/pin은 OPEN이다.
+
+- sub-158 조건부 교정: sub-155가 확인한 db1f114의 canonical_placement source 중복을 정식 가지에서 하나의 실제 placement/removal admission으로 모았다. PS5.1/7 위임·timeout/해제와 duplicate 거절 회귀를 보존한다. 선언/pin/최종 packet 및 실제 lifecycle 수용은 OPEN이다.

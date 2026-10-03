@@ -117,6 +117,15 @@ if ($WriterFenceFunctionsPreloaded.IsPresent) {
 }
 $LegacyRelayTaskName = "direct-sync-relay-label-match-current-pc"
 
+function Enter-LabelCanonicalPlacement([int]$TimeoutMilliseconds = 5000) {
+    # Placement and supported removal share the same exact admission source.
+    return Enter-LabelWriterDelegatedOperation -ControlRoot $WriterFenceControlRoot `
+        -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId `
+        -ReplacementTransactionId $WriterFenceReplacementTransactionId `
+        -DelegationToken $WriterFenceDelegationToken -Source 'canonical_placement' `
+        -TimeoutMilliseconds $TimeoutMilliseconds
+}
+
 function Get-StrictFullPath([string]$Path, [string]$Purpose) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
         throw "$Purpose must be an absolute path."
@@ -1334,10 +1343,7 @@ if ($Uninstall.IsPresent) {
     # Standalone supported removal is elevated and does not load installed helpers.
     # A canonical caller retains its exact, preloaded deployment delegation.
     if (-not $testOverride -and $WriterFenceFunctionsPreloaded.IsPresent) {
-        $lease = Enter-LabelWriterDelegatedOperation -ControlRoot $WriterFenceControlRoot `
-            -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId `
-            -ReplacementTransactionId $WriterFenceReplacementTransactionId `
-            -DelegationToken $WriterFenceDelegationToken -Source 'canonical_placement'
+        $lease = Enter-LabelCanonicalPlacement
     }
     try {
         $application = Split-Path -Parent $installRootFull
@@ -1401,14 +1407,7 @@ if (-not $testOverride) {
     if (-not $WriterFenceFunctionsPreloaded.IsPresent) {
         throw "Production placement requires the preloaded writer fence helper."
     }
-    $writerFenceLease = Enter-LabelWriterDelegatedOperation `
-        -ControlRoot $WriterFenceControlRoot `
-        -SessionId $WriterFenceSessionId `
-        -AttemptId $WriterFenceAttemptId `
-        -ReplacementTransactionId $WriterFenceReplacementTransactionId `
-        -DelegationToken $WriterFenceDelegationToken `
-        -Source 'canonical_placement' `
-        -TimeoutMilliseconds 15000
+    $writerFenceLease = Enter-LabelCanonicalPlacement -TimeoutMilliseconds 15000
 }
 
 $applicationParent = Split-Path -Parent $installRootFull
