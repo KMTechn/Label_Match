@@ -451,3 +451,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="w9setupprep-sub192-child"></a>
 
 - 배치 자식 실패 보존과 선택값: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.
+
+
+<a id="w9setupprep-sub192-archive"></a>
+
+- 거래 전 실패의 다른 실행 보존: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.

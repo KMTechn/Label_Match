@@ -1574,9 +1574,10 @@ function Save([string]$Path, $Value) {
 
 
 function Archive-PretransactionFailure([string]$AuditRoot, [string]$RunId) {
-    # Before writer authority/fence acquisition, only this run's snapshots and
-    # frozen helpers exist. Retain their bytes outside the active audit root;
-    # never classify an existing receipt or registration as pristine.
+    # Before writer authority/fence acquisition, another installer may publish
+    # here. Retain only this run's literal snapshot entries outside the active
+    # root; never classify an existing receipt or registration as pristine.
+    $Script:LabelPretransactionActiveRootRetained = $false
     if ($RunId -cnotmatch '^[a-zA-Z0-9-]+$') { throw 'Pretransaction run identity is invalid.' }
     $auditRootPath = [IO.Path]::GetFullPath($AuditRoot).TrimEnd('\')
     if ((Split-Path -Leaf $auditRootPath) -cne 'install-audit') {
@@ -1601,7 +1602,9 @@ function Archive-PretransactionFailure([string]$AuditRoot, [string]$RunId) {
     $entries = @($allEntries | Where-Object {
         $_.Name -ceq ($prefix + '.json') -or
             $_.Name.StartsWith($prefix + '.json.tmp.', [StringComparison]::Ordinal) -or
-            $_.Name.StartsWith($prefix + '-', [StringComparison]::Ordinal)
+            $_.Name -cin @(($prefix + '-helper'), ($prefix + '-task-preimage.xml'),
+                ($prefix + '-stop-preimage.json'), ($prefix + '-removal-preimage.json'),
+                ($prefix + '-first-registration-attempt.json'))
     })
     foreach ($entry in $entries) {
         if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
@@ -1609,20 +1612,36 @@ function Archive-PretransactionFailure([string]$AuditRoot, [string]$RunId) {
         }
     }
     if ($entries.Count -eq 0) { throw 'Pretransaction artifacts are absent.' }
-    if ($entries.Count -eq $allEntries.Count) {
-        # A new audit root contains only this run. Rename its ordinary parent
-        # as one unit, retaining every frozen child ACL and all original bytes.
-        Move-Item -LiteralPath $auditRootPath -Destination $archiveRoot -ErrorAction Stop
-        return $archiveRoot
-    }
     [void][IO.Directory]::CreateDirectory($archiveRoot)
     foreach ($entry in $entries) {
-        # Move whole entries without traversing the frozen helpers' deny ACLs.
-        # Both resolved endpoints are fixed siblings under this user's app state.
-        Move-Item -LiteralPath $entry.FullName -Destination (Join-Path $archiveRoot $entry.Name) -ErrorAction Stop
+        # The captured literal list belongs to this run. Another installer can
+        # publish after enumeration; its active root and entries stay in place.
+        $entryPath = [IO.Path]::GetFullPath($entry.FullName)
+        if ([IO.Path]::GetDirectoryName($entryPath) -cne $auditRootPath -or
+            [IO.Path]::GetFileName($entryPath) -cne $entry.Name) {
+            throw 'Pretransaction artifact literal boundary differs.'
+        }
+        $currentEntry = Get-Item -LiteralPath $entryPath -ErrorAction Stop
+        if ($currentEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Pretransaction artifact became a reparse point.'
+        }
+        Move-Item -LiteralPath $entryPath -Destination (Join-Path $archiveRoot $entry.Name) -ErrorAction Stop
     }
-    if (@(Get-ChildItem -LiteralPath $auditRootPath -Force).Count -eq 0) {
-        Remove-Item -LiteralPath $auditRootPath -ErrorAction Stop
+    # Native nonrecursive deletion is atomic with respect to nonempty state
+    # and open handles. A concurrent record or live handle keeps this root.
+    if (Test-Path -LiteralPath $auditRootPath) {
+        if ((Get-Item -LiteralPath $auditRootPath).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Pretransaction active audit root became a reparse point.'
+        }
+        try { [IO.Directory]::Delete($auditRootPath, $false) }
+        catch [IO.IOException] {
+            $Script:LabelPretransactionActiveRootRetained = $true
+            [Console]::Error.WriteLine('Pretransaction active audit root retained: nonempty or open handle.')
+        }
+        catch [UnauthorizedAccessException] {
+            $Script:LabelPretransactionActiveRootRetained = $true
+            [Console]::Error.WriteLine('Pretransaction active audit root retained: native access denied.')
+        }
     }
     return $archiveRoot
 }
@@ -3218,6 +3237,7 @@ catch {
         Save $auditPath $audit
         $archiveRoot = Archive-PretransactionFailure $localAuditRoot $runId
         $audit.recovery.artifacts_archived = $true
+        $audit.recovery.active_audit_root_retained = $Script:LabelPretransactionActiveRootRetained
         $audit.recovery.archive_root = $archiveRoot
         Save (Join-Path $archiveRoot (Split-Path -Leaf $auditPath)) $audit
         if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }

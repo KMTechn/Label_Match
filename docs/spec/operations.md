@@ -1088,7 +1088,7 @@ canonical placement와 지원 제거는 Enter-LabelCanonicalPlacement 한 함수
 
 canonical 설치기는 원 파일 bytes를 한 번 읽어 BOM을 포함한 SHA256을 대조한 같은 bytes만 실행한다. UTF-8 디코드 뒤 맨 앞 U+FEFF 하나만 제거하여 ScriptBlock으로 만든다. 나머지 문자·줄바꿈과 파일 BOM은 유지한다. 일반 사용자 사전 검사, 동결 무결성 probe, 상승 placement launcher의 integrity/writer/placement helper 다섯 자리가 같은 규칙을 쓴다. 한국어 PowerShell 파일의 BOM을 파일에서 지우거나 해시 대상을 바꾸지 않는다.
 
-preimage 저장 뒤 writer authority/fence 거래 진입 전 실패는 `FAILED_PRETRANSACTION`으로 원 예외와 `transaction_started=false`를 남긴다. 그 run의 snapshot·동결 helper·중단된 audit 임시 파일만 사용자 상태의 `install-audit-pretransaction-failures/<run_id>/`에 bytes와 ACL 그대로 보존 이동한다. 새 audit 폴더의 항목이 전부 해당 run이면 폴더를 한 번 rename하고, 기존 receipt가 있으면 해당 run의 항목만 이동한다. 빈 active audit 폴더만 일반 삭제한다. 기존 receipt·등록·업무 자료의 residue 거절과 거래 안 rollback은 유지한다. 회복 이동 자체가 실패하면 원 예외와 회복 오류를 함께 보존하고 guard를 우회하지 않는다. 지원 사용자 제거는 이 진단 archive를 삭제하지 않는다.
+preimage 저장 뒤 writer authority/fence 거래 진입 전 실패는 `FAILED_PRETRANSACTION`으로 원 예외와 `transaction_started=false`를 남긴다. 그 run의 snapshot·동결 helper·중단된 audit 임시 파일만 사용자 상태의 `install-audit-pretransaction-failures/<run_id>/`에 bytes와 ACL 그대로 보존 이동한다. 판정한 이번 run의 정확한 항목만 하나씩 이동하고 공유 active root를 전체 rename하지 않는다. 마지막 비재귀 빈 폴더 삭제에서 동시 기록·열린 핸들이 거절되면 active root를 보존한다. 기존 receipt·등록·업무 자료의 residue 거절과 거래 안 rollback은 유지한다. 회복 이동 자체가 실패하면 원 예외와 회복 오류를 함께 보존하고 guard를 우회하지 않는다. 지원 사용자 제거는 이 진단 archive를 삭제하지 않는다.
 
 PS5.1/PS7의 실제 BOM helper·encoded prefix·hash 불일치 거절, native deny ACL 및 기존 receipt/임시 bytes 보존, 실제 거래 전 catch와 격리 지원 제거 domain 회귀는 sub-177 REPORT를 따른다. 전체 native 설치/Run/task/relay·콜드 부팅/현장 수용과 고정 선언은 source 회귀와 구별한다. 정식 선언/pin 재생성은 이번 교정에서 수행하지 않고 예행 가지와 중앙 출시 컷에서만 처리한다.
 
@@ -1098,3 +1098,10 @@ PS5.1/PS7의 실제 BOM helper·encoded prefix·hash 불일치 거절, native de
 배치 자식 실패 보존과 선택값
 
 상승 배치 launcher는 해시 검증한 writer helper의 StrictMode를 유지하면서 선택 매개변수 ExpectedActiveCommit·StartupUpdateRestorePreimage·StartupUpdateRestoreSha256의 부재만 빈 문자열로 받는다. 실제 정상 호출의 누락 restore 값은 a02c454에서 PS5.1/PS7 모두 helper 실행 전 실패했고 교정 뒤 같은 운반·helper bytes로 진행한다. 자식은 단계·원 예외 종류/메시지·HRESULT·종료 코드를 크기가 제한된 새 진단 파일로 fsync하고 부모 감사에 보존한다. 위임 비밀값은 가린다. 원 파일 BOM·해시·strict scalar/byte pin guard를 유지한다. source 회귀 PROVEN이며 native 설치·원 sub-177 자식 원인 확정은 별도다.
+
+
+<a id="w9setupprep-sub192-archive"></a>
+
+거래 전 실패의 다른 실행 보존
+
+Archive-PretransactionFailure는 판정한 목록에서 이번 run의 정확한 audit/temp/helper/task·stop·removal preimage 항목만 literal 경로로 하나씩 이동한다. 공유 install-audit 전체를 rename하지 않는다. 마지막에는 IO.Directory.Delete(root,false)만 시도하며 동시 기록·열린 핸들·native 접근 거절이면 폴더와 모든 남은 항목을 보존하고 retained 결과를 남긴다. reparse는 거절하고 동결 helper의 deny ACL·원 bytes를 유지한다. PS5.1/PS7 실제 NTFS 경합·열린 핸들·기존 재설치/receipt/deny ACL 회귀 PROVEN; 최초 snapshot/첫 Save 실패 회복은 UNPROVEN이다.
