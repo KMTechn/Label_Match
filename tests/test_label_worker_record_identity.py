@@ -282,6 +282,182 @@ def test_uncommitted_completion_undo_can_change_scans_without_archiving(packagin
 
 
 @pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('restart', [False, True])
+def test_csv_completed_archive_retry_rejects_edits_and_keeps_original_snapshot(
+        packaging, tmp_path, monkeypatch, enabled, restart):
+    import label_data_manager as module
+    app, dialogs = packaging
+    app._publish_durable_commit_block = lm.Label_Match._publish_durable_commit_block.__get__(app)
+    select_worker(app, tmp_path, enabled=enabled)
+    write = module.write_checked_bytes
+    cuts = []
+    def interrupt(path, *args, **kwargs):
+        if '_worker_record_identity' in Path(path).parts and not cuts:
+            cuts.append(True)
+            raise OSError('archive interrupted after CSV completion')
+        return write(path, *args, **kwargs)
+    monkeypatch.setattr(module, 'write_checked_bytes', interrupt)
+    original = [MASTER, *products(prefix='COMPLETED')]
+    for value in original:
+        scan(app, value)
+    assert cuts == [True] and len(completions(app)) == 1
+    restored = None
+    try:
+        retry = app
+        if restart:
+            _close(app)
+            restored = _app_for_recovery(lm, tmp_path, monkeypatch)
+            restored._publish_durable_commit_block = lm.Label_Match._publish_durable_commit_block.__get__(restored)
+            restored._load_current_set_state()
+            retry = restored
+        assert retry._workflow_blocking_notice.title == '완료됨 · 기록 마무리 중'
+        checkpoint = retry.data_manager.load_current_state()['current_set_info']
+        for value in ('KMCMD:UNDO', 'KMCMD:EXCHANGE', original[-1], products(prefix='CHANGED')[3]):
+            scan(retry, value)
+            assert retry.current_set_info['raw'] == original
+            assert not retry.current_set_info.get('scanner_exchange_phase')
+        assert retry._reset_current_set(full_reset=True) is False
+        assert retry.data_manager.load_current_state()['current_set_info'] == checkpoint
+        # A late callback changing the live object must not replace the CSV's
+        # completion snapshot during the follow-up retry.
+        retry.current_set_info['raw'][-1] = products(prefix='CALLBACK')[3]
+        assert retry._save_current_set_state()
+        assert retry.data_manager.load_current_state()['current_set_info']['raw'] == original
+        retry._worker_identity_enabled = not enabled
+        retry._retry_blocked_submission()
+        [(_row, details)] = completions(retry)
+        [record] = Path(retry.save_directory).glob('_worker_record_identity/*.json')
+        saved = json.loads(record.read_text(encoding='utf-8'))['current_set_info']
+        assert saved['raw'] == details['scanned_product_barcodes'] == original
+        assert saved['completion_worker_identity'] == (IDENTITY if enabled else {})
+        assert retry.current_set_info['raw'] == [] and dialogs == []
+    finally:
+        if restored is not None:
+            _close(restored)
+
+
+def test_csv_completed_outbox_marker_failure_retries_without_requeuing(packaging, tmp_path, monkeypatch):
+    app, dialogs = packaging
+    select_worker(app, tmp_path, enabled=True)
+    original = [MASTER, *products(prefix='MARKER')]
+    for value in original[:-1]:
+        scan(app, value)
+    # Exercise the completion consumer with a durable command whose local
+    # marker fails, independent of the scanner's background delivery path.
+    app.current_set_info['raw'].append(original[-1])
+    app.current_set_info['parsed'].append(MASTER)
+    queued, marked = [], []
+    metadata = {'idempotency_key': 'completed-marker', 'status': 'PENDING',
+                'operation_lease_id': 'completed-lease',
+                'operation_lease_completed_at': '2026-10-04T00:00:00Z'}
+    def queue(**kwargs):
+        queued.append(True)
+        return metadata
+    def mark(*args, **kwargs):
+        marked.append(kwargs)
+        if len(marked) == 1:
+            raise OSError('outbox marker interrupted after CSV completion')
+    monkeypatch.setattr(app, '_queue_authoritative_package', queue)
+    monkeypatch.setattr(app.package_outbox, 'mark_local_completion_committed', mark)
+    args = dict(details={'set_id': app.current_set_info['id'], 'final_result': app.Results.PASS,
+                         'scanned_product_barcodes': original}, item_code=MASTER,
+                is_manual_complete=False, result=app.Results.PASS, central_inherit_all=True,
+                set_id_for_log=app.current_set_info['id'])
+    with pytest.raises(OSError, match='outbox marker interrupted'):
+        app._commit_finalized_set_durable(**args)
+    scan(app, 'KMCMD:UNDO')
+    scan(app, 'KMCMD:EXCHANGE')
+    assert app.current_set_info['raw'] == original
+    app.current_set_info['raw'][-1] = products(prefix='CALLBACK')[3]
+    completed = app._commit_finalized_set_durable(**args)
+    assert queued == [True] and len(marked) == 2 and marked[0] == marked[1]
+    [(_row, details)] = completions(app)
+    [record] = Path(app.save_directory).glob('_worker_record_identity/*.json')
+    assert json.loads(record.read_text(encoding='utf-8'))['current_set_info']['raw'] == original
+    assert completed['details']['scanned_product_barcodes'] == details['scanned_product_barcodes'] == original
+    assert completed['details']['package_logistics'] == details['package_logistics'] == metadata
+    assert dialogs == []
+
+
+@pytest.mark.parametrize('follow_up', ['failure_archive', 'empty_failure_archive', 'shortage_checkpoint'])
+def test_csv_completed_failure_or_shortage_follow_up_keeps_its_verdict(
+        packaging, tmp_path, monkeypatch, scanner_clock, follow_up):
+    import label_data_manager as module
+    app, dialogs = packaging
+    select_worker(app, tmp_path, enabled=True)
+    cuts = []
+    original = [] if follow_up == 'empty_failure_archive' else [MASTER, products(prefix='FOLLOWUP')[0]]
+    if follow_up.endswith('failure_archive'):
+        write = module.write_checked_bytes
+        def interrupt(path, *args, **kwargs):
+            if '_worker_record_identity' in Path(path).parts and not cuts:
+                cuts.append(True)
+                raise OSError('failure archive interrupted after CSV completion')
+            return write(path, *args, **kwargs)
+        monkeypatch.setattr(module, 'write_checked_bytes', interrupt)
+    else:
+        save = app.data_manager.save_current_state
+        def interrupt(state, **kwargs):
+            current = state.get('current_set_info') or {}
+            if current.get('shortage_undo_snapshot') and not current.get('raw') and not cuts:
+                cuts.append(True)
+                return False
+            return save(state, **kwargs)
+        monkeypatch.setattr(app.data_manager, 'save_current_state', interrupt)
+    for value in original:
+        scanner_clock[0] += 5
+        scan(app, value)
+    if follow_up.endswith('failure_archive'):
+        scan(app, 'OTHER-ITEM-WRONG-PRODUCT')
+    else:
+        scanner_clock[0] += 5
+        scan(app, MASTER)
+    assert cuts == [True]
+    [(_row, first)] = completions(app)
+    before = copy.deepcopy(app.current_set_info)
+    scan(app, 'KMCMD:UNDO')
+    scan(app, 'KMCMD:EXCHANGE')
+    assert app.current_set_info == before
+    app._retry_blocked_submission()
+    [(_row, final)] = completions(app)
+    assert final == first and dialogs == []
+    if follow_up.endswith('failure_archive'):
+        assert final['final_result'] == (app.Results.FAIL_MISMATCH if original else app.Results.FAIL_INPUT_ERROR)
+    else:
+        assert final['shortage_confirmed'] is True
+        # The documented shortage exception reopens only after the follow-up
+        # checkpoint is safely saved, until the next material master label.
+        scan(app, 'KMCMD:UNDO')
+        assert app.current_set_info['raw'] == original
+
+
+def test_completed_ui_follow_up_failure_does_not_recount_or_reopen_the_set(packaging, tmp_path, monkeypatch):
+    app, dialogs = packaging
+    select_worker(app, tmp_path, enabled=True)
+    original = [MASTER, *products(prefix='UIFOLLOWUP')]
+    configure = app.save_status_label.config
+    cuts = []
+    def interrupt(**kwargs):
+        if not cuts:
+            cuts.append(True)
+            raise OSError('UI follow-up interrupted after CSV completion')
+        return configure(**kwargs)
+    monkeypatch.setattr(app.save_status_label, 'config', interrupt)
+    for value in original[:-1]:
+        scan(app, value)
+    with pytest.raises(OSError, match='UI follow-up interrupted'):
+        scan(app, original[-1])
+    assert len(completions(app)) == 1
+    scan(app, 'KMCMD:UNDO')
+    scan(app, 'KMCMD:EXCHANGE')
+    assert app.current_set_info['raw'] == original
+    app._retry_blocked_submission()
+    assert len(completions(app)) == 1
+    assert sum(count for values in app.scan_count.values() for count in values.values()) == 1
+    assert app.current_set_info['raw'] == [] and dialogs == []
+
+
+@pytest.mark.parametrize('enabled', [False, True])
 def test_offline_restart_and_new_process_keep_the_original_identity(packaging, tmp_path, monkeypatch, enabled):
     app, _dialogs = packaging
     select_worker(app, tmp_path, enabled=enabled)

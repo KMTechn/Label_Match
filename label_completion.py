@@ -648,6 +648,37 @@ def _transition_failed_completion(current, *, parse_sealed):
     return label_transition.fields(decided, reasons, duplicate)
 
 
+def _finish_csv_completed_set(self, completion, *, detached, PackageLogisticsError):
+    """Retry only the follow-up work against the CSV's original snapshot."""
+    current = completion["current_snapshot"]
+    archive = getattr(self.data_manager, '_save_completed_worker_identity', None)
+    if label_worker_roster.record_identity(current) and callable(archive):
+        archive(current)
+    package_logistics = completion["package_logistics"]
+    if (
+        completion["central_inherit_all"]
+        and package_logistics
+        and package_logistics.get("idempotency_key")
+        and package_logistics.get("status") != label_transition.LOCAL_ONLY_STATUS
+    ):
+        outbox = self.__dict__.get("package_outbox")
+        if outbox is None:
+            raise PackageLogisticsError(
+                "durable package outbox disappeared before local completion"
+            )
+        lease_id = str(package_logistics.get("operation_lease_id") or "")
+        if lease_id:
+            outbox.mark_local_completion_committed(
+                package_logistics["idempotency_key"],
+                operation_lease_id=lease_id,
+                operation_completed_at=str(package_logistics.get("operation_lease_completed_at") or ""),
+            )
+        else:
+            outbox.mark_local_completion_committed(package_logistics["idempotency_key"])
+    return {"details": completion["details"], "package_logistics": package_logistics,
+            "current_snapshot": current if detached else None}
+
+
 def _commit_finalized_set_durable(
     self,
     *,
@@ -666,6 +697,21 @@ def _commit_finalized_set_durable(
 ):
     detached = isinstance(current_snapshot, dict)
     current = current_snapshot if detached else (self.__dict__.get('current_set_info') or {})
+    completed = self.__dict__.get('_csv_completed_set') or {}
+    frozen = completed.get('current_snapshot') or {}
+    if str(frozen.get('completion_identity') or frozen.get('id') or '') == str(set_id_for_log):
+        if 'details' in completed:
+            return _finish_csv_completed_set(self, completed, detached=detached,
+                PackageLogisticsError=PackageLogisticsError)
+        # Restart readback has already established completion. Keep the saved
+        # checkpoint's scans even if another callback changed the live object.
+        current = deepcopy(frozen)
+        if detached:
+            current_snapshot.clear()
+            current_snapshot.update(current)
+            current = current_snapshot
+        else:
+            self.current_set_info = current
     identity = label_worker_roster.record_identity(current)
     if identity:
         if 'completion_worker_identity' not in current:
@@ -794,44 +840,17 @@ def _commit_finalized_set_durable(
                 'identity_enabled': bool(current.get('completion_worker_identity'))} if identity else {}),
         )
         self._flush_data_manager_if_supported()
-    if identity:
-        archive = getattr(self.data_manager, '_save_completed_worker_identity', None)
-        if callable(archive):
-            archive(current)
-    if (
-        central_inherit_all
-        and package_logistics
-        and package_logistics.get("idempotency_key")
-        and package_logistics.get("status") != label_transition.LOCAL_ONLY_STATUS
-    ):
-        outbox = self.__dict__.get("package_outbox")
-        if outbox is None:
-            raise PackageLogisticsError(
-                "durable package outbox disappeared before local completion"
-            )
-        lease_id = str(
-            package_logistics.get("operation_lease_id") or ""
-        )
-        if lease_id:
-            outbox.mark_local_completion_committed(
-                package_logistics.get("idempotency_key"),
-                operation_lease_id=lease_id,
-                operation_completed_at=str(
-                    package_logistics.get(
-                        "operation_lease_completed_at"
-                    )
-                    or ""
-                ),
-            )
-        else:
-            outbox.mark_local_completion_committed(
-                package_logistics.get("idempotency_key")
-            )
-    return {
+    completion = {
         "details": durable_details,
         "package_logistics": package_logistics,
-        "current_snapshot": current_snapshot if detached else None,
+        "current_snapshot": deepcopy(current),
+        "central_inherit_all": central_inherit_all,
     }
+    # CSV flush/readback is the completion boundary. Archive, marker and lease
+    # failures cannot turn this snapshot back into an editable checkpoint.
+    self.__dict__['_csv_completed_set'] = deepcopy(completion)
+    return _finish_csv_completed_set(self, completion, detached=detached,
+        PackageLogisticsError=PackageLogisticsError)
 
 
 def _apply_ui_lane_completion_snapshot(self, snapshot, *, deepcopy):
@@ -910,6 +929,11 @@ def _submit_finalized_set_on_lane(
     def fail(error):
         # A saved local decision stays with the live set for the retry.
         live = self.current_set_info or {}
+        completed = (self.__dict__.get('_csv_completed_set') or {}).get('current_snapshot') or {}
+        if completed and str(live.get('id') or '') == str(completed.get('id') or ''):
+            self.current_set_info = deepcopy(completed)
+            self._publish_durable_commit_block(error)
+            return
         if (
             str(live.get("id") or "") == str(current_snapshot.get("id") or "")
             and tuple(live.get("raw") or ()) == tuple(current_snapshot.get("raw") or ())

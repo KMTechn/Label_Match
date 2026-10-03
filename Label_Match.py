@@ -8345,6 +8345,9 @@ class Label_Match(tk.Tk):
 
     def _save_current_set_state(self, *, audit_events=()):
         current_set = self.__dict__.get("current_set_info") or {}
+        frozen = (self.__dict__.get("_csv_completed_set") or {}).get("current_snapshot") or {}
+        if frozen and str(frozen.get("id") or "") == str(current_set.get("id") or ""):
+            current_set = copy.deepcopy(frozen)
         if not self.initialized_successfully or (
             not current_set.get("raw") and "scanner_failure_result" not in current_set
         ):
@@ -11444,6 +11447,10 @@ class Label_Match(tk.Tk):
             if completion_sync_error is not None:
                 self._publish_durable_commit_block(completion_sync_error)
                 return
+            if self._csv_completed_set_blocks_edit():
+                self._publish_durable_commit_block(
+                    PackageLogisticsError("completed CSV follow-up recovery"))
+                return
             scans = len(self.current_set_info.get("raw") or [])
             if (
                 not self.current_set_info.get("central_inherit_all")
@@ -14325,6 +14332,9 @@ class Label_Match(tk.Tk):
         if self._block_active_history_load_action("스캔"):
             return
 
+        if self._csv_completed_set_blocks_edit(raw_input):
+            consume_input()
+            return
         self._replay_scanner_audits()
         previous_scan = self.__dict__.get("_scanner_previous_scan") or ("", 0.0)
         self._scanner_previous_scan = (raw_input, time.monotonic())
@@ -14758,8 +14768,37 @@ class Label_Match(tk.Tk):
             known.add(cls._sample_barcode(pair["replacement_barcode"]))
         return known
 
+    def _csv_completed_set_blocks_edit(self, raw_input=None):
+        current = self.current_set_info
+        set_id = str(current.get("completion_identity") or current.get("id") or "")
+        if not set_id:
+            return False
+        completed = self.__dict__.get("_csv_completed_set") or {}
+        frozen = completed.get("current_snapshot") or {}
+        if str(frozen.get("completion_identity") or frozen.get("id") or "") != set_id:
+            if not (any(key in current for key in (
+                    "completion_worker_identity", "local_completed_at", "transition_row_key",
+                    "scanner_failure_result")) or current.get("operation_lease_completed_at")
+                    or current.get("package_submission_idempotency_key")):
+                return False
+            try:
+                if not _label_match_local_completion_event_exists(self.data_manager, set_id):
+                    return False
+            except Exception as error:
+                self._publish_durable_commit_block(error)
+                return True
+            # The existing pre-CSV checkpoint is the restart snapshot; no new
+            # storage field or independently fallible completion marker.
+            self.__dict__["_csv_completed_set"] = {"current_snapshot": copy.deepcopy(current)}
+        if raw_input is not None:
+            self._ignore_product_scan(raw_input,
+                "완료됨 · 기록 마무리 중. 완료된 입력은 취소·교환할 수 없습니다. 저장 재시도를 누르세요.")
+        return True
+
     def _scanner_command(self, command):
         if self._app_close_blocks_local_action() or self._block_view_only_action("스캐너 명령") or self._block_active_history_load_action("스캐너 명령"):
+            return
+        if self._csv_completed_set_blocks_edit(command):
             return
         if command == "KMCMD:UNDO":
             return self._undo_scanner_input()
@@ -14774,6 +14813,8 @@ class Label_Match(tk.Tk):
         self.update_big_display("교환할 불량 제품을 스캔하세요.", "primary")
 
     def _scanner_exchange_input(self, value):
+        if self._csv_completed_set_blocks_edit(value):
+            return
         current = self.current_set_info
         normalized = self._sample_barcode(value)
         samples = {self._sample_barcode(barcode) for barcode in current["raw"][1:]}
@@ -14926,6 +14967,8 @@ class Label_Match(tk.Tk):
             return False
 
     def _undo_scanner_input(self):
+        if self._csv_completed_set_blocks_edit("KMCMD:UNDO"):
+            return
         current = self.current_set_info
         snapshot = self.__dict__.get("_scanner_shortage_undo") or current.get("shortage_undo_snapshot")
         if current.get("shortage_release_pending"):
@@ -17091,6 +17134,9 @@ class Label_Match(tk.Tk):
         *,
         _durable_completion=None,
     ):
+        frozen = (self.__dict__.get("_csv_completed_set") or {}).get("current_snapshot") or {}
+        if frozen and str(frozen.get("id") or "") == str(self.current_set_info.get("id") or ""):
+            self.current_set_info = copy.deepcopy(frozen)
         raw_scans_to_log = self.current_set_info['raw'].copy()
         parsed_scans_to_log = self.current_set_info['parsed'].copy()
         central_inherit_all = self._central_inherit_all_active()
@@ -17281,8 +17327,7 @@ class Label_Match(tk.Tk):
         self.__dict__.setdefault("history_row_details_map", {})[set_id_for_log] = details
         if result == self.Results.PASS:
             summary_date = _label_match_summary_date(details)
-            if item_code != "N/A" and summary_date and not (
-                    details.get("shortage_confirmed") and set_id_for_log in self.set_details_map):
+            if item_code != "N/A" and summary_date and set_id_for_log not in self.set_details_map:
                 self.scan_count[summary_date][(item_code, phase)] += 1
             self.set_details_map[set_id_for_log] = details
             self.global_scanned_set.update(_label_match_duplicate_index_barcodes(details))
@@ -17321,6 +17366,7 @@ class Label_Match(tk.Tk):
         self._update_summary_tree()
         returned = self._return_to_idle_after_finalized_set()
         if returned and _durable_completion is not None:
+            self.__dict__.pop("_csv_completed_set", None)
             # Scans held behind this durable completion may start the next set.
             self._completed_set_behind_scans = (
                 set_id_for_log, int(self.__dict__.get("_ui_lane_generation", 0)),
@@ -17748,6 +17794,8 @@ class Label_Match(tk.Tk):
 
     def _reset_current_set(self, full_reset=False, from_finalize=False):
         if self.is_blinking: return False
+        if full_reset and not from_finalize and self._csv_completed_set_blocks_edit("KMCMD:UNDO"):
+            return False
         if (
             full_reset
             and not from_finalize
@@ -17827,6 +17875,7 @@ class Label_Match(tk.Tk):
         if not from_finalize and self.__dict__.get("_scans_behind_completion"):
             # Scans held behind a completion belong to the work reset here.
             self._refuse_scans_behind_completion("changed")
+        self.__dict__.pop("_csv_completed_set", None)
         self._advance_ui_lane_generation()
         self.current_set_info = {
             'id': None, 'parsed': [], 'raw': [],
@@ -21150,9 +21199,15 @@ class Label_Match(tk.Tk):
         scans = tuple(self.current_set_info.get("raw") or ())
         total = max(1, int(self._workflow_total_scan_count()))
         completed = min(total, len(scans))
+        frozen = (self.__dict__.get("_csv_completed_set") or {}).get("current_snapshot") or {}
+        csv_completed = bool(frozen and str(frozen.get("id") or "") == str(self.current_set_info.get("id") or ""))
+        if csv_completed:
+            message = "완료됨 · 기록 마무리 중. 저장 재시도를 누르세요. 완료된 입력은 취소·교환할 수 없습니다."
         notice = WorkflowNotice(
             title=(
-                f"{completed}/{total} 유지 · PC 시계 확인 필요"
+                "완료됨 · 기록 마무리 중"
+                if csv_completed
+                else f"{completed}/{total} 유지 · PC 시계 확인 필요"
                 if clock_behind
                 else f"{completed}/{total} 유지 · 포장 권한 확인 필요"
                 if lease_failure
