@@ -443,3 +443,6 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - LM-O1: canonical Snapshot과 현재 사용자 relay 관측의 key 없음 판단을 native RegOpenKeyExW 코드 2로 한정하고 나머지 오류/race 실패를 보존한다. PS5.1/7 격리 회귀는 sub-158 REPORT; 실제 registry 오류·Run/설치 수용과 최종 선언/pin은 OPEN이다.
 
 - sub-158 조건부 교정: sub-155가 확인한 db1f114의 canonical_placement source 중복을 정식 가지에서 하나의 실제 placement/removal admission으로 모았다. PS5.1/7 위임·timeout/해제와 duplicate 거절 회귀를 보존한다. 선언/pin/최종 packet 및 실제 lifecycle 수용은 OPEN이다.
+
+
+- sub-177: 고정 helper 원 bytes hash 유지 + UTF-8 디코드 선두 BOM 하나 제거를 canonical 다섯 실행 자리에 적용하고, preimage 뒤·writer 거래 전 실패의 해당 run 진단/임시 상태를 보존 archive하여 새 설치 판정을 안전하게 이어간다. 기존 receipt·등록·data residue 거절 및 거래 안 rollback은 유지한다. [동작·회복 경계](operations.md#verified-helper-text-pretransaction)와 D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-177/REPORT.md에 실제 회귀/예행/실패 한계를 기록한다. 정식 선언/pin·독립 검토·현장 수용은 중앙 후속 OPEN이다.

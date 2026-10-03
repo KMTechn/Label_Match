@@ -1572,6 +1572,61 @@ function Save([string]$Path, $Value) {
     Move-Item $temp $Path -Force
 }
 
+
+function Archive-PretransactionFailure([string]$AuditRoot, [string]$RunId) {
+    # Before writer authority/fence acquisition, only this run's snapshots and
+    # frozen helpers exist. Retain their bytes outside the active audit root;
+    # never classify an existing receipt or registration as pristine.
+    if ($RunId -cnotmatch '^[a-zA-Z0-9-]+$') { throw 'Pretransaction run identity is invalid.' }
+    $auditRootPath = [IO.Path]::GetFullPath($AuditRoot).TrimEnd('\')
+    if ((Split-Path -Leaf $auditRootPath) -cne 'install-audit') {
+        throw 'Pretransaction audit root identity differs.'
+    }
+    if ((Get-Item -LiteralPath $auditRootPath).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Pretransaction audit root is a reparse point.'
+    }
+    $archiveParent = $auditRootPath + '-pretransaction-failures'
+    if (Test-Path -LiteralPath $archiveParent) {
+        $archiveItem = Get-Item -LiteralPath $archiveParent
+        if (-not $archiveItem.PSIsContainer -or
+            ($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Pretransaction archive parent is not an ordinary directory.'
+        }
+    }
+    $archiveRoot = Join-Path $archiveParent $RunId
+    if (Test-Path -LiteralPath $archiveRoot) { throw 'Pretransaction archive already exists.' }
+    [void][IO.Directory]::CreateDirectory($archiveParent)
+    $prefix = 'canonical-portable-' + $RunId
+    $allEntries = @(Get-ChildItem -LiteralPath $auditRootPath -Force)
+    $entries = @($allEntries | Where-Object {
+        $_.Name -ceq ($prefix + '.json') -or
+            $_.Name.StartsWith($prefix + '.json.tmp.', [StringComparison]::Ordinal) -or
+            $_.Name.StartsWith($prefix + '-', [StringComparison]::Ordinal)
+    })
+    foreach ($entry in $entries) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Pretransaction artifact is a reparse point.'
+        }
+    }
+    if ($entries.Count -eq 0) { throw 'Pretransaction artifacts are absent.' }
+    if ($entries.Count -eq $allEntries.Count) {
+        # A new audit root contains only this run. Rename its ordinary parent
+        # as one unit, retaining every frozen child ACL and all original bytes.
+        Move-Item -LiteralPath $auditRootPath -Destination $archiveRoot -ErrorAction Stop
+        return $archiveRoot
+    }
+    [void][IO.Directory]::CreateDirectory($archiveRoot)
+    foreach ($entry in $entries) {
+        # Move whole entries without traversing the frozen helpers' deny ACLs.
+        # Both resolved endpoints are fixed siblings under this user's app state.
+        Move-Item -LiteralPath $entry.FullName -Destination (Join-Path $archiveRoot $entry.Name) -ErrorAction Stop
+    }
+    if (@(Get-ChildItem -LiteralPath $auditRootPath -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $auditRootPath -ErrorAction Stop
+    }
+    return $archiveRoot
+}
+
 function FreezePlacementHelper(
     [string]$Source,
     [string]$AuditRoot,
@@ -1715,7 +1770,7 @@ try { $actual = ([BitConverter]::ToString($hash.ComputeHash($bytes))).Replace('-
 finally { $hash.Dispose() }
 if ($actual -cne '@@integrity-sha@@') { throw 'Frozen integrity helper byte pin differs.' }
 $utf8 = New-Object Text.UTF8Encoding($false, $true)
-. ([ScriptBlock]::Create($utf8.GetString($bytes))) -SharedCodeRoot '@@shared-root@@'
+. ([ScriptBlock]::Create(($utf8.GetString($bytes) -replace '^\uFEFF', ''))) -SharedCodeRoot '@@shared-root@@'
 $probeRoot = $utf8.GetString([Convert]::FromBase64String('@@root-base64@@'))
 [void](Assert-BootstrapIntegrityRecord $probeRoot)
 '@.Replace('@@integrity-path@@', $integrityPath.Replace("'", "''")).Replace(
@@ -1800,9 +1855,9 @@ function Get-RequiredExternalInteger($Object, [string]$Name) {
 [byte[]]$writerFenceBytes = PinnedBytes ([string]$payload.writer_fence_path) ([string]$payload.writer_fence_sha256)
 [byte[]]$helperBytes = PinnedBytes ([string]$payload.helper_path) ([string]$payload.helper_sha256)
 $utf8 = New-Object Text.UTF8Encoding($false, $true)
-. ([ScriptBlock]::Create($utf8.GetString($integrityBytes))) -SharedCodeRoot (Split-Path (Split-Path ([string]$payload.integrity_path) -Parent) -Parent)
-. ([ScriptBlock]::Create($utf8.GetString($writerFenceBytes)))
-$helper = [ScriptBlock]::Create($utf8.GetString($helperBytes))
+. ([ScriptBlock]::Create(($utf8.GetString($integrityBytes) -replace '^\uFEFF', ''))) -SharedCodeRoot (Split-Path (Split-Path ([string]$payload.integrity_path) -Parent) -Parent)
+. ([ScriptBlock]::Create(($utf8.GetString($writerFenceBytes) -replace '^\uFEFF', '')))
+$helper = [ScriptBlock]::Create(($utf8.GetString($helperBytes) -replace '^\uFEFF', ''))
 $parameterNames = @(
     'SourceRoot',
     'InstallRoot',
@@ -2958,6 +3013,7 @@ $audit = [ordered]@{
     rollback = [ordered]@{ available = $true; applied = $false; runtime_restored = $false }
 }
 Save $auditPath $audit
+try {
 if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
 $frozenPlacement = FreezePlacementHelper `
     $source `
@@ -2966,7 +3022,7 @@ $frozenPlacement = FreezePlacementHelper `
     $receiptSource.critical_file_sha256
 # The ordinary preflight uses only the already pinned/frozen integrity helper.
 $preparationIntegrityBytes = PinnedFileBytes (Join-Path ([string]$frozenPlacement.root) 'tools\bootstrap_integrity.ps1') ([string]$frozenPlacement.integrity_sha256)
-. ([ScriptBlock]::Create(([Text.UTF8Encoding]::new($false, $true)).GetString($preparationIntegrityBytes))) -SharedCodeRoot ([string]$frozenPlacement.root)
+. ([ScriptBlock]::Create((([Text.UTF8Encoding]::new($false, $true)).GetString($preparationIntegrityBytes) -replace '^\uFEFF', ''))) -SharedCodeRoot ([string]$frozenPlacement.root)
 if (-not $testMode) {
     try { Assert-LabelProtectedInstallPath (Split-Path -Parent $install) -AllowSupportedPreparation }
     catch {
@@ -3102,6 +3158,39 @@ $rollbackSources = @(
     'auto_update_task_mutation',
     'auto_update_restore_preimage'
 )
+}
+catch {
+    $pretransactionFailure = $_
+    $audit.status = 'FAILED_PRETRANSACTION'
+    $audit.failure = [ordered]@{
+        type = $pretransactionFailure.Exception.GetType().FullName
+        message = $pretransactionFailure.Exception.Message
+    }
+    $audit.recovery = [ordered]@{ transaction_started = $false; artifacts_archived = $false }
+    try {
+        Save $auditPath $audit
+        $archiveRoot = Archive-PretransactionFailure $localAuditRoot $runId
+        $audit.recovery.artifacts_archived = $true
+        $audit.recovery.archive_root = $archiveRoot
+        Save (Join-Path $archiveRoot (Split-Path -Leaf $auditPath)) $audit
+        if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+    }
+    catch {
+        # A partial archive is retained, and no receipt/guard is relaxed to retry.
+        # Report both failures while preserving the original ErrorRecord.
+        $archiveFailure = $_
+        $pretransactionFailure.Exception.Data['pretransaction_recovery_failure'] = $archiveFailure.Exception.Message
+        $audit.recovery.failure = $archiveFailure.Exception.Message
+        $retainedAuditPath = Join-Path (Join-Path ($localAuditRoot + '-pretransaction-failures') $runId) (Split-Path -Leaf $auditPath)
+        if (Test-Path -LiteralPath $auditPath) { $retainedAuditPath = $auditPath }
+        try {
+            Save $retainedAuditPath $audit
+            if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+        } catch { }
+    }
+    $Script:LabelWriterFenceInstalledIdentity = $null
+    throw $pretransactionFailure
+}
 $mutated = $false
 $replacementRollbackRoot = if ($null -ne $firstRegistrationResume) { [string]$firstRegistrationResume.code_backup_root } else { '' }
 $replacementBackupsBefore = @()

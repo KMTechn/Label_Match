@@ -1990,3 +1990,215 @@ $actual=Test-PristineInstallState $env:LM_PRISTINE_INSTALL `
     assert json.loads(result.stdout)["pristine"] is (scenario in {"public-ca", "absent-ca"})
     assert {name: hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
             for name in before} == before
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("tamper", (False, True))
+def test_pinned_bom_integrity_helper_executes_verified_bytes(tmp_path, engine, tamper):
+    from tests.test_shared_ancestor_protection import run_functions
+
+    expected = hashlib.sha256(INTEGRITY_HELPER.read_bytes()).hexdigest()
+    result = run_functions(tmp_path, INSTALLER, ["ByteSha", "PinnedFileBytes"], r'''
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
+$statement=@($ast.FindAll({param($n)
+ $n -is [Management.Automation.Language.PipelineAst] -and
+ $n.Extent.Text.StartsWith('. ([ScriptBlock]::Create', [StringComparison]::Ordinal) -and
+ $n.Extent.Text.Contains('preparationIntegrityBytes')
+},$true))
+if($statement.Count -ne 1){throw 'Ordinary verified-byte execution site missing.'}
+$preparationIntegrityBytes=PinnedFileBytes $env:LM_BOM_HELPER $env:LM_BOM_SHA
+$frozenPlacement=[pscustomobject]@{root=$env:LM_BOM_ROOT}
+# Execute the actual product statement, never the installer entrypoint.
+. ([ScriptBlock]::Create($statement[0].Extent.Text))
+if(-not (Get-Command Assert-BootstrapIntegrityRecord -CommandType Function -ErrorAction SilentlyContinue)) {
+ throw 'Actual BOM helper did not define its integrity function.'
+}
+'EXECUTED'
+''', engine=engine, values={
+        "LM_BOM_HELPER": str(INTEGRITY_HELPER), "LM_BOM_ROOT": str(ROOT),
+        "LM_BOM_SHA": ("0" * 64) if tamper else expected,
+    })
+    if tamper:
+        assert result.returncode != 0
+        assert "EXECUTED" not in result.stdout
+        assert "pin" in result.stderr.lower()
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "EXECUTED" in result.stdout
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("existing", (False, True))
+@pytest.mark.parametrize("frozen_acl", (False, True))
+def test_pretransaction_failure_preserves_evidence_and_next_install_state(tmp_path, engine, existing, frozen_acl):
+    from tests.test_shared_ancestor_protection import run_functions
+
+    result = run_functions(tmp_path, INSTALLER, ["Save", "Archive-PretransactionFailure", "Test-PristineInstallState"], r'''
+$auditRoot=Join-Path $env:LM_ARCHIVE_ROOT 'install-audit'
+[void][IO.Directory]::CreateDirectory($auditRoot)
+$runId='regression-run'
+$auditPath=Join-Path $auditRoot ('canonical-portable-'+$runId+'.json')
+$audit=[ordered]@{status='FAILED_PRETRANSACTION';code_placement='PENDING';rollback=@{applied=$false}}
+Save $auditPath $audit
+[IO.File]::WriteAllText(($auditPath+'.tmp.123'),'unique interrupted audit write')
+$frozen=Join-Path $auditRoot ('canonical-portable-'+$runId+'-helper')
+[void][IO.Directory]::CreateDirectory($frozen)
+$helper=Join-Path $frozen 'helper.ps1'
+[IO.File]::WriteAllText($helper,'unique original failure evidence')
+if($env:LM_ARCHIVE_FROZEN -eq '1'){
+ $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+ $acl=Get-Acl -LiteralPath $frozen
+ $rights=[Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete
+ $inherit=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+ [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,$rights,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Deny))
+ Set-Acl -LiteralPath $frozen -AclObject $acl
+}
+if($env:LM_ARCHIVE_EXISTING -eq '1'){
+ [IO.File]::WriteAllText((Join-Path $auditRoot 'existing-receipt.json'),'preserve unrelated receipt')
+}
+$archive=Archive-PretransactionFailure $auditRoot $runId
+if(-not (Test-Path -LiteralPath (Join-Path $archive ('canonical-portable-'+$runId+'.json')))) {throw 'Audit lost.'}
+if([IO.File]::ReadAllText((Join-Path $archive ('canonical-portable-'+$runId+'.json.tmp.123'))) -cne 'unique interrupted audit write') {throw 'Interrupted audit bytes lost.'}
+if([IO.File]::ReadAllText((Join-Path $archive ('canonical-portable-'+$runId+'-helper\helper.ps1'))) -cne 'unique original failure evidence') {throw 'Helper evidence changed.'}
+$pristine=Test-PristineInstallState (Join-Path $env:LM_ARCHIVE_ROOT 'current') ([pscustomobject]@{exists=$false}) @() @() @($auditRoot)
+if($pristine -ne ($env:LM_ARCHIVE_EXISTING -ne '1')) {throw 'Next install residue contract differs.'}
+if($env:LM_ARCHIVE_EXISTING -eq '1' -and [IO.File]::ReadAllText((Join-Path $auditRoot 'existing-receipt.json')) -cne 'preserve unrelated receipt') {throw 'Existing preimage changed.'}
+# Supported removal has no new code, Run, task, relay or registration to undo;
+# forensic archive remains a preserved local diagnostic, outside active audit.
+[pscustomobject]@{pristine=$pristine;archived=$true}|ConvertTo-Json -Compress
+''', engine=engine, values={"LM_ARCHIVE_ROOT": str(tmp_path), "LM_ARCHIVE_EXISTING": "1" if existing else "0", "LM_ARCHIVE_FROZEN": "1" if frozen_acl else "0"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["archived"] is True
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("wrapper", ("probe", "placement"))
+def test_pinned_bom_integrity_encoded_wrappers_without_native_launch(tmp_path, engine, wrapper):
+    from tests.test_shared_ancestor_protection import run_functions
+
+    result = run_functions(tmp_path, INSTALLER,
+        ["ByteSha", "PinnedFileBytes", "InvokeFrozenIntegrityProbe", "InvokeFrozenPlacementHelper"], r'''
+$root=$env:LM_BOM_ROOT
+$integrity=Join-Path $root 'tools\bootstrap_integrity.ps1'
+$writer=Join-Path $root 'tools\label_writer_fence.ps1'
+$helper=Join-Path $root 'INSTALL_THIS_PC.ps1'
+$frozen=[pscustomobject]@{root=$root;helper_path=$helper;writer_fence_path=$writer;
+ integrity_sha256=(Get-FileHash -LiteralPath $integrity).Hash.ToLowerInvariant();
+ writer_fence_sha256=(Get-FileHash -LiteralPath $writer).Hash.ToLowerInvariant();
+ helper_sha256=(Get-FileHash -LiteralPath $helper).Hash.ToLowerInvariant()}
+function Join-Path {param($Path,$ChildPath)
+ if($ChildPath -ceq 'WindowsPowerShell\v1.0\powershell.exe'){return 'Capture-Encoded'}
+ Microsoft.PowerShell.Management\Join-Path -Path $Path -ChildPath $ChildPath
+}
+function Capture-Encoded {param([switch]$NoLogo,[switch]$NoProfile,[switch]$NonInteractive,$ExecutionPolicy,$EncodedCommand)
+ $global:captured=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($EncodedCommand))
+ $global:LASTEXITCODE=0
+}
+function Start-Process {param($FilePath,$Verb,$ArgumentList,$WindowStyle,[switch]$Wait,[switch]$PassThru)
+ $global:captured=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[-1]))
+ [pscustomobject]@{ExitCode=0}
+}
+if($env:LM_BOM_WRAPPER -eq 'probe'){
+ InvokeFrozenIntegrityProbe $frozen (Join-Path $env:LM_BOM_TMP 'absent-install')
+ $boundary=$captured.IndexOf('$probeRoot =')
+}else{
+ [void](InvokeFrozenPlacementHelper $frozen @{})
+ $boundary=$captured.IndexOf('$parameterNames =')
+}
+if($boundary -le 0){throw 'Encoded product helper boundary missing.'}
+Remove-Item Function:\Join-Path
+Remove-Item Function:\Start-Process
+# Execute the generated byte-read/hash/decode prefix from the product wrapper.
+# The domain operation and actual placement helper entrypoint are excluded.
+. ([ScriptBlock]::Create($captured.Substring(0,$boundary)))
+if(-not (Get-Command Assert-BootstrapIntegrityRecord -CommandType Function -ErrorAction SilentlyContinue)){throw 'Actual integrity helper did not execute.'}
+if($env:LM_BOM_WRAPPER -eq 'placement'){
+ if(-not (Get-Command Enter-LabelWriterSessionAuthority -CommandType Function -ErrorAction SilentlyContinue)){throw 'Actual writer helper did not execute.'}
+ if($null -eq $helper.Ast.ParamBlock){throw 'Actual placement helper BOM hides its parameters.'}
+}
+'EXECUTED'
+''', engine=engine, values={"LM_BOM_ROOT": str(ROOT), "LM_BOM_TMP": str(tmp_path), "LM_BOM_WRAPPER": wrapper})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "EXECUTED" in result.stdout
+
+
+def test_pretransaction_failure_diagnostics_survive_supported_user_removal(tmp_path, monkeypatch):
+    import auto_update
+    from current_user_onboarding import remove_current_user_setup
+
+    monkeypatch.setattr(auto_update, "installation_root", lambda _root: None)
+    archive = tmp_path / "local/KMTech/Label_Match/install-audit-pretransaction-failures/run"
+    archive.mkdir(parents=True)
+    original = archive / "canonical-portable-run.json"
+    original.write_bytes(b'{"status":"FAILED_PRETRANSACTION","unique_failure":true}')
+    before = original.read_bytes()
+    # Call the unchanged removal domain with all three native persistence
+    # callbacks substituted; writer admission/native CLI is the guest's scope.
+    report = remove_current_user_setup.__wrapped__(
+        tmp_path / "app", environ={"LOCALAPPDATA": str(tmp_path / "local"),
+                                  "LABEL_MATCH_SAVE_DIR": str(tmp_path / "data")},
+        autostart_remover=lambda: {"status": "ABSENT"},
+        scheduled_task_remover=lambda _root: {"status": "ABSENT"},
+        relay_stopper=lambda _root: {"status": "ABSENT"},
+    )
+    assert report["status"] == "PASS_DATA_PRESERVED"
+    assert original.read_bytes() == before
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("failure_phase", ("frozen", "external-evidence"))
+def test_pretransaction_failure_boundary_rethrows_and_retires_only_own_run(tmp_path, engine, failure_phase):
+    from tests.test_shared_ancestor_protection import run_functions
+
+    result = run_functions(tmp_path, INSTALLER, ["Save", "Archive-PretransactionFailure", "Full"], r'''
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
+$boundary=@($ast.FindAll({param($n)
+ $n -is [Management.Automation.Language.TryStatementAst] -and
+ $n.Body.Extent.Text.Contains('$frozenPlacement = FreezePlacementHelper')
+},$true))
+if($boundary.Count -ne 1){throw 'Pretransaction recovery boundary missing.'}
+$runId='boundary-run';$localAuditRoot=Join-Path $env:LM_BOUNDARY_ROOT 'install-audit'
+. $env:LM_BOUNDARY_SHARED
+[void][IO.Directory]::CreateDirectory($localAuditRoot)
+$auditPath=Join-Path $localAuditRoot ('canonical-portable-'+$runId+'.json')
+$EvidencePath=Join-Path $env:LM_BOUNDARY_ROOT 'external-evidence.json'
+if($env:LM_BOUNDARY_PHASE -eq 'external-evidence'){
+ $blocked=Join-Path $env:LM_BOUNDARY_ROOT 'blocked'
+ [IO.File]::WriteAllText($blocked,'preserve path obstruction')
+ $EvidencePath=Join-Path $blocked 'external-evidence.json'
+}
+$audit=[ordered]@{status='PREIMAGE_SAVED';code_placement='PENDING';rollback=@{applied=$false}}
+Save $auditPath $audit
+$source=$env:LM_BOUNDARY_ROOT;$receiptSource=@{critical_file_sha256=@{}}
+function FreezePlacementHelper {param($Source,$AuditRoot,$RunId,$Expected)
+ $script:freezeCalls++
+ $frozen=Join-Path $AuditRoot ('canonical-portable-'+$RunId+'-helper')
+ [void][IO.Directory]::CreateDirectory($frozen)
+ [IO.File]::WriteAllText((Join-Path $frozen 'failure.ps1'),'unique failed input')
+ throw 'ORIGINAL_FROZEN_HELPER_FAILURE'
+}
+function Enter-LabelWriterSessionAuthority {throw 'Writer authority must remain untouched.'}
+function Start-LabelWriterFence {throw 'Writer fence must remain untouched.'}
+$rejected=$false
+$script:freezeCalls=0
+try{. ([ScriptBlock]::Create($boundary[0].Extent.Text))}
+catch{
+ $originalFailure=$_
+ if($env:LM_BOUNDARY_PHASE -eq 'frozen' -and $_.Exception.Message -cne 'ORIGINAL_FROZEN_HELPER_FAILURE'){throw}
+ if($env:LM_BOUNDARY_PHASE -eq 'external-evidence' -and $script:freezeCalls -ne 0){throw 'Evidence failure did not precede helper evaluation.'}
+ $rejected=$true
+}
+if(-not $rejected){throw 'Original failure was swallowed.'}
+$retained=Join-Path (Join-Path ($localAuditRoot+'-pretransaction-failures') $runId) (Split-Path -Leaf $auditPath)
+$evidence=Get-Content -LiteralPath $retained -Raw | ConvertFrom-Json
+if($evidence.failure.message -cne $originalFailure.Exception.Message){throw 'Original failure differs from retained audit.'}
+if($env:LM_BOUNDARY_PHASE -eq 'external-evidence' -and [IO.File]::ReadAllText($blocked) -cne 'preserve path obstruction'){throw 'Existing path obstruction changed.'}
+if($evidence.status -cne 'FAILED_PRETRANSACTION' -or
+ $evidence.recovery.transaction_started -or -not $evidence.recovery.artifacts_archived -or
+ $evidence.rollback.applied -or (Test-Path -LiteralPath $localAuditRoot)) {throw 'Pretransaction recovery state differs.'}
+'RECOVERED'
+''', engine=engine, values={"LM_BOUNDARY_ROOT": str(tmp_path), "LM_BOUNDARY_SHARED": str(ROOT / "kmtech_shared/powershell/portable.ps1"), "LM_BOUNDARY_PHASE": failure_phase})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "RECOVERED" in result.stdout

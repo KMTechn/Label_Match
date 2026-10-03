@@ -1081,3 +1081,13 @@ canonical onboarding은 fence 안에서 신원·Run을 준비하고 relay 시작
 Run key 읽기는 RegOpenKeyExW의 반환 코드 2만 정확한 부재로 받는다. 접근 거부·삭제 중 key·다른 오류는 native code를 보존해 실패하며 query-only handle을 SafeRegistryHandle/RegistryKey로 소유·폐기한다. 성공한 값 이름 관측의 정확한 누락만 value 부재이며 kind/data 오류·관측 뒤 소실은 실패한다. 실제 호스트 registry 오류는 실행하지 않았으며 PS5.1/7 native status 주입 회귀와 실제 API 수용을 구별한다.
 
 canonical placement와 지원 제거는 Enter-LabelCanonicalPlacement 한 함수의 기존 delegated source를 공유한다. 정확한 control/session/attempt/transaction/token과 제거 5000ms·배치 15000ms·기존 lease 해제를 유지한다. 코드 유도 inventory의 중복 거절을 유지하며 root의 canonical_placement가 한 행으로 나온다. pin/선언 갱신·stock·실제 설치는 중앙 후속이다.
+
+
+<a id="verified-helper-text-pretransaction"></a>
+## 고정 helper의 BOM과 거래 진입 전 회복
+
+canonical 설치기는 원 파일 bytes를 한 번 읽어 BOM을 포함한 SHA256을 대조한 같은 bytes만 실행한다. UTF-8 디코드 뒤 맨 앞 U+FEFF 하나만 제거하여 ScriptBlock으로 만든다. 나머지 문자·줄바꿈과 파일 BOM은 유지한다. 일반 사용자 사전 검사, 동결 무결성 probe, 상승 placement launcher의 integrity/writer/placement helper 다섯 자리가 같은 규칙을 쓴다. 한국어 PowerShell 파일의 BOM을 파일에서 지우거나 해시 대상을 바꾸지 않는다.
+
+preimage 저장 뒤 writer authority/fence 거래 진입 전 실패는 `FAILED_PRETRANSACTION`으로 원 예외와 `transaction_started=false`를 남긴다. 그 run의 snapshot·동결 helper·중단된 audit 임시 파일만 사용자 상태의 `install-audit-pretransaction-failures/<run_id>/`에 bytes와 ACL 그대로 보존 이동한다. 새 audit 폴더의 항목이 전부 해당 run이면 폴더를 한 번 rename하고, 기존 receipt가 있으면 해당 run의 항목만 이동한다. 빈 active audit 폴더만 일반 삭제한다. 기존 receipt·등록·업무 자료의 residue 거절과 거래 안 rollback은 유지한다. 회복 이동 자체가 실패하면 원 예외와 회복 오류를 함께 보존하고 guard를 우회하지 않는다. 지원 사용자 제거는 이 진단 archive를 삭제하지 않는다.
+
+PS5.1/PS7의 실제 BOM helper·encoded prefix·hash 불일치 거절, native deny ACL 및 기존 receipt/임시 bytes 보존, 실제 거래 전 catch와 격리 지원 제거 domain 회귀는 sub-177 REPORT를 따른다. 전체 native 설치/Run/task/relay·콜드 부팅/현장 수용과 고정 선언은 source 회귀와 구별한다. 정식 선언/pin 재생성은 이번 교정에서 수행하지 않고 예행 가지와 중앙 출시 컷에서만 처리한다.
