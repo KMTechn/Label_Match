@@ -138,7 +138,8 @@ def test_completion_retry_must_persist_the_frozen_signal_before_logging(packagin
 
 
 @pytest.mark.parametrize('enabled', [False, True])
-def test_local_completion_identity_write_failure_keeps_the_checkpoint_decision(packaging, tmp_path, monkeypatch, enabled):
+@pytest.mark.parametrize('restart', [False, True])
+def test_local_completion_identity_write_failure_keeps_the_checkpoint_decision(packaging, tmp_path, monkeypatch, enabled, restart):
     import label_data_manager as module
     app, dialogs = packaging
     select_worker(app, tmp_path, enabled=enabled)
@@ -158,12 +159,27 @@ def test_local_completion_identity_write_failure_keeps_the_checkpoint_decision(p
     decision = IDENTITY if enabled else {}
     assert state['current_set_info']['completion_worker_identity'] == decision
     assert app.current_set_info['completion_worker_identity'] == decision
-    app._worker_identity_enabled = not enabled
-    app._retry_blocked_submission()
-    assert len(completions(app)) == 1
-    [intent] = Path(app.save_directory).glob('_worker_record_identity/*.json')
-    assert json.loads(intent.read_text(encoding='utf-8'))['current_set_info']['completion_worker_identity'] == decision
-    assert app.current_set_info['raw'] == [] and dialogs == []
+    restored = None
+    try:
+        if restart:
+            _close(app)
+            restored = _app_for_recovery(lm, tmp_path, monkeypatch)
+            restored.worker_id, restored.worker_name = ALICE, 'Corrected worker'
+            restored._worker_identity_enabled = not enabled
+            restored._load_current_set_state()
+            retry = restored
+        else:
+            app._worker_identity_enabled = not enabled
+            retry = app
+        assert retry.current_set_info['completion_worker_identity'] == decision
+        retry._retry_blocked_submission()
+        assert len(completions(retry)) == 1
+        [intent] = Path(retry.save_directory).glob('_worker_record_identity/*.json')
+        assert json.loads(intent.read_text(encoding='utf-8'))['current_set_info']['completion_worker_identity'] == decision
+        assert retry.current_set_info['raw'] == [] and dialogs == []
+    finally:
+        if restored is not None:
+            _close(restored)
 
 
 @pytest.mark.parametrize('enabled', [False, True])
