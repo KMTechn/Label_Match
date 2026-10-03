@@ -1407,15 +1407,16 @@ function Snapshot {
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($RunKey, $false)
     if ($null -eq $key) { return [ordered]@{ exists = $false; kind = ''; data = '' } }
     try {
-        try { $kind = [string]$key.GetValueKind($RunName) }
-        catch [IO.IOException] { return [ordered]@{ exists = $false; kind = ''; data = '' } }
+        if ($RunName -notin $key.GetValueNames()) { return [ordered]@{ exists = $false; kind = ''; data = '' } }
+        $kind = [string]$key.GetValueKind($RunName)
         if ($kind -notin @('String', 'ExpandString')) { throw "Unsupported Run type: $kind" }
-        $data = [string]$key.GetValue(
+        $data = $key.GetValue(
             $RunName,
             $null,
             [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
         )
-        return [ordered]@{ exists = $true; kind = $kind; data = $data }
+        if ($null -eq $data) { throw 'Run value disappeared during snapshot.' }
+        return [ordered]@{ exists = $true; kind = $kind; data = [string]$data }
     }
     finally { $key.Dispose() }
 }
@@ -1440,10 +1441,7 @@ function TextSha([string]$Value) {
 }
 
 function ScheduledTaskSnapshot([string]$AuditRoot, [string]$RunId) {
-    $task = Get-ScheduledTask `
-        -TaskName $CanonicalTaskName `
-        -TaskPath '\' `
-        -ErrorAction SilentlyContinue
+    $task = Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' }
     if ($null -eq $task) {
         return [pscustomobject][ordered]@{
             exists = $false
@@ -1468,10 +1466,7 @@ function ScheduledTaskSnapshot([string]$AuditRoot, [string]$RunId) {
 }
 
 function RestoreScheduledTask($Before) {
-    $existing = Get-ScheduledTask `
-        -TaskName $CanonicalTaskName `
-        -TaskPath '\' `
-        -ErrorAction SilentlyContinue
+    $existing = Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' }
     if (-not [bool]$Before.exists) {
         if ($null -ne $existing) {
             Unregister-ScheduledTask `
@@ -1479,7 +1474,7 @@ function RestoreScheduledTask($Before) {
                 -TaskPath '\' `
                 -Confirm:$false
         }
-        if ($null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)) {
+        if ($null -ne (Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' })) {
             throw 'Scheduled task absence restore readback failed.'
         }
         return
@@ -3127,7 +3122,7 @@ try {
                 [string]$removal.status -cne 'PASS_DATA_PRESERVED' -or
                 [string]$removal.relay_process.status -cne 'ABSENT' -or
                 (Get-Item $removalPath).LastWriteTimeUtc -lt $removalStarted.AddSeconds(-1) -or
-                $null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)
+                $null -ne (Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' })
             ) { throw 'Removal readback failed.' }
         }
     }
@@ -3279,7 +3274,7 @@ try {
         $onboarding.server_registration_verified -ceq $false -and
         (Get-Item -LiteralPath $onboardingPath).LastWriteTimeUtc -ge $started.AddSeconds(-1)) {
         if ($after.exists -or @(Relays).Count -ne 0 -or
-            @(Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue).Count -ne 0 -or
+            @(Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' }).Count -ne 0 -or
             (Test-Path -LiteralPath $stop)) {
             throw 'Recovery-required registration must leave persistence absent.'
         }

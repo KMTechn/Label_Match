@@ -686,7 +686,8 @@ function Assert-LabelStartupUpdateSettings([object]$Settings, [string]$UpdatePol
 }
 function Initialize-LabelStartupUpdate([string]$Root) {
     $settingsPath = Join-Path $Root 'app\auto-update-settings.json'
-    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) { return }
+    if (-not (Test-Path -LiteralPath $settingsPath -ErrorAction Stop)) { return }
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf -ErrorAction Stop)) { throw 'STARTUP_UPDATE_SETTINGS_NOT_A_FILE' }
     if ($testOverride) { Write-Output 'startup_update_status=NOT_TESTED_HOST'; return }
     Assert-LabelStartupUpdateTrust $Root
     $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -873,19 +874,15 @@ function Remove-OwnedLegacyTask([string]$Name) {
 
 function Test-CurrentUserRelayPersistencePresent {
     $runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
+    try { $key = Get-Item -LiteralPath $runKey -ErrorAction Stop }
+    catch [System.Management.Automation.ItemNotFoundException] { return $false }
     try {
-        $value = Get-ItemPropertyValue `
-            -LiteralPath $runKey `
-            -Name 'KMTech.LabelMatch.Relay' `
-            -ErrorAction Stop
-        return -not [string]::IsNullOrWhiteSpace([string]$value)
+        if ('KMTech.LabelMatch.Relay' -notin $key.GetValueNames()) { return $false }
+        $value = Get-ItemPropertyValue -LiteralPath $runKey -Name 'KMTech.LabelMatch.Relay' -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { throw 'Current-user relay Run value is empty.' }
+        return $true
     }
-    catch [System.Management.Automation.ItemNotFoundException] {
-        return $false
-    }
-    catch [System.Management.Automation.PSArgumentException] {
-        return $false
-    }
+    finally { $key.Dispose() }
 }
 
 function Get-LabelSupportedStartupTasks([string]$Root) {
@@ -932,6 +929,7 @@ function Remove-LabelScheduledTasks($Folder, [string]$EvidenceRoot, [string]$Cur
         $Folder.DeleteTask($name,0)
         try { [void]$Folder.GetTask($name); throw 'REMOVAL_TASK_ABSENCE_NOT_PROVEN' }
         catch [Runtime.InteropServices.COMException] { if ($_.Exception.HResult -ne -2147024894) { throw } }
+        catch [IO.FileNotFoundException] { if ($_.Exception.HResult -ne -2147024894) { throw } }
     }
     $legacy = Get-OwnedLegacyTaskRetirementSnapshot 'direct-sync-relay-label-match-current-pc'
     if ($null -ne $legacy) {

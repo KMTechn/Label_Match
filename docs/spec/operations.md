@@ -2,6 +2,8 @@
 
 상위 바탕의 최종 admission은 문자 경로 `C:\KMTech`와 `C:\KMTech\Apps`에만 설치기의 ACE 집합·Administrators SID 소유·상속 차단·재분석 거절 판정을 재사용한다. 일반 설치 사전 준비는 없는 폴더를 만들지 않고 기존 기본/보호 모양을 읽으며, 직접 admission은 없는 폴더를 거절한다. daily는 원 코드 신뢰 확인→helper 로드→두 조상의 보호 목표 확인을 업무 변경보다 먼저 수행한다. 다른 경로의 strict leaf mask는 유지한다. standalone code-only removal은 설치된·소스 helper를 로드하지 않고 공유 순수 ACL 판정의 정확한 사본을 사용하며 AST 본문 대조 회귀가 두 정의의 차이를 거절한다. sub-153의 D: NTFS/PS5.1·PS7 회귀는 owner 읽기 seam 범위이고 실제 설치·예약 작업·relay·상승·최종 선언/packet은 NOT TESTED다.
 
+새 설치·제거의 부재 관측은 성공한 예약 작업 전체 조회의 정확한 이름/루트 필터, 레지스트리 키 부재 또는 성공한 값 이름 조회의 누락으로 판정한다. 접근 거부·일반 IO/인수 오류·관측 중 값 소실은 실패이며 빈 relay Run 값도 부재로 취급하지 않는다. 제거 뒤 task 되읽기는 COMException 또는 FileNotFoundException의 정확한 `0x80070002`만 부재로 인정한다. 선택적 업데이트 설정은 경로가 없을 때만 건너뛰고 디렉터리·조회 오류는 거절한다. sub-153의 주입 PS5.1·PS7 회귀와 실제 랩의 native API 수용은 구별한다.
+
 <a id="remote-writer-admission"></a>
 
 예외: 건별 복구에서 재개하는 숨긴 F5 날짜 교환의 원격 호출은 writer admission을 유지한다(코디 결정 2026-10-02). 기존 busy gate가 거절한 스캔은 응답 뒤 다시 입력하며 미리 입력된 값은 보존한다. 계측 등록은 F5 writer 함수와 해당 client 메서드의 조합만 면제한다.
