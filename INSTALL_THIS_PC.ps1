@@ -617,7 +617,7 @@ function Restore-LabelStartupUpdatePreimage([string]$Root, [string]$Directory, [
 }
 
 
-function Assert-LabelStartupUpdateSettings([object]$Settings) {
+function Assert-LabelStartupUpdateSettings([object]$Settings, [string]$UpdatePolicyPath) {
     $names=@($Settings.PSObject.Properties.Name)
     $allowed=@('feed_url','channel','apply_during_work','profile_auth')
     if (@($names | Where-Object { $_ -cnotin $allowed }).Count -or @($allowed | Where-Object { $_ -cnotin $names }).Count) { throw 'STARTUP_UPDATE_SETTINGS_FIELDS_INVALID' }
@@ -628,6 +628,21 @@ function Assert-LabelStartupUpdateSettings([object]$Settings) {
         $feedAuthority=[regex]::Match([string]$Settings.feed_url,'^https://([^/?#]+)',[Text.RegularExpressions.RegexOptions]::IgnoreCase).Groups[1].Value
         if ($feedAuthority.Contains('@')) { throw 'STARTUP_UPDATE_SETTINGS_HTTPS_REQUIRED' }
         if ($feedAuthority -match '[^\x00-\x7f]') { throw '업데이트 주소의 호스트는 ASCII IP 또는 도메인이어야 합니다.' }
+        if ($uri.Query) {
+            # Consume the runtime's literal policy; do not maintain a second list.
+            $policy = Get-Content -LiteralPath $UpdatePolicyPath -Raw -Encoding UTF8
+            $keys = [regex]::Match($policy, '(?ms)^UPDATE_SECRET_QUERY_KEYS = \{(?<body>.*?)^\}').Groups['body'].Value
+            $prefixes = [regex]::Match($policy, '(?m)^UPDATE_SECRET_QUERY_PREFIXES = \((?<body>[^\r\n]*)\)\r?$').Groups['body'].Value
+            $literal = '"([a-z_]+)"'
+            if (-not $keys -or -not $prefixes -or [regex]::Replace($keys,$literal,'') -notmatch '^[,\s]*$' -or [regex]::Replace($prefixes,$literal,'') -notmatch '^[,\s]*$') { throw 'STARTUP_UPDATE_SETTINGS_QUERY_POLICY_INVALID' }
+            $secretKeys = @([regex]::Matches($keys,$literal) | ForEach-Object { $_.Groups[1].Value })
+            $secretPrefixes = @([regex]::Matches($prefixes,$literal) | ForEach-Object { $_.Groups[1].Value })
+            $queryUrl = $Settings.feed_url -replace '[\r\n\t]', '' # urllib.parse URL preprocessing
+            foreach ($part in (($queryUrl -split '\?',2)[1] -split '&')) {
+                $name = [Uri]::UnescapeDataString(($part -split '=',2)[0].Replace('+',' ')).ToLowerInvariant().Replace('-','_')
+                if ($name -cin $secretKeys -or @($secretPrefixes | Where-Object { $name.StartsWith($_,[StringComparison]::Ordinal) }).Count) { throw 'STARTUP_UPDATE_SETTINGS_TOKEN_QUERY_FORBIDDEN' }
+            }
+        }
         $hostName=$uri.DnsSafeHost.ToLowerInvariant().TrimEnd('.')
         if (@(@('github.com','githubusercontent.com','github.io') | Where-Object { $hostName -ceq $_ -or $hostName.EndsWith('.'+$_) }).Count) { throw 'STARTUP_UPDATE_SETTINGS_GITHUB_FORBIDDEN' }
         if (-not $Settings.profile_auth) { throw 'STARTUP_UPDATE_SETTINGS_AUTH_REQUIRED' }
@@ -639,7 +654,7 @@ function Initialize-LabelStartupUpdate([string]$Root) {
     if ($testOverride) { Write-Output 'startup_update_status=NOT_TESTED_HOST'; return }
     Assert-LabelStartupUpdateTrust $Root
     $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Assert-LabelStartupUpdateSettings $settings
+    Assert-LabelStartupUpdateSettings $settings (Join-Path $Root 'app\auto_update.py')
     $Script:StartupUpdatePreimage = Save-LabelStartupUpdatePreimage $Root 'install'
     $managed = Get-StrictFullPath (Split-Path -Parent $Root) 'startup update managed root'
     Assert-NoReparsePoint $managed 'startup update managed root'

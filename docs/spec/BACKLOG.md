@@ -422,4 +422,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 - sub-130 N1: 건강한 A/A·A/B 및 다음 C에서 사용자 제거→재등록의 표식 검증을 고정 owner/actual active 문맥으로 교정했다. 정상 제거의 정확한 ID/SHA·부재 증거를 요구하고 credential handoff·conflict receipt의 권한은 유지한다. source headless 검증과 원 실패는 sub-130 REPORT.md이며 실제 Windows 설치·relay/Run·credential 수용은 OPEN이다.
 - sub-130/136 N2: canonical 내장 URL gate의 ASCII host·빈 userinfo·port 검사와 PC 설정 gate를 맞췄다. PC의 scheme 추출도 대소문자 무관하게 처리하여 `HTTPS`·`hTtPs`의 빈 userinfo·비 ASCII 호스트를 거절한다. 정상 사내 주소·punycode·IPv4/IPv6 및 scheme/호스트 대소문자 변형 허용과 기존 호스팅 별칭 거절을 유지한다. runtime/내장/PC 함수 교차 회귀이며 실제 feed/설치 수용과 최종 선언 재생성은 OPEN이다.
+- LM-U1/sub-143: PC gate가 runtime의 query 금지 목록과 이름 정규화를 사용하도록 맞췄다. 기존 세 경로 교차 회귀에 모든 금지 이름·두 접두사·percent/대소문자/하이픈/빈 값 및 정상 주소 사례를 추가했다. 독립 검토·최종 선언 재생성·실제 feed/설치는 OPEN이다.
 - sub-130 N3: archive 후보 fixture는 staged/unstaged 변경이 있는 입력을 거절하며 candidate의 공개 설정·적용 helper도 해당 committed archive에서 읽는다. 검증 집계는 실제 실행 XML과 입력 SHA·clean 상태로 계산하고 RED/중간/재사용 증거를 최종 합계에 중복 가산하지 않는다. 최종 source SHA·판정·선언 대기 목록은 sub-130 REPORT.md에 기록한다.

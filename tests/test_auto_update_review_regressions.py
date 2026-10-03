@@ -24,6 +24,18 @@ FEED_URL_CASES = [
     ("https://company.test/feed#fragment", False), ("https://github.com/feed", False),
     ("https://alias.github.com/feed", False), ("https://raw.githubusercontent.com/feed", False),
     ("https://alias.github.io./feed", False),
+    ("https://company.test/feed?channel=stable&empty=", True),
+    ("https://company.test/feed?api%2Bkey=safe", True),
+    *[(f"https://company.test/feed?{name}=synthetic", False) for name in sorted(updates.UPDATE_SECRET_QUERY_KEYS)],
+    ("https://company.test/feed?API-KEY=", False),
+    ("hTtPs://company.test/feed?%74%6f%6b%65%6e=synthetic", False),
+    ("https://company.test/feed?safe=ok&client%2Dsecret=synthetic", False),
+    ("https://company.test/feed?X-Amz-Credential=synthetic", False),
+    ("https://company.test/feed?x%5Fgoog%5Fsignature=synthetic", False),
+    ("https://company.test/feed?token", False),
+    ("https://company.test/feed?%61ccess_token=synthetic", False),
+    *[(f"https://company.test/feed?to{control}ken=synthetic", False) for control in ("\t", "\r", "\n")],
+    ("https://company.test/feed?to%09ken=synthetic", True),
 ]
 
 
@@ -49,7 +61,7 @@ def test_pc_installer_feed_url_contract_without_installing(tmp_path):
     result = powershell(tmp_path, body + f"""
 $urls=Get-Content -LiteralPath {quote(cases)} -Raw -Encoding UTF8 | ConvertFrom-Json
 foreach ($url in $urls) {{
-    try {{ Assert-LabelStartupUpdateSettings ([pscustomobject]@{{feed_url=$url;channel='stable';apply_during_work=$false;profile_auth=$true}}); 'ACCEPT' }}
+    try {{ Assert-LabelStartupUpdateSettings ([pscustomobject]@{{feed_url=$url;channel='stable';apply_during_work=$false;profile_auth=$true}}) {quote(ROOT/'auto_update.py')}; 'ACCEPT' }}
     catch {{ 'REJECT' }}
 }}
 """)
