@@ -907,6 +907,10 @@ class SealedTransferExchangeCoordinator:
                 if pair["target_barcode"] not in target["by_barcode"]:
                     raise PackageLogisticsError("exchange target is not a source member")
                 saved = dict(old_fields, scanner_command_id=key, scanner_target=target, scanner_seal=seal)
+                import label_worker_roster
+                identity = label_worker_roster.record_identity(pair)
+                if identity:
+                    saved['worker_identity'] = identity
                 saved["QT"] = len(target["member_ids"])
                 row = self.store.prepare(set_id=local_completion_id,
                     target_bundle_id=target["bundle_id"], item_id=item_code,
@@ -935,6 +939,10 @@ class SealedTransferExchangeCoordinator:
                     "local_completed_at": local_completed_at},
                 "client_exact_evidence": {"target_item_id": item_code, "old_barcodes": [pair["target_barcode"]],
                     "new_barcodes": [pair["replacement_barcode"]], "target_barcodes": list(target["barcodes"])} }
+            import label_worker_roster
+            identity = saved.get('worker_identity')
+            if identity and label_worker_roster.query_identity_capability(self.client):
+                command['payload']['worker_identity'] = dict(identity)
             row = self.store.bind_command(row["intent_id"], command, expected_state=row)
         if row["status"] == "ACKED":
             return self._finish_scanner_exchange(row)

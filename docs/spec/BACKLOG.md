@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+명단 2단은 로컬 묶음 귀속·이름 정정/중지·신호별 본문·감사/물류 재전송·옛 상태 읽기를 합성 headless 경로에서 검증한다. 실제 서버 신호 켜기·설치 전이·장치/화면·번호별 웹 집계는 통합 수용에서 확인하며 downgrade 필드 보존은 미검증이다([C-00](contracts.md#c-00)).
+
 LM-A1/LM-B4: 빈 화면 종료 확인을 줄였고 F5의 새 날짜 교환·전용 조회·단추·선택 창·전용 시험은 제거했다. 이전 판이 미완료 journal을 남길 수 있으므로 건별 복구·hold·PIN intent·v1 형식과 같은 요청의 prepare/print/activate는 보존한다. 잠금 면제는 복구 두 source만 남는다.
 
 <a id="busy-scan-durable-fifo"></a>

@@ -6,6 +6,7 @@ remain unchanged.
 """
 
 import label_transition
+import label_worker_roster
 
 _TRANSITION_KEYS = ("transition_class", "transition_reasons", "transition_duplicate")
 
@@ -664,6 +665,15 @@ def _commit_finalized_set_durable(
     _app_version="",
 ):
     detached = isinstance(current_snapshot, dict)
+    current = current_snapshot if detached else (self.__dict__.get('current_set_info') or {})
+    identity = label_worker_roster.record_identity(current)
+    if identity:
+        if 'completion_worker_identity' not in current:
+            current['completion_worker_identity'] = (
+                identity if self.__dict__.get('_worker_identity_enabled', False) is True else {})
+        if not _persist_transition_state(self, current,
+                self._persist_ui_lane_current_set_snapshot if detached else None):
+            raise PackageLogisticsError('completion worker identity could not be saved')
     if (
         detached
         and self.__dict__.get("initialized_successfully", False)
@@ -780,6 +790,8 @@ def _commit_finalized_set_durable(
         self.data_manager.log_event(
             self.Events.TRAY_COMPLETE,
             durable_details,
+            **({'worker_identity': identity,
+                'identity_enabled': bool(current.get('completion_worker_identity'))} if identity else {}),
         )
         self._flush_data_manager_if_supported()
     if (

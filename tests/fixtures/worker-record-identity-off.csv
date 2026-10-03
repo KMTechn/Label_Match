@@ -1,0 +1,2 @@
+﻿timestamp,worker_name,event,details
+2026-10-04T01:02:03,Original worker,SCAN_OK,"{""set_id"": ""golden-set"", ""scanner_exchanges"": [{""target_barcode"": ""OLD"", ""replacement_barcode"": ""NEW""}]}"

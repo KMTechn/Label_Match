@@ -27,6 +27,7 @@ RECOVERY_SCHEMAS = {
     "current": {
         "required": {"current_set_info": "current_set"},
         "optional": {"timestamp": _TIME, "worker_name": _TEXT,
+                      "worker_id": _NULLABLE_TEXT, "worker_name_snapshot": _TEXT,
                      "scanner_audit_outbox": "scanner_audit_list",
                      "scanner_audit_segments": "sha256_list"},
     },
@@ -36,7 +37,7 @@ RECOVERY_SCHEMAS = {
     },
     "scanner_audit_event": {
         "required": {"event_type": _TEXT, "details": "scanner_audit_details"},
-        "optional": {},
+        "optional": {"worker_id": _NULLABLE_TEXT, "worker_name_snapshot": _TEXT},
     },
     "scanner_audit_details": {
         "required": {"scanner_audit": "scanner_audit_identity"},
@@ -50,6 +51,8 @@ RECOVERY_SCHEMAS = {
         "required": {"id": _NULLABLE_TEXT, "raw": _TEXT_LIST},
         "optional": {
             "parsed": _TEXT_LIST, "start_time": _NULLABLE_TIME,
+            "worker_id": _NULLABLE_TEXT, "worker_name_snapshot": _TEXT,
+            "completion_worker_identity": _OBJECT,
             "exact_rescan_active": _BOOLEAN,
             "exact_rescan_complete": _BOOLEAN,
             "exact_rescan_target_count": _INTEGER,
@@ -103,6 +106,7 @@ RECOVERY_SCHEMAS = {
     "draft": {
         "required": {"set_id": _TEXT, "membership_mode": _TEXT},
         "optional": {
+            "worker_identity": _OBJECT,
             "source_input_tag_id": _TEXT,
             "source_input_tag_label_id": _TEXT,
             "source_input_tag_hash_prefix": _TEXT,

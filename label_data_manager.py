@@ -12,6 +12,7 @@ import queue
 import threading
 import time
 import uuid
+import label_worker_roster
 from pathlib import Path
 
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
@@ -133,6 +134,7 @@ class DataManager:
             else "PACKAGING"
         )
         self.persistent_worker_name = persistent_operator_name(self.worker_name)
+        self.record_context = None
         self.unique_id = redact_protected_admin_code(unique_id)
         self.log_queue = queue.Queue()
         self._close_lock = threading.Lock()
@@ -209,7 +211,34 @@ class DataManager:
             finally:
                 if got_item:
                     self.log_queue.task_done()
-    def log_event(self, event_type, details):
+    @staticmethod
+    def _csv_details(details):
+        details = dict(details)
+        for field in ('scanner_exchange', 'scanner_exchanges'):
+            value = details.get(field)
+            if isinstance(value, dict):
+                details[field] = {key: item for key, item in value.items()
+                                  if key not in ('worker_id', 'worker_name_snapshot')}
+            elif isinstance(value, list):
+                details[field] = [{key: item for key, item in pair.items()
+                                   if key not in ('worker_id', 'worker_name_snapshot')}
+                                  for pair in value]
+        return details
+
+    def log_event(self, event_type, details, *, worker_identity=None, identity_enabled=None):
+        details = dict(details or {})
+        identity, enabled = self.record_context() if callable(self.record_context) else ({}, False)
+        if worker_identity is not None:
+            identity = worker_identity
+        if identity_enabled is not None:
+            enabled = identity_enabled
+        # Audit details are already the immutable CSV projection, including the
+        # capability decision made before their durable checkpoint.
+        if not details.get('scanner_audit') and identity and enabled:
+            details.setdefault('worker_id', identity['worker_id'])
+            details.setdefault('worker_name_snapshot', identity['worker_name_snapshot'])
+        if not details.get('scanner_audit'):
+            details = self._csv_details(details)
         enriched_details = sanitize_persistent_value(
             self._enrich_event(event_type, details or {}, self.unique_id)
         )
@@ -221,7 +250,8 @@ class DataManager:
         audit = enriched_details.get('scanner_audit') or {}
         log_item = [
             audit.get('occurred_at') or self._clock().now().isoformat(),
-            self._csv_safe_cell(persistent_operator_name(audit.get('operator', self.worker_name))),
+            self._csv_safe_cell(persistent_operator_name(audit.get('operator',
+                identity.get('worker_name_snapshot', self.worker_name)))),
             redact_protected_admin_code(event_type),
             redact_protected_admin_code(detail_text),
         ]
@@ -235,14 +265,19 @@ class DataManager:
             return str(json.loads(log_item[3]).get('scanner_audit', {}).get('key') or '')
         except (TypeError, IndexError, AttributeError, ValueError):
             return ''
-    def prepare_audit_event(self, event_type, details):
-        details = dict(details)
+    def prepare_audit_event(self, event_type, details, *, worker_identity=None):
+        details = self._csv_details(details)
+        identity, enabled = self.record_context() if callable(self.record_context) else ({}, False)
+        if worker_identity is not None:
+            identity = worker_identity
+        if identity and enabled:
+            details.update(identity)
         details['scanner_audit'] = {
             'key': uuid.uuid4().hex,
             'occurred_at': self._clock().now().isoformat(),
-            'operator': persistent_operator_name(self.worker_name),
+            'operator': persistent_operator_name(identity.get('worker_name_snapshot', self.worker_name)),
         }
-        return {'event_type': event_type, 'details': sanitize_persistent_value(
+        return {'event_type': event_type, **identity, 'details': sanitize_persistent_value(
             self._enrich_event(event_type, details, self.unique_id))}
     def replay_audit_events(self, timeout=5, *, archived_events=()):
         """Replay the saved CSV projection; a failure leaves the checkpoint intact."""
@@ -363,10 +398,12 @@ class DataManager:
                     state_data_with_worker['scanner_audit_outbox'] = list(pending.values())
                 else:
                     state_data_with_worker.pop('scanner_audit_outbox', None)
+                current = state_data_with_worker.get('current_set_info') or {}
+                identity = label_worker_roster.record_identity(current.get('shortage_undo_snapshot') or current)
+                state_data_with_worker.update(identity)
                 state_data_with_worker['worker_name'] = persistent_operator_name(
-                    state_data_with_worker.get('worker_name', self.worker_name)
-                    if _completed_audit_keys else self.worker_name
-                )
+                    identity.get('worker_name_snapshot', state_data_with_worker.get('worker_name', self.worker_name)
+                        if _completed_audit_keys else self.worker_name))
                 encoded = json.dumps(state_data_with_worker, ensure_ascii=False, indent=4,
                                      cls=self._datetime_encoder())
                 require_recovery_record("current", json.loads(encoded))
@@ -425,6 +462,27 @@ class DataManager:
                     raise ValueError('current business state exceeds recovery size limit')
                 write_checked_bytes(state_path, encoded.encode('utf-8'),
                                     allowed_root=self.save_directory)
+                if identity and current.get('id') and 'completion_worker_identity' in current:
+                    # The wire gate can be off even for a completed legacy set.
+                    # Keep its local identity and exchange evidence after the
+                    # active checkpoint is cleared, without changing that CSV.
+                    completed = {'current_set_info': {
+                        'id': str(current.get('completion_identity') or current['id']),
+                        'raw': list(current.get('raw') or []),
+                        'scanner_exchanges': list(current.get('scanner_exchanges') or []),
+                        'completion_worker_identity': current['completion_worker_identity'], **identity}, **identity}
+                    require_recovery_record('current', completed)
+                    payload = json.dumps(completed, ensure_ascii=False, sort_keys=True,
+                                         cls=self._datetime_encoder()).encode('utf-8')
+                    record_path = Path(self.save_directory) / '_worker_record_identity' / (
+                        hashlib.sha256(completed['current_set_info']['id'].encode('utf-8')).hexdigest() + '.json')
+                    try:
+                        original = read_checked_bytes(record_path, allowed_root=self.save_directory)
+                    except FileNotFoundError:
+                        write_checked_bytes(record_path, payload, allowed_root=self.save_directory, replace=False)
+                    else:
+                        if original != payload:
+                            raise ValueError('completed worker record identity differs')
                 self._audit_outbox = list(pending.values())
                 return True
             except Exception as e:

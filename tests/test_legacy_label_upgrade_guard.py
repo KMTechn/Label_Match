@@ -224,6 +224,59 @@ def test_stock_3f4574a_guard_still_refuses_everything_else(tmp_path, legacy_labe
     assert reason in result.stderr, result.stdout + result.stderr
 
 
+@pytest.fixture(scope='module')
+def worker_record_packages(tmp_path_factory, legacy_label_packages):
+    return _stock_label_packages(tmp_path_factory, 'worker-record-stock', '0cf0414', legacy_label_packages[1])
+
+
+def test_worker_record_declaration_matches_stage_one_and_candidate():
+    pairs = _declared_current_user_profile_pairs('worker_record_replacements')
+    expected = {'app/Label_Match.py', 'app/label_completion.py', 'app/label_data_manager.py',
+        'app/label_recovery_schema.py', 'app/label_worker_roster.py', 'app/package_command_draft.py',
+        'app/package_outbox_processor.py', 'app/sealed_transfer_exchange.py',
+        'app/writer_session_fence.py', 'tools/label_writer_fence.ps1'}
+    assert set(pairs) == expected
+    for relative, (before, after) in pairs.items():
+        path = relative.removeprefix('app/')
+        original = subprocess.check_output(['git', '-C', str(ROOT), 'show', f'0cf0414:{path}'])
+        assert before == _release_digest(original)
+        assert after == _release_digest((ROOT / path).read_bytes()) != before
+
+
+def test_stage_one_stock_upgrade_preserves_current_and_pending(tmp_path, worker_record_packages):
+    old, candidate = worker_record_packages
+    installed = _tree(old, tmp_path / 'installed')
+    environment = _environment(tmp_path)
+    work = _seed_base_work(environment)
+    result = _ps(tmp_path, _definitions() + f"""
+. (Join-Path {_quote(candidate)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(candidate)}
+[void](Write-BootstrapIntegrityRecord -Root {_quote(installed)} -CodeRoot {_quote(installed)})
+$before = PortableInventory {_quote(installed)}
+{_upgrade_preflight(candidate, installed)}
+if ((PortableInventory {_quote(installed)}).sha256 -cne $before.sha256) {{ throw 'Preflight changed the preimage' }}
+$writerTransition | ConvertTo-Json -Compress
+""", environment, timeout=300)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)['compatibility'] == 'PINNED_WORKER_RECORD_IDENTITY'
+    assert all(path.read_bytes() == raw for path, raw in work.items())
+
+
+@pytest.mark.parametrize('change', ['reverse', 'app/label_worker_roster.py', 'app/label_data_manager.py', 'app/package_command_draft.py'])
+def test_worker_record_upgrade_refuses_reverse_and_unreviewed_bytes(tmp_path, worker_record_packages, change):
+    old, candidate = worker_record_packages
+    if change == 'reverse':
+        source, installed = old, candidate
+    else:
+        source = _tree(candidate, tmp_path / 'candidate', [change])
+        with (source / change).open('ab') as stream:
+            stream.write(CHANGED_LINE.encode('utf-8'))
+        _pin(source)
+        installed = old
+    result = _ps(tmp_path, _definitions() + f'\nAssert-WriterTransition {_quote(source)} {_quote(installed)}', _environment(tmp_path))
+    assert result.returncode != 0
+    assert 'WRITER_TRANSITION_' in result.stderr
+
+
 NEXTFIX_BASE = "e88011c"
 NEXTFIX_PINNED = "PINNED_W9NEXTFIX_LABEL_RECOVERY"
 

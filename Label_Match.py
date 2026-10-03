@@ -2567,6 +2567,7 @@ def _label_match_package_draft(
         local_completed_at=str(current.get("local_completed_at") or ""),
         short_confirmed=bool(current.get("shortage_confirmed")),
         scanner_exchanges=current.get("scanner_exchanges", ()),
+        worker_identity=label_worker_roster.record_identity(current),
         exact_rescan_barcodes=exact_rescan,
         expected_seal_id=expected_seal_id,
         expected_seal_revision=expected_seal_revision,
@@ -6805,6 +6806,27 @@ class Label_Match(tk.Tk):
         self._roster_next_refresh = 0.0
         self._roster_poll_after_id = None
         self._roster_selection_window = None
+        self._worker_identity_enabled = False
+        self._sync_worker_record_context()
+
+    def _sync_worker_record_context(self):
+        manager = self.__dict__.get("data_manager")
+        if manager is not None:
+            manager.record_context = self._worker_record_context
+
+    def _worker_record_context(self):
+        current = self.__dict__.get("current_set_info") or {}
+        return (label_worker_roster.record_identity(current.get('shortage_undo_snapshot') or current),
+                self.__dict__.get("_worker_identity_enabled", False) is True)
+
+    def _bind_current_worker_record(self):
+        current = self.current_set_info
+        if "worker_name_snapshot" not in current:
+            roster = self.__dict__.get("_worker_roster")
+            current.update(worker_id=(self.__dict__.get("worker_id")
+                if not label_worker_roster.uses_legacy_names(roster) else None),
+                worker_name_snapshot=persistent_operator_name(self.worker_name))
+        self._sync_worker_record_context()
 
     def _worker_roster_choices(self):
         recent = self.app_settings.get("recent_worker_ids", [])
@@ -6873,12 +6895,14 @@ class Label_Match(tk.Tk):
         version = snapshot["version"] if snapshot is not None else None
         results = self._roster_result_queue
         query = self._worker_roster_query
+        client = self.__dict__.get("package_logistics_client")
         def fetch():
             try:
                 result = query(scope, version)
             except Exception:
                 result = None
-            results.put((serial, scope, result))
+            enabled = label_worker_roster.query_identity_capability(client)
+            results.put((serial, scope, result, enabled))
         self._roster_next_refresh = time.monotonic() + 60
         self._roster_thread = threading.Thread(target=fetch, name="label-worker-roster", daemon=True)
         self._roster_thread.start()
@@ -6895,9 +6919,13 @@ class Label_Match(tk.Tk):
             return
         while True:
             try:
-                serial, scope, result = self._roster_result_queue.get_nowait()
+                response = self._roster_result_queue.get_nowait()
+                serial, scope, result = response[:3]
             except queue.Empty:
                 break
+            if (len(response) == 4 and serial == self._roster_request_serial
+                    and scope == self._roster_scope):
+                self._worker_identity_enabled = response[3] is True
             if result is not None:
                 try:
                     self._apply_worker_roster_answer(serial, scope, result)
@@ -11022,6 +11050,7 @@ class Label_Match(tk.Tk):
                 print(f"포장 복구 안내 기술 진단: {notice_exc}")
 
     def _load_current_set_state_checked(self):
+        self._sync_worker_record_context()
         completion_sync_error = None
 
         self._replay_scanner_audits(include_holds=True)
@@ -11373,7 +11402,10 @@ class Label_Match(tk.Tk):
                 "이전에 완료되지 않은 세트를 복구했습니다. "
                 "계속 스캔하거나 현재 세트를 취소하세요."
                 + (f" 이전 작업자: {display_operator_name(saved_worker_name)}."
-                   if saved_worker_name and saved_worker_name != persistent_operator_name(self.worker_name)
+                    if saved_worker_name and (
+                        saved_set_info.get('worker_id') != self.__dict__.get('worker_id')
+                        if saved_set_info.get('worker_id') else
+                        saved_worker_name != persistent_operator_name(self.worker_name))
                    else ""))
             self.current_set_info.update(saved_set_info)
 
@@ -13964,7 +13996,8 @@ class Label_Match(tk.Tk):
             members = self._known_sample_members(snapshot, current.get("scanner_exchanges", []))
             invalid_sample = members is not None and any(self._sample_barcode(value) not in members for value in samples)
             audits = [self.data_manager.prepare_audit_event(self.Events.POST_REVIEW_REQUIRED, {
-                "set_id": set_id, "reason_code": "PACKAGE_SAMPLE_NOT_MEMBER"})] if invalid_sample and expected_claim is None else []
+                "set_id": set_id, "reason_code": "PACKAGE_SAMPLE_NOT_MEMBER"},
+                worker_identity=label_worker_roster.record_identity(current))] if invalid_sample and expected_claim is None else []
             if active:
                 if not (self._save_current_set_state(audit_events=audits) if audits else self._save_current_set_state()):
                     current.clear()
@@ -13999,6 +14032,7 @@ class Label_Match(tk.Tk):
         evidence, snapshot, sealed, _unused = self._resolve_central_phs2_scan_overlay(
             physical, draft.item_code, force_central_read=True)
         current = {"id": draft.set_id, "raw": [physical, *draft.sample_barcodes],
+            **dict(draft.worker_identity),
             "parsed": [draft.item_code] * (len(draft.sample_barcodes) + 1),
             "scanner_only": True, "central_inherit_all": True,
             "physical_scanned_qr_payload": physical,
@@ -14776,7 +14810,9 @@ class Label_Match(tk.Tk):
         target = current["scanner_exchange_target"]
         pair = {"target_barcode": self._sample_barcode(target), "replacement_barcode": normalized,
                 "set_id": str(current["id"]), "pc_id": self.data_manager.unique_id,
-                "operator": self.worker_name, "occurred_at": datetime.now().isoformat()}
+                "operator": current.get("worker_name_snapshot", self.worker_name),
+                "occurred_at": datetime.now().isoformat(),
+                **label_worker_roster.record_identity(current)}
         sequence = int(current.get("scanner_exchange_sequence", 0)) + 1
         current["scanner_exchange_sequence"] = sequence
         pair["idempotency_key"] = label_transition.event_key(self.data_manager.unique_id,
@@ -16561,6 +16597,7 @@ class Label_Match(tk.Tk):
         first_scan = len(self.current_set_info['raw']) == 0
         try:
             if first_scan:
+                self._bind_current_worker_record()
                 if not durable_acceptance:
                     self._clear_workflow_completion()
                     self._workflow_recovered = False
@@ -17411,6 +17448,7 @@ class Label_Match(tk.Tk):
     def _ensure_current_set_id(self):
         if not self.current_set_info.get('id'):
             self.current_set_info['id'] = str(time.time_ns())
+            self._bind_current_worker_record()
         return self.current_set_info['id']
 
     def _mark_current_set_error(self):
@@ -18528,6 +18566,7 @@ class Label_Match(tk.Tk):
             self.unique_id,
             authenticated_admin=authenticated_admin,
         )
+        self._sync_worker_record_context()
         self.title(_label_match_window_title())
         operator_context = self.__dict__.get("operator_header_context_label")
         if operator_context is not None:

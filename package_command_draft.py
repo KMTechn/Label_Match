@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 import unicodedata
 
 import carrier_identity_port as carrier_identity
+import label_worker_roster
 from package_errors import PackageLogisticsError
 
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
@@ -209,6 +210,7 @@ class PackageCommandDraft:
     local_completed_at: str = ""
     short_confirmed: bool = False
     scanner_exchanges: tuple[Mapping[str, Any], ...] = ()
+    worker_identity: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def build(
@@ -258,7 +260,16 @@ class PackageCommandDraft:
         local_completed_at: str = "",
         short_confirmed: bool = False,
         scanner_exchanges: Iterable[Mapping[str, Any]] = (),
+        worker_identity: Mapping[str, Any] | None = None,
     ) -> "PackageCommandDraft":
+        identity = _json_clone_mapping(worker_identity or {}, field_name='worker_identity')
+        if identity:
+            try:
+                if set(identity) != {'worker_id', 'worker_name_snapshot'}:
+                    raise ValueError('worker identity fields differ')
+                identity = label_worker_roster.record_identity(identity)
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise PackageLogisticsError('invalid package worker identity') from exc
         normalized_set_id = str(set_id or "").strip()
         normalized_item = str(item_code or "").strip()
         source_id = str(source_bundle_id or "").strip()
@@ -424,6 +435,7 @@ class PackageCommandDraft:
             local_completed_at=str(local_completed_at or ""),
             short_confirmed=bool(short_confirmed),
             scanner_exchanges=tuple(_json_clone_mapping(row, field_name="scanner_exchange") for row in scanner_exchanges),
+            worker_identity=identity,
             source_input_tag_label_id=source_input_tag_label,
             source_input_tag_hash_prefix=source_input_tag_hash,
             source_canonical_input_tag_qr=canonical_input_tag_qr,
@@ -529,4 +541,6 @@ class PackageCommandDraft:
             data.update(scanner_only=True, scan_payload=self.scan_payload, local_completed_at=self.local_completed_at,
                         short_confirmed=self.short_confirmed,
                         scanner_exchanges=[dict(row) for row in self.scanner_exchanges])
+        if self.worker_identity:
+            data['worker_identity'] = dict(self.worker_identity)
         return data

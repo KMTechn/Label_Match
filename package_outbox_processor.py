@@ -81,6 +81,10 @@ class PackageOutboxProcessor:
                         source_id, command = self.client.build_create_package_command(
                             draft, idempotency_key=key
                         )
+                        if draft.worker_identity:
+                            import label_worker_roster
+                            if label_worker_roster.query_identity_capability(self.client):
+                                command['payload']['worker_identity'] = dict(draft.worker_identity)
                         if draft.scanner_only:
                             command["payload"].update(
                                 scan_payload=draft.scan_payload,
@@ -306,6 +310,8 @@ class PackageOutboxProcessor:
                 barcode_membership_hash(draft.exact_rescan_barcodes)
             )
         _attach_operation_lease(expected_payload, draft)
+        if 'worker_identity' in payload:
+            expected_payload['worker_identity'] = dict(draft.worker_identity)
         if draft.scanner_only:
             expected_payload.update(
                 scan_payload=draft.scan_payload, local_completion_id=draft.set_id,
@@ -726,6 +732,9 @@ class PackageOutboxProcessor:
         validate_operation_lease_receipt: Callable[..., None],
         validate_work_group_receipt: Callable[..., None],
     ) -> None:
+        if command is not None and 'worker_identity' in command.get('payload', {}):
+            if (not draft.worker_identity or command['payload']['worker_identity'] != dict(draft.worker_identity)):
+                raise PackageLogisticsError('saved package worker identity differs from its draft')
         validate_operation_lease_receipt(
             draft, receipt
         )

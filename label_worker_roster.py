@@ -1,4 +1,4 @@
-"""Stage-one worker choices; record and recovery identities remain names."""
+"""Worker choices and optional, frozen record identity metadata."""
 from __future__ import annotations
 
 import hashlib
@@ -12,6 +12,36 @@ from datetime import datetime, timezone
 
 CONTRACT_VERSION = "worker-roster.v1"
 MAX_CACHE_BYTES = 2 * 1024 * 1024
+
+
+def record_identity(value):
+    """Read a captured identity; legacy records deliberately return no fields."""
+    if not isinstance(value, dict) or "worker_name_snapshot" not in value:
+        return {}
+    identity = value.get("worker_id")
+    if identity is not None and (type(identity) is not str or str(uuid.UUID(identity)) != identity):
+        raise ValueError("invalid recorded worker_id")
+    name = value["worker_name_snapshot"]
+    if not valid_name(name):
+        raise ValueError("invalid recorded worker_name_snapshot")
+    return {"worker_id": identity, "worker_name_snapshot": name}
+
+
+def identity_capability_enabled(answer):
+    if not isinstance(answer, dict):
+        return False
+    data = answer.get("data", answer)
+    capabilities = data.get("capabilities") if isinstance(data, dict) else None
+    feature = capabilities.get("worker_record_identity_v1") if isinstance(capabilities, dict) else None
+    return isinstance(feature, dict) and feature.get("enabled") is True
+
+
+def query_identity_capability(client):
+    """A failed or unavailable advertisement keeps the old wire format."""
+    try:
+        return identity_capability_enabled(client.get_capabilities())
+    except Exception:
+        return False
 
 
 def valid_name(value, *, remote=False):
