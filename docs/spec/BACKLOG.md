@@ -461,3 +461,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="w9setupprep-sub192-removal"></a>
 
 - 실패한 설치 자신의 fence와 지원 사용자 제거: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.
+
+
+<a id="w9setupprep-sub192-rollback"></a>
+
+- 되돌리기 독립 단계와 정확한 끝 상태: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.

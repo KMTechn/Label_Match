@@ -2070,11 +2070,12 @@ function Assert-RollbackRelayPreimage([object[]]$ExpectedRelays) {
     return $actualRelays
 }
 
-function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @()) {
+function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @(), [string]$LogicalAppRoot = '') {
+    if ([string]::IsNullOrEmpty($LogicalAppRoot)) { $LogicalAppRoot = $Root }
     $args = '-I -B {0} {1} --app-root {2}' -f
         (Arg (Join-Path $Root 'app\main.py')),
         $Mode,
-        (Arg $Root)
+        (Arg $LogicalAppRoot)
     foreach ($extraArgument in $ExtraArguments) { $args += ' ' + (Arg $extraArgument) }
     $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) (
         'label-product-' + $PID + '-' + [Guid]::NewGuid().ToString('N') + '.out'
@@ -2258,6 +2259,25 @@ function StartRaw([string]$Line) {
         throw 'Canonical relay normal-user security readback failed.'
     }
     return [int]$newPid
+}
+
+function Invoke-LabelRollbackStep([string]$Phase, [scriptblock]$Action) {
+    # Dot-source this helper so successful restoration assignments remain in
+    # the transaction scope. Each independent phase records its own failure.
+    try {
+        . $Action
+        $Script:LabelRollbackSteps.Add([ordered]@{phase=$Phase;status='PROVEN'})
+    }
+    catch {
+        $Script:LabelRollbackErrors.Add($_)
+        $failure = Get-LabelLaunchFailure $_ $Phase
+        $message = [string]$_.Exception.Message
+        if ($writerDelegationToken) { $message = $message.Replace($writerDelegationToken, '[REDACTED]') }
+        if ($message.Length -gt 2000) { $message = $message.Substring(0, 2000) }
+        $failure.message = $message
+        $Script:LabelRollbackFailures.Add($failure)
+        $Script:LabelRollbackSteps.Add([ordered]@{phase=$Phase;status='FAILED'})
+    }
 }
 
 function Get-LabelLaunchFailure($Failure, [string]$Phase) {
@@ -3649,7 +3669,14 @@ catch {
     $original = $_
     if (-not $mutated) { throw $original }
     try {
-        if ($mutated) {
+        $Script:LabelRollbackErrors = [Collections.Generic.List[object]]::new()
+        $Script:LabelRollbackFailures = [Collections.Generic.List[object]]::new()
+        $Script:LabelRollbackSteps = [Collections.Generic.List[object]]::new()
+        $rollbackCustodyReady = $false
+        $rollbackQuiescent = $false
+        $rollbackAuthenticationReady = -not $legacyFirstRegistration
+        $rollbackUsesInstalled = $false
+        . Invoke-LabelRollbackStep 'deployment_custody' {
             if (-not $writerFenceStarted) {
                 # Final audit persistence can fail after the success path released
                 # its fence. Reacquire the same session before stopping/restoring
@@ -3690,6 +3717,10 @@ catch {
                     $writerAttemptId `
                     $writerTransactionId
             }
+            $rollbackCustodyReady = $true
+        }
+        if ($rollbackCustodyReady) {
+            . Invoke-LabelRollbackStep 'current_user_removal' {
             $rollbackProductRoot = if (Test-Path (Join-Path $install 'runtime\pythonw.exe')) {
                 $install
             }
@@ -3712,10 +3743,16 @@ catch {
                 # No new setup has run while the exact legacy preimage remains
                 # installed. Do not ask that old code to create removal state.
                 if (-not ($legacyFirstRegistration -and $rollbackUsesInstalled)) {
-                    Product $rollbackProductRoot '--remove-current-user-setup'
+                    Product $rollbackProductRoot '--remove-current-user-setup' -LogicalAppRoot $install
                 }
             }
-            [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+            }
+            . Invoke-LabelRollbackStep 'writer_absence' {
+                [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+                $rollbackQuiescent = $true
+            }
+            if ($rollbackQuiescent) {
+                . Invoke-LabelRollbackStep 'registration_preimage' {
             if ($legacyFirstRegistration) {
                 # Detach authentication before restoring legacy code. Keep its
                 # own active fence until the guarded placement helper completes.
@@ -3737,6 +3774,10 @@ catch {
                 }
                 finally { Exit-LabelWriterAdmission $stateMutationLease }
             }
+                    $rollbackAuthenticationReady = $true
+                }
+                if ($rollbackAuthenticationReady) {
+                    . Invoke-LabelRollbackStep 'code_restore' {
             if ($existingVerified -and -not $rollbackUsesInstalled) {
                 if ([string]::IsNullOrEmpty($replacementRollbackRoot)) {
                     throw 'Exact installed code preimage is unavailable for rollback.'
@@ -3814,7 +3855,10 @@ catch {
             }
             $audit.rollback.code_restored = $existingVerified -or -not (Test-Path -LiteralPath $install)
             $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
-        }
+                    }
+                }
+            }
+            . Invoke-LabelRollbackStep 'user_preimage_admission' {
         $ownerMutationLease = $null
         try {
             if ($writerFenceStarted) {
@@ -3822,8 +3866,9 @@ catch {
                     -ControlRoot $writerFenceControlRoot `
                     -TimeoutMilliseconds 90000
             }
-            Restore $before
-            RestoreScheduledTask $taskBefore
+            . Invoke-LabelRollbackStep 'run_restore' { Restore $before }
+            . Invoke-LabelRollbackStep 'task_restore' { RestoreScheduledTask $taskBefore }
+            . Invoke-LabelRollbackStep 'stop_marker_restore' {
             if ([bool]$stopBefore.exists) {
                 Copy-Item -LiteralPath ([string]$stopBefore.backup_path) -Destination $stop -Force
                 if ((Sha $stop) -cne [string]$stopBefore.sha256) {
@@ -3833,6 +3878,8 @@ catch {
             elseif (Test-Path $stop) {
                 Remove-Item $stop -Force
             }
+            }
+            . Invoke-LabelRollbackStep 'removal_report_restore' {
             if (Test-Path -LiteralPath $removalPath) {
                 $removalProof=Join-Path $localAuditRoot ('canonical-portable-'+$runId+'-failed-removal-proof.json')
                 if (-not (Test-Path -LiteralPath $removalProof)) { Copy-Item -LiteralPath $removalPath -Destination $removalProof }
@@ -3850,12 +3897,15 @@ catch {
                 if (Test-Path -LiteralPath $removalPath) { throw 'Removal report absence restoration failed.' }
                 $audit.rollback.removal_report_restored = $true
             }
+            }
         }
         finally {
             if ($null -ne $ownerMutationLease) {
                 Exit-LabelWriterAdmission $ownerMutationLease
             }
         }
+            }
+            . Invoke-LabelRollbackStep 'protected_startup_restore' {
         if ($audit.Contains('startup_update_preimage')) {
             $restoreParameters=$helperParameters.Clone()
             $restoreParameters.StartupUpdateRestorePreimage=[string]$audit.startup_update_preimage.path
@@ -3863,6 +3913,25 @@ catch {
             $restoreParameters.ReplaceExistingVerifiedPortable=$false
             if ((InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters) -ne 0) { throw 'Startup update preimage restoration failed.' }
         }
+            }
+            . Invoke-LabelRollbackStep 'preimage_readback' {
+        $check = Snapshot
+        if (
+            [bool]$check.exists -ne [bool]$before.exists -or
+            [string]$check.kind -cne [string]$before.kind -or
+            [string]$check.data -cne [string]$before.data
+        ) { throw 'registry restore failed' }
+                if ($existingVerified) {
+                    InvokeFrozenIntegrityProbe $frozenPlacement $install
+                    if ([string](PortableInventory $install).sha256 -cne [string]$installedPreimageInventory.sha256) {
+                        throw 'Rollback final code preimage differs.'
+                    }
+                } elseif (Test-Path -LiteralPath $install) { throw 'Rollback final code absence differs.' }
+            }
+            # Keep protection when any prerequisite failed. Starting the old
+            # relay before exact restoration and fence release is forbidden.
+            if ($Script:LabelRollbackErrors.Count -eq 0) {
+                . Invoke-LabelRollbackStep 'fence_release' {
         $firstRegistrationRollbackLease = $null
         try {
             if ($legacyFirstRegistration) {
@@ -3906,7 +3975,10 @@ catch {
                 Exit-LabelWriterAdmission $firstRegistrationRollbackLease
             }
         }
+                }
+                if ($Script:LabelRollbackErrors.Count -eq 0) {
         foreach ($item in $old) {
+            . Invoke-LabelRollbackStep 'relay_restart' {
             $newPid = StartRaw ([string]$item.CommandLine)
             Start-Sleep -Seconds 3
             $restored = Get-CimInstance `
@@ -3917,7 +3989,12 @@ catch {
                 $null -eq $restored -or
                 -not (Same ([string]$restored.ExecutablePath) ([string]$item.ExecutablePath))
             ) { throw 'runtime restore failed' }
+            }
         }
+                }
+            }
+        }
+        . Invoke-LabelRollbackStep 'final_readback' {
         [void](Assert-RollbackRelayPreimage -ExpectedRelays $old)
         $check = Snapshot
         if (
@@ -3925,6 +4002,10 @@ catch {
             [string]$check.kind -cne [string]$before.kind -or
             [string]$check.data -cne [string]$before.data
         ) { throw 'registry restore failed' }
+        }
+        $audit.rollback.steps = $Script:LabelRollbackSteps.ToArray()
+        $audit.rollback.step_failures = $Script:LabelRollbackFailures.ToArray()
+        if ($Script:LabelRollbackErrors.Count -gt 0) { throw $Script:LabelRollbackErrors[0] }
         $audit.status = 'FAILED_ROLLED_BACK'
         if ($legacyFirstRegistration) {
             $firstRegistrationAttempt.status = 'FAILED_ROLLED_BACK'

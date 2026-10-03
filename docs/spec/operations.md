@@ -1112,3 +1112,10 @@ Archive-PretransactionFailure는 판정한 목록에서 이번 run의 정확한 
 실패한 설치 자신의 fence와 지원 사용자 제거
 
 지원 사용자 제거만 현재 fence와 감사의 session/attempt/transaction·orchestrator/contract/inventory·시작 시각이 모두 같은 실패 설치를 수용한다. 기록의 소유 PID 종료를 native SYNCHRONIZE로 확인하고 같은 session authority를 독점한 동안에만 Run/relay/task 제거의 좁은 writer 목록을 허용한다. 살아 있거나 관측 불가한 소유자, 살아 있는 authority, 다른 기록·일반 writer는 계속 거절한다. active fence 원본은 코드 제거/복구를 위해 보존한다. Run 실패 뒤에도 relay 정지와 독립 task 정리를 시도하지만 relay 부재 미확인 시 task 제거는 보류한다. 자료·등록·자격·대기를 보존하며 모든 실패를 보고한다. 격리 native mutex/PID와 callback 경계 회귀 PROVEN; 실제 CLI 수렴은 guest 수용 범위다.
+
+
+<a id="w9setupprep-sub192-rollback"></a>
+
+되돌리기 독립 단계와 정확한 끝 상태
+
+배치 실패 때 packet runtime을 실행하더라도 Product의 logical app-root는 정식 설치 root로 결속한다. 되돌리기는 protection 재수립·사용자 제거·writer 부재·코드/등록 preimage·Run/task/stop/receipt·보호 startup·최종 readback을 단계별로 기록하고 독립 후속 단계를 계속한다. custody 미확인이면 mutation하지 않고 writer 부재·등록 정리가 미확인이면 코드 복원을 건너뛴다. 모든 preimage가 증명돼야 fence를 해제하고 옛 relay를 시작하며, 남은 오류는 ROLLBACK_FAILED/FAILED_ROLLBACK_INCOMPLETE와 step_failures에 보존한다. PS5.1/PS7 실제 catch 회귀 PROVEN(OS/보안/relay는 seam); native 성공/실패 끝 상태는 guest 증거로 별도 판단한다.
