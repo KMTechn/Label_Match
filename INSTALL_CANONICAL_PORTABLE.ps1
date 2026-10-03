@@ -411,6 +411,39 @@ function Manifest([string]$Root, [bool]$UnsignedOk) {
     return $value
 }
 
+function Invoke-LabelPinnedProbe([string]$Python, [byte[]]$ProbeBytes,
+    [string]$ExpectedSha256, [string[]]$ProbeArguments = @(),
+    [string]$FailureMessage = 'Pinned Python probe failed: ') {
+    # Hash and execute the same bytes; no mutable temporary script path.
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { $actual = [BitConverter]::ToString($sha256.ComputeHash($ProbeBytes)).Replace('-', '').ToLowerInvariant() }
+    finally { $sha256.Dispose() }
+    if ($actual -cne $ExpectedSha256) { throw 'PINNED_PROBE_SHA256_MISMATCH' }
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Python
+    $startInfo.Arguments = '-I -B -'
+    foreach ($argument in $ProbeArguments) { $startInfo.Arguments += ' ' + (Arg $argument) }
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
+    try {
+        # Drain both pipes while writing the program and waiting for its exit.
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        try { $process.StandardInput.BaseStream.Write($ProbeBytes, 0, $ProbeBytes.Length) }
+        finally { $process.StandardInput.Close() }
+        $process.WaitForExit()
+        $output = $stdout.GetAwaiter().GetResult()
+        $errorOutput = $stderr.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw ($FailureMessage + $errorOutput.Trim()) }
+        return $output
+    }
+    finally { $process.Dispose() }
+}
+
 function Assert-WriterTransition([string]$Source, [string]$Installed) {
     # Run only the attested candidate's scanner. Never import installed code.
     # Changed semantics require an exact, reviewed directional release pair;
@@ -1367,26 +1400,12 @@ compatibility = ('X13B_PINNED_SHARED_LEAF_ADOPTION' if shared_transition else
                  'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
 print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
 '@
-    $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = Join-Path $Source 'runtime\python.exe'
-    # Windows argv quoting; the probe is literal source, never shell input.
-    $startInfo.Arguments = '-I -B -c "' + $probe.Replace('"', '\"') + '" ' +
-        (Arg $Source) + ' ' + (Arg $Installed)
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $process = [Diagnostics.Process]::Start($startInfo)
-    try {
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-        if ($process.ExitCode -ne 0) {
-            throw ('Installed writer transition is unsupported: ' + $stderr.Trim())
-        }
-        return $stdout | ConvertFrom-Json
-    }
-    finally { $process.Dispose() }
+    # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
+    $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
+    $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
+        -ProbeBytes $probeBytes -ExpectedSha256 '2d6f55cea88c24722d1f2911efe032392f8ccba7bc22bbf06a47609975716893' `
+        -ProbeArguments @($Source, $Installed) -FailureMessage 'Installed writer transition is unsupported: '
+    return $stdout | ConvertFrom-Json
 }
 
 function ReplacementPreimage([string]$InstallRootValue, $ExpectedInventory, [string[]]$Before) {
@@ -2243,25 +2262,12 @@ else:
     raise ValueError('unsupported healthy lifecycle operation')
 print(json.dumps(result, sort_keys=True))
 '@
-    $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = Join-Path $Root 'runtime\python.exe'
-    $startInfo.Arguments = '-I -B -c "' + $probe.Replace('"', '\"') + '" ' +
-        (Arg $Root) + ' ' + (Arg $Installed) + ' ' + (Arg $Mode) + ' ' + (Arg $ExpectedStateSha256)
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $process = [Diagnostics.Process]::Start($startInfo)
-    try {
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-        if ($process.ExitCode -ne 0) {
-            throw ('Pinned conflict-resolution receipt source validation is required; healthy lifecycle validation failed: ' + $stderr.Trim())
-        }
-        return $stdout | ConvertFrom-Json
-    }
-    finally { $process.Dispose() }
+    # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
+    $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
+    $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Root 'runtime\python.exe') `
+        -ProbeBytes $probeBytes -ExpectedSha256 '2a4c503491b126eb15adbd4918d60deb191ee983911897aa8d6a9d95fd38d120' `
+        -ProbeArguments @($Root, $Installed, $Mode, $ExpectedStateSha256) -FailureMessage 'Pinned conflict-resolution receipt source validation is required; healthy lifecycle validation failed: '
+    return $stdout | ConvertFrom-Json
 }
 
 function ConvertTo-LabelTaskSid([string]$Identity) {

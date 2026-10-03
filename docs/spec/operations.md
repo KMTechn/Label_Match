@@ -793,6 +793,8 @@ PROVEN(호스트 격리): 초기 e47 선택 62 PASS만으로는 rollback 경계�
 <a id="bootstrap-integrity-writer-transition"></a>
 ### 무결성 순서 수정본으로 writer 업그레이드
 
+canonical 설치기의 writer 전이·healthy lifecycle probe는 literal 본문의 LF-normalized UTF-8 bytes를 한 번 만들고 고정 SHA256을 실행 전에 대조한 뒤 같은 bytes를 `python -I -B -`의 표준 입력으로 전달한다. 긴 probe를 Windows 명령줄에 넣거나 mutable 임시 script 경로로 실행하지 않는다. probe 판정·지원 release 방향·writer 계약은 그대로이며 hash 불일치는 자식 시작 전 거절한다. PowerShell 5.1/7 실제 Python 자식 회귀와 native 설치 수용은 구분한다. 정식 가지에서 release-pair·inventory 선언은 재생성하지 않았으며 예행 가지에서만 committed bytes 생성기로 probe transport pin을 함께 결속한다.
+
 스캐너 전환 후보는 `a20cd01` 기준판과 기존 지원 preimage의 정확한 전/후 source hash 쌍 및 scanner companion 목록을 설치기 read-only writer probe에 고정한다. 동일한 59개 writer identity·path·guard 종류를 유지하며 source 위치와 bytes로 파생되는 Python/PowerShell inventory pin만 함께 갱신한다. runtime·파일 집합·설치 계약·bootstrap 무결성 검사는 그대로 요구하고 역방향 설치와 목록 밖 변경을 거부한다. 후보의 문구·source 위치·inventory pin 변경 후에는 실제 LF-normalized SHA256으로 legacy/scan-input/nextfix/scanner release-pair와 current-user companion의 후보 쪽 선언을 같은 커밋에서 갱신한다. 기존 설치판 쪽 digest·지원 방향·companion 목록은 유지하고 `tests/test_legacy_label_upgrade_guard.py` 전체의 선언 대조와 목록 밖 변경 거절을 확인한다. 이 후보의 host archive/stock preflight 검증은 native 설치 수용과 구분한다.
 
 고정된 앱·companion을 바꾸면 해당 후보의 LF 정규화 SHA-256과 Python/PowerShell writer inventory pin을 같은 변경에서 갱신한다. 기존 지원판의 preimage와 역방향·목록 밖 변경 거부 시험은 보존하며, `tests/test_legacy_label_upgrade_guard.py` 전체와 inventory 정합 시험을 focused 검증에 포함한다. 최종 출시 packet의 실제 설치 전이는 별도 설치 수용에서 확인한다.
