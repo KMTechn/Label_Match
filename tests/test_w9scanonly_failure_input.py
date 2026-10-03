@@ -77,10 +77,10 @@ def test_restart_replays_one_failure_and_does_not_restore_the_failed_set(packagi
         pass
 
     if cut == "before_fail_event":
-        def stop_before(event, details):
+        def stop_before(event, details, **kwargs):
             if event == app.Events.TRAY_COMPLETE:
                 raise PowerCut()
-            return original_log(event, details)
+            return original_log(event, details, **kwargs)
         monkeypatch.setattr(app.data_manager, "log_event", stop_before)
     else:
         def stop_after():
