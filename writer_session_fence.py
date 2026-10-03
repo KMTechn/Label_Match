@@ -445,6 +445,76 @@ def _delegation_matches(
     )
 
 
+def _failed_installer_removal_sources(
+    root: Path, active: Mapping[str, Any], environ: Mapping[str, str]
+) -> frozenset[str] | None:
+    """Claim only a dead failed install's authority for bounded user cleanup.
+
+    The durable fence remains: this is no authority for ordinary writers or
+    code replacement. A live/unknown PID or authority always denies cleanup.
+    """
+    local = str(environ.get("LOCALAPPDATA") or "").strip()
+    if os.name != "nt" or not local:
+        return None
+    audit_root = Path(local) / "KMTech" / "Label_Match" / "install-audit"
+    claim = _acquire_named_mutex(str(active["session_authority_mutex_name"]), 0)
+    if claim is None:
+        return None
+    try:
+        _assert_no_reparse_components(audit_root)
+        files = list(audit_root.glob("canonical-portable-*.json"))
+        if len(files) > 128:
+            return None
+        matches = []
+        for path in files:
+            try:
+                _assert_no_reparse_components(path)
+                audit = _bounded_json(path)
+            except WriterFenceError:
+                continue
+            owner = audit.get("writer_fence")
+            if not isinstance(owner, dict) or any(owner.get(key) != active[key] for key in (
+                "session_id", "attempt_id", "replacement_transaction_id", "writer_inventory_sha256",
+                "orchestrator_sha256", "writer_contract_sha256", "session_started_at_utc",
+            )):
+                continue
+            if (audit.get("schema") != "label-match-canonical-portable-install-v1"
+                or audit.get("status") not in {"ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE", "FAILED_ROLLED_BACK"}
+                or str(audit.get("install_root") or "").replace("/", "\\").rstrip("\\").casefold()
+                    != r"C:\KMTech\Apps\Label_Match\current".casefold()):
+                continue
+            pid = owner.get("owner_process_id")
+            if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+                continue
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+            kernel.OpenProcess.restype = ctypes.c_void_p
+            kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            kernel.WaitForSingleObject.restype = ctypes.c_ulong
+            kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+            handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE only
+            if handle:
+                try:
+                    absent = int(kernel.WaitForSingleObject(handle, 0)) == 0
+                finally:
+                    kernel.CloseHandle(handle)
+            else:
+                absent = ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER: absent PID
+            if absent:
+                matches.append(audit)
+        if len(matches) != 1 or active_fence(root, environ=environ) != active:
+            return None
+        _WRITER_LOCAL.failed_removal_authority = claim
+        claim = None
+        return frozenset({"current_user_setup_removal", "scheduled_task_remove",
+                          "user_relay_autostart_remove", "user_relay_stop_request"})
+    except (OSError, WriterFenceError):
+        return None
+    finally:
+        if claim is not None:
+            claim.release()
+
+
 def _admitted_writer_sources(
     root: Path,
     *,
@@ -463,6 +533,10 @@ def _admitted_writer_sources(
         source=source,
         environ=environ,
     ):
+        if source == "current_user_setup_removal":
+            cleanup_sources = _failed_installer_removal_sources(root, active, environ)
+            if cleanup_sources is not None:
+                return cleanup_sources
         raise WriterFencedError(
             "ACTIVE_WRITER_FENCE",
             "writer denied by the active deployment fence",
@@ -557,6 +631,10 @@ def writer_admission(
     try:
         yield
     finally:
+        failed_removal_authority = getattr(_WRITER_LOCAL, "failed_removal_authority", None)
+        _WRITER_LOCAL.failed_removal_authority = None
+        if failed_removal_authority is not None:
+            failed_removal_authority.release()
         _WRITER_LOCAL.remote_apply_error = None
         _WRITER_LOCAL.depth = 0
         _WRITER_LOCAL.allowed_sources = None

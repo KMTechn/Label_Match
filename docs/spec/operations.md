@@ -1105,3 +1105,10 @@ PS5.1/PS7의 실제 BOM helper·encoded prefix·hash 불일치 거절, native de
 거래 전 실패의 다른 실행 보존
 
 Archive-PretransactionFailure는 판정한 목록에서 이번 run의 정확한 audit/temp/helper/task·stop·removal preimage 항목만 literal 경로로 하나씩 이동한다. 공유 install-audit 전체를 rename하지 않는다. 마지막에는 IO.Directory.Delete(root,false)만 시도하며 동시 기록·열린 핸들·native 접근 거절이면 폴더와 모든 남은 항목을 보존하고 retained 결과를 남긴다. reparse는 거절하고 동결 helper의 deny ACL·원 bytes를 유지한다. PS5.1/PS7 실제 NTFS 경합·열린 핸들·기존 재설치/receipt/deny ACL 회귀 PROVEN; 최초 snapshot/첫 Save 실패 회복은 UNPROVEN이다.
+
+
+<a id="w9setupprep-sub192-removal"></a>
+
+실패한 설치 자신의 fence와 지원 사용자 제거
+
+지원 사용자 제거만 현재 fence와 감사의 session/attempt/transaction·orchestrator/contract/inventory·시작 시각이 모두 같은 실패 설치를 수용한다. 기록의 소유 PID 종료를 native SYNCHRONIZE로 확인하고 같은 session authority를 독점한 동안에만 Run/relay/task 제거의 좁은 writer 목록을 허용한다. 살아 있거나 관측 불가한 소유자, 살아 있는 authority, 다른 기록·일반 writer는 계속 거절한다. active fence 원본은 코드 제거/복구를 위해 보존한다. Run 실패 뒤에도 relay 정지와 독립 task 정리를 시도하지만 relay 부재 미확인 시 task 제거는 보류한다. 자료·등록·자격·대기를 보존하며 모든 실패를 보고한다. 격리 native mutex/PID와 callback 경계 회귀 PROVEN; 실제 CLI 수렴은 guest 수용 범위다.

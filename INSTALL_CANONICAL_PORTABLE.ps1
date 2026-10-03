@@ -3295,6 +3295,10 @@ try {
     $mutated = $true
     $audit.writer_fence = [ordered]@{
         status = 'QUIESCING'
+        owner_process_id = [int]$PID
+        orchestrator_sha256 = $writerOrchestratorSha256
+        writer_contract_sha256 = $writerContractSha256
+        session_started_at_utc = $writerStartedAt
         session_id = $writerSessionId
         attempt_id = $writerAttemptId
         replacement_transaction_id = $writerTransactionId

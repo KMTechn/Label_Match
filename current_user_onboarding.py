@@ -1328,36 +1328,37 @@ def remove_current_user_setup(
         "failure": "",
     }
     try:
-        report["relay_autostart"] = dict(autostart_remover())
-        report["relay_process"] = dict(relay_stopper(paths.direct_sync_root))
-        if str(report["relay_process"].get("status") or "") in {"", "UNKNOWN"}:
-            raise CurrentUserOnboardingError(
-                "current-user relay removal result is UNKNOWN",
-                report_path=paths.removal_report_path,
-                status="UNKNOWN",
-            )
-        if report["relay_process"].get("status") != "ABSENT":
-            raise ValueError("current-user relay process absence is UNKNOWN")
-        report["scheduled_task"] = dict(scheduled_task_remover(paths.app_root))
-        autostart_status = str(report["relay_autostart"].get("status") or "")
-        scheduled_task_status = str(report["scheduled_task"].get("status") or "")
-        relay_status = str(report["relay_process"].get("status") or "")
-        if (
-            autostart_status in {"", "UNKNOWN"}
-            or scheduled_task_status in {"", "UNKNOWN"}
-            or relay_status in {"", "UNKNOWN"}
+        failures = []
+        for step, key, callback, arguments in (
+            ("run", "relay_autostart", autostart_remover, ()),
+            ("relay", "relay_process", relay_stopper, (paths.direct_sync_root,)),
+            ("task", "scheduled_task", scheduled_task_remover, (paths.app_root,)),
         ):
+            if step == "task" and report.get("relay_process", {}).get("status") != "ABSENT":
+                report[key] = {"status": "NOT_TESTED_RELAY_UNPROVEN"}
+                continue
+            try:
+                report[key] = dict(callback(*arguments))
+                status = str(report[key].get("status") or "")
+                if status in {"", "UNKNOWN"}:
+                    raise CurrentUserOnboardingError(
+                        f"current-user {step} removal result is UNKNOWN",
+                        report_path=paths.removal_report_path, status="UNKNOWN",
+                    )
+                if status != "ABSENT":
+                    raise ValueError(f"current-user {step} absence was not proven")
+            except Exception as exc:
+                failures.append({"step": step, "error_type": type(exc).__name__,
+                                 "failure": str(exc)[:500],
+                                 "status": getattr(exc, "status", "FAILED")})
+        if failures:
+            report["removal_failures"] = failures
+            status = "UNKNOWN" if any(item["status"] == "UNKNOWN" for item in failures) else "FAILED"
             raise CurrentUserOnboardingError(
-                "current-user removal result is UNKNOWN",
-                report_path=paths.removal_report_path,
-                status="UNKNOWN",
+                "current-user removal remains incomplete: " + "; ".join(
+                    item["step"] + ": " + item["failure"] for item in failures),
+                report_path=paths.removal_report_path, status=status,
             )
-        if autostart_status != "ABSENT":
-            raise ValueError("HKCU relay persistence absence was not proven")
-        if scheduled_task_status != "ABSENT":
-            raise ValueError("current-user task absence was not proven")
-        if relay_status != "ABSENT":
-            raise ValueError("current-user relay process absence is UNKNOWN")
         report.update({"status": "PASS_DATA_PRESERVED", "completed_at": _now()})
         _write_json_atomic(paths.removal_report_path, report)
         return report
