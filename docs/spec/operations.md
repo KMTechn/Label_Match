@@ -1,5 +1,7 @@
 # Label_Match 운영·복구·검증
 
+상위 바탕의 최종 admission은 문자 경로 `C:\KMTech`와 `C:\KMTech\Apps`에만 설치기의 ACE 집합·Administrators SID 소유·상속 차단·재분석 거절 판정을 재사용한다. 일반 설치 사전 준비는 없는 폴더를 만들지 않고 기존 기본/보호 모양을 읽으며, 직접 admission은 없는 폴더를 거절한다. daily는 원 코드 신뢰 확인→helper 로드→두 조상의 보호 목표 확인을 업무 변경보다 먼저 수행한다. 다른 경로의 strict leaf mask는 유지한다. standalone code-only removal의 helper 없는 판정은 별도 신뢰 경계로 남으며 중앙 결정이 필요하다. sub-150의 D: NTFS/PS5.1·PS7 회귀는 owner 읽기 seam 범위이고 실제 설치·예약 작업·relay·상승·최종 선언/packet은 NOT TESTED다.
+
 <a id="remote-writer-admission"></a>
 
 예외: 건별 복구에서 재개하는 숨긴 F5 날짜 교환의 원격 호출은 writer admission을 유지한다(코디 결정 2026-10-02). 기존 busy gate가 거절한 스캔은 응답 뒤 다시 입력하며 미리 입력된 값은 보존한다. 계측 등록은 F5 writer 함수와 해당 client 메서드의 조합만 면제한다.

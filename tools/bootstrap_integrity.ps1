@@ -30,11 +30,15 @@ function Get-InstallationPreparationDiagnostic([int]$ExitCode) {
     return [pscustomobject]@{code=('INSTALLATION_PREPARATION_'+$entry[0]);message=($entry[1]+' 지원 담당자에게 문의하세요.');exit_code=$ExitCode}
 }
 
-function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,[switch]$BeforeAppCreation) {
+function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,[switch]$BeforeAppCreation,[string]$AncestorPath,[switch]$RequireProtected) {
     # Deliberately persistent, non-recursive protection of these two shared paths.
     # Never restore their old permissions as part of an app rollback/uninstall.
     if (-not ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($CodeParent))).Equals('C:\KMTech\Apps',[StringComparison]::OrdinalIgnoreCase)) {
         throw 'Code parent must be a direct application directory under C:\KMTech\Apps.'
+    }
+    if(($AncestorPath -and $AncestorPath -notin @('C:\KMTech','C:\KMTech\Apps')) -or
+        (($AncestorPath -or $RequireProtected) -and -not $AdmissionOnly)){
+        throw 'Selected ancestor admission requires a literal shared path and read-only admission.'
     }
     $records=@(); $plans=@()
     function Get-KmtechAncestorAclShapeKey($Acl) {
@@ -42,10 +46,14 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
             [string]$_.IdentityReference.Value+'|'+[int64]$_.FileSystemRights+'|'+[string]$_.AccessControlType+'|'+[int]$_.InheritanceFlags+'|'+[int]$_.PropagationFlags+'|'+[int]$_.IsInherited
         } | Sort-Object) -join ';')
     }
-    foreach ($path in @('C:\KMTech','C:\KMTech\Apps')) {
+    $ancestorPaths=if($AncestorPath){@($AncestorPath)}else{@('C:\KMTech','C:\KMTech\Apps')}
+    foreach ($path in $ancestorPaths) {
         $reason=''
         if (-not (Test-Path -LiteralPath $path)) {
-            if($AdmissionOnly){continue}
+            if($AdmissionOnly){
+                $failure=[InvalidOperationException]::new("설치 폴더 권한을 확인하세요: $path (상위 폴더가 없습니다). 지원 담당자에게 문의하세요.")
+                $failure.Data['installation_preparation_exit_code']=61;throw $failure
+            }
             $ancestor=Split-Path -Parent $path
             $entry=Get-Item -LiteralPath $ancestor -ErrorAction Stop
             if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { $reason='상위 폴더가 재분석 지점입니다' }
@@ -71,6 +79,7 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
         $targetShape=($rules.Count -eq 5 -and $acl.AreAccessRulesProtected -and $actualKey -ceq $targetKey)
         if($owner -cne 'S-1-5-32-544'){$reason='폴더 소유자가 예상과 다릅니다'}
         if(-not $reason -and -not $defaultShape -and -not $targetShape){$reason='권한 모양이 지원하는 기본값 또는 보호된 값과 다릅니다'}
+        if(-not $reason -and $RequireProtected -and -not $targetShape){$reason='상위 폴더가 보호된 목표 모양이 아닙니다'}
         if($reason) {
             Write-LabelAncestorPreparationEvent ([ordered]@{event='ANCESTOR_ACL_REJECTED';path=$path;reason=$reason;before_sddl=$before;changed=$false})
             $failure=[InvalidOperationException]::new("설치 폴더 권한을 확인하세요: $path ($reason). 지원 담당자에게 문의하세요.")
@@ -140,12 +149,20 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
 }
 
 function Assert-LabelProtectedInstallPath([string]$Path,[switch]$AllowSupportedPreparation) {
-    if($AllowSupportedPreparation){Protect-KmtechCodeAncestors 'C:\KMTech\Apps\Label_Match' -AdmissionOnly}
     $full=[IO.Path]::GetFullPath($Path);$leaf=$true
+    if($full -ne [IO.Path]::GetPathRoot($full)){$full=$full.TrimEnd([char[]]'\/')}
     while($full) {
         $shared=$full -in @('C:\KMTech','C:\KMTech\Apps')
+        if($shared){
+            # Ordinary preparation can inspect an absent base without creating it;
+            # every actual admission of an existing ancestor uses the same shape.
+            if(-not ($AllowSupportedPreparation -and -not(Test-Path -LiteralPath $full))){
+                [void](Protect-KmtechCodeAncestors 'C:\KMTech\Apps\Label_Match' -AdmissionOnly -AncestorPath $full -RequireProtected:(-not $AllowSupportedPreparation))
+            }
+            $full=[IO.Path]::GetDirectoryName($full);$leaf=$false;continue
+        }
         if($AllowSupportedPreparation -and -not(Test-Path -LiteralPath $full) -and
-            ($shared -or $full -ieq 'C:\KMTech\Apps\Label_Match')){
+            $full -ieq 'C:\KMTech\Apps\Label_Match'){
             $full=[IO.Path]::GetDirectoryName($full);$leaf=$false;continue
         }
         $entry=Get-Item -LiteralPath $full -ErrorAction Stop
@@ -165,7 +182,7 @@ function Assert-LabelProtectedInstallPath([string]$Path,[switch]$AllowSupportedP
             if($rule.AccessControlType -eq 'Allow' -and
                 -not($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and
                 $rule.IdentityReference.Value -cnotin @('S-1-5-18','S-1-5-32-544') -and
-                ([int64]$rule.FileSystemRights -band $mask) -and -not($AllowSupportedPreparation -and $shared)){
+                ([int64]$rule.FileSystemRights -band $mask)){
                 $failure=[InvalidOperationException]::new('설치 경로 권한에 일반 사용자 쓰기가 있습니다.')
                 $failure.Data['installation_preparation_exit_code']=61;throw $failure
             }

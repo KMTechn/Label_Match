@@ -6,6 +6,7 @@ param(
     [switch]$SupportedLifecycle
 )
 $ErrorActionPreference = 'Stop'
+$script:LabelStartupBootstrapLoaded=$false
 
 function Get-LabelSupportedStartupTasks([string]$Root) {
     $full = [IO.Path]::GetFullPath($Root)
@@ -55,6 +56,7 @@ if ($Mode -ceq 'ObserveLifecycle') {
 function Assert-Protected([string]$Path, [switch]$Recursive, [hashtable]$Verified = $null) {
     if ($null -eq $Verified) { $Verified = @{} }
     $full = [IO.Path]::GetFullPath($Path)
+    if($full -ne [IO.Path]::GetPathRoot($full)){$full=$full.TrimEnd([char[]]'\/')}
     $leaf = $true
     while ($full) {
         if (-not $Verified.ContainsKey($full) -or ($leaf -and -not $Verified[$full])) {
@@ -63,6 +65,11 @@ function Assert-Protected([string]$Path, [switch]$Recursive, [hashtable]$Verifie
         $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
         $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($owner -notin @('S-1-5-18','S-1-5-32-544')) { throw 'Update storage owner is not privileged.' }
+        if($script:LabelStartupBootstrapLoaded -and $full -in @('C:\KMTech','C:\KMTech\Apps')){
+            [void](Protect-KmtechCodeAncestors 'C:\KMTech\Apps\Label_Match' -AdmissionOnly -AncestorPath $full -RequireProtected)
+            $Verified[$full]=$leaf
+            $full=[IO.Path]::GetDirectoryName($full);$leaf=$false;continue
+        }
         $mask = if ($leaf) { 0x500D0156 } else { 0x500D0150 }
         foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
             if ($rule.AccessControlType -eq 'Allow' -and
@@ -95,6 +102,10 @@ foreach ($directory in @('update-control','versions')) {
 }
 $IntegrityHelper = Join-Path $PSScriptRoot 'bootstrap_integrity.ps1'
 . $IntegrityHelper
+$script:LabelStartupBootstrapLoaded=$true
+# Initial code-tree trust precedes loading the helper. Its exact, read-only
+# shared-ancestor gate must then pass before shared code or daily operations.
+[void](Protect-KmtechCodeAncestors $trustedApplication -AdmissionOnly -RequireProtected)
 $SharedLeaf = Get-LabelSharedPortableLeafPath $InstallRoot
 . $SharedLeaf
 
