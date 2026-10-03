@@ -1792,7 +1792,20 @@ $probeRoot = $utf8.GetString([Convert]::FromBase64String('@@root-base64@@'))
 }
 
 function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters) {
+    $Script:LabelPlacementChildFailure = $null
+    $failureBase = [string]$HelperParameters.ElevationLogPath
+    if ([string]::IsNullOrEmpty($failureBase)) {
+        $failureBase = Join-Path ([IO.Path]::GetTempPath()) 'label-placement'
+    }
+    $failurePath = $failureBase + '-child-' + [Guid]::NewGuid().ToString('N') + '.json'
+    for ($ancestor = [IO.Path]::GetDirectoryName($failurePath); $ancestor; $ancestor = [IO.Path]::GetDirectoryName($ancestor)) {
+        if (([IO.File]::Exists($ancestor) -or [IO.Directory]::Exists($ancestor)) -and
+            ([IO.File]::GetAttributes($ancestor) -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Placement diagnostic parent is a reparse point.'
+        }
+    }
     $payload = [ordered]@{
+        failure_path = $failurePath
         helper_path = [string]$Frozen.helper_path
         helper_sha256 = [string]$Frozen.helper_sha256
         integrity_path = Join-Path ([string]$Frozen.root) 'tools\bootstrap_integrity.ps1'
@@ -1811,6 +1824,37 @@ $payloadText = (New-Object Text.UTF8Encoding($false, $true)).GetString(
     [Convert]::FromBase64String('@@payload-base64@@')
 )
 $payload = $payloadText | ConvertFrom-Json
+$placementPhase = 'PIN_VALIDATION'
+trap {
+    $childError = $_
+    $childExit = 1
+    $exception = $childError.Exception
+    for ($depth = 0; $null -ne $exception -and $depth -lt 8; $depth++) {
+        if ($exception.Data.Contains('installation_preparation_exit_code')) {
+            $childExit = [int]$exception.Data['installation_preparation_exit_code']; break
+        }
+        $exception = $exception.InnerException
+    }
+    $message = [string]$childError.Exception.Message
+    $privateValue = [string]$payload.parameters.WriterFenceDelegationToken
+    if ($privateValue) { $message = $message.Replace($privateValue, '[REDACTED]') }
+    $message = $message -replace '(?i)(token|password|secret|authorization|credential)\s*[=:]\s*\S+', '$1=[REDACTED]'
+    if ($message.Length -gt 2000) { $message = $message.Substring(0, 2000) }
+    $record = [ordered]@{
+        schema = 'label-match-placement-child-failure-v1'; phase = $placementPhase
+        exit_code = $childExit; exception_type = $childError.Exception.GetType().FullName
+        hresult = $childError.Exception.HResult; message = $message
+    }
+    try {
+        $stream = [IO.File]::Open([string]$payload.failure_path, 'CreateNew', 'Write', 'Read')
+        try {
+            $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress))
+            $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+        } finally { $stream.Dispose() }
+    } catch { [Console]::Error.WriteLine('Placement child diagnostic could not be saved.') }
+    [Console]::Error.WriteLine($message)
+    exit $childExit
+}
 function PinnedBytes([string]$Path, [string]$Expected) {
     [byte[]]$bytes = [IO.File]::ReadAllBytes($Path)
     $hash = [Security.Cryptography.SHA256]::Create()
@@ -1855,9 +1899,11 @@ function Get-RequiredExternalInteger($Object, [string]$Name) {
 [byte[]]$writerFenceBytes = PinnedBytes ([string]$payload.writer_fence_path) ([string]$payload.writer_fence_sha256)
 [byte[]]$helperBytes = PinnedBytes ([string]$payload.helper_path) ([string]$payload.helper_sha256)
 $utf8 = New-Object Text.UTF8Encoding($false, $true)
+$placementPhase = 'HELPER_LOADING'
 . ([ScriptBlock]::Create(($utf8.GetString($integrityBytes) -replace '^\uFEFF', ''))) -SharedCodeRoot (Split-Path (Split-Path ([string]$payload.integrity_path) -Parent) -Parent)
 . ([ScriptBlock]::Create(($utf8.GetString($writerFenceBytes) -replace '^\uFEFF', '')))
 $helper = [ScriptBlock]::Create(($utf8.GetString($helperBytes) -replace '^\uFEFF', ''))
+$placementPhase = 'PARAMETER_VALIDATION'
 $parameterNames = @(
     'SourceRoot',
     'InstallRoot',
@@ -1892,7 +1938,6 @@ if ($expectedSourceByteCount -lt 0) {
     throw 'External integer is outside the supported range: ExpectedSourceByteCount'
 }
 $invokeParameters = @{
-    ExpectedActiveCommit = [string]$payload.parameters.ExpectedActiveCommit
     SourceRoot = [string]$payload.parameters.SourceRoot
     InstallRoot = [string]$payload.parameters.InstallRoot
     ElevationLogPath = [string]$payload.parameters.ElevationLogPath
@@ -1911,8 +1956,10 @@ $invokeParameters = @{
     AllowNoncanonicalLayoutForTest = Get-RequiredExternalBoolean $payload.parameters 'AllowNoncanonicalLayoutForTest'
     ReplaceExistingVerifiedPortable = Get-RequiredExternalBoolean $payload.parameters 'ReplaceExistingVerifiedPortable'
     DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
-    StartupUpdateRestorePreimage = [string]$payload.parameters.StartupUpdateRestorePreimage
-    StartupUpdateRestoreSha256 = [string]$payload.parameters.StartupUpdateRestoreSha256
+}
+foreach ($name in @('ExpectedActiveCommit','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256')) {
+    $property = $payload.parameters.PSObject.Properties[$name]
+    $invokeParameters[$name] = if ($null -eq $property) { '' } else { [string]$property.Value }
 }
 $Script:LabelWriterFenceAdmissionProductionRoot = [string]$invokeParameters.WriterFenceControlRoot
 if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
@@ -1929,19 +1976,8 @@ if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
     }
     $invokeParameters.Uninstall = $true
 }
-try { & $helper @invokeParameters }
-catch {
-    if (Get-Command Get-InstallationPreparationExitCode -CommandType Function -ErrorAction SilentlyContinue) {
-        $preparationException = $_.Exception
-        for ($depth = 0; $null -ne $preparationException -and $depth -lt 8; $depth++) {
-            if ($preparationException.Data.Contains('installation_preparation_exit_code')) {
-                exit (Get-InstallationPreparationExitCode $_)
-            }
-            $preparationException = $preparationException.InnerException
-        }
-    }
-    throw
-}
+$placementPhase = 'HELPER_EXECUTION'
+& $helper @invokeParameters
 if (-not $?) { exit 4 }
 exit 0
 '@.Replace('@@payload-base64@@', $payloadBase64)
@@ -1964,7 +2000,18 @@ exit 0
         -WindowStyle Hidden `
         -Wait `
         -PassThru
-    return [int]$process.ExitCode
+    $childExit = [int]$process.ExitCode
+    if (Test-Path -LiteralPath $failurePath -PathType Leaf) {
+        $diagnosticItem = Get-Item -LiteralPath $failurePath
+        if (($diagnosticItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $diagnosticItem.Length -gt 65536) {
+            throw 'Placement child failure evidence is not a bounded ordinary file.'
+        }
+        $record = [IO.File]::ReadAllText($failurePath) | ConvertFrom-Json
+        if ([string]$record.schema -cne 'label-match-placement-child-failure-v1' -or
+            [int]$record.exit_code -ne $childExit) { throw 'Placement child failure evidence differs.' }
+        $Script:LabelPlacementChildFailure = $record
+    }
+    return $childExit
 }
 
 function Relays {
@@ -3369,13 +3416,21 @@ try {
             }
         }
         if ($placementExitCode -ne 0) {
+            $audit.placement_child_failure = $Script:LabelPlacementChildFailure
+            Save $auditPath $audit
             $preparationDiagnostic = Get-InstallationPreparationDiagnostic $placementExitCode
             if ($null -ne $preparationDiagnostic) {
                 $failure = [InvalidOperationException]::new(($preparationDiagnostic.message + ' [' + $preparationDiagnostic.code + ']'))
                 $failure.Data['installation_preparation_exit_code'] = $placementExitCode
                 throw $failure
             }
+            if ($null -ne $Script:LabelPlacementChildFailure) {
+                throw ('Code placement failed: {0}; child {1}/{2}: {3}' -f $placementExitCode,
+                    $Script:LabelPlacementChildFailure.phase, $Script:LabelPlacementChildFailure.exception_type,
+                    $Script:LabelPlacementChildFailure.message)
+            }
             throw "Code placement failed: $placementExitCode"
+
         }
         $placement = 'PASS'
     }

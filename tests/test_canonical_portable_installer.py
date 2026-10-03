@@ -2073,6 +2073,58 @@ if($env:LM_ARCHIVE_EXISTING -eq '1' -and [IO.File]::ReadAllText((Join-Path $audi
 
 
 @pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("phase", ("PIN_VALIDATION", "HELPER_EXECUTION"))
+def test_placement_child_preserves_original_failure_without_delegation_secret(tmp_path, engine, phase):
+    import shutil
+
+    executable = shutil.which(engine)
+    if not executable:
+        pytest.skip(f"{engine} is required")
+    body = re.search(r"\$launcher = @'\r?\n(.*?)\r?\n'@\.Replace", _source(), re.DOTALL).group(1)
+    integrity = tmp_path / "integrity.ps1"
+    writer = tmp_path / "writer.ps1"
+    helper = tmp_path / "helper.ps1"
+    failure = tmp_path / "child-failure.json"
+    integrity.write_text("param([string]$SharedCodeRoot)\n", encoding="utf-8-sig")
+    writer.write_bytes(WRITER_FENCE_HELPER.read_bytes())
+    parameters = {name: str(tmp_path) for name in (
+        "SourceRoot", "InstallRoot", "ElevationLogPath", "ExpectedBootstrapScriptSha256",
+        "VerifiedBootstrapScriptPath", "ExpectedSourceAggregateSha256", "WriterFenceControlRoot",
+        "WriterFenceSessionId", "WriterFenceAttemptId", "WriterFenceReplacementTransactionId",
+        "WriterFenceDelegationToken",
+    )}
+    parameters.update(ExpectedSourceFileCount=1, ExpectedSourceByteCount=1,
+        BootstrapIntegrityPreloaded=True, WriterFenceFunctionsPreloaded=True,
+        AllowNoncanonicalLayoutForTest=True, ReplaceExistingVerifiedPortable=False, DryRun=False)
+    parameters["WriterFenceDelegationToken"] = "synthetic-private-delegation-" + "x" * 64
+    declarations = [f"[{'switch' if isinstance(value, bool) else 'long' if isinstance(value, int) else 'string'}]${name}"
+                    for name, value in parameters.items()]
+    declarations.extend(("[string]$ExpectedActiveCommit", "[string]$StartupUpdateRestorePreimage", "[string]$StartupUpdateRestoreSha256"))
+    helper.write_text("param(" + ",".join(declarations) + ")\nthrow ('ORIGINAL_PLACEMENT_FAILURE ' + $WriterFenceDelegationToken)\n", encoding="utf-8-sig")
+    payload = dict(helper_path=str(helper), helper_sha256=hashlib.sha256(helper.read_bytes()).hexdigest(),
+        integrity_path=str(integrity), integrity_sha256=hashlib.sha256(integrity.read_bytes()).hexdigest(),
+        writer_fence_path=str(writer), writer_fence_sha256=hashlib.sha256(writer.read_bytes()).hexdigest(),
+        failure_path=str(failure), parameters=parameters)
+    if phase == "PIN_VALIDATION":
+        payload["integrity_sha256"] = "0" * 64
+    body = body.replace("@@payload-base64@@", base64.b64encode(json.dumps(payload).encode()).decode())
+    script = tmp_path / "child.ps1"
+    script.write_text(body, encoding="utf-8-sig")
+    child = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW)
+    assert child.returncode != 0
+    assert failure.exists(), "Original elevated child failure was not preserved"
+    record = json.loads(failure.read_text(encoding="utf-8"))
+    assert record["phase"] == phase
+    assert record["exit_code"] == child.returncode
+    assert record["exception_type"] and record["hresult"] is not None
+    expected = "Elevated helper byte pin differs" if phase == "PIN_VALIDATION" else "ORIGINAL_PLACEMENT_FAILURE"
+    assert expected in record["message"]
+    assert parameters["WriterFenceDelegationToken"] not in failure.read_text(encoding="utf-8")
+    assert parameters["WriterFenceDelegationToken"] not in child.stderr
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
 @pytest.mark.parametrize("wrapper", ("probe", "placement"))
 def test_pinned_bom_integrity_encoded_wrappers_without_native_launch(tmp_path, engine, wrapper):
     from tests.test_shared_ancestor_protection import run_functions

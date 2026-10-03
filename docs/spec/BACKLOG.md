@@ -446,3 +446,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 
 - sub-177: 고정 helper 원 bytes hash 유지 + UTF-8 디코드 선두 BOM 하나 제거를 canonical 다섯 실행 자리에 적용하고, preimage 뒤·writer 거래 전 실패의 해당 run 진단/임시 상태를 보존 archive하여 새 설치 판정을 안전하게 이어간다. 기존 receipt·등록·data residue 거절 및 거래 안 rollback은 유지한다. [동작·회복 경계](operations.md#verified-helper-text-pretransaction)와 D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-177/REPORT.md에 실제 회귀/예행/실패 한계를 기록한다. 정식 선언/pin·독립 검토·현장 수용은 중앙 후속 OPEN이다.
+
+
+<a id="w9setupprep-sub192-child"></a>
+
+- 배치 자식 실패 보존과 선택값: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.
