@@ -99,7 +99,7 @@ winreg.CreateKeyEx = mutate
 before = {}
 original_open = Path.open
 def observed_open(path, mode="r", *args, **kwargs):
-    if "r" in mode and path.name.casefold() in {"producer_identity.json", "credential.json", "producer_manifest.json", "settings.json", "logistics_runtime_profile.json"}:
+    if "r" in mode and path.name.casefold() in {"producer_identity.json", "credential.json", "producer_manifest.json", "settings.json", "logistics_runtime_profile.json", "runtime-profile.json", "preimage.json", "predecessor-receipt.json", "authorization.json"}:
         events["identity_reads"] += 1
     return original_open(path, mode, *args, **kwargs)
 Path.open = observed_open
@@ -157,6 +157,7 @@ argv = {
 }
 kind = os.environ["KMTECH_DATA_GENERATION_ENTRY_KIND"]
 argv["hosted-raw"] = argv["raw"]
+argv["exact-receipt"] = ["receipt", *argv["exact"][1:], "--preimage", str(root / "preimage.json")]
 argv["registrar-admin"] = [*argv["registrar"], "--admin-recovery-secret-file", str(root / "authorization.json"),
     "--pc-id", "synthetic-pc", "--source-host-id", "synthetic-host", "--producer-install-id", "synthetic-install",
     "--producer-id", "synthetic-producer",
@@ -165,7 +166,7 @@ argv["registrar-partial"] = [*argv["registrar-admin"], "--recover-partial-local-
 if kind.startswith("registrar"):
     module.apply_registration = network
 if external_mode:
-    for name in ("producer_identity.json", "credential.json", "logistics_runtime_profile.json"):
+    for name in ("producer_identity.json", "credential.json", "logistics_runtime_profile.json", "preimage.json", "authorization.json"):
         (external / name).write_text(json.dumps(identity) if name == "producer_identity.json" else '{"preserved":true}', encoding="utf-8")
     shutil.copyfile(database, external / "direct_sync_relay.sqlite3")
     alias = external
@@ -186,7 +187,7 @@ if external_mode:
     field, name = {
         "registrar": ("--identity-path", "producer_identity.json"),
         "registrar-dry": ("--identity-path", "producer_identity.json"),
-        "registrar-admin": ("--identity-path", "producer_identity.json"),
+        "registrar-admin": ("--admin-recovery-secret-file", "authorization.json"),
         "registrar-partial": ("--identity-path", "producer_identity.json"),
         "check-profile": ("--profile-path", "logistics_runtime_profile.json"),
         "install-profile": ("--profile-path", "logistics_runtime_profile.json"),
@@ -200,7 +201,8 @@ if external_mode:
         "canary": ("--credential-path", "credential.json"),
         "install-pack": ("--credential-path", "credential.json"),
         "exact": ("--identity", "producer_identity.json"),
-        "reconcile": ("--identity", "producer_identity.json"),
+        "exact-receipt": ("--preimage", "preimage.json"),
+        "reconcile": ("--preimage", "preimage.json"),
     }.get(kind, ("", ""))
     selected = requested(external / name)
     if field:

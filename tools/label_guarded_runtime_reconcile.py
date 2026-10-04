@@ -98,7 +98,9 @@ def main(argv: list[str] | None = None) -> int:
             "live_client_proof", "server_initializer_proof", "server_source_root", "server_launcher", "server_executable",
             "stop_marker", "portable_root", "tls_ca_bundle"))
         roots = tuple(Path(value).parent for value in (args.client_db, args.server_db, args.identity, args.credential))
-        check_user_data_open(ROOT, roots)
+        evidence_roots = tuple(Path(value).parent for value in (
+            args.preimage, args.client_backup, args.live_client_proof, args.server_initializer_proof))
+        check_user_data_open(ROOT, (*roots, *evidence_roots))
         record_user_data_open(ROOT, roots)
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)

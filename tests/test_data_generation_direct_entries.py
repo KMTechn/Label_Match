@@ -30,6 +30,7 @@ ENTRIES = {
     "install-admin": "tools.install_protected_admin:main",
     "install-pack": "tools.direct_sync_relay_install_pack:main",
     "exact": "tools.label_exact_clone_resolution_receipt:main",
+    "exact-receipt": "tools.label_exact_clone_resolution_receipt:main",
     "reconcile": "tools.label_guarded_runtime_reconcile:main",
 }
 
@@ -55,11 +56,13 @@ def test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, sta
 @pytest.mark.parametrize("state", ["external-tilde", "external-relative", "external-case", "external-link"])
 def test_external_input_marker_without_control_marker_refuses_before_any_read(entry, state, tmp_path):
     test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, state, tmp_path)
+    assert json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))["control_marker_absent_before"]
 
 
 @pytest.mark.parametrize("state", ["external-blank-profile", "external-default-profile"])
 def test_empty_or_default_profile_selects_actual_external_marker_before_loading(state, tmp_path):
     test_direct_process_refuses_without_identity_or_lifecycle_changes("check-profile", state, tmp_path)
+    assert json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))["control_marker_absent_before"]
 
 
 @pytest.mark.parametrize("argument", ["", "~/external/logistics_runtime_profile.json"])

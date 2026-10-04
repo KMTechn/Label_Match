@@ -2261,7 +2261,7 @@ def main(argv: list[str] | None = None) -> int:
         data_roots = (Path(args.sync_dir), data_dir, data_dir / "queue")
         identity_roots = tuple(Path(value).parent for value in (
             args.identity_path, args.manifest_path, args.credential_path, args.receipt_path,
-            args.logistics_profile_path) if value)
+            args.logistics_profile_path, args.admin_recovery_secret_file) if value)
         check_user_data_open(ROOT, (*data_roots, *identity_roots))
         if args.recover_partial_local_state and not args.admin_recovery_secret_file:
             raise DirectSyncPushError("부분 등록 복구에는 관리자 일회용 승인 파일이 필요합니다")

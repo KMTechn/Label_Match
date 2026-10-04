@@ -122,11 +122,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, resolve_data_path, normalize_data_arguments
     try:
-        normalize_data_arguments(args, ("client_db", "server_db", "identity", "credential", "stop_marker", "portable_root"))
+        normalize_data_arguments(args, ("client_db", "server_db", "identity", "credential", "stop_marker", "portable_root",
+            "preimage", "predecessor_receipt"))
         inputs = {name: resolve_data_path(value) if value is not None else None for name, value in _paths(args).items()}
         roots = tuple(inputs[name].parent for name in ("client_db_path", "server_db_path", "identity_path", "credential_path")
                       if inputs[name] is not None)
-        check_user_data_open(REPO_ROOT, roots)
+        evidence_roots = tuple(Path(value).parent for value in (
+            getattr(args, "preimage", None), getattr(args, "predecessor_receipt", None)) if value is not None)
+        check_user_data_open(REPO_ROOT, (*roots, *evidence_roots))
         record_user_data_open(REPO_ROOT, roots)
         extra_summary = {}
         if args.operation == "capture":
