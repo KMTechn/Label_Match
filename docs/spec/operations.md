@@ -1,5 +1,7 @@
 # Label_Match 운영·복구·검증
 
+저장된 F5 복구 journal 시험 자료 `tests/fixtures/f5-recovery-167ac7e/*.journal.json`은 원 LF 바이트와 SHA256을 보존하도록 `.gitattributes`의 `-text`로 고정한다. `core.autocrlf=true` checkout에서도 `tests/test_f5_saved_journals.py`의 다섯 복구 신원·상태 oracle을 그대로 검사한다.
+
 <a id="remote-writer-admission"></a>
 
 예외: 건별 복구에서 이전 판 journal로 재개하는 F5 날짜 교환의 원격 호출은 writer admission을 유지한다(코디 결정 2026-10-02). 기존 busy gate가 거절한 스캔은 응답 뒤 다시 입력하며 미리 입력된 값은 보존한다. 계측 등록은 phs_current_recovery/phs_reconciliation_recovery와 기존 prepare/status/print/activate client 메서드의 조합만 면제한다. 새 교환·후보/action 조회는 제거했다.

@@ -7,3 +7,5 @@ kmtech_shared.lock.json text eol=lf
 tests/fixtures/deferred_intent_contract/** -text
 tests/lock_remote_guard.py -text
 tests/late_result_guard.py -text
+# Saved recovery journals are byte oracles, including their original LF bytes.
+tests/fixtures/f5-recovery-167ac7e/*.journal.json -text
