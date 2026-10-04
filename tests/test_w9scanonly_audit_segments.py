@@ -215,3 +215,145 @@ def test_held_checkpoint_replays_segments_without_rewriting_originals(
     assert archive.read_bytes() == raw and not checkpoint(app).exists()
     assert restart(app).replay_audit_events(archived_events=evidence['value']['scanner_audit_outbox'])
     assert len(csv_audits(app)) == len(records)
+
+
+@pytest.mark.parametrize('damage', ['middle', 'same-size-middle', 'same-size-key', 'conflicting-duplicate',
+                                  'duplicate', 'truncated', 'shorter', 'reordered'])
+@pytest.mark.parametrize('reopen', [False, True], ids=['live-writer', 'restart'])
+def test_changed_csv_falls_back_to_the_original_full_row_verdict(packaging, damage, reopen):
+    """Proof mismatches retain the old per-key verdict and exact CSV bytes."""
+    import io
+    import os
+
+    app, _ = packaging
+    scan(app, MASTER)
+    records = records_for(app, 8)
+    assert save(app, records)
+    assert app.data_manager.replay_audit_events()
+    # A later checkpoint can still carry the original keys after an ACK loss.
+    assert save(app, records)
+    path = Path(app.data_manager._get_log_filepath_for_item([
+        records[0]['details']['scanner_audit']['occurred_at'], '',
+        records[0]['event_type'], '']))
+    original = path.read_bytes()
+    original_stat = path.stat()
+    rows = list(csv.reader(io.StringIO(original.decode('utf-8-sig'), newline='')))
+    positions = [index for index, row in enumerate(rows)
+                 if len(row) == 4 and row[0] != 'timestamp'
+                 and json.loads(row[3]).get('scanner_audit')]
+    expected_rows = {app.data_manager._audit_key(rows[index]): rows[index].copy() for index in positions}
+    if damage == 'truncated':
+        changed = original[:-8]
+    else:
+        if damage in ('middle', 'same-size-middle', 'same-size-key', 'conflicting-duplicate'):
+            if damage == 'conflicting-duplicate':
+                rows.insert(positions[3], rows[positions[3]].copy())
+            details = json.loads(rows[positions[3]][3])
+            if damage == 'same-size-key':
+                key = details['scanner_audit']['key']
+                details['scanner_audit']['key'] = key[:-1] + ('0' if key[-1] != '0' else '1')
+            else:
+                details['reason'] = 'SCANNER_EDIT' if damage == 'same-size-middle' else 'CHANGED_VALID_JSON'
+            rows[positions[3]][3] = json.dumps(details, ensure_ascii=False)
+        elif damage == 'duplicate':
+            rows.insert(positions[3], rows[positions[3]].copy())
+        elif damage == 'shorter':
+            rows = rows[:positions[-2]]
+        else:
+            left, right = positions[2:4]
+            rows[left], rows[right] = rows[right], rows[left]
+        stream = io.StringIO(newline='')
+        csv.writer(stream).writerows(rows)
+        changed = stream.getvalue().encode('utf-8-sig')
+    path.write_bytes(changed)
+    if damage in ('same-size-middle', 'same-size-key'):
+        assert len(changed) == len(original)
+        os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    manager = restart(app) if reopen else app.data_manager
+    # Literal reference to the old writer: scan every row per pending key,
+    # reject only same-key/different-content, otherwise fsync or append.
+    legacy_failed, legacy_bytes = set(), changed
+    for record in records:
+        key = record['details']['scanner_audit']['key']
+        duplicate = False
+        for row in csv.reader(io.StringIO(legacy_bytes.decode('utf-8-sig'), newline='')):
+            if manager._audit_key(row) == key:
+                if row != expected_rows[key]:
+                    legacy_failed.add(key)
+                    break
+                duplicate = True
+        if key not in legacy_failed and not duplicate:
+            stream = io.StringIO(newline='')
+            csv.writer(stream).writerow(expected_rows[key])
+            legacy_bytes += stream.getvalue().encode('utf-8')
+    assert manager.replay_audit_events() is (not legacy_failed)
+    assert manager._audit_outbox == [item for item in records
+        if item['details']['scanner_audit']['key'] in legacy_failed]
+    assert path.read_bytes() == legacy_bytes
+    assert all(str(error) == 'audit key has different CSV content' for error in manager._writer_errors)
+    if legacy_failed:
+        with pytest.raises(RuntimeError, match='audit key has different CSV content'):
+            manager.close(timeout=5)
+        app.data_manager = lm.DataManager(app.save_directory, manager.process_name,
+                                         'NEXT-SHIFT', manager.unique_id)
+    else:
+        assert restart(app).replay_audit_events()
+        assert path.read_bytes() == legacy_bytes
+
+
+@pytest.mark.parametrize('damage', ['root', 'null-proof', 'size', 'rows', 'sha256', 'last_row_sha256'])
+def test_unreadable_prefix_proof_uses_all_csv_rows_before_ack(packaging, damage, monkeypatch):
+    app, _ = packaging
+    scan(app, MASTER)
+    records = records_for(app, 8)
+    assert save(app, records)
+    assert app.data_manager.replay_audit_events()
+    assert save(app, records)
+    state = json.loads(checkpoint(app).read_bytes())
+    proofs = state['scanner_audit_csv_prefixes']
+    if damage == 'root':
+        state['scanner_audit_csv_prefixes'] = 'unreadable\x00hint'
+    elif damage == 'null-proof':
+        proofs[next(iter(proofs))] = None
+    else:
+        proofs[next(iter(proofs))][damage] = None
+    checkpoint(app).write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
+    manager = restart(app)
+    assert manager._audit_outbox == records
+    original = {path: path.read_bytes() for path in Path(app.save_directory).rglob('*.csv')}
+    read_keys, audit_key = [], manager._audit_key
+
+    def observed_row(row):
+        key = audit_key(row)
+        if key:
+            read_keys.append(key)
+        return key
+
+    monkeypatch.setattr(manager, '_audit_key', observed_row)
+    assert manager.replay_audit_events()
+    assert all(read_keys.count(item['details']['scanner_audit']['key']) >= 2 for item in records)
+    assert not manager._audit_outbox
+    assert all(path.read_bytes() == raw for path, raw in original.items())
+    assert restart(app).replay_audit_events()
+    assert len(csv_audits(app)) == len(records)
+
+
+def test_durable_rows_after_stale_prefix_checkpoint_restart_exactly_once(packaging, monkeypatch):
+    app, _ = packaging
+    scan(app, MASTER)
+    records = records_for(app, 8)
+    assert save(app, records[:4])
+    assert app.data_manager.replay_audit_events()
+    assert save(app, records[4:])
+    raw = checkpoint(app).read_bytes()
+    assert json.loads(raw)['scanner_audit_csv_prefixes']
+    monkeypatch.setattr(app.data_manager, 'save_current_state', lambda *args, **kwargs: False)
+    assert not app.data_manager.replay_audit_events()
+    assert checkpoint(app).read_bytes() == raw
+    assert csv_audits(app) == [item['details'] for item in records]
+    original = {path: path.read_bytes() for path in Path(app.save_directory).rglob('*.csv')}
+    assert restart(app).replay_audit_events()
+    assert restart(app).replay_audit_events()
+    assert not app.data_manager._audit_outbox
+    assert all(path.read_bytes() == value for path, value in original.items())
+    assert csv_audits(app) == [item['details'] for item in records]

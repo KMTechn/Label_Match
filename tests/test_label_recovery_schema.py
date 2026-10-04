@@ -24,6 +24,22 @@ PHS2_FIELDS = {
 }
 
 
+@pytest.mark.parametrize('proof', [None, [], 'broken\x00hint',
+                                 {'audit.csv': {'size': -1, 'sha256': None}}])
+def test_damaged_csv_hint_does_not_invalidate_business_recovery(tmp_path, proof):
+    import json
+    value = {'current_set_info': {'id': None, 'raw': []},
+             'scanner_audit_csv_prefixes': proof}
+    path = tmp_path / 'current.json'
+    raw = json.dumps(value).encode('utf-8')
+    path.write_bytes(raw)
+    result = read_recovery_file(path, current_state=True)
+    assert result['verified'] and result['value'] == value
+    assert result['raw'] == raw and path.read_bytes() == raw
+    value['current_set_info']['raw'] = 'invalid-business'
+    assert not validate_recovery_record('current', value)
+
+
 def _sample(rule):
     if rule in RECOVERY_SCHEMAS:
         return _record(rule)

@@ -427,6 +427,10 @@ def _json_tree_valid(value):
 
 def validate_recovery_record(kind, value, *, journal_version=None):
     schema = RECOVERY_SCHEMAS[kind]
+    # Optional CSV proofs cannot invalidate business recovery. The writer
+    # validates these hints against CSV bytes and falls back to all-row checks.
+    if kind == 'current' and isinstance(value, dict):
+        value = {name: item for name, item in value.items() if name != 'scanner_audit_csv_prefixes'}
     if not isinstance(value, dict) or not _json_tree_valid(value):
         return False
     required = schema["required"]

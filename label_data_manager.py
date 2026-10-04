@@ -5,7 +5,9 @@ event projection and file names; this module does not import the Tk application.
 """
 
 import csv
+from contextlib import nullcontext
 import hashlib
+import io
 import json
 import os
 import queue
@@ -144,10 +146,16 @@ class DataManager:
         self._recovered_audit_errors = set()
         self._state_lock = threading.RLock()
         self._archived_audit_outbox = []
+        self._audit_csv_lock = threading.RLock()
+        self._audit_csv_indexes = {}
         evidence = read_recovery_file(
             os.path.join(save_dir, self._current_state_filename()), current_state=True)
         self._audit_outbox = list((evidence['value'] or {}).get('scanner_audit_outbox', [])) if evidence['verified'] else []
         self._unverified_audit_segments = evidence.get('unverified_audit_segments', [])
+        prefixes = (evidence['value'] or {}).get('scanner_audit_csv_prefixes', {}) if evidence['verified'] else {}
+        self._audit_csv_prefixes = dict(prefixes) if isinstance(prefixes, dict) else {}
+        if not isinstance(prefixes, dict):
+            print('감사 CSV 증명 손상: 기존 전 행 검증으로 재생')
         self.log_thread = threading.Thread(target=self._log_writer_thread, daemon=True)
         self.log_thread.start()
     def _get_log_filepath(self, target_date=None):
@@ -170,9 +178,14 @@ class DataManager:
             )
         return contract_path
     def _log_writer_thread(self):
+        audit_stream = None
+        audit_context = None
+        audit_path = None
+        last_audit_key = ''
         while True:
             log_item = None
             got_item = False
+            failed_write = False
             try:
                 log_item = self.log_queue.get()
                 got_item = True
@@ -181,36 +194,182 @@ class DataManager:
                 file_exists = os.path.exists(filepath)
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
                 audit_key = self._audit_key(log_item)
-                with self._open_file(filepath, 'a+' if audit_key else 'a', newline='', encoding='utf-8-sig') as f:
+                with self._audit_csv_lock:
+                    # Keep the same handle only for a contiguous audit burst.
+                    # Every row still flushes and fsyncs before task_done/ACK.
+                    if audit_stream is not None and (not audit_key or not file_exists or audit_path != filepath
+                            or os.stat(filepath).st_ino != os.fstat(audit_stream.fileno()).st_ino):
+                        context = audit_context
+                        audit_context = None
+                        audit_stream = None
+                        context.__exit__(None, None, None)
                     if audit_key:
-                        f.seek(0)
-                        duplicate = False
-                        for row in csv.reader(f):
-                            if self._audit_key(row) == audit_key:
-                                if row != log_item:
-                                    raise ValueError('audit key has different CSV content')
-                                duplicate = True
+                        if audit_stream is None:
+                            context = self._open_file(filepath, 'a+', newline='', encoding='utf-8-sig')
+                            audit_stream = context.__enter__()
+                            audit_context = context
+                            audit_path = filepath
+                        last_audit_key = audit_key
+                        file_context = nullcontext(audit_stream)
+                    else:
+                        file_context = self._open_file(filepath, 'a', newline='', encoding='utf-8-sig')
+                with self._audit_csv_lock, file_context as f:
+                    index = None
+                    if audit_key:
+                        index = self._audit_csv_index(f, filepath)
+                        previous = index['keys'].get(audit_key)
+                        if audit_key in index['conflicts'] or (previous is not None and previous != log_item):
+                            raise ValueError('audit key has different CSV content')
                         f.seek(0, os.SEEK_END)
-                        if duplicate:
+                        if previous is not None:
                             f.flush()
                             os.fsync(f.fileno())
                             continue
                     writer = csv.writer(f)
-                    if not file_exists or os.stat(filepath).st_size == 0:
-                        writer.writerow(["timestamp", "worker_name", "event", "details"])
+                    empty = not file_exists or os.stat(filepath).st_size == 0
+                    header = ["timestamp", "worker_name", "event", "details"]
+                    if empty:
+                        writer.writerow(header)
                     writer.writerow(log_item)
                     if audit_key or str(log_item[2] or "") in self._durable_event_types():
                         f.flush()
                         os.fsync(f.fileno())
+                    if index is not None:
+                        appended = (self._csv_row_bytes(header) if empty else b'') + self._csv_row_bytes(log_item)
+                        if empty:
+                            appended = b'\xef\xbb\xbf' + appended
+                        index['hash'].update(appended)
+                        index['size'] += len(appended)
+                        index['rows'] += 1
+                        index['last_row_sha256'] = hashlib.sha256(self._csv_row_bytes(log_item)).hexdigest()
+                        index['keys'][audit_key] = list(log_item)
+                        index['signature'] = self._csv_signature(f)
+                        self._audit_csv_prefixes[index['relative']] = self._csv_prefix(index)
             except queue.Empty:
                 continue
             except Exception as e:
+                failed_write = True
                 self._writer_errors.append(e)
                 self._writer_error_keys[id(e)] = self._audit_key(log_item)
                 print(f"로그 쓰기 스레드 오류: {e}")
             finally:
+                if audit_stream is not None and (failed_write or log_item is None or self.log_queue.empty()):
+                    context = audit_context
+                    audit_context = None
+                    audit_stream = None
+                    try:
+                        context.__exit__(None, None, None)
+                    except Exception as error:
+                        self._writer_errors.append(error)
+                        self._writer_error_keys[id(error)] = self._audit_key(log_item) or last_audit_key
+                        print(f"로그 쓰기 스레드 오류: {error}")
                 if got_item:
                     self.log_queue.task_done()
+    @staticmethod
+    def _csv_signature(stream):
+        stat = os.fstat(stream.fileno())
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    @staticmethod
+    def _csv_row_bytes(row):
+        stream = io.StringIO(newline='')
+        csv.writer(stream).writerow(row)
+        return stream.getvalue().encode('utf-8')
+    @staticmethod
+    def _csv_prefix(index):
+        return {name: index[name] for name in ('size', 'rows', 'last_row_sha256')} | {
+            'sha256': index['hash'].hexdigest()}
+    def _csv_prefix_matches(self, raw, proof):
+        try:
+            if not isinstance(proof, dict) or set(proof) != {'size', 'rows', 'sha256', 'last_row_sha256'}:
+                return False
+            if any(type(proof[name]) is not int or proof[name] < 0 for name in ('size', 'rows')):
+                return False
+            prefix = raw[:proof['size']]
+            if len(prefix) != proof['size'] or hashlib.sha256(prefix).hexdigest() != proof['sha256']:
+                return False
+            rows = list(csv.reader(io.StringIO(prefix.decode('utf-8-sig'), newline='')))
+            last_hash = hashlib.sha256(self._csv_row_bytes(rows[-1])).hexdigest() if len(rows) > 1 else ''
+            return proof['rows'] == max(0, len(rows)-1) and proof['last_row_sha256'] == last_hash
+        except (KeyError, TypeError, ValueError, csv.Error):
+            return False
+    def _audit_csv_index(self, stream, filepath):
+        """Validate a prefix once, then index only this writer's durable appends."""
+        signature = self._csv_signature(stream)
+        previous = self._audit_csv_indexes.get(filepath)
+        if previous is not None and previous['signature'] == signature:
+            return previous
+        stream.seek(0)
+        raw = stream.buffer.read()
+        stream.seek(0)
+        relative = Path(filepath).absolute().relative_to(Path(self.save_directory).absolute()).as_posix()
+        proof = self._csv_prefix(previous) if previous is not None else self._audit_csv_prefixes.get(relative)
+        if (previous is not None or relative in self._audit_csv_prefixes) and not self._csv_prefix_matches(raw, proof):
+            print('감사 CSV 증명 불일치: 기존 전 행 검증으로 재생')
+        # A proof is only an optimization hint. Always rebuild from all rows on
+        # restart/change, using exactly the old csv.reader and key comparison.
+        # Identical duplicates, reordered rows and unrelated malformed rows did
+        # not globally stop the old writer and must not gain new hard errors.
+        rows = list(csv.reader(io.StringIO(raw.decode('utf-8-sig'), newline='')))
+        keys, conflicts = {}, set()
+        for row in rows:
+            key = self._audit_key(row)
+            if key:
+                if key in keys and keys[key] != row:
+                    conflicts.add(key)
+                keys[key] = row
+        index = dict(signature=signature, relative=relative, hash=hashlib.sha256(raw),
+                     size=len(raw), rows=max(0, len(rows)-1), keys=keys, conflicts=conflicts,
+                     last_row_sha256=hashlib.sha256(self._csv_row_bytes(rows[-1])).hexdigest() if len(rows) > 1 else '')
+        self._audit_csv_indexes[filepath] = index
+        return index
+    def _verify_audit_csv_prefixes(self, keys, ordered_keys):
+        # A fresh byte read before ACK also catches same-size edits whose file
+        # times were restored. Metadata is only a cache invalidation hint.
+        failed = set()
+        with self._audit_csv_lock:
+            for filepath, index in list(self._audit_csv_indexes.items()):
+                if keys.isdisjoint(index['keys']):
+                    continue
+                with self._open_file(filepath, 'rb') as stream:
+                    raw = stream.read()
+                if len(raw) != index['size'] or hashlib.sha256(raw).hexdigest() != index['hash'].hexdigest():
+                    expected = {key: index['keys'][key] for key in ordered_keys
+                                if key in keys and key in index['keys']}
+                    # A restored stat can hide a byte edit during a burst. Use
+                    # the same full-row verdict, retaining only affected keys.
+                    self._audit_csv_indexes.pop(filepath)
+                    with self._open_file(filepath, 'a+', newline='', encoding='utf-8-sig') as stream:
+                        index = self._audit_csv_index(stream, filepath)
+                        for key, row in expected.items():
+                            previous = index['keys'].get(key)
+                            if key in index['conflicts'] or (previous is not None and previous != row):
+                                error = ValueError('audit key has different CSV content')
+                                self._writer_errors.append(error)
+                                self._writer_error_keys[id(error)] = key
+                                failed.add(key)
+                            elif previous is None:
+                                # The old full scan would append a missing key,
+                                # even if a restored stat hid its removal.
+                                stream.seek(0, os.SEEK_END)
+                                empty = index['size'] == 0
+                                header = ['timestamp', 'worker_name', 'event', 'details']
+                                writer = csv.writer(stream)
+                                if empty:
+                                    writer.writerow(header)
+                                writer.writerow(row)
+                                stream.flush()
+                                os.fsync(stream.fileno())
+                                appended = self._csv_row_bytes(row)
+                                if empty:
+                                    appended = b'\xef\xbb\xbf' + self._csv_row_bytes(header) + appended
+                                index['hash'].update(appended)
+                                index['size'] += len(appended)
+                                index['rows'] += 1
+                                index['last_row_sha256'] = hashlib.sha256(self._csv_row_bytes(row)).hexdigest()
+                                index['keys'][key] = row
+                                index['signature'] = self._csv_signature(stream)
+                self._audit_csv_prefixes[index['relative']] = self._csv_prefix(index)
+        return failed
     @staticmethod
     def _csv_details(details):
         details = dict(details)
@@ -344,6 +503,11 @@ class DataManager:
                 completed = keys - failed
                 if not completed:
                     return False
+                failed.update(self._verify_audit_csv_prefixes(completed,
+                    [item['details']['scanner_audit']['key'] for item in pending]))
+                completed -= failed
+                if not completed:
+                    return False
                 active_completed = completed & {item['details']['scanner_audit']['key']
                                                 for item in self._audit_outbox}
                 if active_completed:
@@ -385,6 +549,9 @@ class DataManager:
             state_path = os.path.join(self.save_directory, self._current_state_filename())
             try:
                 state_data_with_worker = sanitize_persistent_value(dict(state_data or {}))
+                with self._audit_csv_lock:
+                    if self._audit_csv_prefixes:
+                        state_data_with_worker['scanner_audit_csv_prefixes'] = dict(self._audit_csv_prefixes)
                 pending = {item['details']['scanner_audit']['key']: item for item in self._audit_outbox}
                 for item in state_data_with_worker.get('scanner_audit_outbox', []):
                     require_recovery_record('scanner_audit_event', item)
