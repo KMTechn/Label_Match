@@ -174,10 +174,50 @@ def _assert_bootstrap_source(installer: Path, integrity_helper: Path) -> None:
     )
     combined_lowered = lowered + "\n" + helper_lowered
     present = [token for token in forbidden if token in combined_lowered]
-    if re.search(
-        r"(?im)^\s*Register-ScheduledTask\b", source + "\n" + helper_source
-    ):
+    if re.search(r"(?im)^\s*Register-ScheduledTask\b", helper_source):
         present.append("register-scheduledtask")
+    if re.search(r"(?im)^\s*Register-ScheduledTask\b", source):
+        # Placement owns two authenticated current-user startup task mutations.
+        # Parse their actual command/ancestor structure; a registration added
+        # elsewhere (including one with the same spelling) remains forbidden.
+        environment = dict(os.environ)
+        environment["KMTECH_STAGED_INSTALLER_SOURCE"] = str(installer.resolve())
+        parsed = subprocess.run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", r"""
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:KMTECH_STAGED_INSTALLER_SOURCE,[ref]$tokens,[ref]$errors)
+if($errors.Count){exit 1}
+$rows=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ieq 'Register-ScheduledTask'},$true)|ForEach-Object {
+ $owner='';$mutation=$false
+ for($parent=$_.Parent;$null -ne $parent;$parent=$parent.Parent){
+  if($parent -is [Management.Automation.Language.CommandAst] -and $parent.GetCommandName() -ceq 'Invoke-LabelStartupUpdateTaskMutation'){$mutation=$true}
+  if($parent -is [Management.Automation.Language.FunctionDefinitionAst]){$owner=$parent.Name;break}
+ }
+ [pscustomobject]@{owner=$owner;mutation=$mutation;command=$_.Extent.Text}
+})
+ConvertTo-Json -InputObject $rows -Compress
+"""],
+            env=environment, capture_output=True, text=True,
+            timeout=TIMEOUT_SECONDS, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        allowed = {
+            "Restore-LabelStartupUpdatePreimage": "Register-ScheduledTask -TaskName $name -Xml ([string]$saved.task.xml) -Force",
+            "Initialize-LabelStartupUpdate": "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
+        }
+        try:
+            registrations = json.loads(parsed.stdout)
+            valid = (parsed.returncode == 0 and not parsed.stderr
+                     and len(parsed.stdout.encode()) <= OUTPUT_BOUND_BYTES
+                     and isinstance(registrations, list)
+                     and len(registrations) == len(allowed)
+                     and {row["owner"] for row in registrations} == set(allowed)
+                     and all(row["mutation"] is True
+                             and row["command"] == allowed[row["owner"]]
+                             for row in registrations))
+        except (ValueError, TypeError, KeyError):
+            valid = False
+        if not valid:
+            present.append("register-scheduledtask")
     if present:
         raise StagedInstallerVerificationError(
             f"bootstrap exposes retired enrollment/task authority: {present}"
@@ -304,7 +344,8 @@ def verify_staged_package(package_root: Path) -> dict[str, Any]:
         },
         "legacy_authority_contract": {
             "system_scheduled_task_supported": False,
-            "task_creation_tokens_absent": True,
+            "task_creation_tokens_absent": False,
+            "current_user_startup_task_mutations": 2,
             "legacy_owned_task_cleanup_only": True,
             "forbidden_package_members_absent": True,
             "forbidden_members": sorted(FORBIDDEN_ACTIVE_AUTHORITY_MEMBERS),

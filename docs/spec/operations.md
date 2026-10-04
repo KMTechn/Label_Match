@@ -1126,6 +1126,10 @@ canonical placement와 지원 제거는 Enter-LabelCanonicalPlacement 한 함수
 <a id="verified-helper-text-pretransaction"></a>
 ## 고정 helper의 BOM과 거래 진입 전 회복
 
+설치 통합 후보의 G 선언은 기존 9개 조상과 e89의 정확한 before를 보존하고 실제 후보 shipped bytes로 after를 재생성한다. audit-index의 label_data_manager/label_recovery_schema 전진 쌍과 기존 역사 G 시험을 함께 유지한다. 상승 전달은 74c02c2의 고정 bootstrap·private script/payload·메모리 SHA 방식이며 합쳐진 child 본문도 그 전달로 실행한다. 길이·pin·변조/교체 거절과 한계의 실제 근거는 [sub-264 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-264/REPORT.md)를 따른다.
+
+staged qualification 도구는 retired SYSTEM enrollment/task 생성을 계속 거절한다. 실제 PowerShell AST에서 Initialize-LabelStartupUpdate 및 Restore-LabelStartupUpdatePreimage의 정확한 두 등록 명령이 Invoke-LabelStartupUpdateTaskMutation 안에 있는 경우만 기존 current-user startup task 계약으로 인정한다. Portable 현장 packet에는 이 qualification 도구가 들어가지 않는다. 설치/G/lifecycle 시험은 봉인한 판·실제 helper pin을 fixture에 주고 원 성공·거절 단언까지 실행하며 Run/task/relay는 격리 대역으로 확인한다. PS7 prefix 시험도 실제 PS5 dispatcher가 생성한 bytes를 PS7에서 실행한다. 실제 상승·native 설치·현장 수용과 독립 검토는 source/stock 검증과 구별한다.
+
 canonical 설치기는 원 파일 bytes를 한 번 읽어 BOM을 포함한 SHA256을 대조한 같은 bytes만 실행한다. UTF-8 디코드 뒤 맨 앞 U+FEFF 하나만 제거하여 ScriptBlock으로 만든다. 나머지 문자·줄바꿈과 파일 BOM은 유지한다. 일반 사용자 사전 검사, 동결 무결성 probe, 상승 placement launcher의 integrity/writer/placement helper 다섯 자리가 같은 규칙을 쓴다. 한국어 PowerShell 파일의 BOM을 파일에서 지우거나 해시 대상을 바꾸지 않는다.
 
 preimage 저장 뒤 writer authority/fence 거래 진입 전 실패는 `FAILED_PRETRANSACTION`으로 원 예외와 `transaction_started=false`를 남긴다. 그 run의 snapshot·동결 helper·중단된 audit 임시 파일만 사용자 상태의 `install-audit-pretransaction-failures/<run_id>/`에 bytes와 ACL 그대로 보존 이동한다. 판정한 이번 run의 정확한 항목만 하나씩 이동하고 공유 active root를 전체 rename하지 않는다. 마지막 비재귀 빈 폴더 삭제에서 동시 기록·열린 핸들이 거절되면 active root를 보존한다. 기존 receipt·등록·업무 자료의 residue 거절과 거래 안 rollback은 유지한다. 회복 이동 자체가 실패하면 원 예외와 회복 오류를 함께 보존하고 guard를 우회하지 않는다. 지원 사용자 제거는 이 진단 archive를 삭제하지 않는다.

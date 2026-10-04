@@ -16,18 +16,23 @@ def _canonical_user_setup(root, monkeypatch, active=NEW):
     from tests.test_current_user_onboarding import (_environment, _ready_state,
         _write_bootstrap_inventory_record)
     fixed, selected, control, verified = healthy(root, monkeypatch, active=active)
-    (fixed / "runtime").mkdir()
-    runtime = fixed / "runtime/pythonw.exe"
-    runtime.write_bytes(b"synthetic-stock-runtime")
-    installer = fixed / "INSTALL_CANONICAL_PORTABLE.ps1"
-    installer.write_bytes(b"synthetic-stock-installer")
-    (fixed / "portable-manifest.json").write_text(json.dumps(dict(
-        schema="label-match-portable-tree-v1", entrypoint="runtime/pythonw.exe app/main.py",
-        source_commit=OLD, source_tree="b" * 40, allowed_unsigned_app_pe=[], forbidden_package_roots=[],
-        canonical_installer=installer.name,
-        canonical_installer_sha256=hashlib.sha256(installer.read_bytes()).hexdigest(),
-        runtime_pythonw_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest())))
-    _write_bootstrap_inventory_record(fixed)
+    from label_data_generation import CURRENT_VERSION
+    for packet, commit in ((fixed, OLD), (selected, active)):
+        (packet / "runtime").mkdir()
+        runtime = packet / "runtime/pythonw.exe"
+        runtime.write_bytes(b"synthetic-stock-runtime")
+        (packet / "app/main.py").write_bytes(
+            (Path(__file__).resolve().parents[1] / "portable/main.py").read_bytes())
+        installer = packet / "INSTALL_CANONICAL_PORTABLE.ps1"
+        installer.write_bytes(b"synthetic-stock-installer")
+        (packet / "portable-manifest.json").write_text(json.dumps(dict(
+            schema="label-match-portable-tree-v1", entrypoint="runtime/pythonw.exe app/main.py",
+            version=CURRENT_VERSION, source_commit=commit, source_tree="b" * 40,
+            allowed_unsigned_app_pe=[], forbidden_package_roots=[],
+            canonical_installer=installer.name,
+            canonical_installer_sha256=hashlib.sha256(installer.read_bytes()).hexdigest(),
+            runtime_pythonw_sha256=hashlib.sha256(runtime.read_bytes()).hexdigest())))
+        _write_bootstrap_inventory_record(packet)
     monkeypatch.setattr(onboarding, "CANONICAL_PORTABLE_ROOT", fixed)
     environment = _environment(root.parent / "user")
     paths = onboarding.resolve_current_user_onboarding_paths(selected, environ=environment)

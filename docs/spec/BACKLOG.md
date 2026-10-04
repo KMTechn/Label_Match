@@ -422,6 +422,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 ## LM-StartupUpdate1 · 로그온 자동 코드 적용의 실기 수용
 
+- 설치 통합 최종 후보: ac745f0의 audit-index 전진 쌍과 74c02c2의 짧은 상승 전달을 합치고, G metadata가 없는 lifecycle/installer fixture와 staged verifier의 오래된 task keyword 거절을 교정한다. 실제 판 기록은 stock builder 결과와 source/G 판을 대조한다. [sub-264 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-264/REPORT.md)의 PROVEN/FAILED/UNPROVEN과 시험 비교를 수용 근거로 쓰며 독립 검토·w9next 병합·native 예행은 1차 소유다.
+
 - sub-254 상승 launcher: 긴 script/payload를 private 감사 파일과 SHA256에 결속하고 상승 명령은 16,000자 이하의 bootstrap으로 제한한다. 259자 경로·20자 사용자, 한 바이트 변조/부재/reparse, 읽기 이후 쓰기·교체 거절, 기존 helper 결과와 UAC 취소 대역의 실제 rollback 회귀를 확인했다([동작·증명 경계](operations.md#placement-launcher-transport)). 실제 RunAs·새 packet의 공개 v2.0.38 업그레이드·P1/P2 독립 검토는 중앙 OPEN이며 배치 성공으로 승격하지 않는다.
 
 - sub-153 SYSTEM 작업 XML: XML에서 허용하지 않는 ServiceAccount LogonType만 생략했다. Task1.4·SYSTEM SID·HighestAvailable·사용자 SID trigger·고정 action/조건과 preimage 복원은 유지한다. emitted principal의 정식 schema 유형·필수 업무 필드 회귀는 PS5.1·PS7 RED4→GREEN14이며 실제 랩 task 등록/되읽기·독립 확인·최종 선언/pin은 OPEN이다.

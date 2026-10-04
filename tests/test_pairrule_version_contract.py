@@ -87,16 +87,38 @@ def test_even_empty_userinfo_and_fragment_are_rejected(url):
         updates.policy_from_settings({"feed_url": url})
 
 
-def test_stock_builder_records_and_compares_version():
-    # The prohibited stock build is not run; inspect its literal/copy boundary.
+def test_stock_builder_records_and_compares_version(tmp_path):
+    # Execute the stock builder in an independent LF checkout. The packet's
+    # recorded version must match both production literals, not a variable's
+    # spelling in the builder source.
     import ast
-    source = (Path(__file__).resolve().parents[1] / "tools/build_portable_release_candidate.py").read_text(encoding="utf-8-sig")
+    import subprocess
+    import sys
+    from auto_update import source_version_literal
+    from tools.build_portable_release_candidate import build as build_packet, _data_generation_version
+    from tests.test_update_manifest import valid_manifest, signed_es256_manifest_payload
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "tools/build_portable_release_candidate.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(source)
     build = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "build")
     calls = [node for node in ast.walk(build) if isinstance(node, ast.Call)
              and isinstance(node.func, ast.Name) and node.func.id == "source_version_literal"]
     assert len(calls) == 2
-    assert '"version": version' in source
+    checkout = tmp_path / "source"
+    subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout",
+                    "-c", "core.autocrlf=false", str(root), str(checkout)],
+                   check=True, capture_output=True)
+    commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run(["git", "-C", str(checkout), "checkout", "--quiet", "--detach", commit],
+                   check=True, capture_output=True)
+    public, _ = signed_es256_manifest_payload(valid_manifest())
+    recorded = build_packet(checkout, Path(sys.base_prefix), tmp_path / "packet",
+        update_manifest_public_key_config=json.dumps(public),
+        auto_update_settings={"feed_url": "", "channel": "stable",
+                              "profile_auth": False, "apply_during_work": False})
+    assert recorded["version"] == "v2.0.95"
+    assert recorded["version"] == source_version_literal((checkout / "Label_Match.py").read_bytes())
+    assert recorded["version"] == _data_generation_version(checkout)
 
 
 @pytest.mark.parametrize("damage", [None, "signature", "pointer", "path", "pin", "failed"])

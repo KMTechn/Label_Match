@@ -115,6 +115,26 @@ def test_verifier_requires_onedir_runtime(tmp_path):
         verifier.verify_staged_package(package)
 
 
+@pytest.mark.parametrize("damage", ("task-name", "unguarded", "helper"))
+def test_verifier_refuses_registration_outside_exact_startup_task_contract(tmp_path, damage):
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    source = installer.read_text(encoding="utf-8")
+    if damage == "task-name":
+        source = source.replace("Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
+                                "Register-ScheduledTask -TaskName bad -Xml $spec.xml -Force", 1)
+    elif damage == "unguarded":
+        source = source.replace("Invoke-LabelStartupUpdateTaskMutation {", "& {", 1)
+    else:
+        helper = package / "tools/bootstrap_integrity.ps1"
+        helper.write_text(helper.read_text(encoding="utf-8") + "\nRegister-ScheduledTask -TaskName bad\n",
+                          encoding="utf-8")
+    installer.write_text(source, encoding="utf-8")
+    with pytest.raises(verifier.StagedInstallerVerificationError,
+                       match="retired enrollment/task authority"):
+        verifier.verify_staged_package(package)
+
+
 @pytest.mark.parametrize("relative", sorted(shared_bootstrap_files()))
 def test_verifier_requires_complete_shared_bootstrap_closure(tmp_path, relative):
     package = _package(tmp_path)

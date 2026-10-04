@@ -1280,7 +1280,7 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
     # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
     $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
     $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
-        -ProbeBytes $probeBytes -ExpectedSha256 '3406aa0a2799c31b13aeb0802d720873a0b3c9a9de64c5c9e3f31f8be5db2d20' `
+        -ProbeBytes $probeBytes -ExpectedSha256 '09e0d9ee69045666e146ae4f44e58b2b49ca41e0d576c8436f49eb349291f9b5' `
         -ProbeArguments @($Source, $Installed, $generationReverse) -FailureMessage 'Installed writer transition is unsupported: '
     return $stdout | ConvertFrom-Json
 }
