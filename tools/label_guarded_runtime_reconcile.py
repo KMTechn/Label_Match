@@ -92,6 +92,14 @@ def _preflight_output(path: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
+    roots = (Path(args.client_db).absolute().parent, Path(args.identity).absolute().parent)
+    try:
+        check_user_data_open(ROOT, roots)
+        record_user_data_open(ROOT, roots)
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return RECONCILE_EXIT_CODE
     evidence_path = Path(args.evidence_output).expanduser().resolve(strict=False)
     receipt_path = Path(args.receipt_output).expanduser().resolve(strict=False)
     started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

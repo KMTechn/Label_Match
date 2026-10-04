@@ -3610,7 +3610,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-from label_data_generation import CURRENT_VERSION, record_user_data_open
+from label_data_generation import CURRENT_VERSION, DataGenerationError, check_user_data_open, record_user_data_open
 APP_VERSION = "v2.0.95"
 if APP_VERSION != CURRENT_VERSION:
     raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
@@ -22429,8 +22429,9 @@ def main(argv=None):
     if hosted_result is not None:
         return hosted_result
     verify_factory_contract_startup()
-    _label_match_startup_trace("main_enter")
     try:
+        check_user_data_open(_label_match_runtime_app_root())
+        _label_match_startup_trace("main_enter")
         if _first_run_onboarding_enabled():
             app_root = _label_match_runtime_app_root()
             try:
@@ -22468,6 +22469,9 @@ def main(argv=None):
             _run_label_match_application,
             data_scope=data_scope,
         )
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return ONBOARDING_EXIT_CODE
     except ItemCatalogSyncError as exc:
         catalog_context = get_catalog_attempt_context_from_error(exc)
         try:

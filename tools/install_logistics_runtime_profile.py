@@ -926,6 +926,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.profile_path is None:
         args.profile_path = str(default_profile_path())
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
+    try:
+        check_user_data_open(REPO_ROOT, (Path(args.profile_path).absolute().parent,))
+        record_user_data_open(REPO_ROOT, ())
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     token = str(os.environ.get(args.token_env) or "").strip()
     if not token:
         print("BLOCKED: bearer token environment value is missing", file=sys.stderr)

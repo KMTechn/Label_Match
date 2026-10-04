@@ -264,6 +264,12 @@ def _probe(mode, root):
     lm.tk.Tk.destroy = destroy_root
     lm.dispatch_product_mode = lambda _args: None
     lm.verify_factory_contract_startup = lambda: None
+    import label_data_generation as generation
+    generation._installed_identity = lambda _root: {
+        "version": generation.CURRENT_VERSION, "build_id": "a" * 40,
+        "data_compatible_min_version": generation.CURRENT_VERSION,
+        "compatibility_verified": False,
+    }
     lm._first_run_onboarding_enabled = lambda: False
     lm._default_label_match_settings_path = lambda: root / "settings.json"
     lm.prepare_startup_item_catalog = lambda: None

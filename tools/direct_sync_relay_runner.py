@@ -518,10 +518,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.baseline_existing_source_files and not args.scan_source_dir:
         parser.error("--baseline-existing-source-files requires --scan-source-dir")
 
-    from label_data_generation import record_user_data_open
+    from label_data_generation import check_user_data_open, record_user_data_open
     from label_match_product_host import _default_product_root
     from current_user_onboarding import resolve_current_user_onboarding_paths
     product_root = _default_product_root()
+    check_user_data_open(product_root, (Path(args.db_path).absolute().parent,
+        Path(args.producer_manifest_path).absolute().parent, Path(args.credential_path).absolute().parent,
+        Path(args.scan_source_dir).absolute() if args.scan_source_dir else
+        Path(args.enqueue_source_file).absolute().parent if args.enqueue_source_file else
+        Path(args.db_path).absolute().parent))
     paths = resolve_current_user_onboarding_paths(product_root)
     source_roots = ([Path(args.scan_source_dir).expanduser().absolute()] if args.scan_source_dir else
                     [Path(args.enqueue_source_file).expanduser().absolute().parent] if args.enqueue_source_file else [])

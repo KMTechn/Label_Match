@@ -22,6 +22,7 @@ from user_relay_stop_marker import (
     read_stop_marker,
 )
 from writer_session_fence import WriterFenceError, WriterFencedError, writer_admission, writer_sink
+from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
 
 USER_RELAY_MODE = "--label-match-user-relay"
 DIRECT_SYNC_RELAY_MODE = "--label-match-direct-sync-relay"
@@ -459,7 +460,7 @@ def run_persistent_relay_loop(
                             "status": "UNKNOWN",
                             "reason": "relay cycle returned no status value",
                         }
-                except WriterFenceError:
+                except (WriterFenceError, DataGenerationError):
                     raise
                 except Exception as exc:
                     cycle = {
@@ -818,7 +819,10 @@ def main(argv: list[str] | None = None) -> int:
         unprotect_current_user_secret,
     )
 
+    check_user_data_open(app_root, (Path(args.direct_sync_root),) if args.direct_sync_root else ())
     paths = resolve_current_user_onboarding_paths(app_root)
+    record_user_data_open(app_root, (paths.data_root, paths.ledger_path.parent,
+                                    paths.direct_sync_root, paths.queue_dir))
     apply_current_user_runtime_environment(paths)
     profile = load_logistics_runtime_profile(
         required=True,

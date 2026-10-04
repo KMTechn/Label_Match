@@ -111,6 +111,16 @@ def main(argv: list[str] | None = None) -> int:
     restore_parser.add_argument("--report-path", default="")
 
     args = parser.parse_args(argv)
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
+    roots = tuple(Path(value).absolute().parent for value in (
+        getattr(args, "db_path", ""), getattr(args, "operator_pause_path", ""),
+        getattr(args, "credential_path", "")) if value)
+    try:
+        check_user_data_open(ROOT, roots)
+        record_user_data_open(ROOT, roots)
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     try:
         if args.command == "status":
             return _emit(operator_status(db_path=args.db_path, pause_path=args.operator_pause_path), args.report_path)

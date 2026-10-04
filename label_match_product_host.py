@@ -238,6 +238,19 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
             DIRECT_SYNC_RELAY_MODE,
             USER_RELAY_MODE,
             }:
+            from label_data_generation import DataGenerationError, check_user_data_open
+            try:
+                selected_root = _option_value(arguments, "--app-root")
+                root = Path(selected_root) if selected_root else _default_product_root()
+                roots = tuple(Path(value).absolute().parent for option in (
+                    "--db-path", "--credential-path", "--producer-manifest-path")
+                    if (value := _option_value(arguments, option)))
+                roots += tuple(Path(value).absolute() for option in ("--scan-source-dir", "--direct-sync-root")
+                    if (value := _option_value(arguments, option)))
+                check_user_data_open(root, roots)
+            except DataGenerationError as exc:
+                print(str(exc), file=sys.stderr)
+                return HOSTED_RELAY_FAILURE_EXIT_CODE
             try:
                 integrity = _verify_frozen_host_integrity()
                 if integrity.get("status") == "ABSENT":
@@ -256,6 +269,10 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
 
                 return int(direct_sync_relay_runner.main(arguments))
             except Exception as exc:
+                from label_data_generation import DataGenerationError
+                if isinstance(exc, DataGenerationError):
+                    print(str(exc), file=sys.stderr)
+                    return HOSTED_RELAY_FAILURE_EXIT_CODE
                 _record_hosted_relay_failure(arguments, exc)
                 return HOSTED_RELAY_FAILURE_EXIT_CODE
         if mode == USER_RELAY_MODE:
@@ -264,6 +281,10 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
 
                 return int(user_relay_main(arguments))
             except Exception as exc:
+                from label_data_generation import DataGenerationError
+                if isinstance(exc, DataGenerationError):
+                    print(str(exc), file=sys.stderr)
+                    return HOSTED_RELAY_FAILURE_EXIT_CODE
                 _record_hosted_relay_failure([USER_RELAY_MODE, *arguments], exc)
                 return HOSTED_RELAY_FAILURE_EXIT_CODE
         if mode == ONBOARD_CURRENT_USER_MODE:

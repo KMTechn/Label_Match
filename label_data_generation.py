@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import Mapping
 
 from kmtech_shared.data_generation import probe_downgrade, record_generation, version_key
@@ -29,10 +31,11 @@ def release_identity(app_root: Path) -> dict[str, object]:
     manifest_path = root / "portable-manifest.json"
     if manifest_path.exists() or getattr(sys, "frozen", False):
         from current_user_onboarding import (
-            resolve_current_user_onboarding_paths, verify_bootstrap_integrity,
+            verify_bootstrap_integrity,
         )
         integrity = verify_bootstrap_integrity(
-            resolve_current_user_onboarding_paths(root), required=True,
+            SimpleNamespace(app_root=root, bootstrap_integrity_path=root / "bootstrap-integrity.json"),
+            required=True,
         )
         if integrity.get("status") != "PASS":
             raise DataGenerationError(UNKNOWN_MESSAGE)
@@ -105,8 +108,11 @@ def verified_private_compatibility(
 
 
 def _installed_identity(app_root: Path) -> dict[str, object]:
-    identity = release_identity(app_root)
-    root = Path(app_root)
+    from label_match_product_host import is_portable_product_root
+    root = Path(app_root).resolve()
+    if root.name.casefold() == "app" and is_portable_product_root(root.parent):
+        root = root.parent
+    identity = release_identity(root)
     metadata_path = root / "portable-manifest.json"
     if not metadata_path.is_file() and getattr(sys, "frozen", False):
         metadata_path = root / "build-identity.json"
@@ -137,12 +143,40 @@ def marker_paths(data_roots, subject_sid: str, *, environ: Mapping[str, str] | N
             *(Path(root).absolute() / "data-generation.json" for root in dict.fromkeys(data_roots))]
 
 
+def check_user_data_open(app_root: Path, data_roots=(), *, environ=None):
+    """Read-only admission before resolving settings or changing lifecycle state."""
+    from protected_admin import current_process_sid
+    values = os.environ if environ is None else environ
+    roots = list(data_roots)
+    local = values.get("LOCALAPPDATA")
+    if local:
+        roots.extend((Path(local) / "KMTech" / "Label_Match" / "data",
+                      Path(local) / "KMTech" / "DirectSync" / "label_match",
+                      Path(local) / "KMTech" / "DirectSync" / "label_match" / "queue"))
+    for name in ("LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_DIRECT_SYNC_ROOT",
+                 "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"):
+        if values.get(name):
+            roots.extend((Path(values[name]), Path(values[name]) / "queue"))
+    try:
+        sid = current_process_sid()
+        identity = _installed_identity(app_root)
+        decision = probe_downgrade(marker_paths(roots, sid), str(identity["version"]),
+            app_id=APP_ID, subject_sid=sid, target_build_id=str(identity["build_id"]))
+        if not decision["allowed"]:
+            raise DataGenerationError(str(decision["message"]))
+        return identity
+    except DataGenerationError:
+        raise
+    except (OSError, ValueError, TypeError) as exc:
+        raise DataGenerationError(UNKNOWN_MESSAGE) from exc
+
+
 @writer_sink("data_generation_record")
 def record_user_data_open(app_root: Path, data_roots, *, environ=None, opener=None):
     """Called immediately before a business constructor, including direct entry."""
     from protected_admin import current_process_sid
-    sid = current_process_sid()
     try:
+        sid = current_process_sid()
         identity = _installed_identity(app_root)
         # Admission and its SID record must use the same observed process root.
         # The optional onboarding map selects data paths, not another fence.

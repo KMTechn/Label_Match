@@ -120,8 +120,12 @@ def _paths(args: argparse.Namespace) -> dict[str, Path]:
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
     try:
         inputs = _paths(args)
+        roots = (inputs["client_db_path"].absolute().parent, inputs["identity_path"].absolute().parent)
+        check_user_data_open(REPO_ROOT, roots)
+        record_user_data_open(REPO_ROOT, roots)
         extra_summary = {}
         if args.operation == "capture":
             payload = capture_conflict_preimage(**inputs)
@@ -288,6 +292,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         }
         print(json.dumps(summary, ensure_ascii=True, sort_keys=True))
         return 0
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except ExactCloneResolutionError as exc:
         print(
             json.dumps(

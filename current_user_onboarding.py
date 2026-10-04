@@ -44,7 +44,7 @@ from user_relay import (
     user_relay_stop_path,
 )
 from writer_session_fence import writer_sink
-from label_data_generation import record_user_data_open
+from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
 
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
@@ -928,7 +928,18 @@ def onboard_current_user(
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = start_user_relay_process,
 ) -> dict[str, Any]:
+    try:
+        check_user_data_open(Path(app_root), environ=environ)
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=Path(app_root),
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
+    try:
+        record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+                                               paths.direct_sync_root, paths.queue_dir))
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
     for directory in (
         paths.data_root,
@@ -1135,8 +1146,7 @@ def onboard_current_user(
                 "configured TLS CA bundle was not persisted in the logistics profile"
             )
 
-        record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent),
-                              environ=environ, opener=lambda: ledger_factory(paths.ledger_path))
+        ledger_factory(paths.ledger_path)
         if not paths.ledger_path.is_file():
             raise ValueError("current-user business ledger readback failed")
         report["settings"] = dict(settings_factory(paths))
@@ -1272,6 +1282,11 @@ def remove_current_user_setup(
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = request_user_relay_stop,
 ) -> dict[str, Any]:
+    try:
+        check_user_data_open(Path(app_root), environ=environ)
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=Path(app_root),
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
     paths.status_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
@@ -1371,7 +1386,7 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     except CurrentUserOnboardingError as exc:
         print(f"onboarding_status={exc.status}")
         print(f"onboarding_report={exc.report_path}")
-        if exc.status == "RECOVERY_REQUIRED":
+        if exc.status == "RECOVERY_REQUIRED" or exc.cause_code == "DATA_GENERATION_REFUSED":
             print(str(exc))
         return ONBOARDING_EXIT_CODE
     print(f"onboarding_status={report['status']}")
@@ -1394,6 +1409,8 @@ def removal_main(argv: list[str] | None = None) -> int:
     except CurrentUserOnboardingError as exc:
         print(f"current_user_removal_status={exc.status}")
         print(f"current_user_removal_report={exc.report_path}")
+        if exc.cause_code == "DATA_GENERATION_REFUSED":
+            print(str(exc))
         return ONBOARDING_EXIT_CODE
     paths = resolve_current_user_onboarding_paths(args.app_root)
     print(f"current_user_removal_status={report['status']}")

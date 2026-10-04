@@ -1828,6 +1828,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-interactive-task-for-local-test", action="store_true")
     parser.add_argument("--allow-noncanonical-layout-for-test", action="store_true")
     args = parser.parse_args(argv)
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
+    roots = (Path(args.program_data_root).absolute(), Path(args.scan_source_dir).absolute())
+    try:
+        check_user_data_open(Path(args.app_root), roots)
+        record_user_data_open(Path(args.app_root), roots)
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     removal = bool(args.uninstall or args.rollback)
 
     if args.uninstall and args.rollback:
