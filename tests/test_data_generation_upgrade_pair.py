@@ -11,6 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 BASE_COMMIT = 'e89c18879f5bf59ddcd550152bf26ffedc4d687a'
 HISTORICAL_G_COMMIT = '362f30f7c6c7a4d952bb4d1ed985adc6f0a8cea8'
+COMPANION_G_COMMIT = 'ac745f0'
 
 
 @pytest.fixture(scope='module')
@@ -32,6 +33,17 @@ def historical_g_source(tmp_path_factory):
                    check=True, capture_output=True)
     subprocess.run(['git', '-C', str(source), 'checkout', '--quiet', '--detach',
                     HISTORICAL_G_COMMIT], check=True, capture_output=True)
+    return source
+
+
+@pytest.fixture(scope='module')
+def companion_g_source(tmp_path_factory):
+    source = tmp_path_factory.mktemp('companion-g-source') / 'source'
+    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout',
+                    '-c', 'core.autocrlf=false', str(ROOT), str(source)],
+                   check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(source), 'checkout', '--quiet', '--detach',
+                    COMPANION_G_COMMIT], check=True, capture_output=True)
     return source
 
 
@@ -93,9 +105,15 @@ def _pair_layouts(tmp_path, baseline_source, candidate_source):
 
 
 @pytest.fixture
-def pair(tmp_path, baseline_source, historical_g_source):
+def historical_pair(tmp_path, baseline_source, historical_g_source):
     """Preserve the accepted pure-G pair and its signed reverse contract."""
     return _pair_layouts(tmp_path, baseline_source, historical_g_source)
+
+
+@pytest.fixture
+def pair(tmp_path, baseline_source, companion_g_source):
+    """Use the reviewed legacyguard package and its own companion declarations."""
+    return _pair_layouts(tmp_path, baseline_source, companion_g_source)
 
 
 @pytest.fixture
@@ -103,12 +121,13 @@ def integration_pair(tmp_path, baseline_source):
     return _pair_layouts(tmp_path, baseline_source, ROOT)
 
 
-def probe(source, installed, *, signed=False, integrated=False):
+def probe(source, installed, *, signed=False, integrated=False, historical=False):
     if integrated:
         text = (ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1').read_text(encoding='utf-8-sig')
     else:
         text = subprocess.check_output(['git', '-C', str(ROOT), 'show',
-            HISTORICAL_G_COMMIT + ':INSTALL_CANONICAL_PORTABLE.ps1']).decode('utf-8-sig')
+            (HISTORICAL_G_COMMIT if historical else COMPANION_G_COMMIT)
+            + ':INSTALL_CANONICAL_PORTABLE.ps1']).decode('utf-8-sig')
     start = text.index("$probe = @'") + len("$probe = @'")
     code = text[start:text.index("\n'@", start)].lstrip()
     return subprocess.run([sys.executable, '-B', '-', str(source), str(installed),
@@ -161,8 +180,8 @@ def test_integrated_g_upgrade_refuses_undeclared_changes(integration_pair, chang
 
 
 @pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice'])
-def test_g_pair_rejects_changes_outside_its_exact_declaration(pair, mutation):
-    old, new = pair
+def test_g_pair_rejects_changes_outside_its_exact_declaration(historical_pair, mutation):
+    old, new = historical_pair
     if mutation == 'runtime':
         (new / 'runtime' / 'fixture').write_bytes(b'changed runtime')
     elif mutation == 'extra_app':
@@ -177,27 +196,38 @@ def test_g_pair_rejects_changes_outside_its_exact_declaration(pair, mutation):
         package = old if mutation == 'old_notice' else new
         with (package / 'app' / 'label_match_single_instance.py').open('ab') as handle:
             handle.write(b'\nUNREVIEWED = True\n')
-    assert probe(new, old).returncode != 0
-    assert probe(old, new, signed=True).returncode != 0
+    assert probe(new, old, historical=True).returncode != 0
+    assert probe(old, new, signed=True, historical=True).returncode != 0
 
 
 @pytest.mark.parametrize('revision,compatibility', [
     ('4b7630f', 'PINNED_MAINLOOP_EXIT_CLEANUP'),
     ('640d770', 'PINNED_MAINLOOP_EXIT_NOTICE'),
 ])
-def test_g_composes_only_with_the_exact_shutdown_repair(pair, revision, compatibility):
-    old, new = pair
+def test_g_composes_only_with_the_exact_shutdown_repair(historical_pair, revision, compatibility):
+    old, new = historical_pair
     for relative in ('app/Label_Match.py', 'app/label_match_single_instance.py',
                      'app/writer_session_fence.py', 'tools/label_writer_fence.ps1'):
         (old / relative).write_bytes(subprocess.check_output([
             'git', '-C', str(ROOT), 'show', revision + ':' + relative.removeprefix('app/')]))
-    forward = probe(new, old)
+    forward = probe(new, old, historical=True)
     assert forward.returncode == 0, forward.stderr[-2000:]
     assert json.loads(forward.stdout)['compatibility'] == compatibility
-    assert probe(old, new, signed=True).returncode != 0
+    assert probe(old, new, signed=True, historical=True).returncode != 0
     with (old / 'app/label_match_single_instance.py').open('ab') as handle:
         handle.write(b'\nUNREVIEWED = True\n')
-    assert probe(new, old).returncode != 0
+    assert probe(new, old, historical=True).returncode != 0
+
+
+def test_original_pure_g_forward_and_signed_reverse_remain_proven(historical_pair):
+    old, new = historical_pair
+    forward = probe(new, old, historical=True)
+    assert forward.returncode == 0, forward.stderr[-2000:]
+    assert json.loads(forward.stdout)['compatibility'] == 'PINNED_DATA_GENERATION_G'
+    assert probe(old, new, historical=True).returncode != 0
+    reverse = probe(old, new, signed=True, historical=True)
+    assert reverse.returncode == 0, reverse.stderr[-2000:]
+    assert json.loads(reverse.stdout)['compatibility'] == 'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE'
 
 
 @pytest.mark.parametrize('relative,mutation,reason', [

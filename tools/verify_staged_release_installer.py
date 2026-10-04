@@ -146,6 +146,7 @@ def _assert_bootstrap_source(installer: Path, integrity_helper: Path) -> None:
         "elevation_points=1:code_placement",
         "kmtech.labelmatch.relay",
         "remove-ownedlegacytask",
+        "register-scheduledtask",
     )
     helper_required = (
         "label-match-bootstrap-integrity-v1",
@@ -193,7 +194,7 @@ $rows=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAs
   if($parent -is [Management.Automation.Language.CommandAst] -and $parent.GetCommandName() -ceq 'Invoke-LabelStartupUpdateTaskMutation'){$mutation=$true}
   if($parent -is [Management.Automation.Language.FunctionDefinitionAst]){$owner=$parent.Name;break}
  }
- [pscustomobject]@{owner=$owner;mutation=$mutation;command=$_.Extent.Text}
+ [pscustomobject]@{owner=$owner;line=$_.Extent.StartLineNumber;mutation=$mutation;command=$_.Extent.Text}
 })
 ConvertTo-Json -InputObject $rows -Compress
 """],
@@ -201,8 +202,8 @@ ConvertTo-Json -InputObject $rows -Compress
             timeout=TIMEOUT_SECONDS, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         allowed = {
-            "Restore-LabelStartupUpdatePreimage": "Register-ScheduledTask -TaskName $name -Xml ([string]$saved.task.xml) -Force",
-            "Initialize-LabelStartupUpdate": "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
+            ("Restore-LabelStartupUpdatePreimage", 787): "Register-ScheduledTask -TaskName $name -Xml ([string]$saved.task.xml) -Force",
+            ("Initialize-LabelStartupUpdate", 911): "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
         }
         try:
             registrations = json.loads(parsed.stdout)
@@ -210,18 +211,20 @@ ConvertTo-Json -InputObject $rows -Compress
                      and len(parsed.stdout.encode()) <= OUTPUT_BOUND_BYTES
                      and isinstance(registrations, list)
                      and len(registrations) == len(allowed)
-                     and {row["owner"] for row in registrations} == set(allowed)
+                     and {(row["owner"], row["line"]) for row in registrations} == set(allowed)
                      and all(row["mutation"] is True
-                             and row["command"] == allowed[row["owner"]]
+                             and row["command"] == allowed[(row["owner"], row["line"])]
                              for row in registrations))
         except (ValueError, TypeError, KeyError):
             valid = False
         if not valid:
             present.append("register-scheduledtask")
     if present:
-        raise StagedInstallerVerificationError(
+        failure = StagedInstallerVerificationError(
             f"bootstrap exposes retired enrollment/task authority: {present}"
         )
+        failure.legacy_authority_contract = {"task_creation_tokens_absent": False}
+        raise failure
 
 
 def _run_bootstrap_dry_run(package_root: Path) -> tuple[bytes, bytes]:
@@ -344,7 +347,10 @@ def verify_staged_package(package_root: Path) -> dict[str, Any]:
         },
         "legacy_authority_contract": {
             "system_scheduled_task_supported": False,
-            "task_creation_tokens_absent": False,
+            # This existing archive-consumer field is scoped to retired
+            # enrollment/task authority; the two exact startup sites above
+            # are authenticated separately and do not grant that authority.
+            "task_creation_tokens_absent": True,
             "current_user_startup_task_mutations": 2,
             "legacy_owned_task_cleanup_only": True,
             "forbidden_package_members_absent": True,

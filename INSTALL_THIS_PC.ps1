@@ -315,16 +315,19 @@ function Assert-RequiredRelease([string]$Root, [bool]$AllowUnsignedPortableForTe
     ) {
         throw "Portable release manifest hash readback failed."
     }
-    $filesBeforeManifest = @(
+    # The root integrity record seals this manifest; counting it here would
+    # create a manifest/integrity cycle. Its caller pin is checked separately.
+    $integrityPath = Join-Path $Root 'bootstrap-integrity.json'
+    $metricsBeforeManifest = (
         Get-ChildItem -LiteralPath $Root -File -Force -Recurse |
-            Where-Object { -not (Test-SamePath $_.FullName $manifestPath) }
-    )
-    $bytesBeforeManifest = [int64](
-        ($filesBeforeManifest | Measure-Object -Property Length -Sum).Sum
+            Where-Object {
+                -not (Test-SamePath $_.FullName $manifestPath) -and
+                -not (Test-SamePath $_.FullName $integrityPath)
+            } | Measure-Object -Property Length -Sum
     )
     if (
-        [int64]$manifest.file_count_before_manifest -ne $filesBeforeManifest.Count -or
-        [int64]$manifest.byte_count_before_manifest -ne $bytesBeforeManifest
+        [int64]$manifest.file_count_before_manifest -ne $metricsBeforeManifest.Count -or
+        [int64]$manifest.byte_count_before_manifest -ne [int64]$metricsBeforeManifest.Sum
     ) {
         throw "Portable release tree metrics differ from the manifest."
     }

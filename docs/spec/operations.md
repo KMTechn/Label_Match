@@ -1130,6 +1130,12 @@ canonical placement와 지원 제거는 Enter-LabelCanonicalPlacement 한 함수
 
 staged qualification 도구는 retired SYSTEM enrollment/task 생성을 계속 거절한다. 실제 PowerShell AST에서 Initialize-LabelStartupUpdate 및 Restore-LabelStartupUpdatePreimage의 정확한 두 등록 명령이 Invoke-LabelStartupUpdateTaskMutation 안에 있는 경우만 기존 current-user startup task 계약으로 인정한다. Portable 현장 packet에는 이 qualification 도구가 들어가지 않는다. 설치/G/lifecycle 시험은 봉인한 판·실제 helper pin을 fixture에 주고 원 성공·거절 단언까지 실행하며 Run/task/relay는 격리 대역으로 확인한다. PS7 prefix 시험도 실제 PS5 dispatcher가 생성한 bytes를 PS7에서 실행한다. 실제 상승·native 설치·현장 수용과 독립 검토는 source/stock 검증과 구별한다.
 
+기존 legacy_authority_contract.task_creation_tokens_absent=True는 retired enrollment/task authority가 없다는 뜻이며 모든 startup 등록 token의 부재를 뜻하지 않는다. 지원하는 정확한 두 AST 자리 수는 current_user_startup_task_mutations=2로 별도 기록한다. 다른 생성 호출이나 두 자리의 인수/guard 변경은 task_creation_tokens_absent=False인 거절 근거로 남고 qualification을 통과하지 못한다.
+
+실제 staged producer의 elevation_authority와 integrity helper 바인딩을 archive consumer가 동일한 exact 키 집합으로 검증한다. authority는 고정 literal이고 helper 경로는 tools/bootstrap_integrity.ps1이며 SHA256은 패키지 실제 바이트에서 재계산한다. 누락·다른 값·추가 task 생성·변경 인수를 거절하고 inventory·서명 경계는 유지한다.
+
+Portable tree 지표는 루트 portable-manifest.json과 루트 bootstrap-integrity.json을 제외한 payload를 센다. manifest를 봉인하는 integrity record를 지표에 다시 포함하는 순환은 만들지 않는다. 같은 이름의 하위 파일은 제외하지 않으며 루트 record는 기존 caller pin과 bootstrap integrity readback으로 별도 검증한다. 예행 3회차의 누락 검사는 실제 stock에 설치기 Assert-RequiredRelease를 실행하는 회귀로 보완한다. 공용 C:\KMTech/Apps의 결정 B hardening은 실패 rollback 밖에 유지한다. 앱 소유 부모가 owner evidence 때문에 남아도 기존 보호 admission을 만족하면 같은 판 재설치가 수용된다. LegacyCA 등 모든 하위의 guest ACL 전후·옛 앱 재시작은 예행 4회차의 별도 증거다.
+
 canonical 설치기는 원 파일 bytes를 한 번 읽어 BOM을 포함한 SHA256을 대조한 같은 bytes만 실행한다. UTF-8 디코드 뒤 맨 앞 U+FEFF 하나만 제거하여 ScriptBlock으로 만든다. 나머지 문자·줄바꿈과 파일 BOM은 유지한다. 일반 사용자 사전 검사, 동결 무결성 probe, 상승 placement launcher의 integrity/writer/placement helper 다섯 자리가 같은 규칙을 쓴다. 한국어 PowerShell 파일의 BOM을 파일에서 지우거나 해시 대상을 바꾸지 않는다.
 
 preimage 저장 뒤 writer authority/fence 거래 진입 전 실패는 `FAILED_PRETRANSACTION`으로 원 예외와 `transaction_started=false`를 남긴다. 그 run의 snapshot·동결 helper·중단된 audit 임시 파일만 사용자 상태의 `install-audit-pretransaction-failures/<run_id>/`에 bytes와 ACL 그대로 보존 이동한다. 판정한 이번 run의 정확한 항목만 하나씩 이동하고 공유 active root를 전체 rename하지 않는다. 마지막 비재귀 빈 폴더 삭제에서 동시 기록·열린 핸들이 거절되면 active root를 보존한다. 기존 receipt·등록·업무 자료의 residue 거절과 거래 안 rollback은 유지한다. 회복 이동 자체가 실패하면 원 예외와 회복 오류를 함께 보존하고 guard를 우회하지 않는다. 지원 사용자 제거는 이 진단 archive를 삭제하지 않는다.

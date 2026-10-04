@@ -91,11 +91,12 @@ $before = Snapshot
     # CPython's supported stdlib ZIP keeps the real runtime self-contained
     # while the receipt gate's full inventory stays within its existing budget.
     with zipfile.ZipFile(runtime_root / "python312.zip", "w", zipfile.ZIP_STORED) as archive:
-        for path in sorted((python_home / "Lib").rglob("*")):
-            relative = path.relative_to(python_home / "Lib")
-            if path.is_file() and not any(part in {"site-packages", "__pycache__", "test", "ensurepip", "idlelib", "turtledemo"}
-                                          for part in relative.parts):
-                archive.write(path, relative.as_posix())
+        for directory, directories, files in os.walk(python_home / "Lib"):
+            directories[:] = sorted(name for name in directories
+                                    if name not in {"site-packages", "__pycache__", "test", "ensurepip", "idlelib", "turtledemo"})
+            for name in sorted(files):
+                path = Path(directory) / name
+                archive.write(path, path.relative_to(python_home / "Lib").as_posix())
     runtime_check = subprocess.run([str(runtime_root / "python.exe"), "-I", "-B", "-c",
                                    "import encodings, sys; assert sys.version_info[:3] == (3, 12, 10)"],
                                   check=False, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)

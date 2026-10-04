@@ -13,6 +13,9 @@ CANDIDATE = "3" * 40
 
 
 def _canonical_user_setup(root, monkeypatch, active=NEW):
+    # Each scenario owns its G marker. The session writer root otherwise
+    # retains another scenario's different build at the same unsigned version.
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_CONTROL_ROOT", str(root.parent / "writer-control"))
     from tests.test_current_user_onboarding import (_environment, _ready_state,
         _write_bootstrap_inventory_record)
     fixed, selected, control, verified = healthy(root, monkeypatch, active=active)
