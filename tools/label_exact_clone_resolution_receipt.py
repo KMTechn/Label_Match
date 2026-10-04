@@ -124,7 +124,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         normalize_data_arguments(args, ("preimage", "predecessor_receipt"))
         inputs = {name: resolve_data_path(value) if value is not None else None for name, value in _paths(args).items()}
-        roots = tuple(inputs[name].parent for name in ("client_db_path", "server_db_path", "identity_path", "credential_path")
+        roots = tuple(inputs[name].parent for name in ("client_db_path", "server_db_path", "identity_path", "credential_path", "stop_marker_path")
                       if inputs[name] is not None)
         evidence_roots = tuple(Path(value).parent for value in (
             getattr(args, "preimage", None), getattr(args, "predecessor_receipt", None)) if value is not None)

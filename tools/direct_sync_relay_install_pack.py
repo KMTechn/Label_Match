@@ -1831,11 +1831,14 @@ def main(argv: list[str] | None = None) -> int:
     from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, normalize_data_arguments
     try:
         normalize_data_arguments(args, ("app_root", "app_settings_path", "program_data_root", "scan_source_dir",
-            "producer_manifest_path", "credential_path", "logistics_profile_path", "tls_ca_bundle_path"))
+            "producer_manifest_path", "credential_path", "logistics_profile_path", "tls_ca_bundle_path",
+            "enrollment_token_file", "task_run_password_file"))
         roots = (Path(args.program_data_root), Path(args.scan_source_dir))
         roots += tuple(Path(value).parent for value in (args.producer_manifest_path, args.credential_path,
-            args.logistics_profile_path) if value)
-        check_user_data_open(Path(args.app_root), roots)
+            args.logistics_profile_path, args.app_settings_path) if value)
+        input_roots = tuple(Path(value).parent for value in (
+            args.tls_ca_bundle_path, args.enrollment_token_file, args.task_run_password_file) if value)
+        check_user_data_open(Path(args.app_root), (*roots, *input_roots))
         record_user_data_open(Path(args.app_root), roots)
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)

@@ -204,6 +204,12 @@ if external_mode:
         "exact-receipt": ("--preimage", "preimage.json"),
         "reconcile": ("--preimage", "preimage.json"),
     }.get(kind, ("", ""))
+    if state == "external-tls":
+        field, name = "--tls-ca-bundle-path", "ca.pem"
+    elif state == "external-enrollment":
+        field, name = "--enrollment-token-file", "enrollment.txt"
+    elif state == "external-task-password":
+        field, name = "--task-run-password-file", "task-password.txt"
     selected = requested(external / name)
     if field:
         if field in argv[kind]: argv[kind][argv[kind].index(field) + 1] = selected

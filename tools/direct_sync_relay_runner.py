@@ -528,14 +528,15 @@ def main(argv: list[str] | None = None) -> int:
     from current_user_onboarding import resolve_current_user_onboarding_paths
     product_root = _default_product_root()
     normalize_data_arguments(args, ("db_path", "producer_manifest_path", "credential_path", "scan_source_dir",
-        "enqueue_source_file", "spool_dir", "log_path", "runtime_status_path", "upload_status_dir", "operator_pause_path"))
+        "enqueue_source_file", "spool_dir", "log_path", "runtime_status_path", "upload_status_dir", "operator_pause_path", "tls_ca_bundle_path"))
     roots = (Path(args.db_path).parent, Path(args.producer_manifest_path).parent, Path(args.credential_path).parent,
         Path(args.scan_source_dir) if args.scan_source_dir else
         Path(args.enqueue_source_file).parent if args.enqueue_source_file else Path(args.db_path).parent)
     roots += (Path(args.spool_dir),)
     if args.operator_pause_path:
         roots += (Path(args.operator_pause_path).parent,)
-    check_user_data_open(product_root, roots)
+    input_roots = tuple(Path(value).parent for value in (args.tls_ca_bundle_path,) if value)
+    check_user_data_open(product_root, (*roots, *input_roots))
     paths = resolve_current_user_onboarding_paths(product_root)
     source_roots = ([Path(args.scan_source_dir).expanduser().absolute()] if args.scan_source_dir else
                     [Path(args.enqueue_source_file).expanduser().absolute().parent] if args.enqueue_source_file else [])

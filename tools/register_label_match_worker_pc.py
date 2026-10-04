@@ -2256,13 +2256,14 @@ def main(argv: list[str] | None = None) -> int:
         args.data_dir = str(resolve_data_path(args.data_dir or DEFAULT_DIRECT_SYNC_ROOT))
         args.sync_dir = str(resolve_data_path(args.sync_dir or DEFAULT_LABEL_MATCH_DATA_ROOT))
         normalize_data_arguments(args, ("identity_path", "manifest_path", "credential_path", "receipt_path",
-            "logistics_profile_path", "tls_ca_bundle_path", "admin_recovery_secret_file"))
+            "logistics_profile_path", "tls_ca_bundle_path", "admin_recovery_secret_file", "enrollment_token_file"))
         data_dir = Path(args.data_dir)
         data_roots = (Path(args.sync_dir), data_dir, data_dir / "queue")
         identity_roots = tuple(Path(value).parent for value in (
             args.identity_path, args.manifest_path, args.credential_path, args.receipt_path,
             args.logistics_profile_path, args.admin_recovery_secret_file) if value)
-        check_user_data_open(ROOT, (*data_roots, *identity_roots))
+        input_roots = tuple(Path(value).parent for value in (args.tls_ca_bundle_path, args.enrollment_token_file) if value)
+        check_user_data_open(ROOT, (*data_roots, *identity_roots, *input_roots))
         if args.recover_partial_local_state and not args.admin_recovery_secret_file:
             raise DirectSyncPushError("부분 등록 복구에는 관리자 일회용 승인 파일이 필요합니다")
         if args.admin_recovery_secret_file:

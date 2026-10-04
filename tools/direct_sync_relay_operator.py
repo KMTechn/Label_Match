@@ -113,11 +113,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, normalize_data_arguments
     try:
-        normalize_data_arguments(args, ("db_path", "operator_pause_path", "credential_path", "spool_root"))
+        normalize_data_arguments(args, ("db_path", "operator_pause_path", "credential_path", "spool_root", "tls_ca_bundle_path"))
         roots = tuple(Path(value).parent for value in (
             getattr(args, "db_path", ""), getattr(args, "operator_pause_path", ""),
             getattr(args, "credential_path", "")) if value)
-        check_user_data_open(ROOT, roots)
+        if getattr(args, "spool_root", ""):
+            roots += (Path(args.spool_root),)
+        input_roots = tuple(Path(value).parent for value in (getattr(args, "tls_ca_bundle_path", ""),) if value)
+        check_user_data_open(ROOT, (*roots, *input_roots))
         record_user_data_open(ROOT, roots)
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)

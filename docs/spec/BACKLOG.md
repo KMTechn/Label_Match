@@ -11,7 +11,7 @@ b48835e (fix(lm): bind generation admission to the actual resolved input paths)
 
 G 후보의 새 기준은 종료 잔류 수정·w9scanonly를 포함한 `e89c188`이며, 종료 알림 sink를 유지한 58→59 명단과 exact 설치기 선언을 다시 생성한다. 새 기준의 집중 묶음·전체 실패 집합과 후보의 비교는 같은 선택/격리 harness로 다시 측정하며, 이전 4b/f1ee 증거는 해당 판의 기록으로 보존한다.
 
-직접 지원 입구 G 부류 교정은 `a56a587` 위에서 진행한다. 등록/관리자·부분 복구, onboarding·제거, raw/hosted relay와 queue·profile·지원 복구가 첫 신원/자료 판독 전에 판단하며, G 거절 때 기존 relay·Run/task·상태 report를 보존한다. bootstrap 판 확인의 사용자 설정 선행 판독과 installed `app/tools`의 packet 신원 선택도 교정한다. 기존 공용 helper와 sink 59개를 유지한다. headless 실제 별도 프로세스 및 정상 허용 경로의 판별 근거는 [sub-234](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-234/REPORT.md)에 기록하며, 실제 GUI·native 설치·VM/서버 수용과 독립 검토는 별도다.
+직접 지원 입구 G 부류 교정은 `a56a587` 위에서 진행한다. 등록/관리자·부분 복구, onboarding·제거, raw/hosted relay와 queue·profile·지원 복구가 첫 신원/자료 판독 전에 판단하며, G 거절 때 기존 relay·Run/task·상태 report를 보존한다. bootstrap 판 확인의 사용자 설정 선행 판독과 installed `app/tools`의 packet 신원 선택도 교정한다. 기존 공용 helper와 sink 59개를 유지한다. headless 실제 별도 프로세스 및 정상 허용 경로의 판별 근거는 [sub-234](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-234/REPORT.md)에 기록하며, 실제 GUI·native 설치·VM/서버 수용과 독립 검토는 별도다. 외부 입력 누락의 후속 교정은 settings·spool·stop marker와 명시 TLS/인증 파일을 각각 검사하며, sub-244의 독립 입력 회귀와 INPUT-ROOTS 표를 근거로 판단한다.
 
 coordinator가 허용한 정확한 G 전환 선언 확장을 별도 커밋으로 검토한다. 기존 pre-G→G 및 이미-G `a56a5877`→교정 후보의 실제 read-only installer probe, 후진/선언 파일 한 바이트/미목록 파일 변조 거절을 검사한다. 자료 G 거절을 우회하는 배포 허가는 포함하지 않는다.
 
