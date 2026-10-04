@@ -39,6 +39,8 @@ def _generation_release_inputs(monkeypatch, tmp_path):
         # data input as well as their explicit synthetic code root.
         if '--program-data-root' not in argv:
             argv.extend(['--program-data-root', str(tmp_path / 'generation-direct-sync')])
+        if '--scan-source-dir' not in argv:
+            argv.extend(['--scan-source-dir', str(tmp_path / 'data')])
         if '--app-root' not in argv:
             return
         root = Path(argv[argv.index('--app-root') + 1]).resolve()
