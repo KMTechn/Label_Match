@@ -234,13 +234,66 @@ def test_worker_record_declaration_matches_stage_one_and_candidate():
     expected = {'app/Label_Match.py', 'app/label_completion.py', 'app/label_data_manager.py',
         'app/label_recovery_schema.py', 'app/label_worker_roster.py', 'app/package_command_draft.py',
         'app/package_outbox_processor.py', 'app/sealed_transfer_exchange.py',
-        'app/writer_session_fence.py', 'tools/label_writer_fence.ps1'}
+        'app/writer_session_fence.py', 'tools/label_writer_fence.ps1',
+        'app/label_match_single_instance.py'}
     assert set(pairs) == expected
     for relative, (before, after) in pairs.items():
         path = relative.removeprefix('app/')
         original = subprocess.check_output(['git', '-C', str(ROOT), 'show', f'0cf0414:{path}'])
         assert before == _release_digest(original)
         assert after == _release_digest((ROOT / path).read_bytes()) != before
+
+
+@pytest.fixture(scope="module")
+def mainloop_exit_packages(tmp_path_factory, legacy_label_packages):
+    return _stock_label_packages(tmp_path_factory, "mainloop-exit-stock", "4b7630f",
+                                 legacy_label_packages[1])
+
+
+def test_mainloop_exit_declaration_matches_exact_preimage_and_candidate():
+    pairs = _declared_current_user_profile_pairs("mainloop_exit_replacements")
+    assert set(pairs) == {"app/Label_Match.py", "app/label_match_single_instance.py",
+                          "app/writer_session_fence.py", "tools/label_writer_fence.ps1"}
+    for relative, (before, after) in pairs.items():
+        name = relative.removeprefix("app/")
+        original = subprocess.check_output(["git", "-C", str(ROOT), "show", f"4b7630f:{name}"])
+        assert before == _release_digest(original)
+        assert after == _release_digest((ROOT / name).read_bytes()) != before
+
+
+def test_mainloop_exit_stock_upgrade_preserves_current_and_pending(tmp_path, mainloop_exit_packages):
+    old, candidate = mainloop_exit_packages
+    installed = _tree(old, tmp_path / "installed")
+    environment = _environment(tmp_path)
+    work = _seed_base_work(environment)
+    result = _ps(tmp_path, _definitions() + f"""
+. (Join-Path {_quote(candidate)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(candidate)}
+[void](Write-BootstrapIntegrityRecord -Root {_quote(installed)} -CodeRoot {_quote(installed)})
+$before = PortableInventory {_quote(installed)}
+{_upgrade_preflight(candidate, installed)}
+if ((PortableInventory {_quote(installed)}).sha256 -cne $before.sha256) {{ throw 'Preflight changed the preimage' }}
+$writerTransition | ConvertTo-Json -Compress
+""", environment, timeout=300)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["compatibility"] == "PINNED_MAINLOOP_EXIT_CLEANUP"
+    assert all(path.read_bytes() == raw for path, raw in work.items())
+
+
+@pytest.mark.parametrize("change", ["reverse", "app/Label_Match.py", "app/label_match_single_instance.py"])
+def test_mainloop_exit_upgrade_refuses_reverse_and_unreviewed_bytes(tmp_path, mainloop_exit_packages, change):
+    old, candidate = mainloop_exit_packages
+    if change == "reverse":
+        source, installed = old, candidate
+    else:
+        source = _tree(candidate, tmp_path / "candidate", [change])
+        with (source / change).open("ab") as stream:
+            stream.write(CHANGED_LINE.encode("utf-8"))
+        _pin(source)
+        installed = old
+    result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(source)} {_quote(installed)}",
+                 _environment(tmp_path))
+    assert result.returncode != 0
+    assert "WRITER_TRANSITION_SEMANTICS_DIFFER" in result.stderr
 
 
 def test_stage_one_stock_upgrade_preserves_current_and_pending(tmp_path, worker_record_packages):
@@ -521,7 +574,8 @@ def test_roster_baseline_stage_two_companions_match_only_changed_runtime():
     pairs = _declared_current_user_profile_pairs('roster_baseline_companions')
     assert set(pairs) == {'app/label_completion.py', 'app/label_data_manager.py',
         'app/label_recovery_schema.py', 'app/package_command_draft.py',
-        'app/package_outbox_processor.py', 'app/sealed_transfer_exchange.py'}
+        'app/package_outbox_processor.py', 'app/sealed_transfer_exchange.py',
+        'app/label_match_single_instance.py'}
     for relative, (before, after) in pairs.items():
         name = relative.removeprefix('app/')
         original = subprocess.check_output(['git', '-C', str(ROOT), 'show', f'{ROSTER_BASELINE}:{name}'])
@@ -531,7 +585,8 @@ def test_roster_baseline_stage_two_companions_match_only_changed_runtime():
 
 @pytest.mark.parametrize('relative', ['app/label_completion.py', 'app/label_data_manager.py',
     'app/label_recovery_schema.py', 'app/package_command_draft.py',
-    'app/package_outbox_processor.py', 'app/sealed_transfer_exchange.py'])
+    'app/package_outbox_processor.py', 'app/sealed_transfer_exchange.py',
+    'app/label_match_single_instance.py'])
 def test_roster_baseline_stage_two_companions_refuse_unreviewed_bytes(tmp_path, roster_baseline_packages, relative):
     old, candidate = roster_baseline_packages
     source = _tree(candidate, tmp_path / 'candidate', [relative])

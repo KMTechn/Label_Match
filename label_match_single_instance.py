@@ -15,6 +15,7 @@ import json
 import logging
 import ntpath
 import os
+import threading
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -29,6 +30,16 @@ LABEL_WINDOW_TITLE_PREFIX = "바코드 세트 검증기 ("
 
 class SingleInstanceError(RuntimeError):
     """Raised when ownership cannot be established safely."""
+
+
+_active_instance_lease = threading.local()
+
+
+def _retain_current_instance_lease() -> None:
+    """An unfinished writer keeps its native handle until OS process cleanup."""
+    lease = getattr(_active_instance_lease, "lease", None)
+    if lease is not None:
+        lease._retain_on_exit = True
 
 
 def canonical_data_scope(path: str | os.PathLike[str]) -> str:
@@ -400,8 +411,12 @@ def run_guarded_entrypoint(
         )
         print(message)
         return 0
+    previous = getattr(_active_instance_lease, "lease", None)
+    _active_instance_lease.lease = lease
     try:
         result = start()
         return int(result or 0)
     finally:
-        lease.close()
+        _active_instance_lease.lease = previous
+        if not getattr(lease, "_retain_on_exit", False):
+            lease.close()

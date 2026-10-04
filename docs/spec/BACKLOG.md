@@ -4,6 +4,8 @@
 
 LM-A1/LM-B4: 빈 화면 종료 확인을 줄였고 F5의 새 날짜 교환·전용 조회·단추·선택 창·전용 시험은 제거했다. 이전 판이 미완료 journal을 남길 수 있으므로 건별 복구·hold·PIN intent·v1 형식과 같은 요청의 prepare/print/activate는 보존한다. 잠금 면제는 복구 두 source만 남는다.
 
+LM mainloop 종료 누락: 예외·직접 반환·종료 접수 직후 반환의 non-daemon UI lane 잔류를 고쳤다. 실제 진입점+fake Tk 자식 시험으로 정상/거절/예외/반환/조기 반환, 정리 실패의 원 예외·exit17, 막힌 drain의 잠금 보유와 OS 종료 뒤 재실행을 확인한다. 영구 I/O 정지와 실제 Tk/장비/서버 검증은 남는다.
+
 <a id="busy-scan-durable-fifo"></a>
 
 후속: 남은 F5 journal 복구·옛 deferred validation의 busy 스캔 거절을 내구 FIFO와 정확히 한 번 적용으로 전환한다. 이번 잠금 컷은 정상 스캐너의 HTTP 무대기·fence 변화 뒤 같은 key 재대조 및 로컬 완료 저장 중 기존 메모리 FIFO의 보존을 검증하며, FIFO의 재시작 내구화는 별도 수용한다.

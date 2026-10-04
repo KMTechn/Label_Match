@@ -692,6 +692,9 @@ def test_main_warns_and_continues_with_verified_catalog_cache(
         def mainloop(self):
             calls.append("mainloop")
 
+        def _finish_after_mainloop(self):
+            calls.append("loop-cleanup")
+
     monkeypatch.setattr(app_module, "Label_Match", FakeLabelMatch)
 
     assert app_module.main([]) == 0
@@ -789,6 +792,9 @@ def test_main_warns_and_continues_when_selected_profile_conflicts_with_install(
 
         def mainloop(self):
             calls.append("mainloop")
+
+        def _finish_after_mainloop(self):
+            calls.append("loop-cleanup")
 
     monkeypatch.setattr(app_module, "Label_Match", FakeLabelMatch)
 

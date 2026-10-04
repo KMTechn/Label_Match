@@ -51,7 +51,9 @@ from protected_admin import (
     redact_protected_admin_code,
     sanitize_persistent_value,
 )
-from label_match_single_instance import resolve_data_scope, run_guarded_entrypoint
+from label_match_single_instance import (
+    _retain_current_instance_lease, resolve_data_scope, run_guarded_entrypoint,
+)
 from current_user_onboarding import (
     CurrentUserOnboardingError,
     LABEL_MATCH_SETTINGS_PATH_ENV,
@@ -7786,6 +7788,9 @@ class Label_Match(tk.Tk):
         deadline = (
             time.monotonic() + LABEL_MATCH_TK_SHUTDOWN_THREAD_TIMEOUT_SECONDS
         )
+        loop_deadline = self.__dict__.get("_mainloop_cleanup_deadline")
+        if loop_deadline is not None:
+            deadline = min(deadline, loop_deadline)
         remaining_names = []
         excluded = {id(thread) for thread in exclude_threads if thread is not None}
         for thread in self._tracked_tk_shutdown_threads():
@@ -7857,7 +7862,11 @@ class Label_Match(tk.Tk):
         if not callable(close):
             return True
         try:
-            close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
+            timeout = LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
+            deadline = self.__dict__.get("_mainloop_cleanup_deadline")
+            if deadline is not None:
+                timeout = min(timeout, max(0.0, deadline - time.monotonic()))
+            close(timeout=timeout)
             return True
         except Exception as exc:
             # A writer error must not leave its worker alive while Tcl is
@@ -7964,6 +7973,38 @@ class Label_Match(tk.Tk):
             if destroy_completed:
                 state["_tk_destroy_complete"] = True
             state["_tk_destroy_in_progress"] = False
+
+    def _finish_after_mainloop(self):
+        """Finish the existing close callbacks while still owning the guard."""
+        state = self.__dict__
+        if state.get("_tk_destroy_complete", False):
+            return
+        state["_mainloop_cleanup_deadline"] = state.get(
+            "_app_close_deadline_monotonic",
+            time.monotonic() + LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS,
+        )
+        try:
+            # A close already accepted may still be draining or syncing. Pump
+            # those callbacks rather than logging/closing the same work twice.
+            if not state.get("_app_close_in_progress", False):
+                self.on_closing(_confirmed=True)
+            while not state.get("_tk_destroy_complete", False):
+                if time.monotonic() >= state["_mainloop_cleanup_deadline"]:
+                    raise TimeoutError("mainloop exit cleanup deadline exceeded")
+                self.update()
+                time.sleep(0.001)
+        finally:
+            manager = state.get("data_manager")
+            workers = self._tracked_tk_shutdown_threads()
+            writer = getattr(manager, "log_thread", None)
+            if writer is not None:
+                workers.append(writer)
+            if (not state.get("_tk_destroy_complete", False)
+                    or any(thread.is_alive() for thread in workers)):
+                # Do not admit another writer while an unfinished task still
+                # owns this data root. The OS closes the handle on process exit.
+                _retain_current_instance_lease()
+                _label_match_startup_trace("mainloop_cleanup_incomplete")
 
     def _suspend_deferred_validation_for_close(self):
         after_id = self.__dict__.get("_deferred_validation_after_id")
@@ -8162,7 +8203,11 @@ class Label_Match(tk.Tk):
                     "_app_close_pending_cancel_attempt_ids", []
                 )
                 pending_attempt_ids.append(close_attempt_id)
-                self.data_manager.close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
+                timeout = LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
+                deadline = self.__dict__.get("_mainloop_cleanup_deadline")
+                if deadline is not None:
+                    timeout = min(timeout, max(0.0, deadline - time.monotonic()))
+                self.data_manager.close(timeout=timeout)
                 self.__dict__.pop(
                     "_app_close_pending_cancel_attempt_ids", None
                 )
@@ -22343,8 +22388,19 @@ def _run_label_match_application():
     app._item_catalog_unconfirmed = catalog_unconfirmed
     _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
     _label_match_startup_trace("mainloop_enter")
-    app.mainloop()
-    _label_match_startup_trace("mainloop_exit")
+    try:
+        app.mainloop()
+        _label_match_startup_trace("mainloop_exit")
+    finally:
+        loop_error = sys.exc_info()[1]
+        try:
+            app._finish_after_mainloop()
+        except BaseException as cleanup_error:
+            if loop_error is None:
+                raise
+            loop_error.add_note(
+                "Label Match exit cleanup: " + type(cleanup_error).__name__
+            )
     return 0
 
 
