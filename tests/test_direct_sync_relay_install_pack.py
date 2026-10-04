@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ import pytest
 from tests.test_current_user_onboarding import _write_bootstrap_inventory_record
 
 
-def _seal_generation_release_input(app_root):
+def _seal_generation_release_input(app_root, source_commit):
     """Supply code identity while preserving the preflight's damaged runtime."""
     from label_data_generation import CURRENT_VERSION
     root = Path(app_root)
@@ -21,7 +22,7 @@ def _seal_generation_release_input(app_root):
         (root / 'Label_Match.exe').write_bytes(b'isolated code identity; never executed')
     (root / 'portable-manifest.json').write_text(json.dumps({
         'schema': 'label-match-portable-tree-v1', 'version': CURRENT_VERSION,
-        'source_commit': 'a' * 40,
+        'source_commit': source_commit,
     }), encoding='utf-8')
     _write_bootstrap_inventory_record(root)
 
@@ -29,13 +30,16 @@ def _seal_generation_release_input(app_root):
 @pytest.fixture(autouse=True)
 def _generation_release_inputs(monkeypatch, tmp_path):
     original_run = subprocess.run
+    source_commit = subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).resolve().parents[1], text=True,
+    ).strip()
 
     def prepare(argv):
         if '--app-root' not in argv:
             return
         root = Path(argv[argv.index('--app-root') + 1]).resolve()
         if root.is_relative_to(tmp_path.resolve()):
-            _seal_generation_release_input(root)
+            _seal_generation_release_input(root, source_commit)
 
     def run_with_release(command, *args, **kwargs):
         if isinstance(command, (list, tuple)) and any(
@@ -50,6 +54,9 @@ def _generation_release_inputs(monkeypatch, tmp_path):
 
     def load_with_release():
         module = original_load()
+        # Installer command stand-ins must not replace Git subprocesses used by
+        # the real release verifier in other imported modules.
+        module.subprocess = types.SimpleNamespace(**vars(subprocess))
         original_main = module.main
 
         def main_with_release(argv=None):
