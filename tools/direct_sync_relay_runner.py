@@ -523,8 +523,10 @@ def main(argv: list[str] | None = None) -> int:
     from current_user_onboarding import resolve_current_user_onboarding_paths
     product_root = _default_product_root()
     paths = resolve_current_user_onboarding_paths(product_root)
+    source_roots = ([Path(args.scan_source_dir).expanduser().absolute()] if args.scan_source_dir else
+                    [Path(args.enqueue_source_file).expanduser().absolute().parent] if args.enqueue_source_file else [])
     record_user_data_open(product_root, (paths.data_root, paths.ledger_path.parent,
-                                        Path(args.db_path).absolute().parent))
+                                        Path(args.db_path).absolute().parent, *source_roots))
     config = _build_config(args)
     if args.baseline_existing_source_files:
         try:

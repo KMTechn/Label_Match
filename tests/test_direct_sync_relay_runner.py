@@ -203,6 +203,14 @@ def test_runner_scan_source_dir_enqueues_matching_csv_idempotently(tmp_path, cap
     (sync_dir / "ignore.txt").write_text("not a csv", encoding="utf-8")
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
+    original_config = runner._build_config
+
+    def config_after_source_record(arguments):
+        assert (sync_dir / "data-generation.json").is_file(), "custom CSV root opened without generation"
+        return original_config(arguments)
+
+    monkeypatch.setattr(runner, "_build_config", config_after_source_record)
+
     assert main(args) == 1
     output = capsys.readouterr().out
     assert "direct_sync_relay_status=idle" in output
