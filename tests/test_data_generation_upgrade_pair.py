@@ -207,4 +207,3 @@ def test_already_g_correction_rejects_declared_or_unlisted_mutation(correction_p
     with (new / relative).open('ab') as handle:
         handle.write(extra)
     assert probe(new, old).returncode != 0
-1f8dc9e (fix(lm): pin exact G entry corrections for supported release transitions)

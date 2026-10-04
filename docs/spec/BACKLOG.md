@@ -7,7 +7,6 @@ legacy upgrade guard의 G/nextfix 조합은 정의된 exact tuple을 사용하�
 w9scanonly audit CSV index 병합 후 G 전이에 빠진 manager/schema 두 파일은 승인된 committed before/after exact 전진 조합으로 결속한다. 기존 G 10항목·signed reverse·공용 helper·syntax guard는 유지하며 current/낡은 일부 바이트/한 바이트/목록 밖/역방향 및 이미 G인 두 판의 회귀·hash 전 항목 표를 같은 sub-242 보고서에서 확인한다.
 
 직접 입구의 G 경로와 실제 reader 경로를 일치시킨다. 빈 profile 값은 기존 loader의 환경 변수/기본 선택을 사용하고, `~`·상대 경로·대소문자는 기존 경로 resolver로 한 번 해석한 값을 guard와 reader에 전달한다. 링크/junction은 기존 no-reparse 계약에 따라 UNKNOWN으로 거절한다. 제어 root에 marker 없이 실제 외부 경로에 높은 marker만 둔 별도 프로세스 회귀와 정상 허용 profile 경로 일치 시험을 sub-234에 기록한다. 합성 build fixture 사이 세대 기록 혼입을 막기 위해 known folder와 제어 root를 시험별로 격리하며 원래 단언·native 시험 선택은 유지한다.
-b48835e (fix(lm): bind generation admission to the actual resolved input paths)
 
 G 후보의 새 기준은 종료 잔류 수정·w9scanonly를 포함한 `e89c188`이며, 종료 알림 sink를 유지한 58→59 명단과 exact 설치기 선언을 다시 생성한다. 새 기준의 집중 묶음·전체 실패 집합과 후보의 비교는 같은 선택/격리 harness로 다시 측정하며, 이전 4b/f1ee 증거는 해당 판의 기록으로 보존한다.
 
