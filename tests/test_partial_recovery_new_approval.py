@@ -23,6 +23,9 @@ def attempts(recovery, monkeypatch, isolated_dpapi):
         schema='label-match-portable-tree-v1', version=generation.CURRENT_VERSION,
         source_commit='a' * 40)), encoding='utf-8')
     _write_bootstrap_root_record(app_root)
+    # Registration and subsequent onboarding model the same byte-verified
+    # installed build; a source checkout is a different release identity.
+    monkeypatch.setattr(r.m, 'ROOT', app_root)
     r.transactions = {}
     r.requests = []
     r.fault = ''

@@ -40,14 +40,15 @@ def isolated_dpapi(monkeypatch, tmp_path):
     return lambda module: cipher.install(monkeypatch, registration=module)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _isolated_writer_control_root(tmp_path_factory):
-    # Children inherit this root; competing writers still share its real mutex.
+@pytest.fixture(autouse=True)
+def _isolated_writer_control_root(tmp_path):
+    # Each synthetic installation has its own SID generation record. Children
+    # and competing writers within one test still share the real mutex/root.
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("KMTECH_LABEL_WRITER_TEST_MODE", "1")
         patch.setenv(
             "KMTECH_LABEL_WRITER_CONTROL_ROOT",
-            str(tmp_path_factory.getbasetemp() / "writer-control"),
+            str(tmp_path / "writer-control"),
         )
         yield
 
