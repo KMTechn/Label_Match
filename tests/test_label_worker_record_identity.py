@@ -593,12 +593,10 @@ def test_create_request_and_restarted_retry_reuse_saved_body_and_identity(tmp_pa
     assert json.loads(restarted.get_by_set_id(draft.set_id)['draft_json'])['worker_identity'] == IDENTITY
 
 
-def test_scanner_delivery_keeps_identity_when_rebuilding_source_and_lease(central, tmp_path, monkeypatch):
+def test_scanner_delivery_keeps_identity_when_rebuilding_source_and_lease(central, tmp_path):
     app, _dialogs, case, root, _releases = central
     from datetime import timezone
     case.instant[0] = datetime(2026, 9, 5, 3, 28, 54, tzinfo=timezone.utc)
-    monkeypatch.setitem(app._prepare_scanner_package_delivery.__func__.__globals__, 'datetime',
-                        case.app._acquire_operation_lease.__func__.__globals__['datetime'])
     select_worker(app, tmp_path, enabled=True)
     scan(app, case.group['scan_payload'])
     root.run_until(lambda: not app.__dict__.get('_phs2_background_pending'), timeout=5)
