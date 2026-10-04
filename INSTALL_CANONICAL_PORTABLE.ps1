@@ -1810,6 +1810,40 @@ $probeRoot = $utf8.GetString([Convert]::FromBase64String('@@root-base64@@'))
     if ($LASTEXITCODE -ne 0) { throw 'Installed bootstrap integrity differs.' }
 }
 
+function Invoke-LabelDelegatedPlacementHelper($Frozen, [hashtable]$HelperParameters, $AuthorityLease) {
+    $control = [string]$HelperParameters.WriterFenceControlRoot
+    $admission = Enter-LabelWriterAdmission -ControlRoot $control -TimeoutMilliseconds 90000
+    try {
+        $active = Read-LabelWriterFence $control
+        # As in Container_Audit, verify this thread's actual session lease;
+        # HeldByOther is for the separate child. Balance only the recursion.
+        if ($null -eq $AuthorityLease -or $AuthorityLease.acquired -isnot [bool] -or
+            -not [bool]$AuthorityLease.acquired -or $AuthorityLease.mutex -isnot [Threading.Mutex] -or
+            [string]$AuthorityLease.name -cne [string]$active.session_authority_mutex_name) {
+            throw 'LABEL_PLACEMENT_CALLER_AUTHORITY_INVALID'
+        }
+        try { $owned = $AuthorityLease.mutex.WaitOne(0) }
+        catch [Threading.AbandonedMutexException] { throw 'LABEL_PLACEMENT_CALLER_AUTHORITY_ABANDONED' }
+        if (-not $owned) { throw 'LABEL_PLACEMENT_CALLER_AUTHORITY_NOT_OWNED' }
+        $AuthorityLease.mutex.ReleaseMutex()
+        if ([string]$active.status -cne 'RESTORING' -or
+            [string]$active.session_id -cne [string]$HelperParameters.WriterFenceSessionId -or
+            [string]$active.attempt_id -cne [string]$HelperParameters.WriterFenceAttemptId -or
+            [string]$active.replacement_transaction_id -cne [string]$HelperParameters.WriterFenceReplacementTransactionId -or
+            [string]$active.delegation_sha256 -cne (Get-LabelWriterFenceStringSha256 ([string]$HelperParameters.WriterFenceDelegationToken)) -or
+            'canonical_placement' -cnotin @($active.delegated_sources) -or
+            (ConvertTo-LabelWriterFenceUtc ([string]$active.delegation_expires_at_utc)) -lt [DateTime]::UtcNow -or
+            $HelperParameters.Uninstall -isnot [bool] -or -not [bool]$HelperParameters.Uninstall) {
+            throw 'LABEL_PLACEMENT_CHILD_DELEGATION_INVALID'
+        }
+    }
+    finally { Exit-LabelWriterAdmission $admission }
+    # Keep the original session authority held across dispatch. The pinned
+    # helper acquires admission itself and checks this exact delegation and
+    # HeldByOther before mutation; ordinary writers still refuse the fence.
+    return InvokeFrozenPlacementHelper $Frozen $HelperParameters
+}
+
 function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters) {
     $Script:LabelPlacementChildFailure = $null
     $failureBase = [string]$HelperParameters.ElevationLogPath
@@ -3852,11 +3886,7 @@ catch {
                 $removeParameters = $helperParameters.Clone()
                 $removeParameters.ReplaceExistingVerifiedPortable = $false
                 $removeParameters.Uninstall = $true
-                # As with setup-preimage restoration below, the orchestrator
-                # holds writer admission for the entire privileged mutation.
-                $codeRemovalAdmission = Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
-                try { $removeExit = InvokeFrozenPlacementHelper $frozenPlacement $removeParameters }
-                finally { Exit-LabelWriterAdmission $codeRemovalAdmission }
+                $removeExit = Invoke-LabelDelegatedPlacementHelper $frozenPlacement $removeParameters $writerAuthority
                 if ($removeExit -ne 0 -or (Test-Path -LiteralPath $install)) {
                     throw 'Absent-code rollback failed to restore code absence.'
                 }
