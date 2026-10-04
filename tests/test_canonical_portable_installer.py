@@ -1294,10 +1294,7 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "data_generation_sha256": hashlib.sha256((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes()).hexdigest(),
         "parameters": parameters,
     }
-    payload_base64 = base64.b64encode(
-        json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    launcher = match.group("body").replace("@@payload-base64@@", payload_base64)
+    launcher = match.group("body")
     encoded_launcher = transport_command(tmp_path, launcher, payload)
     powershell = (
         Path(os.environ["SystemRoot"])
@@ -1458,10 +1455,7 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
         "data_generation_sha256": hashlib.sha256((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes()).hexdigest(),
         "parameters": parameters,
     }
-    payload_base64 = base64.b64encode(
-        json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    launcher = match.group("body").replace("@@payload-base64@@", payload_base64)
+    launcher = match.group("body")
     encoded_launcher = transport_command(tmp_path, launcher, payload)
     powershell = (
         Path(os.environ["SystemRoot"])
@@ -1577,10 +1571,7 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
         "data_generation_sha256": hashlib.sha256((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes()).hexdigest(),
         "parameters": parameters,
     }
-    payload_base64 = base64.b64encode(
-        json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    launcher = match.group("body").replace("@@payload-base64@@", payload_base64)
+    launcher = match.group("body")
     encoded_launcher = transport_command(tmp_path, launcher, payload)
     powershell = (
         Path(os.environ["SystemRoot"])
@@ -2121,7 +2112,6 @@ def test_placement_child_preserves_original_failure_without_delegation_secret(tm
         failure_path=str(failure), parameters=parameters)
     if phase == "PIN_VALIDATION":
         payload["integrity_sha256"] = "0" * 64
-    body = body.replace("@@payload-base64@@", base64.b64encode(json.dumps(payload).encode()).decode())
     script = tmp_path / "child.ps1"
     script.write_text(base64.b64decode(transport_command(tmp_path, body, payload)).decode("utf-16-le"), encoding="utf-8-sig")
     child = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)],
