@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SID = "S-1-5-21-900-901-902-1001"
 BUILD = "a" * 40
 OLD_BUILD = "b" * 40
+REAL_INSTALLED_IDENTITY = generation._installed_identity
 
 
 @pytest.fixture(autouse=True)
@@ -178,6 +179,36 @@ def test_private_es256_compatibility_is_bound_to_version_build_and_explicit_floo
         manifest, signature, public, version=generation.CURRENT_VERSION, build_id=BUILD)
     assert proof["compatibility_verified"] is False
     assert proof["data_compatible_min_version"] == generation.CURRENT_VERSION
+
+
+@pytest.mark.parametrize("state", ["signed", "tampered", "missing_signature"])
+def test_existing_portable_metadata_carries_signed_proof_without_app_additions(monkeypatch, tmp_path, state):
+    from tests.test_update_manifest import signed_es256_manifest_payload, valid_manifest
+    default = {"version": generation.CURRENT_VERSION, "build_id": BUILD,
+               "data_compatible_min_version": generation.CURRENT_VERSION,
+               "compatibility_verified": False}
+    monkeypatch.setattr(generation, "release_identity", lambda _root: default)
+    manifest = valid_manifest()
+    manifest.update(version=generation.CURRENT_VERSION, source_commit=BUILD,
+                    data_compatible_min_version="v2.0.94")
+    public, signature = signed_es256_manifest_payload(manifest)
+    monkeypatch.setattr(app, "_get_update_manifest_public_key", lambda: public)
+    metadata = {"data_compatible_min_version": "v0.0.0",
+                "data_generation_signed_manifest": manifest,
+                "data_generation_signature_hex": signature.hex()}
+    if state == "tampered":
+        manifest["data_compatible_min_version"] = "v2.0.38"
+    elif state == "missing_signature":
+        metadata.pop("data_generation_signature_hex")
+    (tmp_path / "portable-manifest.json").write_text(json.dumps(metadata), encoding="utf-8")
+    if state == "signed":
+        identity = REAL_INSTALLED_IDENTITY(tmp_path)
+        assert identity["compatibility_verified"] is True
+        assert identity["data_compatible_min_version"] == "v2.0.94"
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["portable-manifest.json"]
+    else:
+        with pytest.raises((ValueError, generation.DataGenerationError)):
+            REAL_INSTALLED_IDENTITY(tmp_path)
 
 
 @pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])

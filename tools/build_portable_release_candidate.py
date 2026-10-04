@@ -485,6 +485,7 @@ def build(
     source_commit = _git_value(repo_root, "HEAD^{commit}")
     data_version = _data_generation_version(repo_root)
     data_floor = data_version
+    private_generation_manifest = None
     if bool(data_generation_update_manifest) != bool(data_generation_update_signature):
         raise PortableBuildError("private compatibility manifest and signature are required together")
     if data_generation_update_manifest is not None:
@@ -492,8 +493,9 @@ def build(
         if (data_generation_update_manifest.stat().st_size > 1024 * 1024
                 or data_generation_update_signature.stat().st_size != 64):
             raise PortableBuildError("private compatibility proof size is invalid")
+        private_generation_manifest = json.loads(data_generation_update_manifest.read_text(encoding="utf-8"))
         proof = verified_private_compatibility(
-            json.loads(data_generation_update_manifest.read_text(encoding="utf-8")),
+            private_generation_manifest,
             data_generation_update_signature.read_bytes(),
             _update_public_key_config(update_manifest_public_key_config),
             version=data_version, build_id=source_commit,
@@ -610,9 +612,6 @@ def build(
         _assert_portable_import_closure(output, repo_root, tool_sources)
         if not (app_root / DATA_GENERATION_POWERSHELL_LEAF).is_file():
             raise PortableBuildError("shared data-generation PowerShell leaf is absent")
-        if data_generation_update_manifest is not None:
-            shutil.copyfile(data_generation_update_manifest, app_root / "data-generation-update-manifest.json")
-            shutil.copyfile(data_generation_update_signature, app_root / "data-generation-update-manifest.sig")
         file_count, byte_count = _tree_metrics(output)
         manifest = {
             "schema": PORTABLE_SCHEMA,
@@ -636,8 +635,14 @@ def build(
             "file_count_before_manifest": file_count,
             "byte_count_before_manifest": byte_count,
         }
+        if private_generation_manifest is not None:
+            manifest["data_generation_signed_manifest"] = private_generation_manifest
+            manifest["data_generation_signature_hex"] = data_generation_update_signature.read_bytes().hex()
+        serialized_manifest = json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+        if len(serialized_manifest.encode("utf-8")) > 65536:
+            raise PortableBuildError("portable generation metadata exceeds the runtime bound")
         (output / "portable-manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            serialized_manifest,
             encoding="utf-8",
             newline="\n",
         )
@@ -667,7 +672,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         data_generation_update_manifest=args.data_generation_update_manifest,
         data_generation_update_signature=args.data_generation_update_signature,
     )
-    print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+    summary = {key: value for key, value in result.items()
+               if key not in {"data_generation_signed_manifest", "data_generation_signature_hex"}}
+    print(json.dumps(summary, ensure_ascii=True, sort_keys=True))
     return 0
 
 

@@ -106,15 +106,24 @@ def verified_private_compatibility(
 
 def _installed_identity(app_root: Path) -> dict[str, object]:
     identity = release_identity(app_root)
-    app = Path(app_root) / "app" if (Path(app_root) / "app").is_dir() else Path(app_root)
-    manifest_path = app / "data-generation-update-manifest.json"
-    signature_path = app / "data-generation-update-manifest.sig"
-    if manifest_path.exists() or signature_path.exists():
+    root = Path(app_root)
+    metadata_path = root / "portable-manifest.json"
+    if not metadata_path.is_file() and getattr(sys, "frozen", False):
+        metadata_path = root / "build-identity.json"
+    if not metadata_path.is_file():
+        return identity
+    if metadata_path.stat().st_size > 65536:
+        raise DataGenerationError(UNKNOWN_MESSAGE)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    proof = metadata.get("data_generation_signed_manifest")
+    signature_hex = metadata.get("data_generation_signature_hex")
+    if proof is not None or signature_hex is not None:
         from Label_Match import _get_update_manifest_public_key
-        if manifest_path.stat().st_size > 1024 * 1024 or signature_path.stat().st_size != 64:
+        if (not isinstance(proof, dict) or not isinstance(signature_hex, str)
+                or not re.fullmatch(r"[0-9a-f]{128}", signature_hex)):
             raise DataGenerationError(UNKNOWN_MESSAGE)
         identity = verified_private_compatibility(
-            json.loads(manifest_path.read_text(encoding="utf-8")), signature_path.read_bytes(),
+            proof, bytes.fromhex(signature_hex),
             _get_update_manifest_public_key(), version=str(identity["version"]),
             build_id=str(identity["build_id"]),
         )
