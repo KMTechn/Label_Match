@@ -122,8 +122,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, resolve_data_path, normalize_data_arguments
     try:
-        normalize_data_arguments(args, ("client_db", "server_db", "identity", "credential", "stop_marker", "portable_root",
-            "preimage", "predecessor_receipt"))
+        normalize_data_arguments(args, ("preimage", "predecessor_receipt"))
         inputs = {name: resolve_data_path(value) if value is not None else None for name, value in _paths(args).items()}
         roots = tuple(inputs[name].parent for name in ("client_db_path", "server_db_path", "identity_path", "credential_path")
                       if inputs[name] is not None)
@@ -141,7 +140,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
             payload = create_resolution_receipt(preimage=preimage, **inputs)
         elif args.operation == "install-receipt":
-            portable_root = inputs["portable_root"].resolve(strict=False)
+            portable_root = inputs["portable_root"]
             receipt_output = args.output.resolve(strict=False)
             inputs["portable_root"] = portable_root
             if receipt_output == portable_root or portable_root in receipt_output.parents:
@@ -158,7 +157,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 **inputs,
             )
         else:
-            portable_root = inputs["portable_root"].resolve(strict=False)
+            portable_root = inputs["portable_root"]
             receipt_output = args.output.resolve(strict=False)
             evidence_output = args.rebind_evidence_output.resolve(strict=False)
             inputs["portable_root"] = portable_root

@@ -547,7 +547,8 @@ def test_rebind_cli_resolves_and_reuses_canonical_output_paths_once(
     forwarded = {}
 
     def recording_resolve(path, strict=False):
-        resolve_calls.append(path)
+        if path in {raw_receipt, raw_evidence}:
+            resolve_calls.append(path)
         return original_resolve(path, strict=strict)
 
     def recording_exists(path):
@@ -594,7 +595,7 @@ def test_rebind_cli_resolves_and_reuses_canonical_output_paths_once(
         )
         == 0
     )
-    assert resolve_calls == [raw_portable, raw_receipt, raw_evidence]
+    assert resolve_calls == [raw_receipt, raw_evidence]
     assert exists_calls == [canonical_receipt, canonical_evidence]
     assert [path for path, _value in write_calls] == [
         canonical_evidence,

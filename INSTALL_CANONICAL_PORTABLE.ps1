@@ -513,7 +513,7 @@ data_generation_replacements = {'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5
  'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5',
                                                  'f142fa960285a776b249b642ec49e2a508df76f8e5706d21a573615e61d7592f'),
  'app/tools/label_exact_clone_resolution_receipt.py': ('c77e6be851f32cad9058ee52892a9b2520232a15914379aba3c28ad09c581a9b',
-                                                       'e7a75bda91c9fd0893096368825378e77eec580ce246119b8789b2ef18278105')}
+                                                       '4492d71220593c8b790be16b54eb704260afcc2186eab570248f12ba1e377657')}
 data_generation_additions = {'app/label_data_generation.py': 'ad5cd8415ce3334cbc06b2c8cb67bd0c914470d60344248cb29b9e94b881aa5a', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}
 data_generation_transition = all(
     (source / relative).is_file() and release_digest(source / relative) == after
@@ -997,7 +997,7 @@ data_generation_correction_replacements = {'app/Label_Match.py': ('d0483a90b7c42
  'app/tools/label_auth_recovery_canary.py': ('440a0ed5061b522cafa56408092e3ed361b42f1ae09569258b08005a04cd463b',
                                              'd79a1d6b053e4275e53962c9e80ea39192535204bb9536fea4cc3e8316debecc'),
  'app/tools/label_exact_clone_resolution_receipt.py': ('c77e6be851f32cad9058ee52892a9b2520232a15914379aba3c28ad09c581a9b',
-                                                       'e7a75bda91c9fd0893096368825378e77eec580ce246119b8789b2ef18278105'),
+                                                       '4492d71220593c8b790be16b54eb704260afcc2186eab570248f12ba1e377657'),
  'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f',
                                                  '880f79bdaec266d6238d0336457097864290e761427c742088bfcef3596f6187'),
  'tools/label_writer_fence.ps1': ('6777bdfac69f830ac7800b4976e2ffc3b2b3cb0593f4e3c3a8cddd5855bb849b',
