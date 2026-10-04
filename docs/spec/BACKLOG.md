@@ -10,7 +10,7 @@ LM-A1/LM-B4: 빈 화면 종료 확인을 줄였고 F5의 새 날짜 교환·전�
 
 LM mainloop 종료 누락(P2, 2026-10-04 정정): 예외·직접 반환·종료 접수 직후 반환의 non-daemon UI lane 잔류를 고쳤다. 마감은 지연 표시 시점이며 정상/비정상 종료 모두 유한 지연의 결과 적용·정리를 끝까지 기다린다. 일반 sink 표시와 시작 시 삭제 실패의 비차단을 검증한다. 영구 I/O 정지·실제 Tk/장비/서버는 남는다. 동결 전 병합되지 않으면 알려진 한계는 앱이 닫히고 다시 안 켜지면 PC 재시작이며 컷 뒤 바로 병합한다.
 
-새 PC 판정은 정해진 bootstrap CA 디렉터리의 ca-bundle.pem 한 파일만 있을 때 기존 bounded certificate-only 검사로 공개 인증서만 확인하여 새 설치를 허용한다. 개인키·잘못된 인증서·다른 파일·빈 디렉터리·재분석 경로·정체/credential/profile/설치 영수증 흔적은 이 예외에 해당하지 않으며 기존 수명주기/복구 판정을 유지한다. 설치 통합 후보에서는 기존 before 선언을 보존하고 최종 candidate after와 writer inventory를 표준 생성기로 다시 결속한다. PS5.1·PS7 회귀와 실제 guest 설치 결과는 별도 근거다.
+새 PC 판정은 정해진 bootstrap CA 디렉터리의 ca-bundle.pem 한 파일만 있을 때 기존 bounded certificate-only 검사로 공개 인증서만 확인하여 새 설치를 허용한다. 개인키·잘못된 인증서·다른 파일·빈 디렉터리·재분석 경로·정체/credential/profile/설치 영수증 흔적은 이 예외에 해당하지 않으며 기존 수명주기/복구 판정을 유지한다. 설치 통합 후보에서는 기존 9개 startup 조상 before를 보존하고 각 조상의 추가 변경 파일/추가 파일을 정확 LF 쌍으로 결속한다. 기존 inventory 생성기로 76개 sink와 Python/PowerShell pin을 함께 갱신하고, stdin probe의 최종 SHA를 다시 결속한다. 새 wildcard·역방향 선언은 추가하지 않는다. 격리 시험·stock·독립 검토·실제 설치 수용은 서로 구분하며 통합 근거는 D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-247/REPORT.md를 따른다. PS5.1·PS7 회귀와 실제 guest 설치 결과는 별도 근거다.
 
 
 canonical probe의 명령줄 길이 결함은 고정 SHA256 검사 후 동일 UTF-8 bytes stdin 실행으로 교정한다. PS5.1/PS7 실제 자식 회귀·정식 기준 대비 guard 실패 집합·stock packet·빈 guest 1회 예행은 `D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-166/REPORT.md`에서 PROVEN/FAILED/NOT TESTED로 구분하며 출시 수용은 별도다. w9next 교정 이식은 coordinator 소유다.

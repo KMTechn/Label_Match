@@ -2,7 +2,7 @@
 
 저장된 F5 복구 journal 시험 자료 `tests/fixtures/f5-recovery-167ac7e/*.journal.json`은 원 LF 바이트와 SHA256을 보존하도록 `.gitattributes`의 `-text`로 고정한다. `core.autocrlf=true` checkout에서도 `tests/test_f5_saved_journals.py`의 다섯 복구 신원·상태 oracle을 그대로 검사한다.
 
-새 PC 판정은 정해진 bootstrap CA 디렉터리의 ca-bundle.pem 한 파일만 있을 때 기존 bounded certificate-only 검사로 공개 인증서만 확인하여 새 설치를 허용한다. 개인키·잘못된 인증서·다른 파일·빈 디렉터리·재분석 경로·정체/credential/profile/설치 영수증 흔적은 이 예외에 해당하지 않으며 기존 수명주기/복구 판정을 유지한다. 설치 통합 후보에서는 기존 before 선언을 보존하고 최종 candidate after와 writer inventory를 표준 생성기로 다시 결속한다. PS5.1·PS7 회귀와 실제 guest 설치 결과는 별도 근거다.
+새 PC 판정은 정해진 bootstrap CA 디렉터리의 ca-bundle.pem 한 파일만 있을 때 기존 bounded certificate-only 검사로 공개 인증서만 확인하여 새 설치를 허용한다. 개인키·잘못된 인증서·다른 파일·빈 디렉터리·재분석 경로·정체/credential/profile/설치 영수증 흔적은 이 예외에 해당하지 않으며 기존 수명주기/복구 판정을 유지한다. 설치 통합 후보에서는 기존 9개 startup 조상 before를 보존하고 각 조상의 추가 변경 파일/추가 파일을 정확 LF 쌍으로 결속한다. 기존 inventory 생성기로 76개 sink와 Python/PowerShell pin을 함께 갱신하고, stdin probe의 최종 SHA를 다시 결속한다. 새 wildcard·역방향 선언은 추가하지 않는다. 격리 시험·stock·독립 검토·실제 설치 수용은 서로 구분하며 통합 근거는 D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-247/REPORT.md를 따른다. PS5.1·PS7 회귀와 실제 guest 설치 결과는 별도 근거다.
 
 
 상위 바탕의 최종 admission은 문자 경로 `C:\KMTech`와 `C:\KMTech\Apps`에만 설치기의 ACE 집합·Administrators SID 소유·상속 차단·재분석 거절 판정을 재사용한다. 일반 설치 사전 준비는 없는 폴더를 만들지 않고 기존 기본/보호 모양을 읽으며, 직접 admission은 없는 폴더를 거절한다. daily는 원 코드 신뢰 확인→helper 로드→두 조상의 보호 목표 확인을 업무 변경보다 먼저 수행한다. 다른 경로의 strict leaf mask는 유지한다. standalone code-only removal은 설치된·소스 helper를 로드하지 않고 공유 순수 ACL 판정의 정확한 사본을 사용하며 AST 본문 대조 회귀가 두 정의의 차이를 거절한다. sub-153의 D: NTFS/PS5.1·PS7 회귀는 owner 읽기 seam 범위이고 실제 설치·예약 작업·relay·상승·최종 선언/packet은 NOT TESTED다.
