@@ -183,13 +183,11 @@ def test_delivery_carries_four_samples_and_retries_upstream_dependency(central):
     assert calls[:2] == ["prepare", "build"] and dialogs == []
 
 
-def test_background_delivery_attaches_a_verified_signed_lease_after_local_completion(central, monkeypatch):
+def test_background_delivery_attaches_a_verified_signed_lease_after_local_completion(central):
     from datetime import datetime, timezone
     from package_command_draft import PackageCommandDraft
     app, dialogs, case, root, _releases = central
     case.instant[0] = datetime(2026, 9, 5, 3, 28, 54, tzinfo=timezone.utc)
-    monkeypatch.setitem(app._prepare_scanner_package_delivery.__func__.__globals__, "datetime",
-                        case.app._acquire_operation_lease.__func__.__globals__["datetime"])
     master = case.group["scan_payload"]
     for value in [master, *[row["normalized_barcode"] for row in case.snapshot["work_group_source"]["members"]]]:
         scan(app, value)
