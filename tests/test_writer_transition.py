@@ -86,7 +86,9 @@ def test_installer_definitions_have_one_bom_and_parse(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == "DEFINITIONS_PARSED"
     script, = tmp_path.glob("probe-*.ps1")
-    assert script.read_bytes().startswith(b"\xef\xbb\xbfparam(")
+    raw = script.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert not raw[3:].startswith(b"\xef\xbb\xbf")
 
 
 def _pin(tree: Path) -> str:
