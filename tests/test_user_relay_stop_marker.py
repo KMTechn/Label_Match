@@ -152,6 +152,15 @@ def test_successor_marker_still_blocks_the_path_only_relay_gate(
     data_root = (tmp_path / "data").resolve()
     profile_path = tmp_path / "profile.json"
     app_root.mkdir()
+    import label_data_generation as generation
+    from tests.test_current_user_onboarding import _write_bootstrap_root_record
+    (app_root / "_internal").mkdir()
+    (app_root / "Label_Match.exe").write_bytes(b"synthetic-test-executable")
+    (app_root / "portable-manifest.json").write_text(json.dumps({
+        "schema": "label-match-portable-tree-v1", "version": generation.CURRENT_VERSION,
+        "source_commit": "a" * 40,
+    }), encoding="utf-8")
+    _write_bootstrap_root_record(app_root)
     _write_marker(user_relay.user_relay_stop_path(direct_root), _root_marker())
     marker_path = user_relay.user_relay_stop_path(direct_root)
     successor = build_successor_marker(
@@ -166,6 +175,8 @@ def test_successor_marker_still_blocks_the_path_only_relay_gate(
         lambda _app_root: SimpleNamespace(
             direct_sync_root=direct_root,
             data_root=data_root,
+            ledger_path=data_root / "ledger.sqlite3",
+            queue_dir=direct_root / "queue",
             settings_path=tmp_path / "settings.json",
             logistics_profile_path=profile_path,
         ),
