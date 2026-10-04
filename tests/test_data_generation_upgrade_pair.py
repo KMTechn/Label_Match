@@ -25,6 +25,10 @@ def baseline_source(tmp_path_factory):
 
 @pytest.fixture
 def pair(tmp_path, baseline_source):
+    return _package_pair(tmp_path, baseline_source)
+
+
+def _package_pair(tmp_path, baseline_source):
     result = []
     for name, source in (('old', baseline_source), ('new', ROOT)):
         package = tmp_path / name
@@ -54,6 +58,22 @@ def pair(tmp_path, baseline_source):
                     target.write_bytes(target.read_bytes().replace(b'\r\n', b'\n'))
         result.append(package)
     return result
+
+
+@pytest.fixture(scope='module')
+def correction_source(tmp_path_factory):
+    baseline = tmp_path_factory.mktemp('g-correction-source') / 'baseline'
+    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout',
+                    '-c', 'core.autocrlf=false', str(ROOT), str(baseline)],
+                   check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(baseline), 'checkout', '--quiet', '--detach',
+                    'a56a58769c43d1b19abdd9881425f95a49dbd7f7'], check=True, capture_output=True)
+    return baseline
+
+
+@pytest.fixture
+def correction_pair(tmp_path, correction_source):
+    return _package_pair(tmp_path, correction_source)
 
 
 def probe(source, installed, *, signed=False):
@@ -86,7 +106,7 @@ def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     assert json.loads(original_reverse.stdout)['compatibility'] == 'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE'
 
 
-@pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice'])
+@pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice', 'corrected_host'])
 def test_g_pair_rejects_changes_outside_its_exact_declaration(pair, mutation):
     old, new = pair
     if mutation == 'runtime':
@@ -98,6 +118,9 @@ def test_g_pair_rejects_changes_outside_its_exact_declaration(pair, mutation):
             handle.write(b'\nUNREVIEWED = True\n')
     elif mutation == 'old_source':
         with (old / 'app' / 'Label_Match.py').open('ab') as handle:
+            handle.write(b'\nUNREVIEWED = True\n')
+    elif mutation == 'corrected_host':
+        with (new / 'app' / 'label_match_product_host.py').open('ab') as handle:
             handle.write(b'\nUNREVIEWED = True\n')
     else:
         package = old if mutation == 'old_notice' else new
@@ -165,3 +188,23 @@ def test_already_g_committed_preimage_uses_only_forward_companions(pair, revisio
         assert reverse.returncode != 0
         assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/label_data_manager.py' in reverse.stderr
     assert {path.relative_to(installed): path.read_bytes() for path in installed.rglob('*') if path.is_file()} == preserved
+
+
+def test_already_g_correction_is_exact_forward_and_refuses_reverse(correction_pair):
+    old, new = correction_pair
+    forward = probe(new, old)
+    assert forward.returncode == 0, forward.stderr[-2000:]
+    assert json.loads(forward.stdout)['compatibility'] == 'PINNED_DATA_GENERATION_G_CORRECTION'
+    assert probe(old, new).returncode != 0
+    assert probe(old, new, signed=True).returncode != 0
+
+
+@pytest.mark.parametrize('mutation', ['declared_one_byte', 'unlisted_file'])
+def test_already_g_correction_rejects_declared_or_unlisted_mutation(correction_pair, mutation):
+    old, new = correction_pair
+    relative, extra = ('app/label_match_product_host.py', b'\n') if mutation == 'declared_one_byte' else (
+        'app/label_worker_roster.py', b'\nUNREVIEWED = True\n')
+    with (new / relative).open('ab') as handle:
+        handle.write(extra)
+    assert probe(new, old).returncode != 0
+1f8dc9e (fix(lm): pin exact G entry corrections for supported release transitions)
