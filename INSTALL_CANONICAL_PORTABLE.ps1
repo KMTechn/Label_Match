@@ -283,7 +283,16 @@ function ReceiptSource([string]$Root, $ManifestValue) {
         [string]::IsNullOrWhiteSpace($receiptPathValue) -or
         $receiptHashValue -cnotmatch '^[0-9a-f]{64}$'
     ) { throw 'Pinned conflict-resolution receipt is required.' }
-    $receiptPath = Full $receiptPathValue 'conflict-resolution receipt path'
+    $receiptPath = Resolve-LabelGenerationInputPath $receiptPathValue $Root
+    # ReceiptSource also runs in PLAN_ONLY and guarded helper paths. Admit its
+    # exact selected parent before its first content read in every caller.
+    $receiptSubjectSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $receiptMarkerPaths = @(
+        (Join-Path (Split-Path -Parent $receiptPath) 'data-generation.json')
+    )
+    [void](Assert-LabelDataDowngrade -MarkerPaths $receiptMarkerPaths -SubjectSid $receiptSubjectSid `
+        -TargetVersion (Get-LabelPortableDataVersion $Root $ManifestValue) `
+        -TargetBuildId ([string]$ManifestValue.source_commit))
     if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
         throw 'Pinned conflict-resolution receipt is absent.'
     }
@@ -2343,6 +2352,19 @@ $selectedProfilePath = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH
     $defaultProfilePath
 }
 else { Resolve-LabelGenerationInputPath ([string]$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH) $source }
+$generationSecurityParents = @((Split-Path -Parent $bootstrapCaPath))
+foreach ($generationInputName in @('LABEL_MATCH_ENROLLMENT_TLS_CA_BUNDLE_PATH',
+    'LABEL_MATCH_LOGISTICS_TLS_CA_BUNDLE_PATH', 'LABEL_MATCH_PROTECTED_ADMIN_PROFILE')) {
+    $generationInputValue = [Environment]::GetEnvironmentVariable($generationInputName, 'Process')
+    if (-not [string]::IsNullOrWhiteSpace($generationInputValue)) {
+        $generationSelectedInput = Resolve-LabelGenerationInputPath $generationInputValue $source
+        $generationSecurityParents += Split-Path -Parent $generationSelectedInput
+        [Environment]::SetEnvironmentVariable($generationInputName, $generationSelectedInput, 'Process')
+    }
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH_PROTECTED_ADMIN_PROFILE)) {
+    $generationSecurityParents += Join-Path $env:PROGRAMDATA 'KMTech\Label_Match\protected'
+}
 
 # Freeze the paths used by admission for every later product child as well.
 $env:LABEL_MATCH_DIRECT_SYNC_ROOT = $selectedDirectSyncRoot
@@ -2366,6 +2388,11 @@ $generationMarkerPaths = @(
     (Join-Path $selectedDirectSyncRoot 'data-generation.json'),
     (Join-Path (Join-Path $selectedDirectSyncRoot 'queue') 'data-generation.json')
 ) | Select-Object -Unique
+$generationMarkerPaths += @($generationSecurityParents | ForEach-Object { Join-Path $_ 'data-generation.json' })
+if ($conflictReceiptSupplied) {
+    $generationReceiptPath = Resolve-LabelGenerationInputPath ([string]$env:KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH) $source
+    $generationMarkerPaths += Join-Path (Split-Path -Parent $generationReceiptPath) 'data-generation.json'
+}
 $generationTargetVersion = Get-LabelPortableDataVersion $source $sourceManifest
 $generationDowngradeDecision = Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
     -TargetVersion $generationTargetVersion -TargetBuildId ([string]$sourceManifest.source_commit)
