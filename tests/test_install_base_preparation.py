@@ -144,6 +144,8 @@ function Initialize-LabelProtectedInstallBase {param($InstallRoot)
   $failure.Data['installation_preparation_exit_code']=61;throw $failure
  }
 }
+$script:ownerWritten=0
+function Write-LabelInstallerOwnerRecord {param($InstallRoot) $script:ownerWritten++}
 function Write-ElevationLog {param($Status,$Message)
  if($env:LM_LOG_SCENARIO -ceq 'log_failure'){throw 'secondary audit IO failure'}
  $script:captured+=,@{status=$Status;message=$Message}
@@ -151,11 +153,11 @@ function Write-ElevationLog {param($Status,$Message)
 $failure=$null
 try{. ([scriptblock]::Create($blocks[0].Extent.Text))}catch{$failure=$_}
 if($env:LM_LOG_SCENARIO -ceq 'success'){
- if($null -ne $failure -or $script:captured[0].status -cne 'PREPARATION'){throw 'Successful preparation evidence missing.'}
+ if($null -ne $failure -or $script:captured[0].status -cne 'PREPARATION' -or $script:ownerWritten -ne 1){throw 'Successful preparation evidence missing.'}
  $events=$script:captured[0].message | ConvertFrom-Json
  if($events.Count -ne 2){throw 'Successful before/after SDDL missing.'}
 }else{
- if($null -eq $failure -or $failure.Exception.Message -cne 'original ancestor failure' -or (Get-InstallationPreparationExitCode $failure) -ne 61){throw 'Audit IO masked original preparation failure.'}
+ if($script:ownerWritten -ne 0 -or $null -eq $failure -or $failure.Exception.Message -cne 'original ancestor failure' -or (Get-InstallationPreparationExitCode $failure) -ne 61){throw 'Audit IO masked original preparation failure.'}
  if($env:LM_LOG_SCENARIO -ceq 'failure'){
   $record=$script:captured[0].message | ConvertFrom-Json
   if($record.events.Count -ne 2 -or $record.events[0].before_sddl -cne 'original-before' -or $record.events[1].after_sddl -cne 'original-after'){throw 'Partial persistent-change evidence lost.'}

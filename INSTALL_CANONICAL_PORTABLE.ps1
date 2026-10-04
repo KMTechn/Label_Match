@@ -1946,7 +1946,7 @@ $parameterNames = @(
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
-    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit')) }).Count -ne 0
+    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit','InstallerRunId','InstallerOwnerProcessId','InstallerOwnerProcessStartedAtFileTime')) }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
 $expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
 $expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
@@ -1980,6 +1980,8 @@ foreach ($name in @('ExpectedActiveCommit','StartupUpdateRestorePreimage','Start
     $property = $payload.parameters.PSObject.Properties[$name]
     $invokeParameters[$name] = if ($null -eq $property) { '' } else { [string]$property.Value }
 }
+foreach($n in @('InstallerRunId','InstallerOwnerProcessStartedAtFileTime')){$p=$payload.parameters.PSObject.Properties[$n];if($null -ne $p){$invokeParameters[$n]=[string]$p.Value}}
+if($null -ne $payload.parameters.PSObject.Properties['InstallerOwnerProcessId']){$op=Get-RequiredExternalInteger $payload.parameters 'InstallerOwnerProcessId';if($op -le 0 -or $op -gt [int]::MaxValue){throw 'Invalid installer owner PID.'};$invokeParameters.InstallerOwnerProcessId=[int]$op}
 $Script:LabelWriterFenceAdmissionProductionRoot = [string]$invokeParameters.WriterFenceControlRoot
 if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
     (Get-RequiredExternalBoolean $payload.parameters 'Uninstall')) {
@@ -2000,6 +2002,8 @@ $placementPhase = 'HELPER_EXECUTION'
 if (-not $?) { exit 4 }
 exit 0
 '@.Replace('@@payload-base64@@', $payloadBase64)
+    # Leading indentation carries no launcher data; retain the native command limit.
+    $launcher = $launcher -replace '(?m)^[\t ]+', ''
     $encodedLauncher = [Convert]::ToBase64String(
         [Text.Encoding]::Unicode.GetBytes($launcher)
     )
@@ -3129,6 +3133,7 @@ $writerAttemptId = [Guid]::NewGuid().ToString('N')
 $writerTransactionId = [Guid]::NewGuid().ToString('N')
 $writerDelegationToken = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))
 $writerStartedAt = [DateTime]::UtcNow.ToString('o')
+$writerOwnerStartedAtFileTime = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString()
 $writerOrchestratorSha256 = Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1')
 $writerContractSha256 = [string]$frozenPlacement.writer_fence_sha256
 if ($null -ne $firstRegistrationResume) {
@@ -3316,6 +3321,7 @@ try {
     $audit.writer_fence = [ordered]@{
         status = 'QUIESCING'
         owner_process_id = [int]$PID
+        owner_process_started_at_filetime = $writerOwnerStartedAtFileTime
         orchestrator_sha256 = $writerOrchestratorSha256
         writer_contract_sha256 = $writerContractSha256
         session_started_at_utc = $writerStartedAt
@@ -3328,6 +3334,8 @@ try {
     Save $auditPath $audit
     if ($null -ne $firstRegistrationResume) {
         $helperParameters = @{
+            InstallerRunId=$runId; InstallerOwnerProcessId=[int]$PID
+            InstallerOwnerProcessStartedAtFileTime=$writerOwnerStartedAtFileTime
             SourceRoot=$source; InstallRoot=$install; ElevationLogPath=$elevationLogPath
             ExpectedBootstrapScriptSha256=[string]$frozenPlacement.helper_sha256
             VerifiedBootstrapScriptPath=[string]$frozenPlacement.helper_path; BootstrapIntegrityPreloaded=$true
@@ -3427,6 +3435,9 @@ try {
             'auto_update_supported_lifecycle_transition','auto_update_persist_switch','auto_update_write_json_durable','auto_update_fixed_helper') `
             -LifetimeSeconds 600)
         $helperParameters = @{
+            InstallerRunId = $runId
+            InstallerOwnerProcessId = [int]$PID
+            InstallerOwnerProcessStartedAtFileTime = $writerOwnerStartedAtFileTime
             ExpectedActiveCommit = $(if ($null -ne $startupLifecycle) { [string]$startupLifecycle.from_commit } else { "" })
             SourceRoot = $source
             InstallRoot = $install

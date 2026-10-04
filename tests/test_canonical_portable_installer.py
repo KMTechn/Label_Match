@@ -2096,6 +2096,8 @@ def test_placement_child_preserves_original_failure_without_delegation_secret(tm
     parameters.update(ExpectedSourceFileCount=1, ExpectedSourceByteCount=1,
         BootstrapIntegrityPreloaded=True, WriterFenceFunctionsPreloaded=True,
         AllowNoncanonicalLayoutForTest=True, ReplaceExistingVerifiedPortable=False, DryRun=False)
+    parameters.update(InstallerRunId='20261004T000000000Z-' + 'a' * 32,
+        InstallerOwnerProcessId=os.getpid(), InstallerOwnerProcessStartedAtFileTime='1')
     parameters["WriterFenceDelegationToken"] = "synthetic-private-delegation-" + "x" * 64
     declarations = [f"[{'switch' if isinstance(value, bool) else 'long' if isinstance(value, int) else 'string'}]${name}"
                     for name, value in parameters.items()]

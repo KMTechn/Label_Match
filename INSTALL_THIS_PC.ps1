@@ -20,6 +20,9 @@ param(
     [string]$WriterFenceReplacementTransactionId = "",
     [string]$WriterFenceDelegationToken = "",
     [string]$ExpectedActiveCommit = "",
+    [string]$InstallerRunId = "",
+    [int]$InstallerOwnerProcessId = 0,
+    [string]$InstallerOwnerProcessStartedAtFileTime = "",
     [string]$StartupUpdateRestorePreimage = "",
     [string]$StartupUpdateRestoreSha256 = "",
     [switch]$ReplaceExistingVerifiedPortable,
@@ -493,6 +496,58 @@ function Initialize-LabelProtectedInstallBase([string]$InstallRoot) {
     Assert-ProtectedCodeAncestors $application
 }
 
+
+function Protect-LabelInstallerOwnerFile([string]$Path) {
+    & (Join-Path ([Environment]::SystemDirectory) 'icacls.exe') $Path '/setowner' '*S-1-5-32-544' '/L' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'INSTALLER_OWNER_PROTECTION_FAILED' }
+    Assert-ProtectedCodeAncestors $Path
+}
+
+function Write-LabelInstallerOwnerRecord([string]$InstallRoot) {
+    if ($InstallerRunId -cnotmatch '^\d{8}T\d{9}Z-[0-9a-f]{32}$' -or
+        $InstallerOwnerProcessId -le 0 -or $InstallerOwnerProcessStartedAtFileTime -cnotmatch '^[1-9][0-9]{0,18}$') {
+        throw 'INSTALLER_OWNER_BINDING_INVALID'
+    }
+    $owner = [Diagnostics.Process]::GetProcessById($InstallerOwnerProcessId)
+    try {
+        if ($owner.HasExited -or $owner.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -cne $InstallerOwnerProcessStartedAtFileTime) {
+            throw 'INSTALLER_OWNER_PROCESS_DIFFERS'
+        }
+    } finally { $owner.Dispose() }
+    $lease = Enter-LabelCanonicalPlacement -TimeoutMilliseconds 15000
+    try {
+        $active = Read-LabelWriterFence $WriterFenceControlRoot
+        if ([string]$active.session_id -cne $WriterFenceSessionId -or
+            [string]$active.attempt_id -cne $WriterFenceAttemptId -or
+            [string]$active.replacement_transaction_id -cne $WriterFenceReplacementTransactionId) {
+            throw 'INSTALLER_OWNER_FENCE_DIFFERS'
+        }
+        $parent = Split-Path -Parent $InstallRoot
+        Assert-ProtectedCodeAncestors $parent
+        $path = Join-Path $parent ('.installer-owner-' + $WriterFenceSessionId + '-' + ($InstallerRunId -split '-')[-1] + '.json')
+        Assert-NoReparsePoint $path 'installer owner record'
+        $record = [ordered]@{schema='label-match-installer-owner-v1';run_id=$InstallerRunId;
+            install_root=$InstallRoot;control_root=([IO.Path]::GetFullPath($WriterFenceControlRoot));
+            owner_process_id=$InstallerOwnerProcessId;owner_process_started_at_filetime=$InstallerOwnerProcessStartedAtFileTime}
+        foreach ($key in @('session_id','attempt_id','replacement_transaction_id','writer_inventory_sha256',
+            'orchestrator_sha256','writer_contract_sha256','session_started_at_utc')) { $record[$key] = $active.$key }
+        $json = $record | ConvertTo-Json -Depth 5 -Compress
+        if (Test-Path -LiteralPath $path) {
+            Assert-ProtectedCodeAncestors $path
+            if ((Get-Item -LiteralPath $path).Length -gt 65536 -or
+                ((Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json | ConvertTo-Json -Depth 5 -Compress) -cne $json)) {
+                throw 'INSTALLER_OWNER_RECORD_DIFFERS'
+            }
+            return
+        }
+        $stream = [IO.File]::Open($path, 'CreateNew', 'Write', 'Read')
+        try { $bytes=[Text.Encoding]::UTF8.GetBytes($json);$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true) }
+        finally { $stream.Dispose() }
+        # Existing code-parent DACL supplies the protected inherited access.
+        Protect-LabelInstallerOwnerFile $path
+        if ((Get-Content -LiteralPath $path -Raw -Encoding UTF8) -cne $json) { throw 'INSTALLER_OWNER_READBACK_DIFFERS' }
+    } finally { Exit-LabelWriterAdmission $lease }
+}
 
 function Assert-LabelStartupUpdateTrust([string]$Root) {
     Assert-ProtectedCodeAncestors (Split-Path -Parent $Root)
@@ -1311,6 +1366,7 @@ if (-not $DryRun.IsPresent -and -not $testOverride) {
     if (-not $Uninstall.IsPresent -and -not $StartupUpdateRestorePreimage) {
         try {
             Initialize-LabelProtectedInstallBase $installRootFull
+            Write-LabelInstallerOwnerRecord $installRootFull
             Write-ElevationLog 'PREPARATION' ($Script:LabelAncestorPreparationEvents.ToArray() | ConvertTo-Json -Depth 8 -Compress)
         }
         catch {
