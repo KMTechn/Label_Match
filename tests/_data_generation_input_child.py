@@ -39,7 +39,7 @@ external = root / 'home' / 'external'
 external.mkdir(parents=True)
 os.chdir(root)
 def requested(path):
-    if spelling == 'tilde':
+    if spelling == 'tilde' and path.is_relative_to(root / 'home'):
         return '~/' + path.relative_to(root / 'home').as_posix()
     if spelling == 'relative':
         return os.path.relpath(path, root)

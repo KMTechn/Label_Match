@@ -44,7 +44,7 @@ def test_allowed_external_input_reaches_existing_reader(tmp_path, kind, state):
     ('canary', 'external-tls'), ('install-profile', 'external-tls'),
 ])
 def test_additional_configuration_input_is_checked_without_reading_or_writing(tmp_path, entry, state):
-    from test_data_generation_direct_entries import test_direct_process_refuses_without_identity_or_lifecycle_changes
+    from tests.test_data_generation_direct_entries import test_direct_process_refuses_without_identity_or_lifecycle_changes
     test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, state, tmp_path)
 
 
