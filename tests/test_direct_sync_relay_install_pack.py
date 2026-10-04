@@ -35,6 +35,10 @@ def _generation_release_inputs(monkeypatch, tmp_path):
     ).strip()
 
     def prepare(argv):
+        # CLI defaults are installation paths, so bare fixtures need their own
+        # data input as well as their explicit synthetic code root.
+        if '--program-data-root' not in argv:
+            argv.extend(['--program-data-root', str(tmp_path / 'generation-direct-sync')])
         if '--app-root' not in argv:
             return
         root = Path(argv[argv.index('--app-root') + 1]).resolve()
@@ -46,6 +50,7 @@ def _generation_release_inputs(monkeypatch, tmp_path):
             str(part).replace('\\', '/').endswith('tools/direct_sync_relay_install_pack.py')
             for part in command
         ):
+            command = list(command)
             prepare(command)
         return original_run(command, *args, **kwargs)
 
@@ -61,6 +66,7 @@ def _generation_release_inputs(monkeypatch, tmp_path):
 
         def main_with_release(argv=None):
             if argv is not None:
+                argv = list(argv)
                 prepare(argv)
             return original_main(argv)
 
