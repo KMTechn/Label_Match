@@ -175,7 +175,7 @@ def _assert_bootstrap_source(installer: Path, integrity_helper: Path) -> None:
     )
     combined_lowered = lowered + "\n" + helper_lowered
     present = [token for token in forbidden if token in combined_lowered]
-    if re.search(r"(?im)^\s*Register-ScheduledTask\b", helper_source):
+    if "register-scheduledtask" in helper_lowered:
         present.append("register-scheduledtask")
     if re.search(r"(?im)^\s*Register-ScheduledTask\b", source):
         # Placement owns two authenticated current-user startup task mutations.

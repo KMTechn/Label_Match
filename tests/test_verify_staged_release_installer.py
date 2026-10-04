@@ -195,7 +195,7 @@ def test_verifier_requires_onedir_runtime(tmp_path):
         verifier.verify_staged_package(package)
 
 
-@pytest.mark.parametrize("damage", ("task-name", "unguarded", "helper"))
+@pytest.mark.parametrize("damage", ("task-name", "unguarded", "helper", "inline-helper"))
 def test_verifier_refuses_registration_outside_exact_startup_task_contract(tmp_path, damage):
     package = _package(tmp_path)
     installer = package / "INSTALL_THIS_PC.ps1"
@@ -207,7 +207,8 @@ def test_verifier_refuses_registration_outside_exact_startup_task_contract(tmp_p
         source = source.replace("Invoke-LabelStartupUpdateTaskMutation {", "& {", 1)
     else:
         helper = package / "tools/bootstrap_integrity.ps1"
-        helper.write_text(helper.read_text(encoding="utf-8") + "\nRegister-ScheduledTask -TaskName bad\n",
+        extra = "\nRegister-ScheduledTask -TaskName bad\n" if damage == "helper" else "\nfunction Forbidden { Register-ScheduledTask -TaskName bad }\n"
+        helper.write_text(helper.read_text(encoding="utf-8") + extra,
                           encoding="utf-8")
     installer.write_text(source, encoding="utf-8")
     with pytest.raises(verifier.StagedInstallerVerificationError,
