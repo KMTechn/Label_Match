@@ -9,7 +9,7 @@ import pytest
 from tools import build_portable_release_candidate as builder
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE_COMMIT = '4b7630f2ca25a08933a9482d8fed6946e79df688'
+BASE_COMMIT = 'e89c18879f5bf59ddcd550152bf26ffedc4d687a'
 
 
 @pytest.fixture(scope='module')
@@ -77,7 +77,7 @@ def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     assert json.loads(reverse.stdout)['compatibility'] == 'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE'
 
 
-@pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source'])
+@pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice'])
 def test_g_pair_rejects_changes_outside_its_exact_declaration(pair, mutation):
     old, new = pair
     if mutation == 'runtime':
@@ -87,8 +87,31 @@ def test_g_pair_rejects_changes_outside_its_exact_declaration(pair, mutation):
     elif mutation == 'helper':
         with (new / 'app' / 'kmtech_shared' / 'data_generation.py').open('ab') as handle:
             handle.write(b'\nUNREVIEWED = True\n')
-    else:
+    elif mutation == 'old_source':
         with (old / 'app' / 'Label_Match.py').open('ab') as handle:
+            handle.write(b'\nUNREVIEWED = True\n')
+    else:
+        package = old if mutation == 'old_notice' else new
+        with (package / 'app' / 'label_match_single_instance.py').open('ab') as handle:
             handle.write(b'\nUNREVIEWED = True\n')
     assert probe(new, old).returncode != 0
     assert probe(old, new, signed=True).returncode != 0
+
+
+@pytest.mark.parametrize('revision,compatibility', [
+    ('4b7630f', 'PINNED_MAINLOOP_EXIT_CLEANUP'),
+    ('640d770', 'PINNED_MAINLOOP_EXIT_NOTICE'),
+])
+def test_g_composes_only_with_the_exact_shutdown_repair(pair, revision, compatibility):
+    old, new = pair
+    for relative in ('app/Label_Match.py', 'app/label_match_single_instance.py',
+                     'app/writer_session_fence.py', 'tools/label_writer_fence.ps1'):
+        (old / relative).write_bytes(subprocess.check_output([
+            'git', '-C', str(ROOT), 'show', revision + ':' + relative.removeprefix('app/')]))
+    forward = probe(new, old)
+    assert forward.returncode == 0, forward.stderr[-2000:]
+    assert json.loads(forward.stdout)['compatibility'] == compatibility
+    assert probe(old, new, signed=True).returncode != 0
+    with (old / 'app/label_match_single_instance.py').open('ab') as handle:
+        handle.write(b'\nUNREVIEWED = True\n')
+    assert probe(new, old).returncode != 0

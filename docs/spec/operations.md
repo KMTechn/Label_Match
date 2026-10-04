@@ -780,6 +780,8 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 <a id="first-field-data-generation"></a>
 ### 첫 현장 설치와 자료 세대 복구
 
+G 가지는 종료 잔류 수정·w9scanonly가 포함된 `e89c188` 위에 적용한다. 종료 지연 알림의 기존 guarded sink와 방향성 선언을 유지하고 자료 세대 기록 sink 하나만 더한다(58→59). `e89c188` 원본은 표준 writer `--check`와 기존 설치 선언 읽기 검사에서 통과했다. 지원 설치기의 exact 자료 세대 전/후 쌍은 이 기준판에 결속하며, 이전 종료 수정 판의 정방향 전환도 각 역사 preimage와 최종 후보 bytes를 함께 확인한다. 실행 증거는 sub-220 보고서의 새 기준/후보 비교를 따른다.
+
 현장 옛 `v2.0.38` 위 첫 설치는 업무가 끝난 뒤 진행한다. 앱과 relay의 정상 정지·PID 부재를 확인한 **설치 직전** 기존 packet/무결성 기록, 실제 선택된 자료 root 전체(package outbox와 WAL/SHM, 현재 세트·완료 CSV·감사 조각), 사용자 DirectSync 전체, 설정·신원·보호된 자격, Run/task의 정확한 원 상태를 하나의 일관 백업으로 보존하고 바이트를 대조한다. 자격 내용은 출력하지 않는다. 백업 이후 추가 업무가 없고 relay가 계속 정지했음을 설치 직전에 다시 확인한다.
 
 자료 세대 G 후보(`v2.0.95`)는 앱 DataManager, onboarding 원장, raw relay가 실제 자료를 열기 직전에 기존 writer admission 안에서 기록한다. 설치기·bootstrap의 기동 허용만으로 기록하지 않는다. 기록은 대상 사용자의 기존 `%LOCALAPPDATA%/KMTech/DirectSync/label_match/control/writer-session/data-generation/<SID>.json`과 실제 자료 root의 `data-generation.json`이며 모두 읽은 최대 세대를 따른다. 기록이 전부 없으면 기존 DB가 있어도 ALLOW이므로 G 이전 코드가 만든 자료는 이 guard로 판별하지 못한다. 손상·읽기 실패·같은 판 다른 build는 거절하고 새 코드와 자료를 보존한다.
