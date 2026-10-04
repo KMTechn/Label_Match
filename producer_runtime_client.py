@@ -23,7 +23,7 @@ from typing import Any, Dict, Mapping
 from urllib.parse import urlparse, urlunparse
 
 from kmtech_shared import runtime as _runtime_core
-from writer_session_fence import remote_request
+from writer_session_fence import remote_request, writer_sink
 
 from kmtech_zero_pe import (
     generate_public_jwk,
@@ -189,6 +189,7 @@ def _response_payload(response: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+@writer_sink("runtime_lease_network")
 @remote_request()
 def _post_lease_request(
     *,

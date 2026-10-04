@@ -28,6 +28,7 @@ if SITE_PACKAGES.is_dir() and str(SITE_PACKAGES) not in sys.path:
     sys.path.insert(1, str(SITE_PACKAGES))
 
 import requests  # noqa: E402
+from writer_session_fence import remote_request, writer_sink  # noqa: E402
 
 from enrollment_mutex import (  # noqa: E402
     DEFAULT_ENROLLMENT_MUTEX_TIMEOUT_SECONDS,
@@ -780,6 +781,8 @@ def _prepare_possession_key(report: Mapping[str, Any]) -> dict[str, Any]:
     return descriptor
 
 
+@writer_sink("worker_enrollment_network")
+@remote_request()
 def _enroll(
     payload: Mapping[str, Any],
     *,
@@ -1492,6 +1495,8 @@ def _archive_partial_recovery(
         _save_partial_recovery(journal, state)
 
 
+@writer_sink("worker_partial_recovery_network")
+@remote_request()
 def _partial_recovery_request(session: requests.Session, url: str, action: str,
                               proof: dict[str, Any], key: Any, token: str,
                               timeout: int, **extra: Any) -> dict[str, Any]:
@@ -1725,6 +1730,8 @@ def _recover_partial_local_state(args: argparse.Namespace, manifest: dict[str, A
             session.close()
 
 
+@writer_sink("worker_admin_recovery_network")
+@remote_request()
 def _admin_recover(
     args: argparse.Namespace,
     manifest: dict[str, Any],

@@ -82,8 +82,11 @@ def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py'):
         (legacy / relative).write_bytes((old / relative).read_bytes())
     original_reverse = probe(old, legacy, signed=True)
-    assert original_reverse.returncode == 0, original_reverse.stderr[-2000:]
-    assert json.loads(original_reverse.stdout)['compatibility'] == 'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE'
+    # sub-333 / user G decision 10-05 05:2x: the newly guarded transport
+    # companion is forward only, even with G's historical signed reversal.
+    # Restoring the two audit-index leaves cannot downgrade these guards.
+    assert original_reverse.returncode != 0
+    assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/producer_runtime_client.py' in original_reverse.stderr
 
 
 @pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice'])
