@@ -41,4 +41,3 @@ def test_security_input_parent_is_checked_before_the_existing_reader(tmp_path, k
     else:
         assert result['ca_reads'] == 1
         assert result['generation_records_added'] > 0
-
