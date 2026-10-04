@@ -1828,9 +1828,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-interactive-task-for-local-test", action="store_true")
     parser.add_argument("--allow-noncanonical-layout-for-test", action="store_true")
     args = parser.parse_args(argv)
-    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
-    roots = (Path(args.program_data_root).absolute(), Path(args.scan_source_dir).absolute())
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, normalize_data_arguments
     try:
+        normalize_data_arguments(args, ("app_root", "app_settings_path", "program_data_root", "scan_source_dir",
+            "producer_manifest_path", "credential_path", "logistics_profile_path", "tls_ca_bundle_path"))
+        roots = (Path(args.program_data_root), Path(args.scan_source_dir))
+        roots += tuple(Path(value).parent for value in (args.producer_manifest_path, args.credential_path,
+            args.logistics_profile_path) if value)
         check_user_data_open(Path(args.app_root), roots)
         record_user_data_open(Path(args.app_root), roots)
     except DataGenerationError as exc:

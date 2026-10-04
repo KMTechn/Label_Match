@@ -1111,11 +1111,13 @@ def main(argv: list[str] | None = None) -> int:
         print("canary_status=FAIL")
         print("canary_error=work-dir-and-report-path-required")
         return 1
-    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
-    roots = tuple(Path(value).absolute() for value in args.live_root)
-    roots += tuple(Path(value).absolute().parent for value in (
-        args.credential_path, args.auth_target_path, args.relay_db_path) if value)
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, resolve_data_path, normalize_data_arguments
     try:
+        normalize_data_arguments(args, ("credential_path", "auth_target_path", "relay_db_path"))
+        args.live_root = [str(resolve_data_path(value)) for value in args.live_root]
+        roots = tuple(Path(value) for value in args.live_root)
+        roots += tuple(Path(value).parent for value in (
+            args.credential_path, args.auth_target_path, args.relay_db_path) if value)
         check_user_data_open(REPO_ROOT, roots)
         record_user_data_open(REPO_ROOT, roots)
     except DataGenerationError as exc:

@@ -7,10 +7,15 @@ import os
 from pathlib import Path
 import sys
 import sqlite3
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 repo, root, entry, state, output = sys.argv[1:]
 repo, root = Path(repo), Path(root)
+external_mode = state.startswith("external-")
+kind = os.environ["KMTECH_DATA_GENERATION_ENTRY_KIND"]
+external = root / "home" / "external"
 sys.path.insert(0, str(repo))
 for name, relative in {"LOCALAPPDATA": "local", "APPDATA": "roaming", "PROGRAMDATA": "program",
                        "LABEL_MATCH_SAVE_DIR": "data", "LABEL_MATCH_DIRECT_SYNC_ROOT": "relay",
@@ -28,9 +33,16 @@ generation._installed_identity = lambda _root: {
     "data_compatible_min_version": generation.CURRENT_VERSION, "compatibility_verified": False,
 }
 root.mkdir(parents=True, exist_ok=True)
-for marker in generation.marker_paths((root / "data", root / "relay"), SID):
+if external_mode:
+    external.mkdir(parents=True)
+    os.environ["USERPROFILE"] = str(root / "home")
+    os.chdir(root)
+    marker_list = [external / "data-generation.json"]
+else:
+    marker_list = generation.marker_paths((root / "data", root / "relay"), SID)
+for marker in marker_list:
     marker.parent.mkdir(parents=True, exist_ok=True)
-    record_generation(marker, "v3.0.0" if state == "old" else generation.CURRENT_VERSION,
+    record_generation(marker, "v3.0.0" if state == "old" or external_mode else generation.CURRENT_VERSION,
                       app_id=generation.APP_ID, subject_sid=SID, build_id="a" * 40)
     if state == "corrupt":
         marker.write_text('{"broken":true}', encoding="utf-8")
@@ -50,6 +62,9 @@ with sqlite3.connect(database) as connection:
     connection.execute("CREATE TABLE relay_batches (status TEXT)")
     connection.execute("INSERT INTO relay_batches VALUES ('pending')")
 events = {"identity_reads": 0, "data_reads": 0, "registration_calls": 0, "mutations": 0}
+def blocked_process(*_args, **_kwargs):
+    events["mutations"] += 1
+    raise RuntimeError("isolated subprocess lifecycle trap")
 def mutate(*_args, **_kwargs):
     events["mutations"] += 1
     return {"status": "ALIVE"}
@@ -75,15 +90,16 @@ def relay_profile(*_args, **_kwargs):
     (root / "relay/credential.json").read_text()
     return SimpleNamespace(tls_ca_bundle_path="")
 import logistics_runtime_profile
+original_profile_loader = logistics_runtime_profile.load_logistics_runtime_profile
 logistics_runtime_profile.load_logistics_runtime_profile = relay_profile
 import winreg
 winreg.SetValueEx = mutate
 winreg.DeleteValue = mutate
 winreg.CreateKeyEx = mutate
-before = {str(p.relative_to(root)): p.read_bytes().hex() for p in root.rglob("*") if p.is_file()}
+before = {}
 original_open = Path.open
 def observed_open(path, mode="r", *args, **kwargs):
-    if "r" in mode and path.name in {"producer_identity.json", "credential.json", "producer_manifest.json", "settings.json"}:
+    if "r" in mode and path.name.casefold() in {"producer_identity.json", "credential.json", "producer_manifest.json", "settings.json", "logistics_runtime_profile.json"}:
         events["identity_reads"] += 1
     return original_open(path, mode, *args, **kwargs)
 Path.open = observed_open
@@ -148,6 +164,71 @@ argv["registrar-admin"] = [*argv["registrar"], "--admin-recovery-secret-file", s
 argv["registrar-partial"] = [*argv["registrar-admin"], "--recover-partial-local-state"]
 if kind.startswith("registrar"):
     module.apply_registration = network
+if external_mode:
+    for name in ("producer_identity.json", "credential.json", "logistics_runtime_profile.json"):
+        (external / name).write_text(json.dumps(identity) if name == "producer_identity.json" else '{"preserved":true}', encoding="utf-8")
+    shutil.copyfile(database, external / "direct_sync_relay.sqlite3")
+    alias = external
+    if state == "external-link":
+        alias = root / "input-link"
+        command = "[void](New-Item -ItemType Junction -Path '{}' -Target '{}')".format(
+            str(alias).replace("'", "''"), str(external).replace("'", "''"))
+        subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            check=True, capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    def requested(path):
+        if state == "external-tilde":
+            return "~/" + path.relative_to(root / "home").as_posix()
+        if state == "external-relative":
+            return str(path.relative_to(root))
+        if state == "external-case":
+            return str(path).swapcase()
+        return str(alias / path.relative_to(external))
+    field, name = {
+        "registrar": ("--identity-path", "producer_identity.json"),
+        "registrar-dry": ("--identity-path", "producer_identity.json"),
+        "registrar-admin": ("--identity-path", "producer_identity.json"),
+        "registrar-partial": ("--identity-path", "producer_identity.json"),
+        "check-profile": ("--profile-path", "logistics_runtime_profile.json"),
+        "install-profile": ("--profile-path", "logistics_runtime_profile.json"),
+        "install-admin": ("--profile-path", "logistics_runtime_profile.json"),
+        "operator": ("--db-path", "direct_sync_relay.sqlite3"),
+        "operator-pause": ("--operator-pause-path", "pause.json"),
+        "operator-retry": ("--db-path", "direct_sync_relay.sqlite3"),
+        "raw": ("--credential-path", "credential.json"),
+        "hosted-raw": ("--credential-path", "credential.json"),
+        "relay": ("--direct-sync-root", ""), "hosted-relay": ("--direct-sync-root", ""),
+        "canary": ("--credential-path", "credential.json"),
+        "install-pack": ("--credential-path", "credential.json"),
+        "exact": ("--identity", "producer_identity.json"),
+        "reconcile": ("--identity", "producer_identity.json"),
+    }.get(kind, ("", ""))
+    selected = requested(external / name)
+    if field:
+        if field in argv[kind]: argv[kind][argv[kind].index(field) + 1] = selected
+        else: argv[kind].extend([field, selected])
+    else:
+        os.environ["LABEL_MATCH_SAVE_DIR"] = selected
+    if kind == "check-profile":
+        module.load_logistics_runtime_profile = original_profile_loader
+        if state == "external-blank-profile":
+            os.environ["LABEL_MATCH_LOGISTICS_PROFILE_PATH"] = str(external / "logistics_runtime_profile.json")
+            argv[kind] = ["--profile-path", ""]
+        elif state == "external-default-profile":
+            os.environ.pop("LABEL_MATCH_LOGISTICS_PROFILE_PATH", None)
+            os.environ["LOCALAPPDATA"] = str(external / "local")
+            profile = logistics_runtime_profile.default_logistics_profile_path()
+            profile.parent.mkdir(parents=True, exist_ok=True)
+            profile.write_text('{"preserved":true}', encoding="utf-8")
+            record_generation(profile.parent / "data-generation.json", "v3.0.0", app_id=generation.APP_ID,
+                subject_sid=SID, build_id="a" * 40)
+            argv[kind] = []
+    assert not (root / "control/data-generation" / (SID + ".json")).exists()
+subprocess.run = blocked_process
+subprocess.Popen = blocked_process
+control_marker_absent = not (root / "control/data-generation" / (SID + ".json")).exists()
+Path.open = original_open
+before = {str(p.relative_to(root)): p.read_bytes().hex() for p in root.rglob("*") if p.is_file()}
+Path.open = observed_open
 stdout, stderr = io.StringIO(), io.StringIO()
 error = ""
 with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -159,7 +240,7 @@ with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             exit_code = 0
         elif kind == "persistent":
             user_relay.run_persistent_relay_loop(
-                lambda: generation.record_user_data_open(repo, (root / "data",)),
+                lambda: generation.record_user_data_open(repo, (Path(selected) if external_mode else root / "data",)),
                 status_path=root / "relay/status/user_relay.json", max_cycles=1)
             exit_code = 0
         elif kind == "hosted-relay":
@@ -178,6 +259,7 @@ changed = sorted(name for name in before if after.get(name) != before[name])
 added = sorted(name for name in after if name not in before and not name.startswith("control/"))
 message = stdout.getvalue() + stderr.getvalue() + error
 result = {"entry": kind, "state": state, **events, "exit_code": exit_code,
+          "control_marker_absent_before": control_marker_absent,
           "changed": changed, "added": added, "korean_guidance": "자료" in message and "복구" in message,
           "passed": events == {"identity_reads": 0, "data_reads": 0, "registration_calls": 0, "mutations": 0}
                     and not changed and not [p for p in added if "startup-trace" not in p]

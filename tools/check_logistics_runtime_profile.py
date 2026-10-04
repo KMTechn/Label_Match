@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from logistics_runtime_profile import default_profile_path, load_logistics_runtime_profile  # noqa: E402
+from logistics_runtime_profile import load_logistics_runtime_profile  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,12 +20,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile-path")
     parser.add_argument("--optional", action="store_true")
     args = parser.parse_args(argv)
-    if args.profile_path is None:
-        args.profile_path = str(default_profile_path())
-    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, resolve_data_path
     try:
-        check_user_data_open(REPO_ROOT, (Path(args.profile_path).absolute().parent,))
-        record_user_data_open(REPO_ROOT, ())
+        check_user_data_open(REPO_ROOT)
+        from logistics_runtime_profile import selected_logistics_runtime_profile_path
+        if str(args.profile_path or "").strip():
+            args.profile_path = str(resolve_data_path(str(args.profile_path).strip()))
+        args.profile_path = str(selected_logistics_runtime_profile_path(args.profile_path))
+        roots = (Path(args.profile_path).parent,)
+        check_user_data_open(REPO_ROOT, roots)
+        record_user_data_open(REPO_ROOT, roots)
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)
         return 2

@@ -238,14 +238,14 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
             DIRECT_SYNC_RELAY_MODE,
             USER_RELAY_MODE,
             }:
-            from label_data_generation import DataGenerationError, check_user_data_open
+            from label_data_generation import DataGenerationError, check_user_data_open, resolve_data_path
             try:
                 selected_root = _option_value(arguments, "--app-root")
-                root = Path(selected_root) if selected_root else _default_product_root()
-                roots = tuple(Path(value).absolute().parent for option in (
+                root = resolve_data_path(selected_root) if selected_root else _default_product_root()
+                roots = tuple(resolve_data_path(value).parent for option in (
                     "--db-path", "--credential-path", "--producer-manifest-path")
                     if (value := _option_value(arguments, option)))
-                roots += tuple(Path(value).absolute() for option in ("--scan-source-dir", "--direct-sync-root")
+                roots += tuple(resolve_data_path(value) for option in ("--scan-source-dir", "--direct-sync-root")
                     if (value := _option_value(arguments, option)))
                 check_user_data_open(root, roots)
             except DataGenerationError as exc:

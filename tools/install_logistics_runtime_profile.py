@@ -924,12 +924,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.profile_path is None:
-        args.profile_path = str(default_profile_path())
-    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, resolve_data_path
     try:
-        check_user_data_open(REPO_ROOT, (Path(args.profile_path).absolute().parent,))
-        record_user_data_open(REPO_ROOT, ())
+        check_user_data_open(REPO_ROOT)
+        args.profile_path = str(resolve_data_path(default_profile_path() if args.profile_path is None else args.profile_path))
+        roots = (Path(args.profile_path).parent,)
+        check_user_data_open(REPO_ROOT, roots)
+        record_user_data_open(REPO_ROOT, roots)
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)
         return 2

@@ -92,9 +92,12 @@ def _preflight_output(path: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
-    roots = (Path(args.client_db).absolute().parent, Path(args.identity).absolute().parent)
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, normalize_data_arguments
     try:
+        normalize_data_arguments(args, ("client_db", "server_db", "identity", "credential", "preimage", "client_backup",
+            "live_client_proof", "server_initializer_proof", "server_source_root", "server_launcher", "server_executable",
+            "stop_marker", "portable_root", "tls_ca_bundle"))
+        roots = tuple(Path(value).parent for value in (args.client_db, args.server_db, args.identity, args.credential))
         check_user_data_open(ROOT, roots)
         record_user_data_open(ROOT, roots)
     except DataGenerationError as exc:

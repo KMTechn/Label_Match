@@ -111,11 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     restore_parser.add_argument("--report-path", default="")
 
     args = parser.parse_args(argv)
-    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
-    roots = tuple(Path(value).absolute().parent for value in (
-        getattr(args, "db_path", ""), getattr(args, "operator_pause_path", ""),
-        getattr(args, "credential_path", "")) if value)
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, normalize_data_arguments
     try:
+        normalize_data_arguments(args, ("db_path", "operator_pause_path", "credential_path", "spool_root"))
+        roots = tuple(Path(value).parent for value in (
+            getattr(args, "db_path", ""), getattr(args, "operator_pause_path", ""),
+            getattr(args, "credential_path", "")) if value)
         check_user_data_open(ROOT, roots)
         record_user_data_open(ROOT, roots)
     except DataGenerationError as exc:

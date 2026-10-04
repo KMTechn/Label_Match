@@ -2,6 +2,8 @@
 
 저장된 F5 복구 journal 시험 자료 `tests/fixtures/f5-recovery-167ac7e/*.journal.json`은 원 LF 바이트와 SHA256을 보존하도록 `.gitattributes`의 `-text`로 고정한다. `core.autocrlf=true` checkout에서도 `tests/test_f5_saved_journals.py`의 다섯 복구 신원·상태 oracle을 그대로 검사한다.
 
+직접 지원 입구는 첫 신원/자료 판독 전에 실제 선택 경로의 G를 확인한다. 빈 profile 값의 환경 변수·기본 경로 선택, `~` 펼침, 상대 경로와 대소문자 해석은 기존 logistics path resolver로 통일하며 해석 결과를 reader에도 전달한다. symlink/junction은 기존 no-reparse 계약에 따라 UNKNOWN으로 거절하고 자료·relay/Run/task·기존 report를 보존한다. 제어 root에는 marker가 없고 실제 외부 경로에 높은 marker만 있는 별도 프로세스 회귀와 정상 profile 선택 검증의 정확한 판·결과·한계는 [sub-234 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-234/REPORT.md)에 기록한다.
+
 <a id="remote-writer-admission"></a>
 
 예외: 건별 복구에서 이전 판 journal로 재개하는 F5 날짜 교환의 원격 호출은 writer admission을 유지한다(코디 결정 2026-10-02). 기존 busy gate가 거절한 스캔은 응답 뒤 다시 입력하며 미리 입력된 값은 보존한다. 계측 등록은 phs_current_recovery/phs_reconciliation_recovery와 기존 prepare/status/print/activate client 메서드의 조합만 면제한다. 새 교환·후보/action 조회는 제거했다.

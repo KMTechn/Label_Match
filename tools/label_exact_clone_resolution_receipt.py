@@ -120,10 +120,12 @@ def _paths(args: argparse.Namespace) -> dict[str, Path]:
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
-    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, resolve_data_path, normalize_data_arguments
     try:
-        inputs = _paths(args)
-        roots = (inputs["client_db_path"].absolute().parent, inputs["identity_path"].absolute().parent)
+        normalize_data_arguments(args, ("client_db", "server_db", "identity", "credential", "stop_marker", "portable_root"))
+        inputs = {name: resolve_data_path(value) if value is not None else None for name, value in _paths(args).items()}
+        roots = tuple(inputs[name].parent for name in ("client_db_path", "server_db_path", "identity_path", "credential_path")
+                      if inputs[name] is not None)
         check_user_data_open(REPO_ROOT, roots)
         record_user_data_open(REPO_ROOT, roots)
         extra_summary = {}

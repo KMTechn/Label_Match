@@ -819,10 +819,14 @@ def main(argv: list[str] | None = None) -> int:
         unprotect_current_user_secret,
     )
 
-    check_user_data_open(app_root, (Path(args.direct_sync_root),) if args.direct_sync_root else ())
+    from label_data_generation import normalize_data_arguments
+    normalize_data_arguments(args, ("direct_sync_root", "scan_source_dir"))
+    selected_roots = tuple(Path(value) for value in (args.direct_sync_root, args.scan_source_dir) if value)
+    check_user_data_open(app_root, selected_roots)
     paths = resolve_current_user_onboarding_paths(app_root)
     record_user_data_open(app_root, (paths.data_root, paths.ledger_path.parent,
-                                    paths.direct_sync_root, paths.queue_dir))
+                                    paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent,
+                                    *selected_roots))
     apply_current_user_runtime_environment(paths)
     profile = load_logistics_runtime_profile(
         required=True,

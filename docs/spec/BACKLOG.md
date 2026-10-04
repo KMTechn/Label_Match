@@ -6,6 +6,9 @@ legacy upgrade guard의 G/nextfix 조합은 정의된 exact tuple을 사용하�
 
 w9scanonly audit CSV index 병합 후 G 전이에 빠진 manager/schema 두 파일은 승인된 committed before/after exact 전진 조합으로 결속한다. 기존 G 10항목·signed reverse·공용 helper·syntax guard는 유지하며 current/낡은 일부 바이트/한 바이트/목록 밖/역방향 및 이미 G인 두 판의 회귀·hash 전 항목 표를 같은 sub-242 보고서에서 확인한다.
 
+직접 입구의 G 경로와 실제 reader 경로를 일치시킨다. 빈 profile 값은 기존 loader의 환경 변수/기본 선택을 사용하고, `~`·상대 경로·대소문자는 기존 경로 resolver로 한 번 해석한 값을 guard와 reader에 전달한다. 링크/junction은 기존 no-reparse 계약에 따라 UNKNOWN으로 거절한다. 제어 root에 marker 없이 실제 외부 경로에 높은 marker만 둔 별도 프로세스 회귀와 정상 허용 profile 경로 일치 시험을 sub-234에 기록한다. 합성 build fixture 사이 세대 기록 혼입을 막기 위해 known folder와 제어 root를 시험별로 격리하며 원래 단언·native 시험 선택은 유지한다.
+b48835e (fix(lm): bind generation admission to the actual resolved input paths)
+
 G 후보의 새 기준은 종료 잔류 수정·w9scanonly를 포함한 `e89c188`이며, 종료 알림 sink를 유지한 58→59 명단과 exact 설치기 선언을 다시 생성한다. 새 기준의 집중 묶음·전체 실패 집합과 후보의 비교는 같은 선택/격리 harness로 다시 측정하며, 이전 4b/f1ee 증거는 해당 판의 기록으로 보존한다.
 
 직접 지원 입구 G 부류 교정은 `a56a587` 위에서 진행한다. 등록/관리자·부분 복구, onboarding·제거, raw/hosted relay와 queue·profile·지원 복구가 첫 신원/자료 판독 전에 판단하며, G 거절 때 기존 relay·Run/task·상태 report를 보존한다. bootstrap 판 확인의 사용자 설정 선행 판독과 installed `app/tools`의 packet 신원 선택도 교정한다. 기존 공용 helper와 sink 59개를 유지한다. headless 실제 별도 프로세스 및 정상 허용 경로의 판별 근거는 [sub-234](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-234/REPORT.md)에 기록하며, 실제 GUI·native 설치·VM/서버 수용과 독립 검토는 별도다.

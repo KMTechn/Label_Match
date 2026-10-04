@@ -518,20 +518,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.baseline_existing_source_files and not args.scan_source_dir:
         parser.error("--baseline-existing-source-files requires --scan-source-dir")
 
-    from label_data_generation import check_user_data_open, record_user_data_open
+    from label_data_generation import check_user_data_open, record_user_data_open, normalize_data_arguments
     from label_match_product_host import _default_product_root
     from current_user_onboarding import resolve_current_user_onboarding_paths
     product_root = _default_product_root()
-    check_user_data_open(product_root, (Path(args.db_path).absolute().parent,
-        Path(args.producer_manifest_path).absolute().parent, Path(args.credential_path).absolute().parent,
-        Path(args.scan_source_dir).absolute() if args.scan_source_dir else
-        Path(args.enqueue_source_file).absolute().parent if args.enqueue_source_file else
-        Path(args.db_path).absolute().parent))
+    normalize_data_arguments(args, ("db_path", "producer_manifest_path", "credential_path", "scan_source_dir",
+        "enqueue_source_file", "spool_dir", "log_path", "runtime_status_path", "upload_status_dir"))
+    roots = (Path(args.db_path).parent, Path(args.producer_manifest_path).parent, Path(args.credential_path).parent,
+        Path(args.scan_source_dir) if args.scan_source_dir else
+        Path(args.enqueue_source_file).parent if args.enqueue_source_file else Path(args.db_path).parent)
+    check_user_data_open(product_root, roots)
     paths = resolve_current_user_onboarding_paths(product_root)
     source_roots = ([Path(args.scan_source_dir).expanduser().absolute()] if args.scan_source_dir else
                     [Path(args.enqueue_source_file).expanduser().absolute().parent] if args.enqueue_source_file else [])
-    record_user_data_open(product_root, (paths.data_root, paths.ledger_path.parent,
-                                        Path(args.db_path).absolute().parent, *source_roots))
+    record_user_data_open(product_root, (paths.data_root, paths.ledger_path.parent, *roots, *source_roots))
     config = _build_config(args)
     if args.baseline_existing_source_files:
         try:

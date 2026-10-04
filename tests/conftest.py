@@ -46,6 +46,9 @@ def _isolated_writer_control_root(tmp_path):
     # and competing writers within one test still share the real mutex/root.
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("KMTECH_LABEL_WRITER_TEST_MODE", "1")
+        for name, relative in (("LOCALAPPDATA", "local"), ("APPDATA", "roaming"),
+                               ("PROGRAMDATA", "program"), ("LABEL_MATCH_SAVE_DIR", "data")):
+            patch.setenv(name, str(tmp_path / relative))
         patch.setenv(
             "KMTECH_LABEL_WRITER_CONTROL_ROOT",
             str(tmp_path / "writer-control"),

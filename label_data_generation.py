@@ -27,7 +27,7 @@ class DataGenerationError(RuntimeError):
 
 def release_identity(app_root: Path) -> dict[str, object]:
     """Use the existing code-root verifier, never a user-supplied build string."""
-    root = Path(app_root).resolve()
+    root = Path(app_root).expanduser().resolve()
     manifest_path = root / "portable-manifest.json"
     if manifest_path.exists() or getattr(sys, "frozen", False):
         from current_user_onboarding import (
@@ -109,7 +109,7 @@ def verified_private_compatibility(
 
 def _installed_identity(app_root: Path) -> dict[str, object]:
     from label_match_product_host import is_portable_product_root
-    root = Path(app_root).resolve()
+    root = Path(app_root).expanduser().resolve()
     if root.name.casefold() == "app" and is_portable_product_root(root.parent):
         root = root.parent
     identity = release_identity(root)
@@ -136,28 +136,60 @@ def _installed_identity(app_root: Path) -> dict[str, object]:
     return identity
 
 
+def resolve_data_path(value) -> Path:
+    """Use the existing reader's expansion and no-reparse path contract."""
+    from logistics_runtime_profile import assert_path_has_no_reparse_components
+    try:
+        if value is None or not str(value).strip():
+            raise DataGenerationError(UNKNOWN_MESSAGE)
+        return assert_path_has_no_reparse_components(value, label="data generation input").resolve(strict=False)
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
+        raise DataGenerationError(UNKNOWN_MESSAGE) from exc
+
+
+def normalize_data_arguments(args, names):
+    """Admission and subsequent readers consume the same selected arguments."""
+    for name in names:
+        value = getattr(args, name, None)
+        if value is not None and str(value).strip():
+            path = resolve_data_path(value)
+            setattr(args, name, path if isinstance(value, Path) else str(path))
+
+
 def marker_paths(data_roots, subject_sid: str, *, environ: Mapping[str, str] | None = None):
     if not re.fullmatch(r"S-1-\d+(?:-\d+)+", subject_sid):
         raise DataGenerationError(UNKNOWN_MESSAGE)
     return [canonical_control_root(environ) / "data-generation" / (subject_sid + ".json"),
-            *(Path(root).absolute() / "data-generation.json" for root in dict.fromkeys(data_roots))]
+            *(root / "data-generation.json" for root in dict.fromkeys(resolve_data_path(p) for p in data_roots))]
 
 
 def check_user_data_open(app_root: Path, data_roots=(), *, environ=None):
     """Read-only admission before resolving settings or changing lifecycle state."""
     from protected_admin import current_process_sid
     values = os.environ if environ is None else environ
-    roots = list(data_roots)
-    local = values.get("LOCALAPPDATA")
-    if local:
-        roots.extend((Path(local) / "KMTech" / "Label_Match" / "data",
-                      Path(local) / "KMTech" / "DirectSync" / "label_match",
-                      Path(local) / "KMTech" / "DirectSync" / "label_match" / "queue"))
-    for name in ("LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_DIRECT_SYNC_ROOT",
-                 "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"):
-        if values.get(name):
-            roots.extend((Path(values[name]), Path(values[name]) / "queue"))
     try:
+        roots = list(data_roots)
+        local = str(values.get("LOCALAPPDATA") or "").strip()
+        save = str(values.get("LABEL_MATCH_SAVE_DIR") or "").strip()
+        if local:
+            local_root = resolve_data_path(local)
+            roots.extend((local_root / "KMTech" / "Label_Match" / "data",
+                          local_root / "KMTech" / "Label_Match" / "config",
+                          local_root / "KMTech" / "DirectSync" / "label_match",
+                          local_root / "KMTech" / "DirectSync" / "label_match" / "queue"))
+        for name in ("LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_DIRECT_SYNC_ROOT",
+                     "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"):
+            value = str(values.get(name) or "").strip()
+            if value:
+                root = resolve_data_path(value)
+                roots.extend((root, root / "queue"))
+        settings = str(values.get("LABEL_MATCH_SETTINGS_PATH") or "").strip()
+        if settings:
+            roots.append(resolve_data_path(settings).parent)
+        if local or save or str(values.get("LABEL_MATCH_LOGISTICS_PROFILE_PATH") or "").strip():
+            from logistics_runtime_profile import default_logistics_profile_path
+            roots.append(default_logistics_profile_path(values,
+                default_data_root=resolve_data_path(save) if save else None).parent)
         sid = current_process_sid()
         identity = _installed_identity(app_root)
         decision = probe_downgrade(marker_paths(roots, sid), str(identity["version"]),

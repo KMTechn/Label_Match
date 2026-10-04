@@ -936,7 +936,8 @@ def onboard_current_user(
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
     try:
         record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
-                                               paths.direct_sync_root, paths.queue_dir))
+                                               paths.direct_sync_root, paths.queue_dir,
+                                               paths.logistics_profile_path.parent))
     except DataGenerationError as exc:
         raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
             status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
@@ -1288,6 +1289,12 @@ def remove_current_user_setup(
         raise CurrentUserOnboardingError(str(exc), report_path=Path(app_root),
             status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
+    try:
+        check_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+            paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent), environ=environ)
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=paths.removal_report_path,
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     paths.status_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
         "report_version": REMOVAL_REPORT_VERSION,

@@ -51,6 +51,36 @@ def test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, sta
     assert result["passed"], result
 
 
+@pytest.mark.parametrize("entry", ENTRIES)
+@pytest.mark.parametrize("state", ["external-tilde", "external-relative", "external-case", "external-link"])
+def test_external_input_marker_without_control_marker_refuses_before_any_read(entry, state, tmp_path):
+    test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, state, tmp_path)
+
+
+@pytest.mark.parametrize("state", ["external-blank-profile", "external-default-profile"])
+def test_empty_or_default_profile_selects_actual_external_marker_before_loading(state, tmp_path):
+    test_direct_process_refuses_without_identity_or_lifecycle_changes("check-profile", state, tmp_path)
+
+
+@pytest.mark.parametrize("argument", ["", "~/external/logistics_runtime_profile.json"])
+def test_allowed_profile_reader_uses_the_same_selected_path_as_generation_guard(argument, monkeypatch, tmp_path):
+    import label_data_generation as generation
+    from tools import check_logistics_runtime_profile as check
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    actual = tmp_path / "external/logistics_runtime_profile.json"
+    monkeypatch.setenv("LABEL_MATCH_LOGISTICS_PROFILE_PATH", str(actual))
+    admitted, loaded = [], []
+    monkeypatch.setattr(generation, "check_user_data_open", lambda _root, roots=(): admitted.extend(roots))
+    monkeypatch.setattr(generation, "record_user_data_open", lambda _root, roots: admitted.extend(roots))
+    def loader(*, required, profile_path):
+        loaded.append(Path(profile_path))
+        return None
+    monkeypatch.setattr(check, "load_logistics_runtime_profile", loader)
+    assert check.main(["--optional", "--profile-path", argument]) == 0
+    assert loaded == [actual.resolve()]
+    assert admitted == [actual.parent.resolve(), actual.parent.resolve()]
+
+
 def test_allow_preflight_is_read_only_and_normal_relay_still_persists(monkeypatch, tmp_path):
     import label_data_generation as generation
     import protected_admin
