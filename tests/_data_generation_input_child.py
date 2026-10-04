@@ -70,7 +70,6 @@ if kind == 'settings':
 elif kind == 'spool':
     from tools import direct_sync_relay_operator as entry
     from direct_sync_push import RELAY_STATUS_ACKED
-    import direct_sync_operator
     target = external / 'batch.csv'
     target.write_bytes(b'synthetic,isolated\n')
     db = root / 'queue/relay.sqlite3'
@@ -112,7 +111,7 @@ elif kind in ('stop', 'reconcile-stop'):
                 '--server-executable-sha256', 'b' * 64, '--tls-ca-bundle', str(root / 'proof/ca.pem'),
                 '--tls-ca-bundle-sha256', 'b' * 64, '--evidence-output', str(root / 'evidence.json'),
                 '--receipt-output', str(root / 'receipt.json')]
-elif kind in ('recovery-db', 'recovery-key'):
+elif kind in ('recovery-db', 'recovery-key', 'recovery-empty-db', 'recovery-empty-key', 'recovery-empty-barrier'):
     from tools import label_auth_recovery_canary as entry
     db = (external if kind == 'recovery-db' else root / 'db') / 'existing.sqlite3'
     db.parent.mkdir(parents=True, exist_ok=True)
@@ -124,6 +123,9 @@ elif kind in ('recovery-db', 'recovery-key'):
     target = db if kind == 'recovery-db' else seal
     argv = ['--_recovery-child', '--_recovery-db', requested(db), '--_seal-key-path', requested(seal),
             '--_barrier-path', str(root / 'barrier.json')]
+    if kind.startswith('recovery-empty-'):
+        field = {'db': '--_recovery-db', 'key': '--_seal-key-path', 'barrier': '--_barrier-path'}[kind.rsplit('-', 1)[1]]
+        argv[argv.index(field) + 1] = ''
 else:
     raise AssertionError('unknown isolated entry')
 

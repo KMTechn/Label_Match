@@ -46,3 +46,9 @@ def test_allowed_external_input_reaches_existing_reader(tmp_path, kind, state):
 def test_additional_configuration_input_is_checked_without_reading_or_writing(tmp_path, entry, state):
     from test_data_generation_direct_entries import test_direct_process_refuses_without_identity_or_lifecycle_changes
     test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, state, tmp_path)
+
+
+@pytest.mark.parametrize('kind', ['recovery-empty-db', 'recovery-empty-key', 'recovery-empty-barrier'])
+def test_hidden_child_unresolvable_input_refuses_before_initializing_database(tmp_path, kind):
+    result = _probe(tmp_path, kind, 'absent')
+    assert result['refused_before_read'], result
