@@ -487,43 +487,8 @@ def release_digest(path):
     return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
 
 # G-DECISIONS #2/#7: exact e89c188 preimage and three pinned leaves.
-data_generation_replacements = {'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145',
-                        '18f08d739e4d5b64b402f38278dc29019c2701856eb18e34d8962f2602ca2724'),
- 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d',
-                                    '3b0c37fff24747462f3bbb1a979c522a32f9cb20cd29f94dfbb87e4cb2e08d57'),
- 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98',
-                                           'bc9123fdef68cd477cad1225b9cefa88ec6809c48c27c61f2db5b6e5a22109f9'),
- 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295',
-                                   '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'),
- 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117',
-                                     'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'),
- 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9',
-                                 '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'),
- 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702',
-                         '5b43cc1c66b2e43aa855ce876e1c7515ca3cea403069002d3da82a597131a766'),
- 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3',
-                                   '60531b973d2c835c2b834136f34d61831e083180790aae28faaa96ba1d7a907c'),
- 'app/writer_session_fence.py': ('26d4d4900f55cafbfad24099065ecfdd6b275327e60b93ac63d67186a05e09e5',
-                                 'd041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb'),
- 'tools/label_writer_fence.ps1': ('fbff47dd51d1d4503ef0dd0e9ec6796adaf943882f6771a19e85059d694de976',
-                                  '2182570ed8684627b75c743a13bc2bbc05018f29c714ed74f7ecda0925c1b813'),
- 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
-                                     'ce29df5585a2e1b0f1d075e05c04bc267e1ded9180454cb74197d7a6907cf580'),
- 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487',
-                       'f9a28ff78d8c3d500cffe682676490deb72fba30db4318cddf8f67ae0e2b290b'),
- 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f',
-                                                 '8bbc3f2e68d7217fbd554c229f043d8e047a02cf1e85b914402cf32d3e7703aa'),
- 'app/tools/direct_sync_relay_operator.py': ('ff97593c29669ad1f983d6f7be0fb1ebabf27adcf9661b797d36f7d583a0cedb',
-                                             '8396f45a0590eb6429bf7e152c102dfefb6aa46dfcac43b3b10fdf5b0104bf0c'),
- 'app/tools/label_auth_recovery_canary.py': ('440a0ed5061b522cafa56408092e3ed361b42f1ae09569258b08005a04cd463b',
-                                             '4ff48178ed23fad2a8026f987d515f76658397252dabef971af6956490ce7b4e'),
- 'app/tools/install_logistics_runtime_profile.py': ('eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef',
-                                                    '9ff8ef6e353b215c1abe50b7809bd730e98a563e67aacaeeb88f632fc99b503d'),
- 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5',
-                                                 '4a1e96d6c8dff4f141fe23d3ea9e42d44507ce57438dca5da9a53cea91720fcf'),
- 'app/tools/label_exact_clone_resolution_receipt.py': ('c77e6be851f32cad9058ee52892a9b2520232a15914379aba3c28ad09c581a9b',
-                                                       '5d7e3836246a8e06e604bd7e776f31310e1c53006f80102cccd5c482dddc3302')}
-data_generation_additions = {'app/label_data_generation.py': 'ad5cd8415ce3334cbc06b2c8cb67bd0c914470d60344248cb29b9e94b881aa5a', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}
+data_generation_replacements = {'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145', '18f08d739e4d5b64b402f38278dc29019c2701856eb18e34d8962f2602ca2724'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', 'a11885f411ea594bdbfd02576107df3428884c40cd77a17bafe8c4840df2ab08'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'bc9123fdef68cd477cad1225b9cefa88ec6809c48c27c61f2db5b6e5a22109f9'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '5b43cc1c66b2e43aa855ce876e1c7515ca3cea403069002d3da82a597131a766'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', '60531b973d2c835c2b834136f34d61831e083180790aae28faaa96ba1d7a907c'), 'app/writer_session_fence.py': ('26d4d4900f55cafbfad24099065ecfdd6b275327e60b93ac63d67186a05e09e5', '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5'), 'tools/label_writer_fence.ps1': ('fbff47dd51d1d4503ef0dd0e9ec6796adaf943882f6771a19e85059d694de976', '517670a19a82713b53a30473bf2b8b94ab7083aec024a604ec3b568ff4afa349'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', 'ce29df5585a2e1b0f1d075e05c04bc267e1ded9180454cb74197d7a6907cf580'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'f9a28ff78d8c3d500cffe682676490deb72fba30db4318cddf8f67ae0e2b290b'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '8bbc3f2e68d7217fbd554c229f043d8e047a02cf1e85b914402cf32d3e7703aa'), 'app/tools/direct_sync_relay_operator.py': ('ff97593c29669ad1f983d6f7be0fb1ebabf27adcf9661b797d36f7d583a0cedb', '8396f45a0590eb6429bf7e152c102dfefb6aa46dfcac43b3b10fdf5b0104bf0c'), 'app/tools/label_auth_recovery_canary.py': ('440a0ed5061b522cafa56408092e3ed361b42f1ae09569258b08005a04cd463b', '4ff48178ed23fad2a8026f987d515f76658397252dabef971af6956490ce7b4e'), 'app/tools/install_logistics_runtime_profile.py': ('eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef', '9ff8ef6e353b215c1abe50b7809bd730e98a563e67aacaeeb88f632fc99b503d'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '4a1e96d6c8dff4f141fe23d3ea9e42d44507ce57438dca5da9a53cea91720fcf'), 'app/tools/label_exact_clone_resolution_receipt.py': ('c77e6be851f32cad9058ee52892a9b2520232a15914379aba3c28ad09c581a9b', '5d7e3836246a8e06e604bd7e776f31310e1c53006f80102cccd5c482dddc3302'), 'app/protected_admin.py': ('f4b1616dc152c84e368a32acb06b424b4b4cdab588635e383fa22e7ee6d3c58e', 'eadfb46474595075b840bbdf87b919910c228ac5481fe62721a3497c478d63f9'), 'app/package_logistics.py': ('6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3', '43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008')}
+data_generation_additions = {'app/label_data_generation.py': 'd8e6dd64c6cb9fd1ebb686235a5e97ea09139c310c3031284227fdbf11290a70', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}
 data_generation_transition = all(
     (source / relative).is_file() and release_digest(source / relative) == after
     for relative, (_, after) in data_generation_replacements.items()
@@ -574,7 +539,7 @@ integrity_order_transition = (
     release_digest(installed / integrity_order_path) ==
         'bfd59326ad76a400c70a62d78622b518a549e844c4bf4725f59eb7525c20a57f' and
     release_digest(source / integrity_order_path) ==
-        '3b0c37fff24747462f3bbb1a979c522a32f9cb20cd29f94dfbb87e4cb2e08d57'
+        'a11885f411ea594bdbfd02576107df3428884c40cd77a17bafe8c4840df2ab08'
 )
 
 shared_transition = all(
@@ -613,7 +578,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+                              '43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
@@ -629,13 +594,13 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787',
                              'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
  'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c',
-                                 'd041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb'),
+                                 '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5'),
  'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
                                                     '9ff8ef6e353b215c1abe50b7809bd730e98a563e67aacaeeb88f632fc99b503d'),
  'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    '3b0c37fff24747462f3bbb1a979c522a32f9cb20cd29f94dfbb87e4cb2e08d57')}
+                                    'a11885f411ea594bdbfd02576107df3428884c40cd77a17bafe8c4840df2ab08')}
 legacy_label_additions = {'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'}
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
@@ -677,7 +642,7 @@ scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+                              '43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
@@ -720,7 +685,7 @@ nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1d
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+                              '43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
@@ -750,10 +715,10 @@ scanner_transition = (
 # files, writer membership and contracts retain their ordinary checks.
 current_user_profile_replacements = {
     'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
-    'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', 'd041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb'),
+    'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5'),
     'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', '9ff8ef6e353b215c1abe50b7809bd730e98a563e67aacaeeb88f632fc99b503d'),
     'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
-    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '3b0c37fff24747462f3bbb1a979c522a32f9cb20cd29f94dfbb87e4cb2e08d57'),
+    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', 'a11885f411ea594bdbfd02576107df3428884c40cd77a17bafe8c4840df2ab08'),
     'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
 }
 # Exact writer bytes from the same accepted profile/scan preimages; their
@@ -782,7 +747,7 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/label_admin_pin.py': ({'8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0'},
                             '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'),
  'app/package_logistics.py': ({'818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'},
-                              '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+                              '43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008'),
  'app/package_outbox_processor.py': ({'4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79'},
                                      'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'),
  'app/phs_label_workflow.py': ({'c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c'},
@@ -794,7 +759,7 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/user_relay.py': ({'07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7'},
                        'f9a28ff78d8c3d500cffe682676490deb72fba30db4318cddf8f67ae0e2b290b'),
  'app/writer_session_fence.py': ({'7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', 'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', 'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50'},
-                                 'd041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb')}
+                                 '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5')}
 remote_transport_transition = (
     legacy_label_transition or scan_input_transition or nextfix_label_transition
     or scanner_transition or current_user_profile_transition
@@ -813,9 +778,9 @@ roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3
  'app/label_admin_pin.py': ('159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8',
                             '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'),
  'app/writer_session_fence.py': ('8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6',
-                                 'd041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb'),
+                                 '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5'),
  'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a',
-                                  '2182570ed8684627b75c743a13bc2bbc05018f29c714ed74f7ecda0925c1b813')}
+                                  '517670a19a82713b53a30473bf2b8b94ab7083aec024a604ec3b568ff4afa349')}
 # Exact additional runtime changes for the already accepted roster baseline.
 roster_baseline_companions = {'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55',
                              'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'),
@@ -877,7 +842,7 @@ if roster_transition:
     installed_sources = [new_request if row == old_request else row for row in installed_sources]
 f5_retirement_replacements = {
     'app/phs_label_workflow.py': ({'c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '0d44faf4128286d49fc4285d26b9901d563c86eba0fe62d669c53a4a382c7b7d'}, '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'),
-    'app/package_logistics.py': ({'4585720051d266fa077005456b0da590b273ad8ab29bc5391cff2e6aa9f74224', '818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'}, '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+    'app/package_logistics.py': ({'4585720051d266fa077005456b0da590b273ad8ab29bc5391cff2e6aa9f74224', '818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'}, '43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008'),
     'app/label_workbench_history.py': ({'6f07e89f69d66bb979abaef58aa4ff514fb839756bc9f4b5b727b5c0cf4d2022', '214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8'}, '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'),
 }
 f5_retirement_transition = all(
@@ -941,9 +906,9 @@ worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f5
  'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c',
                                      '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'),
  'app/writer_session_fence.py': ('e649873611c442930e8d635c5836752ea1203273676a3269443a9bf403755bca',
-                                 'd041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb'),
+                                 '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5'),
  'tools/label_writer_fence.ps1': ('e3256e6129ab819075d38cb582559a25d312683c57995e1cfde92dbae66feb89',
-                                  '2182570ed8684627b75c743a13bc2bbc05018f29c714ed74f7ecda0925c1b813'),
+                                  '517670a19a82713b53a30473bf2b8b94ab7083aec024a604ec3b568ff4afa349'),
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee')}
 worker_record_transition = all(
@@ -958,9 +923,9 @@ mainloop_exit_replacements = {'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8',
-                                 'd041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb'),
+                                 '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5'),
  'tools/label_writer_fence.ps1': ('500955366215a113f3c0ffd284d86d6364aadb86e00b097a4cefedb3cbb1ff7e',
-                                  '2182570ed8684627b75c743a13bc2bbc05018f29c714ed74f7ecda0925c1b813')}
+                                  '517670a19a82713b53a30473bf2b8b94ab7083aec024a604ec3b568ff4afa349')}
 mainloop_exit_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
@@ -973,9 +938,9 @@ mainloop_exit_notice_replacements = {'app/Label_Match.py': ('75fdd2d1422825f5232
  'app/label_match_single_instance.py': ('2929ffe042131ccc8cc905dbbad084be0fbab0585d70100252d3ee682c66346b',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('5dc1377d481970f75c6a6330a2c2ea9987b016de4cea7f86f5788299a23b0f73',
-                                 'd041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb'),
+                                 '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5'),
  'tools/label_writer_fence.ps1': ('89dd2e7e3ac09fb125905a00f49e6ce3b2c6f9d5420b0d47535124336f36ecf9',
-                                  '2182570ed8684627b75c743a13bc2bbc05018f29c714ed74f7ecda0925c1b813')}
+                                  '517670a19a82713b53a30473bf2b8b94ab7083aec024a604ec3b568ff4afa349')}
 mainloop_exit_notice_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
@@ -983,34 +948,7 @@ mainloop_exit_notice_transition = all(
     for relative, (before, after) in mainloop_exit_notice_replacements.items()
 )
 # Exact already-G forward correction; no reverse or membership exception.
-data_generation_correction_replacements = {'app/Label_Match.py': ('d0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1',
-                        '18f08d739e4d5b64b402f38278dc29019c2701856eb18e34d8962f2602ca2724'),
- 'app/current_user_onboarding.py': ('fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017',
-                                    '3b0c37fff24747462f3bbb1a979c522a32f9cb20cd29f94dfbb87e4cb2e08d57'),
- 'app/label_data_generation.py': ('d0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c',
-                                  'ad5cd8415ce3334cbc06b2c8cb67bd0c914470d60344248cb29b9e94b881aa5a'),
- 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf',
-                                     'ce29df5585a2e1b0f1d075e05c04bc267e1ded9180454cb74197d7a6907cf580'),
- 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487',
-                       'f9a28ff78d8c3d500cffe682676490deb72fba30db4318cddf8f67ae0e2b290b'),
- 'app/writer_session_fence.py': ('46731dc32ab372b721dcd59297764e0bc99cb4c2ca92ae5bf66157b3fb90593e',
-                                 'd041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb'),
- 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5',
-                                                 '4a1e96d6c8dff4f141fe23d3ea9e42d44507ce57438dca5da9a53cea91720fcf'),
- 'app/tools/direct_sync_relay_operator.py': ('ff97593c29669ad1f983d6f7be0fb1ebabf27adcf9661b797d36f7d583a0cedb',
-                                             '8396f45a0590eb6429bf7e152c102dfefb6aa46dfcac43b3b10fdf5b0104bf0c'),
- 'app/tools/direct_sync_relay_runner.py': ('f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5',
-                                           'bc9123fdef68cd477cad1225b9cefa88ec6809c48c27c61f2db5b6e5a22109f9'),
- 'app/tools/install_logistics_runtime_profile.py': ('eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef',
-                                                    '9ff8ef6e353b215c1abe50b7809bd730e98a563e67aacaeeb88f632fc99b503d'),
- 'app/tools/label_auth_recovery_canary.py': ('440a0ed5061b522cafa56408092e3ed361b42f1ae09569258b08005a04cd463b',
-                                             '4ff48178ed23fad2a8026f987d515f76658397252dabef971af6956490ce7b4e'),
- 'app/tools/label_exact_clone_resolution_receipt.py': ('c77e6be851f32cad9058ee52892a9b2520232a15914379aba3c28ad09c581a9b',
-                                                       '5d7e3836246a8e06e604bd7e776f31310e1c53006f80102cccd5c482dddc3302'),
- 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f',
-                                                 '8bbc3f2e68d7217fbd554c229f043d8e047a02cf1e85b914402cf32d3e7703aa'),
- 'tools/label_writer_fence.ps1': ('6777bdfac69f830ac7800b4976e2ffc3b2b3cb0593f4e3c3a8cddd5855bb849b',
-                                  '2182570ed8684627b75c743a13bc2bbc05018f29c714ed74f7ecda0925c1b813')}
+data_generation_correction_replacements = {'app/Label_Match.py': ('d0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1', '18f08d739e4d5b64b402f38278dc29019c2701856eb18e34d8962f2602ca2724'), 'app/current_user_onboarding.py': ('fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017', 'a11885f411ea594bdbfd02576107df3428884c40cd77a17bafe8c4840df2ab08'), 'app/label_data_generation.py': ('d0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'd8e6dd64c6cb9fd1ebb686235a5e97ea09139c310c3031284227fdbf11290a70'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', 'ce29df5585a2e1b0f1d075e05c04bc267e1ded9180454cb74197d7a6907cf580'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'f9a28ff78d8c3d500cffe682676490deb72fba30db4318cddf8f67ae0e2b290b'), 'app/writer_session_fence.py': ('46731dc32ab372b721dcd59297764e0bc99cb4c2ca92ae5bf66157b3fb90593e', '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '4a1e96d6c8dff4f141fe23d3ea9e42d44507ce57438dca5da9a53cea91720fcf'), 'app/tools/direct_sync_relay_operator.py': ('ff97593c29669ad1f983d6f7be0fb1ebabf27adcf9661b797d36f7d583a0cedb', '8396f45a0590eb6429bf7e152c102dfefb6aa46dfcac43b3b10fdf5b0104bf0c'), 'app/tools/direct_sync_relay_runner.py': ('f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5', 'bc9123fdef68cd477cad1225b9cefa88ec6809c48c27c61f2db5b6e5a22109f9'), 'app/tools/install_logistics_runtime_profile.py': ('eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef', '9ff8ef6e353b215c1abe50b7809bd730e98a563e67aacaeeb88f632fc99b503d'), 'app/tools/label_auth_recovery_canary.py': ('440a0ed5061b522cafa56408092e3ed361b42f1ae09569258b08005a04cd463b', '4ff48178ed23fad2a8026f987d515f76658397252dabef971af6956490ce7b4e'), 'app/tools/label_exact_clone_resolution_receipt.py': ('c77e6be851f32cad9058ee52892a9b2520232a15914379aba3c28ad09c581a9b', '5d7e3836246a8e06e604bd7e776f31310e1c53006f80102cccd5c482dddc3302'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '8bbc3f2e68d7217fbd554c229f043d8e047a02cf1e85b914402cf32d3e7703aa'), 'tools/label_writer_fence.ps1': ('6777bdfac69f830ac7800b4976e2ffc3b2b3cb0593f4e3c3a8cddd5855bb849b', '517670a19a82713b53a30473bf2b8b94ab7083aec024a604ec3b568ff4afa349'), 'app/protected_admin.py': ('f4b1616dc152c84e368a32acb06b424b4b4cdab588635e383fa22e7ee6d3c58e', 'eadfb46474595075b840bbdf87b919910c228ac5481fe62721a3497c478d63f9'), 'app/package_logistics.py': ('6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3', '43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008')}
 data_generation_correction_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
@@ -1019,6 +957,16 @@ data_generation_correction_transition = all(
 )
 # Compose G only with an existing exact directional pair. Each changed
 # preimage still matches the baseline or that pair's historical declaration.
+
+# Exact f6e4cf2 security-input correction; forward only.
+data_generation_security_replacements = {'app/current_user_onboarding.py': ('3b0c37fff24747462f3bbb1a979c522a32f9cb20cd29f94dfbb87e4cb2e08d57', 'a11885f411ea594bdbfd02576107df3428884c40cd77a17bafe8c4840df2ab08'), 'app/label_data_generation.py': ('ad5cd8415ce3334cbc06b2c8cb67bd0c914470d60344248cb29b9e94b881aa5a', 'd8e6dd64c6cb9fd1ebb686235a5e97ea09139c310c3031284227fdbf11290a70'), 'app/protected_admin.py': ('f4b1616dc152c84e368a32acb06b424b4b4cdab588635e383fa22e7ee6d3c58e', 'eadfb46474595075b840bbdf87b919910c228ac5481fe62721a3497c478d63f9'), 'app/package_logistics.py': ('6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3', '43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008'), 'app/writer_session_fence.py': ('d041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb', '1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5'), 'tools/label_writer_fence.ps1': ('2182570ed8684627b75c743a13bc2bbc05018f29c714ed74f7ecda0925c1b813', '517670a19a82713b53a30473bf2b8b94ab7083aec024a604ec3b568ff4afa349')}
+data_generation_security_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file()
+    and release_digest(installed / relative) == before
+    and release_digest(source / relative) == after
+    for relative, (before, after) in data_generation_security_replacements.items()
+)
+
 def data_generation_before_allowed(relative):
     if not (installed / relative).is_file():
         return False
@@ -1062,6 +1010,8 @@ for directory in ('app', 'runtime'):
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
     for relative in sorted(left, key=lambda path: (path != 'app/Label_Match.py', path)):
         path = left[relative]
+        if data_generation_security_transition and relative in data_generation_security_replacements:
+            continue
         if data_generation_correction_transition and relative in data_generation_correction_replacements:
             continue
         if data_generation_reverse and relative in data_generation_replacements:
@@ -1130,7 +1080,7 @@ if candidate_sources != installed_sources:
     ):
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 compatibility = ('SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE' if data_generation_reverse else
-                 'PINNED_DATA_GENERATION_G_CORRECTION' if data_generation_correction_transition else
+                 'PINNED_DATA_GENERATION_G_CORRECTION' if (data_generation_correction_transition or data_generation_security_transition) else
                  'PINNED_MAINLOOP_EXIT_NOTICE' if mainloop_exit_notice_transition else
                  'PINNED_MAINLOOP_EXIT_CLEANUP' if mainloop_exit_transition else
                  'PINNED_WORKER_RECORD_IDENTITY' if worker_record_transition else
