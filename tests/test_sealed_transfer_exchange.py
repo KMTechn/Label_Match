@@ -1466,6 +1466,8 @@ def test_invalid_receipt_stays_review_blocked_across_restart_without_repost(tmp_
     app.current_set_info = {"id": "set-1"}
     app.sealed_transfer_exchange_store = restarted.store
     app.sealed_transfer_exchange_coordinator = restarted
+    from tests.label_test_presentation import prepare_label_presentation
+    prepare_label_presentation(app)
     app.run_tests = True
     assert app._sealed_transfer_exchange_blocks_local_action("다음 스캔") is True
 

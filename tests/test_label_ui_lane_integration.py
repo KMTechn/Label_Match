@@ -678,6 +678,7 @@ def test_f3_lease_outbox_and_flush_run_off_tk_before_ui_apply(tmp_path, monkeypa
         app.current_set_info = {"id": None, "raw": [], "parsed": [], "start_time": None}
         app.save_directory = str(tmp_path)
         app.data_manager = label_module.DataManager(str(tmp_path), "포장실", "worker-f3", "F3")
+        app.worker_name = app.data_manager.worker_name
         app.items_data = {"ITEM-F3": {"Item Name": "F3 item", "Spec": "F3 spec"}}
         app.scan_count = defaultdict(lambda: defaultdict(int))
         app.global_scanned_set = set()

@@ -18,6 +18,8 @@ claim 만료 뒤 옛 HTTP 성공/거부·retry·끊김·timeout의 적용과 rec
 
 fake Tk pump는 예약 callback이 계속 생겨도 반복마다 작업 스레드에 실행 기회를 준다. 기본 2초 제한과 완료 단언은 유지하며 실제 정지된 lane이 여전히 제한 시간에 실패하는 부정 시험으로 검사한다. 실제 Tk·스캐너·서버·설치 수용과 브랜치 전체 시험은 별도 통합 검증 범위다.
 
+복구 canary 2개와 새 승인 partial-recovery 26개 시험은 기본적으로 `tests/conftest.py`의 `isolated_dpapi`를 사용한다. 같은 시험 cipher가 별도 canary crash child에도 적용되며 평문 비노출·변조/다른 cipher/entropy 거절을 검사한다. 새 승인 fixture는 bootstrap hash로 검증되는 합성 설치 입력을 제공하며 바이트 변조가 거절되는 것도 검사한다. 이는 Windows DPAPI 자체의 증명이 아니다. 격리 guest에서 `KMTECH_TEST_REAL_DPAPI=1`로 이 28개를 대역 없이 실행하고 기존 `test_real_current_user_dpapi_roundtrip_contains_no_plaintext_row`까지 29개를 함께 검증한다. 이 native 시험에는 fixture·skip·xfail을 추가하지 않는다. 호스트에서는 실제 Tk·DPAPI·자격 증명 저장소를 차단한 harness를 유지한다.
+
 DESIGN §1.7에 따라 조회 탭에서 스캐너 Entry 입력을 받으면 이번 세션 작업 화면으로 돌아가 같은 원문을 처리한다. 지난 날짜 조회는 오늘의 작업·중복 인덱스를 보존하며, 복귀 때 이전 날짜의 배경 조회/표시 generation을 무효화하고 보관한 오늘 화면으로 돌아간다. 초기화·오늘 인덱스 오류·저장 차단·중앙 처리 등 기존 안전 gate는 유지한다.
 
 DESIGN §1.2와 코디 추가 결정에 따라 품목 불일치·입력 오류는 오류 순간 기존 FAIL 판정·기록 내용을 내구 완료한다. 로컬 current_set의 선택 필드 scanner_failure_result/scanner_failure_details가 판정과 원문을 보존하며 중단·재시작과 저장 재시도에도 같은 FAIL을 이어서 한 번만 기록한다. 안내를 닫는 다음 Entry 스캔도 새 입력으로 처리하고 Enter/ESC는 안내를 닫는다. 저장 실패 때는 기존 세트·실패 intent를 유지하고 재시도에서도 PASS로 바꾸지 않는다. 서버 필드·명령 형식은 바꾸지 않는다.

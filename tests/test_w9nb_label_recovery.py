@@ -962,6 +962,7 @@ def test_catalog_retry_uses_verified_startup_path_without_restart(monkeypatch):
         return None
 
     constructed = []
+    finished = []
 
     class FakeApp:
         def __init__(self):
@@ -976,6 +977,9 @@ def test_catalog_retry_uses_verified_startup_path_without_restart(monkeypatch):
         def mainloop(self):
             return None
 
+        def _finish_after_mainloop(self):
+            finished.append(True)
+
     monkeypatch.setattr(app_module, "prepare_startup_item_catalog", prepare)
     monkeypatch.setattr(app_module, "Label_Match", FakeApp)
     monkeypatch.setattr(app_module, "_label_match_startup_trace", lambda *args, **kwargs: None)
@@ -984,6 +988,7 @@ def test_catalog_retry_uses_verified_startup_path_without_restart(monkeypatch):
     monkeypatch.setattr(app_module, "legacy_label_transition_enabled", lambda: False)
     assert app_module._run_label_match_application() == 0
     assert len(attempts) == 2 and constructed == [True]
+    assert finished == [True]
 
 
 def test_catalog_retry_cancel_stays_closed(monkeypatch):

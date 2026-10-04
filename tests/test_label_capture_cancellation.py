@@ -10,6 +10,7 @@ import pytest
 
 import Label_Match as label_module
 from deferred_intent_capture import DeferredIntentCaptureError
+from tests.label_test_presentation import prepare_label_presentation
 from tests.test_deferred_intent_capture import (
     _b1_local_lease, _capture, _claim_and_plan, _row, _source_evidence, _store,
 )
@@ -34,7 +35,7 @@ def _validated(store, *, set_id="SET-F1", scan="PHS2-MEASURED"):
 
 def _app(store, captured, *, scan="PHS2-MEASURED"):
     app = label_module.Label_Match.__new__(label_module.Label_Match)
-    app.tk = SimpleNamespace()
+    prepare_label_presentation(app)
     app.current_set_info = {
         "id": _row(store.db_path, captured.intent_id)["local_work_identity"],
         "deferred_intent_id": captured.intent_id, "raw": [scan],

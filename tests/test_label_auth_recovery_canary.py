@@ -399,7 +399,7 @@ def test_assigned_lease_requires_exact_relay_authority_binding(tmp_path: Path) -
     assert mismatched.evidence["assigned_relay_exact"] is False
 
 
-def test_recovery_probe_hits_exact_boundary_and_reopens_twice(tmp_path: Path) -> None:
+def test_recovery_probe_hits_exact_boundary_and_reopens_twice(tmp_path: Path, isolated_dpapi) -> None:
     check = probe_recovery(
         work_dir=tmp_path / "recovery",
         protected_roots=(Path(__file__).resolve().parents[1],),
@@ -479,7 +479,7 @@ def test_report_path_cannot_overwrite_a_live_input(tmp_path: Path) -> None:
 
 
 def test_machine_readable_pass_fail_unknown_matrix(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_dpapi
 ) -> None:
     _clear_production_profile(monkeypatch)
     export = os.getenv("LABEL_CANARY_TEST_EXPORT_DIR", "").strip()

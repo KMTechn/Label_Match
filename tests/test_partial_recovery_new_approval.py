@@ -9,8 +9,20 @@ from tests.test_partial_registration_recovery import recovery, put_residue, reco
 
 
 @pytest.fixture
-def attempts(recovery, monkeypatch):
+def attempts(recovery, monkeypatch, isolated_dpapi):
     r = recovery
+    isolated_dpapi(r.m)
+    # READY now opens a release-bound business ledger. Supply a synthetic,
+    # byte-verified installed root rather than bypassing the generation guard.
+    import label_data_generation as generation
+    from tests.test_current_user_onboarding import _write_bootstrap_root_record
+    app_root = r.root / 'app'
+    (app_root / '_internal').mkdir(parents=True)
+    (app_root / 'Label_Match.exe').write_bytes(b'synthetic-test-executable')
+    (app_root / 'portable-manifest.json').write_text(json.dumps(dict(
+        schema='label-match-portable-tree-v1', version=generation.CURRENT_VERSION,
+        source_commit='a' * 40)), encoding='utf-8')
+    _write_bootstrap_root_record(app_root)
     r.transactions = {}
     r.requests = []
     r.fault = ''
@@ -127,6 +139,16 @@ def assert_ready_and_first_request(r):
     assert calls[0][2]['Authorization'] == 'Bearer ' + profile.bearer_token
     assert profile.source_host_id == r.args.source_host_id
     assert profile.device_id == r.args.pc_id
+
+
+def test_recovery_app_fixture_retains_release_byte_verification(attempts):
+    import label_data_generation as generation
+
+    app_root = attempts.root / 'app'
+    assert generation.release_identity(app_root)['version'] == generation.CURRENT_VERSION
+    (app_root / 'Label_Match.exe').write_bytes(b'changed-test-executable')
+    with pytest.raises(ValueError, match='bootstrap code root integrity failed'):
+        generation.release_identity(app_root)
 
 
 @pytest.mark.parametrize('cut', ['before_prepare', 'before_commit', 'after_success'])

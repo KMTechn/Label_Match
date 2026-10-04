@@ -7,6 +7,39 @@ import time
 import pytest
 
 
+@pytest.fixture
+def isolated_dpapi(monkeypatch, tmp_path):
+    """Use a shared authenticated double unless a guest explicitly requests native DPAPI."""
+    import os
+    from pathlib import Path
+    from tests.dpapi_double import DPAPIDouble
+
+    if os.environ.get('KMTECH_TEST_REAL_DPAPI') == '1':
+        return lambda _module: None
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    import tools.label_auth_recovery_canary as canary
+
+    material = AESGCM.generate_key(bit_length=256)
+    cipher = DPAPIDouble(material)
+    cipher.install(monkeypatch)
+    child_material = tmp_path / 'dpapi-double.bin'
+    child_material.write_bytes(material)
+    original = canary.subprocess.Popen
+
+    def launch(command, *args, **kwargs):
+        if '--_recovery-child' in command:
+            command = list(command)
+            index = command.index(str(Path(canary.__file__).resolve()))
+            command[index:index + 1] = [str(Path(__file__).with_name('dpapi_double.py')),
+                                      str(child_material), command[index]]
+            kwargs['creationflags'] = kwargs.get('creationflags', 0) | getattr(
+                canary.subprocess, 'CREATE_NO_WINDOW', 0)
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(canary.subprocess, 'Popen', launch)
+    return lambda module: cipher.install(monkeypatch, registration=module)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_writer_control_root(tmp_path_factory):
     # Children inherit this root; competing writers still share its real mutex.
