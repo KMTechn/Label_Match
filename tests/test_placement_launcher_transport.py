@@ -171,7 +171,8 @@ if(-not $denied){throw 'Pinned helper could change during execution.'}
         assert record["exit_code"] == 1
 
 
-def test_placement_elevation_command_is_bounded_at_longest_supported_paths(tmp_path):
+@pytest.mark.parametrize("owner_change_denied", (False, True))
+def test_placement_elevation_command_is_bounded_at_longest_supported_paths(tmp_path, owner_change_denied):
     result = run_functions(tmp_path, INSTALLER,
         ["ByteSha", "InvokeFrozenPlacementHelper"], r'''
 $root=$env:LM_TRANSPORT_ROOT
@@ -179,6 +180,18 @@ $user='u'*20
 $audit=Join-Path $root $user
 while($audit.Length -lt 175){$audit=Join-Path $audit ('segment'+('x'*12))}
 [void][IO.Directory]::CreateDirectory($audit)
+if($env:LM_TRANSPORT_OWNER_DENIED -ceq '1'){
+ $transportOwnerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+ $acl=[Security.AccessControl.DirectorySecurity]::new()
+ $acl.SetAccessRuleProtection($true,$false)
+ $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($transportOwnerSid,'TakeOwnership',
+  ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+  [Security.AccessControl.PropagationFlags]::None,'Deny'))
+ $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($transportOwnerSid,'FullControl',
+  ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+  [Security.AccessControl.PropagationFlags]::None,'Allow'))
+ [IO.Directory]::SetAccessControl($audit,$acl)
+}
 $long='C:\'+('p'*256)
 $frozen=[pscustomobject]@{root=$root;helper_path=(Join-Path $root 'helper.ps1');helper_sha256=('a'*64);
  integrity_sha256=('b'*64);writer_fence_path=(Join-Path $root 'writer.ps1');writer_fence_sha256=('c'*64);
@@ -193,7 +206,7 @@ $parameters=@{ElevationLogPath=(Join-Path $audit 'placement');SourceRoot=$long;I
  DataGenerationMarkerPaths=@(1..12|ForEach-Object{$long})}
 [void](InvokeFrozenPlacementHelper $frozen $parameters)
 @{argument_chars=$transportLength;username_chars=$user.Length;longest_path_chars=$long.Length}|ConvertTo-Json -Compress
-''', values={"LM_TRANSPORT_ROOT": str(tmp_path)})
+''', values={"LM_TRANSPORT_ROOT": str(tmp_path), "LM_TRANSPORT_OWNER_DENIED": "1" if owner_change_denied else "0"})
     assert result.returncode == 0, result.stderr
     record = json.loads(result.stdout.strip().splitlines()[-1])
     assert record["username_chars"] == 20

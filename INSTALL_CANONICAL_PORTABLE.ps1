@@ -1920,7 +1920,6 @@ exit 0
     # elevation trusts the in-memory hashes, never an adjacent manifest.
     $privateAcl = New-Object Security.AccessControl.FileSecurity
     $privateAcl.SetAccessRuleProtection($true, $false)
-    $privateAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
     foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User,
         [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
         [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
