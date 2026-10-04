@@ -181,6 +181,35 @@ def test_private_es256_compatibility_is_bound_to_version_build_and_explicit_floo
     assert proof["data_compatible_min_version"] == generation.CURRENT_VERSION
 
 
+@pytest.mark.parametrize("new_verified", [False, True])
+def test_same_version_new_build_records_its_own_compatibility_before_data_open(monkeypatch, tmp_path, new_verified):
+    monkeypatch.setattr(protected_admin, "current_process_sid", lambda: SID)
+    data = tmp_path / "data"
+    data.mkdir()
+    markers = generation.marker_paths((data,), SID)
+    for marker in markers:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        record_generation(marker, generation.CURRENT_VERSION, app_id="Label_Match", subject_sid=SID,
+                          build_id=BUILD, data_compatible_min_version="v2.0.94", compatibility_verified=True)
+    monkeypatch.setattr(generation, "_installed_identity", lambda _root: {
+        "version": generation.CURRENT_VERSION, "build_id": OLD_BUILD,
+        "data_compatible_min_version": "v2.0.93", "compatibility_verified": new_verified,
+    })
+
+    def open_business():
+        for marker in markers:
+            record = json.loads(marker.read_bytes())
+            assert record["build_id"] == OLD_BUILD
+            assert record["compatibility_verified"] is new_verified
+            assert record["data_compatible_min_version"] == ("v2.0.94" if new_verified else generation.CURRENT_VERSION)
+        return "opened"
+
+    assert generation.record_user_data_open(ROOT, (data,), opener=open_business) == "opened"
+    decision = probe_downgrade(markers, "v2.0.94", app_id="Label_Match", subject_sid=SID,
+                               target_build_id=BUILD)
+    assert decision["allowed"] is new_verified
+
+
 @pytest.mark.parametrize("state", ["signed", "tampered", "missing_signature"])
 def test_existing_portable_metadata_carries_signed_proof_without_app_additions(monkeypatch, tmp_path, state):
     from tests.test_update_manifest import signed_es256_manifest_payload, valid_manifest

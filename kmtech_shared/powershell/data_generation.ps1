@@ -152,7 +152,19 @@ function Write-KmtechDataGeneration(
     $full = Get-KmtechDataLiteralPath $MarkerPath
     if (-not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($full))) { throw 'Data generation parent must already exist.' }
     $previous = Read-KmtechDataGeneration $full $AppId $SubjectSid
-    if ($null -ne $previous -and (ConvertTo-KmtechDataVersion $previous.version).CompareTo($release) -ge 0) { return $previous }
+    if ($null -ne $previous) {
+        $comparison = (ConvertTo-KmtechDataVersion $previous.version).CompareTo($release)
+        if ($comparison -gt 0 -or ($comparison -eq 0 -and $previous.build_id -ceq $BuildId)) { return $previous }
+        if ($comparison -eq 0) {
+            # Bind the admitted new build; never inherit a predecessor's grant.
+            $CompatibilityVerified = $CompatibilityVerified -and $previous.compatibility_verified
+            if (-not $CompatibilityVerified) { $floor = $release }
+            else {
+                $previousFloor = ConvertTo-KmtechDataVersion $previous.data_compatible_min_version
+                if ($previousFloor.CompareTo($floor) -gt 0) { $floor = $previousFloor }
+            }
+        }
+    }
     $record = [ordered]@{
         schema='kmtech-data-generation-v2';app_id=$AppId;subject_sid=$SubjectSid
         version=('v' + $release.ToString());data_compatible_min_version=('v' + $floor.ToString())

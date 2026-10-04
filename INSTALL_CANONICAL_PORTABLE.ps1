@@ -91,11 +91,11 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot, [ValidateSet('portab
             throw "Shared PowerShell path contains a reparse point: $path"
         }
     }
-    $expectedManifestSha = '8ca8078dc921485085ad79212d9213e31fbc8d78629461c82e622e16bf5664e6'
+    $expectedManifestSha = 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'
     $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
     if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
     $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$lock.version -cne '0.3.2' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
+    if ([string]$lock.version -cne '0.3.3' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
         throw 'Shared consumer manifest pin mismatch.'
     }
     $manifestPath = Join-Path $appRoot 'kmtech_shared.manifest.json'
@@ -452,13 +452,13 @@ def syntax(path, relative):
 shared_replacements = {
     'app/kmtech_shared/__init__.py': (
         'b1b16c26ef8cd85be89e13b24afda1ec7be1d4ce8d7632ab032981601f223455',
-        '4c97c1fcfc066333a8655bdeca0ceaddfbd8783ec660c4d747fa614ea0348630'),
+        '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'),
     'app/kmtech_shared.manifest.json': (
         '465eea8ad20f010e29be5bb98cbc32fdcd1d163d5ba7b76d9eac3b33c14874ee',
-        '8ca8078dc921485085ad79212d9213e31fbc8d78629461c82e622e16bf5664e6'),
+        'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'),
     'app/kmtech_shared.lock.json': (
         '6807ed97f7d734c5d8bdb0e23c141916cc5f013bd2392a46b98849d285d54fcd',
-        'f20fa1c467b402a08b5c2511de235e250968af388f452511898f29173afe4dbb'),
+        '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'),
     'app/kmtech_zero_pe.vendor.json': (
         'e7dac78746db6efbccedcba5c3b44b58b77bc44e8d25a2dbaea6dc1ac01e307c',
         'bf7ccf44e5abd14b3211bbea9b1e22d3b4a53525b4d4bc760c1893ca2da63a69'),
@@ -467,7 +467,7 @@ shared_replacements = {
         '5b43cc1c66b2e43aa855ce876e1c7515ca3cea403069002d3da82a597131a766'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
-        '40d83c7c1eb96140934fc636a86a066087bf20fe1de0e28d267c034931f9330e'),
+        '60531b973d2c835c2b834136f34d61831e083180790aae28faaa96ba1d7a907c'),
 }
 shared_additions = {
     'app/kmtech_shared/powershell/portable.ps1':
@@ -479,8 +479,8 @@ def release_digest(path):
 
 
 # G-DECISIONS #2/#7: exact 4b7630f preimage and three pinned leaves.
-data_generation_replacements = {'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70', '449f58ff26df263e7c03a3009af92342279c473acb1432be2d469d2e1c085a4f'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', 'fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '4c97c1fcfc066333a8655bdeca0ceaddfbd8783ec660c4d747fa614ea0348630'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', '8ca8078dc921485085ad79212d9213e31fbc8d78629461c82e622e16bf5664e6'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', 'f20fa1c467b402a08b5c2511de235e250968af388f452511898f29173afe4dbb'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '5b43cc1c66b2e43aa855ce876e1c7515ca3cea403069002d3da82a597131a766'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', '40d83c7c1eb96140934fc636a86a066087bf20fe1de0e28d267c034931f9330e'), 'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8', '7b0ddf5b910023a547ec910aa01cae3582f286be0aeccaed14bfd40fb621fae8'), 'tools/label_writer_fence.ps1': ('500955366215a113f3c0ffd284d86d6364aadb86e00b097a4cefedb3cbb1ff7e', '48cf0d09b2a0239c1de71cf6c6204170d05b776e5a642d4c4d7a62786df42a9f')}
-data_generation_additions = {'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/kmtech_shared/data_generation.py': '041585ce4c46c768fd1be8882b31c94496fa1b61187d22b4981fa2823d2af05e', 'app/kmtech_shared/powershell/data_generation.ps1': 'd19ec49ed9215122653b07da3154aa3079bcc03e9d2ad0411f8b74d003b4e99a'}
+data_generation_replacements = {'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70', '449f58ff26df263e7c03a3009af92342279c473acb1432be2d469d2e1c085a4f'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', 'fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '5b43cc1c66b2e43aa855ce876e1c7515ca3cea403069002d3da82a597131a766'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', '60531b973d2c835c2b834136f34d61831e083180790aae28faaa96ba1d7a907c'), 'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8', '7b0ddf5b910023a547ec910aa01cae3582f286be0aeccaed14bfd40fb621fae8'), 'tools/label_writer_fence.ps1': ('500955366215a113f3c0ffd284d86d6364aadb86e00b097a4cefedb3cbb1ff7e', '48cf0d09b2a0239c1de71cf6c6204170d05b776e5a642d4c4d7a62786df42a9f')}
+data_generation_additions = {'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}
 data_generation_transition = all(
     (source / relative).is_file() and release_digest(source / relative) == after
     for relative, (_, after) in data_generation_replacements.items()

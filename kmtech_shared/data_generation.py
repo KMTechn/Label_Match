@@ -153,8 +153,15 @@ Probe all slots before opening data; recording alone does not authorize admissio
     if not path.parent.is_dir():
         raise DataGenerationError("data generation parent must already exist")
     previous = _read(path, app_id, subject_sid)
-    if previous is not None and version_key(previous["version"]) >= version_key(version):
-        return previous
+    if previous is not None:
+        previous_version = version_key(previous["version"])
+        if previous_version > version_key(version) or (previous_version == version_key(version) and previous["build_id"] == build_id):
+            return previous
+        if previous_version == version_key(version):
+            # An admitted different build must not inherit its predecessor's
+            # compatibility grant. Keep the stricter floor at this maximum.
+            compatibility_verified = compatibility_verified and previous["compatibility_verified"]
+            floor = max((floor, previous["data_compatible_min_version"]), key=version_key) if compatibility_verified else version
     record = {"schema": SCHEMA, "app_id": app_id, "subject_sid": subject_sid,
               "version": version, "data_compatible_min_version": floor,
               "build_id": build_id, "compatibility_verified": compatibility_verified}
