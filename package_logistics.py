@@ -2941,6 +2941,11 @@ def package_client_from_env(
             tls_ca_bundle_path=profile.tls_ca_bundle_path,
         )
     else:
+        selected_ca = str(values.get("LABEL_MATCH_LOGISTICS_TLS_CA_BUNDLE_PATH") or "").strip()
+        if selected_ca:
+            from label_data_generation import check_user_data_open, resolve_data_path
+            selected_ca = str(resolve_data_path(selected_ca))
+            check_user_data_open(Path(__file__).resolve().parent, (Path(selected_ca).parent,), environ=values)
         base_url = str(
             values.get("LABEL_MATCH_LOGISTICS_API_BASE_URL")
             or values.get("WORKER_ANALYSIS_LOGISTICS_API_BASE_URL")
@@ -2980,9 +2985,7 @@ def package_client_from_env(
             source_host_id=host,
             device_id=str(values.get("LABEL_MATCH_LOGISTICS_DEVICE_ID") or host).strip(),
             timeout_seconds=timeout,
-            tls_ca_bundle_path=str(
-                values.get("LABEL_MATCH_LOGISTICS_TLS_CA_BUNDLE_PATH") or ""
-            ).strip(),
+            tls_ca_bundle_path=selected_ca,
         )
     try:
         client = PackageLogisticsClient(config=config, transport=transport)
