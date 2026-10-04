@@ -323,6 +323,19 @@ def test_signed_f3_marker_failure_recovers_same_completion_after_midnight(
     assert case.provider.effects == 0
     original_events = completion_events(case)
     case.restart(at=datetime(2026, 9, 15, 0, 1, tzinfo=timezone.utc))
+    # CSV durability freezes the completed set across restart (4b7630f,
+    # DESIGN 1.3/11-1); its remaining marker/lease work uses the offered retry.
+    recovered = case.app.package_outbox.get_by_set_id("SET-BUSINESS")
+    assert recovered["local_completion_committed"] == 0
+    assert case.app.package_outbox.claim_next() is None
+    assert completion_events(case) == original_events
+    assert case.app.current_set_info["raw"] == [case.provider.raw]
+    assert case.app._workflow_notice.title == "완료됨 · 기록 마무리 중"
+    assert case.app._workflow_notice_action_text == "저장 재시도"
+    assert case.provider.effects == 0
+    calls_before_retry = deepcopy(case.provider.calls)
+    assert case.app._workflow_notice_action() is True
+    assert case.provider.calls == calls_before_retry
     final = case.app.package_outbox.get_by_set_id("SET-BUSINESS")
     assert final["idempotency_key"] == row["idempotency_key"] == refused[0][0]
     assert final["draft_json"] == row["draft_json"]
