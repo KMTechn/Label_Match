@@ -176,7 +176,10 @@ def check_user_data_open(app_root: Path, data_roots=(), *, environ=None):
             roots.extend((local_root / "KMTech" / "Label_Match" / "data",
                           local_root / "KMTech" / "Label_Match" / "config",
                           local_root / "KMTech" / "DirectSync" / "label_match",
-                          local_root / "KMTech" / "DirectSync" / "label_match" / "queue"))
+                          local_root / "KMTech" / "DirectSync" / "label_match" / "queue",
+                          local_root / "KMTech" / "Bootstrap" / "Label_Match"))
+        elif save:
+            roots.append(resolve_data_path(save).parent / "Bootstrap" / "Label_Match")
         for name in ("LABEL_MATCH_SAVE_DIR", "LABEL_MATCH_DIRECT_SYNC_ROOT",
                      "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"):
             value = str(values.get(name) or "").strip()
@@ -186,6 +189,16 @@ def check_user_data_open(app_root: Path, data_roots=(), *, environ=None):
         settings = str(values.get("LABEL_MATCH_SETTINGS_PATH") or "").strip()
         if settings:
             roots.append(resolve_data_path(settings).parent)
+        # These are read-only security inputs, including the normal default
+        # administrator verifier. Refuse before an entry records any generation.
+        for name in ("LABEL_MATCH_ENROLLMENT_TLS_CA_BUNDLE_PATH",
+                     "LABEL_MATCH_LOGISTICS_TLS_CA_BUNDLE_PATH",
+                     "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH"):
+            value = str(values.get(name) or "").strip()
+            if value:
+                roots.append(resolve_data_path(value).parent)
+        from protected_admin import default_protected_admin_profile_path
+        roots.append(resolve_data_path(default_protected_admin_profile_path(environ=values)).parent)
         if local or save or str(values.get("LABEL_MATCH_LOGISTICS_PROFILE_PATH") or "").strip():
             from logistics_runtime_profile import default_logistics_profile_path
             roots.append(default_logistics_profile_path(values,

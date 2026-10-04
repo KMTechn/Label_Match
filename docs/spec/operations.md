@@ -788,6 +788,8 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 <a id="first-field-data-generation"></a>
 ### 첫 현장 설치와 자료 세대 복구
 
+선택된 enrollment CA(명시/기본 bootstrap), conflict receipt, 보호 관리자 verifier(명시/기본), legacy logistics CA도 초기 읽기 전용 G의 입력 parent에 포함한다. 온보딩은 선택한 CA를 record 이전에 검사하고 READY helper와 registrar에 같은 값을 전달한다. Python receipt·관리자 reader는 선택한 target parent를 판독 전에 재검사하며 canonical ReceiptSource는 PLAN_ONLY·helper 호출에서도 receipt를 읽기 전에 부모 G를 수행한다. 이 보안 구성 폴더에는 새 generation 기록을 쓰지 않는다. sub-262의 ENV-INPUTS와 별도 process 회귀를 확인하며 native 설치·GUI·실제 자격 저장소는 NOT TESTED다.
+
 직접 입력 admission은 정규화한 설정 파일 parent, restore-spool root, exact/reconcile stop-marker parent를 포함한다. 명시 TLS CA·등록 token 파일·task password 파일도 첫 판독 전에 읽기 전용으로 검사하며 그 추가 보안 구성 디렉터리에는 세대 기록을 쓰지 않는다. 경로 해석 결과를 reader 인수로 그대로 넘긴다. 각 외부 입력 하나에만 높은/손상 기록을 둔 별도 프로세스 및 같은 판/기록 없음의 기존 reader 회귀는 sub-244에 기록한다. hidden recovery child도 실제 DB·seal-key parent를 SQLite 초기화/키 판독 전에 검사한다. 정상 부모의 기록 없는 synthetic 작업은 기존대로 허용하며 이 child admission 자체는 세대 기록을 추가하지 않는다. canonical 부모는 알려진 control·설정/profile parent·명시 자료/DirectSync roots를 설정 판독 전에 검사하고, 설정의 custom root를 선택한 뒤 다시 검사한다. Windows PowerShell 5.1과 PowerShell 7에서도 상대·tilde·비ASCII 입력을 같은 Python 경로로 선택한다. 부모 경로와 실제 resolver child의 경로/cwd 동일성은 PS5/PS7 정의-only 회귀 범위이며 native 설치·Run/task·실제 relay 수용은 NOT TESTED다.
 
 G 가지는 종료 잔류 수정·w9scanonly가 포함된 `e89c188` 위에 적용한다. 종료 지연 알림의 기존 guarded sink와 방향성 선언을 유지하고 자료 세대 기록 sink 하나만 더한다(58→59). `e89c188` 원본은 표준 writer `--check`와 기존 설치 선언 읽기 검사에서 통과했다. 지원 설치기의 exact 자료 세대 전/후 쌍은 이 기준판에 결속하며, 이전 종료 수정 판의 정방향 전환도 각 역사 preimage와 최종 후보 bytes를 함께 확인한다. 실행 증거는 sub-220 보고서의 새 기준/후보 비교를 따른다.

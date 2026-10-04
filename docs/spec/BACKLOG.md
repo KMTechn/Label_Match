@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+외부 CA·conflict receipt·보호 관리자 verifier의 G parent 누락을 sub-262에서 교정한다. legacy install-pack fixture는 실제 release identity와 bootstrap inventory 입력을 보충하며 기존 단언을 유지한다. headless/정의-only 회귀와 stock 거절 근거는 [sub-262](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-262/REPORT.md)에 결속하고 독립 재확인·중앙 병합·native 수용은 1차 후속이다.
+
 legacy upgrade guard의 G/nextfix 조합은 정의된 exact tuple을 사용하고 시험 helper의 중복 BOM을 제거한다. 기존 66개 read-only 선언/stock/archive preflight와 신규 source/self·BOM 구문 회귀는 [sub-242 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-242/REPORT.md)에서 기준/후보별 결과를 구분한다. 실제 설치·공개 v2.0.38의 백업/새 설치·등록 복구/현장 rollback 수용은 별도이며, 호스트에서 실행하지 않는다.
 
 첫 재실행의 남은 17개는 금지 입력을 성공시킨 결함이 아니라 G writer/file source-set 선거절을 옛 semantics 문자열로 기대하던 시험 결함이다. G writer 추가를 독립적으로 대조한 뒤 정확한 첫 거절 코드만 교정하며 기존 부정 입력·nonzero exit·불변 자료 단언은 유지한다. 원 실패 및 최종 재실행 결과는 같은 보고서에서 구분한다.
