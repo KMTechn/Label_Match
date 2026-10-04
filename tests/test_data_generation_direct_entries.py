@@ -65,6 +65,13 @@ def test_empty_or_default_profile_selects_actual_external_marker_before_loading(
     assert json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))["control_marker_absent_before"]
 
 
+@pytest.mark.parametrize("entry", ["hosted-raw", "hosted-relay"])
+@pytest.mark.parametrize("state", ["external-duplicate", "external-abbreviated"])
+def test_host_uses_the_child_parser_path_before_bootstrap_diagnostics(entry, state, tmp_path):
+    test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, state, tmp_path)
+    assert json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))["control_marker_absent_before"]
+
+
 @pytest.mark.parametrize("argument", ["", "~/external/logistics_runtime_profile.json"])
 def test_allowed_profile_reader_uses_the_same_selected_path_as_generation_guard(argument, monkeypatch, tmp_path):
     import label_data_generation as generation

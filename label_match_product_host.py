@@ -116,7 +116,8 @@ def _record_bootstrap_integrity_absent(arguments: Sequence[str], mode: str) -> N
 
 
 def _option_value(arguments: Sequence[str], option: str) -> str:
-    for index, argument in enumerate(arguments):
+    for index in range(len(arguments) - 1, -1, -1):
+        argument = arguments[index]
         if argument == option and index + 1 < len(arguments):
             return str(arguments[index + 1])
         prefix = f"{option}="
@@ -238,15 +239,23 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
             DIRECT_SYNC_RELAY_MODE,
             USER_RELAY_MODE,
             }:
-            from label_data_generation import DataGenerationError, check_user_data_open, resolve_data_path
+            from label_data_generation import DataGenerationError, check_user_data_open, resolve_data_path, normalize_data_arguments
             try:
-                selected_root = _option_value(arguments, "--app-root")
-                root = resolve_data_path(selected_root) if selected_root else _default_product_root()
-                roots = tuple(resolve_data_path(value).parent for option in (
-                    "--db-path", "--credential-path", "--producer-manifest-path")
-                    if (value := _option_value(arguments, option)))
-                roots += tuple(resolve_data_path(value) for option in ("--scan-source-dir", "--direct-sync-root")
-                    if (value := _option_value(arguments, option)))
+                if mode == USER_RELAY_MODE:
+                    from user_relay import build_parser
+                    selected = build_parser().parse_args(arguments)
+                    root = resolve_data_path(selected.app_root) if selected.app_root else _default_product_root()
+                    normalize_data_arguments(selected, ("direct_sync_root", "scan_source_dir"))
+                    roots = tuple(Path(value) for value in (selected.direct_sync_root, selected.scan_source_dir) if value)
+                else:
+                    from tools.direct_sync_relay_runner import build_parser
+                    selected = build_parser().parse_args(arguments)
+                    root = _default_product_root()
+                    normalize_data_arguments(selected, ("db_path", "credential_path", "producer_manifest_path",
+                        "enqueue_source_file", "operator_pause_path", "scan_source_dir", "spool_dir"))
+                    roots = tuple(Path(value).parent for value in (selected.db_path, selected.credential_path,
+                        selected.producer_manifest_path, selected.enqueue_source_file, selected.operator_pause_path) if value)
+                    roots += tuple(Path(value) for value in (selected.scan_source_dir, selected.spool_dir) if value)
                 check_user_data_open(root, roots)
             except DataGenerationError as exc:
                 print(str(exc), file=sys.stderr)

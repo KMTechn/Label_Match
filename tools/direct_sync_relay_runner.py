@@ -487,8 +487,7 @@ def _persist_scan_runtime_status(config: DirectSyncRuntimeConfig, status: dict) 
         handle.write("\n")
 
 
-@writer_sink("raw_relay_runner")
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Label_Match direct-sync relay runner")
     parser.add_argument("--db-path", required=True)
     parser.add_argument("--spool-dir", required=True)
@@ -512,6 +511,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-enqueue-files", type=int, default=100)
     parser.add_argument("--min-source-file-age-seconds", type=int, default=0)
     parser.add_argument("--baseline-existing-source-files", action="store_true")
+    return parser
+
+
+@writer_sink("raw_relay_runner")
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.enqueue_source_file and args.scan_source_dir:
         parser.error("--enqueue-source-file and --scan-source-dir are mutually exclusive")
@@ -523,10 +528,13 @@ def main(argv: list[str] | None = None) -> int:
     from current_user_onboarding import resolve_current_user_onboarding_paths
     product_root = _default_product_root()
     normalize_data_arguments(args, ("db_path", "producer_manifest_path", "credential_path", "scan_source_dir",
-        "enqueue_source_file", "spool_dir", "log_path", "runtime_status_path", "upload_status_dir"))
+        "enqueue_source_file", "spool_dir", "log_path", "runtime_status_path", "upload_status_dir", "operator_pause_path"))
     roots = (Path(args.db_path).parent, Path(args.producer_manifest_path).parent, Path(args.credential_path).parent,
         Path(args.scan_source_dir) if args.scan_source_dir else
         Path(args.enqueue_source_file).parent if args.enqueue_source_file else Path(args.db_path).parent)
+    roots += (Path(args.spool_dir),)
+    if args.operator_pause_path:
+        roots += (Path(args.operator_pause_path).parent,)
     check_user_data_open(product_root, roots)
     paths = resolve_current_user_onboarding_paths(product_root)
     source_roots = ([Path(args.scan_source_dir).expanduser().absolute()] if args.scan_source_dir else

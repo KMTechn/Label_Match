@@ -208,6 +208,10 @@ if external_mode:
     if field:
         if field in argv[kind]: argv[kind][argv[kind].index(field) + 1] = selected
         else: argv[kind].extend([field, selected])
+        if state == "external-duplicate":
+            argv[kind] = [field, str(root / "relay/credential.json" if kind == "hosted-raw" else root / "relay"), *argv[kind]]
+        elif state == "external-abbreviated":
+            argv[kind][argv[kind].index(field)] = field[:-1]
     else:
         os.environ["LABEL_MATCH_SAVE_DIR"] = selected
     if kind == "check-profile":
