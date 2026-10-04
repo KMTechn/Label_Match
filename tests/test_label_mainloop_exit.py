@@ -106,6 +106,7 @@ def _probe(mode, root):
     original = lm.Label_Match
     apps = []
     release = threading.Event()
+    main_returned = threading.Event()
     verdict = {"exception": None, "decline_kept_work": False}
 
     class ProbeApp(original):
@@ -227,6 +228,7 @@ def _probe(mode, root):
     )
 
     def rescue():
+        main_returned.wait()
         time.sleep(0.4)
         app = apps[0]
         workers = [{"name": t.name, "daemon": t.daemon}
@@ -272,6 +274,7 @@ def _probe(mode, root):
         "current_state_preserved": app.data_manager.load_current_state()["current_set_info"]["raw"] == ["unfinished"],
     })
     (root / f"{mode}.json").write_text(json.dumps(verdict), encoding="utf-8")
+    main_returned.set()
     if original_exit is not None:
         raise original_exit
 
