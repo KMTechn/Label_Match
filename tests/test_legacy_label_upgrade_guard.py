@@ -446,6 +446,18 @@ def test_e88011c_archive_upgrade_passes_nextfix_writer_guard(tmp_path, nextfix_a
     assert (old / "app/Label_Match.py").read_bytes() == before
 
 
+def test_candidate_archive_fresh_install_uses_same_tree(tmp_path, nextfix_archive_layouts):
+    _old, candidate = nextfix_archive_layouts
+    before = {path.relative_to(candidate): path.read_bytes()
+              for path in candidate.rglob("*") if path.is_file()}
+    result = _nextfix_probe(tmp_path, candidate, candidate)
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["installed_inventory_sha256"] == payload["candidate_inventory_sha256"]
+    assert {path.relative_to(candidate): path.read_bytes()
+            for path in candidate.rglob("*") if path.is_file()} == before
+
+
 def test_reviewed_current_user_pair_preserves_e88011c_upgrade(tmp_path, nextfix_archive_layouts):
     old, candidate = nextfix_archive_layouts
     for relative, (before, after) in _declared_current_user_profile_pairs().items():

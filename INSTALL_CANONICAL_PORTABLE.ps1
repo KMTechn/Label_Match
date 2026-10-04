@@ -928,7 +928,7 @@ def data_generation_before_allowed(relative):
         return True
     if relative == 'app/Label_Match.py':
         scalar_pairs = [*(scan_input_pairs if scan_input_transition else []),
-                        *([nextfix_pair] if nextfix_label_transition else []),
+                        *([nextfix_label_pair] if nextfix_label_transition else []),
                         *([scanner_label_pair] if scanner_transition else [])]
         if any(actual == before for before, _ in scalar_pairs):
             return True

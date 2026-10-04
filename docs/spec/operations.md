@@ -816,6 +816,8 @@ PROVEN(호스트 격리): 초기 e47 선택 62 PASS만으로는 rollback 경계�
 
 고정된 앱·companion을 바꾸면 해당 후보의 LF 정규화 SHA-256과 Python/PowerShell writer inventory pin을 같은 변경에서 갱신한다. 기존 지원판의 preimage와 역방향·목록 밖 변경 거부 시험은 보존하며, `tests/test_legacy_label_upgrade_guard.py` 전체와 inventory 정합 시험을 focused 검증에 포함한다. 최종 출시 packet의 실제 설치 전이는 별도 설치 수용에서 확인한다.
 
+G와 nextfix 전이를 조합할 때는 기존 `nextfix_label_pair`의 정확한 before/after tuple을 사용한다. 신규 설치의 source/self 비교와 exact nextfix 업그레이드는 read-only guard에서 확인하며 실제 배치·등록·rollback 수용은 별도 범위다. 설치기 정의를 추출하는 시험 helper는 UTF-8 BOM을 읽을 때 제거하고 PowerShell 시험 파일에 한 번만 쓴다. 표준 pytest/Full CI는 legacy upgrade guard 파일을 자동 수집하며, 호스트 선택에서는 실제 설치·relay를 시작하는 수명주기 노드와 read-only preflight 노드를 구분한다.
+
 `0cf5bf6` 자체의 installer는 `d0e504e`와 onboarding AST가 달라 교체 전에 거부한다. `w9labelwriterupgrade`가 포함된 stock portable을 사용하면 정확한 전/후 onboarding hash 쌍만 `PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX`로 인정한다. 파일 집합·writer/guard·runtime·계약·설치본 bootstrap 검증은 유지한다. 검증 순서만 바뀌고 data/identity/queue/spool/settings/receipt schema는 같으므로 데이터 변환은 필요 없다. 임의 이전/이후 릴리스나 역방향 downgrade를 허용하는 옵션은 없다.
 
 capture8에서 `aa4d59b` 패키지는 `app/assets/Item.csv`에서 거부됐다. 실제 `d0e504e` 설치본 CSV는 committed LF 2374 bytes지만 후보는 checkout CRLF 2425 bytes였고 bundled 설정도 같은 차이가 있었다. `w9labelwriterupgrade2` stock 빌더는 commit/tree를 고정한 Git blob snapshot을 사용하여 저장소 입력 bytes를 보존한다. CSV/설정 예외나 guard 완화는 없다. onboarding은 inventory 비교와 aggregate 검증의 실제 코드 변경이므로 기존 pin 쌍은 필요하다.
