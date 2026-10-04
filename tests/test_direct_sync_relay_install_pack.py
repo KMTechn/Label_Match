@@ -9,6 +9,59 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_current_user_onboarding import _write_bootstrap_inventory_record
+
+
+def _seal_generation_release_input(app_root):
+    """Supply code identity while preserving the preflight's damaged runtime."""
+    from label_data_generation import CURRENT_VERSION
+    root = Path(app_root)
+    root.mkdir(parents=True, exist_ok=True)
+    if not ((root / 'runtime/pythonw.exe').is_file() and (root / 'app/main.py').is_file()):
+        (root / 'Label_Match.exe').write_bytes(b'isolated code identity; never executed')
+    (root / 'portable-manifest.json').write_text(json.dumps({
+        'schema': 'label-match-portable-tree-v1', 'version': CURRENT_VERSION,
+        'source_commit': 'a' * 40,
+    }), encoding='utf-8')
+    _write_bootstrap_inventory_record(root)
+
+
+@pytest.fixture(autouse=True)
+def _generation_release_inputs(monkeypatch, tmp_path):
+    original_run = subprocess.run
+
+    def prepare(argv):
+        if '--app-root' not in argv:
+            return
+        root = Path(argv[argv.index('--app-root') + 1]).resolve()
+        if root.is_relative_to(tmp_path.resolve()):
+            _seal_generation_release_input(root)
+
+    def run_with_release(command, *args, **kwargs):
+        if isinstance(command, (list, tuple)) and any(
+            str(part).replace('\\', '/').endswith('tools/direct_sync_relay_install_pack.py')
+            for part in command
+        ):
+            prepare(command)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', run_with_release)
+    original_load = load_install_pack_module
+
+    def load_with_release():
+        module = original_load()
+        original_main = module.main
+
+        def main_with_release(argv=None):
+            if argv is not None:
+                prepare(argv)
+            return original_main(argv)
+
+        module.main = main_with_release
+        return module
+
+    monkeypatch.setattr(sys.modules[__name__], 'load_install_pack_module', load_with_release)
+
 
 @pytest.fixture(autouse=True)
 def _factory_install_test_mode(monkeypatch):
