@@ -204,7 +204,9 @@ def _portable_stop_marker_release_preflight(
         raise ValueError(
             "relay stop marker requires a pinned EXACT_CLONE_RUNTIME_CONFLICT receipt"
         )
-    receipt_path = _resolved(receipt_value)
+    from label_data_generation import resolve_data_path
+    receipt_path = resolve_data_path(receipt_value)
+    check_user_data_open(paths.app_root, (receipt_path.parent,), environ=environ)
     try:
         receipt = read_pinned_json(
             receipt_path,
@@ -817,7 +819,8 @@ def _configured_tls_ca_bundle_source(
     values = os.environ if environ is None else environ
     explicit = str(values.get(ENROLLMENT_TLS_CA_BUNDLE_PATH_ENV) or "").strip()
     if explicit:
-        return explicit
+        from label_data_generation import resolve_data_path
+        return str(resolve_data_path(explicit))
     if paths.bootstrap_tls_ca_bundle_path.is_file():
         return str(paths.bootstrap_tls_ca_bundle_path)
     return ""
@@ -828,6 +831,7 @@ def _registration_runner(
     *,
     server_base_url: str,
     environ: Mapping[str, str] | None = None,
+    tls_ca_source: str | None = None,
 ) -> int:
     from tools import register_label_match_worker_pc
 
@@ -855,7 +859,8 @@ def _registration_runner(
         "--report-path",
         str(paths.registration_report_path),
     ]
-    tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
+    if tls_ca_source is None:
+        tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
     if tls_ca_source:
         arguments.extend(["--tls-ca-bundle-path", tls_ca_source])
     return int(register_label_match_worker_pc.main(arguments))
@@ -935,13 +940,15 @@ def onboard_current_user(
             status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
     try:
+        tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
+        if tls_ca_source:
+            check_user_data_open(paths.app_root, (Path(tls_ca_source).parent,), environ=environ)
         record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
                                                paths.direct_sync_root, paths.queue_dir,
                                                paths.logistics_profile_path.parent))
     except DataGenerationError as exc:
         raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
             status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
-    tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
     for directory in (
         paths.data_root,
         paths.settings_path.parent,
@@ -1091,6 +1098,7 @@ def onboard_current_user(
                             paths,
                             server_base_url=server_base_url,
                             environ=environ,
+                            tls_ca_source=tls_ca_source,
                         )
                     else:
                         return_code = registration_runner(paths)
