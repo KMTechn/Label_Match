@@ -93,6 +93,7 @@ def clock_case(tmp_path, monkeypatch, request):
         return artifact
 
     app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.worker_name = "worker"  # Bind the same operator as an initialized app.
     app.current_set_info = {"id": None, "raw": [], "parsed": [], "start_time": None,
                             "error_count": 0, "has_error_or_reset": False}
     app.deferred_intent_capture = open_capture()

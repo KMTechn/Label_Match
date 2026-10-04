@@ -723,6 +723,8 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 <a id="business-fixtures-w7lmfix"></a>
 ### W7 후속 업무 fixture 사용 범위
 
+동기 PHS2 접수와 lease 시계 시험에서 생성자를 생략하는 앱 대역도 교대 선택이 끝난 `worker_name`을 초기화한다. 작업자 결속·실제 capture/validation/materialization/F3·서명 검증을 그대로 실행하며 내구 순서·원 요청 재전송·원자 commit 단언을 유지한다.
+
 [business_factory](../../tests/test_business_flow_fixtures.py)와 [지원 코드](../../tests/_business_flow_fixture.py)는 W7-V4의 세 후속 행을 위한 격리 headless 시험이다. 실제 `DataManager`, 공유 SQLite outbox·exchange·lease store, `PackageLogisticsClient`의 주입 transport, 기존 시험 signer/keyring을 사용한다. 제품 source·guard·서명 검증·flush/fsync·marker·receipt 검증은 변경하지 않는다. `run_tests=False`이며 UI·오디오·telemetry 전송·clock만 외부 seam이다.
 
 | 행 | 재사용 진입·상태 | 입증 한계 |

@@ -1593,6 +1593,7 @@ def test_capture_only_row_is_forward_compatible_without_schema_rewrite(tmp_path)
 def test_label_closed_port_flow_captures_before_remote_and_shows_pending(tmp_path):
     db_path, _outbox, store = _store(tmp_path)
     app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.worker_name = "worker"  # The real shift selection precedes capture.
     app.current_set_info = {
         "id": None,
         "raw": [],
@@ -1640,6 +1641,7 @@ def test_label_closed_port_flow_captures_before_remote_and_shows_pending(tmp_pat
 def test_label_capture_failure_stops_before_remote_and_reports_rescan(tmp_path):
     _db_path, _outbox, store = _store(tmp_path)
     app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.worker_name = "worker"  # The real shift selection precedes capture.
     app.current_set_info = {
         "id": None,
         "raw": [],
@@ -2289,6 +2291,7 @@ def test_initial_gui_validation_does_not_require_create_package_grant(
 ):
     db_path, _outbox, store = _store(tmp_path)
     app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.worker_name = "worker"  # The real shift selection precedes capture.
     app.current_set_info = {
         "id": None,
         "raw": [],
@@ -2376,6 +2379,7 @@ def test_initial_gui_validation_does_not_require_create_package_grant(
 def test_real_gui_validated_path_materializes_current_set(tmp_path):
     db_path, _outbox, store = _store(tmp_path)
     app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.worker_name = "worker"  # The real shift selection precedes capture.
     app.current_set_info = {
         "id": None,
         "raw": [],
@@ -2514,6 +2518,7 @@ def test_validated_materializer_flows_through_f3_durable_completion(
     success_label_updates = []
     db_path, outbox, store = _store(tmp_path)
     app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.worker_name = "worker"  # The real shift selection precedes capture.
     app.tk = SimpleNamespace()  # Storage integration has no Tcl interpreter.
     physical_qr = (
         "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=ITG-MATERIALIZE-F3|"
@@ -2837,6 +2842,7 @@ def test_validated_materializer_flows_through_f3_durable_completion(
 def test_gui_local_integrity_invalid_calls_no_remote(tmp_path):
     db_path, _outbox, store = _store(tmp_path)
     app = label_module.Label_Match.__new__(label_module.Label_Match)
+    app.worker_name = "worker"  # The real shift selection precedes capture.
     app.current_set_info = {
         "id": None,
         "raw": [],
