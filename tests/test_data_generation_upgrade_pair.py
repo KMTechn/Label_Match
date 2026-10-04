@@ -1,15 +1,16 @@
 """Run the installer's actual read-only upgrade probe on isolated source copies."""
 import json
+import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 
 import pytest
-from tools import build_portable_release_candidate as builder
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_COMMIT = 'e89c18879f5bf59ddcd550152bf26ffedc4d687a'
+HISTORICAL_G_COMMIT = '362f30f7c6c7a4d952bb4d1ed985adc6f0a8cea8'
 
 
 @pytest.fixture(scope='module')
@@ -23,12 +24,30 @@ def baseline_source(tmp_path_factory):
     return baseline
 
 
-@pytest.fixture
-def pair(tmp_path, baseline_source):
+@pytest.fixture(scope='module')
+def historical_g_source(tmp_path_factory):
+    source = tmp_path_factory.mktemp('historical-g-source') / 'source'
+    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout',
+                    '-c', 'core.autocrlf=false', str(ROOT), str(source)],
+                   check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(source), 'checkout', '--quiet', '--detach',
+                    HISTORICAL_G_COMMIT], check=True, capture_output=True)
+    return source
+
+
+def _pair_layouts(tmp_path, baseline_source, candidate_source):
     result = []
-    for name, source in (('old', baseline_source), ('new', ROOT)):
+    for name, source in (('old', baseline_source), ('new', candidate_source)):
         package = tmp_path / name
-        builder._copy_application(source, package / 'app')
+        spec = importlib.util.spec_from_file_location(name + '_g_builder',
+            source / 'tools/build_portable_release_candidate.py')
+        own_builder = importlib.util.module_from_spec(spec)
+        import_path = sys.path[:]
+        try:
+            spec.loader.exec_module(own_builder)
+            own_builder._copy_application(source, package / 'app')
+        finally:
+            sys.path[:] = import_path
         (package / 'runtime').mkdir()
         (package / 'runtime' / 'fixture').write_bytes(b'identical runtime preimage')
         (package / 'launch-label-match.cmd').write_bytes(b'identical launcher fixture\r\n')
@@ -52,12 +71,44 @@ def pair(tmp_path, baseline_source):
             for target in targets:
                 if target.is_file():
                     target.write_bytes(target.read_bytes().replace(b'\r\n', b'\n'))
+        commit = subprocess.check_output(['git', '-C', str(source), 'rev-parse',
+                                          'HEAD'], text=True).strip()
+        (package / 'portable-manifest.json').write_text(json.dumps({
+            'source_commit': commit}), encoding='utf-8')
+        if (source / 'tools/apply_prepared_update.ps1').is_file():
+            from auto_update import canonical_startup_settings
+            (package / 'app/auto-update-settings.json').write_bytes(
+                canonical_startup_settings({}))
+            public = json.loads((source / 'config/update-manifest-key-config.json').read_text(
+                encoding='utf-8-sig'))
+            (package / 'app/update-manifest-key-config.json').write_bytes(
+                (json.dumps(public, ensure_ascii=True, sort_keys=True, indent=2) + '\n').encode())
+            shutil.copyfile(source / 'tools/apply_prepared_update.ps1',
+                            package / 'tools/apply_prepared_update.ps1')
+        else:
+            shutil.copyfile(ROOT / 'tests/fixtures/LM-e88011c-public-key-config.json',
+                            package / 'app/update-manifest-key-config.json')
         result.append(package)
     return result
 
 
-def probe(source, installed, *, signed=False):
-    text = (ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1').read_text(encoding='utf-8-sig')
+@pytest.fixture
+def pair(tmp_path, baseline_source, historical_g_source):
+    """Preserve the accepted pure-G pair and its signed reverse contract."""
+    return _pair_layouts(tmp_path, baseline_source, historical_g_source)
+
+
+@pytest.fixture
+def integration_pair(tmp_path, baseline_source):
+    return _pair_layouts(tmp_path, baseline_source, ROOT)
+
+
+def probe(source, installed, *, signed=False, integrated=False):
+    if integrated:
+        text = (ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1').read_text(encoding='utf-8-sig')
+    else:
+        text = subprocess.check_output(['git', '-C', str(ROOT), 'show',
+            HISTORICAL_G_COMMIT + ':INSTALL_CANONICAL_PORTABLE.ps1']).decode('utf-8-sig')
     start = text.index("$probe = @'") + len("$probe = @'")
     code = text[start:text.index("\n'@", start)].lstrip()
     return subprocess.run([sys.executable, '-B', '-', str(source), str(installed),
@@ -75,6 +126,29 @@ def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     reverse = probe(old, new, signed=True)
     assert reverse.returncode == 0, reverse.stderr[-2000:]
     assert json.loads(reverse.stdout)['compatibility'] == 'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE'
+
+
+def test_integrated_g_upgrade_is_exactly_forward_only(integration_pair):
+    old, new = integration_pair
+    forward = probe(new, old, integrated=True)
+    assert forward.returncode == 0, forward.stderr[-2000:]
+    assert json.loads(forward.stdout)['compatibility'] == 'PINNED_DATA_GENERATION_G'
+    for signed in (False, True):
+        reverse = probe(old, new, signed=signed, integrated=True)
+        assert reverse.returncode != 0
+        assert 'WRITER_TRANSITION_' in reverse.stderr
+
+
+@pytest.mark.parametrize('change', ['one_byte', 'unlisted', 'helper'])
+def test_integrated_g_upgrade_refuses_undeclared_changes(integration_pair, change):
+    old, new = integration_pair
+    relative = {'one_byte': 'app/Label_Match.py', 'unlisted': 'app/undeclared.py',
+                'helper': 'app/kmtech_shared/data_generation.py'}[change]
+    with (new / relative).open('ab') as handle:
+        handle.write(b'\n')
+    result = probe(new, old, integrated=True)
+    assert result.returncode != 0
+    assert 'WRITER_TRANSITION_' in result.stderr
 
 
 @pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice'])
