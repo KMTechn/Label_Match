@@ -1,4 +1,4 @@
-param([string]$Repo, [string]$Root, [string]$Python, [string]$Field,
+﻿param([string]$Repo, [string]$Root, [string]$Python, [string]$Field,
       [string]$State, [string]$Spelling, [string]$Output)
 $ErrorActionPreference = 'Stop'
 $Script:SettingsReads = 0
@@ -44,7 +44,7 @@ foreach ($name in @('LABEL_MATCH_SETTINGS_PATH','LABEL_MATCH_LOGISTICS_PROFILE_P
                    'LABEL_MATCH_DIRECT_SYNC_ROOT','LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT')) {
     [Environment]::SetEnvironmentVariable($name, '', 'Process')
 }
-$external = Join-Path $env:USERPROFILE 'external'
+$external = Join-Path $env:USERPROFILE $(if ($Spelling -eq 'unicode') { '외부자료' } else { 'external' })
 [void][IO.Directory]::CreateDirectory($external)
 $settings = Join-Path $lad 'KMTech\Label_Match\config\app_settings.json'
 $profile = Join-Path $lad 'KMTech\Logistics\profiles\Label_Match\runtime-profile.json'
@@ -106,6 +106,7 @@ foreach ($path in $before.Keys) {
 $added = @(Get-ChildItem -LiteralPath $Root -File -Recurse | Where-Object { -not $before.ContainsKey($_.FullName) }).Count
 $samePaths = $false
 $cwdMatches = $false
+$intendedPaths = $false
 if (-not $refused) {
     $childScript = Join-Path $Root 'reader.py'
     $childOutput = Join-Path $Root 'reader.json'
@@ -130,9 +131,14 @@ Path(sys.argv[2]).write_text(json.dumps({'cwd':os.getcwd(),'settings':str(p.sett
         $selected.profile.Equals($selectedProfilePath,'OrdinalIgnoreCase') -and
         $selected.direct.Equals($selectedDirectSyncRoot,'OrdinalIgnoreCase') -and
         $selected.data.Equals($generationDataRoot,'OrdinalIgnoreCase')
+    $intendedPaths = $selected.settings.Equals($settings,'OrdinalIgnoreCase') -and
+        $selected.profile.Equals($profile,'OrdinalIgnoreCase') -and
+        $selected.direct.Equals($direct,'OrdinalIgnoreCase') -and
+        $selected.data.Equals($data,'OrdinalIgnoreCase')
 }
 $result = @{ refused=$refused; guidance=$guidance; settings_reads=$Script:SettingsReads;
              lifecycle_calls=$Script:LifecycleCalls; changed=$changed; added=$added;
              parent_child_same_paths=$samePaths; child_cwd_matches=$cwdMatches;
+             intended_paths_selected=$intendedPaths;
              ps_version=$PSVersionTable.PSVersion.ToString() }
 [IO.File]::WriteAllText($Output, ($result | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))

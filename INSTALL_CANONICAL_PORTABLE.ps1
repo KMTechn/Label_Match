@@ -1783,20 +1783,26 @@ function Resolve-LabelGenerationInputPath([string]$Value, [string]$Root) {
     # Use the reader's resolver and the same FileSystem working directory as
     # Product's child. Do not interpret user path strings twice in two languages.
     $pathProbe = @'
-import sys
+import base64, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / 'app'))
 from label_data_generation import resolve_data_path
 try:
-    print(str(resolve_data_path(sys.argv[2])))
+    selected = resolve_data_path(base64.b64decode(sys.stdin.read()).decode('utf-8'))
+    print(base64.b64encode(str(selected).encode('utf-8')).decode('ascii'))
 except Exception:
     raise SystemExit(4)
 '@
-    $resolved = @(& (Join-Path $Root 'runtime\python.exe') -I -B -c $pathProbe $Root $Value)
+    # PS7 expands a native argv value beginning with ~ using its own HOME.
+    # ASCII stdin also preserves non-ASCII paths under Windows PowerShell 5.1.
+    $pathInput = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
+    $resolved = @($pathInput | & (Join-Path $Root 'runtime\python.exe') -I -B -c $pathProbe $Root)
     if ($LASTEXITCODE -ne 0 -or $resolved.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$resolved[0])) {
         throw '이 PC의 자료 경로를 확인할 수 없어 자료를 열 수 없습니다. 현재 코드와 자료를 보존하고 관리자에게 지원 복구를 요청하세요.'
     }
-    return Full ([string]$resolved[0]) 'Label generation input'
+    try { $cooked = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$resolved[0])) }
+    catch { throw '이 PC의 자료 경로를 확인할 수 없습니다. 현재 코드와 자료를 보존하고 관리자에게 지원 복구를 요청하세요.' }
+    return Full $cooked 'Label generation input'
 }
 
 $WriterDelegationEnvironmentNames = @(

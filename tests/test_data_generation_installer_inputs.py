@@ -44,6 +44,13 @@ def test_installer_admits_known_inputs_before_settings_or_lifecycle(tmp_path, sh
 
 
 @pytest.mark.parametrize('shell', SHELLS)
+def test_installer_resolver_preserves_non_ascii_path_through_native_stdio(tmp_path, shell):
+    result = _run(tmp_path, shell, 'custom', 'absent', 'unicode')
+    assert not result['refused'] and result['intended_paths_selected'], result
+    assert result['parent_child_same_paths'] and result['child_cwd_matches'], result
+
+
+@pytest.mark.parametrize('shell', SHELLS)
 @pytest.mark.parametrize('field', ['settings', 'profile', 'direct', 'legacy-direct', 'data', 'custom', 'default'])
 @pytest.mark.parametrize('state', ['same', 'absent'])
 @pytest.mark.parametrize('spelling', ['absolute', 'tilde', 'relative'])
@@ -52,4 +59,5 @@ def test_installer_and_real_child_use_same_selected_paths(tmp_path, shell, field
     assert not result['refused'], result
     assert result['settings_reads'] == 1, result
     assert result['parent_child_same_paths'] and result['child_cwd_matches'], result
+    assert result['intended_paths_selected'], result
     assert result['changed'] == result['added'] == result['lifecycle_calls'] == 0, result
