@@ -167,7 +167,7 @@ def check_user_data_open(app_root: Path, data_roots=(), *, environ=None):
         return identity
     except DataGenerationError:
         raise
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
         raise DataGenerationError(UNKNOWN_MESSAGE) from exc
 
 
@@ -196,5 +196,5 @@ def record_user_data_open(app_root: Path, data_roots, *, environ=None, opener=No
         return opener() if opener is not None else identity
     except DataGenerationError:
         raise
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
         raise DataGenerationError(UNKNOWN_MESSAGE) from exc

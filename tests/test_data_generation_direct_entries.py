@@ -118,3 +118,20 @@ def test_installed_tool_uses_packet_identity_without_resolving_user_settings(mon
     monkeypatch.setattr(current_user_onboarding, "resolve_current_user_onboarding_paths", forbidden)
     assert generation._installed_identity(root / "app")["build_id"] == "a" * 40
     assert observed == [root]
+
+
+@pytest.mark.parametrize("operation", ["check_user_data_open", "record_user_data_open"])
+def test_unavailable_process_sid_is_generation_unknown_before_release_or_data_read(
+        operation, monkeypatch, tmp_path):
+    import label_data_generation as generation
+    import protected_admin
+    def unavailable():
+        raise RuntimeError("synthetic process SID lookup failure")
+    def forbidden(_root):
+        pytest.fail("release/data lookup followed an unavailable SID")
+    monkeypatch.setattr(protected_admin, "current_process_sid", unavailable)
+    monkeypatch.setattr(generation, "_installed_identity", forbidden)
+    data = tmp_path / "unopened-data"
+    with pytest.raises(generation.DataGenerationError, match="자료.*복구"):
+        getattr(generation, operation)(tmp_path, (data,))
+    assert not data.exists()
