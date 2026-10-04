@@ -3719,8 +3719,9 @@ catch {
             $rollbackCustodyReady = $true
         }
         if ($rollbackCustodyReady) {
-            . Invoke-LabelRollbackStep 'current_user_removal' {
+            # A generation refusal aborts rollback before any phase can continue.
             Assert-LabelRollbackGeneration
+            . Invoke-LabelRollbackStep 'current_user_removal' {
             $rollbackProductRoot = if (Test-Path (Join-Path $install 'runtime\pythonw.exe')) {
                 $install
             }

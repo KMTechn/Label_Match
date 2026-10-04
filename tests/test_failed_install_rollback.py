@@ -27,11 +27,13 @@ if($arguments -cne $expected){throw 'Packet source was used as logical install r
 
 
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
-@pytest.mark.parametrize('cut', ('remove', 'run', 'task', 'custody'))
+@pytest.mark.parametrize('cut', ('remove', 'run', 'task', 'custody', 'generation_before', 'generation_after'))
 def test_actual_install_rollback_attempts_later_restoration_and_records_failure(tmp_path, engine, cut):
     names = ['Get-LabelLaunchFailure']
     if 'function Invoke-LabelRollbackStep' in INSTALLER.read_text(encoding='utf-8'):
         names.append('Invoke-LabelRollbackStep')
+    if 'function Assert-LabelRollbackGeneration' in INSTALLER.read_text(encoding='utf-8'):
+        names.append('Assert-LabelRollbackGeneration')
     result = run_functions(tmp_path, INSTALLER, names, r'''
 $root=$env:LM_ROLLBACK_ROOT
 $source=Join-Path $root 'packet';$install=Join-Path $root 'canonical\current'
@@ -47,6 +49,16 @@ $writerSessionId='1';$writerAttemptId='2';$writerTransactionId='3';$writerDelega
 $rollbackSources=@('current_user_setup_removal')
 $audit=[ordered]@{rollback=[ordered]@{};writer_fence=[ordered]@{}}
 $script:events=[Collections.Generic.List[string]]::new()
+$script:generationChecks=0
+if ($env:LM_ROLLBACK_CUT -like 'generation_*') {
+ function Assert-LabelRollbackGeneration {
+  $script:generationChecks++
+  if (($env:LM_ROLLBACK_CUT -ceq 'generation_before' -and $script:generationChecks -eq 1) -or
+      ($env:LM_ROLLBACK_CUT -ceq 'generation_after' -and $script:generationChecks -eq 2)) {
+   throw 'injected generation refusal'
+  }
+ }
+}
 function Same {param($A,$B) return [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($A),[IO.Path]::GetFullPath($B))}
 function Set-LabelWriterFenceDelegation {param($ControlRoot,$Status,$SessionId,$AttemptId,$ReplacementTransactionId,$DelegationToken,$DelegatedSources,$LifetimeSeconds)
  if($env:LM_ROLLBACK_CUT -eq 'custody'){throw 'injected custody failure'}
@@ -75,6 +87,14 @@ $body=$catches[0].Body.Extent.Text
 $body=$body.Substring(1,$body.Length-2)
 try {throw 'original forward failure'} catch {try{. ([scriptblock]::Create($body))}catch{}}
 if(-not $events.Contains('run-readback')){throw 'Final rollback observation skipped.'}
+if($env:LM_ROLLBACK_CUT -like 'generation_*') {
+ if($events.Contains('remove') -or $events.Contains('run') -or $events.Contains('task') -or
+    $events.Contains('fence-release')){throw 'Mutation continued after a generation refusal.'}
+ $expectedChecks=if($env:LM_ROLLBACK_CUT -ceq 'generation_before'){1}else{2}
+ if($script:generationChecks -ne $expectedChecks){throw 'Wrong generation boundary reached.'}
+ if($audit.status -cne 'ROLLBACK_FAILED'){throw 'Generation refusal reported rollback success.'}
+ 'PASS';return
+}
 if($env:LM_ROLLBACK_CUT -eq 'custody'){
  if($events.Contains('run') -or $events.Contains('task')){throw 'Mutation passed unproven deployment custody.'}
 }elseif(-not $events.Contains('run') -or -not $events.Contains('task')){throw 'Later independent rollback steps were skipped.'}
