@@ -470,3 +470,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - 10/04 sub-192 추가/sub-197 P2-1: FAILED_SUPPORTED_REMOVAL_REQUIRED의 정확한 자기 실패도 지원 제거 상태로 수용한다. 종료/살아 있는 소유자와 비실패 상태 회귀 RED→GREEN; guest ROLLBACK_FAILED의 제거 성공과 구별한다. 소유자 신뢰 경계 P2-2는 별도 교정하며 선언/pin 재생성은 0이다.
 
 - 10/04 sub-192 추가/sub-197 P2-2: 실패 fence의 지원 제거를 기존 protected code-parent 소유자 기록의 run/PID/native 생성 FILETIME과 정확한 fence tuple에 결속했다. mutable audit 단독·상충/live/unknown·중복은 전체 거절하고 활성 writer/authority를 유지한다. 위조/중복 RED→GREEN, PS5.1/7 NTFS immutable 발행 및 native PID 회귀; positive privileged ACL/실제 guest 발행은 NOT TESTED다. 추가 교정은 정식 가지에만 두며 선언/pin/stock 재생성 0이다. 고정 예행 packet guest의 최초 InnerText 실패와 rollback 실패는 원 출력으로 보존하고 native 설치 수용은 OPEN이다.
+
+- 10/04 sub-192 native 원인 (가): 실제 startup task XML comparer의 빠진 선택 노드/기본 true export 형태를 PS5.1/7 공통 CLR node/count 비교로 교정했다. 원문·엄격한 ownership 비교 유지, RED 16 FAIL·8 PASS → GREEN 24 PASS. 선언/pin/추가 guest는 0이며 고친 packet의 native 설치 증명은 동결 후 OPEN이다.

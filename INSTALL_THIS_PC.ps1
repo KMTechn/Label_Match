@@ -586,11 +586,20 @@ function Assert-LabelStartupUpdateTaskDefinition([xml]$Actual, [xml]$Expected) {
     foreach ($document in @($Actual, $Expected)) {
         $identityNamespace = [Xml.XmlNamespaceManager]::new($document.NameTable)
         $identityNamespace.AddNamespace('t','http://schemas.microsoft.com/windows/2004/02/mit/task')
+        # Task Scheduler omits these exact schema defaults on export. Remove
+        # only a single, attribute-free literal true on copies; false, complex
+        # or repeated nodes still differ. Keep all other ownership XML strict.
+        foreach ($xpath in @('/t:Task/t:Triggers/t:LogonTrigger/t:Enabled','/t:Task/t:Settings/t:AllowStartOnDemand')) {
+            $nodes = @($document.SelectNodes($xpath,$identityNamespace))
+            if ($nodes.Count -eq 1 -and $nodes[0].Attributes.Count -eq 0 -and
+                $nodes[0].ChildNodes.Count -eq 1 -and $nodes[0].FirstChild.NodeType -eq [Xml.XmlNodeType]::Text -and
+                $nodes[0].get_InnerText() -ceq 'true') { [void]$nodes[0].ParentNode.RemoveChild($nodes[0]) }
+        }
         foreach ($xpath in @('/t:Task/t:Principals/t:Principal/t:UserId','/t:Task/t:Triggers/t:LogonTrigger/t:UserId')) {
             $nodes = @($document.SelectNodes($xpath,$identityNamespace))
             if ($nodes.Count -ne 1 -or $nodes[0].ChildNodes.Count -ne 1 -or
                 $nodes[0].FirstChild.NodeType -ne [Xml.XmlNodeType]::Text) { throw 'STARTUP_UPDATE_OWNED_TASK_DIFFERS' }
-            $nodes[0].InnerText = ConvertTo-LabelTaskSid ([string]$nodes[0].InnerText)
+            $nodes[0].set_InnerText((ConvertTo-LabelTaskSid ([string]$nodes[0].get_InnerText())))
         }
     }
     $namespace=New-Object Xml.XmlNamespaceManager($Actual.NameTable)
@@ -603,13 +612,23 @@ function Assert-LabelStartupUpdateTaskDefinition([xml]$Actual, [xml]$Expected) {
         '/t:Task/t:Triggers/t:LogonTrigger/t:UserId','/t:Task/t:Triggers/t:LogonTrigger/t:Enabled','/t:Task/t:Triggers/t:LogonTrigger/t:Delay',
         '/t:Task/t:Settings/t:MultipleInstancesPolicy','/t:Task/t:Settings/t:Hidden','/t:Task/t:Settings/t:ExecutionTimeLimit','/t:Task/t:Settings/t:AllowHardTerminate',
         '/t:Task/t:Settings/t:StartWhenAvailable','/t:Task/t:Settings/t:AllowStartOnDemand','/t:Task/t:Settings/t:DisallowStartIfOnBatteries','/t:Task/t:Settings/t:StopIfGoingOnBatteries')) {
-        $a=$Actual.SelectSingleNode($xpath,$namespace); $b=$Expected.SelectSingleNode($xpath,$namespace)
-        if ([string]$a.InnerText -cne [string]$b.InnerText) { throw 'STARTUP_UPDATE_OWNED_TASK_DIFFERS' }
+        $a=@($Actual.SelectNodes($xpath,$namespace)); $b=@($Expected.SelectNodes($xpath,$namespace))
+        if ($a.Count -ne $b.Count -or $a.Count -gt 1) { throw 'STARTUP_UPDATE_OWNED_TASK_DIFFERS' }
+        if ($a.Count -eq 0) {
+            if ($xpath -cnotin @('/t:Task/t:Actions/t:Exec/t:WorkingDirectory','/t:Task/t:Principals/t:Principal/t:LogonType',
+                '/t:Task/t:Triggers/t:LogonTrigger/t:Enabled','/t:Task/t:Triggers/t:LogonTrigger/t:Delay','/t:Task/t:Settings/t:AllowStartOnDemand')) {
+                throw 'STARTUP_UPDATE_OWNED_TASK_DIFFERS'
+            }
+            continue
+        }
+        # CLR getters avoid PowerShell's XML property adaptation; both engines
+        # use the same typed node/count comparison, including attributes.
+        if ([string]$a[0].get_InnerText() -cne [string]$b[0].get_InnerText()) { throw 'STARTUP_UPDATE_OWNED_TASK_DIFFERS' }
     }
     # Reject extra executable/trigger/principal properties, including repetition.
     foreach ($xpath in @('/t:Task/t:Actions','/t:Task/t:Triggers','/t:Task/t:Principals')) {
         $a=$Actual.SelectSingleNode($xpath,$namespace); $b=$Expected.SelectSingleNode($xpath,$namespace)
-        if ([string]$a.InnerXml -cne [string]$b.InnerXml) { throw 'STARTUP_UPDATE_OWNED_TASK_DIFFERS' }
+        if ($null -eq $a -or $null -eq $b -or [string]$a.get_InnerXml() -cne [string]$b.get_InnerXml()) { throw 'STARTUP_UPDATE_OWNED_TASK_DIFFERS' }
     }
 }
 
