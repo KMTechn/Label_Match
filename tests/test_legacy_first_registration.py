@@ -67,6 +67,7 @@ def _probe(tmp_path: Path, *, residue: str = "", compatibility: str = "PINNED_W9
     bootstrap.write_bytes(b"pre-provisioned public CA\n")
     setup = f"""
 $source = {_quote(tmp_path / 'candidate')}
+$startupLifecycle = $null
 $install = {_quote(installed)}
 $defaultDirectSyncRoot = {_quote(direct)}
 $selectedDirectSyncRoot = $defaultDirectSyncRoot
@@ -212,6 +213,7 @@ def test_first_registration_rollback_only_removes_new_code_setup(tmp_path, insta
     (installed / "runtime/pythonw.exe").write_bytes(b"not an executable")
     script = tmp_path / "rollback.ps1"
     script.write_text(f"""
+$startupLifecycle = $null
 $install = {_quote(installed)}
 $source = {_quote(tmp_path / 'candidate')}
 $existingVerified = $true
@@ -242,7 +244,7 @@ def test_registration_stage_failure_restores_absence_and_preserves_new_state(tmp
     source = INSTALLER.read_text(encoding="utf-8-sig")
     definitions = source[:source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
     definitions += "\n. (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + ")\n"
-    catch_start = source.index("catch {\n    $original = $_")
+    catch_start = source.rindex("\ncatch {\n") + 1
     catch_end = source.index("\nfinally {", catch_start)
     installed = tmp_path / "installed"
     backup = tmp_path / "old-code"
@@ -274,6 +276,7 @@ def test_registration_stage_failure_restores_absence_and_preserves_new_state(tmp
         path.write_bytes(b"synthetic attempt state\n")
     script = tmp_path / "failed-registration.ps1"
     setup = f"""
+$startupLifecycle = $null
 $install = {_quote(installed)}
 $source = {_quote(tmp_path / 'candidate')}
 $existingVerified = $true
@@ -555,7 +558,7 @@ $resumeFound = $false
 """
         if failures >= 3:
             installer = INSTALLER.read_text(encoding="utf-8-sig")
-            begin = installer.index("catch {\n    $original = $_")
+            begin = installer.rindex("\ncatch {\n") + 1
             end = installer.index("\nfinally {", begin)
             tail += """
 $pending = Read-FirstRegistrationAttempt $localAuditRoot $install 'candidate-commit' ('a' * 64) $firstRegistrationStatePaths

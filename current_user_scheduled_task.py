@@ -241,16 +241,19 @@ function Get-TaskSnapshot([string]$Name) {
     }
 }
 
+function ConvertTo-LabelTaskSid([string]$Identity) {
+    if ([string]::IsNullOrWhiteSpace($Identity)) { throw 'TASK_USER_ID_UNRESOLVED' }
+    if ($Identity -match '^S-1-') {
+        return [Security.Principal.SecurityIdentifier]::new($Identity).Value
+    }
+    return [Security.Principal.NTAccount]::new($Identity).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
 function Test-ExactTask($Snapshot) {
     if (-not [bool]$Snapshot.exists) { return $false }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $userName = [string]$identity.Name
-    $sam = $userName.Split('\')[-1]
-    $principalMatches = (
-        [string]$Snapshot.principal_user_id -ieq $userName -or
-        [string]$Snapshot.principal_user_id -ieq $sam -or
-        [string]$Snapshot.principal_user_id -ieq [string]$identity.User.Value
-    )
+    try { $principalMatches = (ConvertTo-LabelTaskSid ([string]$Snapshot.principal_user_id)) -ceq [string]$identity.User.Value }
+    catch { return $false }
     return (
         [int]$Snapshot.action_count -eq 1 -and
         [string]$Snapshot.execute -ceq [string]$spec.execute -and

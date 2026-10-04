@@ -95,6 +95,10 @@ from label_safe_path import (describe_entry, quarantine_entry, read_checked_byte
 
 
 if __name__ == "__main__":
+    from auto_update import startup_gate
+    _early_update_result = startup_gate(Path(__file__).resolve().parent, list(sys.argv[1:]))
+    if _early_update_result is not None:
+        raise SystemExit(_early_update_result)
     _early_product_mode_result = dispatch_product_mode(sys.argv[1:])
     if _early_product_mode_result is not None:
         raise SystemExit(_early_product_mode_result)
@@ -3798,7 +3802,10 @@ def _assert_https_update_url(url, *, require_zip=False):
     parsed = urlparse(str(url or ""))
     if parsed.scheme.lower() != "https" or not parsed.netloc:
         raise ValueError("Update URL must be HTTPS")
-    if parsed.username or parsed.password:
+    if not parsed.hostname or not parsed.hostname.isascii():
+        raise ValueError("업데이트 주소의 호스트는 ASCII IP 또는 도메인이어야 합니다.")
+    parsed.port
+    if parsed.username is not None or parsed.password is not None:
         raise ValueError("Update URL must not include userinfo")
     if parsed.fragment:
         raise ValueError("Update URL must not include fragments")
@@ -3832,10 +3839,14 @@ def _validate_relative_manifest_path(value, field_name):
     return normalized
 
 
-def _normalize_update_install_policy(install):
+def _normalize_update_install_policy(install, *, allow_version_pointer=False):
     if not isinstance(install, dict):
         raise ValueError("Update manifest install must be an object")
     strategy = str(install.get("strategy") or "").strip()
+    if allow_version_pointer and strategy == "version_pointer":
+        if install.get("preserve_paths", []) != [] or install.get("restart_executable", "runtime/pythonw.exe") != "runtime/pythonw.exe":
+            raise ValueError("Canonical update uses fixed code-only pointer application")
+        return {"strategy": "version_pointer", "preserve_paths": [], "restart_executable": "runtime/pythonw.exe"}
     if strategy not in UPDATE_ALLOWED_INSTALL_STRATEGIES:
         raise ValueError("Update manifest install.strategy is unsupported")
     if strategy != UPDATE_AUTOMATIC_INSTALL_STRATEGY:
@@ -3982,9 +3993,15 @@ def _validate_private_update_manifest_policy(manifest, expected_channel):
     if archive.get("top_level") is not None:
         _validate_relative_manifest_path(archive.get("top_level"), "archive.top_level")
     required_file_keys = {item.casefold() for item in normalized_required_files}
+    canonical = archive.get("layout") == "canonical_portable"
+    canonical_required = ["Label_Match/portable-manifest.json", "Label_Match/runtime/python.exe", "Label_Match/runtime/pythonw.exe", "Label_Match/app/main.py", "Label_Match/INSTALL_CANONICAL_PORTABLE.ps1", "Label_Match/tools/apply_prepared_update.ps1", "Label_Match/app/update-manifest-key-config.json"]
+    if archive.get("layout") not in {None, "canonical_portable"}:
+        raise ValueError("unsupported update archive layout")
+    if canonical and (archive.get("top_level") != "Label_Match" or archive.get("entrypoint") != "Label_Match/app/main.py"):
+        raise ValueError("canonical update archive identity differs")
     missing_archive_settings = [
         item
-        for item in _default_update_archive_policy()["required_files"]
+        for item in (canonical_required if canonical else _default_update_archive_policy()["required_files"])
         if item.casefold() not in required_file_keys
     ]
     if missing_archive_settings:
@@ -3993,7 +4010,9 @@ def _validate_private_update_manifest_policy(manifest, expected_channel):
             f"settings files: {', '.join(missing_archive_settings)}"
         )
 
-    install = _normalize_update_install_policy(manifest.get("install"))
+    install = _normalize_update_install_policy(manifest.get("install"), allow_version_pointer=canonical)
+    if canonical and install["strategy"] != "version_pointer":
+        raise ValueError("Canonical update requires version_pointer installation")
 
     return {
         "artifact": artifact,
@@ -4054,6 +4073,7 @@ def _update_candidate_from_manifest(
     manifest,
     expected_channel,
     *,
+    current_version=None,
     tls_ca_bundle_path="",
 ):
     policy = _validate_private_update_manifest_policy(manifest, expected_channel)
@@ -4061,7 +4081,7 @@ def _update_candidate_from_manifest(
         return None
 
     latest_version = policy["version"]
-    if not _is_update_version_newer(latest_version):
+    if not _is_update_version_newer(latest_version, current_version=current_version):
         return None
     if not _rollout_allows_current_pc(manifest):
         return None
@@ -4070,7 +4090,7 @@ def _update_candidate_from_manifest(
         "url": policy["download_url"],
         "version": latest_version,
         "sha256": policy["sha256"],
-        "archive": policy["archive"],
+        "archive": {**policy["archive"], **({"layout": "canonical_portable"} if manifest["archive"].get("layout") == "canonical_portable" else {})},
         "install": policy["install"],
         "provider": UPDATE_PROVIDER_PRIVATE_MANIFEST,
         "tls_ca_bundle_path": str(tls_ca_bundle_path or "").strip(),
@@ -14299,6 +14319,8 @@ class Label_Match(tk.Tk):
         return True
 
     def process_input(self, event=None, *, _scan_behind_completion=None):
+        if self.__dict__.get("_startup_update_pending", False):
+            return
         if self.__dict__.get("_app_close_in_progress", False):
             # Closing has locked the entry: this scan was not taken.
             self._show_ui_lane_rejection("closing")
@@ -22404,6 +22426,29 @@ def _run_label_match_application():
         ):
             _show_item_catalog_cache_warning(catalog_context)
     app = Label_Match()
+    from auto_update import trial_context, publish_gui_ready, trial_stop_requested, confirmed_trial
+    _update_trial = trial_context(Path(__file__).resolve().parent) is not None
+    if _update_trial:
+        app._startup_update_pending = True
+        app.attributes("-disabled", True)
+        def _update_readback():
+            if trial_stop_requested(Path(__file__).resolve().parent):
+                app.on_closing(_confirmed=True)
+                return
+            try:
+                _ready = publish_gui_ready(Path(__file__).resolve().parent)
+                _confirmed = _ready and confirmed_trial(Path(__file__).resolve().parent)
+            except Exception as error:
+                _confirmed = False
+                if not getattr(app, "_startup_update_readback_failed", False):
+                    _label_match_startup_trace("startup_update_ready_unproven", error_type=type(error).__name__)
+                    app._startup_update_readback_failed = True
+            if _confirmed:
+                app._startup_update_pending = False
+                app.attributes("-disabled", False)
+                return
+            app.after(200, _update_readback)
+        app.after(0, _update_readback)
     app._item_catalog_unconfirmed = catalog_unconfirmed
     _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
     _label_match_startup_trace("mainloop_enter")
@@ -22425,6 +22470,10 @@ def _run_label_match_application():
 
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
+    from auto_update import startup_gate
+    update_result = startup_gate(Path(__file__).resolve().parent, arguments)
+    if update_result is not None:
+        return update_result
     hosted_result = dispatch_product_mode(arguments)
     if hosted_result is not None:
         return hosted_result

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Published Task Scheduler types for the emitted principal fields.
+     https://learn.microsoft.com/en-us/windows/win32/taskschd/task-scheduler-schema
+     principalType uses xs:all; ServiceAccount is an API enum, not an XML value.
+     This projection does not establish native task registration or Task 1.4 support. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="http://schemas.microsoft.com/windows/2004/02/mit/task"
+           targetNamespace="http://schemas.microsoft.com/windows/2004/02/mit/task"
+           elementFormDefault="qualified">
+  <xs:element name="Principal" type="t:principalType"/>
+  <xs:simpleType name="nonEmptyString"><xs:restriction base="xs:string"><xs:minLength value="1"/></xs:restriction></xs:simpleType>
+  <xs:simpleType name="logonType"><xs:restriction base="xs:string">
+    <xs:enumeration value="S4U"/><xs:enumeration value="Password"/>
+    <xs:enumeration value="InteractiveToken"/><xs:enumeration value="InteractiveTokenOrPassword"/>
+  </xs:restriction></xs:simpleType>
+  <xs:simpleType name="runLevelType"><xs:restriction base="xs:string">
+    <xs:enumeration value="LeastPrivilege"/><xs:enumeration value="HighestAvailable"/>
+  </xs:restriction></xs:simpleType>
+  <xs:complexType name="principalType"><xs:all>
+    <xs:element name="UserId" type="t:nonEmptyString" minOccurs="0"/>
+    <xs:element name="LogonType" type="t:logonType" minOccurs="0" maxOccurs="1"/>
+    <xs:element name="RunLevel" type="t:runLevelType" minOccurs="0" maxOccurs="1"/>
+  </xs:all><xs:attribute name="id" type="xs:ID" use="optional"/></xs:complexType>
+</xs:schema>

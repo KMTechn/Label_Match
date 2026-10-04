@@ -445,6 +445,206 @@ def _delegation_matches(
     )
 
 
+_INSTALLER_OWNER_SCHEMA = "label-match-installer-owner-v1"
+_INSTALLER_TUPLE_FIELDS = (
+    "session_id", "attempt_id", "replacement_transaction_id", "writer_inventory_sha256",
+    "orchestrator_sha256", "writer_contract_sha256", "session_started_at_utc",
+)
+_FAILED_INSTALL_STATUSES = frozenset({
+    "ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE", "FAILED_ROLLED_BACK",
+    "FAILED_SUPPORTED_REMOVAL_REQUIRED",
+})
+_PRIVILEGED_OWNER_SIDS = frozenset({"S-1-5-18", "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"})
+
+
+def _installer_owner_root() -> Path:
+    # The existing protected code parent survives failed placement/rollback.
+    # Neither LOCALAPPDATA nor a caller-supplied path supplies this authority.
+    return Path(r"C:\KMTech\Apps\Label_Match")
+
+
+def _assert_protected_owner_path(path: Path) -> None:
+    """Observe held native objects under the existing installer trust rule."""
+    from ctypes import wintypes as w
+
+    class Acl(ctypes.Structure):
+        _fields_ = [("revision", w.BYTE), ("reserved", w.BYTE),
+                    ("size", w.WORD), ("count", w.WORD), ("reserved2", w.WORD)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, w.LPVOID, w.DWORD, w.DWORD, w.HANDLE]
+    kernel.CreateFileW.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.LocalFree.argtypes = [w.HLOCAL]
+    advapi.GetSecurityInfo.argtypes = [w.HANDLE, w.DWORD, w.DWORD, ctypes.POINTER(w.LPVOID),
+        w.LPVOID, ctypes.POINTER(w.LPVOID), w.LPVOID, ctypes.POINTER(w.LPVOID)]
+    advapi.GetSecurityInfo.restype = w.DWORD
+    advapi.ConvertSidToStringSidW.argtypes = [w.LPVOID, ctypes.POINTER(w.LPWSTR)]
+    advapi.GetAce.argtypes = [w.LPVOID, w.DWORD, ctypes.POINTER(w.LPVOID)]
+    kernel.GetFileInformationByHandleEx.argtypes = [w.HANDLE, ctypes.c_int, w.LPVOID, w.DWORD]
+    handles = []
+
+    def sid_text(sid):
+        text = w.LPWSTR()
+        try:
+            if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+                raise OSError("Installer owner SID cannot be observed")
+            return text.value
+        finally:
+            if text:
+                kernel.LocalFree(text)
+
+    try:
+        selected = path.absolute()
+        for component in [*reversed(selected.parents), selected]:
+            leaf = component == selected
+            # Hold ancestors and leaf against rename/reparse/content replacement.
+            handle = kernel.CreateFileW(str(component), 0x20080, 1, None, 3, 0x02200000, None)
+            if handle in (None, ctypes.c_void_p(-1).value):
+                raise OSError("Protected installer record cannot be held")
+            handles.append(handle)
+            attributes = (w.DWORD * 2)()
+            if not kernel.GetFileInformationByHandleEx(handle, 9, attributes, ctypes.sizeof(attributes)):
+                raise OSError("Protected installer record type cannot be observed")
+            if attributes[0] & 0x400 or bool(attributes[0] & 0x10) == leaf:
+                raise OSError("Protected installer record is redirected or has wrong type")
+            owner, dacl, descriptor = w.LPVOID(), w.LPVOID(), w.LPVOID()
+            try:
+                if advapi.GetSecurityInfo(handle, 1, 5, ctypes.byref(owner), None,
+                    ctypes.byref(dacl), None, ctypes.byref(descriptor)):
+                    raise OSError("Protected installer record ACL cannot be observed")
+                if sid_text(owner) not in _PRIVILEGED_OWNER_SIDS or not dacl:
+                    raise OSError("Protected installer record has untrusted owner or null DACL")
+                count = ctypes.cast(dacl, ctypes.POINTER(Acl)).contents.count
+                for index in range(count):
+                    ace = w.LPVOID()
+                    if not advapi.GetAce(dacl, index, ctypes.byref(ace)):
+                        raise OSError("Protected installer ACE cannot be observed")
+                    header = (w.BYTE * 4).from_address(ace.value)
+                    if header[0] == 1:  # An access-denied ACE grants no mutation.
+                        continue
+                    if header[0] != 0:
+                        raise OSError("Protected installer record has unsupported ACE")
+                    if header[1] & 8 and not leaf:  # INHERIT_ONLY, existing ancestor rule
+                        continue
+                    mask = w.DWORD.from_address(ace.value + 4).value
+                    if sid_text(ace.value + 8) not in {"S-1-5-18", "S-1-5-32-544"} and mask & (0x500D0156 if leaf else 0x500D0150):
+                        raise OSError("Protected installer record is user mutable")
+            finally:
+                if descriptor:
+                    kernel.LocalFree(descriptor)
+        if selected.stat().st_nlink != 1:
+            raise OSError("Protected installer record has multiple links")
+    finally:
+        for handle in reversed(handles):
+            kernel.CloseHandle(handle)
+
+
+def _installer_process_exited(pid: int, started: str) -> bool:
+    from ctypes import wintypes as w
+    if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF or not isinstance(started, str) or not re.fullmatch(r"[1-9][0-9]{0,18}", started):
+        return False
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
+    kernel.WaitForSingleObject.restype = w.DWORD
+    kernel.GetProcessTimes.argtypes = [w.HANDLE, *([ctypes.POINTER(w.FILETIME)] * 4)]
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    handle = kernel.OpenProcess(0x00101000, False, pid)  # SYNCHRONIZE + QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 87  # Only a definitely absent PID.
+    try:
+        created, exited, system, user = (w.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(system), ctypes.byref(user)):
+            return False
+        creation = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        return str(creation) == started and int(kernel.WaitForSingleObject(handle, 0)) == 0
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _failed_installer_removal_sources(
+    root: Path, active: Mapping[str, Any], environ: Mapping[str, str]
+) -> frozenset[str] | None:
+    """Only a protected, exact dead installer owner permits user cleanup."""
+    local = str(environ.get("LOCALAPPDATA") or "").strip()
+    if os.name != "nt" or not local:
+        return None
+    audit_root = Path(local) / "KMTech" / "Label_Match" / "install-audit"
+    claim = _acquire_named_mutex(str(active["session_authority_mutex_name"]), 0)
+    if claim is None:
+        return None
+    try:
+        protected_root = _installer_owner_root()
+        prefix = '.installer-owner-' + active['session_id']
+        records = list(protected_root.glob('.installer-owner-*.json'))
+        if len(records) > 128:
+            return None
+        matching = []
+        for path in records:
+            record = _bounded_json(path)
+            if all(record.get(key) == active[key] for key in _INSTALLER_TUPLE_FIELDS):
+                matching.append((path, record))
+        if len(matching) != 1:
+            return None
+        trusted_path, trusted = matching[0]
+        _assert_protected_owner_path(trusted_path)
+        run_id = trusted.get('run_id')
+        if (trusted.get('schema') != _INSTALLER_OWNER_SCHEMA
+            or not isinstance(run_id, str) or not re.fullmatch(r"[0-9]{8}T[0-9]{9}Z-[0-9a-f]{32}", run_id)
+            or trusted_path.name != prefix + '-' + run_id.rsplit('-', 1)[-1] + '.json'
+            or any(trusted.get(key) != active[key] for key in _INSTALLER_TUPLE_FIELDS)
+            or _normalized_control_root(str(trusted.get('control_root') or '')) != _normalized_control_root(root)
+            or _normalized_control_root(str(trusted.get('install_root') or '')) != _normalized_control_root(r"C:\KMTech\Apps\Label_Match\current")):
+            return None
+        _assert_no_reparse_components(audit_root)
+        files = list(audit_root.glob("canonical-portable-*.json"))
+        if len(files) > 128:
+            return None
+        matches = []
+        for path in files:
+            try:
+                _assert_no_reparse_components(path)
+                audit = _bounded_json(path)
+            except WriterFenceError:
+                if path.name == 'canonical-portable-' + run_id + '.json':
+                    return None
+                continue
+            owner = audit.get("writer_fence")
+            if not isinstance(owner, dict) or any(owner.get(key) != active[key] for key in _INSTALLER_TUPLE_FIELDS):
+                continue
+            # Every record claiming this identity must agree; never discard a
+            # live, unknown, differently named/statused or contradictory record.
+            if (any(owner.get(key) != trusted.get(key) for key in (*_INSTALLER_TUPLE_FIELDS,
+                    'owner_process_id', 'owner_process_started_at_filetime'))
+                or audit.get('run_id') != run_id or path.name != 'canonical-portable-' + run_id + '.json'
+                or audit.get('schema') != 'label-match-canonical-portable-install-v1'
+                or audit.get('status') not in _FAILED_INSTALL_STATUSES
+                or _normalized_control_root(str(audit.get('install_root') or '')) != _normalized_control_root(trusted['install_root'])):
+                return None
+            matches.append((path, audit))
+        if len(matches) != 1 or not _installer_process_exited(trusted.get('owner_process_id'), trusted.get('owner_process_started_at_filetime')):
+            return None
+        _assert_protected_owner_path(trusted_path)
+        if (_bounded_json(trusted_path) != trusted or _bounded_json(matches[0][0]) != matches[0][1]
+            or set(audit_root.glob('canonical-portable-*.json')) != set(files)
+            or set(protected_root.glob('.installer-owner-*.json')) != set(records)
+            or active_fence(root, environ=environ) != active):
+            return None
+        _WRITER_LOCAL.failed_removal_authority = claim
+        claim = None
+        return frozenset({"current_user_setup_removal", "scheduled_task_remove",
+                          "user_relay_autostart_remove", "user_relay_stop_request"})
+    except (OSError, WriterFenceError, ValueError, TypeError):
+        return None
+    finally:
+        if claim is not None:
+            claim.release()
+
+
 def _admitted_writer_sources(
     root: Path,
     *,
@@ -463,6 +663,10 @@ def _admitted_writer_sources(
         source=source,
         environ=environ,
     ):
+        if source == "current_user_setup_removal":
+            cleanup_sources = _failed_installer_removal_sources(root, active, environ)
+            if cleanup_sources is not None:
+                return cleanup_sources
         raise WriterFencedError(
             "ACTIVE_WRITER_FENCE",
             "writer denied by the active deployment fence",
@@ -539,7 +743,10 @@ def writer_admission(
             source=selected_source,
             environ=values,
         )
-    except WriterFenceError:
+        if allowed_sources is None:
+            from auto_update import assert_version_writer
+            assert_version_writer(Path(__file__).resolve().parent, source=selected_source, environ=values)
+    except BaseException:
         if lease is not None:
             lease.release()
         raise
@@ -554,6 +761,10 @@ def writer_admission(
     try:
         yield
     finally:
+        failed_removal_authority = getattr(_WRITER_LOCAL, "failed_removal_authority", None)
+        _WRITER_LOCAL.failed_removal_authority = None
+        if failed_removal_authority is not None:
+            failed_removal_authority.release()
         _WRITER_LOCAL.remote_apply_error = None
         _WRITER_LOCAL.depth = 0
         _WRITER_LOCAL.allowed_sources = None
