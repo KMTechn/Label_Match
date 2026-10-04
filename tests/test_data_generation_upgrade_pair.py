@@ -73,8 +73,17 @@ def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     assert json.loads(forward.stdout)['compatibility'] == 'PINNED_DATA_GENERATION_G'
     assert probe(old, new).returncode != 0
     reverse = probe(old, new, signed=True)
-    assert reverse.returncode == 0, reverse.stderr[-2000:]
-    assert json.loads(reverse.stdout)['compatibility'] == 'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE'
+    # The merged audit-index companion pair is forward only, including when
+    # an explicit signed marker permits the original ten-file G reversal.
+    assert reverse.returncode != 0
+    assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/label_data_manager.py' in reverse.stderr
+    legacy = new.parent / 'original-g'
+    shutil.copytree(new, legacy)
+    for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py'):
+        (legacy / relative).write_bytes((old / relative).read_bytes())
+    original_reverse = probe(old, legacy, signed=True)
+    assert original_reverse.returncode == 0, original_reverse.stderr[-2000:]
+    assert json.loads(original_reverse.stdout)['compatibility'] == 'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE'
 
 
 @pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice'])
@@ -115,3 +124,44 @@ def test_g_composes_only_with_the_exact_shutdown_repair(pair, revision, compatib
     with (old / 'app/label_match_single_instance.py').open('ab') as handle:
         handle.write(b'\nUNREVIEWED = True\n')
     assert probe(new, old).returncode != 0
+
+
+@pytest.mark.parametrize('relative,mutation,reason', [
+    ('app/label_data_manager.py', 'old', 'app/label_recovery_schema.py'),
+    ('app/label_recovery_schema.py', 'old', 'app/label_data_manager.py'),
+    ('app/label_data_manager.py', 'one-byte', 'app/label_data_manager.py'),
+    ('app/label_recovery_schema.py', 'one-byte', 'app/label_data_manager.py'),
+    ('app/carrier_identity_port.py', 'one-byte', 'app/carrier_identity_port.py'),
+])
+def test_g_forward_companions_refuse_stale_partial_and_unreviewed_bytes(pair, relative, mutation, reason):
+    old, new = pair
+    before = {path.relative_to(old): path.read_bytes() for path in old.rglob('*') if path.is_file()}
+    target = new / relative
+    if mutation == 'old':
+        target.write_bytes((old / relative).read_bytes())
+    else:
+        target.write_bytes(target.read_bytes() + b'X')
+    result = probe(new, old)
+    assert result.returncode != 0
+    assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: ' + reason in result.stderr
+    assert {path.relative_to(old): path.read_bytes() for path in old.rglob('*') if path.is_file()} == before
+
+
+@pytest.mark.parametrize('revision', ['362f30f', 'a56a587'])
+def test_already_g_committed_preimage_uses_only_forward_companions(pair, revision):
+    old, new = pair
+    installed = new.parent / 'already-g'
+    shutil.copytree(new, installed)
+    for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py'):
+        before = subprocess.check_output(['git', '-C', str(ROOT), 'show', revision + ':' + relative.removeprefix('app/')])
+        assert before.replace(b'\r\n', b'\n') == (old / relative).read_bytes().replace(b'\r\n', b'\n')
+        (installed / relative).write_bytes(before)
+    preserved = {path.relative_to(installed): path.read_bytes() for path in installed.rglob('*') if path.is_file()}
+    forward = probe(new, installed)
+    assert forward.returncode == 0, forward.stderr[-2000:]
+    assert json.loads(forward.stdout)['compatibility'] == 'PINNED_DATA_GENERATION_G'
+    for signed in (False, True):
+        reverse = probe(installed, new, signed=signed)
+        assert reverse.returncode != 0
+        assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/label_data_manager.py' in reverse.stderr
+    assert {path.relative_to(installed): path.read_bytes() for path in installed.rglob('*') if path.is_file()} == preserved
