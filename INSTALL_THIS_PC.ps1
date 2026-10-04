@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$DryRun,
     [switch]$Uninstall,
@@ -15,13 +15,15 @@ param(
     [uint64]$ExpectedSourceByteCount = 0,
     [switch]$WriterFenceFunctionsPreloaded,
     [string]$WriterFenceControlRoot = "",
+    [string]$DataGenerationSubjectSid = "",
     [string]$WriterFenceSessionId = "",
     [string]$WriterFenceAttemptId = "",
     [string]$WriterFenceReplacementTransactionId = "",
     [string]$WriterFenceDelegationToken = "",
     [switch]$ReplaceExistingVerifiedPortable,
     [switch]$AllowNoncanonicalLayoutForTest,
-    [switch]$ApplyHardenedAclForTest
+    [switch]$ApplyHardenedAclForTest,
+    [string[]]$DataGenerationMarkerPaths = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -94,6 +96,7 @@ elseif (-not (Test-Path -LiteralPath $BootstrapIntegrityFunctions -PathType Leaf
 }
 else {
     . $BootstrapIntegrityFunctions -SharedCodeRoot $PSScriptRoot
+    . (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')
 }
 if ($WriterFenceFunctionsPreloaded.IsPresent) {
     foreach ($functionName in @(
@@ -106,6 +109,36 @@ if ($WriterFenceFunctionsPreloaded.IsPresent) {
     }
 }
 $LegacyRelayTaskName = "direct-sync-relay-label-match-current-pc"
+
+
+function Get-PlacementDataVersion([string]$Root, $Manifest) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$Manifest.version)) { return [string]$Manifest.version }
+    # Older stock portable manifests omitted version. Read the verified source
+    # literal; do not execute the old application to determine its identity.
+    foreach ($relative in @('app\label_data_generation.py', 'app\Label_Match.py')) {
+        $path = Join-Path $Root $relative
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            if ((Get-Item -LiteralPath $path).Length -gt 10485760) { throw 'Release version source is oversized.' }
+            $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+            $match = [regex]::Match($text, '(?m)^(?:CURRENT_VERSION|APP_VERSION)\s*=\s*["''](v\d+\.\d+\.\d+)["'']\s*$')
+            if ($match.Success) { return $match.Groups[1].Value }
+        }
+    }
+    return '' # The helper returns UNKNOWN; missing records remain ALLOW.
+}
+
+function Assert-PlacementDataDowngrade([string]$Root) {
+    if ($DataGenerationMarkerPaths.Count -eq 0 -and $testOverride) { return }
+    if ($DataGenerationMarkerPaths.Count -eq 0 -or $DataGenerationSubjectSid -cnotmatch '^S-1-\d+(-\d+)+$') {
+        throw '자료 판 확인 기록의 대상 사용자를 확인할 수 없습니다. 현재 코드와 자료를 보존하고 관리자 지원 복구를 요청하세요.'
+    }
+    $manifest = Get-Content -LiteralPath (Join-Path $Root 'portable-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $version = Get-PlacementDataVersion $Root $manifest
+    $decision = Get-KmtechDataDowngradeDecision -MarkerPaths $DataGenerationMarkerPaths `
+        -TargetVersion $version -TargetBuildId ([string]$manifest.source_commit) `
+        -AppId 'Label_Match' -SubjectSid $DataGenerationSubjectSid
+    if ($decision.allowed -ne $true) { throw ([string]$decision.message) }
+}
 
 function Get-StrictFullPath([string]$Path, [string]$Purpose) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
@@ -634,6 +667,7 @@ if ($applyHardenedAcl) {
 }
 New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 try {
+    Assert-PlacementDataDowngrade $sourceRootFull
     $robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'
     & $robocopy $sourceRootFull $stagingRoot /E /XJ /MT:16 /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $sourceRootFull $IntegrityFileName) | Out-Null
     if ($LASTEXITCODE -lt 0 -or $LASTEXITCODE -ge 8) { throw "Portable staging copy failed: $LASTEXITCODE" }
@@ -705,6 +739,7 @@ try {
                     -LiteralPath $replacementRollbackRoot `
                     -PathType Container
                 if ($replacementTargetAbsent -and $replacementRollbackPresent) {
+                    Assert-PlacementDataDowngrade $replacementRollbackRoot
                     Move-Item -LiteralPath $replacementRollbackRoot -Destination $installRootFull
                 }
                 throw
@@ -764,6 +799,7 @@ catch {
         Remove-Item -LiteralPath $stagingFull -Recurse -Force -ErrorAction SilentlyContinue
     }
     if ($replacementApplied) {
+        Assert-PlacementDataDowngrade $replacementRollbackRoot
         $failedRoot = Join-Path $applicationParent (
             '.current.failed.' + [Guid]::NewGuid().ToString('N')
         )

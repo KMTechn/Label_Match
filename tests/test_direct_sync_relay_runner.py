@@ -20,6 +20,18 @@ import tools.direct_sync_relay_runner as runner
 from tools.direct_sync_relay_runner import _scan_source_files, main
 
 
+@pytest.fixture(autouse=True)
+def isolated_data_generation_release(monkeypatch, tmp_path):
+    import label_data_generation as generation
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_TEST_MODE", "1")
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_CONTROL_ROOT", str(tmp_path / "control"))
+    monkeypatch.setattr(generation, "_installed_identity", lambda _root: {
+        "version": generation.CURRENT_VERSION, "build_id": "a" * 40,
+        "data_compatible_min_version": generation.CURRENT_VERSION,
+        "compatibility_verified": False,
+    })
+
+
 def load_label_match_module():
     module_path = Path(__file__).resolve().parents[1] / "Label_Match.py"
     spec = importlib.util.spec_from_file_location("label_match_app_for_runner_tests", module_path)

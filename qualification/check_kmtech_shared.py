@@ -17,7 +17,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("kmtech_shared/__init__.py", "kmtech_shared/catalog.py", "kmtech_shared/raster.py",
-         "kmtech_shared/runtime.py", "kmtech_shared/powershell/portable.ps1")
+         "kmtech_shared/runtime.py", "kmtech_shared/powershell/portable.ps1",
+         "kmtech_shared/data_generation.py", "kmtech_shared/powershell/data_generation.ps1")
 SCHEMA = "kmtech.shared.source.v1"
 
 

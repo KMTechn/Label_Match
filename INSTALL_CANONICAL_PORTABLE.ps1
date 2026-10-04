@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$SourceRoot = "",
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
@@ -65,7 +65,7 @@ function Test-RelayPersistentRetry($Relay) {
 
 # This small trust bootstrap is intentionally local to both standalone loaders.
 # Never use shared code (or start Python) to establish its own execution authority.
-function Get-LabelSharedPortableLeafPath([string]$CodeRoot) {
+function Get-LabelSharedPortableLeafPath([string]$CodeRoot, [ValidateSet('portable.ps1','data_generation.ps1')][string]$Leaf = 'portable.ps1') {
     if ([string]::IsNullOrWhiteSpace($CodeRoot) -or -not [IO.Path]::IsPathRooted($CodeRoot) -or
         $CodeRoot.StartsWith('\\?\') -or $CodeRoot.StartsWith('\\.\')) {
         throw 'Shared PowerShell code root must be an ordinary absolute path.'
@@ -84,18 +84,18 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot) {
         Join-Path $root 'app'
     } else { $root }
     foreach ($relative in @('', 'kmtech_shared', 'kmtech_shared\powershell',
-        'kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1')) {
+        'kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1', 'kmtech_shared\powershell\data_generation.ps1')) {
         $path = if ($relative) { Join-Path $appRoot $relative } else { $appRoot }
         $item = Get-Item -LiteralPath $path -Force
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Shared PowerShell path contains a reparse point: $path"
         }
     }
-    $expectedManifestSha = 'feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117'
+    $expectedManifestSha = '8ca8078dc921485085ad79212d9213e31fbc8d78629461c82e622e16bf5664e6'
     $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
     if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
     $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$lock.version -cne '0.3.1' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
+    if ([string]$lock.version -cne '0.3.2' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
         throw 'Shared consumer manifest pin mismatch.'
     }
     $manifestPath = Join-Path $appRoot 'kmtech_shared.manifest.json'
@@ -107,8 +107,8 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot) {
     } finally { $hash.Dispose() }
     if ($actualManifestSha -cne $expectedManifestSha) { throw 'Shared manifest pin mismatch.' }
     $pinnedSharedManifest = (New-Object Text.UTF8Encoding($false, $true)).GetString($manifestBytes) | ConvertFrom-Json
-    $sharedLeaf = Join-Path $appRoot 'kmtech_shared\powershell\portable.ps1'
-    $expectedLeafSha = $pinnedSharedManifest.files.'kmtech_shared/powershell/portable.ps1'
+    $sharedLeaf = Join-Path $appRoot ('kmtech_shared\powershell\' + $Leaf)
+    $expectedLeafSha = $pinnedSharedManifest.files.('kmtech_shared/powershell/' + $Leaf)
     $stream = [IO.File]::OpenRead($sharedLeaf)
     $hash = [Security.Cryptography.SHA256]::Create()
     try {
@@ -401,7 +401,8 @@ function Assert-WriterTransition([string]$Source, [string]$Installed) {
     # otherwise AST equality admits only comments/line movement.
     $probe = @'
 import ast, hashlib, json, pathlib, re, sys
-source, installed = map(pathlib.Path, sys.argv[1:])
+source, installed = map(pathlib.Path, sys.argv[1:3])
+signed_generation_reverse_allowed = len(sys.argv) == 4 and sys.argv[3] == 'signed-compatible-downgrade'
 sys.path.insert(0, str(source / 'app'))
 from writer_sink_inventory import derive_writer_sink_inventory, writer_sink_inventory_sha256, _powershell_inventory
 
@@ -451,22 +452,22 @@ def syntax(path, relative):
 shared_replacements = {
     'app/kmtech_shared/__init__.py': (
         'b1b16c26ef8cd85be89e13b24afda1ec7be1d4ce8d7632ab032981601f223455',
-        '32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295'),
+        '4c97c1fcfc066333a8655bdeca0ceaddfbd8783ec660c4d747fa614ea0348630'),
     'app/kmtech_shared.manifest.json': (
         '465eea8ad20f010e29be5bb98cbc32fdcd1d163d5ba7b76d9eac3b33c14874ee',
-        'feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117'),
+        '8ca8078dc921485085ad79212d9213e31fbc8d78629461c82e622e16bf5664e6'),
     'app/kmtech_shared.lock.json': (
         '6807ed97f7d734c5d8bdb0e23c141916cc5f013bd2392a46b98849d285d54fcd',
-        '87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9'),
+        'f20fa1c467b402a08b5c2511de235e250968af388f452511898f29173afe4dbb'),
     'app/kmtech_zero_pe.vendor.json': (
         'e7dac78746db6efbccedcba5c3b44b58b77bc44e8d25a2dbaea6dc1ac01e307c',
         'bf7ccf44e5abd14b3211bbea9b1e22d3b4a53525b4d4bc760c1893ca2da63a69'),
     'INSTALL_THIS_PC.ps1': (
         '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
-        '2401e30f7d7c5965360bfcb1e1ebc3ef71fe30491eb8ee7e9f84dd2a8e1e5770'),
+        '5b43cc1c66b2e43aa855ce876e1c7515ca3cea403069002d3da82a597131a766'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
-        '7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3'),
+        '40d83c7c1eb96140934fc636a86a066087bf20fe1de0e28d267c034931f9330e'),
 }
 shared_additions = {
     'app/kmtech_shared/powershell/portable.ps1':
@@ -475,6 +476,28 @@ shared_additions = {
 
 def release_digest(path):
     return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
+
+
+# G-DECISIONS #2/#7: exact 4b7630f preimage and three pinned leaves.
+data_generation_replacements = {'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70', '449f58ff26df263e7c03a3009af92342279c473acb1432be2d469d2e1c085a4f'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', 'fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', '7b241b4d35589c00d63fc53a7e9f21e8533280afb024db2f9c22230bea1bbc87'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '4c97c1fcfc066333a8655bdeca0ceaddfbd8783ec660c4d747fa614ea0348630'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', '8ca8078dc921485085ad79212d9213e31fbc8d78629461c82e622e16bf5664e6'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', 'f20fa1c467b402a08b5c2511de235e250968af388f452511898f29173afe4dbb'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '5b43cc1c66b2e43aa855ce876e1c7515ca3cea403069002d3da82a597131a766'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', '40d83c7c1eb96140934fc636a86a066087bf20fe1de0e28d267c034931f9330e'), 'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8', 'ad99c15308f36ff69b01602bfc4e26713b60caaa867d54793dc7b751156e5e1e'), 'tools/label_writer_fence.ps1': ('500955366215a113f3c0ffd284d86d6364aadb86e00b097a4cefedb3cbb1ff7e', 'e280de572d8932abd501be8d50387f24ba6e0da7d9f8cd130d40bf372e792ce3')}
+data_generation_additions = {'app/label_data_generation.py': '84f487316c48eb40c81ee797cea82931468207d2d5af444db5c594eacf55b183', 'app/kmtech_shared/data_generation.py': '041585ce4c46c768fd1be8882b31c94496fa1b61187d22b4981fa2823d2af05e', 'app/kmtech_shared/powershell/data_generation.ps1': 'd19ec49ed9215122653b07da3154aa3079bcc03e9d2ad0411f8b74d003b4e99a'}
+data_generation_transition = all(
+    (source / relative).is_file() and release_digest(source / relative) == after
+    for relative, (_, after) in data_generation_replacements.items()
+) and all(
+    not (installed / relative).exists() and (source / relative).is_file()
+    and release_digest(source / relative) == expected
+    for relative, expected in data_generation_additions.items()
+)
+data_generation_reverse = signed_generation_reverse_allowed and all(
+    (source / relative).is_file() and (installed / relative).is_file()
+    and release_digest(source / relative) == before and release_digest(installed / relative) == after
+    for relative, (before, after) in data_generation_replacements.items()
+) and all(
+    not (source / relative).exists() and (installed / relative).is_file()
+    and release_digest(installed / relative) == expected
+    for relative, expected in data_generation_additions.items()
+)
 
 # d0e504e -> 0cf5bf6 only: bootstrap v1 readers compare the same complete
 # inventory independent of row order and validate its original-order aggregate.
@@ -488,7 +511,7 @@ integrity_order_transition = (
     release_digest(installed / integrity_order_path) ==
         'bfd59326ad76a400c70a62d78622b518a549e844c4bf4725f59eb7525c20a57f' and
     release_digest(source / integrity_order_path) ==
-        '02bcbd5b2ed79b230dbc8a78add9d92457ef3f8076978c314fbda27b24a73ab7'
+        'fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017'
 )
 
 shared_transition = all(
@@ -549,7 +572,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    '84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d')}
+                                    'fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017')}
 legacy_label_additions = {'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'}
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
@@ -889,15 +912,25 @@ mainloop_exit_notice_transition = all(
 )
 for directory in ('app', 'runtime'):
     left, right = files(source, directory), files(installed, directory)
-    additions = set(shared_additions) if shared_transition and directory == 'app' else set()
+    additions = set(data_generation_additions) if data_generation_transition and directory == 'app' else set()
+    additions |= set(shared_additions) if shared_transition and directory == 'app' else set()
     if legacy_label_transition and directory == 'app':
         additions |= set(legacy_label_additions)
     if roster_transition and directory == 'app':
         additions |= set(roster_additions)
-    if left.keys() != right.keys() | additions:
+    expected_left = right.keys() - set(data_generation_additions) if data_generation_reverse and directory == 'app' else right.keys() | additions
+    if left.keys() != expected_left:
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
     for relative in sorted(left, key=lambda path: (path != 'app/Label_Match.py', path)):
         path = left[relative]
+        if data_generation_reverse and relative in data_generation_replacements:
+            continue
+        if data_generation_transition and relative in data_generation_additions:
+            continue
+        if data_generation_transition and relative in data_generation_replacements:
+            if not data_generation_before_allowed(relative):
+                raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: ' + relative)
+            continue
         if shared_transition and relative in (shared_replacements.keys() | shared_additions.keys()):
             continue
         if integrity_order_transition and relative == integrity_order_path:
@@ -934,6 +967,12 @@ for directory in ('app', 'runtime'):
                 continue
         raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: ' + relative)
 for relative in ('INSTALL_THIS_PC.ps1', 'launch-label-match.cmd', 'tools/bootstrap_integrity.ps1', 'tools/label_writer_fence_contract.json'):
+    if data_generation_reverse and relative in data_generation_replacements:
+        continue
+    if data_generation_transition and relative in data_generation_replacements:
+        if not data_generation_before_allowed(relative):
+            raise ValueError('WRITER_TRANSITION_CONTRACT_DIFFERS: ' + relative)
+        continue
     if shared_transition and relative in shared_replacements:
         continue
     if (source / relative).read_bytes() != (installed / relative).read_bytes():
@@ -957,14 +996,23 @@ compatibility = ('PINNED_MAINLOOP_EXIT_NOTICE' if mainloop_exit_notice_transitio
                  'PINNED_W9NEXTFIX_LABEL_RECOVERY' if nextfix_label_transition else
                  'PINNED_W9SCANONLY_WORKFLOW' if scanner_transition else
                  'PINNED_CURRENT_USER_PROFILE_SELECTION' if current_user_profile_transition else
-                 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
+                 'PINNED_DATA_GENERATION_G' if data_generation_transition else 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
 print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
 '@
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = Join-Path $Source 'runtime\python.exe'
     # Windows argv quoting; the probe is literal source, never shell input.
+    $generationReverse = 'no-data-compatibility-override'
+    $generationVariable = Get-Variable -Name generationDowngradeDecision -ErrorAction SilentlyContinue
+    if ($null -ne $generationVariable) {
+        $generationDecision = $generationVariable.Value
+        if ($generationDecision.allowed -eq $true -and $null -ne $generationDecision.version -and
+            $generationDecision.minimum_version -cne $generationDecision.version) {
+            $generationReverse = 'signed-compatible-downgrade'
+        }
+    }
     $startInfo.Arguments = '-I -B - ' +
-        (Arg $Source) + ' ' + (Arg $Installed)
+        (Arg $Source) + ' ' + (Arg $Installed) + ' ' + (Arg $generationReverse)
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
@@ -1137,13 +1185,15 @@ function FreezePlacementHelper(
     [string]$Source,
     [string]$AuditRoot,
     [string]$RunId,
-    $ExpectedCriticalFileSha256
+    $ExpectedCriticalFileSha256,
+    [string]$GuardedHelperOrigin = ''
 ) {
+    if ([string]::IsNullOrEmpty($GuardedHelperOrigin)) { $GuardedHelperOrigin = $Source }
     $frozenRoot = Join-Path $AuditRoot "canonical-portable-$RunId-helper"
     $frozenTools = Join-Path $frozenRoot 'tools'
     New-Item -ItemType Directory -Path $frozenTools -Force | Out-Null
-    $sourceHelper = Join-Path $Source 'INSTALL_THIS_PC.ps1'
-    $sourceIntegrity = Join-Path $Source 'tools\bootstrap_integrity.ps1'
+    $sourceHelper = Join-Path $GuardedHelperOrigin 'INSTALL_THIS_PC.ps1'
+    $sourceIntegrity = Join-Path $GuardedHelperOrigin 'tools\bootstrap_integrity.ps1'
     $sourceWriterFence = Join-Path $Source 'tools\label_writer_fence.ps1'
     $frozenHelper = Join-Path $frozenRoot 'INSTALL_THIS_PC.ps1'
     $frozenIntegrity = Join-Path $frozenTools 'bootstrap_integrity.ps1'
@@ -1168,10 +1218,10 @@ function FreezePlacementHelper(
         (Sha $frozenWriterFence) -cne $writerFenceSha256
     ) { throw 'Frozen placement helper readback differs.' }
 
-    $sourceSharedLeaf = Get-LabelSharedPortableLeafPath $Source
+    $sourceSharedLeaf = Get-LabelSharedPortableLeafPath $GuardedHelperOrigin
     $sourceSharedApp = Split-Path (Split-Path (Split-Path $sourceSharedLeaf -Parent) -Parent) -Parent
     $frozenSharedPaths = @()
-    foreach ($relative in @('kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1')) {
+    foreach ($relative in @('kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1', 'kmtech_shared\powershell\data_generation.ps1')) {
         $target = Join-Path $frozenRoot $relative
         [void](New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force)
         [IO.File]::WriteAllBytes($target, [IO.File]::ReadAllBytes((Join-Path $sourceSharedApp $relative)))
@@ -1256,6 +1306,8 @@ function FreezePlacementHelper(
         integrity_sha256 = $integritySha256
         writer_fence_path = $frozenWriterFence
         writer_fence_sha256 = $writerFenceSha256
+        data_generation_path = Get-LabelSharedPortableLeafPath $frozenRoot 'data_generation.ps1'
+        data_generation_sha256 = Sha (Get-LabelSharedPortableLeafPath $frozenRoot 'data_generation.ps1')
         current_user_writable = $false
     }
 }
@@ -1305,6 +1357,8 @@ function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters) {
         integrity_sha256 = [string]$Frozen.integrity_sha256
         writer_fence_path = [string]$Frozen.writer_fence_path
         writer_fence_sha256 = [string]$Frozen.writer_fence_sha256
+        data_generation_path = [string]$Frozen.data_generation_path
+        data_generation_sha256 = [string]$Frozen.data_generation_sha256
         parameters = $HelperParameters
     }
     $payloadJson = $payload | ConvertTo-Json -Depth 5 -Compress
@@ -1360,9 +1414,11 @@ function Get-RequiredExternalInteger($Object, [string]$Name) {
 [byte[]]$integrityBytes = PinnedBytes ([string]$payload.integrity_path) ([string]$payload.integrity_sha256)
 [byte[]]$writerFenceBytes = PinnedBytes ([string]$payload.writer_fence_path) ([string]$payload.writer_fence_sha256)
 [byte[]]$helperBytes = PinnedBytes ([string]$payload.helper_path) ([string]$payload.helper_sha256)
+[byte[]]$dataGenerationBytes = PinnedBytes ([string]$payload.data_generation_path) ([string]$payload.data_generation_sha256)
 $utf8 = New-Object Text.UTF8Encoding($false, $true)
 . ([ScriptBlock]::Create($utf8.GetString($integrityBytes))) -SharedCodeRoot (Split-Path (Split-Path ([string]$payload.integrity_path) -Parent) -Parent)
 . ([ScriptBlock]::Create($utf8.GetString($writerFenceBytes)))
+. ([ScriptBlock]::Create($utf8.GetString($dataGenerationBytes)))
 $helper = [ScriptBlock]::Create($utf8.GetString($helperBytes))
 $parameterNames = @(
     'SourceRoot',
@@ -1376,6 +1432,8 @@ $parameterNames = @(
     'ExpectedSourceByteCount',
     'WriterFenceFunctionsPreloaded',
     'WriterFenceControlRoot',
+    'DataGenerationSubjectSid',
+    'DataGenerationMarkerPaths',
     'WriterFenceSessionId',
     'WriterFenceAttemptId',
     'WriterFenceReplacementTransactionId',
@@ -1409,6 +1467,8 @@ $invokeParameters = @{
     ExpectedSourceByteCount = [uint64]$expectedSourceByteCount
     WriterFenceFunctionsPreloaded = Get-RequiredExternalBoolean $payload.parameters 'WriterFenceFunctionsPreloaded'
     WriterFenceControlRoot = [string]$payload.parameters.WriterFenceControlRoot
+    DataGenerationSubjectSid = [string]$payload.parameters.DataGenerationSubjectSid
+    DataGenerationMarkerPaths = @($payload.parameters.DataGenerationMarkerPaths | ForEach-Object { [string]$_ })
     WriterFenceSessionId = [string]$payload.parameters.WriterFenceSessionId
     WriterFenceAttemptId = [string]$payload.parameters.WriterFenceAttemptId
     WriterFenceReplacementTransactionId = [string]$payload.parameters.WriterFenceReplacementTransactionId
@@ -1537,6 +1597,50 @@ function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @()) 
         Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
     }
+}
+
+
+function Get-LabelPortableDataVersion([string]$Root, $Manifest) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$Manifest.version)) { return [string]$Manifest.version }
+    # Older stock portable manifests omitted version. Read the verified source
+    # literal; do not execute the old application to determine its identity.
+    foreach ($relative in @('app\label_data_generation.py', 'app\Label_Match.py')) {
+        $path = Join-Path $Root $relative
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            if ((Get-Item -LiteralPath $path).Length -gt 10485760) { throw 'Release version source is oversized.' }
+            $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+            $match = [regex]::Match($text, '(?m)^(?:CURRENT_VERSION|APP_VERSION)\s*=\s*["''](v\d+\.\d+\.\d+)["'']\s*$')
+            if ($match.Success) { return $match.Groups[1].Value }
+        }
+    }
+    return '' # The helper returns UNKNOWN; missing records remain ALLOW.
+}
+
+function Assert-LabelRollbackGeneration {
+    # Before any rollback cleanup or old-code selection, retain the opened
+    # generation. Code-only failures before data open still have no markers.
+    if ($existingVerified -and -not [string]::IsNullOrEmpty($replacementRollbackRoot)) {
+        $generationRollbackManifest = Manifest $replacementRollbackRoot $SkipSignatureValidationForTest
+        $generationRollbackVersion = Get-LabelPortableDataVersion $replacementRollbackRoot $generationRollbackManifest
+        [void](Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
+            -TargetVersion $generationRollbackVersion -TargetBuildId ([string]$generationRollbackManifest.source_commit))
+    }
+    elseif (-not $existingVerified -and (Test-Path -LiteralPath $install -PathType Container)) {
+        $generationAbsence = Get-KmtechDataDowngradeDecision -MarkerPaths $generationMarkerPaths `
+            -TargetVersion 'v0.0.0' -TargetBuildId ('0' * 40) -AppId 'Label_Match' -SubjectSid $generationSubjectSid
+        if ($generationAbsence.allowed -ne $true -or $null -ne $generationAbsence.version) {
+            throw '새 판이 이 PC의 자료를 열어 설치 이전 코드 없음 상태로 되돌릴 수 없습니다. 현재 코드와 자료를 보존하고 관리자 지원 복구를 요청하세요.'
+        }
+    }
+}
+
+function Assert-LabelDataDowngrade(
+    [string[]]$MarkerPaths, [string]$TargetVersion, [string]$SubjectSid, [string]$TargetBuildId
+) {
+    $decision = Get-KmtechDataDowngradeDecision -MarkerPaths $MarkerPaths `
+        -TargetVersion $TargetVersion -AppId 'Label_Match' -SubjectSid $SubjectSid -TargetBuildId $TargetBuildId
+    if ($decision.allowed -ne $true) { throw ([string]$decision.message) }
+    return $decision
 }
 
 $WriterDelegationEnvironmentNames = @(
@@ -1760,6 +1864,8 @@ function Test-LegacyFirstRegistrationState(
     # Only directions already admitted by Assert-WriterTransition qualify.
     # AST-equivalent/unknown code is not a pinned legacy release preimage.
     $pinnedDirections = @(
+        'PINNED_DATA_GENERATION_G',
+        'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE',
         'X13B_PINNED_SHARED_LEAF_ADOPTION',
         'PINNED_BOOTSTRAP_INTEGRITY_ORDER_FIX',
         'PINNED_LEGACY_LABEL_TRANSITION_MODE',
@@ -2005,7 +2111,8 @@ function Save-FirstRegistrationAttempt($Record, [string]$Path) {
 }
 
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
-. (Get-LabelSharedPortableLeafPath $SourceRoot)
+. (Get-LabelSharedPortableLeafPath $PSScriptRoot)
+. (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')
 $source = Full $SourceRoot 'SourceRoot'
 $install = Full $InstallRoot 'InstallRoot'
 if (-not $testMode -and -not (Same $install $CanonicalRoot)) {
@@ -2079,9 +2186,29 @@ $statusRoot = Join-Path $defaultDirectSyncRoot 'status'
 $stop = Join-Path $defaultDirectSyncRoot 'control\label_match_user_relay.stop.json'
 $writerFenceControlRoot = Join-Path $defaultDirectSyncRoot 'control\writer-session'
 $Script:LabelWriterFenceAdmissionProductionRoot = if ($testMode) { '' } else { $writerFenceControlRoot }
+# Bind the original target user's roots before elevation; never use SYSTEM's profile.
+$generationSubjectSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$generationDataRoot = $selectedDataRoot
+if (Test-Path -LiteralPath $selectedSettingsPath -PathType Leaf) {
+    if ((Get-Item -LiteralPath $selectedSettingsPath).Length -gt 1048576) { throw 'User settings are oversized.' }
+    $generationSettings = Get-Content -LiteralPath $selectedSettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not [string]::IsNullOrWhiteSpace([string]$generationSettings.custom_save_path)) {
+        $generationDataRoot = Full ([string]$generationSettings.custom_save_path) 'selected business root'
+    }
+}
+$generationMarkerPaths = @(
+    (Join-Path $writerFenceControlRoot ('data-generation\' + $generationSubjectSid + '.json')),
+    (Join-Path $generationDataRoot 'data-generation.json'),
+    (Join-Path $selectedDataRoot 'data-generation.json'),
+    (Join-Path $defaultDataRoot 'data-generation.json'),
+    (Join-Path (Join-Path $selectedDirectSyncRoot 'queue') 'data-generation.json')
+) | Select-Object -Unique
 $onboardingPath = Join-Path $statusRoot 'current_user_onboarding.json'
 $removalPath = Join-Path $statusRoot 'current_user_removal.json'
 $relayPath = Join-Path $statusRoot 'label_match_user_relay.json'
+$generationDowngradeDecision = Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
+    -TargetVersion (Get-LabelPortableDataVersion $source $sourceManifest) `
+    -TargetBuildId ([string]$sourceManifest.source_commit)
 $before = Snapshot
 $old = @(Relays)
 $scheduledTasksAtPreflight = @(
@@ -2302,11 +2429,26 @@ $audit = [ordered]@{
 }
 Save $auditPath $audit
 if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+$guardedHelperOrigin = $source
+$placementCriticalHashes = $receiptSource.critical_file_sha256
+if (-not (Test-Path -LiteralPath (Join-Path $source 'app\kmtech_shared\powershell\data_generation.ps1') -PathType Leaf)) {
+    # A compatible pre-G packet supplies code and its own writer inventory.
+    # Placement/integrity/G helpers come from this separately verified G caller.
+    $guardedHelperOrigin = Full $PSScriptRoot 'guarded installer packet'
+    $guardedCallerManifest = Manifest $guardedHelperOrigin $SkipSignatureValidationForTest
+    $guardedCallerReceipt = ReceiptSource $guardedHelperOrigin $guardedCallerManifest
+    $placementCriticalHashes = [pscustomobject]@{
+        placement_helper = [string]$guardedCallerReceipt.critical_file_sha256.placement_helper
+        bootstrap_integrity_helper = [string]$guardedCallerReceipt.critical_file_sha256.bootstrap_integrity_helper
+        writer_fence_helper = [string]$receiptSource.critical_file_sha256.writer_fence_helper
+    }
+}
 $frozenPlacement = FreezePlacementHelper `
     $source `
     $localAuditRoot `
     $runId `
-    $receiptSource.critical_file_sha256
+    $placementCriticalHashes `
+    $guardedHelperOrigin
 . ([string]$frozenPlacement.writer_fence_path)
 
 $writerSessionId = [Guid]::NewGuid().ToString('N')
@@ -2400,6 +2542,7 @@ $writerEnvironmentBefore = @(
     }
 )
 $restoreSources = @(
+    'data_generation_record',
     'current_user_onboarding',
     'direct_sync_enqueue',
     'direct_sync_relay_cycle',
@@ -2475,6 +2618,7 @@ try {
             ExpectedBootstrapScriptSha256=[string]$frozenPlacement.helper_sha256
             VerifiedBootstrapScriptPath=[string]$frozenPlacement.helper_path; BootstrapIntegrityPreloaded=$true
             WriterFenceFunctionsPreloaded=$true; WriterFenceControlRoot=$writerFenceControlRoot
+            DataGenerationSubjectSid=$generationSubjectSid; DataGenerationMarkerPaths=@($generationMarkerPaths)
             WriterFenceSessionId=$writerSessionId; WriterFenceAttemptId=$writerAttemptId
             WriterFenceReplacementTransactionId=$writerTransactionId; WriterFenceDelegationToken=$writerDelegationToken
             AllowNoncanonicalLayoutForTest=[bool]$testMode; ReplaceExistingVerifiedPortable=$true; DryRun=$false
@@ -2552,9 +2696,9 @@ try {
         }
         if (
             [string]$frozenPlacement.helper_sha256 -cne
-                [string]$receiptSource.critical_file_sha256.placement_helper -or
+                [string]$placementCriticalHashes.placement_helper -or
             [string]$frozenPlacement.integrity_sha256 -cne
-                [string]$receiptSource.critical_file_sha256.bootstrap_integrity_helper -or
+                [string]$placementCriticalHashes.bootstrap_integrity_helper -or
             [string]$frozenPlacement.writer_fence_sha256 -cne
                 [string]$receiptSource.critical_file_sha256.writer_fence_helper
         ) { throw 'Frozen placement helper no longer matches the attested source.' }
@@ -2579,6 +2723,8 @@ try {
             ExpectedSourceByteCount = [uint64]$receiptSource.byte_count
             WriterFenceFunctionsPreloaded = $true
             WriterFenceControlRoot = $writerFenceControlRoot
+            DataGenerationSubjectSid = $generationSubjectSid
+            DataGenerationMarkerPaths = @($generationMarkerPaths)
             WriterFenceSessionId = $writerSessionId
             WriterFenceAttemptId = $writerAttemptId
             WriterFenceReplacementTransactionId = $writerTransactionId
@@ -2774,6 +2920,7 @@ catch {
     $original = $_
     if (-not $mutated) { throw $original }
     try {
+        Assert-LabelRollbackGeneration
         if ($mutated) {
             if (-not $writerFenceStarted) {
                 # Final audit persistence can fail after the success path released
@@ -2815,6 +2962,9 @@ catch {
                     $writerAttemptId `
                     $writerTransactionId
             }
+            # RESTORING delegation excludes the new generation sink. Recheck
+            # after that admission barrier and before any setup-state cleanup.
+            Assert-LabelRollbackGeneration
             $rollbackProductRoot = if (Test-Path (Join-Path $install 'runtime\pythonw.exe')) {
                 $install
             }

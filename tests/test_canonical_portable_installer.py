@@ -1222,6 +1222,8 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
     [uint64]$ExpectedSourceByteCount,
     [switch]$WriterFenceFunctionsPreloaded,
     [string]$WriterFenceControlRoot,
+    [string]$DataGenerationSubjectSid,
+    [string[]]$DataGenerationMarkerPaths,
     [string]$WriterFenceSessionId,
     [string]$WriterFenceAttemptId,
     [string]$WriterFenceReplacementTransactionId,
@@ -1271,6 +1273,8 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "ExpectedSourceByteCount": 77580497,
         "WriterFenceFunctionsPreloaded": True,
         "WriterFenceControlRoot": str(tmp_path / "writer-control"),
+        "DataGenerationSubjectSid": "S-1-5-21-1-2-3-1001",
+        "DataGenerationMarkerPaths": [str(tmp_path / "data-generation.json")],
         "WriterFenceSessionId": "1" * 32,
         "WriterFenceAttemptId": "2" * 32,
         "WriterFenceReplacementTransactionId": "3" * 32,
@@ -1286,6 +1290,8 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "integrity_sha256": integrity_sha256,
         "writer_fence_path": str(writer_fence),
         "writer_fence_sha256": writer_fence_sha256,
+        "data_generation_path": str(ROOT / "kmtech_shared/powershell/data_generation.ps1"),
+        "data_generation_sha256": hashlib.sha256((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes()).hexdigest(),
         "parameters": parameters,
     }
     payload_base64 = base64.b64encode(
@@ -1431,6 +1437,8 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
         "ExpectedSourceByteCount": 77580497,
         "WriterFenceFunctionsPreloaded": True,
         "WriterFenceControlRoot": str(tmp_path / "writer-control"),
+        "DataGenerationSubjectSid": "S-1-5-21-1-2-3-1001",
+        "DataGenerationMarkerPaths": [str(tmp_path / "data-generation.json")],
         "WriterFenceSessionId": "1" * 32,
         "WriterFenceAttemptId": "2" * 32,
         "WriterFenceReplacementTransactionId": "3" * 32,
@@ -1447,6 +1455,8 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
         "integrity_sha256": integrity_sha256,
         "writer_fence_path": str(writer_fence),
         "writer_fence_sha256": writer_fence_sha256,
+        "data_generation_path": str(ROOT / "kmtech_shared/powershell/data_generation.ps1"),
+        "data_generation_sha256": hashlib.sha256((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes()).hexdigest(),
         "parameters": parameters,
     }
     payload_base64 = base64.b64encode(
@@ -1548,6 +1558,8 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
         "ExpectedSourceByteCount": 0,
         "WriterFenceFunctionsPreloaded": True,
         "WriterFenceControlRoot": str(tmp_path / "writer-control"),
+        "DataGenerationSubjectSid": "S-1-5-21-1-2-3-1001",
+        "DataGenerationMarkerPaths": [str(tmp_path / "data-generation.json")],
         "WriterFenceSessionId": "1" * 32,
         "WriterFenceAttemptId": "2" * 32,
         "WriterFenceReplacementTransactionId": "3" * 32,
@@ -1563,6 +1575,8 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
         "integrity_sha256": integrity_sha256,
         "writer_fence_path": str(WRITER_FENCE_HELPER),
         "writer_fence_sha256": writer_fence_sha256,
+        "data_generation_path": str(ROOT / "kmtech_shared/powershell/data_generation.ps1"),
+        "data_generation_sha256": hashlib.sha256((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes()).hexdigest(),
         "parameters": parameters,
     }
     payload_base64 = base64.b64encode(

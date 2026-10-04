@@ -60,6 +60,7 @@ BOOTSTRAP_INTEGRITY_HELPER = Path("tools/bootstrap_integrity.ps1")
 WRITER_FENCE_HELPER = Path("tools/label_writer_fence.ps1")
 WRITER_FENCE_CONTRACT = Path("tools/label_writer_fence_contract.json")
 SHARED_POWERSHELL_LEAF = Path("kmtech_shared/powershell/portable.ps1")
+DATA_GENERATION_POWERSHELL_LEAF = Path("kmtech_shared/powershell/data_generation.ps1")
 THIRD_PARTY = {
     "babel": ("2.18.0", ("babel",)),
     "certifi": ("2026.6.17", ("certifi",)),
@@ -448,18 +449,56 @@ def _assert_clean_source(repo_root: Path) -> None:
         raise PortableBuildError("portable source tree must be clean and committed")
 
 
+def _data_generation_version(repo_root: Path) -> str:
+    from kmtech_shared.data_generation import version_key
+    tree = ast.parse((repo_root / "label_data_generation.py").read_text(encoding="utf-8"))
+    values = [ast.literal_eval(node.value) for node in tree.body
+              if isinstance(node, ast.Assign) and any(
+                  isinstance(target, ast.Name) and target.id == "CURRENT_VERSION"
+                  for target in node.targets)]
+    if len(values) != 1:
+        raise PortableBuildError("one literal CURRENT_VERSION is required")
+    version_key(values[0])
+    app = ast.parse((repo_root / "Label_Match.py").read_text(encoding="utf-8-sig"))
+    app_versions = [ast.literal_eval(node.value) for node in app.body
+                    if isinstance(node, ast.Assign) and any(
+                        isinstance(target, ast.Name) and target.id == "APP_VERSION"
+                        for target in node.targets)]
+    if app_versions != values:
+        raise PortableBuildError("APP_VERSION and CURRENT_VERSION differ")
+    return values[0]
+
+
 def build(
     repo_root: Path,
     python_home: Path,
     output: Path,
     *,
     update_manifest_public_key_config: str,
+    data_generation_update_manifest: Path | None = None,
+    data_generation_update_signature: Path | None = None,
 ) -> dict[str, object]:
     repo_root = repo_root.resolve()
     python_home = python_home.resolve()
     output = output.resolve()
     _assert_clean_source(repo_root)
     source_commit = _git_value(repo_root, "HEAD^{commit}")
+    data_version = _data_generation_version(repo_root)
+    data_floor = data_version
+    if bool(data_generation_update_manifest) != bool(data_generation_update_signature):
+        raise PortableBuildError("private compatibility manifest and signature are required together")
+    if data_generation_update_manifest is not None:
+        from label_data_generation import verified_private_compatibility
+        if (data_generation_update_manifest.stat().st_size > 1024 * 1024
+                or data_generation_update_signature.stat().st_size != 64):
+            raise PortableBuildError("private compatibility proof size is invalid")
+        proof = verified_private_compatibility(
+            json.loads(data_generation_update_manifest.read_text(encoding="utf-8")),
+            data_generation_update_signature.read_bytes(),
+            _update_public_key_config(update_manifest_public_key_config),
+            version=data_version, build_id=source_commit,
+        )
+        data_floor = proof["data_compatible_min_version"]
     source_tree = _git_value(repo_root, source_commit + "^{tree}")
     # A clean checkout can still contain CRLF/smudge-filter bytes that differ
     # from its commit. Package the attested commit, including data and scripts,
@@ -569,11 +608,18 @@ def build(
                 + ", ".join(forbidden_roots)
             )
         _assert_portable_import_closure(output, repo_root, tool_sources)
+        if not (app_root / DATA_GENERATION_POWERSHELL_LEAF).is_file():
+            raise PortableBuildError("shared data-generation PowerShell leaf is absent")
+        if data_generation_update_manifest is not None:
+            shutil.copyfile(data_generation_update_manifest, app_root / "data-generation-update-manifest.json")
+            shutil.copyfile(data_generation_update_signature, app_root / "data-generation-update-manifest.sig")
         file_count, byte_count = _tree_metrics(output)
         manifest = {
             "schema": PORTABLE_SCHEMA,
             "source_commit": source_commit,
             "source_tree": source_tree,
+            "version": data_version,
+            "data_compatible_min_version": data_floor,
             "python_version": ".".join(str(value) for value in EXPECTED_PYTHON),
             "python_home": str(python_home),
             "runtime_python_sha256": _sha256(output / "runtime" / "python.exe"),
@@ -606,6 +652,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--repo-root", type=Path, default=Path(__file__).resolve().parents[1]
     )
     parser.add_argument("--update-manifest-public-key-config", required=True)
+    parser.add_argument("--data-generation-update-manifest", type=Path)
+    parser.add_argument("--data-generation-update-signature", type=Path)
     return parser.parse_args(argv)
 
 
@@ -616,6 +664,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         args.python_home,
         args.output,
         update_manifest_public_key_config=args.update_manifest_public_key_config,
+        data_generation_update_manifest=args.data_generation_update_manifest,
+        data_generation_update_signature=args.data_generation_update_signature,
     )
     print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     return 0

@@ -245,7 +245,7 @@ function Assert-BootstrapIntegrityRecord {
 
 # This small trust bootstrap is intentionally local to both standalone loaders.
 # Never use shared code (or start Python) to establish its own execution authority.
-function Get-LabelSharedPortableLeafPath([string]$CodeRoot) {
+function Get-LabelSharedPortableLeafPath([string]$CodeRoot, [ValidateSet('portable.ps1','data_generation.ps1')][string]$Leaf = 'portable.ps1') {
     if ([string]::IsNullOrWhiteSpace($CodeRoot) -or -not [IO.Path]::IsPathRooted($CodeRoot) -or
         $CodeRoot.StartsWith('\\?\') -or $CodeRoot.StartsWith('\\.\')) {
         throw 'Shared PowerShell code root must be an ordinary absolute path.'
@@ -264,18 +264,18 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot) {
         Join-Path $root 'app'
     } else { $root }
     foreach ($relative in @('', 'kmtech_shared', 'kmtech_shared\powershell',
-        'kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1')) {
+        'kmtech_shared.lock.json', 'kmtech_shared.manifest.json', ('kmtech_shared\powershell\' + $Leaf))) {
         $path = if ($relative) { Join-Path $appRoot $relative } else { $appRoot }
         $item = Get-Item -LiteralPath $path -Force
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Shared PowerShell path contains a reparse point: $path"
         }
     }
-    $expectedManifestSha = 'feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117'
+    $expectedManifestSha = '8ca8078dc921485085ad79212d9213e31fbc8d78629461c82e622e16bf5664e6'
     $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
     if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
     $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$lock.version -cne '0.3.1' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
+    if ([string]$lock.version -cne '0.3.2' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
         throw 'Shared consumer manifest pin mismatch.'
     }
     $manifestPath = Join-Path $appRoot 'kmtech_shared.manifest.json'
@@ -287,8 +287,8 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot) {
     } finally { $hash.Dispose() }
     if ($actualManifestSha -cne $expectedManifestSha) { throw 'Shared manifest pin mismatch.' }
     $pinnedSharedManifest = (New-Object Text.UTF8Encoding($false, $true)).GetString($manifestBytes) | ConvertFrom-Json
-    $sharedLeaf = Join-Path $appRoot 'kmtech_shared\powershell\portable.ps1'
-    $expectedLeafSha = $pinnedSharedManifest.files.'kmtech_shared/powershell/portable.ps1'
+    $sharedLeaf = Join-Path $appRoot ('kmtech_shared\powershell\' + $Leaf)
+    $expectedLeafSha = $pinnedSharedManifest.files.('kmtech_shared/powershell/' + $Leaf)
     $stream = [IO.File]::OpenRead($sharedLeaf)
     $hash = [Security.Cryptography.SHA256]::Create()
     try {

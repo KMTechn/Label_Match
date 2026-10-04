@@ -19,6 +19,16 @@ from current_user_onboarding import (
 from direct_sync_push import manifest_hash
 
 
+@pytest.fixture(autouse=True)
+def isolated_data_generation_release(monkeypatch):
+    import label_data_generation as generation
+    monkeypatch.setattr(generation, "_installed_identity", lambda _root: {
+        "version": generation.CURRENT_VERSION, "build_id": "a" * 40,
+        "data_compatible_min_version": generation.CURRENT_VERSION,
+        "compatibility_verified": False,
+    })
+
+
 def test_recovery_required_onboarding_is_visible_and_does_not_repeat_enrollment(tmp_path):
     env = {"LOCALAPPDATA": str(tmp_path / "local"), "ProgramData": str(tmp_path / "program-data")}
     paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=env)

@@ -777,6 +777,17 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 
 ## 설치·업그레이드·제거·백업·롤백
 
+<a id="first-field-data-generation"></a>
+### 첫 현장 설치와 자료 세대 복구
+
+현장 옛 `v2.0.38` 위 첫 설치는 업무가 끝난 뒤 진행한다. 앱과 relay의 정상 정지·PID 부재를 확인한 **설치 직전** 기존 packet/무결성 기록, 실제 선택된 자료 root 전체(package outbox와 WAL/SHM, 현재 세트·완료 CSV·감사 조각), 사용자 DirectSync 전체, 설정·신원·보호된 자격, Run/task의 정확한 원 상태를 하나의 일관 백업으로 보존하고 바이트를 대조한다. 자격 내용은 출력하지 않는다. 백업 이후 추가 업무가 없고 relay가 계속 정지했음을 설치 직전에 다시 확인한다.
+
+자료 세대 G 후보(`v2.0.95`)는 앱 DataManager, onboarding 원장, raw relay가 실제 자료를 열기 직전에 기존 writer admission 안에서 기록한다. 설치기·bootstrap의 기동 허용만으로 기록하지 않는다. 기록은 대상 사용자의 기존 `%LOCALAPPDATA%/KMTech/DirectSync/label_match/control/writer-session/data-generation/<SID>.json`과 실제 자료 root의 `data-generation.json`이며 모두 읽은 최대 세대를 따른다. 기록이 전부 없으면 기존 DB가 있어도 ALLOW이므로 G 이전 코드가 만든 자료는 이 guard로 판별하지 못한다. 손상·읽기 실패·같은 판 다른 build는 거절하고 새 코드와 자료를 보존한다.
+
+자료를 열기 전 배치 실패 복원은 기존 경계를 유지한다. 기본 호환 하한은 자기 판이다. 기존 ES256 private update manifest의 `version`, `source_commit`, 명시한 `data_compatible_min_version`을 같은 서명에서 검증해야 더 낮은 하한을 인정하며 portable metadata만으로 허가하지 않는다. 릴리스 담당자는 자료 형식 호환 근거가 있을 때만 기존 서명 절차로 하한을 선언하고 portable builder에 `--data-generation-update-manifest`와 `--data-generation-update-signature`를 함께 전달한다. 기록 당시 검증된 하한과 exact 코드/runtime/inventory 계약을 모두 충족해야 지원 내림을 허용한다. 먼저 같은 새 판 재시작 또는 지원 수정판을 사용한다. 관리자 수동 복구는 실패한 새 자료와 기록을 따로 보존하고, 백업 뒤 업무 없음 확인 후 **옛 코드 + 설치 직전 일관 자료 + 사용자 설정/신원/relay·자료 세대 기록**을 같은 복구 단위로 복원한다. 기록만 삭제해 guard를 우회하지 않는다.
+
+정확한 정지·백업·복구 및 수량/멤버십·미전송/보류·재시작 대조는 [첫 현장 설치 runbook](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-220/LM-FIRST-FIELD-INSTALL-RUNBOOK.md)을 따른다. Python exe/headless 데이터 열기와 PS5/PS7 정의-only guard, 기존 서명 검증기 결속은 [sub-220 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-220/REPORT.md)에 실행 범위와 한계를 기록한다. 실제 frozen exe·UAC·`v2.0.38` 위 설치·일관 백업·수동 복원·GUI/중앙 수용은 **NOT TESTED**이다.
+
 옛 canonical LM 코드가 이미 있어도 설치 사용자의 자기 등록이 없으면 첫 등록을 진행할 수 있다. 설치본의 manifest·bootstrap·전체 inventory를 검증하고 기존 writer-transition의 정확한 허용 방향에 해당할 때만 `FIRST_REGISTRATION_OVER_PINNED_PREIMAGE`로 기록한다. AST가 같다는 이유만으로 알 수 없는 판을 첫 등록 출발 판으로 인정하지 않는다. 자기 DirectSync 전체 루트·profile/secret 디렉터리·settings 파일·등록 ledger와 sidecar는 모두 ABSENT여야 하며 절대 경로와 부재를 감사에 기록한다. 자기 상태 일부나 사용자 autostart/task/relay가 있으면 기존 healthy/receipt 검사를 유지한다. 파일 대신 디렉터리가 있거나 reparse 경로인 경우도 ABSENT가 아니다.
 
 실행 중인 LM은 정상 종료한 뒤 다시 설치한다. 설치기는 writer admission 안에서 자기 상태 부재를 재확인하고 옛 코드를 보존하면서 후보를 배치한 뒤 기존 `--onboard-current-user`를 실행한다. 새 자격은 설치 사용자의 자기 위치에 생성하며 옛 Machine `KM_LOGISTICS_*` 값이나 공용 profile을 읽거나 지우지 않는다. 공개 CA와 일반 업무 파일은 보존한다. 최초 ABSENT 경로와 없던 상위 디렉터리, 코드 preimage, 시도 ID는 앱이 읽지 않는 설치 감사의 `*-first-registration-attempt.json`에 남긴다. delegation token이나 자격 내용은 이 기록에 넣지 않는다.

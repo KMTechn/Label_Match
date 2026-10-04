@@ -44,6 +44,7 @@ from user_relay import (
     user_relay_stop_path,
 )
 from writer_session_fence import writer_sink
+from label_data_generation import record_user_data_open
 
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
@@ -1134,7 +1135,8 @@ def onboard_current_user(
                 "configured TLS CA bundle was not persisted in the logistics profile"
             )
 
-        ledger_factory(paths.ledger_path)
+        record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent),
+                              environ=environ, opener=lambda: ledger_factory(paths.ledger_path))
         if not paths.ledger_path.is_file():
             raise ValueError("current-user business ledger readback failed")
         report["settings"] = dict(settings_factory(paths))

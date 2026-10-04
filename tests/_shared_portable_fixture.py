@@ -7,4 +7,5 @@ ROOT = Path(__file__).resolve().parents[1]
 def shared_bootstrap_files(prefix=""):
     return {prefix + name: (ROOT / name).read_bytes() for name in (
         "kmtech_shared.lock.json", "kmtech_shared.manifest.json", "kmtech_shared/powershell/portable.ps1",
+        "kmtech_shared/powershell/data_generation.ps1",
     )}

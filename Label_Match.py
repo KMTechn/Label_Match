@@ -3610,7 +3610,17 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-APP_VERSION = "v2.0.94"
+from label_data_generation import CURRENT_VERSION, record_user_data_open
+APP_VERSION = "v2.0.95"
+if APP_VERSION != CURRENT_VERSION:
+    raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
+
+
+def _open_label_data_manager(save_directory, *args, **kwargs):
+    return record_user_data_open(
+        _label_match_runtime_app_root(), (Path(save_directory),),
+        opener=lambda: DataManager(save_directory, *args, **kwargs),
+    )
 _label_match_startup_trace("module_loaded", argv=sys.argv[:4])
 UPDATE_PROVIDER_ENV = "LABEL_MATCH_UPDATE_PROVIDER"
 UPDATE_MANIFEST_URL_ENV = "LABEL_MATCH_UPDATE_MANIFEST_URL"
@@ -5003,7 +5013,7 @@ class Label_Match(tk.Tk):
         self._admin_pin_login_epoch = uuid.uuid4().hex
         self.worker_role = "PACKAGING"
         self._authenticated_protected_admin = False
-        self.data_manager = DataManager(
+        self.data_manager = _open_label_data_manager(
             self.save_directory,
             self.Worker.PACKAGING,
             self.worker_name,

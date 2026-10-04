@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+자료 세대 G 후보(`v2.0.95`): 지원 옛 packet 선택·canonical/verified replacement 실패 복원 앞 guard와 직접 앱·relay·온보딩의 실제 첫 자료 열기 경계 기록을 연결했다. 공통 helper 0.3.2의 동일 바이트와 기존 사용자 control/data 자리, 단일 guarded sink 1개를 사용한다. 호환 하한은 기존 ES256 private manifest의 판·build 결속만 신뢰하며, 기록 없음은 ALLOW, 손상/같은 판 다른 build는 거절한다. 직접 Python exe·PS5/PS7·온보딩 회귀는 **PROVEN(headless, 신원/GUI 대역)**이고 실제 frozen exe·UAC·원 사용자 lifecycle 및 독립 검토는 남아 있다. [첫 현장 설치](operations.md#first-field-data-generation)는 옛 `v2.0.38`의 설치 직전 일관 백업과 관리자 코드/자료 함께 복원을 요구하며 실제 현장/랩 수용은 **NOT TESTED**이다. 정확한 commit·집중 비교·stock 증거는 [sub-220 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-220/REPORT.md)에 기록한다.
+
 명단 2단은 로컬 묶음 귀속·이름 정정/중지·신호별 본문·감사/물류 재전송·옛 상태 읽기를 합성 headless 경로에서 검증한다. 완료 CSV 전 실패의 lane 재시도·재시작과 미완료 UNDO, CSV 후 archive·marker·lease 실패의 재시도는 완료된 원 구성·신원·신호 결정에 결속한다. 완료 후 편집은 거절하며 재시작도 기존 CSV 완료를 확인한다. 실제 서버 신호 켜기·설치 전이·장치/화면·번호별 웹 집계는 통합 수용에서 확인하며 downgrade 필드 보존은 미검증이다([C-00](contracts.md#c-00)).
 
 LM-A1/LM-B4: 빈 화면 종료 확인을 줄였고 F5의 새 날짜 교환·전용 조회·단추·선택 창·전용 시험은 제거했다. 이전 판이 미완료 journal을 남길 수 있으므로 건별 복구·hold·PIN intent·v1 형식과 같은 요청의 prepare/print/activate는 보존한다. 잠금 면제는 복구 두 source만 남는다.
