@@ -1729,14 +1729,10 @@ function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters) {
         parameters = $HelperParameters
     }
     $payloadJson = $payload | ConvertTo-Json -Depth 5 -Compress
-    $payloadBase64 = [Convert]::ToBase64String(
-        (New-Object Text.UTF8Encoding($false)).GetBytes($payloadJson)
-    )
     $launcher = @'
+param([byte[]]$PayloadBytes)
 $ErrorActionPreference = 'Stop'
-$payloadText = (New-Object Text.UTF8Encoding($false, $true)).GetString(
-    [Convert]::FromBase64String('@@payload-base64@@')
-)
+$payloadText = (New-Object Text.UTF8Encoding($false, $true)).GetString($PayloadBytes)
 $payload = $payloadText | ConvertFrom-Json
 $placementPhase = 'PIN_VALIDATION'
 trap {
@@ -1769,8 +1765,17 @@ trap {
     [Console]::Error.WriteLine($message)
     exit $childExit
 }
+$pinnedStreams = [Collections.Generic.List[IO.Stream]]::new()
 function PinnedBytes([string]$Path, [string]$Expected) {
-    [byte[]]$bytes = [IO.File]::ReadAllBytes($Path)
+    for ($item = [IO.Path]::GetFullPath($Path); $item; $item = [IO.Path]::GetDirectoryName($item)) {
+        if ([IO.File]::GetAttributes($item) -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Elevated helper is a reparse point: $Path"
+        }
+    }
+    $stream = [IO.File]::Open($Path, 'Open', 'Read', 'Read')
+    $pinnedStreams.Add($stream)
+    if ($stream.Length -gt 16777216) { throw 'Elevated helper is not bounded.' }
+    [byte[]]$bytes = ([IO.BinaryReader]::new($stream)).ReadBytes([int]$stream.Length)
     $hash = [Security.Cryptography.SHA256]::Create()
     try {
         $actual = ([BitConverter]::ToString($hash.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
@@ -1902,12 +1907,72 @@ $placementPhase = 'HELPER_EXECUTION'
 & $helper @invokeParameters
 if (-not $?) { exit 4 }
 exit 0
-'@.Replace('@@payload-base64@@', $payloadBase64)
-    # Leading indentation carries no launcher data; retain the native command limit.
+'@
     $launcher = $launcher -replace '(?m)^[\t ]+', ''
+    [byte[]]$launcherBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($launcher)
+    [byte[]]$payloadBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($payloadJson)
+    # Stay within the already supported diagnostic path length (MAX_PATH).
+    $transportBase = $failurePath.Substring(0, $failurePath.Length - 5)
+    $launcherPath = $transportBase + '.ps1'
+    $payloadPath = $transportBase + '.dat'
+    # The audit parent was checked above. Only these new, unpredictable files
+    # are owned here. Publish private bytes after protecting their read access;
+    # elevation trusts the in-memory hashes, never an adjacent manifest.
+    $privateAcl = New-Object Security.AccessControl.FileSecurity
+    $privateAcl.SetAccessRuleProtection($true, $false)
+    $privateAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+    foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User,
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+        [void]$privateAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, ([Security.AccessControl.FileSystemRights]::ReadAndExecute -bor
+                [Security.AccessControl.FileSystemRights]::Delete), 'Allow'))
+    }
+    $createdPaths = @()
+    try {
+        foreach ($entry in @(@($launcherPath, $launcherBytes), @($payloadPath, $payloadBytes))) {
+            $stream = [IO.File]::Open([string]$entry[0], 'CreateNew', 'Write', 'None')
+            $createdPaths += [string]$entry[0]
+            try {
+                [IO.File]::SetAccessControl([string]$entry[0], $privateAcl)
+                $stream.Write([byte[]]$entry[1], 0, $entry[1].Length)
+                $stream.Flush($true)
+            } finally { $stream.Dispose() }
+        }
+    $bootstrap = @'
+$ErrorActionPreference='Stop'
+$streams=[Collections.Generic.List[IO.Stream]]::new()
+function ReadPinned([string]$p,[string]$expected){
+ for($a=[IO.Path]::GetFullPath($p);$a;$a=[IO.Path]::GetDirectoryName($a)){
+  if([IO.File]::GetAttributes($a) -band [IO.FileAttributes]::ReparsePoint){throw 'Placement transport reparse point.'}
+ }
+ $s=[IO.File]::Open($p,'Open','Read','Read');$streams.Add($s)
+ if($s.Length -gt 16777216){throw 'Placement transport is not bounded.'}
+ [byte[]]$b=([IO.BinaryReader]::new($s)).ReadBytes([int]$s.Length)
+ $h=[Security.Cryptography.SHA256]::Create()
+ try{$actual=([BitConverter]::ToString($h.ComputeHash($b))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()}
+ if($actual -cne $expected){throw 'Placement transport byte pin differs.'}
+ return ,$b
+}
+try{
+ [byte[]]$code=ReadPinned '@@launcher-path@@' '@@launcher-sha@@'
+ [byte[]]$data=ReadPinned '@@payload-path@@' '@@payload-sha@@'
+ # Read handles deny write/delete until execution finishes. Execute only the
+ # verified memory buffers, with no second read or path-based invocation.
+ & ([ScriptBlock]::Create(([Text.UTF8Encoding]::new($false,$true)).GetString($code))) -PayloadBytes $data
+}catch{[Console]::Error.WriteLine('Placement launcher transport rejected.');exit 1}
+finally{foreach($s in $streams){$s.Dispose()}}
+'@
+    $bootstrap = $bootstrap.Replace('@@launcher-path@@', $launcherPath.Replace("'", "''")).Replace(
+        '@@launcher-sha@@', (ByteSha $launcherBytes)).Replace(
+        '@@payload-path@@', $payloadPath.Replace("'", "''")).Replace(
+        '@@payload-sha@@', (ByteSha $payloadBytes))
     $encodedLauncher = [Convert]::ToBase64String(
-        [Text.Encoding]::Unicode.GetBytes($launcher)
+        [Text.Encoding]::Unicode.GetBytes($bootstrap)
     )
+    if ($encodedLauncher.Length + 80 -gt 16000) {
+        throw 'Placement launcher command is not bounded.'
+    }
     $winps = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
     $process = Start-Process `
         -FilePath $winps `
@@ -1936,6 +2001,14 @@ exit 0
         $Script:LabelPlacementChildFailure = $record
     }
     return $childExit
+    }
+    finally {
+        foreach ($createdPath in $createdPaths) {
+            if ([IO.File]::Exists($createdPath)) {
+                Remove-Item -LiteralPath $createdPath -ErrorAction Stop
+            }
+        }
+    }
 }
 
 function Relays {

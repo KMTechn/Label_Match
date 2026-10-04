@@ -27,11 +27,12 @@ if($arguments -cne $expected){throw 'Packet source was used as logical install r
 
 
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
-@pytest.mark.parametrize('cut', ('remove', 'run', 'task', 'custody', 'generation_before', 'generation_after'))
+@pytest.mark.parametrize('cut', ('remove', 'run', 'task', 'custody', 'generation_before', 'generation_after', 'uac_cancel'))
 def test_actual_install_rollback_attempts_later_restoration_and_records_failure(tmp_path, engine, cut):
     names = ['Get-LabelLaunchFailure']
     if 'function Invoke-LabelRollbackStep' in INSTALLER.read_text(encoding='utf-8'):
         names.append('Invoke-LabelRollbackStep')
+    names.extend(['ByteSha', 'InvokeFrozenPlacementHelper'])
     if 'function Assert-LabelRollbackGeneration' in INSTALLER.read_text(encoding='utf-8'):
         names.append('Assert-LabelRollbackGeneration')
     result = run_functions(tmp_path, INSTALLER, names, r'''
@@ -85,7 +86,19 @@ $catches=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CatchC
 if($catches.Count -ne 1){throw 'Actual transaction rollback catch is ambiguous.'}
 $body=$catches[0].Body.Extent.Text
 $body=$body.Substring(1,$body.Length-2)
-try {throw 'original forward failure'} catch {try{. ([scriptblock]::Create($body))}catch{}}
+try {
+ if($env:LM_ROLLBACK_CUT -ceq 'uac_cancel'){
+  $frozen=[pscustomobject]@{root=$root;helper_path=(Join-Path $root 'helper.ps1');helper_sha256=('a'*64);
+   integrity_sha256=('b'*64);writer_fence_path=(Join-Path $root 'writer.ps1');writer_fence_sha256=('c'*64);
+   data_generation_path=(Join-Path $root 'generation.ps1');data_generation_sha256=('d'*64)}
+  function Start-Process {param($FilePath,$Verb,$ArgumentList,$WindowStyle,[switch]$Wait,[switch]$PassThru)
+   throw [ComponentModel.Win32Exception]::new(1223)
+  }
+  [void](InvokeFrozenPlacementHelper $frozen @{ElevationLogPath=(Join-Path $root 'placement')})
+  throw 'UAC cancellation was not raised.'
+ }
+ throw 'original forward failure'
+} catch {try{. ([scriptblock]::Create($body))}catch{}}
 if(-not $events.Contains('run-readback')){throw 'Final rollback observation skipped.'}
 if($env:LM_ROLLBACK_CUT -like 'generation_*') {
  if($events.Contains('remove') -or $events.Contains('run') -or $events.Contains('task') -or
@@ -93,6 +106,13 @@ if($env:LM_ROLLBACK_CUT -like 'generation_*') {
  $expectedChecks=if($env:LM_ROLLBACK_CUT -ceq 'generation_before'){1}else{2}
  if($script:generationChecks -ne $expectedChecks){throw 'Wrong generation boundary reached.'}
  if($audit.status -cne 'ROLLBACK_FAILED'){throw 'Generation refusal reported rollback success.'}
+ 'PASS';return
+}
+if($env:LM_ROLLBACK_CUT -ceq 'uac_cancel'){
+ if($audit.status -cne 'FAILED_ROLLED_BACK' -or $audit.rollback.runtime_restored -ne $true){throw 'Cancellation rollback changed.'}
+ if(-not $events.Contains('run') -or -not $events.Contains('task') -or -not $events.Contains('fence-release')){throw 'Cancellation skipped restoration.'}
+ if(@($audit.rollback.step_failures).Count -ne 0){throw 'Cancellation rollback acquired a new failure.'}
+ if(@(Get-ChildItem -LiteralPath $root -Filter 'placement-child-*').Count){throw 'Cancellation retained private transport.'}
  'PASS';return
 }
 if($env:LM_ROLLBACK_CUT -eq 'custody'){
