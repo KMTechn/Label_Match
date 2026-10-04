@@ -18,7 +18,7 @@ DESIGN §1.2와 코디 추가 결정에 따라 품목 불일치·입력 오류�
 
 빈 작업대는 종료 확인 없이 기존 저장·lane drain·전송 정리를 실행한다. 현재 세트 raw·교환 단계·미달 UNDO 또는 현품표 교환 미완료 상태가 있을 때만 종료를 묻는다. 내구 전송 대기열만 있는 것은 확인 사유가 아니다. 정상 화면의 F5 키·날짜 교환 단추·새 교환 코드와 전용 조회는 제거했으며 저장된 교환은 `건별 복구 → 미완료 현품표 교환 복구`에서 같은 요청으로 재개한다.
 
-mainloop 예외·직접 반환·종료 접수 직후 반환도 기존 종료 callback을 UI owner에서 마감 안에 이어 실행한다. 로그 writer와 UI lane이 종료된 뒤 단일 실행 잠금을 해제한다. 정리가 미완료면 OS 프로세스 종료까지 잠금을 보유하고 내구 원본을 보존하며, 원 mainloop 예외와 SystemExit 코드는 정리 오류로 덮지 않는다.
+mainloop 예외·직접 반환·종료 접수 직후 반환도 기존 종료 callback을 UI owner에서 이어 실행한다. 105초 마감은 지연 표시 시점이며 유한 작업의 결과 적용·로그 writer·UI lane 종료를 계속 기다린 뒤 단일 실행 잠금을 해제한다. 원 mainloop 예외와 SystemExit 코드는 정리 오류로 덮지 않는다. 영구 정지 중에는 잠금·내구 원본을 보존한다.
 
 교환·일반 UNDO·미달 release·자동 source 검토 감사는 current-state의 scanner_audit_outbox에 업무 checkpoint와 함께 저장한다. 고정 key·원 시각·작업자·이벤트 내용을 보존하고 직후·다음 스캔 전·저장 재시도·기동 때 기존 CSV writer로 재생한다. 같은 key의 동일 CSV 행은 재append하지 않고 fsync하며, CSV와 outbox 제거 checkpoint가 모두 성공한 항목만 목록에서 지운다. CSV 실패는 입력을 막지 않고 pending을 유지한다; 업무 checkpoint 실패만 기존 차단한다. UNDO·reset·완료 후에도 미전송 감사는 보존하므로 교환과 그 UNDO가 모두 남는다. 목표 수량에 도달하지 않은 재시도를 PASS 완료하지 않는다. 기동·복구는 기존 DB 보류 snapshot과 검증된 archive의 pending 감사도 읽어서 같은 ID로 재생한다. 보류 원본·PIN에 결속된 현재 파일은 재작성하지 않고, 활성 파일이 없으면 만들지 않는다; 보류 감사의 재생 여부는 CSV readback으로 판정한다. 큰 감사 목록은 `_scanner_audit_outbox/<SHA256>.json`의 내구 조각을 먼저 저장한 뒤 `scanner_audit_segments` 참조와 업무 checkpoint를 원자 저장한다. 재기동은 SHA·스키마가 맞는 조각을 기록 순서대로 재생하며, 손상·소실 조각의 원본과 참조는 보존한 채 다른 감사와 입력을 계속한다. 이전 8MiB 초과 inline 감사도 업무 본문 검증 뒤 읽는다. 백업·보류 복원에는 checkpoint와 `_scanner_audit_outbox` 폴더를 함께 보존하며, 완료된 조각도 자동 삭제하지 않는다.
 

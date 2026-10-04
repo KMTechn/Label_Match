@@ -2164,11 +2164,12 @@ def test_close_retries_manager_recovery_before_rolling_back(monkeypatch):
     _close_lane(app, root)
 
 
-def test_close_drain_deadline_breaks_lane_and_shows_cleanup_delay():
+def test_close_drain_deadline_keeps_finite_lane_and_shows_cleanup_delay():
     app, root = _app_with_lane()
     active_gate = threading.Event()
     active_started = threading.Event()
     delays = []
+    applied = []
     app._app_close_in_progress = True
     app._app_close_drain_watchdog_after_id = None
     app._show_app_close_cleanup_delay = lambda: delays.append(True)
@@ -2203,7 +2204,7 @@ def test_close_drain_deadline_breaks_lane_and_shows_cleanup_delay():
             "overdue-close-drain",
             0,
             blocking_work,
-            lambda _value: None,
+            lambda value: applied.append(value),
             pytest.fail,
         )
     )
@@ -2220,8 +2221,15 @@ def test_close_drain_deadline_breaks_lane_and_shows_cleanup_delay():
 
         clock.advance(1)
 
-        assert app.ui_lane.state is LaneState.BROKEN
+        # 2026-10-04 correction: the deadline displays delay and keeps the
+        # accepted result path alive until finite work completes.
+        assert app.ui_lane.state is LaneState.BUSY
         assert delays == [True]
+        assert applied == []
+        active_gate.set()
+        root.run_until(lambda: bool(applied))
+        assert applied == [True]
+        assert app.ui_lane.state is LaneState.IDLE
     finally:
         active_gate.set()
         app._app_close_in_progress = False

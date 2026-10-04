@@ -244,25 +244,34 @@ def test_worker_record_declaration_matches_stage_one_and_candidate():
         assert after == _release_digest((ROOT / path).read_bytes()) != before
 
 
-@pytest.fixture(scope="module")
-def mainloop_exit_packages(tmp_path_factory, legacy_label_packages):
-    return _stock_label_packages(tmp_path_factory, "mainloop-exit-stock", "4b7630f",
-                                 legacy_label_packages[1])
+@pytest.fixture(scope="module", params=[
+    ("4b7630f", "PINNED_MAINLOOP_EXIT_CLEANUP"),
+    ("640d770", "PINNED_MAINLOOP_EXIT_NOTICE"),
+])
+def mainloop_exit_packages(tmp_path_factory, legacy_label_packages, request):
+    revision, compatibility = request.param
+    packages = _stock_label_packages(tmp_path_factory, "mainloop-exit-stock-" + revision,
+                                     revision, legacy_label_packages[1])
+    return (*packages, compatibility)
 
 
-def test_mainloop_exit_declaration_matches_exact_preimage_and_candidate():
-    pairs = _declared_current_user_profile_pairs("mainloop_exit_replacements")
+@pytest.mark.parametrize("declaration,revision", [
+    ("mainloop_exit_replacements", "4b7630f"),
+    ("mainloop_exit_notice_replacements", "640d770"),
+])
+def test_mainloop_exit_declaration_matches_exact_preimage_and_candidate(declaration, revision):
+    pairs = _declared_current_user_profile_pairs(declaration)
     assert set(pairs) == {"app/Label_Match.py", "app/label_match_single_instance.py",
                           "app/writer_session_fence.py", "tools/label_writer_fence.ps1"}
     for relative, (before, after) in pairs.items():
         name = relative.removeprefix("app/")
-        original = subprocess.check_output(["git", "-C", str(ROOT), "show", f"4b7630f:{name}"])
+        original = subprocess.check_output(["git", "-C", str(ROOT), "show", f"{revision}:{name}"])
         assert before == _release_digest(original)
         assert after == _release_digest((ROOT / name).read_bytes()) != before
 
 
 def test_mainloop_exit_stock_upgrade_preserves_current_and_pending(tmp_path, mainloop_exit_packages):
-    old, candidate = mainloop_exit_packages
+    old, candidate, compatibility = mainloop_exit_packages
     installed = _tree(old, tmp_path / "installed")
     environment = _environment(tmp_path)
     work = _seed_base_work(environment)
@@ -275,13 +284,13 @@ if ((PortableInventory {_quote(installed)}).sha256 -cne $before.sha256) {{ throw
 $writerTransition | ConvertTo-Json -Compress
 """, environment, timeout=300)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout)["compatibility"] == "PINNED_MAINLOOP_EXIT_CLEANUP"
+    assert json.loads(result.stdout)["compatibility"] == compatibility
     assert all(path.read_bytes() == raw for path, raw in work.items())
 
 
 @pytest.mark.parametrize("change", ["reverse", "app/Label_Match.py", "app/label_match_single_instance.py"])
 def test_mainloop_exit_upgrade_refuses_reverse_and_unreviewed_bytes(tmp_path, mainloop_exit_packages, change):
-    old, candidate = mainloop_exit_packages
+    old, candidate, _compatibility = mainloop_exit_packages
     if change == "reverse":
         source, installed = old, candidate
     else:

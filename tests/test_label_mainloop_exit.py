@@ -17,6 +17,7 @@ import pytest
 @pytest.mark.parametrize("mode", [
     "close", "decline", "raise", "return", "accepted_return", "stall",
     "interrupt_cleanup", "exit_cleanup", "sync_return",
+    "finite_close", "finite_return", "finite_raise", "finite_accepted",
 ])
 def test_entrypoint_exit_releases_workers_and_replays_durable_state(tmp_path, mode):
     root = tmp_path / mode
@@ -45,21 +46,24 @@ def test_entrypoint_exit_releases_workers_and_replays_durable_state(tmp_path, mo
             stdout + stderr).decode("utf-8", errors="replace")
         observed = json.loads((root / f"{stage}.json").read_text(encoding="utf-8"))
         assert observed["owner"] is True
-        if stage == "stall":
-            assert any(not worker["daemon"] for worker in observed["workers"])
-            assert observed["destroyed"] is False
-            assert observed["guard_held_during_cleanup"] is True
-            rescue = json.loads((root / f"{stage}-rescue.json").read_text(encoding="utf-8"))
-            assert rescue["guard_held"] is True
-        else:
-            assert observed["workers"] == []
-            assert observed["destroyed"] is True
-            assert not (root / f"{stage}-rescue.json").exists()
+        assert observed["workers"] == []
+        assert observed["destroyed"] is True
+        assert not (root / f"{stage}-rescue.json").exists()
+        if stage == "stall" or stage.startswith("finite_"):
+            waiting = json.loads((root / f"{stage}-waiting.json").read_text(encoding="utf-8"))
+            assert waiting["notice"] is True
+            assert waiting["guard_held"] is True
+            assert waiting["destroyed"] is False
+            assert waiting["main_returned"] is False
+            assert waiting["non_daemon_alive"] is True
+            assert waiting["stop_sent"] is (stage != "finite_close")
+            assert observed["accepted_results"] == 1
+            assert observed["notice_removed"] is True
         assert observed["pending_preserved"] is True
         assert observed["audit_preserved"] is True
         assert observed["guard_held_during_cleanup"] is True
         assert observed["current_state_preserved"] is True
-        expected_close_events = (1 if mode == "stall" else 2) if stage == "restart" else int(mode != "stall")
+        expected_close_events = 2 if stage == "restart" else 1
         assert observed["close_events"] == expected_close_events
         if stage == "restart":
             assert observed["pending_identity"] == pending_identity
@@ -70,7 +74,7 @@ def test_entrypoint_exit_releases_workers_and_replays_durable_state(tmp_path, mo
             audit_prefix = {p.relative_to(root): p.read_bytes() for p in root.rglob("*작업이벤트로그*.csv")}
         if stage == "decline":
             assert observed["decline_kept_work"] is True
-        expected = {"raise": "RuntimeError", "stall": "TimeoutError",
+        expected = {"raise": "RuntimeError", "finite_raise": "RuntimeError",
                     "interrupt_cleanup": "KeyboardInterrupt", "exit_cleanup": "SystemExit"}
         assert observed["exception"] == expected.get(stage)
 
@@ -107,14 +111,46 @@ def _probe(mode, root):
     apps = []
     release = threading.Event()
     main_returned = threading.Event()
-    verdict = {"exception": None, "decline_kept_work": False}
+    app_ready = threading.Event()
+    verdict = {"exception": None, "decline_kept_work": False, "accepted_results": 0}
+
+    class StrictTkRoot(FakeTkRoot):
+        def __init__(self):
+            super().__init__()
+            self.due = {}
+
+        def after(self, delay, callback, *args):
+            if self.destroyed:
+                raise RuntimeError("Tk callback registration after destroy")
+            job = super().after(delay, callback, *args)
+            self.due[job] = time.monotonic() + delay / 1000
+            return job
+
+        def run_one(self):
+            if self.destroyed:
+                raise RuntimeError("Tk callback delivery after destroy")
+            for _ in range(len(self.jobs)):
+                job, delay, callback, args = self.jobs.popleft()
+                if job in self.cancelled:
+                    continue
+                if time.monotonic() < self.due[job]:
+                    self.jobs.append((job, delay, callback, args))
+                    continue
+                callback(*args)
+                return True
+            return False
+
+        def destroy(self):
+            super().destroy()
+            self.jobs.clear()
+            self.due.clear()
 
     class ProbeApp(original):
         def __getattr__(self, name):
             raise AttributeError(name)
 
         def __init__(self):
-            self.root = FakeTkRoot()
+            self.root = StrictTkRoot()
             self.run_tests = True
             self.initialized_successfully = True
             self.save_directory = str(root)
@@ -128,6 +164,15 @@ def _probe(mode, root):
                 self.data_manager.log_event(self.Events.APP_START, {"message": "exit-test"})
                 self.data_manager.flush(timeout=2)
             self.ui_lane = TkSerialUiLane(self, poll_ms=1, worker_name="lm281-ui-lane")
+            if os.environ.get("LM281_MUTATION") == "skip-stop":
+                signal_stop = self.ui_lane._signal_worker_stop
+                skipped = False
+                def skip_first_stop():
+                    nonlocal skipped
+                    if skipped:
+                        signal_stop()
+                    skipped = True
+                self.ui_lane._signal_worker_stop = skip_first_stop
             self._save_current_set_state = lambda: self.data_manager.save_current_state(
                 {"current_set_info": self.current_set_info})
             if mode != "restart":
@@ -142,12 +187,9 @@ def _probe(mode, root):
             self.guard_observations = [owns_guard()]
             self.direct_sync_bootstrap_context = {"scan_source_dir": str(root)}
             apps.append(self)
+            app_ready.set()
 
         def after(self, delay, callback, *args):
-            # The fake scheduler preserves callback order. The watchdog is
-            # intentionally unused: this probe's real work completes in 40ms.
-            if getattr(callback, "__name__", "") == "expire_overdue_drain":
-                return "unused-watchdog"
             return self.root.after(delay, callback, *args)
 
         def after_cancel(self, job):
@@ -165,6 +207,23 @@ def _probe(mode, root):
             return "withdrawn"
 
         def mainloop(self):
+            if mode.startswith("finite_") or mode == "stall":
+                self.ui_lane.submit(LaneTask(
+                    name="finite-before-exit", generation=0,
+                    work=lambda: (release.wait(), self.data_manager.log_event(
+                        self.Events.APP_START, {"message": "finite-work"})),
+                    finish=lambda _value: verdict.update(accepted_results=verdict["accepted_results"] + 1),
+                    fail=lambda error: (_ for _ in ()).throw(error),
+                ))
+                if mode != "stall":
+                    threading.Thread(target=release_finite_work, daemon=True).start()
+                if mode in {"finite_close", "finite_accepted", "stall"}:
+                    self.on_closing()
+                if mode == "finite_close":
+                    self.root.run_until(lambda: self.__dict__.get("_tk_destroy_complete", False))
+                if mode == "finite_raise":
+                    raise RuntimeError("injected finite mainloop failure")
+                return
             if mode in {"close", "restart", "decline"}:
                 if mode == "decline":
                     self.run_tests = False
@@ -178,15 +237,14 @@ def _probe(mode, root):
                     self.run_tests = True
                 self.on_closing()
                 self.root.run_until(lambda: self.__dict__.get("_tk_destroy_complete", False))
-            elif mode in {"accepted_return", "stall"}:
+            elif mode == "accepted_return":
                 self.ui_lane.submit(LaneTask(
                     name="durable-before-exit", generation=0,
                     work=lambda: (release.wait(), self.data_manager.log_event(
                         self.Events.APP_START, {"message": "accepted-work"})),
                     finish=lambda _value: None, fail=lambda error: (_ for _ in ()).throw(error),
                 ))
-                if mode != "stall":
-                    threading.Thread(target=lambda: (time.sleep(0.04), release.set()), daemon=True).start()
+                threading.Thread(target=lambda: (time.sleep(0.04), release.set()), daemon=True).start()
                 self.on_closing()
             elif mode == "raise":
                 raise RuntimeError("injected mainloop failure")
@@ -213,7 +271,7 @@ def _probe(mode, root):
     lm._label_match_explicit_automated_test_mode = lambda: False
     lm._label_match_bind_current_log_source = lambda context, _manager: context
     lm._label_match_run_and_record_session_direct_sync = lambda *_a, **_k: {"status": "PASS"}
-    if mode == "stall":
+    if mode == "stall" or mode.startswith("finite_"):
         lm.LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS = 0.1
     if mode in {"interrupt_cleanup", "exit_cleanup"} and hasattr(original, "_finish_after_mainloop"):
         finish = original._finish_after_mainloop
@@ -224,13 +282,48 @@ def _probe(mode, root):
     if os.environ.get("LM281_MUTATION") == "skip-cleanup":
         ProbeApp._finish_after_mainloop = lambda self: None
     if os.environ.get("LM281_MUTATION") == "release-guard":
-        lm._retain_current_instance_lease = lambda: None
+        mark_stall = ProbeApp._mark_app_close_stall
+        def mark_then_release(self):
+            mark_stall(self)
+            instance._active_instance_lease.lease.close()
+        ProbeApp._mark_app_close_stall = mark_then_release
+    if os.environ.get("LM281_MUTATION") == "stop-at-deadline":
+        update = ProbeApp.update
+        def update_then_abandon(self):
+            update(self)
+            if self.__dict__.get("_app_close_stall_noted"):
+                raise TimeoutError("mutated deadline abandonment")
+        ProbeApp.update = update_then_abandon
     lm.run_guarded_entrypoint = lambda start, **kwargs: instance.run_guarded_entrypoint(
         start, data_scope=root, acquire=acquire,
         activate=lambda: instance.ActivationResult(found=False, activated=False),
     )
 
+    def record_waiting():
+        app = apps[0]
+        (root / f"{mode}-waiting.json").write_text(json.dumps({
+            "notice": (root / "label_match_shutdown_stall.json").is_file(),
+            "guard_held": owns_guard(), "destroyed": app.root.destroyed,
+            "main_returned": main_returned.is_set(),
+            "non_daemon_alive": app.ui_lane.worker_thread.is_alive(),
+            "stop_sent": app.ui_lane._stop_sent,
+        }), encoding="utf-8")
+
+    def release_finite_work():
+        time.sleep(0.25)
+        record_waiting()
+        release.set()
+
     def rescue():
+        app_ready.wait()
+        if mode == "stall":
+            deadline = time.monotonic() + 2
+            while not (root / "label_match_shutdown_stall.json").is_file() and not main_returned.is_set():
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.005)
+            record_waiting()
+            release.set()
         main_returned.wait()
         time.sleep(0.4)
         app = apps[0]
@@ -268,6 +361,7 @@ def _probe(mode, root):
         "workers": [{"name": t.name, "daemon": t.daemon}
                     for t in (app.ui_lane.worker_thread, app.data_manager.log_thread) if t.is_alive()],
         "destroyed": app.__dict__.get("_tk_destroy_complete", False),
+        "notice_removed": not (root / "label_match_shutdown_stall.json").exists(),
         "pending_preserved": pending["status"] == "PENDING",
         "pending_identity": [pending[field] for field in ("idempotency_key", "command_fingerprint", "draft_json")],
         "audit_preserved": bool(log_files) and all(p.stat().st_size > 0 for p in log_files),

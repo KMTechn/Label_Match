@@ -19,6 +19,8 @@ import threading
 from pathlib import Path
 from typing import Callable, Mapping
 
+from writer_session_fence import writer_sink
+
 
 ERROR_ALREADY_EXISTS = 183
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -40,6 +42,52 @@ def _retain_current_instance_lease() -> None:
     lease = getattr(_active_instance_lease, "lease", None)
     if lease is not None:
         lease._retain_on_exit = True
+
+
+@writer_sink("gui_shutdown_stall_notice")
+def _set_shutdown_stall_notice(data_scope, *, stalled: bool) -> None:
+    """A best-effort diagnostic uses the same admission as ordinary writers."""
+    import sys
+
+    path = Path(data_scope) / "label_match_shutdown_stall.json"
+    if stalled:
+        path.write_text(json.dumps({"pid": os.getpid(), "executable": sys.executable}), encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _try_update_shutdown_stall_notice(data_scope, *, stalled: bool) -> None:
+    try:
+        _set_shutdown_stall_notice(data_scope, stalled=stalled)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("shutdown notice unavailable: %s", type(exc).__name__)
+
+
+def _shutdown_stall_message(data_scope) -> str:
+    try:
+        path = Path(data_scope) / "label_match_shutdown_stall.json"
+        with path.open("rb") as stream:
+            raw = stream.read(4097)
+        if len(raw) > 4096:
+            return ""
+        notice = json.loads(raw)
+        pid, executable = notice["pid"], notice["executable"]
+        if type(pid) is not int or not 0 < pid < 2**32 or not isinstance(executable, str) or not executable:
+            return ""
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        actual = _query_process_path(kernel, pid)
+        if actual and ntpath.normcase(actual) == ntpath.normcase(executable):
+            return "Label Match 종료 정리가 지연되고 있습니다. 앱이 닫히고 다시 안 켜지면 PC를 재시작하세요."
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return ""
 
 
 def canonical_data_scope(path: str | os.PathLike[str]) -> str:
@@ -407,13 +455,16 @@ def run_guarded_entrypoint(
         message = (
             "기존 Label Match 창을 표시했습니다."
             if result.found
-            else "Label Match가 이미 실행 중입니다. 기존 창을 확인하세요."
+            else (_shutdown_stall_message(data_scope)
+                  or "Label Match가 이미 실행 중입니다. 기존 창을 확인하세요.")
         )
         print(message)
         return 0
     previous = getattr(_active_instance_lease, "lease", None)
     _active_instance_lease.lease = lease
     try:
+        # Stale diagnostics never become an additional startup lock.
+        _try_update_shutdown_stall_notice(data_scope, stalled=False)
         result = start()
         return int(result or 0)
     finally:

@@ -52,7 +52,8 @@ from protected_admin import (
     sanitize_persistent_value,
 )
 from label_match_single_instance import (
-    _retain_current_instance_lease, resolve_data_scope, run_guarded_entrypoint,
+    _retain_current_instance_lease, _try_update_shutdown_stall_notice,
+    resolve_data_scope, run_guarded_entrypoint,
 )
 from current_user_onboarding import (
     CurrentUserOnboardingError,
@@ -7788,9 +7789,6 @@ class Label_Match(tk.Tk):
         deadline = (
             time.monotonic() + LABEL_MATCH_TK_SHUTDOWN_THREAD_TIMEOUT_SECONDS
         )
-        loop_deadline = self.__dict__.get("_mainloop_cleanup_deadline")
-        if loop_deadline is not None:
-            deadline = min(deadline, loop_deadline)
         remaining_names = []
         excluded = {id(thread) for thread in exclude_threads if thread is not None}
         for thread in self._tracked_tk_shutdown_threads():
@@ -7838,6 +7836,18 @@ class Label_Match(tk.Tk):
         except (TclError, RuntimeError, AttributeError):
             pass
 
+    def _mark_app_close_stall(self):
+        state = self.__dict__
+        if state.get("_app_close_stall_noted", False):
+            return
+        state["_app_close_stall_noted"] = True
+        if state.get("save_directory"):
+            _try_update_shutdown_stall_notice(state["save_directory"], stalled=True)
+        try:
+            self._show_app_close_cleanup_delay()
+        except (TclError, RuntimeError, AttributeError):
+            pass
+
     def _arm_app_close_lane_drain_watchdog(self, ui_lane):
         if self.__dict__.get("_app_close_drain_watchdog_after_id") is not None:
             return
@@ -7846,10 +7856,7 @@ class Label_Match(tk.Tk):
             self._app_close_drain_watchdog_after_id = None
             if not self.__dict__.get("_app_close_in_progress", False):
                 return
-            if ui_lane.break_for_shutdown_timeout(
-                RuntimeError("UI lane exceeded the app-close drain deadline")
-            ):
-                self._show_app_close_cleanup_delay()
+            self._mark_app_close_stall()
 
         self._app_close_drain_watchdog_after_id = self.after(
             int(LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS * 1000),
@@ -7863,9 +7870,6 @@ class Label_Match(tk.Tk):
             return True
         try:
             timeout = LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
-            deadline = self.__dict__.get("_mainloop_cleanup_deadline")
-            if deadline is not None:
-                timeout = min(timeout, max(0.0, deadline - time.monotonic()))
             close(timeout=timeout)
             return True
         except Exception as exc:
@@ -7972,6 +7976,8 @@ class Label_Match(tk.Tk):
         finally:
             if destroy_completed:
                 state["_tk_destroy_complete"] = True
+                if state.get("_app_close_stall_noted") and state.get("save_directory"):
+                    _try_update_shutdown_stall_notice(state["save_directory"], stalled=False)
             state["_tk_destroy_in_progress"] = False
 
     def _finish_after_mainloop(self):
@@ -7979,18 +7985,23 @@ class Label_Match(tk.Tk):
         state = self.__dict__
         if state.get("_tk_destroy_complete", False):
             return
-        state["_mainloop_cleanup_deadline"] = state.get(
+        notice_deadline = state.get(
             "_app_close_deadline_monotonic",
             time.monotonic() + LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS,
         )
         try:
+            ui_lane = state.get("ui_lane")
+            if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
+                # After mainloop exits, finish the accepted task and leave the
+                # worker queue; result delivery still runs on this UI owner.
+                ui_lane._signal_worker_stop()
             # A close already accepted may still be draining or syncing. Pump
             # those callbacks rather than logging/closing the same work twice.
             if not state.get("_app_close_in_progress", False):
                 self.on_closing(_confirmed=True)
             while not state.get("_tk_destroy_complete", False):
-                if time.monotonic() >= state["_mainloop_cleanup_deadline"]:
-                    raise TimeoutError("mainloop exit cleanup deadline exceeded")
+                if time.monotonic() >= notice_deadline:
+                    self._mark_app_close_stall()
                 self.update()
                 time.sleep(0.001)
         finally:
@@ -8004,6 +8015,7 @@ class Label_Match(tk.Tk):
                 # Do not admit another writer while an unfinished task still
                 # owns this data root. The OS closes the handle on process exit.
                 _retain_current_instance_lease()
+                self._mark_app_close_stall()
                 _label_match_startup_trace("mainloop_cleanup_incomplete")
 
     def _suspend_deferred_validation_for_close(self):
@@ -8204,9 +8216,6 @@ class Label_Match(tk.Tk):
                 )
                 pending_attempt_ids.append(close_attempt_id)
                 timeout = LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
-                deadline = self.__dict__.get("_mainloop_cleanup_deadline")
-                if deadline is not None:
-                    timeout = min(timeout, max(0.0, deadline - time.monotonic()))
                 self.data_manager.close(timeout=timeout)
                 self.__dict__.pop(
                     "_app_close_pending_cancel_attempt_ids", None
