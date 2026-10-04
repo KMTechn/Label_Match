@@ -652,6 +652,15 @@ def _recovery_binding() -> DeferredIntentBinding:
 
 
 def _run_recovery_child(args: argparse.Namespace) -> int:
+    from label_data_generation import DataGenerationError, check_user_data_open, normalize_data_arguments
+    try:
+        normalize_data_arguments(args, ("_recovery_db", "_seal_key_path", "_barrier_path"))
+        # The hidden CLI accepts existing paths as well as the parent's synthetic
+        # inputs. Admit both readers before SQLite initialization or key access.
+        check_user_data_open(REPO_ROOT, (Path(args._recovery_db).parent, Path(args._seal_key_path).parent))
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     try:
         store = _BarrierDeferredIntentCaptureStore(
             Path(args._recovery_db),
@@ -1113,12 +1122,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, resolve_data_path, normalize_data_arguments
     try:
-        normalize_data_arguments(args, ("credential_path", "auth_target_path", "relay_db_path"))
+        normalize_data_arguments(args, ("credential_path", "auth_target_path", "relay_db_path", "tls_ca_bundle_path"))
         args.live_root = [str(resolve_data_path(value)) for value in args.live_root]
         roots = tuple(Path(value) for value in args.live_root)
         roots += tuple(Path(value).parent for value in (
             args.credential_path, args.auth_target_path, args.relay_db_path) if value)
-        check_user_data_open(REPO_ROOT, roots)
+        input_roots = tuple(Path(value).parent for value in (args.tls_ca_bundle_path,) if value)
+        check_user_data_open(REPO_ROOT, (*roots, *input_roots))
         record_user_data_open(REPO_ROOT, roots)
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)
