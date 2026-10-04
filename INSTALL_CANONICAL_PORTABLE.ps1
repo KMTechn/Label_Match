@@ -817,7 +817,16 @@ if f5_retirement_transition:
             new_f5_recovery if row == old_f5_recovery else row
             for row in installed_sources if row not in retired_f5_sources
         )
-if candidate_sources != installed_sources:
+# Defer only the reviewed shutdown-notice membership delta. Exact release
+# bytes still have to pass the ordinary directional file checks below, so
+# re-pinning an altered module cannot admit it. Reverse deltas are deferred
+# only to retain the existing semantic downgrade rejection.
+shutdown_notice_source = ('gui_shutdown_stall_notice', 'label_match_single_instance.py', '_set_shutdown_stall_notice', 'decorator')
+shutdown_notice_forward = (shutdown_notice_source not in installed_sources
+    and candidate_sources == sorted(installed_sources + [shutdown_notice_source]))
+shutdown_notice_reverse = (shutdown_notice_source not in candidate_sources
+    and installed_sources == sorted(candidate_sources + [shutdown_notice_source]))
+if candidate_sources != installed_sources and not (shutdown_notice_forward or shutdown_notice_reverse):
     raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 # Exact stage-one 0cf0414 to stage-two bytes; state and pending stay additive.
 worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f58eaf3f9f5841d9de2fbfd5a74a63c969e38c92',
@@ -848,7 +857,7 @@ worker_record_transition = all(
     and release_digest(source / relative) == after
     for relative, (before, after) in worker_record_replacements.items()
 )
-# Exact 4b7630f shutdown repair; durable formats and writer membership are unchanged.
+# Exact 4b7630f shutdown repair; durable formats are unchanged.
 mainloop_exit_replacements = {'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70',
                         '65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145'),
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
@@ -929,6 +938,15 @@ for relative in ('INSTALL_THIS_PC.ps1', 'launch-label-match.cmd', 'tools/bootstr
         continue
     if (source / relative).read_bytes() != (installed / relative).read_bytes():
         raise ValueError('WRITER_TRANSITION_CONTRACT_DIFFERS: ' + relative)
+if candidate_sources != installed_sources:
+    # Only the complete committed shutdown repair may add this one sink.
+    # Older reviewed release pairs remain checked above; their declarations
+    # already pin the same candidate bytes. No other membership is waived.
+    if not shutdown_notice_forward or not all(
+        (source / relative).is_file() and release_digest(source / relative) == after
+        for relative, (_before, after) in mainloop_exit_replacements.items()
+    ):
+        raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 compatibility = ('PINNED_MAINLOOP_EXIT_NOTICE' if mainloop_exit_notice_transition else
                  'PINNED_MAINLOOP_EXIT_CLEANUP' if mainloop_exit_transition else
                  'PINNED_WORKER_RECORD_IDENTITY' if worker_record_transition else
