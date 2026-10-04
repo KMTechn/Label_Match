@@ -479,7 +479,7 @@ def _failed_installer_removal_sources(
             )):
                 continue
             if (audit.get("schema") != "label-match-canonical-portable-install-v1"
-                or audit.get("status") not in {"ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE", "FAILED_ROLLED_BACK"}
+                or audit.get("status") not in {"ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE", "FAILED_ROLLED_BACK", "FAILED_SUPPORTED_REMOVAL_REQUIRED"}
                 or str(audit.get("install_root") or "").replace("/", "\\").rstrip("\\").casefold()
                     != r"C:\KMTech\Apps\Label_Match\current".casefold()):
                 continue

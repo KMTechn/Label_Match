@@ -466,3 +466,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="w9setupprep-sub192-rollback"></a>
 
 - 되돌리기 독립 단계와 정확한 끝 상태: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.
+
+- 10/04 sub-192 추가/sub-197 P2-1: FAILED_SUPPORTED_REMOVAL_REQUIRED의 정확한 자기 실패도 지원 제거 상태로 수용한다. 종료/살아 있는 소유자와 비실패 상태 회귀 RED→GREEN; guest ROLLBACK_FAILED의 제거 성공과 구별한다. 소유자 신뢰 경계 P2-2는 별도 교정하며 선언/pin 재생성은 0이다.

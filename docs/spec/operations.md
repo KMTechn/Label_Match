@@ -1119,3 +1119,5 @@ Archive-PretransactionFailure는 판정한 목록에서 이번 run의 정확한 
 되돌리기 독립 단계와 정확한 끝 상태
 
 배치 실패 때 packet runtime을 실행하더라도 Product의 logical app-root는 정식 설치 root로 결속한다. 되돌리기는 protection 재수립·사용자 제거·writer 부재·코드/등록 preimage·Run/task/stop/receipt·보호 startup·최종 readback을 단계별로 기록하고 독립 후속 단계를 계속한다. custody 미확인이면 mutation하지 않고 writer 부재·등록 정리가 미확인이면 코드 복원을 건너뛴다. 모든 preimage가 증명돼야 fence를 해제하고 옛 relay를 시작하며, 남은 오류는 ROLLBACK_FAILED/FAILED_ROLLBACK_INCOMPLETE와 step_failures에 보존한다. PS5.1/PS7 실제 catch 회귀 PROVEN(OS/보안/relay는 seam); native 성공/실패 끝 상태는 guest 증거로 별도 판단한다.
+
+sub-197 발견 1: 실패 상태 목록에는 설치기가 직접 기록하는 FAILED_SUPPORTED_REMOVAL_REQUIRED도 포함한다. 같은 tuple의 종료 소유자만 지원 제거를 허용하고 살아 있는 소유자, 진행/완료/거래 전 상태와 다른 fence는 거절한다. 격리 NTFS/native PID 회귀 RED 1 FAIL·4 PASS → GREEN 5 PASS. guest는 ROLLBACK_FAILED였으므로 이 발견의 native 증거가 아니다.

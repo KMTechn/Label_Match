@@ -125,3 +125,28 @@ def test_supported_removal_attempts_later_steps_after_independent_failure(tmp_pa
     assert report['removal_failures'][0]['step'] == cut
     if cut == 'relay':
         assert report['scheduled_task']['status'] == 'NOT_TESTED_RELAY_UNPROVEN'
+
+
+@pytest.mark.parametrize("status,live,allowed", (
+    ("FAILED_SUPPORTED_REMOVAL_REQUIRED", False, True),
+    ("FAILED_SUPPORTED_REMOVAL_REQUIRED", True, False),
+    ("RUNNING", False, False),
+    ("COMPLETE", False, False),
+    ("FAILED_PRETRANSACTION", False, False),
+))
+def test_supported_removal_required_accepts_only_exact_dead_failure(failed_install, status, live, allowed):
+    control, payload, audit, record = failed_install
+    record['status'] = status
+    if live:
+        record['writer_fence']['owner_process_id'] = os.getpid()
+    audit.write_text(json.dumps(record), encoding='utf-8')
+    original = (control / fence.ACTIVE_FILENAME).read_bytes()
+    events = []
+    if allowed:
+        assert _remove(events)['status'] == 'PASS_DATA_PRESERVED'
+        assert events == ['run', 'relay', 'task']
+    else:
+        with pytest.raises(fence.WriterFencedError):
+            _remove(events)
+        assert events == []
+    assert (control / fence.ACTIVE_FILENAME).read_bytes() == original
