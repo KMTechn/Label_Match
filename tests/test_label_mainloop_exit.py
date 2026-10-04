@@ -139,7 +139,7 @@ def _probe(mode, root):
             self._save_app_settings = lambda: None
             self._show_app_close_cleanup_delay = lambda: None
             self._stop_error_siren = lambda: None
-            self.guard_observations = []
+            self.guard_observations = [owns_guard()]
             self.direct_sync_bootstrap_context = {"scan_source_dir": str(root)}
             apps.append(self)
 
@@ -200,7 +200,10 @@ def _probe(mode, root):
                 raise SystemExit(17)
 
     lm.Label_Match = ProbeApp
-    lm.tk.Tk.destroy = lambda self: self.root.destroy()
+    def destroy_root(self):
+        self.guard_observations.append(owns_guard())
+        self.root.destroy()
+    lm.tk.Tk.destroy = destroy_root
     lm.dispatch_product_mode = lambda _args: None
     lm.verify_factory_contract_startup = lambda: None
     lm._first_run_onboarding_enabled = lambda: False
