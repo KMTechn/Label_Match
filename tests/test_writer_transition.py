@@ -32,7 +32,7 @@ def _quote(value: object) -> str:
 
 
 def _definitions() -> str:
-    source = INSTALLER.read_text(encoding="utf-8")
+    source = INSTALLER.read_text(encoding="utf-8-sig")
     return source[: source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")] + "\n. (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + ")\n"
 
 
@@ -78,6 +78,17 @@ def _ps(root: Path, code: str, env: dict[str, str], *, timeout: int = 120, engin
     completed.stdout = stdout.read_text(encoding="utf-8", errors="replace")
     completed.stderr = stderr.read_text(encoding="utf-8", errors="replace")
     return completed
+
+
+def test_installer_definitions_have_one_bom_and_parse(tmp_path):
+    env = _environment(tmp_path)
+    result = _ps(tmp_path, _definitions() + "\nWrite-Output 'DEFINITIONS_PARSED'\n", env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "DEFINITIONS_PARSED"
+    script, = tmp_path.glob("probe-*.ps1")
+    raw = script.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert not raw[3:].startswith(b"\xef\xbb\xbf")
 
 
 def _pin(tree: Path) -> str:

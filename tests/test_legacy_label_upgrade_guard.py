@@ -29,6 +29,18 @@ PINNED = "PINNED_LEGACY_LABEL_TRANSITION_MODE"
 CHANGED_LINE = "\nUNREVIEWED_RUNTIME_CHANGE = True\n"
 
 
+def _assert_generation_writer_added(candidate, old):
+    from writer_sink_inventory import derive_writer_sink_inventory
+
+    identity = ("data_generation_record", "label_data_generation.py", "record_user_data_open", "decorator")
+    candidate_rows = derive_writer_sink_inventory(candidate / "app")
+    old_rows = derive_writer_sink_inventory(old / "app")
+    assert any((row.source, row.source_path, row.qualified_name, row.guard_kind) == identity
+               for row in candidate_rows)
+    assert not any((row.source, row.source_path, row.qualified_name, row.guard_kind) == identity
+                   for row in old_rows)
+
+
 def _release_digest(data: bytes) -> str:
     return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
@@ -291,6 +303,7 @@ $writerTransition | ConvertTo-Json -Compress
 @pytest.mark.parametrize("change", ["reverse", "app/Label_Match.py", "app/label_match_single_instance.py"])
 def test_mainloop_exit_upgrade_refuses_reverse_and_unreviewed_bytes(tmp_path, mainloop_exit_packages, change):
     old, candidate, _compatibility = mainloop_exit_packages
+    _assert_generation_writer_added(candidate, old)
     if change == "reverse":
         source, installed = old, candidate
     else:
@@ -302,7 +315,9 @@ def test_mainloop_exit_upgrade_refuses_reverse_and_unreviewed_bytes(tmp_path, ma
     result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(source)} {_quote(installed)}",
                  _environment(tmp_path))
     assert result.returncode != 0
-    assert "WRITER_TRANSITION_SEMANTICS_DIFFER" in result.stderr
+    # These deltas disable the exact G composition; its writer delta is
+    # rejected before the historical ordinary AST comparison.
+    assert "WRITER_TRANSITION_SOURCE_SET_DIFFERS" in result.stderr
 
 
 def test_stage_one_stock_upgrade_preserves_current_and_pending(tmp_path, worker_record_packages):
@@ -481,6 +496,18 @@ def test_e88011c_archive_upgrade_passes_nextfix_writer_guard(tmp_path, nextfix_a
     assert (old / "app/Label_Match.py").read_bytes() == before
 
 
+def test_candidate_archive_fresh_install_uses_same_tree(tmp_path, nextfix_archive_layouts):
+    _old, candidate = nextfix_archive_layouts
+    before = {path.relative_to(candidate): path.read_bytes()
+              for path in candidate.rglob("*") if path.is_file()}
+    result = _nextfix_probe(tmp_path, candidate, candidate)
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["installed_inventory_sha256"] == payload["candidate_inventory_sha256"]
+    assert {path.relative_to(candidate): path.read_bytes()
+            for path in candidate.rglob("*") if path.is_file()} == before
+
+
 def test_reviewed_current_user_pair_preserves_e88011c_upgrade(tmp_path, nextfix_archive_layouts):
     old, candidate = nextfix_archive_layouts
     for relative, (before, after) in _declared_current_user_profile_pairs().items():
@@ -503,6 +530,7 @@ def test_reviewed_current_user_pair_preserves_e88011c_upgrade(tmp_path, nextfix_
 ])
 def test_current_user_pair_refuses_changed_candidate(tmp_path, nextfix_archive_layouts, relative):
     old, candidate = nextfix_archive_layouts
+    _assert_generation_writer_added(candidate, old)
     before, after = _declared_current_user_profile_pairs()[relative]
     installed_digest = _release_digest((old / relative).read_bytes())
     if relative == "app/writer_session_fence.py":
@@ -517,8 +545,12 @@ def test_current_user_pair_refuses_changed_candidate(tmp_path, nextfix_archive_l
     assert _release_digest((changed / relative).read_bytes()) != after
     result = _nextfix_probe(tmp_path, changed, old)
     assert result.returncode != 0
-    # The exact startup companion declaration identifies the changed file.
-    assert "WRITER_TRANSITION_SEMANTICS_DIFFER: " + relative in result.stderr
+    # Mutations that disable G composition fail its writer membership first;
+    # other profile mutations still reach the ordinary onboarding AST check.
+    reason = ("WRITER_TRANSITION_SOURCE_SET_DIFFERS" if relative in {
+        "app/current_user_onboarding.py", "app/label_match_single_instance.py", "app/writer_session_fence.py",
+    } else "WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py")
+    assert reason in result.stderr
 
 
 @pytest.mark.parametrize("relative", ["app/enrollment_mutex.py", "app/writer_session_fence.py"])
@@ -552,6 +584,7 @@ def test_declared_scanner_pair_and_companions_match_reviewed_sources():
 
 def test_baseline_archive_upgrades_only_forward_to_scanner_source(tmp_path, nextfix_archive_layouts):
     old, candidate = nextfix_archive_layouts
+    _assert_generation_writer_added(candidate, old)
     baseline = _tree(old, tmp_path / "baseline", ["app/Label_Match.py"])
     (baseline / "app/Label_Match.py").write_bytes(subprocess.check_output(["git", "-C", str(ROOT), "show", "a20cd01:Label_Match.py"]))
     _pin(baseline)
@@ -567,14 +600,15 @@ def test_baseline_archive_upgrades_only_forward_to_scanner_source(tmp_path, next
 
 @pytest.mark.parametrize("change,reason", [
     ("membership", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
-    # Exact membership and companion bytes reject unreviewed or reverse input.
-    ("other-app", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/user_relay.py"),
-    ("other-label", "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py"),
+    # Unreviewed/reversed G composition cannot normalize its writer delta.
+    ("other-app", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
+    ("other-label", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("reverse", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("contract", "WRITER_TRANSITION_CONTRACT_DIFFERS: launch-label-match.cmd"),
 ])
 def test_nextfix_archive_guard_refuses_other_changes(tmp_path, nextfix_archive_layouts, change, reason):
     old, candidate = nextfix_archive_layouts
+    _assert_generation_writer_added(candidate, old)
     if change == "reverse":
         source, installed = old, candidate
     else:
@@ -586,7 +620,7 @@ def test_nextfix_archive_guard_refuses_other_changes(tmp_path, nextfix_archive_l
             stream.write(b'\n@writer_sink("unreviewed_membership")\ndef unreviewed_writer():\n    return None\n'
                          if change == "membership" else
                          CHANGED_LINE.encode() if change == "other-label" else b"X")
-        _pin(source)  # Refusal is semantic/contract evidence, rather than a stale-pin failure.
+        _pin(source)  # Refusal tests writer membership/semantics/contracts, never a stale pin.
     result = _nextfix_probe(tmp_path, source, installed)
     assert result.returncode != 0, result.stdout
     assert reason in result.stderr, result.stdout + result.stderr
@@ -642,6 +676,7 @@ def test_roster_baseline_stage_two_companions_refuse_unreviewed_bytes(tmp_path, 
 
 def test_roster_baseline_stock_upgrades_forward_and_refuses_reverse(tmp_path, roster_baseline_packages):
     old, candidate = roster_baseline_packages
+    _assert_generation_writer_added(candidate, old)
     env = _environment(tmp_path)
     before = _seed_base_work(env)
     result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(candidate)} {_quote(old)}", env)
@@ -649,20 +684,22 @@ def test_roster_baseline_stock_upgrades_forward_and_refuses_reverse(tmp_path, ro
     assert all(path.read_bytes() == raw for path, raw in before.items())
     reverse = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(old)} {_quote(candidate)}", env)
     assert reverse.returncode != 0
-    assert "WRITER_TRANSITION_SEMANTICS_DIFFER: app/Label_Match.py" in reverse.stderr
+    # G's three extra files exceed the exact roster-only reverse addition set.
+    assert "WRITER_TRANSITION_SOURCE_SET_DIFFERS" in reverse.stderr
     assert all(path.read_bytes() == raw for path, raw in before.items())
 
 
 @pytest.mark.parametrize("relative,reason", [
-    ("app/Label_Match.py", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
+    ("app/Label_Match.py", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("app/label_admin_pin.py", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
-    ("app/writer_session_fence.py", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
-    ("tools/label_writer_fence.ps1", "WRITER_TRANSITION_SEMANTICS_DIFFER"),
+    ("app/writer_session_fence.py", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
+    ("tools/label_writer_fence.ps1", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("app/label_worker_roster.py", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
     ("roster-missing", "WRITER_TRANSITION_SOURCE_SET_DIFFERS"),
 ])
 def test_roster_baseline_refuses_unreviewed_bytes(tmp_path, roster_baseline_packages, relative, reason):
     old, candidate = roster_baseline_packages
+    _assert_generation_writer_added(candidate, old)
     name = "app/label_worker_roster.py" if relative == "roster-missing" else relative
     source = _tree(candidate, tmp_path / "candidate", [name])
     if relative == "roster-missing":

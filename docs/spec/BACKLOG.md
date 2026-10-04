@@ -1,5 +1,11 @@
 # Label_Match 진행·공백·추가 제안
 
+legacy upgrade guard의 G/nextfix 조합은 정의된 exact tuple을 사용하고 시험 helper의 중복 BOM을 제거한다. 기존 66개 read-only 선언/stock/archive preflight와 신규 source/self·BOM 구문 회귀는 [sub-242 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-242/REPORT.md)에서 기준/후보별 결과를 구분한다. 실제 설치·공개 v2.0.38의 백업/새 설치·등록 복구/현장 rollback 수용은 별도이며, 호스트에서 실행하지 않는다.
+
+첫 재실행의 남은 17개는 금지 입력을 성공시킨 결함이 아니라 G writer/file source-set 선거절을 옛 semantics 문자열로 기대하던 시험 결함이다. G writer 추가를 독립적으로 대조한 뒤 정확한 첫 거절 코드만 교정하며 기존 부정 입력·nonzero exit·불변 자료 단언은 유지한다. 원 실패 및 최종 재실행 결과는 같은 보고서에서 구분한다.
+
+w9scanonly audit CSV index 병합 후 G 전이에 빠진 manager/schema 두 파일은 승인된 committed before/after exact 전진 조합으로 결속한다. 기존 G 10항목·signed reverse·공용 helper·syntax guard는 유지하며 current/낡은 일부 바이트/한 바이트/목록 밖/역방향 및 이미 G인 두 판의 회귀·hash 전 항목 표를 같은 sub-242 보고서에서 확인한다.
+
 G 후보의 새 기준은 종료 잔류 수정·w9scanonly를 포함한 `e89c188`이며, 종료 알림 sink를 유지한 58→59 명단과 exact 설치기 선언을 다시 생성한다. 새 기준의 집중 묶음·전체 실패 집합과 후보의 비교는 같은 선택/격리 harness로 다시 측정하며, 이전 4b/f1ee 증거는 해당 판의 기록으로 보존한다.
 
 자료 세대 G 후보(`v2.0.95`): 지원 옛 packet 선택·canonical/verified replacement 실패 복원 앞 guard와 직접 앱·relay·온보딩의 실제 첫 자료 열기 경계 기록을 연결했다. 공통 helper 0.3.3의 동일 바이트와 기존 사용자 control/data 자리, 단일 guarded sink 1개를 사용한다. 호환 하한은 기존 ES256 private manifest의 판·build 결속만 신뢰하며, 기록 없음은 ALLOW, 손상/같은 판 다른 build는 거절한다. 명시 호환으로 허용된 같은 판 새 build가 자료를 열면 새 build를 기록하고, 두 하한의 더 엄격한 값과 신뢰 교집합을 보존하여 이전 승인을 물려주지 않는다. 직접 Python exe·PS5/PS7·온보딩 회귀는 **PROVEN(headless, 신원/GUI 대역)**이고 실제 frozen exe·UAC·원 사용자 lifecycle 및 독립 검토는 남아 있다. [첫 현장 설치](operations.md#first-field-data-generation)는 옛 `v2.0.38`의 설치 직전 일관 백업과 관리자 코드/자료 함께 복원을 요구하며 실제 현장/랩 수용은 **NOT TESTED**이다. 정확한 commit·집중 비교·stock 증거는 [sub-220 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-220/REPORT.md)에 기록한다.

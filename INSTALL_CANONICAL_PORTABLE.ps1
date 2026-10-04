@@ -547,6 +547,26 @@ data_generation_reverse = signed_generation_reverse_allowed and all(
     for relative, expected in data_generation_additions.items()
 )
 
+# Exact e89/a56 -> merged audit-index bytes, forward only. This does not
+# change G's original ten-file declaration or its signed reverse decision.
+data_generation_forward_companions = {
+    'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
+    'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'),
+}
+data_generation_companion_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file()
+    and release_digest(installed / relative) == before
+    and release_digest(source / relative) == after
+    for relative, (before, after) in data_generation_forward_companions.items()
+) and all(
+    (source / relative).is_file() and release_digest(source / relative) == after
+    for relative, (_, after) in data_generation_replacements.items()
+) and all(
+    (source / relative).is_file() and release_digest(source / relative) == expected
+    for relative, expected in data_generation_additions.items()
+)
+
+
 # d0e504e -> 0cf5bf6 only: bootstrap v1 readers compare the same complete
 # inventory independent of row order and validate its original-order aggregate.
 # No persisted schema/writer changes need migration. The caller verifies the
@@ -1134,7 +1154,7 @@ def data_generation_before_allowed(relative):
         return True
     if relative == 'app/Label_Match.py':
         scalar_pairs = [*(scan_input_pairs if scan_input_transition else []),
-                        *([nextfix_pair] if nextfix_label_transition else []),
+                        *([nextfix_label_pair] if nextfix_label_transition else []),
                         *([scanner_label_pair] if scanner_transition else [])]
         if any(actual == before for before, _ in scalar_pairs):
             return True
@@ -1176,6 +1196,8 @@ for directory in ('app', 'runtime'):
         if data_generation_transition and relative in data_generation_replacements:
             if not data_generation_before_allowed(relative):
                 raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: ' + relative)
+            continue
+        if data_generation_companion_transition and relative in data_generation_forward_companions:
             continue
         if shared_transition and relative in (shared_replacements.keys() | shared_additions.keys()):
             continue
@@ -1243,7 +1265,7 @@ compatibility = ('SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE' if data_generation_
                  'PINNED_W9NEXTFIX_LABEL_RECOVERY' if nextfix_label_transition else
                  'PINNED_W9SCANONLY_WORKFLOW' if scanner_transition else
                  'PINNED_CURRENT_USER_PROFILE_SELECTION' if current_user_profile_transition else
-                 'PINNED_DATA_GENERATION_G' if data_generation_transition else 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
+                 'PINNED_DATA_GENERATION_G' if (data_generation_transition or data_generation_companion_transition) else 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
 print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
 '@
     $generationReverse = 'no-data-compatibility-override'
