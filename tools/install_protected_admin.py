@@ -765,7 +765,7 @@ def install_protected_admin_profile(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = __import__("failure_redaction").InstallerArgumentParser(
         description="Install a machine-local offline administrator verifier.",
         allow_abbrev=False,
     )
@@ -788,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
         check_user_data_open(REPO_ROOT, roots)
         record_user_data_open(REPO_ROOT, roots)
     except DataGenerationError as exc:
-        print(str(exc), file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return 2
     if args.dry_run:
         try:
@@ -843,4 +843,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

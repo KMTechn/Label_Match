@@ -439,3 +439,6 @@ SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부�
 지원 수명주기: 정상 current-owner A/active B에서 실제 B→C 설치·managed 등록을 허용하고, 손상/중간 상태의 설치는 지원 제거 후 재설치를 안내한다. 지원 제거와 사용자 제거는 control 기록의 일관성을 요구하지 않는다. 지원 제거는 내용 SHA가 증명한 파일만 이동하고 목록 메타데이터는 마지막에 대조한다. 미확정 파일은 표식·목록을 보존하고 제거 미완을 알린다. 기존 정확한 deployment delegation과 옛 첫 등록 경계를 유지한다. [쌍 계약](PAIR-RULE-CONTRACT.md)·[지원 수명주기](LIFECYCLE-DESIGN.md)의 구현과 실제 Windows 수용을 구별한다.
 
 증거: 새 순수/주입 경계·독립 clone 집중 비교와 기존 source-derived inventory 핀 확인만 이 레인의 PROVEN 대상이다. 전체 suite·stock builder·실제 packet·작업 등록/ACL·CreateProcessWithTokenW·GUI·VM 수명주기·독립 검토는 NOT TESTED이며 중앙 랩 수용이 필요하다.
+# 설치·지원 공개 실패 기록 (2026-10-06)
+
+등록/제거의 실패 원문은 같은 시도의 기존 보호 보고서에만 가린 traceback으로 보존한다(UTF-8 64 KiB 상한). 공개 stderr `LABEL_MATCH_INSTALLER_FAILURE=`는 코드·고정 안내·예외 형식·소스 위치만 받으며, 그 시도가 원자 게시한 보고서의 `report_path`/`report_sha256`만 첨부한다. 게시 실패·조기 거절은 `REPORT_UNAVAILABLE`이며 옛 보고서 경로를 재사용하지 않는다. 성공 출력과 exit, 지원 제거가 읽는 거래·복구 metadata는 보존한다. [현재 기록 계약](assembly_failure_contract.md)을 따른다.

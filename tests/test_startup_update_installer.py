@@ -1,6 +1,7 @@
 """Injected installer boundaries: no task registration, process start or lifecycle."""
 from pathlib import Path
 import json
+import hashlib
 import re
 import subprocess
 
@@ -118,11 +119,16 @@ $failure=[pscustomobject]@{Exception=$outer}
 Get-LabelLaunchFailure $failure 'rollback' | ConvertTo-Json -Depth 8 -Compress
 """)
     payload=json.loads(out)
-    assert payload['phase']=='rollback'
-    assert payload['exception_chain'][1]['call']=='DuplicateTokenEx:primary'
-    assert payload['exception_chain'][1]['win32_error']==5
-    assert payload['last_line'] == 'credential=[REDACTED:field]'
-    assert 0 < len(payload['last_line']) <= 300
+    assert 'phase' not in payload and 'last_line' not in payload and 'exception_chain' not in payload
+    assert payload['status']=='FAILED'
+    raw=Path(payload['report_path']).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == payload['report_sha256']
+    protected=json.loads(raw)
+    assert protected['phase'] == 'rollback'
+    assert protected['exception_chain'][1]['details']['native_call_function']=='DuplicateTokenEx'
+    assert protected['exception_chain'][1]['details']['native_call_variant']=='primary'
+    assert protected['exception_chain'][1]['native_error']==5
+    assert '[REDACTED:field]' in protected['trace']
     assert payload['exception_type'].endswith('Win32Exception')
     assert 'NATIVE_SYNTHETIC_SECRET' not in out
 

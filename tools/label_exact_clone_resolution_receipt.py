@@ -52,7 +52,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = __import__("failure_redaction").InstallerArgumentParser(
         description=(
             "Capture the current Label exact-clone conflict or emit a receipt "
             "after an independently authorized reconciliation. The command "
@@ -297,25 +297,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(json.dumps(summary, ensure_ascii=True, sort_keys=True))
         return 0
     except DataGenerationError as exc:
-        print(str(exc), file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return 2
     except ExactCloneResolutionError as exc:
-        print(
-            json.dumps(
-                {
-                    "status": "BLOCKED",
-                    "error": str(exc),
-                    "client_state_mutated": False,
-                    "server_state_mutated": False,
-                    "stop_marker_removed": False,
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-            ),
-            file=sys.stderr,
-        )
+        __import__("failure_redaction").emit_support_failure(exc, fields={
+            "status": "UNKNOWN", "client_state_mutated": False,
+            "server_state_mutated": False, "stop_marker_removed": False})
         return 4
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

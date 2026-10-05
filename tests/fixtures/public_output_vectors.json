@@ -1,0 +1,128 @@
+{
+  "schema": "kmtech-public-output-vectors-v1",
+  "contract": "W\\w9setupprep\\REDACTION-CONTRACT.md section 0",
+  "note": "Synthetic values only. Each app runs every vector through its public_record / ConvertTo-KmtechPublicRecord with the vector's allowed_codes and safe_messages, and compares the result object (key order included) with expected.",
+  "vectors": [
+    {
+      "id": "public-all-allowed-kept",
+      "allowed_codes": ["FAILED_CHILD_EXIT", "install_payload"],
+      "safe_messages": ["설치에 실패했습니다. 관리자에게 보고서 위치를 알려 주세요."],
+      "fields": {
+        "status": "FAILED_CHILD_EXIT",
+        "stage": "install_payload",
+        "exception_type": "RuntimeError",
+        "location_module": "label_match.installer",
+        "location_function": "apply_payload",
+        "location_line": 128,
+        "exit_code": 1,
+        "guidance": "설치에 실패했습니다. 관리자에게 보고서 위치를 알려 주세요.",
+        "report_path": "C:\\ProgramData\\KMTech\\reports\\attempt-01.json",
+        "report_sha256": "8b8afe41e5b61700627e0b7e505dd00cf2225bcbb3185186fe5341c330e1ad59",
+        "attempt_id": "3f2a9c1e-7b4d-4e8a-9c0f-1a2b3c4d5e6f",
+        "utc": "2026-10-06T01:23:45Z",
+        "version": "v2.0.95",
+        "source_commit": "80a93abddf85ac58974e9569ca2b5993ba641630",
+        "rollback_completed": true
+      },
+      "expected": {
+        "status": "FAILED_CHILD_EXIT",
+        "stage": "install_payload",
+        "exception_type": "RuntimeError",
+        "location_module": "label_match.installer",
+        "location_function": "apply_payload",
+        "location_line": 128,
+        "exit_code": 1,
+        "guidance": "설치에 실패했습니다. 관리자에게 보고서 위치를 알려 주세요.",
+        "report_path": "C:\\ProgramData\\KMTech\\reports\\attempt-01.json",
+        "report_sha256": "8b8afe41e5b61700627e0b7e505dd00cf2225bcbb3185186fe5341c330e1ad59",
+        "attempt_id": "3f2a9c1e-7b4d-4e8a-9c0f-1a2b3c4d5e6f",
+        "utc": "2026-10-06T01:23:45Z",
+        "version": "v2.0.95",
+        "source_commit": "80a93abddf85ac58974e9569ca2b5993ba641630",
+        "rollback_completed": true
+      }
+    },
+    {
+      "id": "public-free-text-dropped",
+      "allowed_codes": ["FAILED_CHILD_EXIT"],
+      "safe_messages": [],
+      "fields": {
+        "status": "FAILED_CHILD_EXIT",
+        "message": "RuntimeError: password=synthPublic0202",
+        "stdout_text": "child said synthPublic0202",
+        "exception_type": "RuntimeError: password=synthPublic0202"
+      },
+      "expected": {
+        "status": "FAILED_CHILD_EXIT",
+        "nonconforming_fields": ["message", "stdout_text", "exception_type"],
+        "public_record_code": "PUBLIC_FIELD_NONCONFORMING"
+      }
+    },
+    {
+      "id": "public-unknown-code-and-guidance-dropped",
+      "allowed_codes": ["FAILED_CHILD_EXIT"],
+      "safe_messages": ["포장 프로그램을 닫아 주세요."],
+      "fields": {
+        "status": "synthTokenLikeValue0203",
+        "guidance": "포장 프로그램을 닫아 주세요. 원인: synthPublic0203",
+        "code": "FAILED_CHILD_EXIT"
+      },
+      "expected": {
+        "code": "FAILED_CHILD_EXIT",
+        "nonconforming_fields": ["status", "guidance"],
+        "public_record_code": "PUBLIC_FIELD_NONCONFORMING"
+      }
+    },
+    {
+      "id": "public-number-only-on-numeric-keys",
+      "allowed_codes": [],
+      "safe_messages": [],
+      "fields": {
+        "exit_code": 2,
+        "admin_pin": 123456,
+        "retry_count": 3,
+        "location_line": "12"
+      },
+      "expected": {
+        "exit_code": 2,
+        "retry_count": 3,
+        "nonconforming_fields": ["admin_pin", "location_line"],
+        "public_record_code": "PUBLIC_FIELD_NONCONFORMING"
+      }
+    },
+    {
+      "id": "public-bad-shapes-dropped",
+      "allowed_codes": [],
+      "safe_messages": [],
+      "fields": {
+        "report_path": "C:\\ProgramData\\KMTech\\r.json\nsynthPublic0205",
+        "report_sha256": "ABCDEF",
+        "attempt_id": "synthNotUuid0205",
+        "utc": "2026-10-06 01:23:45",
+        "details": {"a": 1},
+        "items": [1, 2],
+        "Bad Key": "synthPublic0205"
+      },
+      "expected": {
+        "nonconforming_fields": ["report_path", "report_sha256", "attempt_id", "utc", "details", "items"],
+        "nonconforming_invalid_key_count": 1,
+        "public_record_code": "PUBLIC_FIELD_NONCONFORMING"
+      }
+    },
+    {
+      "id": "public-null-bool-any-key-kept",
+      "allowed_codes": ["REPORT_UNAVAILABLE"],
+      "safe_messages": [],
+      "fields": {
+        "report_status": "REPORT_UNAVAILABLE",
+        "report_path": null,
+        "secret_values_recorded": false
+      },
+      "expected": {
+        "report_status": "REPORT_UNAVAILABLE",
+        "report_path": null,
+        "secret_values_recorded": false
+      }
+    }
+  ]
+}

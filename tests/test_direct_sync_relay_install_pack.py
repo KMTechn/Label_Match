@@ -1,3 +1,4 @@
+import hashlib
 import argparse
 import base64
 import importlib.util
@@ -11,6 +12,17 @@ from pathlib import Path
 import pytest
 
 from tests.test_current_user_onboarding import _write_bootstrap_inventory_record
+
+
+def _diagnostic_notice_text(value):
+    if isinstance(value, str):
+        return value
+    private=Path(value["report_path"]).read_bytes()
+    assert hashlib.sha256(private).hexdigest()==value["report_sha256"]
+    original=json.loads(private)["message"]
+    assert original not in json.dumps(value), "free diagnostic sentence was public"
+    return original
+
 
 
 def _seal_generation_release_input(app_root, source_commit):
@@ -316,7 +328,7 @@ def test_install_pack_blocks_raw_credential_secret_even_without_production_env(t
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     report_text = report_path.read_text(encoding="utf-8-sig")
     assert report["status"] == "BLOCKED"
-    assert "raw credential secret is disabled for production install packs" in report["blocked_reason"]
+    assert "raw credential secret is disabled for production install packs" in _diagnostic_notice_text(report["blocked_reason"])
     assert any(
         check["name"] == "production_credential_secret_policy" and check["status"] == "FAIL"
         for check in report["install_preflight"]["checks"]
@@ -1056,7 +1068,7 @@ def test_install_pack_blocks_task_user_without_password_source(tmp_path):
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "BLOCKED"
     assert report["task_principal"]["status"] == "FAIL"
-    assert "requires --task-run-password" in report["blocked_reason"]
+    assert "requires --task-run-password" in _diagnostic_notice_text(report["blocked_reason"])
 
 
 def test_install_pack_apply_defaults_to_system_task_without_password(tmp_path, monkeypatch):
@@ -1159,7 +1171,7 @@ def test_install_pack_blocks_invalid_task_password_sources(tmp_path, monkeypatch
         assert result == 2
         report = json.loads(report_path.read_text(encoding="utf-8-sig"))
         assert report["status"] == "BLOCKED"
-        assert expected_reason in report["blocked_reason"]
+        assert expected_reason in _diagnostic_notice_text(report["blocked_reason"])
 
 
 def test_install_pack_uninstall_skips_task_password_validation(tmp_path, monkeypatch):
@@ -1440,9 +1452,12 @@ def test_run_command_preserves_process_start_exception_without_secret_inputs(mon
     assert diagnostic["child_exit_code"] is None
     assert diagnostic["failure_code"] == "CHILD_PROCESS_START_FAILED"
     assert diagnostic["inner_exception_type"] == "FileNotFoundError"
-    assert diagnostic["inner_exception_message"].endswith(
-        "enrollment_token=[REDACTED:field]"
-    )
+    from failure_redaction import RULES
+    assert diagnostic["inner_exception_message"] == RULES["safe_messages"][0]
+    reference=diagnostic["full_exception_trace"]
+    private=Path(reference["path"]).read_bytes()
+    assert hashlib.sha256(private).hexdigest() == reference["sha256"]
+    assert b"synthetic process start failure" in private
     assert len(diagnostic["inner_exception_message"]) <= module.DIAGNOSTIC_TEXT_LIMIT
     assert secret_argument not in serialized
     assert secret_environment not in serialized
@@ -1488,11 +1503,15 @@ def test_import_exception_is_bounded_and_promoted_to_install_report(tmp_path, mo
     assert result == 2
     assert report["status"] == "BLOCKED"
     assert report["self_enrollment_registration"]["returncode"] == 1
-    assert diagnostic["command_identity"] == "tools.register_label_match_worker_pc.main"
-    assert diagnostic["child_exit_code"] is None
-    assert diagnostic["failure_code"] == "CHILD_IMPORT_FAILED"
-    assert diagnostic["inner_exception_type"] == "ImportError"
-    assert len(diagnostic["inner_exception_message"]) <= module.DIAGNOSTIC_TEXT_LIMIT
+    assert diagnostic["exit_code"] is None
+    assert diagnostic["reason_code"] == "CHILD_IMPORT_FAILED"
+    assert diagnostic["exception_type"] == "ImportError"
+    raw=Path(diagnostic["report_path"]).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == diagnostic["report_sha256"]
+    protected=json.loads(raw)
+    assert protected["command_identity"] == "tools.register_label_match_worker_pc.main"
+    trace=protected["full_exception_trace"]
+    assert b"ImportError" in Path(trace["path"]).read_bytes()
     assert "seq184-import-secret" not in serialized
     assert secret_environment not in serialized
 
@@ -1748,7 +1767,7 @@ def test_install_pack_blocks_missing_release_runtime_preflight(tmp_path):
     assert completed.returncode == 2
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "BLOCKED"
-    assert report["blocked_reason"].startswith("install preflight failed:")
+    assert _diagnostic_notice_text(report["blocked_reason"]).startswith("install preflight failed:")
     assert report["install_preflight"]["status"] == "FAIL"
     assert any(
         check["name"] == "runner_script" and check["status"] == "FAIL"
@@ -1778,7 +1797,7 @@ def test_install_pack_blocks_missing_manifest_preflight(tmp_path):
     assert completed.returncode == 2
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "BLOCKED"
-    assert report["blocked_reason"].startswith("install preflight failed:")
+    assert _diagnostic_notice_text(report["blocked_reason"]).startswith("install preflight failed:")
     assert any(
         check["name"] == "producer_manifest_path" and check["status"] == "FAIL"
         for check in report["install_preflight"]["checks"]
@@ -1807,7 +1826,7 @@ def test_install_pack_blocks_missing_credential_preflight(tmp_path):
     assert completed.returncode == 2
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "BLOCKED"
-    assert report["blocked_reason"].startswith("install preflight failed:")
+    assert _diagnostic_notice_text(report["blocked_reason"]).startswith("install preflight failed:")
     assert any(
         check["name"] == "credential_path" and check["status"] == "FAIL"
         for check in report["install_preflight"]["checks"]

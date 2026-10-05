@@ -552,3 +552,11 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - 2026-10-05 조립: 실패 가림 식별자 예외와 제품 상태 writer 분리 완료. 계약·writer 표 및 회귀 범위는 assembly_failure_contract.md 참조; 최종 조립 stock 수용은 sub-292 REPORT로 확인.
 
 - 2026-10-06 공식 옛 LM VBS: v2.0.38 writer의 CR CR LF 전체 본문을 launcher admission의 정확한 대안으로 인정. 보존 VBS 472바이트 완전 재생성 및 PS5.1/7 RED 2 FAIL 확인; source ownership :2929 귀속은 원 native의 principal/command 결합 문구와 달라 폐기. 최종 조립·stock 근거는 sub-311 REPORT, 실제 relay-01 설치/rollback은 NOT TESTED이며 coordinator guest 읽기로 native 단계 귀속을 별도 확인한다.
+
+# 설치 공개 실패 기록 수렴 (sub-310, 2026-10-06)
+
+컷 전 범위는 설치기·업데이트 적용기·지원 도구의 가변 진단 출력이며 업무 로그/스캔 화면은 제외한다. 허용 필드/고정 문구 표와 같은 시도 보호 보고서의 경로·UTF-8 SHA 결속, 게시 실패/옛 보고서 회귀를 추가한다. 고정 안내·성공 출력 및 지원 제거의 거래·복구 metadata를 유지한다. 전수 자리 분류·RED→GREEN·접두/긴 assignment 병합·선언 재생성·focused/조립142의 실제 판정과 남은 native/GUI 한계는 sub-310 REPORT에 기록하며 전체 준비 완료로 간주하지 않는다. 전면 공개 형식 통일은 컷 뒤 범위다.
+
+- 2026-10-06 sub-310: 계약 0e에 따라 공개 출력 가변 진단만 교정하고 고정 문구·typed 상태·복구 metadata 유지. sub-308 99c9298 merge 완료; 최종 재생성/회귀 기록은 sub-310 REPORT. stock 빌드와 독립 검토는 코디 msg_89d701df2105에 따라 306+308+310+311 통합 조립에서 한 번 수행.
+
+- 04:0x 범위 재분류: 직접 자리 (가) 26→21, (나) 115, (다) 0. 내부 경로·종류·고정 옵션/코드 출력 6곳은 80a93ab 줄로 복원하고 누락 예외 출력 1곳을 (가)로 정정했다. 얽힌 부분 복구 안내 1곳은 (가) 유지 사유를 INVENTORY에 기록한다. 이 복원 뒤 재생성은 수행하지 않으며 최종 재생성·142 회귀는 통합 sub-315/v2가 소유한다.

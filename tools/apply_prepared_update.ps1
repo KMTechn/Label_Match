@@ -6,6 +6,19 @@ param(
     [switch]$SupportedLifecycle
 )
 $ErrorActionPreference = 'Stop'
+trap {
+    $record=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE'}
+    if (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue) {
+        $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$_.Exception.GetType().FullName;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0];report_status='REPORT_UNAVAILABLE'}
+        try {
+            $reference=Write-KmtechProtectedFailureSidecar -Text $_.Exception.ToString()
+            $fields.Remove('report_status');$fields.report_path=$reference.path;$fields.report_sha256=$reference.sha256
+        } catch { }
+        $record=ConvertTo-KmtechPublicRecord $fields
+    }
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($record | ConvertTo-Json -Compress))
+    exit 1
+}
 $script:LabelStartupBootstrapLoaded=$false
 
 function Test-KmtechPrivilegedOwnerSid([string]$Sid) {

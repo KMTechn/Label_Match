@@ -251,7 +251,7 @@ def _write_new(path: Path, value: dict) -> None:
 
 
 def _args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
+    parser = __import__("failure_redaction").InstallerArgumentParser()
     parser.add_argument("--preimage", type=Path, required=True)
     parser.add_argument("--server-db", type=Path, required=True)
     parser.add_argument("--client-db", type=Path, required=True)
@@ -348,4 +348,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

@@ -898,7 +898,7 @@ def ensure_runtime_profile_from_enrollment_bundle(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Install the shared KMTech logistics PC profile.")
+    parser = __import__("failure_redaction").InstallerArgumentParser(description="Install the shared KMTech logistics PC profile.")
     parser.add_argument("--profile-path")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--authority-scope", required=True)
@@ -934,7 +934,7 @@ def main(argv: list[str] | None = None) -> int:
         check_user_data_open(REPO_ROOT, (*roots, *input_roots))
         record_user_data_open(REPO_ROOT, roots)
     except DataGenerationError as exc:
-        print(str(exc), file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return 2
     token = str(os.environ.get(args.token_env) or "").strip()
     if not token:
@@ -960,11 +960,15 @@ def main(argv: list[str] | None = None) -> int:
             credential_scope=args.credential_scope,
         )
     except Exception as exc:
-        print(f"BLOCKED: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return 2
-    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(__import__("failure_redaction").redact_success_summary(report), ensure_ascii=False, sort_keys=True))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

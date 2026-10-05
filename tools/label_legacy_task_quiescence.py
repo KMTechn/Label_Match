@@ -31,7 +31,8 @@ def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
     selected = path.expanduser()
     if not selected.is_absolute():
         raise ValueError("report path must be absolute")
-    write_json_atomic(selected, value)
+    from failure_redaction import public_diagnostic_tree
+    write_json_atomic(selected, public_diagnostic_tree(dict(value)))
 
 
 def _validate_report(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -57,7 +58,7 @@ def _validate_report(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = __import__("failure_redaction").InstallerArgumentParser(
         description=(
             "Require the root legacy Label task to be absent or Disabled without "
             "changing tasks or processes."
@@ -94,4 +95,8 @@ def main(
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

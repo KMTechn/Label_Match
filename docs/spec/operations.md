@@ -6,7 +6,7 @@
 
 GUI/onboarding의 legacy readback·현재 사용자 task 제거와 source 판 확인 Git 호출은 CREATE_NO_WINDOW를 명시한다. source resident/autostart는 확인된 sibling pythonw.exe를 쓰며 없으면 기존 오류로 거절한다. one-shot console·packaged/portable·r4 bootstrap과 과거 task ownership 정의는 보존한다. GUI 바로가기·작업자 시작은 manifest.entrypoint의 runtime\pythonw.exe -I -B app\main.py 또는 관리 설치 bootstrap에 직접 연결한다. portable launch-label-match.cmd는 콘솔 전용이며 현장 작업자 GUI 시작에 쓰지 않는다. mock 회귀 22 PASS; 실제 Explorer·로그온·스캐너 포커스는 NOT TESTED다.
 
-rollback 최종 예외와 원 설치 예외의 재전달은 기존 Get-LabelLaunchFailure의 공용 가림/마지막 줄(300자 이하)을 사용한다. 원 예외 chain/type과 가린 원인 전문/참조는 기존 감사·보호 evidence에 보존하며 raw message를 사용자 sink로 다시 연결하지 않는다.
+rollback 최종 예외와 원 설치 예외의 재전달은 Get-LabelLaunchFailure의 허용 필드 공개 레코드를 사용한다. 예외 문장·child 출력은 같은 시도의 보호 evidence에 보존하고, 공개 참조는 게시된 실제 UTF-8 바이트 SHA에 결속한다. 원 예외 chain/type과 첫 원인을 보호 기록에 유지한다.
 
 조립판 자동 업데이트 다운로드는 실제 profile 위치 G 뒤 profile을 한 번 판독하고, loader의 secret/TLS owner G를 통과한다. 각 HTTP 요청의 TLS CA 첫 판독 직전에도 현재 G를 재확인한다. 늦은 거절은 해당 보호 판독·복호·접속·다운로드 상태 변경 전에 끝나며 기존 업데이트 상태 계약을 보존한다. 격리 회귀와 stock/랩 수용은 별도로 기록한다.
 
@@ -1221,3 +1221,7 @@ F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join
 옛 공식 relay 정체성은 Export-ScheduledTask XML로 판정한다. 실측 계약에 따라 누락 RunLevel은 LeastPrivilege, SYSTEM의 누락 LogonType은 ServiceAccount로 정규화하며 사용자 누락 LogonType은 ABSENT로 거절한다. 명시한 요소와 생략한 요소는 같은 지문이고 모르는 값은 기존 거절이다. 저장 암호/InteractiveToken 동일 작업자 인정은 한 상수에 켜며 native 실패 복원/성공 전환 회차가 실패하면 닫는다.
 
 공식 LM v2.0.38의 VBS writer는 CRLF 문자열에 CRLF 출력 변환을 적용하여 CR CR LF를 저장한다. 옛 launcher admission은 동명 wrapper로 렌더한 이 전체 본문을 기존 LF/CRLF 비교의 정확한 대안 한 가지로 인정한다. 추가 빈 줄·혼합 CR CR LF·바뀐 명령은 계속 거절하며 wrapper 경로·ordinary-file 검사는 유지한다. 80a93ab에서 공식 writer가 보존된 472바이트 VBS와 같은 SHA를 재생성했고 PS5.1/7 모두 CR CR LF 입력만 거절한 RED 2 FAIL을 보존했다. 최종 후보의 검사와 native 설치 한계는 w9setupprep/sub-311 REPORT에 기록한다; 실제 guest 설치·rollback은 별도 확인 대상이다.
+
+# 설치·지원 실패 보고서 확인 (2026-10-06)
+
+설치기·업데이트·지원 도구의 가변 오류 안내는 허용 코드와 고정 한국어 안내, 보호 보고서 경로로 표시한다. `LABEL_MATCH_INSTALLER_FAILURE=`의 `report_path`/`report_sha256`는 해당 실패 시도의 게시 결과이며 실제 UTF-8 바이트 SHA256과 대조한다. `REPORT_UNAVAILABLE`이면 이전 보고서를 새 실패 근거로 사용하지 않는다. 기준 stdout의 status/report 경로 안내는 유지하지만 게시 증명은 `LABEL_MATCH_INSTALLER_FAILURE=` 레코드의 참조로 확인한다. 작업 사용자/관리자의 기존 보호 보고서 또는 private evidence에서 가린 첫 원인 traceback을 확인한다. 거래·복구 상태는 기존 지원 경로로 처리하고 audit/상태 파일을 수동 편집하지 않는다. [가림·공개 기록 경계](assembly_failure_contract.md)를 따른다.

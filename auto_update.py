@@ -711,7 +711,7 @@ def supported_lifecycle_transition(root: Path, *, expected_from_commit: str, can
 
 def lifecycle_context_main(arguments: list[str]) -> int:
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = __import__("failure_redaction").InstallerArgumentParser()
     parser.add_argument("--install-root", type=Path, required=True)
     parser.add_argument("--expected-from-commit")
     parser.add_argument("--operation", default="inspect")
@@ -727,10 +727,8 @@ def lifecycle_context_main(arguments: list[str]) -> int:
             result = resolve_lifecycle_context(args.install_root,
                 expected_from_commit=args.expected_from_commit, operation=args.operation)
     except Exception as error:
-        message = str(error) if str(error).startswith("설치가 만드는") else "자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요."
-        from failure_redaction import redact_json_for_sink
-        print(json.dumps(redact_json_for_sink(dict(status="FAILED", message=message,
-                             errors=launch_failure_details(error, include_original=True))), ensure_ascii=True))
+        from failure_redaction import emit_support_failure
+        emit_support_failure(error, prefix="LABEL_MATCH_LIFECYCLE_FAILURE")
         return 1
     print(json.dumps(result, ensure_ascii=True))
     return 0
@@ -1444,11 +1442,10 @@ def process_security(process_id: int) -> dict[str, Any]:
 
 
 def safe_update_text(value: Any, *, limit: int = 300) -> str:
-    """Keep the sanitized final exception line short enough for user guidance."""
-    from failure_redaction import redact_for_sink
-    text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
-    lines = redact_for_sink(text).splitlines()
-    return next((line for line in reversed(lines) if line.strip()), "")[-min(limit, 300):]
+    """Only source-declared, input-free guidance may reach a public notice."""
+    from failure_redaction import RULES
+    text = str(value or "")
+    return text if text in RULES["safe_messages"] else RULES["safe_messages"][0]
 
 
 def child_failure_output(completed: Any) -> dict[str, Any]:
@@ -1489,7 +1486,8 @@ def launch_failure_details(error: BaseException, *, include_original: bool = Fal
                                      "stderr_evidence": try_write_failure_evidence(getattr(error, "stderr", ""))}
         chain.append(detail)
         error = error.__cause__ or error.__context__
-    return chain
+    from failure_redaction import public_diagnostic_tree
+    return public_diagnostic_tree(chain)
 
 
 def start_ordinary_process(command: list[str], *, cwd: str, environment: Mapping[str, str] | None = None):
@@ -2034,7 +2032,7 @@ def main(arguments: list[str] | None = None) -> int:
     import argparse
     import sys
 
-    parser = argparse.ArgumentParser()
+    parser = __import__("failure_redaction").InstallerArgumentParser()
     parser.add_argument("--bootstrap", action="store_true")
     parser.add_argument("--apply-prepared", action="store_true")
     parser.add_argument("--control-root", type=Path)
@@ -2070,4 +2068,8 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

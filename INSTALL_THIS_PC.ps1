@@ -35,6 +35,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+trap {
+    $record=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE'}
+    if (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue) {
+        $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$_.Exception.GetType().FullName;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0];report_status='REPORT_UNAVAILABLE'}
+        try {
+            $reference=Write-KmtechProtectedFailureSidecar -Text $_.Exception.ToString()
+            $fields.Remove('report_status');$fields.report_path=$reference.path;$fields.report_sha256=$reference.sha256
+        } catch { }
+        $record=ConvertTo-KmtechPublicRecord $fields
+    }
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($record | ConvertTo-Json -Compress))
+    exit 1
+}
 $ExpectedInstallRoot = "C:\KMTech\Apps\Label_Match\current"
 $IntegrityFileName = "bootstrap-integrity.json"
 $IntegritySchema = "label-match-bootstrap-integrity-v1"
@@ -238,13 +251,14 @@ function Write-ElevationLog([string]$Status, [string]$Message) {
     if ([string]::IsNullOrWhiteSpace($ElevationLogPath)) { return }
     $path = Get-StrictFullPath $ElevationLogPath "ElevationLogPath"
     New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
-    $entry = [ordered]@{
-        captured_at = (Get-Date).ToUniversalTime().ToString('o')
-        process_id = $PID
-        elevated = $true
-        status = $Status
-        message = $Message
+    $entry = [ordered]@{utc=(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ');elevated=$true;status=$Status;report_status='REPORT_UNAVAILABLE'}
+    if ($Message) {
+        try {
+            $reference=Write-KmtechProtectedFailureSidecar -Text $Message
+            $entry.Remove('report_status');$entry.report_path=$reference.path;$entry.report_sha256=$reference.sha256
+        } catch { }
     }
+    $entry=ConvertTo-KmtechPublicRecord $entry
     [IO.File]::AppendAllText(
         $path,
         ((ConvertTo-KmtechRedactedSinkObject $entry | ConvertTo-Json -Compress) + [Environment]::NewLine),
