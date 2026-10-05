@@ -87,6 +87,7 @@ record_generation(Path(sys.argv[2]),sys.argv[3],app_id='Label_Match',subject_sid
 $source = Join-Path $Root 'packet'
 $sourceManifest = [pscustomobject]@{ version='v2.0.95'; source_commit=('a'*40) }
 $testMode = $true
+function Get-LabelOfficialLegacyTaskSnapshot { return $null }
 $blockStart = $installer.IndexOf('$defaultDirectSyncRoot =')
 $blockEnd = $installer.IndexOf('$before = Snapshot', $blockStart)
 if ($blockStart -lt 0 -or $blockEnd -lt 0) { throw 'Installer selection boundary is missing' }

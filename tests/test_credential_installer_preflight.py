@@ -23,6 +23,7 @@ def test_canonical_nested_admission_precedes_all_installer_changes(tmp_path, she
     lifecycle = tmp_path / "lifecycle.json"
     application = tmp_path / "application"
     source = (REPO / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
+    source = source[source.index("$source = Full $SourceRoot"):]
     admission = source[source.index("$generationProductRoot = Full"):source.index("$old = @(Relays)")]
     assert source.index("$generationProductRoot = Full") < source.index("Save $auditPath $audit")
     assert source.index("$generationProductRoot = Full") < source.index("Start-LabelWriterFence `", source.index("$before = Snapshot"))

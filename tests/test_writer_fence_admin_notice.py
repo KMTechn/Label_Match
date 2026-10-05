@@ -44,6 +44,7 @@ def test_startup_fence_error_keeps_app_stopped_and_explains_recovery(
         denied()
 
     namespace = {
+        "Path": Path,
         "os": os, "sys": sys,
         "WriterFenceError": WriterFenceError,
         "CurrentUserOnboardingError": CurrentUserOnboardingError,

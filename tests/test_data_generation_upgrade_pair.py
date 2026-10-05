@@ -1,5 +1,6 @@
 """Run the installer's actual read-only upgrade probe on isolated source copies."""
 import json
+import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -33,13 +34,20 @@ def _package_pair(tmp_path, baseline_source):
     result = []
     for name, source in (('old', baseline_source), ('new', ROOT)):
         package = tmp_path / name
-        builder._copy_application(source, package / 'app')
+        spec = importlib.util.spec_from_file_location(name + '_g_builder', source / 'tools/build_portable_release_candidate.py')
+        own_builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(own_builder)
+        own_builder._copy_application(source, package / 'app')
         (package / 'runtime').mkdir()
         (package / 'runtime' / 'fixture').write_bytes(b'identical runtime preimage')
         (package / 'launch-label-match.cmd').write_bytes(b'identical launcher fixture\r\n')
         for relative in ('INSTALL_THIS_PC.ps1',
                          'tools/bootstrap_integrity.ps1', 'tools/label_writer_fence.ps1',
                          'tools/label_writer_fence_contract.json'):
+            target = package / relative
+            target.parent.mkdir(exist_ok=True)
+            shutil.copyfile(source / relative, target)
+        for relative in getattr(own_builder, 'FAILURE_SINK_DATA', ()):
             target = package / relative
             target.parent.mkdir(exist_ok=True)
             shutil.copyfile(source / relative, target)
