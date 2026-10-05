@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+sub-292 G 회귀에서 junction 등록 경로의 WriterFenceError도 공통 복구 안내가 필요함을 확인했다. ValueError와 같은 초기 거절 경계에서 공용 가림을 적용하며 등록·정체 판독·상태 변경 0을 유지한다.
+
 조립의 registrar 경로 선검사 거절은 읽기·등록·변경 전에 기존 오류와 공용 한국어 자료 보존/지원 복구 안내를 전달한다. 설치 상태를 보존하는 조기 catch도 최종 예외 가림과 audit 원인 보존을 적용한다. r4로 바뀐 catch/선검사 구조와 추가 readback에 맞춰 G fixture의 locator·namespace를 교정하며 실제 guard와 기존 단언을 유지한다.
 
 공식 legacy relay의 repetition_interval은 SCHEMA의 XmlConvert TimeSpan 왕복으로 정규화한다. 같은 기간의 다른 표기는 같은 13개 필드 지문을 유지하고 다른/무효 기간은 기존 소유권 오류로 상태 변경 전에 거절한다. 기존 정규 표기와 공유 기대값 지문은 불변이며 PS5.1·7 격리 회귀 10 PASS다.

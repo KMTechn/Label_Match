@@ -28,7 +28,8 @@ if SITE_PACKAGES.is_dir() and str(SITE_PACKAGES) not in sys.path:
     sys.path.insert(1, str(SITE_PACKAGES))
 
 import requests  # noqa: E402
-from writer_session_fence import remote_request, writer_sink  # noqa: E402
+from writer_session_fence import WriterFenceError, remote_request, writer_sink  # noqa: E402
+from failure_redaction import redact_for_sink  # noqa: E402
 from label_data_generation import DataGenerationError, UNKNOWN_MESSAGE, check_user_data_open, record_user_data_open  # noqa: E402
 
 from enrollment_mutex import (  # noqa: E402
@@ -2267,8 +2268,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         _registration_storage_preflight(args)
-    except ValueError as exc:
-        print(str(exc))
+    except (ValueError, WriterFenceError) as exc:
+        print(redact_for_sink(str(exc)).rstrip().splitlines()[-1][-300:])
         print(UNKNOWN_MESSAGE, file=sys.stderr)
         return 2
 
