@@ -17,7 +17,7 @@ def test_startup_definition_binds_sid_and_preserves_raw_xml(tmp_path, engine, sc
         ['Assert-LabelStartupUpdateTaskDefinition'], r'''
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 $sid=$identity.User.Value
-[xml]$expected='<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>'+ $sid +'</UserId></LogonTrigger></Triggers><Principals><Principal id="System"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Actions Context="System"><Exec><Command>fixture.exe</Command><Arguments>fixed</Arguments></Exec></Actions></Task>'
+[xml]$expected='<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>'+ $sid +'</UserId></LogonTrigger></Triggers><Principals><Principal id="System"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Actions Context="System"><Exec><Command>fixture.exe</Command><Arguments>fixed</Arguments></Exec></Actions><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><Hidden>true</Hidden><ExecutionTimeLimit>PT2M</ExecutionTimeLimit><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries></Settings></Task>'
 [xml]$actual=$expected.OuterXml
 switch($env:LM_SID_SCENARIO){
  'account' {$actual.Task.Triggers.LogonTrigger.UserId=$identity.Name}

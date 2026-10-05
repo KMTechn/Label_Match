@@ -206,8 +206,7 @@ def test_user_state_race_is_rejected_before_placement(tmp_path):
 def test_first_registration_rollback_only_removes_new_code_setup(tmp_path, installed_preimage, expected_removals):
     source = INSTALLER.read_text(encoding="utf-8-sig")
     start = source.index("            $rollbackProductRoot =")
-    detach = "            if ($legacyFirstRegistration) {\n                # Detach authentication"
-    end = source.index(detach, start) if detach in source else source.index("            if ($existingVerified -and -not $rollbackUsesInstalled)", start)
+    end = source.index("\n            }\n            . Invoke-LabelRollbackStep 'writer_absence'", start)
     installed = tmp_path / "installed"
     (installed / "runtime").mkdir(parents=True)
     (installed / "runtime/pythonw.exe").write_bytes(b"not an executable")

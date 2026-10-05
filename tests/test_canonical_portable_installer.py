@@ -708,7 +708,7 @@ def test_top_level_installer_owns_current_user_lifecycle_and_preimage() -> None:
         "label-match-canonical-portable-install-v1",
         "INSTALL_THIS_PC.ps1",
         "Product $removalRoot '--remove-current-user-setup'",
-        "Product $install '--onboard-current-user'",
+        "Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start')",
         "PREIMAGE_SAVED",
         "FAILED_ROLLED_BACK",
         "stop_marker_preimage",
@@ -719,16 +719,16 @@ def test_top_level_installer_owns_current_user_lifecycle_and_preimage() -> None:
         "ReceiptSource $source $sourceManifest",
     ):
         assert token in source
-    assert "(Arg $Root)" in source
+    assert "(Arg $LogicalAppRoot)" in source
     assert "Register-ScheduledTask" in source
     assert "Start-ScheduledTask" not in source
     assert "Stop-ScheduledTask" not in source
     assert "schtasks /run" not in source.lower()
     assert source.index("Product $removalRoot '--remove-current-user-setup'") < source.index(
-        "InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
+        "$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
     )
     assert source.index("ReceiptSource $source $sourceManifest") < source.index(
-        "InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
+        "$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
     )
 
 
@@ -1969,7 +1969,9 @@ def test_server_base_url_is_validated_first_and_reaches_only_onboarding() -> Non
     assert validation < source.index("if ($PlanOnly)")
     assert validation < source.index("$before = Snapshot")
     assert source.count("$onboardingArguments") == 2
-    assert "Product $install '--onboard-current-user' $onboardingArguments" in source
+    assert "Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start')" in source
+    onboarding = source.index("try { Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start') }")
+    assert source.index("$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters") < onboarding < source.index("$after = Snapshot", onboarding)
     assert "'--remove-current-user-setup' $onboardingArguments" not in source
     assert "onboarding_server_base_url = [ordered]@{" in source
     launcher_parameters = source[
@@ -1977,6 +1979,28 @@ def test_server_base_url_is_validated_first_and_reaches_only_onboarding() -> Non
     ]
     assert "ServerBaseUrl" not in launcher_parameters
     assert "ServerBaseUrl" not in _source(HELPER)
+
+
+@pytest.mark.parametrize("damage", ("old-marker", "old-onboarding", "onboarding-before-placement"))
+def test_integrated_lifecycle_static_contract_refuses_previous_shape(monkeypatch, damage):
+    source = _source()
+    onboarding = "try { Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start') }"
+    if damage == "old-marker":
+        source = source.replace("REUSED_VERIFIED", "REUSED")
+    elif damage == "old-onboarding":
+        source = source.replace(onboarding, "try { Product $install '--onboard-current-user' $onboardingArguments }")
+    else:
+        assert source.count(onboarding) == 1
+        source = source.replace(onboarding, "")
+        placement = "$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
+        source = source.replace(placement, onboarding + "\n        " + placement, 1)
+    helper = _source(HELPER)
+    monkeypatch.setattr(__name__ + "._source", lambda path=INSTALLER: source if path == INSTALLER else helper)
+    with pytest.raises(AssertionError):
+        if damage == "old-marker":
+            test_top_level_installer_owns_current_user_lifecycle_and_preimage()
+        else:
+            test_server_base_url_is_validated_first_and_reaches_only_onboarding()
 
 
 @pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))

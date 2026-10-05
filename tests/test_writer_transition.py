@@ -232,6 +232,8 @@ def _upgrade_preflight(candidate: Path, installed: Path) -> str:
     return f"""
 $source = {_quote(candidate)}
 $install = {_quote(installed)}
+$lifecycleInstalled = $install
+$startupLifecycle = $null
 $SkipSignatureValidationForTest = $true
 $sourceManifest = Manifest $source $true
 $receiptSource = PortableInventory $source
