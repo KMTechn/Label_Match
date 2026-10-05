@@ -25,8 +25,12 @@ def _closing_app(monkeypatch, current, *, answer=True):
     app._begin_app_close_direct_sync = Mock()
     app.direct_sync_bootstrap_context = {"scan_source_dir": "synthetic"}
     app.data_manager = SimpleNamespace(log_event=Mock(), close=Mock())
-    question = Mock(return_value=answer)
-    monkeypatch.setattr(lm.messagebox, "askokcancel", question)
+    def choose_inline(_title, _message, _text, action):
+        if answer:
+            action()
+    question = Mock(side_effect=choose_inline)
+    app._request_pointer_confirmation = question
+    monkeypatch.setattr(lm.messagebox, "askokcancel", Mock(side_effect=AssertionError("native exit approval forbidden")))
     return app, question
 
 
