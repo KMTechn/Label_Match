@@ -673,11 +673,17 @@ $legacyFirstRegistration = $false
 $generationSubjectSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $generationMarkerPaths = @({_quote(tmp_path / 'rollback-generation.json')})
 $rollbackFixtureManifest = Manifest {_quote(old)} $true
-[void](Write-KmtechDataGeneration -MarkerPath $generationMarkerPaths[0] `
-    -Version (Get-LabelPortableDataVersion {_quote(old)} $rollbackFixtureManifest) `
-    -AppId 'Label_Match' -SubjectSid $generationSubjectSid -BuildId ([string]$rollbackFixtureManifest.source_commit))
 }}
 $script:rollbackGenerationChecks = 0
+$script:rollbackDecisionReads = 0
+if ({_quote(failure)} -ceq 'rollback-remove') {{
+$script:realDowngradeDecision = ${{function:Get-KmtechDataDowngradeDecision}}
+function Get-KmtechDataDowngradeDecision([string[]]$MarkerPaths, [string]$TargetVersion, [string]$AppId, [string]$SubjectSid, [string]$TargetBuildId) {{
+    $script:rollbackDecisionReads++
+    & $script:realDowngradeDecision -MarkerPaths $MarkerPaths -TargetVersion $TargetVersion `
+        -AppId $AppId -SubjectSid $SubjectSid -TargetBuildId $TargetBuildId
+}}
+}}
 $script:realRollbackGeneration = ${{function:Assert-LabelRollbackGeneration}}
 function Assert-LabelRollbackGeneration {{
     $script:rollbackGenerationChecks++
@@ -685,6 +691,13 @@ function Assert-LabelRollbackGeneration {{
 }}
 $script:realProduct = ${{function:Product}}
 function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @()) {{
+    if ({_quote(failure)} -ceq 'rollback-remove' -and $Mode -ceq '--onboard-current-user') {{
+        # Seed unchanged old-format data at the rollback boundary, after the
+        # real placement has retained its exact preimage. No G is replaced.
+        [void](Write-KmtechDataGeneration -MarkerPath $generationMarkerPaths[0] `
+            -Version (Get-LabelPortableDataVersion {_quote(old)} $rollbackFixtureManifest) `
+            -AppId 'Label_Match' -SubjectSid $generationSubjectSid -BuildId ([string]$rollbackFixtureManifest.source_commit))
+    }}
     if ({_quote(failure)} -ceq 'rollback-remove' -and $Mode -ceq '--remove-current-user-setup' -and
         ((Get-Content -LiteralPath (Get-LabelWriterFenceActivePath $writerFenceControlRoot) -Raw | ConvertFrom-Json).status -ceq 'RESTORING')) {{
         throw 'injected rollback product removal failure'
@@ -714,6 +727,7 @@ try {{
 {transaction}
 }} finally {{
     [IO.File]::WriteAllText({_quote(tmp_path / 'rollback-g-count.txt')}, [string]$script:rollbackGenerationChecks)
+    [IO.File]::WriteAllText({_quote(tmp_path / 'rollback-g-read-count.txt')}, [string]$script:rollbackDecisionReads)
 }}
 """
         result = _ps(tmp_path, code, env, timeout=180)
@@ -724,7 +738,9 @@ try {{
             assert [item["stage"] for item in audit["rollback"]["step_failures"]] == ["product_remove"]
             assert audit["rollback"]["step_failures"][0]["message"] == "injected rollback product removal failure"
             assert int((tmp_path / "rollback-g-count.txt").read_text()) >= 5
+            assert int((tmp_path / "rollback-g-read-count.txt").read_text()) >= 5
             assert (tmp_path / "rollback-generation.json").is_file()
+            assert audit["rollback"]["code_placement"] == "RESTORED_PREIMAGE"
         else:
             assert audit["status"] == "FAILED_ROLLED_BACK", result.stderr[-3000:] + result.stdout[-1000:]
         assert audit["rollback"]["runtime_restored"] is True
