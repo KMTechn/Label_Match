@@ -10,6 +10,7 @@ $ExtractedFunctionNames=@('Invoke-LabelRollbackStep','Get-LabelLaunchFailure',
     'Stop-LabelRollbackCandidateRelay','Invoke-LabelGenerationRefusalRecovery',
     'Assert-LabelRollbackTaskPreimage','Get-LabelCurrentUserScheduledTasks',
     'Protect-LabelFailureText')
+. (Join-Path $Repo 'tools/failure_redaction.ps1')
 New-Item -ItemType Directory -Path $Root,(Join-Path $Root 'installed'),(Join-Path $Root 'control') | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $Root 'installed/runtime') | Out-Null
 # Membership placeholder only; Product is a native-free stand-in and never executes it.
@@ -43,6 +44,8 @@ function InvokeFrozenIntegrityProbe { param($Frozen,$Path) if(-not (Test-Path -L
 function Set-LabelWriterFenceDelegation { }
 function SetWriterDelegationEnvironment { }
 function Set-LabelWriterFenceInstalledTree { }
+function Relays { return @() }
+function Get-LabelCurrentUserScheduledTasks { return @() }
 function Assert-RollbackRelayPreimage { param([object[]]$ExpectedRelays) return $true }
 function Product { $script:NativeCalls.product++;if($Case -ceq 'early_failure'){throw 'Injected isolated current-user removal failure'} }
 function Enter-LabelWriterAdmission { return [pscustomobject]@{isolated=$true} }
