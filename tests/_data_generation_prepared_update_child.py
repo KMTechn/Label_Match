@@ -180,7 +180,11 @@ try:
                     record_generation(ca.parent/'data-generation.json', app_id='Label_Match',
                         subject_sid=setup['subject'], version=high,
                         build_id=hashlib.sha256(b'isolated-higher-build').hexdigest()[:40], data_compatible_min_version=high)
-                    before = setup['snapshot']()
+                    Path.open = original_open
+                    try:
+                        before = setup['snapshot']()
+                    finally:
+                        Path.open = observed_open
                 return value
             onboarding._default_profile_loader = admitted_profile
             onboarding.resolve_current_user_onboarding_paths = lambda *args, **kwargs: SimpleNamespace(logistics_profile_path=profile_path)
