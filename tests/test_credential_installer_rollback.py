@@ -67,7 +67,7 @@ $script:run=@{{exists=$true;kind='String';data='native new relay command'}}
 $taskBefore=@{{exists=$false;enabled=$false;xml_sha256='';backup_path=''}}
 $script:attempts=@{{product=0;run=0;task=0;relay=0;g=0}}
 $script:relayLive=$false
-$old=@([pscustomobject]@{{CommandLine='native old relay command';ExecutablePath='native relay executable'}})
+$old=@([pscustomobject]@{{CommandLine='native old relay command';ExecutablePath=(Join-Path $install 'runtime\\pythonw.exe')}})
 function Relays {{ if ($script:relayLive) {{ return $old }}; return @() }}
 function Snapshot {{ return $script:run }}
 function Restore($Before) {{ $script:attempts.run++; $script:run=$Before }}
