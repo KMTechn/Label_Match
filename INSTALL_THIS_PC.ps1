@@ -1084,10 +1084,24 @@ function Get-LabelOfficialLegacyTaskSnapshot {
     $task=$tasks[0]
     $xml=[string](Export-ScheduledTask -TaskName ([string]$task.TaskName) -TaskPath ([string]$task.TaskPath) -ErrorAction Stop)
     $fingerprint=Get-LabelOfficialLegacyTaskFingerprint ([string]$task.TaskName) ([string]$task.TaskPath) $xml
+    # Enabled is scheduler state, not identity. Exported XML can omit its
+    # default; never coerce an unreadable/non-boolean object value to false.
+    $enabledActual=$task.Settings.Enabled
+    if ($enabledActual -isnot [bool]) { throw 'Healthy lifecycle task belongs to another principal/command.' }
+    $enabledDocument=[xml]::new();$enabledDocument.XmlResolver=$null;$enabledDocument.LoadXml($xml)
+    $enabledNodes=@($enabledDocument.SelectNodes('/*[local-name()="Task"]/*[local-name()="Settings"]/*[local-name()="Enabled"]'))
+    if ($enabledNodes.Count -gt 1) { throw 'Healthy lifecycle task belongs to another principal/command.' }
+    if ($enabledNodes.Count -eq 1) {
+        $enabledText=[string]$enabledNodes[0].InnerText
+        if ($enabledText -ceq 'true' -or $enabledText -ceq '1') { $enabledXml=$true }
+        elseif ($enabledText -ceq 'false' -or $enabledText -ceq '0') { $enabledXml=$false }
+        else { throw 'Healthy lifecycle task belongs to another principal/command.' }
+        if ($enabledXml -ne $enabledActual) { throw 'Healthy lifecycle task belongs to another principal/command.' }
+    }
     $hash=[Security.Cryptography.SHA256]::Create()
     try { $sha=([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($xml)))).Replace('-','').ToLowerInvariant() }
     finally { $hash.Dispose() }
-    return [pscustomobject]@{name=[string]$task.TaskName;path=[string]$task.TaskPath;xml=$xml;xml_sha256=$sha;enabled=[bool]$task.Settings.Enabled;fingerprint=$fingerprint}
+    return [pscustomobject]@{name=[string]$task.TaskName;path=[string]$task.TaskPath;xml=$xml;xml_sha256=$sha;enabled=$enabledActual;fingerprint=$fingerprint}
     } catch { throw 'Healthy lifecycle task belongs to another principal/command.' }
 }
 
