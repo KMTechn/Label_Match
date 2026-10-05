@@ -17,6 +17,8 @@ def test_prepared_update_admits_current_profile_and_tls_before_read(tmp_path, st
                               str(tmp_path/'runtime'), 'prepared-update', state, str(output)],
                              capture_output=True, text=True,
                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    (tmp_path/'child.stdout.log').write_text(process.stdout, encoding='utf-8')
+    (tmp_path/'child.stderr.log').write_text(process.stderr, encoding='utf-8')
     assert process.returncode == 0, 'isolated child failed; observation retained'
     result = json.loads(output.read_text(encoding='utf-8'))
     events = result['events']

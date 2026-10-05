@@ -107,6 +107,11 @@ if consumer in {'relay', 'enqueue'}:
     runtime._queue_backpressure_report = mutate
     runtime.reset_stale_relay_leases = lambda **kwargs: 0
 
+import auto_update as update
+import current_user_onboarding as onboarding
+import Label_Match as app
+import requests
+profile_base = json.loads(profile_path.read_text(encoding='utf-8'))['base_url']
 generation.check_user_data_open(repo, (setup['external'],))
 if state == 'late-high':
     from kmtech_shared.data_generation import record_generation
@@ -122,7 +127,8 @@ if state == 'late-profile':
     version[-1] += 1
     high = 'v' + '.'.join(map(str, version))
     record_generation(profile_path.parent/'data-generation.json', app_id='Label_Match',
-        subject_sid=setup['subject'], version=high)
+        subject_sid=setup['subject'], version=high,
+        build_id=hashlib.sha256(b'isolated-higher-build').hexdigest()[:40], data_compatible_min_version=high)
 before = setup['snapshot']()
 original_open = Path.open
 def observed_open(path, mode='r', *args, **kwargs):
@@ -172,13 +178,14 @@ try:
                     version[-1] += 1
                     high = 'v' + '.'.join(map(str, version))
                     record_generation(ca.parent/'data-generation.json', app_id='Label_Match',
-                        subject_sid=setup['subject'], version=high)
+                        subject_sid=setup['subject'], version=high,
+                        build_id=hashlib.sha256(b'isolated-higher-build').hexdigest()[:40], data_compatible_min_version=high)
                     before = setup['snapshot']()
                 return value
             onboarding._default_profile_loader = admitted_profile
             onboarding.resolve_current_user_onboarding_paths = lambda *args, **kwargs: SimpleNamespace(logistics_profile_path=profile_path)
             update.control_root = lambda root: work/'control'
-            update.load_policy = lambda root: {'feed_url': 'https://reader.invalid/manifest', 'profile_auth': True, 'channel': 'stable'}
+            update.load_policy = lambda root: {'feed_url': profile_base.rstrip('/')+'/manifest', 'profile_auth': True, 'channel': 'stable'}
             update.read_json = lambda path: {'manifest_public_key': 'isolated-public-key'} if path.name == 'update-manifest-key-config.json' else {'sha': '1'*40}
             update.fixed_helper = lambda *args, **kwargs: None
             update.version_bundle = lambda *args: repo
