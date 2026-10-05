@@ -3617,6 +3617,11 @@ if APP_VERSION != CURRENT_VERSION:
 
 
 def _open_label_data_manager(save_directory, *args, **kwargs):
+    from direct_sync_runtime import prepare_credentials_from_json
+    app_root = _label_match_runtime_app_root()
+    paths = resolve_current_user_onboarding_paths(app_root)
+    if paths.credential_path.is_file():
+        prepare_credentials_from_json(paths.credential_path, app_root=app_root)
     return record_user_data_open(
         _label_match_runtime_app_root(), (Path(save_directory),),
         opener=lambda: DataManager(save_directory, *args, **kwargs),

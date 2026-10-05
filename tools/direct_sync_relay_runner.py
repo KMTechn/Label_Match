@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once, utc_now_text  # noqa: E402
+from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once, utc_now_text, prepare_credentials_from_json  # noqa: E402
 from writer_session_fence import writer_sink  # noqa: E402
 
 
@@ -515,7 +515,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 @writer_sink("raw_relay_runner")
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, credential_input=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.enqueue_source_file and args.scan_source_dir:
@@ -537,6 +537,8 @@ def main(argv: list[str] | None = None) -> int:
         roots += (Path(args.operator_pause_path).parent,)
     input_roots = tuple(Path(value).parent for value in (args.tls_ca_bundle_path,) if value)
     check_user_data_open(product_root, (*roots, *input_roots))
+    if credential_input is None:
+        credential_input = prepare_credentials_from_json(args.credential_path, app_root=product_root)
     paths = resolve_current_user_onboarding_paths(product_root)
     source_roots = ([Path(args.scan_source_dir).expanduser().absolute()] if args.scan_source_dir else
                     [Path(args.enqueue_source_file).expanduser().absolute().parent] if args.enqueue_source_file else [])
@@ -559,6 +561,7 @@ def main(argv: list[str] | None = None) -> int:
             config,
             source_file_path=args.enqueue_source_file,
             relative_path=args.relative_path,
+            credential_input=credential_input,
         )
     elif args.scan_source_dir:
         try:
@@ -600,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
                     config,
                     source_file_path=delta_source_file,
                     relative_path=relative_path,
+                    credential_input=credential_input,
                 )
                 if current["status"] in {"paused_by_operator", "blocked_queue_backpressure", "blocked_disk_pressure"}:
                     preflight_status = current
@@ -676,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
                 targeted_drain_results = []
                 relay_status = None
                 for relay_id in list(pending_delta_progress):
-                    current_status = run_relay_once(config, target_relay_id=relay_id)
+                    current_status = run_relay_once(config, target_relay_id=relay_id, credential_input=credential_input)
                     last_result = (
                         current_status.get("last_result")
                         if isinstance(current_status.get("last_result"), dict)
@@ -695,7 +699,7 @@ def main(argv: list[str] | None = None) -> int:
                     targeted_drain_results.append(targeted_result)
                     relay_status = current_status
                 if relay_status is None:
-                    relay_status = run_relay_once(config)
+                    relay_status = run_relay_once(config, credential_input=credential_input)
                 relay_status["scan_status"] = status["scan_status"]
                 relay_status["scan_enqueued_count"] = enqueued_count
                 relay_status["scan_attempted_count"] = attempted_count
@@ -719,7 +723,7 @@ def main(argv: list[str] | None = None) -> int:
         if "scan_status" in status:
             _persist_scan_runtime_status(config, status)
     else:
-        status = run_relay_once(config)
+        status = run_relay_once(config, credential_input=credential_input)
     print(f"direct_sync_relay_status={status['status']}")
     if "scan_status" in status:
         print(f"direct_sync_scan_status={status['scan_status']}")

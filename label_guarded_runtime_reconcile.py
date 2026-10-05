@@ -1350,6 +1350,7 @@ def run_guarded_runtime_reconcile(
     credential_loader: Callable[[str | os.PathLike[str]], Any] = (
         load_credentials_from_json
     ),
+    credential_input=None,
     authority_acquirer: Callable[..., RuntimePreparation] = ensure_runtime_authority,
     initializer_replayer: Callable[..., Mapping[str, Any]] = _independent_initializer_replay,
     endpoint_validator: Callable[..., Mapping[str, Any]] = validate_server_endpoint_binding,
@@ -1418,7 +1419,9 @@ def run_guarded_runtime_reconcile(
         stop_marker_path=stop_marker_path,
         portable_root=portable_root,
     )
-    credentials = credential_loader(credential_path)
+    credentials = (credential_loader(credential_path, credential_input=credential_input)
+                   if credential_input is not None and credential_loader is load_credentials_from_json
+                   else credential_loader(credential_path))
     expected_credential = dict(preimage.get("current_credential") or {})
     if (
         str(getattr(credentials, "runtime_lease_mode", "")) != "enforce"

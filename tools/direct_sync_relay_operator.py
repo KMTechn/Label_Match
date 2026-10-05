@@ -23,7 +23,7 @@ from direct_sync_operator import (  # noqa: E402
     restore_relay_spool_from_server,
     retry_dead_relay_batch,
 )
-from direct_sync_runtime import load_credentials_from_json  # noqa: E402
+from direct_sync_runtime import load_credentials_from_json, prepare_credentials_from_json  # noqa: E402
 
 
 def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
@@ -121,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
             roots += (Path(args.spool_root),)
         input_roots = tuple(Path(value).parent for value in (getattr(args, "tls_ca_bundle_path", ""),) if value)
         check_user_data_open(ROOT, (*roots, *input_roots))
+        credential_input = (prepare_credentials_from_json(args.credential_path, app_root=ROOT)
+                            if getattr(args, "credential_path", "") else None)
         record_user_data_open(ROOT, roots)
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)
@@ -160,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
                     db_path=args.db_path,
                     relay_id=args.relay_id,
                     spool_root=args.spool_root,
-                    credentials=load_credentials_from_json(args.credential_path),
+                    credentials=load_credentials_from_json(args.credential_path, credential_input=credential_input),
                     operator_id=args.operator_id,
                     reason=args.reason,
                     audit_log_path=args.audit_log_path,

@@ -366,7 +366,51 @@ def _read_wincred_secret(target_name: str) -> str:
         advapi32.CredFree(credential_ptr)
 
 
-def _resolve_secret_ref(secret_ref: str, *, credential_path: Path, secret_data_dir: str = "") -> str:
+@dataclass(frozen=True, repr=False)
+class CredentialInput:
+    path: Path
+    payload: dict[str, Any] | None = None
+    secret_data_dir: Path | None = None
+    error: Exception | None = None
+
+
+def prepare_credentials_from_json(path, *, app_root: Path, environ=None, reader=None) -> CredentialInput:
+    """Admit the locator, read it once, then admit its protected-file owner.
+
+    Credential validation errors remain with the existing consumer/report path.
+    Admission errors escape before that consumer can record or mutate anything.
+    """
+    from label_data_generation import DataGenerationError, UNKNOWN_MESSAGE, check_user_data_open, resolve_data_path
+    selected = resolve_data_path(path)
+    check_user_data_open(app_root, (selected.parent,), environ=environ)
+    try:
+        payload = (reader(selected) if reader is not None else
+                   _load_json_no_duplicate_keys(selected.read_text(encoding="utf-8-sig")))
+        if not isinstance(payload, dict):
+            raise DirectSyncPushError("credential file must be a JSON object")
+    except PermissionError as exc:
+        raise DataGenerationError(UNKNOWN_MESSAGE) from exc
+    except (OSError, UnicodeError, ValueError, DirectSyncPushError) as exc:
+        return CredentialInput(selected, error=exc)
+    secret_ref = str(payload.get("secret_ref") or "").strip()
+    secret_root = None
+    if secret_ref.lower().startswith("dpapi:"):
+        try:
+            _safe_secret_ref_name(secret_ref.split(":", 1)[1])
+        except DirectSyncPushError as exc:
+            return CredentialInput(selected, payload, error=exc)
+        configured = str(payload.get("secret_data_dir") or "")
+        values = os.environ if environ is None else environ
+        default_root = (Path(values["LOCALAPPDATA"]) / "CompanyProducerConnector"
+                        if values.get("LOCALAPPDATA") else selected.parent / "CompanyProducerConnector")
+        secret_root = resolve_data_path(configured or default_root)
+        protected_parent = resolve_data_path(secret_root / "secrets")
+        check_user_data_open(app_root, (secret_root.parent, secret_root, protected_parent), environ=environ)
+    return CredentialInput(selected, payload, secret_root)
+
+
+def _resolve_secret_ref(secret_ref: str, *, credential_path: Path, secret_data_dir: str = "",
+                        resolved_secret_data_dir: Path | None = None) -> str:
     text = str(secret_ref or "").strip()
     if ":" not in text:
         raise DirectSyncPushError("secret_ref must start with env:, dpapi:, or wincred:")
@@ -381,7 +425,8 @@ def _resolve_secret_ref(secret_ref: str, *, credential_path: Path, secret_data_d
             raise DirectSyncPushError("env secret_ref is not available")
         return value
     if scheme == "dpapi":
-        base_dir = Path(secret_data_dir).expanduser() if secret_data_dir else _default_secret_data_dir(credential_path)
+        base_dir = (resolved_secret_data_dir if resolved_secret_data_dir is not None else
+                    Path(secret_data_dir).expanduser() if secret_data_dir else _default_secret_data_dir(credential_path))
         protected_path = base_dir / "secrets" / f"{name}.dpapi"
         if not protected_path.is_file():
             raise DirectSyncPushError("dpapi secret_ref artifact is missing")
@@ -391,9 +436,12 @@ def _resolve_secret_ref(secret_ref: str, *, credential_path: Path, secret_data_d
     raise DirectSyncPushError("secret_ref must start with env:, dpapi:, or wincred:")
 
 
-def load_credentials_from_json(path: str | os.PathLike[str]) -> ProducerCredentials:
-    credential_path = Path(path)
-    payload = json.loads(credential_path.read_text(encoding="utf-8-sig"))
+def load_credentials_from_json(path: str | os.PathLike[str], *, credential_input: CredentialInput | None = None) -> ProducerCredentials:
+    credential_path = credential_input.path if credential_input is not None else Path(path)
+    if credential_input is not None and credential_input.error is not None:
+        raise credential_input.error
+    payload = (credential_input.payload if credential_input is not None else
+               json.loads(credential_path.read_text(encoding="utf-8-sig")))
     if not isinstance(payload, dict):
         raise DirectSyncPushError("credential file must be a JSON object")
     producer_id = str(payload.get("producer_id") or "").strip()
@@ -413,6 +461,7 @@ def load_credentials_from_json(path: str | os.PathLike[str]) -> ProducerCredenti
             secret_ref,
             credential_path=credential_path,
             secret_data_dir=str(payload.get("secret_data_dir") or ""),
+            resolved_secret_data_dir=credential_input.secret_data_dir if credential_input is not None else None,
         )
     if not producer_id or not key_id or not secret or not endpoint_url:
         raise DirectSyncPushError("credential file is missing producer_id, key_id, secret/secret_ref, or endpoint_url")
@@ -692,6 +741,7 @@ def _recover_aged_queue_before_enqueue(
     *,
     backpressure: Mapping[str, Any],
     credentials: ProducerCredentials | None = None,
+    credential_input: CredentialInput | None = None,
     session: Any = None,
     max_attempts: int = 1,
 ) -> dict[str, Any]:
@@ -713,7 +763,7 @@ def _recover_aged_queue_before_enqueue(
     attempt_limit = min(active_count, recovery["max_attempts"])
     recovery["attempted"] = attempt_limit > 0
     for _ in range(attempt_limit):
-        drain_status = run_relay_once(config, session=session, credentials=credentials)
+        drain_status = run_relay_once(config, session=session, credentials=credentials, credential_input=credential_input)
         recovery["attempt_count"] += 1
         recovery["results"].append(
             {
@@ -744,6 +794,7 @@ def enqueue_completed_source_file(
     source_file_path: str | os.PathLike[str],
     relative_path: str = "",
     credentials: ProducerCredentials | None = None,
+    credential_input: CredentialInput | None = None,
     backpressure_recovery_session: Any = None,
 ) -> dict[str, Any]:
     """Spool one completed Label_Match CSV and persist local operator evidence."""
@@ -759,6 +810,7 @@ def enqueue_completed_source_file(
                 config,
                 backpressure=backpressure,
                 credentials=credentials,
+                credential_input=credential_input,
                 session=backpressure_recovery_session,
             )
         if backpressure["status"] != "pass":
@@ -782,7 +834,7 @@ def enqueue_completed_source_file(
             _append_runtime_event(config, "enqueue_blocked_disk_pressure", status)
             return status
 
-        creds = credentials or load_credentials_from_json(config.credential_path)
+        creds = credentials or load_credentials_from_json(config.credential_path, credential_input=credential_input)
         row = enqueue_source_file_for_relay(
             db_path=config.db_path,
             spool_dir=config.spool_dir,
@@ -858,6 +910,7 @@ def run_relay_once(
     *,
     session: Any = None,
     credentials: ProducerCredentials | None = None,
+    credential_input: CredentialInput | None = None,
     now: str = "",
     target_relay_id: str = "",
 ) -> dict[str, Any]:
@@ -884,7 +937,7 @@ def run_relay_once(
     try:
         cycle_now = now or utc_now_text()
         reset_count = reset_stale_relay_leases(db_path=config.db_path, now=cycle_now)
-        creds = credentials or load_credentials_from_json(config.credential_path)
+        creds = credentials or load_credentials_from_json(config.credential_path, credential_input=credential_input)
         source_identity = _producer_manifest_identity(config)
         if source_identity.get("status") != "PASS":
             raise DirectSyncPushError(

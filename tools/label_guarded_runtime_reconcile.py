@@ -102,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
             args.preimage, args.client_backup, args.live_client_proof, args.server_initializer_proof))
         input_roots = tuple(Path(value).parent for value in (args.tls_ca_bundle,) if value)
         check_user_data_open(ROOT, (*roots, *evidence_roots, *input_roots))
+        from direct_sync_runtime import prepare_credentials_from_json
+        credential_input = prepare_credentials_from_json(args.credential, app_root=ROOT)
         record_user_data_open(ROOT, roots)
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)
@@ -132,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             server_db_path=args.server_db,
             identity_path=args.identity,
             credential_path=args.credential,
+            credential_input=credential_input,
             stop_marker_path=args.stop_marker,
             portable_root=args.portable_root,
             receipt_output_path=args.receipt_output,

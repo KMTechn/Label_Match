@@ -715,6 +715,7 @@ def inspect_current_user_state(
     *,
     profile_loader: Callable[[Path], Any] = _default_profile_loader,
     credential_loader: Callable[[Path], Any] = load_credentials_from_json,
+    credential_input=None,
 ) -> dict[str, Any]:
     state_paths = {
         "identity": paths.identity_path,
@@ -746,7 +747,10 @@ def inspect_current_user_state(
     try:
         identity = _read_json(paths.identity_path, "producer identity")
         manifest = _read_json(paths.producer_manifest_path, "producer manifest")
-        credential = _read_json(paths.credential_path, "producer credential")
+        if credential_input is not None and credential_input.error is not None:
+            raise credential_input.error
+        credential = (credential_input.payload if credential_input is not None else
+                      _read_json(paths.credential_path, "producer credential"))
         registration = _read_json(paths.registration_report_path, "registration report")
         profile_payload = _read_json(paths.logistics_profile_path, "logistics profile")
         required_identity = {
@@ -778,7 +782,9 @@ def inspect_current_user_state(
             raise ValueError("producer credential is not current-user scoped")
         if str(profile_payload.get("credential_scope") or "") != "current_user":
             raise ValueError("logistics profile is not current-user scoped")
-        resolved_credential = credential_loader(paths.credential_path)
+        resolved_credential = (credential_loader(paths.credential_path, credential_input=credential_input)
+            if credential_input is not None and credential_loader is load_credentials_from_json else
+            credential_loader(paths.credential_path))
         resolved_profile = profile_loader(paths.logistics_profile_path)
         if resolved_credential is None or resolved_profile is None:
             raise ValueError("credential/profile readback returned no value")
@@ -943,6 +949,9 @@ def onboard_current_user(
         tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
         if tls_ca_source:
             check_user_data_open(paths.app_root, (Path(tls_ca_source).parent,), environ=environ)
+        from direct_sync_runtime import prepare_credentials_from_json
+        credential_input = (prepare_credentials_from_json(paths.credential_path,
+            app_root=paths.app_root, environ=environ) if paths.credential_path.is_file() else None)
         record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
                                                paths.direct_sync_root, paths.queue_dir,
                                                paths.logistics_profile_path.parent))
@@ -1053,7 +1062,7 @@ def onboard_current_user(
         state = inspect_current_user_state(
             paths,
             profile_loader=profile_loader,
-            credential_loader=credential_loader,
+            credential_loader=credential_loader, credential_input=credential_input,
         )
         report["initial_state"] = state
         require_registration_recovery(state)
@@ -1072,7 +1081,7 @@ def onboard_current_user(
             state = inspect_current_user_state(
                 paths,
                 profile_loader=profile_loader,
-                credential_loader=credential_loader,
+                credential_loader=credential_loader, credential_input=credential_input,
             )
         if state["status"] == "RECOVERY_REQUIRED":
             raise ValueError(str(state.get("reason") or "partial current-user state"))
@@ -1085,7 +1094,7 @@ def onboard_current_user(
                 state = inspect_current_user_state(
                     paths,
                     profile_loader=profile_loader,
-                    credential_loader=credential_loader,
+                    credential_loader=credential_loader, credential_input=credential_input,
                 )
                 require_registration_recovery(state)
                 if state["status"] == "RECOVERY_REQUIRED":
@@ -1102,6 +1111,10 @@ def onboard_current_user(
                         )
                     else:
                         return_code = registration_runner(paths)
+                    # Registration can create/replace this locator; admit that new
+                    # input once before its readback and keep it for later loaders.
+                    credential_input = (prepare_credentials_from_json(paths.credential_path,
+                        app_root=paths.app_root, environ=environ) if paths.credential_path.is_file() else None)
                     if type(return_code) is not int:
                         raise CurrentUserOnboardingError(
                             "registration result is UNKNOWN because no exit code was returned",
@@ -1111,7 +1124,7 @@ def onboard_current_user(
                     if return_code != 0:
                         require_registration_recovery(inspect_current_user_state(
                             paths, profile_loader=profile_loader,
-                            credential_loader=credential_loader,
+                            credential_loader=credential_loader, credential_input=credential_input,
                         ))
                         if paths.registration_report_path.is_file():
                             registration_failure = _read_json(
@@ -1135,7 +1148,7 @@ def onboard_current_user(
                     state = inspect_current_user_state(
                         paths,
                         profile_loader=profile_loader,
-                        credential_loader=credential_loader,
+                        credential_loader=credential_loader, credential_input=credential_input,
                     )
                     if state["status"] != "READY":
                         raise ValueError(
