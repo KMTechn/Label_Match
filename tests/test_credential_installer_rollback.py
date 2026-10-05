@@ -81,11 +81,10 @@ function Get-ScheduledTask {{ param($TaskName,$TaskPath,$ErrorAction) return $nu
 function Product {{ param($Root,$Mode,$ExtraArguments) $script:attempts.product++; throw 'injected native product removal failure' }}
 function StartRaw($Line) {{ $script:attempts.relay++; $script:relayLive=$true; return 2147418112 }}
 $script:realCim=${{function:Get-CimInstance}}
-function Get-CimInstance {{ param($ClassName,$Filter,$ErrorAction)
-    if ($ClassName -ceq 'Win32_Process' -and $Filter -ceq 'ProcessId = 2147418112') {{ return $old[0] }}
-    & $script:realCim @PSBoundParameters
+function Get-CimInstance([string]$ClassName,[string]$Filter,[string]$ErrorAction='Continue') {{
+ if ($ClassName -ceq 'Win32_Process' -and $Filter -match '^\s*ProcessId\s*=\s*(\d+)\s*$' -and [int]$Matches[1] -eq 2147418112) {{ return $old[0] }}
+ & $script:realCim @PSBoundParameters
 }}
-$script:realDecision=${{function:Get-KmtechDataDowngradeDecision}}
 function Get-KmtechDataDowngradeDecision([string[]]$MarkerPaths,[string]$TargetVersion,[string]$AppId,[string]$SubjectSid,[string]$TargetBuildId) {{
     $script:attempts.g++
     & $script:realDecision -MarkerPaths $MarkerPaths -TargetVersion $TargetVersion -AppId $AppId -SubjectSid $SubjectSid -TargetBuildId $TargetBuildId
