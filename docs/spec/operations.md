@@ -2,6 +2,8 @@
 
 저장된 F5 복구 journal 시험 자료 `tests/fixtures/f5-recovery-167ac7e/*.journal.json`은 원 LF 바이트와 SHA256을 보존하도록 `.gitattributes`의 `-text`로 고정한다. `core.autocrlf=true` checkout에서도 `tests/test_f5_saved_journals.py`의 다섯 복구 신원·상태 oracle을 그대로 검사한다.
 
+직접 지원 입구는 첫 신원/자료 판독 전에 실제 선택 경로의 G를 확인한다. 빈 profile 값의 환경 변수·기본 경로 선택, `~` 펼침, 상대 경로와 대소문자 해석은 기존 logistics path resolver로 통일하며 해석 결과를 reader에도 전달한다. symlink/junction은 기존 no-reparse 계약에 따라 UNKNOWN으로 거절하고 자료·relay/Run/task·기존 report를 보존한다. 제어 root에는 marker가 없고 실제 외부 경로에 높은 marker만 있는 별도 프로세스 회귀와 정상 profile 선택 검증의 정확한 판·결과·한계는 [sub-234 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-234/REPORT.md)에 기록한다.
+
 <a id="remote-writer-admission"></a>
 
 예외: 건별 복구에서 이전 판 journal로 재개하는 F5 날짜 교환의 원격 호출은 writer admission을 유지한다(코디 결정 2026-10-02). 기존 busy gate가 거절한 스캔은 응답 뒤 다시 입력하며 미리 입력된 값은 보존한다. 계측 등록은 phs_current_recovery/phs_reconciliation_recovery와 기존 prepare/status/print/activate client 메서드의 조합만 면제한다. 새 교환·후보/action 조회는 제거했다.
@@ -786,11 +788,27 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 <a id="first-field-data-generation"></a>
 ### 첫 현장 설치와 자료 세대 복구
 
+GUI PIN·명단 client는 실제 첫 요청 때 locator 위치 G → JSON 한 번 → 하위 보호 secret/TLS owner G를 다시 확인하고 그 CredentialInput을 loader에 넘긴다. startup의 허용이나 준비 입력을 첫 PIN 판독 근거로 재사용하지 않는다. relay의 반복 run/enqueue는 상태 기록·lease reset 전에 현재 locator를 다시 준비하며, profile 재판독과 각 앱 transport의 TLS CA 판독에도 기존 G를 적용한다. 거절은 보호 판독·복호·연결과 해당 회차 상태 변경보다 먼저이고 PIN 화면은 기존 쉬운 한국어 원인을 표시한다. 공용 G helper·syntax guard·writer membership은 보존하며 byte/line 변경에 따른 pin과 exact forward 선언만 표준 재생성한다. `auto_update.py`가 없는 이 기준 `2c46de1`의 별도 업데이트 consumer는 조립판에서 확인한다. [sub-281 구현·별도 process 대조](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-281/REPORT.md)의 범위는 호스트 격리이며 실제 GUI·DPAPI·서버·stock은 NOT TESTED다.
+
+credential locator는 위치의 parent G 통과 뒤 한 번만 판독한다. DPAPI의 명시 secret_data_dir 또는 기본 CompanyProducerConnector root와 보호 파일 parent도 판독·암호 해제·generation/report 기록 전에 G로 검사한다. 직접 operator/runner/canary/reconcile와 온보딩은 이미 읽은 locator 객체와 해석한 owner를 같은 loader에 전달한다. runner의 enqueue·backpressure drain·run은 같은 입력을 공유한다. JSON 형식·중복 키 실패는 credential 검증 경로의 기존 report로 남기며 경로 해석·접근 거부만 UNKNOWN admission으로 거절한다. sub-268의 전수 표와 격리 별도 process 회귀가 근거이며 native 설치·자격 저장소·GUI는 별도 수용 범위다.
+
+canonical은 audit/preimage 저장·elevation·writer fence보다 앞에서 기존 제품 `--onboard-current-user --check-data-generation-only`를 호출한다. 이 읽기 전용 호출과 실제 onboarding은 같은 owner admission 함수를 사용하며 locator만 읽고 보호 파일·generation·report·업무/설치 상태는 변경하지 않는다. 판정은 검증된 installer 제품 코드로 실행하되 app-root는 설치할 source release로 유지하여 호환되는 옛 source도 그 판으로 검사한다. nested 거절이 코드 교체 뒤에 나타나 rollback G까지 막는 순서를 예방하며 rollback guard는 유지한다. 현재 앱 업데이트는 외부 설치기 안내만 제공하므로 canonical 적용에도 같은 경계가 적용된다.
+
+읽기 전용 설치 판정만 기존 bootstrap 검증의 source file inventory와 manifest/static version·commit을 결속한다. `-SourceRoot`로 지정한 옛 pre-G 포장의 version 메타데이터가 없으면 canonical과 같은 app/label_data_generation.py 또는 app/Label_Match.py의 정적 version을 사용한다. 일반 release_identity/입구 및 rollback G 판정은 유지하며 호출자가 임의 version/commit을 넘기는 API는 제공하지 않는다. 미검증 bootstrap, 바뀐 source 바이트, manifest와 정적 version 불일치는 UNKNOWN으로 변경 전에 거절한다.
+
+선택된 enrollment CA(명시/기본 bootstrap), conflict receipt, 보호 관리자 verifier(명시/기본), legacy logistics CA도 초기 읽기 전용 G의 입력 parent에 포함한다. 온보딩은 선택한 CA를 record 이전에 검사하고 READY helper와 registrar에 같은 값을 전달한다. Python receipt·관리자 reader는 선택한 target parent를 판독 전에 재검사하며 canonical ReceiptSource는 PLAN_ONLY·helper 호출에서도 receipt를 읽기 전에 부모 G를 수행한다. 이 보안 구성 폴더에는 새 generation 기록을 쓰지 않는다. sub-262의 ENV-INPUTS와 별도 process 회귀를 확인하며 native 설치·GUI·실제 자격 저장소는 NOT TESTED다.
+
+직접 입력 admission은 정규화한 설정 파일 parent, restore-spool root, exact/reconcile stop-marker parent를 포함한다. 명시 TLS CA·등록 token 파일·task password 파일도 첫 판독 전에 읽기 전용으로 검사하며 그 추가 보안 구성 디렉터리에는 세대 기록을 쓰지 않는다. 경로 해석 결과를 reader 인수로 그대로 넘긴다. 각 외부 입력 하나에만 높은/손상 기록을 둔 별도 프로세스 및 같은 판/기록 없음의 기존 reader 회귀는 sub-244에 기록한다. hidden recovery child도 실제 DB·seal-key parent를 SQLite 초기화/키 판독 전에 검사한다. 정상 부모의 기록 없는 synthetic 작업은 기존대로 허용하며 이 child admission 자체는 세대 기록을 추가하지 않는다. canonical 부모는 알려진 control·설정/profile parent·명시 자료/DirectSync roots를 설정 판독 전에 검사하고, 설정의 custom root를 선택한 뒤 다시 검사한다. Windows PowerShell 5.1과 PowerShell 7에서도 상대·tilde·비ASCII 입력을 같은 Python 경로로 선택한다. 부모 경로와 실제 resolver child의 경로/cwd 동일성은 PS5/PS7 정의-only 회귀 범위이며 native 설치·Run/task·실제 relay 수용은 NOT TESTED다.
+
 G 가지는 종료 잔류 수정·w9scanonly가 포함된 `e89c188` 위에 적용한다. 종료 지연 알림의 기존 guarded sink와 방향성 선언을 유지하고 자료 세대 기록 sink 하나만 더한다(58→59). `e89c188` 원본은 표준 writer `--check`와 기존 설치 선언 읽기 검사에서 통과했다. 지원 설치기의 exact 자료 세대 전/후 쌍은 이 기준판에 결속하며, 이전 종료 수정 판의 정방향 전환도 각 역사 preimage와 최종 후보 bytes를 함께 확인한다. 실행 증거는 sub-220 보고서의 새 기준/후보 비교를 따른다.
 
 현장 옛 `v2.0.38` 위 첫 설치는 업무가 끝난 뒤 진행한다. 앱과 relay의 정상 정지·PID 부재를 확인한 **설치 직전** 기존 packet/무결성 기록, 실제 선택된 자료 root 전체(package outbox와 WAL/SHM, 현재 세트·완료 CSV·감사 조각), 사용자 DirectSync 전체, 설정·신원·보호된 자격, Run/task의 정확한 원 상태를 하나의 일관 백업으로 보존하고 바이트를 대조한다. 자격 내용은 출력하지 않는다. 백업 이후 추가 업무가 없고 relay가 계속 정지했음을 설치 직전에 다시 확인한다.
 
-자료 세대 G 후보(`v2.0.95`)는 앱 DataManager, onboarding 원장, raw relay가 실제 자료를 열기 직전에 기존 writer admission 안에서 기록한다. 설치기·bootstrap의 기동 허용만으로 기록하지 않는다. 기록은 대상 사용자의 기존 `%LOCALAPPDATA%/KMTech/DirectSync/label_match/control/writer-session/data-generation/<SID>.json`과 실제 자료 root의 `data-generation.json`이며 모두 읽은 최대 세대를 따른다. 기록이 전부 없으면 기존 DB가 있어도 ALLOW이므로 G 이전 코드가 만든 자료는 이 guard로 판별하지 못한다. 손상·읽기 실패·같은 판 다른 build는 거절하고 새 코드와 자료를 보존한다.
+자료 세대 G 후보(`v2.0.95`)는 직접 등록(`--apply`·`--dry-run`·관리자/부분 복구), onboarding·제거, GUI, raw/hosted relay, queue 운영·지원 복구, profile 검사/설치 입구에서 첫 설정·신원·자료 판독 전에 읽기 전용 G 판단을 한다. 실제 신원/자료를 여는 입구는 기존 `data_generation_record` sink를 재사용해 기존 사용자 control 및 실제 자료 root에 기록한 뒤 읽는다. release identity의 bootstrap 검증은 코드 root만 사용하며 사용자 설정을 먼저 읽지 않는다. 설치기·bootstrap의 기동 허용만으로 기록하지 않는다. 기록은 대상 사용자의 기존 `%LOCALAPPDATA%/KMTech/DirectSync/label_match/control/writer-session/data-generation/<SID>.json`과 실제 자료 root의 `data-generation.json`이며 모두 읽은 최대 세대를 따른다. 기록이 전부 없으면 기존 DB가 있어도 ALLOW이므로 G 이전 코드가 만든 자료는 이 guard로 판별하지 못한다. 손상·읽기 실패·같은 판 다른 build는 거절하고 새 코드와 자료를 보존한다.
+
+G 거절은 등록·onboarding·hosted relay의 일반 실패 보고나 relay activation 실패로 바꾸지 않는다. 기존 report·relay·HKCU Run·예약 작업·queue를 그대로 두고 한국어 원인과 복구 길을 출력한다. persistent relay의 G 예외도 주기/최종 상태를 쓰기 전에 그대로 전파한다. 실제 packet의 `app/tools` 직접 입구는 부모 packet의 검증된 판/build를 사용한다. 공용 helper 바이트·단일 sink 수는 유지하며, 지원 입구별 별도 프로세스 회귀와 입구/거절 지도는 [sub-234 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-234/REPORT.md)에 판·격리 조건과 함께 기록한다. 실제 frozen exe·GUI·native 설치 lifecycle은 이 회귀의 범위 밖이다.
+
+직접 입구 교정의 코드 전환은 기존 G 기준 `e89c1887`의 정확한 shipped-file before/after와 이미 G가 있는 `a56a5877`의 별도 정확한 forward 선언으로만 허용한다. source-set·writer membership·공용 helper·syntax guard는 유지하고 correction reverse는 허용하지 않는다. 이 코드 호환성 판정은 자료 marker 검사를 대체하지 않으며, 같은 판/다른 build의 기존 G 거절도 유지한다. source-only 지원 도구3개는 portable builder에 들어가지 않아 패킷 선언에서 제외한다.
 
 자료를 열기 전 배치 실패 복원은 기존 경계를 유지한다. 기본 호환 하한은 자기 판이다. 기존 ES256 private update manifest의 `version`, `source_commit`, 명시한 `data_compatible_min_version`을 같은 서명에서 검증해야 더 낮은 하한을 인정하며 portable metadata만으로 허가하지 않는다. 릴리스 담당자는 자료 형식 호환 근거가 있을 때만 기존 서명 절차로 하한을 선언하고 portable builder에 `--data-generation-update-manifest`와 `--data-generation-update-signature`를 함께 전달한다. 기록 당시 검증된 하한과 exact 코드/runtime/inventory 계약을 모두 충족해야 지원 내림을 허용한다. 먼저 같은 새 판 재시작 또는 지원 수정판을 사용한다. 관리자 수동 복구는 실패한 새 자료와 기록을 따로 보존하고, 백업 뒤 업무 없음 확인 후 **옛 코드 + 설치 직전 일관 자료 + 사용자 설정/신원/relay·자료 세대 기록**을 같은 복구 단위로 복원한다. 기록만 삭제해 guard를 우회하지 않는다.
 
@@ -1061,3 +1079,13 @@ Main은 **2026-09-07 13:09:40Z**에 [실제 Main readback](E:/KMTech/coordinator
 소비자 없는 `tools/sandbox_label_sac/run.ps1`·`guest.ps1`은 내부 쌍으로 제거하고 standalone `tools/scan_portable_pe.ps1`을 제거한다. 원본은 Git 판 `ebbe812`에 남고 portable 빌더의 실제 PE 검사·현재 runtime 도구 선택은 그대로다. 설치/빌더/CI/.spec/manifest/문서, 형제 저장소 committed HEAD와 09-10 이후 절차 검색의 소비자0 근거는 w9slim2 RESULT와 logs에 있다.
 
 publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다. `label_old_fence_liveness_proof.py`는 runtime reconcile의 old-fence 증명 계약에 쓰이므로 보존한다. 일회 tag burner는 현재 계약 참조와 D: 원 evidence 완전성이 미확인이라 보류한다; 감사 CSV의 분류만으로 실제 보장을 지우지 않는다.
+
+### Canonical rollback 후속 시도와 지원 복구 (sub-268 추가 P1)
+
+rollback은 각 단계의 실패를 `audit.rollback.step_failures`에 보존하고, 다른 독립 복원 단계는 모두 시도한다. setup 제거 오류 하나가 Run/task/stop/report 복원과 코드 readback을 건너뛰지 않는다. 기존 old-target G는 각 보호 변경 전에 유지한다. 코드 preimage, old-target G, Run/task/stop 및 정지된 relay의 runtime preimage를 확인한 뒤에만 fence 해제와 각 옛 relay 재시작을 반드시 시도한다. 뒤 readback은 `runtime_restored`로 별도 기록하며 앞 단계 실패는 `ROLLBACK_FAILED`로 남는다.
+
+코드·자료 판·runtime 정합을 증명하지 못하면 fence와 정지를 유지한다. 콘솔과 audit의 `user_message`에 “설치 전 코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요.”를 남긴다. 앱 시작의 기존 writer-fence 오류는 `_show_installation_recovery_required`를 통해 “설치 또는 복구 상태를 확인해야 해 앱을 멈춘 상태로 유지합니다. 자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요.”를 기존 관리자 오류 화면과 시작 로그에 전달한다. headless 경로와 실제 GUI 표시는 구분한다. fence/marker를 삭제하거나 G를 끄고 앱을 시작하지 않는다.
+
+지원 복구는 원 audit, verified backup, 현재 marker와 setup preimage를 보존한 채 원 실패 단계·코드/자료 판/runtime readback을 확인하는 운영 소유 절차가 필요하다. 현재 legacy 최초등록 재개는 같은 canonical 입력의 `Read-FirstRegistrationAttempt`로 제공되지만 일반 `ROLLBACK_FAILED`의 지원 재개와 guest 1회 수용은 아직 UNPROVEN이다. 코디네이터 결정 `msg_94ca1783634e`에 따라 일반 지원 재개 진입점은 설치 통합 sub-274 범위다. 일반 실패를 legacy 최초등록으로 꾸미거나 단독 Stop/Abort fence helper로 해제하지 않는다. 코디네이터 guest 검증이 끝나기 전 native 복구를 PROVEN으로 올리지 않는다.
+
+앱 내부 updater는 안내만 제공하고 이 외부 canonical 설치 경로를 사용한다. 격리 G/fence 회귀와 실제 사용자 HKCU/작업·relay·UAC·guest 복구 수용은 구분한다.

@@ -29,6 +29,7 @@ if SITE_PACKAGES.is_dir() and str(SITE_PACKAGES) not in sys.path:
 
 import requests  # noqa: E402
 from writer_session_fence import remote_request, writer_sink  # noqa: E402
+from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open  # noqa: E402
 
 from enrollment_mutex import (  # noqa: E402
     DEFAULT_ENROLLMENT_MUTEX_TIMEOUT_SECONDS,
@@ -2258,6 +2259,18 @@ def main(argv: list[str] | None = None) -> int:
     report: dict[str, Any] = {}
     enrollment_guard: EnrollmentMutex | None = None
     try:
+        from label_data_generation import normalize_data_arguments, resolve_data_path
+        args.data_dir = str(resolve_data_path(args.data_dir or DEFAULT_DIRECT_SYNC_ROOT))
+        args.sync_dir = str(resolve_data_path(args.sync_dir or DEFAULT_LABEL_MATCH_DATA_ROOT))
+        normalize_data_arguments(args, ("identity_path", "manifest_path", "credential_path", "receipt_path",
+            "logistics_profile_path", "tls_ca_bundle_path", "admin_recovery_secret_file", "enrollment_token_file"))
+        data_dir = Path(args.data_dir)
+        data_roots = (Path(args.sync_dir), data_dir, data_dir / "queue")
+        identity_roots = tuple(Path(value).parent for value in (
+            args.identity_path, args.manifest_path, args.credential_path, args.receipt_path,
+            args.logistics_profile_path, args.admin_recovery_secret_file) if value)
+        input_roots = tuple(Path(value).parent for value in (args.tls_ca_bundle_path, args.enrollment_token_file) if value)
+        check_user_data_open(ROOT, (*data_roots, *identity_roots, *input_roots))
         if args.recover_partial_local_state and not args.admin_recovery_secret_file:
             raise DirectSyncPushError("부분 등록 복구에는 관리자 일회용 승인 파일이 필요합니다")
         if args.admin_recovery_secret_file:
@@ -2265,6 +2278,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.apply:
             enrollment_guard = EnrollmentMutex(args.enrollment_mutex_timeout_seconds)
             report_context["enrollment_mutex"] = enrollment_guard.acquire()
+        record_user_data_open(ROOT, data_roots)
         manifest, credential, report = build_payloads(args)
         if "enrollment_mutex" in report_context:
             report["enrollment_mutex"] = dict(report_context["enrollment_mutex"])
@@ -2408,6 +2422,9 @@ def main(argv: list[str] | None = None) -> int:
             in {"SELF_ENROLLMENT_REGISTERED", "ADMIN_RECOVERY_REGISTERED"}
             else 1
         )
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except Exception as exc:
         if args.recover_partial_local_state:
             # A rejected recovery must not overwrite the surviving registration

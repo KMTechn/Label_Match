@@ -283,7 +283,16 @@ function ReceiptSource([string]$Root, $ManifestValue) {
         [string]::IsNullOrWhiteSpace($receiptPathValue) -or
         $receiptHashValue -cnotmatch '^[0-9a-f]{64}$'
     ) { throw 'Pinned conflict-resolution receipt is required.' }
-    $receiptPath = Full $receiptPathValue 'conflict-resolution receipt path'
+    $receiptPath = Resolve-LabelGenerationInputPath $receiptPathValue $Root
+    # ReceiptSource also runs in PLAN_ONLY and guarded helper paths. Admit its
+    # exact selected parent before its first content read in every caller.
+    $receiptSubjectSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $receiptMarkerPaths = @(
+        (Join-Path (Split-Path -Parent $receiptPath) 'data-generation.json')
+    )
+    [void](Assert-LabelDataDowngrade -MarkerPaths $receiptMarkerPaths -SubjectSid $receiptSubjectSid `
+        -TargetVersion (Get-LabelPortableDataVersion $Root $ManifestValue) `
+        -TargetBuildId ([string]$ManifestValue.source_commit))
     if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
         throw 'Pinned conflict-resolution receipt is absent.'
     }
@@ -527,7 +536,7 @@ integrity_order_transition = (
     release_digest(installed / integrity_order_path) ==
         'bfd59326ad76a400c70a62d78622b518a549e844c4bf4725f59eb7525c20a57f' and
     release_digest(source / integrity_order_path) ==
-        'fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017'
+        'cbe541306148f28a9e95317f6885cfca0e7b0e6744f81befd15b7727844109d1'
 )
 
 shared_transition = all(
@@ -546,13 +555,13 @@ shared_transition = all(
 # preimage ignores, so no data migration; downgrade is not admitted.
 legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-                        'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1'),
+                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
  'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
-                             'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'),
+                             '7556f245d8724729d70e0639f6c5fcec06cc77e0f3e8b1f871278c585cd45666'),
  'app/label_completion.py': ('25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d',
                              'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'),
  'app/label_recovery_schema.py': ('52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90',
@@ -562,11 +571,11 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8',
                                     '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'),
  'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f',
-                                      '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
+                                      'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'),
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+                              '732b2449cee55b15e9c687a542814f76c5dc0a0c49337ec018194caa7960b3c1'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
@@ -584,11 +593,11 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c',
                                  '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'),
  'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
-                                                    'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
+                                                    '9ff8ef6e353b215c1abe50b7809bd730e98a563e67aacaeeb88f632fc99b503d'),
  'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    'fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017')}
+                                    'cbe541306148f28a9e95317f6885cfca0e7b0e6744f81befd15b7727844109d1')}
 legacy_label_additions = {'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'}
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
@@ -609,11 +618,11 @@ legacy_label_transition = all(
 # initialize. Everything else stays checked and downgrade is not admitted.
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-  'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1'),
+  '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
  ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-  'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1'),
+  '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
  ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
-  'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1')}
+  '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed')}
 scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -630,7 +639,7 @@ scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+                              '732b2449cee55b15e9c687a542814f76c5dc0a0c49337ec018194caa7960b3c1'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
@@ -658,7 +667,7 @@ scan_input_transition = (
 # through the existing recovery schema. Downgrade is not admitted.
 nextfix_label_path = 'app/Label_Match.py'
 nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
- 'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1')
+ '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed')
 nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -673,7 +682,7 @@ nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1d
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+                              '732b2449cee55b15e9c687a542814f76c5dc0a0c49337ec018194caa7960b3c1'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
@@ -691,7 +700,7 @@ nextfix_label_transition = (
 
 # a20cd01 -> this scanner source: exact forward-only source pair, the same
 # pinned companion deltas, and unchanged writer membership/runtime/contracts.
-scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', 'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1')
+scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed')
 scanner_transition = (
     (installed / nextfix_label_path).is_file() and
     (source / nextfix_label_path).is_file() and
@@ -706,8 +715,8 @@ current_user_profile_replacements = {
     'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'),
     'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
     'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
-    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', 'fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017'),
-    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
+    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', 'cbe541306148f28a9e95317f6885cfca0e7b0e6744f81befd15b7727844109d1'),
+    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', 'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'),
 }
 # Exact writer bytes from the same accepted profile/scan preimages; their
 # inventory pins differ. No additional release direction is admitted.
@@ -731,11 +740,11 @@ current_user_profile_transition = all(
 # matches; this table adds no release, writer identity, runtime or contract.
 remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
                               '86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd'},
-                             'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'),
+                             '7556f245d8724729d70e0639f6c5fcec06cc77e0f3e8b1f871278c585cd45666'),
  'app/label_admin_pin.py': ({'8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0'},
-                            '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'),
+                            'be6ccfe4d74fd423d6dfcd7095ba1c92fa340c7be2ae4ade50127a1232f82d84'),
  'app/package_logistics.py': ({'818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'},
-                              '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+                              '732b2449cee55b15e9c687a542814f76c5dc0a0c49337ec018194caa7960b3c1'),
  'app/package_outbox_processor.py': ({'4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79'},
                                      'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'),
  'app/phs_label_workflow.py': ({'c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c'},
@@ -745,7 +754,7 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/sealed_transfer_exchange.py': ({'f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2'},
                                      '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'),
  'app/user_relay.py': ({'07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7'},
-                       '3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487'),
+                       '6edac91cef60878847ec1954e0b8c39978105a6df003984f056d421823e1262f'),
  'app/writer_session_fence.py': ({'7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', 'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', 'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50'},
                                  '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e')}
 remote_transport_transition = (
@@ -780,9 +789,9 @@ roster_additions = {'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b749433
 # This feature's exact reviewed branch baseline is independent of the older
 # accepted release tables; never broaden their historical preimages.
 roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062',
-                        'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1'),
+                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
  'app/label_admin_pin.py': ('159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8',
-                            '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'),
+                            'be6ccfe4d74fd423d6dfcd7095ba1c92fa340c7be2ae4ade50127a1232f82d84'),
  'app/writer_session_fence.py': ('8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6',
                                  '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'),
  'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a',
@@ -848,7 +857,7 @@ if roster_transition:
     installed_sources = [new_request if row == old_request else row for row in installed_sources]
 f5_retirement_replacements = {
     'app/phs_label_workflow.py': ({'c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '0d44faf4128286d49fc4285d26b9901d563c86eba0fe62d669c53a4a382c7b7d'}, '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'),
-    'app/package_logistics.py': ({'4585720051d266fa077005456b0da590b273ad8ab29bc5391cff2e6aa9f74224', '818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'}, '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'),
+    'app/package_logistics.py': ({'4585720051d266fa077005456b0da590b273ad8ab29bc5391cff2e6aa9f74224', '818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'}, '732b2449cee55b15e9c687a542814f76c5dc0a0c49337ec018194caa7960b3c1'),
     'app/label_workbench_history.py': ({'6f07e89f69d66bb979abaef58aa4ff514fb839756bc9f4b5b727b5c0cf4d2022', '214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8'}, '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'),
 }
 f5_retirement_transition = all(
@@ -905,7 +914,7 @@ if candidate_sources != installed_sources and not (shutdown_notice_forward or sh
     raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 # Exact stage-one 0cf0414 to stage-two bytes; state and pending stay additive.
 worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f58eaf3f9f5841d9de2fbfd5a74a63c969e38c92',
-                        'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1'),
+                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
  'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55',
                              'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'),
  'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec',
@@ -934,7 +943,7 @@ worker_record_transition = all(
 )
 # Exact 4b7630f shutdown repair; durable formats are unchanged.
 mainloop_exit_replacements = {'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70',
-                        'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1'),
+                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8',
@@ -949,7 +958,7 @@ mainloop_exit_transition = all(
 )
 # Exact prior cleanup candidate -> corrected notice-and-wait policy.
 mainloop_exit_notice_replacements = {'app/Label_Match.py': ('75fdd2d1422825f52320d3373acd12366b244e8ca00aa531a052983c09694227',
-                        'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1'),
+                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
  'app/label_match_single_instance.py': ('2929ffe042131ccc8cc905dbbad084be0fbab0585d70100252d3ee682c66346b',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('5dc1377d481970f75c6a6330a2c2ea9987b016de4cea7f86f5788299a23b0f73',
@@ -962,8 +971,43 @@ mainloop_exit_notice_transition = all(
     and release_digest(source / relative) == after
     for relative, (before, after) in mainloop_exit_notice_replacements.items()
 )
+# Exact already-G forward correction; no reverse or membership exception.
+data_generation_correction_replacements = {'app/Label_Match.py': ('d0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1', '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'), 'app/current_user_onboarding.py': ('fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017', 'cbe541306148f28a9e95317f6885cfca0e7b0e6744f81befd15b7727844109d1'), 'app/label_data_generation.py': ('d0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'c30153d3c0a7364f408efff5e62789271a49896dcdad4ad93a55d4ac8d985ef5'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '174895b001a0ba88dda6e877e6a742bec5a7690afd09104895d0e14c1886ee31'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', '6edac91cef60878847ec1954e0b8c39978105a6df003984f056d421823e1262f'), 'app/writer_session_fence.py': ('46731dc32ab372b721dcd59297764e0bc99cb4c2ca92ae5bf66157b3fb90593e', 'a6249fb720994fbf766a69cf7b82fbb4a307e7d39cb1863e6dae7a654bd4da03'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '4a1e96d6c8dff4f141fe23d3ea9e42d44507ce57438dca5da9a53cea91720fcf'), 'app/tools/direct_sync_relay_operator.py': ('ff97593c29669ad1f983d6f7be0fb1ebabf27adcf9661b797d36f7d583a0cedb', '8f7a22e4f180276dabe3c2635761d16c59ed41d6b35825e681ac510398d856ca'), 'app/tools/direct_sync_relay_runner.py': ('f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5', 'ed4c169b6d057ff9d6927277068d0c477c2804984badc065cb6d5b7b40ced915'), 'app/tools/install_logistics_runtime_profile.py': ('eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef', '9ff8ef6e353b215c1abe50b7809bd730e98a563e67aacaeeb88f632fc99b503d'), 'app/tools/label_auth_recovery_canary.py': ('440a0ed5061b522cafa56408092e3ed361b42f1ae09569258b08005a04cd463b', '079dfe927bcf721f4db49779eeab96b66093e1e02c69b86da73ea069d5b7c9be'), 'app/tools/label_exact_clone_resolution_receipt.py': ('c77e6be851f32cad9058ee52892a9b2520232a15914379aba3c28ad09c581a9b', '5d7e3836246a8e06e604bd7e776f31310e1c53006f80102cccd5c482dddc3302'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '8bbc3f2e68d7217fbd554c229f043d8e047a02cf1e85b914402cf32d3e7703aa'), 'tools/label_writer_fence.ps1': ('6777bdfac69f830ac7800b4976e2ffc3b2b3cb0593f4e3c3a8cddd5855bb849b', '9776ec64a3f6a0281a263b3a77af76b5bfb27b4410d61a15bffc3c742dc3fa1b'), 'app/protected_admin.py': ('f4b1616dc152c84e368a32acb06b424b4b4cdab588635e383fa22e7ee6d3c58e', 'eadfb46474595075b840bbdf87b919910c228ac5481fe62721a3497c478d63f9'), 'app/package_logistics.py': ('6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3', '732b2449cee55b15e9c687a542814f76c5dc0a0c49337ec018194caa7960b3c1'), 'app/direct_sync_runtime.py': ('50ff189da613b1e1bec5bbb32061acc76e8d29ecae8808f5f591854a361be033', 'c658aea0da7907af08b7bf3c074b67cd64eab8b7e6039ba581e229838f71465e'), 'app/label_guarded_runtime_reconcile.py': ('5f2d668622236950e307e5dc964303f78c7074d3f4bf2c2a37018c2fffe46016', 'dccab991a4caa38b7cefc59aa92357393219131232f3252c50d23dc7240a8a1e'), 'app/registration_relay_recovery.py': ('25921c0e33df76ef1c52655d95f2482906d444409d5c4a4d602e3745ff8d721b', '013758e5ab7f9084eae87651fd088a667e240841384deae3140858d28998f144'), 'app/direct_sync_push.py': ('d9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d', '7556f245d8724729d70e0639f6c5fcec06cc77e0f3e8b1f871278c585cd45666'), 'app/item_catalog_sync.py': ('41c33bf6a473cc147db6e522b1d20d4771cc9bd92c74fa3a8bd091a141907387', '7ba452c285d2f41fea202dedd68fedbe15d514a8d632bf6818f27ac54851c3d4'), 'app/label_admin_pin.py': ('25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75', 'be6ccfe4d74fd423d6dfcd7095ba1c92fa340c7be2ae4ade50127a1232f82d84'), 'app/logistics_runtime_profile.py': ('1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee', 'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'), 'app/producer_runtime_client.py': ('e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17', '743f132a40973bc623bef0f5ab63f12e2ba077ade5bf7b88ece430b7a7cea99c')}
+data_generation_correction_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file()
+    and release_digest(installed / relative) == before
+    and release_digest(source / relative) == after
+    for relative, (before, after) in data_generation_correction_replacements.items()
+)
 # Compose G only with an existing exact directional pair. Each changed
 # preimage still matches the baseline or that pair's historical declaration.
+
+# Exact f6e4cf2 security-input correction; forward only.
+data_generation_security_replacements = {'app/current_user_onboarding.py': ('3b0c37fff24747462f3bbb1a979c522a32f9cb20cd29f94dfbb87e4cb2e08d57', 'cbe541306148f28a9e95317f6885cfca0e7b0e6744f81befd15b7727844109d1'), 'app/label_data_generation.py': ('ad5cd8415ce3334cbc06b2c8cb67bd0c914470d60344248cb29b9e94b881aa5a', 'c30153d3c0a7364f408efff5e62789271a49896dcdad4ad93a55d4ac8d985ef5'), 'app/protected_admin.py': ('f4b1616dc152c84e368a32acb06b424b4b4cdab588635e383fa22e7ee6d3c58e', 'eadfb46474595075b840bbdf87b919910c228ac5481fe62721a3497c478d63f9'), 'app/package_logistics.py': ('6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3', '732b2449cee55b15e9c687a542814f76c5dc0a0c49337ec018194caa7960b3c1'), 'app/writer_session_fence.py': ('d041b529535779ad5f35e0ebc790451e0432a34bc537ae7a38bf21dc0b87e8cb', 'a6249fb720994fbf766a69cf7b82fbb4a307e7d39cb1863e6dae7a654bd4da03'), 'tools/label_writer_fence.ps1': ('2182570ed8684627b75c743a13bc2bbc05018f29c714ed74f7ecda0925c1b813', '9776ec64a3f6a0281a263b3a77af76b5bfb27b4410d61a15bffc3c742dc3fa1b'), 'app/Label_Match.py': ('18f08d739e4d5b64b402f38278dc29019c2701856eb18e34d8962f2602ca2724', '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'), 'app/direct_sync_runtime.py': ('50ff189da613b1e1bec5bbb32061acc76e8d29ecae8808f5f591854a361be033', 'c658aea0da7907af08b7bf3c074b67cd64eab8b7e6039ba581e229838f71465e'), 'app/label_guarded_runtime_reconcile.py': ('5f2d668622236950e307e5dc964303f78c7074d3f4bf2c2a37018c2fffe46016', 'dccab991a4caa38b7cefc59aa92357393219131232f3252c50d23dc7240a8a1e'), 'app/label_match_product_host.py': ('ce29df5585a2e1b0f1d075e05c04bc267e1ded9180454cb74197d7a6907cf580', '174895b001a0ba88dda6e877e6a742bec5a7690afd09104895d0e14c1886ee31'), 'app/registration_relay_recovery.py': ('25921c0e33df76ef1c52655d95f2482906d444409d5c4a4d602e3745ff8d721b', '013758e5ab7f9084eae87651fd088a667e240841384deae3140858d28998f144'), 'app/tools/direct_sync_relay_operator.py': ('8396f45a0590eb6429bf7e152c102dfefb6aa46dfcac43b3b10fdf5b0104bf0c', '8f7a22e4f180276dabe3c2635761d16c59ed41d6b35825e681ac510398d856ca'), 'app/tools/direct_sync_relay_runner.py': ('bc9123fdef68cd477cad1225b9cefa88ec6809c48c27c61f2db5b6e5a22109f9', 'ed4c169b6d057ff9d6927277068d0c477c2804984badc065cb6d5b7b40ced915'), 'app/tools/label_auth_recovery_canary.py': ('4ff48178ed23fad2a8026f987d515f76658397252dabef971af6956490ce7b4e', '079dfe927bcf721f4db49779eeab96b66093e1e02c69b86da73ea069d5b7c9be'), 'app/user_relay.py': ('f9a28ff78d8c3d500cffe682676490deb72fba30db4318cddf8f67ae0e2b290b', '6edac91cef60878847ec1954e0b8c39978105a6df003984f056d421823e1262f'), 'app/direct_sync_push.py': ('d9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d', '7556f245d8724729d70e0639f6c5fcec06cc77e0f3e8b1f871278c585cd45666'), 'app/item_catalog_sync.py': ('41c33bf6a473cc147db6e522b1d20d4771cc9bd92c74fa3a8bd091a141907387', '7ba452c285d2f41fea202dedd68fedbe15d514a8d632bf6818f27ac54851c3d4'), 'app/label_admin_pin.py': ('25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75', 'be6ccfe4d74fd423d6dfcd7095ba1c92fa340c7be2ae4ade50127a1232f82d84'), 'app/logistics_runtime_profile.py': ('1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee', 'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'), 'app/producer_runtime_client.py': ('e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17', '743f132a40973bc623bef0f5ab63f12e2ba077ade5bf7b88ece430b7a7cea99c')}
+data_generation_security_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file()
+    and release_digest(installed / relative) == before
+    and release_digest(source / relative) == after
+    for relative, (before, after) in data_generation_security_replacements.items()
+)
+
+
+# Exact 223cda8 nested credential owner admission; forward only.
+data_generation_nested_replacements = {'app/Label_Match.py': ('18f08d739e4d5b64b402f38278dc29019c2701856eb18e34d8962f2602ca2724', '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'), 'app/current_user_onboarding.py': ('a11885f411ea594bdbfd02576107df3428884c40cd77a17bafe8c4840df2ab08', 'cbe541306148f28a9e95317f6885cfca0e7b0e6744f81befd15b7727844109d1'), 'app/direct_sync_runtime.py': ('50ff189da613b1e1bec5bbb32061acc76e8d29ecae8808f5f591854a361be033', 'c658aea0da7907af08b7bf3c074b67cd64eab8b7e6039ba581e229838f71465e'), 'app/label_data_generation.py': ('d8e6dd64c6cb9fd1ebb686235a5e97ea09139c310c3031284227fdbf11290a70', 'c30153d3c0a7364f408efff5e62789271a49896dcdad4ad93a55d4ac8d985ef5'), 'app/label_guarded_runtime_reconcile.py': ('5f2d668622236950e307e5dc964303f78c7074d3f4bf2c2a37018c2fffe46016', 'dccab991a4caa38b7cefc59aa92357393219131232f3252c50d23dc7240a8a1e'), 'app/label_match_product_host.py': ('ce29df5585a2e1b0f1d075e05c04bc267e1ded9180454cb74197d7a6907cf580', '174895b001a0ba88dda6e877e6a742bec5a7690afd09104895d0e14c1886ee31'), 'app/registration_relay_recovery.py': ('25921c0e33df76ef1c52655d95f2482906d444409d5c4a4d602e3745ff8d721b', '013758e5ab7f9084eae87651fd088a667e240841384deae3140858d28998f144'), 'app/tools/direct_sync_relay_operator.py': ('8396f45a0590eb6429bf7e152c102dfefb6aa46dfcac43b3b10fdf5b0104bf0c', '8f7a22e4f180276dabe3c2635761d16c59ed41d6b35825e681ac510398d856ca'), 'app/tools/direct_sync_relay_runner.py': ('bc9123fdef68cd477cad1225b9cefa88ec6809c48c27c61f2db5b6e5a22109f9', 'ed4c169b6d057ff9d6927277068d0c477c2804984badc065cb6d5b7b40ced915'), 'app/tools/label_auth_recovery_canary.py': ('4ff48178ed23fad2a8026f987d515f76658397252dabef971af6956490ce7b4e', '079dfe927bcf721f4db49779eeab96b66093e1e02c69b86da73ea069d5b7c9be'), 'tools/label_writer_fence.ps1': ('517670a19a82713b53a30473bf2b8b94ab7083aec024a604ec3b568ff4afa349', '9776ec64a3f6a0281a263b3a77af76b5bfb27b4410d61a15bffc3c742dc3fa1b'), 'app/user_relay.py': ('f9a28ff78d8c3d500cffe682676490deb72fba30db4318cddf8f67ae0e2b290b', '6edac91cef60878847ec1954e0b8c39978105a6df003984f056d421823e1262f'), 'app/writer_session_fence.py': ('1c70276cf1a6990771528bbc74628270a14000f624dc43d069ddff544d77cbc5', 'a6249fb720994fbf766a69cf7b82fbb4a307e7d39cb1863e6dae7a654bd4da03'), 'app/direct_sync_push.py': ('d9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d', '7556f245d8724729d70e0639f6c5fcec06cc77e0f3e8b1f871278c585cd45666'), 'app/item_catalog_sync.py': ('41c33bf6a473cc147db6e522b1d20d4771cc9bd92c74fa3a8bd091a141907387', '7ba452c285d2f41fea202dedd68fedbe15d514a8d632bf6818f27ac54851c3d4'), 'app/label_admin_pin.py': ('25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75', 'be6ccfe4d74fd423d6dfcd7095ba1c92fa340c7be2ae4ade50127a1232f82d84'), 'app/logistics_runtime_profile.py': ('1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee', 'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'), 'app/package_logistics.py': ('43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008', '732b2449cee55b15e9c687a542814f76c5dc0a0c49337ec018194caa7960b3c1'), 'app/producer_runtime_client.py': ('e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17', '743f132a40973bc623bef0f5ab63f12e2ba077ade5bf7b88ece430b7a7cea99c')}
+data_generation_pin_replacements = {'app/Label_Match.py': ('0b8dc236a221c941b423568353238453e1b7a6229647fc7882afc227bdeee702', '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'), 'app/direct_sync_push.py': ('d9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d', '7556f245d8724729d70e0639f6c5fcec06cc77e0f3e8b1f871278c585cd45666'), 'app/direct_sync_runtime.py': ('03411c1c265188cd4ba4267b0db0444001799191c6a5ea1bb35690b319e04fc8', 'c658aea0da7907af08b7bf3c074b67cd64eab8b7e6039ba581e229838f71465e'), 'app/item_catalog_sync.py': ('41c33bf6a473cc147db6e522b1d20d4771cc9bd92c74fa3a8bd091a141907387', '7ba452c285d2f41fea202dedd68fedbe15d514a8d632bf6818f27ac54851c3d4'), 'app/label_admin_pin.py': ('25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75', 'be6ccfe4d74fd423d6dfcd7095ba1c92fa340c7be2ae4ade50127a1232f82d84'), 'app/logistics_runtime_profile.py': ('1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee', 'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'), 'app/package_logistics.py': ('43f7a81134e22a576e40b4313198ae5e86485449655398d21bf6cb309d523008', '732b2449cee55b15e9c687a542814f76c5dc0a0c49337ec018194caa7960b3c1'), 'app/producer_runtime_client.py': ('e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17', '743f132a40973bc623bef0f5ab63f12e2ba077ade5bf7b88ece430b7a7cea99c'), 'tools/label_writer_fence.ps1': ('eff51cca49b3bc5e9104bcb2c3778c59dceecea003beb45390d5dc1eeeda6420', '9776ec64a3f6a0281a263b3a77af76b5bfb27b4410d61a15bffc3c742dc3fa1b'), 'app/writer_session_fence.py': ('9376e9e2a998aca6f97fa99368276c3c87c18fa3b45625e1c1a226df68ebdb7b', 'a6249fb720994fbf766a69cf7b82fbb4a307e7d39cb1863e6dae7a654bd4da03')}
+data_generation_pin_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file()
+    and release_digest(installed / relative) == before
+    and release_digest(source / relative) == after
+    for relative, (before, after) in data_generation_pin_replacements.items()
+)
+data_generation_nested_transition = all(
+    (installed / relative).is_file() and (source / relative).is_file()
+    and release_digest(installed / relative) == before
+    and release_digest(source / relative) == after
+    for relative, (before, after) in data_generation_nested_replacements.items()
+)
+
 def data_generation_before_allowed(relative):
     if not (installed / relative).is_file():
         return False
@@ -1007,6 +1051,14 @@ for directory in ('app', 'runtime'):
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
     for relative in sorted(left, key=lambda path: (path != 'app/Label_Match.py', path)):
         path = left[relative]
+        if data_generation_pin_transition and relative in data_generation_pin_replacements:
+            continue
+        if data_generation_nested_transition and relative in data_generation_nested_replacements:
+            continue
+        if data_generation_security_transition and relative in data_generation_security_replacements:
+            continue
+        if data_generation_correction_transition and relative in data_generation_correction_replacements:
+            continue
         if data_generation_reverse and relative in data_generation_replacements:
             continue
         if data_generation_transition and relative in data_generation_additions:
@@ -1075,6 +1127,7 @@ if candidate_sources != installed_sources:
     ):
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 compatibility = ('SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE' if data_generation_reverse else
+                 'PINNED_DATA_GENERATION_G_CORRECTION' if (data_generation_correction_transition or data_generation_security_transition or data_generation_nested_transition or data_generation_pin_transition) else
                  'PINNED_MAINLOOP_EXIT_NOTICE' if mainloop_exit_notice_transition else
                  'PINNED_MAINLOOP_EXIT_CLEANUP' if mainloop_exit_transition else
                  'PINNED_WORKER_RECORD_IDENTITY' if worker_record_transition else
@@ -1732,6 +1785,32 @@ function Assert-LabelDataDowngrade(
     return $decision
 }
 
+function Resolve-LabelGenerationInputPath([string]$Value, [string]$Root) {
+    # Use the reader's resolver and the same FileSystem working directory as
+    # Product's child. Do not interpret user path strings twice in two languages.
+    $pathProbe = @'
+import base64, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / 'app'))
+from label_data_generation import resolve_data_path
+try:
+    selected = resolve_data_path(base64.b64decode(sys.stdin.buffer.read()).decode('utf-8'))
+    print(base64.b64encode(str(selected).encode('utf-8')).decode('ascii'))
+except Exception:
+    raise SystemExit(4)
+'@
+    # PS7 expands a native argv value beginning with ~ using its own HOME.
+    # Byte stdin accepts the PS5 UTF-8 BOM and preserves non-ASCII paths.
+    $pathInput = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
+    $resolved = @($pathInput | & (Join-Path $Root 'runtime\python.exe') -I -B -c $pathProbe $Root)
+    if ($LASTEXITCODE -ne 0 -or $resolved.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$resolved[0])) {
+        throw '이 PC의 자료 경로를 확인할 수 없어 자료를 열 수 없습니다. 현재 코드와 자료를 보존하고 관리자에게 지원 복구를 요청하세요.'
+    }
+    try { $cooked = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$resolved[0])) }
+    catch { throw '이 PC의 자료 경로를 확인할 수 없습니다. 현재 코드와 자료를 보존하고 관리자에게 지원 복구를 요청하세요.' }
+    return Full $cooked 'Label generation input'
+}
+
 $WriterDelegationEnvironmentNames = @(
     'KMTECH_LABEL_WRITER_DELEGATION_TOKEN',
     'KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID',
@@ -2255,21 +2334,40 @@ if ([string]::IsNullOrWhiteSpace($selectedDirectSyncRootValue)) {
 $selectedDirectSyncRoot = if ([string]::IsNullOrWhiteSpace($selectedDirectSyncRootValue)) {
     $defaultDirectSyncRoot
 }
-else { Full $selectedDirectSyncRootValue 'Label current-user DirectSync root' }
+else { Resolve-LabelGenerationInputPath $selectedDirectSyncRootValue $source }
 $selectedDataRoot = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH_SAVE_DIR)) {
     $defaultDataRoot
 }
-else { Full ([string]$env:LABEL_MATCH_SAVE_DIR) 'Label current-user data root' }
+else { Resolve-LabelGenerationInputPath ([string]$env:LABEL_MATCH_SAVE_DIR) $source }
 $selectedSettingsPath = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH_SETTINGS_PATH)) {
     $defaultSettingsPath
 }
-else { Full ([string]$env:LABEL_MATCH_SETTINGS_PATH) 'Label current-user settings path' }
+else { Resolve-LabelGenerationInputPath ([string]$env:LABEL_MATCH_SETTINGS_PATH) $source }
 # The shared KM_LOGISTICS_PROFILE_PATH is not read: an inherited Machine value from the
 # old PC-wide rollout points at a file other programs may use (TEST1 09-30 refused here).
 $selectedProfilePath = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH)) {
     $defaultProfilePath
 }
-else { Full ([string]$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH) 'Label logistics profile path' }
+else { Resolve-LabelGenerationInputPath ([string]$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH) $source }
+$generationSecurityParents = @((Split-Path -Parent $bootstrapCaPath))
+foreach ($generationInputName in @('LABEL_MATCH_ENROLLMENT_TLS_CA_BUNDLE_PATH',
+    'LABEL_MATCH_LOGISTICS_TLS_CA_BUNDLE_PATH', 'LABEL_MATCH_PROTECTED_ADMIN_PROFILE')) {
+    $generationInputValue = [Environment]::GetEnvironmentVariable($generationInputName, 'Process')
+    if (-not [string]::IsNullOrWhiteSpace($generationInputValue)) {
+        $generationSelectedInput = Resolve-LabelGenerationInputPath $generationInputValue $source
+        $generationSecurityParents += Split-Path -Parent $generationSelectedInput
+        [Environment]::SetEnvironmentVariable($generationInputName, $generationSelectedInput, 'Process')
+    }
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH_PROTECTED_ADMIN_PROFILE)) {
+    $generationSecurityParents += Join-Path $env:PROGRAMDATA 'KMTech\Label_Match\protected'
+}
+
+# Freeze the paths used by admission for every later product child as well.
+$env:LABEL_MATCH_DIRECT_SYNC_ROOT = $selectedDirectSyncRoot
+$env:LABEL_MATCH_SAVE_DIR = $selectedDataRoot
+$env:LABEL_MATCH_SETTINGS_PATH = $selectedSettingsPath
+$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH = $selectedProfilePath
 
 $statusRoot = Join-Path $defaultDirectSyncRoot 'status'
 $stop = Join-Path $defaultDirectSyncRoot 'control\label_match_user_relay.stop.json'
@@ -2278,27 +2376,50 @@ $Script:LabelWriterFenceAdmissionProductionRoot = if ($testMode) { '' } else { $
 # Bind the original target user's roots before elevation; never use SYSTEM's profile.
 $generationSubjectSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $generationDataRoot = $selectedDataRoot
+$generationMarkerPaths = @(
+    (Join-Path $writerFenceControlRoot ('data-generation\' + $generationSubjectSid + '.json')),
+    (Join-Path $selectedDataRoot 'data-generation.json'),
+    (Join-Path $defaultDataRoot 'data-generation.json'),
+    (Join-Path (Split-Path -Parent $selectedSettingsPath) 'data-generation.json'),
+    (Join-Path (Split-Path -Parent $selectedProfilePath) 'data-generation.json'),
+    (Join-Path $selectedDirectSyncRoot 'data-generation.json'),
+    (Join-Path (Join-Path $selectedDirectSyncRoot 'queue') 'data-generation.json')
+) | Select-Object -Unique
+$generationMarkerPaths += @($generationSecurityParents | ForEach-Object { Join-Path $_ 'data-generation.json' })
+if ($conflictReceiptSupplied) {
+    $generationReceiptPath = Resolve-LabelGenerationInputPath ([string]$env:KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH) $source
+    $generationMarkerPaths += Join-Path (Split-Path -Parent $generationReceiptPath) 'data-generation.json'
+}
+$generationTargetVersion = Get-LabelPortableDataVersion $source $sourceManifest
+$generationDowngradeDecision = Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
+    -TargetVersion $generationTargetVersion -TargetBuildId ([string]$sourceManifest.source_commit)
 if (Test-Path -LiteralPath $selectedSettingsPath -PathType Leaf) {
     if ((Get-Item -LiteralPath $selectedSettingsPath).Length -gt 1048576) { throw 'User settings are oversized.' }
     $generationSettings = Get-Content -LiteralPath $selectedSettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not [string]::IsNullOrWhiteSpace([string]$generationSettings.custom_save_path)) {
-        $generationDataRoot = Full ([string]$generationSettings.custom_save_path) 'selected business root'
+        $generationDataRoot = Resolve-LabelGenerationInputPath ([string]$generationSettings.custom_save_path) $source
     }
 }
-$generationMarkerPaths = @(
-    (Join-Path $writerFenceControlRoot ('data-generation\' + $generationSubjectSid + '.json')),
-    (Join-Path $generationDataRoot 'data-generation.json'),
-    (Join-Path $selectedDataRoot 'data-generation.json'),
-    (Join-Path $defaultDataRoot 'data-generation.json'),
-    (Join-Path (Join-Path $selectedDirectSyncRoot 'queue') 'data-generation.json')
+$generationMarkerPaths = @($generationMarkerPaths) + @(
+    (Join-Path $generationDataRoot 'data-generation.json')
 ) | Select-Object -Unique
 $onboardingPath = Join-Path $statusRoot 'current_user_onboarding.json'
 $removalPath = Join-Path $statusRoot 'current_user_removal.json'
 $relayPath = Join-Path $statusRoot 'label_match_user_relay.json'
 $generationDowngradeDecision = Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
-    -TargetVersion (Get-LabelPortableDataVersion $source $sourceManifest) `
+    -TargetVersion $generationTargetVersion `
     -TargetBuildId ([string]$sourceManifest.source_commit)
 $before = Snapshot
+# Use the verified guarded caller's existing product entrypoint. The target
+# app-root stays the source release, including compatible pre-G source packets.
+# Finish nested admission before audit/preimage writes, elevation, or any fence.
+$generationProductRoot = Full $PSScriptRoot 'read-only admission product'
+if (-not (Same $generationProductRoot $source)) {
+    [void](Manifest $generationProductRoot $SkipSignatureValidationForTest)
+    [void](PortableInventory $generationProductRoot)
+}
+Product $generationProductRoot '--onboard-current-user' `
+    (@('--app-root', $source, '--check-data-generation-only') + $onboardingArguments)
 $old = @(Relays)
 $scheduledTasksAtPreflight = @(
     Get-ScheduledTask -ErrorAction Stop | Where-Object {
@@ -3008,7 +3129,12 @@ try {
 catch {
     $original = $_
     if (-not $mutated) { throw $original }
+    $rollbackFailures = New-Object 'System.Collections.Generic.List[object]'
+    $rollbackRuntimeVerified = $false
+    $rollbackRuntimePreimageVerified = $false
+    $audit.rollback.code_restored = $false
     try {
+      try {
         Assert-LabelRollbackGeneration
         if ($mutated) {
             if (-not $writerFenceStarted) {
@@ -3076,7 +3202,10 @@ catch {
                 # No new setup has run while the exact legacy preimage remains
                 # installed. Do not ask that old code to create removal state.
                 if (-not ($legacyFirstRegistration -and $rollbackUsesInstalled)) {
-                    Product $rollbackProductRoot '--remove-current-user-setup'
+                    try { Product $rollbackProductRoot '--remove-current-user-setup' }
+                    catch {
+                        $rollbackFailures.Add([ordered]@{ stage='product_remove'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message })
+                    }
                 }
             }
             [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
@@ -3102,6 +3231,7 @@ catch {
                 finally { Exit-LabelWriterAdmission $stateMutationLease }
             }
             if ($existingVerified -and -not $rollbackUsesInstalled) {
+                Assert-LabelRollbackGeneration
                 if ([string]::IsNullOrEmpty($replacementRollbackRoot)) {
                     throw 'Exact installed code preimage is unavailable for rollback.'
                 }
@@ -3147,6 +3277,7 @@ catch {
                 [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
             }
             if (-not $existingVerified -and (Test-Path -LiteralPath $install)) {
+                Assert-LabelRollbackGeneration
                 InvokeFrozenIntegrityProbe $frozenPlacement $install
                 $rollbackInventory = PortableInventory $install
                 if ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
@@ -3176,9 +3307,19 @@ catch {
             if (-not $existingVerified -and -not (Test-Path -LiteralPath $install)) {
                 $audit.rollback.code_placement = 'RESTORED_ABSENCE'
             }
+            Assert-LabelRollbackGeneration
             $audit.rollback.code_restored = $existingVerified -or -not (Test-Path -LiteralPath $install)
             $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
         }
+      }
+      catch {
+          $rollbackFailures.Add([ordered]@{ stage='code_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message })
+      }
+      try {
+        # Independently restore setup under the old-target G and held fence
+        # even when code restoration failed. Code proof gates release/restart.
+        Assert-LabelRollbackGeneration
+        if (-not $audit.rollback.code_restored -and -not $writerFenceStarted) { throw 'Rollback code is unverified and writer custody is absent; setup restoration remains blocked.' }
         $ownerMutationLease = $null
         try {
             if ($writerFenceStarted) {
@@ -3186,8 +3327,11 @@ catch {
                     -ControlRoot $writerFenceControlRoot `
                     -TimeoutMilliseconds 90000
             }
-            Restore $before
-            RestoreScheduledTask $taskBefore
+            try { Restore $before }
+            catch { $rollbackFailures.Add([ordered]@{ stage='run_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
+            try { RestoreScheduledTask $taskBefore }
+            catch { $rollbackFailures.Add([ordered]@{ stage='task_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
+            try {
             if ([bool]$stopBefore.exists) {
                 Copy-Item -LiteralPath ([string]$stopBefore.backup_path) -Destination $stop -Force
                 if ((Sha $stop) -cne [string]$stopBefore.sha256) {
@@ -3197,6 +3341,9 @@ catch {
             elseif (Test-Path $stop) {
                 Remove-Item $stop -Force
             }
+            }
+            catch { $rollbackFailures.Add([ordered]@{ stage='stop_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
+            try {
             if ($null -ne $healthyRemovalReportBefore) {
                 Copy-Item -LiteralPath $healthyRemovalReportBefore.backup_path -Destination $removalPath -Force
                 if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) {
@@ -3209,11 +3356,40 @@ catch {
                 if (Test-Path -LiteralPath $removalPath) { throw 'Removal report absence restoration failed.' }
                 $audit.rollback.removal_report_restored = $true
             }
+            }
+            catch { $rollbackFailures.Add([ordered]@{ stage='removal_report_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
         }
         finally {
             if ($null -ne $ownerMutationLease) {
                 Exit-LabelWriterAdmission $ownerMutationLease
             }
+        }
+      }
+      catch { $rollbackFailures.Add([ordered]@{ stage='setup_restore_admission'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
+      try {
+        # Task restoration already checks its exact XML/enabled readback.
+        # Keep the fence if any required state cannot be demonstrated intact.
+        if (@($rollbackFailures | Where-Object { $_.stage -in @('task_restore','stop_restore','removal_report_restore','setup_restore_admission') }).Count -ne 0) {
+            throw '자동 시작 설정 복원을 확인하지 못했습니다. 앱을 멈춘 상태와 자료를 보존하고 관리자에게 지원 복구를 요청하세요.'
+        }
+        $rollbackRunReadback = Snapshot
+        if ([bool]$rollbackRunReadback.exists -ne [bool]$before.exists -or
+            [string]$rollbackRunReadback.kind -cne [string]$before.kind -or
+            [string]$rollbackRunReadback.data -cne [string]$before.data) { throw '자동 시작 설정이 설치 전 상태와 다릅니다. 관리자에게 지원 복구를 요청하세요.' }
+        if ([bool]$stopBefore.exists) {
+            if (-not (Test-Path -LiteralPath $stop -PathType Leaf) -or (Sha $stop) -cne [string]$stopBefore.sha256) { throw '앱 정지 상태 복원을 확인하지 못했습니다. 관리자에게 지원 복구를 요청하세요.' }
+        }
+        elseif (Test-Path -LiteralPath $stop) { throw '앱 정지 상태가 설치 전 상태와 다릅니다. 관리자에게 지원 복구를 요청하세요.' }
+        [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+        $rollbackRuntimePreimageVerified = $true
+      }
+      catch { $rollbackFailures.Add([ordered]@{ stage='runtime_preimage'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
+      try {
+        Assert-LabelRollbackGeneration
+        if (-not $audit.rollback.code_restored) { throw 'Rollback code preimage is not verified; fence release remains blocked.' }
+        if (-not $rollbackRuntimePreimageVerified) { throw '자동 시작 설정과 앱 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 관리자에게 지원 복구를 요청하세요.' }
+        if ($legacyFirstRegistration -and -not $audit.rollback.first_registration_state.restored_absent) {
+            throw 'First-registration authentication cleanup is not verified; fence release remains blocked.'
         }
         $firstRegistrationRollbackLease = $null
         try {
@@ -3258,7 +3434,12 @@ catch {
                 Exit-LabelWriterAdmission $firstRegistrationRollbackLease
             }
         }
+      }
+      catch { $rollbackFailures.Add([ordered]@{ stage='fence_release'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
         foreach ($item in $old) {
+          try {
+            Assert-LabelRollbackGeneration
+            if (-not $audit.rollback.code_restored -or -not $rollbackRuntimePreimageVerified -or $writerFenceStarted) { throw '코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 다시 시작하지 않았습니다. 자료를 보존하고 관리자에게 지원 복구를 요청하세요.' }
             $newPid = StartRaw ([string]$item.CommandLine)
             Start-Sleep -Seconds 3
             $restored = Get-CimInstance `
@@ -3269,7 +3450,10 @@ catch {
                 $null -eq $restored -or
                 -not (Same ([string]$restored.ExecutablePath) ([string]$item.ExecutablePath))
             ) { throw 'runtime restore failed' }
+          }
+          catch { $rollbackFailures.Add([ordered]@{ stage='relay_restart'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
         }
+      try {
         [void](Assert-RollbackRelayPreimage -ExpectedRelays $old)
         $check = Snapshot
         if (
@@ -3277,6 +3461,12 @@ catch {
             [string]$check.kind -cne [string]$before.kind -or
             [string]$check.data -cne [string]$before.data
         ) { throw 'registry restore failed' }
+      }
+      catch { $rollbackFailures.Add([ordered]@{ stage='runtime_readback'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
+        $rollbackRuntimeVerified = $audit.rollback.code_restored -and $rollbackRuntimePreimageVerified -and -not $writerFenceStarted -and
+            @($rollbackFailures | Where-Object { $_.stage -in @('relay_restart','runtime_readback','fence_release') }).Count -eq 0
+        $audit.rollback.step_failures = @($rollbackFailures.ToArray())
+        if ($rollbackFailures.Count -ne 0) { throw 'One or more rollback steps failed; all guarded recovery steps were attempted.' }
         $audit.status = 'FAILED_ROLLED_BACK'
         if ($legacyFirstRegistration) {
             $firstRegistrationAttempt.status = 'FAILED_ROLLED_BACK'
@@ -3293,13 +3483,20 @@ catch {
     catch {
         $rollbackFailure = $_
         try {
-            $audit.status = if ($legacyFirstRegistration) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }
+            $audit.status = if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }
             $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
             $audit.rollback.applied = $mutated
-            $audit.rollback.runtime_restored = $false
+            $audit.rollback.runtime_restored = $rollbackRuntimeVerified
+            $audit.rollback.step_failures = @($rollbackFailures.ToArray())
+            $audit.rollback.runtime_preimage_verified = $rollbackRuntimePreimageVerified
+            $audit.user_message = if ($rollbackRuntimeVerified) {
+                '설치 복구 중 일부 단계가 실패했지만 설치 전 앱 상태를 확인하고 앱을 다시 시작했습니다. 기록을 보존하고 관리자에게 설치 점검을 요청하세요.'
+            } else {
+                '설치 전 코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요.'
+            }
             $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
             $audit.failure_type = $original.Exception.GetType().Name
-            if ($legacyFirstRegistration) {
+            if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) {
                 if (-not $writerFenceStarted) {
                     # A final cleanup can throw before returning its readback.
                     # Retain custody for exceptions as well as reported residue.
@@ -3347,7 +3544,7 @@ catch {
                 '; rollback=' + $rollbackFailure.Exception.GetType().Name
             )
         }
-        throw ("AUTOSTART_ROLLBACK_FAILED: " + $rollbackFailure.Exception.Message +
+        throw ([string]$audit.user_message + " AUTOSTART_ROLLBACK_FAILED: " + $rollbackFailure.Exception.Message +
             '; original=' + $original.Exception.Message)
     }
     throw $original

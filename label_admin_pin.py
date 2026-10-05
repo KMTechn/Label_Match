@@ -101,8 +101,11 @@ class AdminPinClient:
             )
 
     @classmethod
-    def from_credential_path(cls, path: str | Path, *, tls_ca_bundle_path: str = ""):
-        return cls(load_credentials_from_json(path), tls_ca_bundle_path=tls_ca_bundle_path)
+    def from_credential_path(cls, path: str | Path, *, tls_ca_bundle_path: str = "",
+                             credential_input=None):
+        credentials = (load_credentials_from_json(path, credential_input=credential_input)
+                       if credential_input is not None else load_credentials_from_json(path))
+        return cls(credentials, tls_ca_bundle_path=tls_ca_bundle_path)
 
     def post(self, route: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self._post_path("/api/admin-pin/v1/" + route, payload)

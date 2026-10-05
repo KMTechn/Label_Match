@@ -1,4 +1,5 @@
 import os
+from tests.test_current_user_onboarding import isolated_data_generation_release  # noqa: F401
 from pathlib import Path
 import sys
 

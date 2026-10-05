@@ -63,7 +63,7 @@ from direct_sync_push import (  # noqa: E402
     restore_metadata_from_upload_metadata,
     restore_signed_headers,
 )
-from direct_sync_runtime import load_credentials_from_json  # noqa: E402
+from direct_sync_runtime import load_credentials_from_json, prepare_credentials_from_json  # noqa: E402
 from kmtech_zero_pe import normalize_public_jwk  # noqa: E402
 from producer_runtime_client import canonical_json as runtime_canonical_json  # noqa: E402
 
@@ -110,14 +110,15 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_credential_context(path: str | os.PathLike[str]) -> CredentialContext:
+def _load_credential_context(path: str | os.PathLike[str], *, credential_input=None) -> CredentialContext:
     selected = Path(path).expanduser()
     if selected.is_symlink():
         raise CanaryContractError("credential input path must not be a symlink")
     if not selected.is_file():
         raise FileNotFoundError(str(selected))
-    payload = read_bounded_json_object(selected)
-    credentials = load_credentials_from_json(selected)
+    payload = (credential_input.payload if credential_input is not None else read_bounded_json_object(selected))
+    credentials = (load_credentials_from_json(selected, credential_input=credential_input)
+                   if credential_input is not None else load_credentials_from_json(selected))
     forbidden: list[str | bytes] = [
         credentials.producer_id,
         credentials.key_id,
@@ -131,7 +132,9 @@ def _load_credential_context(path: str | os.PathLike[str]) -> CredentialContext:
     secret_ref = str(payload.get("secret_ref") or "").strip()
     if secret_ref.lower().startswith("dpapi:"):
         configured_data_dir = str(payload.get("secret_data_dir") or "").strip()
-        if configured_data_dir:
+        if credential_input is not None:
+            secret_data_root = credential_input.secret_data_dir
+        elif configured_data_dir:
             secret_data_root = Path(configured_data_dir).expanduser()
         else:
             local_app_data = str(os.getenv("LOCALAPPDATA") or "").strip()
@@ -652,6 +655,17 @@ def _recovery_binding() -> DeferredIntentBinding:
 
 
 def _run_recovery_child(args: argparse.Namespace) -> int:
+    from label_data_generation import DataGenerationError, check_user_data_open, resolve_data_path
+    try:
+        args._recovery_db = str(resolve_data_path(args._recovery_db))
+        args._seal_key_path = str(resolve_data_path(args._seal_key_path))
+        args._barrier_path = str(resolve_data_path(args._barrier_path))
+        # The hidden CLI accepts existing paths as well as the parent's synthetic
+        # inputs. Admit both readers before SQLite initialization or key access.
+        check_user_data_open(REPO_ROOT, (Path(args._recovery_db).parent, Path(args._seal_key_path).parent))
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     try:
         store = _BarrierDeferredIntentCaptureStore(
             Path(args._recovery_db),
@@ -933,6 +947,7 @@ def run_canary(
     tls_ca_bundle_path: str = "",
     session: Any = None,
     live_roots: tuple[str | os.PathLike[str], ...] = (),
+    credential_input=None,
 ) -> dict[str, Any]:
     started_text = utc_now_text()
     started = time.monotonic()
@@ -943,7 +958,7 @@ def run_canary(
 
     if credential_path:
         try:
-            credential_context = _load_credential_context(credential_path)
+            credential_context = _load_credential_context(credential_path, credential_input=credential_input)
         except FileNotFoundError:
             credential_context = None
         except Exception:
@@ -1111,6 +1126,21 @@ def main(argv: list[str] | None = None) -> int:
         print("canary_status=FAIL")
         print("canary_error=work-dir-and-report-path-required")
         return 1
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, resolve_data_path, normalize_data_arguments
+    try:
+        normalize_data_arguments(args, ("credential_path", "auth_target_path", "relay_db_path", "tls_ca_bundle_path"))
+        args.live_root = [str(resolve_data_path(value)) for value in args.live_root]
+        roots = tuple(Path(value) for value in args.live_root)
+        roots += tuple(Path(value).parent for value in (
+            args.credential_path, args.auth_target_path, args.relay_db_path) if value)
+        input_roots = tuple(Path(value).parent for value in (args.tls_ca_bundle_path,) if value)
+        check_user_data_open(REPO_ROOT, (*roots, *input_roots))
+        credential_input = (prepare_credentials_from_json(args.credential_path, app_root=REPO_ROOT,
+                            reader=read_bounded_json_object) if args.credential_path else None)
+        record_user_data_open(REPO_ROOT, roots)
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     try:
         report = run_canary(
             credential_path=args.credential_path,
@@ -1122,6 +1152,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout_seconds,
             tls_ca_bundle_path=args.tls_ca_bundle_path,
             live_roots=tuple(args.live_root),
+            credential_input=credential_input,
         )
     except Exception:
         print("canary_status=FAIL")

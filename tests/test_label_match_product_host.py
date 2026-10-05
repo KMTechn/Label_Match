@@ -1,4 +1,5 @@
 import json
+from tests.test_current_user_onboarding import isolated_data_generation_release  # noqa: F401
 from pathlib import Path
 import sys
 
@@ -8,6 +9,17 @@ import current_user_onboarding
 import label_match_product_host as product_host
 from tools import direct_sync_relay_runner
 import user_relay
+
+
+@pytest.fixture
+def raw_arguments(tmp_path):
+    root = tmp_path / "relay-inputs"
+    return [item for option, relative in (
+        ("--db-path", "queue/relay.sqlite3"), ("--spool-dir", "spool"),
+        ("--producer-manifest-path", "producer_manifest.json"),
+        ("--credential-path", "credential.json"), ("--upload-status-dir", "upload_status"),
+        ("--runtime-status-path", "status/raw.json"), ("--log-path", "logs/raw.jsonl"),
+    ) for item in (option, str(root / relative))]
 
 
 def test_portable_default_product_root_is_the_release_parent(monkeypatch, tmp_path):
@@ -37,24 +49,24 @@ def test_non_product_arguments_continue_to_gui_startup():
     assert product_host.dispatch_product_mode(["--ordinary-app-argument"]) is None
 
 
-def test_relay_mode_reuses_main_onedir_process_and_forwards_arguments(monkeypatch):
+def test_relay_mode_reuses_main_onedir_process_and_forwards_arguments(monkeypatch, raw_arguments):
     observed = []
     monkeypatch.setattr(
         direct_sync_relay_runner,
         "main",
-        lambda arguments: observed.append(list(arguments)) or 17,
+        lambda arguments, **_prepared_inputs: observed.append(list(arguments)) or 17,
     )
 
     result = product_host.dispatch_product_mode(
-        [product_host.DIRECT_SYNC_RELAY_MODE, "--db-path", "queue.sqlite3"]
+        [product_host.DIRECT_SYNC_RELAY_MODE, *raw_arguments, "--db-path", "queue.sqlite3"]
     )
 
     assert result == 17
-    assert observed == [["--db-path", "queue.sqlite3"]]
+    assert observed == [[*raw_arguments, "--db-path", "queue.sqlite3"]]
 
 
 def test_frozen_hosted_relay_fails_closed_before_runtime_on_integrity_error(
-    monkeypatch,
+    monkeypatch, raw_arguments,
 ):
     observed = []
     monkeypatch.setattr(
@@ -68,14 +80,14 @@ def test_frozen_hosted_relay_fails_closed_before_runtime_on_integrity_error(
         lambda arguments: observed.append(list(arguments)) or 0,
     )
 
-    result = product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE])
+    result = product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE, *raw_arguments])
 
     assert result == product_host.HOSTED_RELAY_FAILURE_EXIT_CODE
     assert observed == []
 
 
 def test_frozen_hosted_relay_warns_and_continues_when_record_is_absent(
-    monkeypatch, capsys, tmp_path
+    monkeypatch, capsys, tmp_path, raw_arguments
 ):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
     monkeypatch.delenv("LABEL_MATCH_DIRECT_SYNC_ROOT", raising=False)
@@ -85,10 +97,10 @@ def test_frozen_hosted_relay_warns_and_continues_when_record_is_absent(
         "_verify_frozen_host_integrity",
         lambda: {"status": "ABSENT"},
     )
-    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments: 0)
+    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments, **_prepared_inputs: 0)
 
     assert (
-        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE]) == 0
+        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE, *raw_arguments]) == 0
     )
     assert "integrity record is absent" in capsys.readouterr().err
     warning_path = (
@@ -105,7 +117,7 @@ def test_frozen_hosted_relay_warns_and_continues_when_record_is_absent(
 
 
 def test_windowed_host_persists_absent_integrity_warning_without_stderr(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, raw_arguments
 ):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
     monkeypatch.delenv("LABEL_MATCH_DIRECT_SYNC_ROOT", raising=False)
@@ -115,11 +127,11 @@ def test_windowed_host_persists_absent_integrity_warning_without_stderr(
         "_verify_frozen_host_integrity",
         lambda: {"status": "ABSENT"},
     )
-    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments: 0)
+    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments, **_prepared_inputs: 0)
     monkeypatch.setattr(sys, "stderr", None)
 
     assert (
-        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE]) == 0
+        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE, *raw_arguments]) == 0
     )
 
     warning_path = (
@@ -135,10 +147,10 @@ def test_windowed_host_persists_absent_integrity_warning_without_stderr(
     assert sys.stderr is None
 
 
-def test_windowed_host_supplies_and_restores_output_streams(monkeypatch):
+def test_windowed_host_supplies_and_restores_output_streams(monkeypatch, raw_arguments):
     observed = []
 
-    def fake_main(arguments):
+    def fake_main(arguments, **_prepared_inputs):
         observed.append((sys.stdout is not None, sys.stderr is not None, arguments))
         return 0
 
@@ -147,27 +159,28 @@ def test_windowed_host_supplies_and_restores_output_streams(monkeypatch):
     monkeypatch.setattr(sys, "stderr", None)
 
     assert (
-        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE]) == 0
+        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE, *raw_arguments]) == 0
     )
-    assert observed == [(True, True, [])]
+    assert observed == [(True, True, raw_arguments)]
     assert sys.stdout is None
     assert sys.stderr is None
 
 
 def test_relay_exception_becomes_bounded_redacted_durable_diagnostic(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, raw_arguments
 ):
     runtime_status_path = tmp_path / "status" / "runtime.json"
     log_path = tmp_path / "logs" / "runtime.jsonl"
     secret_text = "secret=must-not-be-persisted"
 
-    def fail(_arguments):
+    def fail(_arguments, **_prepared_inputs):
         raise RuntimeError(secret_text)
 
     monkeypatch.setattr(direct_sync_relay_runner, "main", fail)
     result = product_host.dispatch_product_mode(
         [
             product_host.DIRECT_SYNC_RELAY_MODE,
+            *raw_arguments,
             "--runtime-status-path",
             str(runtime_status_path),
             "--log-path",
@@ -189,14 +202,14 @@ def test_relay_exception_becomes_bounded_redacted_durable_diagnostic(
     assert log_path.stat().st_size < 16 * 1024
 
 
-def test_relay_mode_preserves_system_exit_semantics(monkeypatch):
+def test_relay_mode_preserves_system_exit_semantics(monkeypatch, raw_arguments):
     monkeypatch.setattr(
         direct_sync_relay_runner,
         "main",
-        lambda _arguments: (_ for _ in ()).throw(SystemExit(7)),
+        lambda _arguments, **_prepared_inputs: (_ for _ in ()).throw(SystemExit(7)),
     )
     with pytest.raises(SystemExit) as caught:
-        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE])
+        product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE, *raw_arguments])
     assert caught.value.code == 7
 
 
@@ -205,7 +218,7 @@ def test_user_relay_onboarding_and_removal_modes_dispatch_in_process(monkeypatch
     monkeypatch.setattr(
         user_relay,
         "main",
-        lambda arguments: observed.append(("relay", list(arguments))) or 0,
+        lambda arguments, **_prepared_inputs: observed.append(("relay", list(arguments))) or 0,
     )
     monkeypatch.setattr(
         current_user_onboarding,

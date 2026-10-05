@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import csv
 import datetime as dt
 import json
@@ -1064,6 +1066,9 @@ def refresh_item_catalog(
                 getattr(profile, "tls_ca_bundle_path", "") or ""
             ).strip()
             if tls_ca_bundle_path:
+                from label_data_generation import check_user_data_open, resolve_data_path
+                tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
+                check_user_data_open(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
                 request_kwargs["verify"] = tls_ca_bundle_path
         transport = get or (_hardened_get if central_enrolled else requests.get)
         _update_catalog_attempt_context(request_sent=True)
@@ -1119,6 +1124,9 @@ def refresh_item_catalog(
             )
         return cache
     except Exception as exc:  # noqa: BLE001 - persist type, never exception text.
+        from label_data_generation import DataGenerationError
+        if isinstance(exc, DataGenerationError):
+            raise
         _update_catalog_attempt_context(exception_type=type(exc).__name__)
         recovered = cache if _is_valid_catalog(cache) else None
         if central_enrolled:

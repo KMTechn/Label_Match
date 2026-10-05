@@ -725,6 +725,9 @@ def load_logistics_runtime_profile(
         selected_path,
         label="runtime profile",
     )
+    from label_data_generation import check_user_data_open
+    app_root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    check_user_data_open(app_root, (path.parent,), environ=values)
     if not path.exists():
         if required_value or explicit_path:
             raise LogisticsRuntimeConfigurationError("machine logistics profile is missing")
@@ -737,6 +740,11 @@ def load_logistics_runtime_profile(
     if profile.get("contract_version") != PROFILE_CONTRACT_VERSION:
         raise LogisticsRuntimeConfigurationError("machine logistics profile contract_version is invalid")
     secret_path = _resolve_secret_path(path, profile.get("bearer_token_ref"))
+    selected_ca = _resolve_tls_ca_bundle_path(path, profile.get("tls_ca_bundle_path"))
+    protected_roots = (secret_path.parent,)
+    if selected_ca:
+        protected_roots += (Path(selected_ca).parent,)
+    check_user_data_open(app_root, protected_roots, environ=values)
     try:
         encrypted = secret_path.read_bytes()
     except OSError as exc:
@@ -777,9 +785,7 @@ def load_logistics_runtime_profile(
         timeout_seconds=timeout,
         profile_path=str(path.resolve()),
         required=required_value,
-        tls_ca_bundle_path=_resolve_tls_ca_bundle_path(
-            path, profile.get("tls_ca_bundle_path")
-        ),
+        tls_ca_bundle_path=selected_ca,
     )
 
 

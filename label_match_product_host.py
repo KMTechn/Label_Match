@@ -116,7 +116,8 @@ def _record_bootstrap_integrity_absent(arguments: Sequence[str], mode: str) -> N
 
 
 def _option_value(arguments: Sequence[str], option: str) -> str:
-    for index, argument in enumerate(arguments):
+    for index in range(len(arguments) - 1, -1, -1):
+        argument = arguments[index]
         if argument == option and index + 1 < len(arguments):
             return str(arguments[index + 1])
         prefix = f"{option}="
@@ -238,6 +239,35 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
             DIRECT_SYNC_RELAY_MODE,
             USER_RELAY_MODE,
             }:
+            from label_data_generation import DataGenerationError, check_user_data_open, resolve_data_path, normalize_data_arguments
+            try:
+                if mode == USER_RELAY_MODE:
+                    from user_relay import build_parser
+                    selected = build_parser().parse_args(arguments)
+                    root = resolve_data_path(selected.app_root) if selected.app_root else _default_product_root()
+                    normalize_data_arguments(selected, ("direct_sync_root", "scan_source_dir"))
+                    roots = tuple(Path(value) for value in (selected.direct_sync_root, selected.scan_source_dir) if value)
+                else:
+                    from tools.direct_sync_relay_runner import build_parser
+                    selected = build_parser().parse_args(arguments)
+                    root = _default_product_root()
+                    normalize_data_arguments(selected, ("db_path", "credential_path", "producer_manifest_path",
+                        "enqueue_source_file", "operator_pause_path", "scan_source_dir", "spool_dir"))
+                    roots = tuple(Path(value).parent for value in (selected.db_path, selected.credential_path,
+                        selected.producer_manifest_path, selected.enqueue_source_file, selected.operator_pause_path) if value)
+                    roots += tuple(Path(value) for value in (selected.scan_source_dir, selected.spool_dir) if value)
+                check_user_data_open(root, roots)
+                from direct_sync_runtime import prepare_credentials_from_json
+                if mode == DIRECT_SYNC_RELAY_MODE:
+                    credential_input = prepare_credentials_from_json(selected.credential_path, app_root=root)
+                else:
+                    from current_user_onboarding import resolve_current_user_onboarding_paths
+                    paths = resolve_current_user_onboarding_paths(root)
+                    selected_direct_sync_root = Path(selected.direct_sync_root) if selected.direct_sync_root else paths.direct_sync_root
+                    credential_input = prepare_credentials_from_json(selected_direct_sync_root / "credential.json", app_root=root)
+            except DataGenerationError as exc:
+                print(str(exc), file=sys.stderr)
+                return HOSTED_RELAY_FAILURE_EXIT_CODE
             try:
                 integrity = _verify_frozen_host_integrity()
                 if integrity.get("status") == "ABSENT":
@@ -254,16 +284,24 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
             try:
                 from tools import direct_sync_relay_runner
 
-                return int(direct_sync_relay_runner.main(arguments))
+                return int(direct_sync_relay_runner.main(arguments, credential_input=credential_input))
             except Exception as exc:
+                from label_data_generation import DataGenerationError
+                if isinstance(exc, DataGenerationError):
+                    print(str(exc), file=sys.stderr)
+                    return HOSTED_RELAY_FAILURE_EXIT_CODE
                 _record_hosted_relay_failure(arguments, exc)
                 return HOSTED_RELAY_FAILURE_EXIT_CODE
         if mode == USER_RELAY_MODE:
             try:
                 from user_relay import main as user_relay_main
 
-                return int(user_relay_main(arguments))
+                return int(user_relay_main(arguments, credential_input=credential_input))
             except Exception as exc:
+                from label_data_generation import DataGenerationError
+                if isinstance(exc, DataGenerationError):
+                    print(str(exc), file=sys.stderr)
+                    return HOSTED_RELAY_FAILURE_EXIT_CODE
                 _record_hosted_relay_failure([USER_RELAY_MODE, *arguments], exc)
                 return HOSTED_RELAY_FAILURE_EXIT_CODE
         if mode == ONBOARD_CURRENT_USER_MODE:

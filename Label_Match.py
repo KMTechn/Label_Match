@@ -82,7 +82,7 @@ from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_pat
 from label_match_product_host import (
     _default_product_root, dispatch_product_mode, requires_bootstrap_integrity,
 )
-from writer_session_fence import writer_sink
+from writer_session_fence import WriterFenceError, writer_sink
 from label_data_manager import DataManager as _DataManager, read_recovery_file
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 from label_admin_pin import (
@@ -3610,13 +3610,18 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-from label_data_generation import CURRENT_VERSION, record_user_data_open
+from label_data_generation import CURRENT_VERSION, DataGenerationError, check_user_data_open, record_user_data_open
 APP_VERSION = "v2.0.95"
 if APP_VERSION != CURRENT_VERSION:
     raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
 
 
 def _open_label_data_manager(save_directory, *args, **kwargs):
+    from direct_sync_runtime import prepare_credentials_from_json
+    app_root = _label_match_runtime_app_root()
+    paths = resolve_current_user_onboarding_paths(app_root)
+    if paths.credential_path.is_file():
+        prepare_credentials_from_json(paths.credential_path, app_root=app_root)
     return record_user_data_open(
         _label_match_runtime_app_root(), (Path(save_directory),),
         opener=lambda: DataManager(save_directory, *args, **kwargs),
@@ -4078,6 +4083,10 @@ def _update_candidate_from_manifest(
 
 
 def _check_private_manifest_for_updates(*, tls_ca_bundle_path=""):
+    if tls_ca_bundle_path:
+        from label_data_generation import check_user_data_open, resolve_data_path
+        tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
+        check_user_data_open(_label_match_runtime_app_root(), (Path(tls_ca_bundle_path).parent,))
     manifest_url = _get_update_manifest_url()
     if not manifest_url:
         print("private_manifest updater is enabled, but no manifest URL is configured.")
@@ -9436,14 +9445,22 @@ class Label_Match(tk.Tk):
     def _package_pin_client(self):
         client = self.__dict__.get("_admin_pin_client")
         if client is None:
-            paths = resolve_current_user_onboarding_paths(
-                _label_match_runtime_app_root()
+            from direct_sync_runtime import prepare_credentials_from_json
+            from label_data_generation import resolve_data_path
+            app_root = _label_match_runtime_app_root()
+            paths = resolve_current_user_onboarding_paths(app_root)
+            selected_ca = _label_match_client_tls_ca_bundle_path(
+                self.__dict__.get("package_logistics_client")
+            )
+            if selected_ca:
+                selected_ca = str(resolve_data_path(selected_ca))
+                check_user_data_open(app_root, (Path(selected_ca).parent,))
+            credential_input = prepare_credentials_from_json(
+                paths.credential_path, app_root=app_root,
             )
             client = AdminPinClient.from_credential_path(
-                paths.credential_path,
-                tls_ca_bundle_path=_label_match_client_tls_ca_bundle_path(
-                    self.__dict__.get("package_logistics_client")
-                ),
+                paths.credential_path, tls_ca_bundle_path=selected_ca,
+                credential_input=credential_input,
             )
             self._admin_pin_client = client
         return client
@@ -10002,6 +10019,11 @@ class Label_Match(tk.Tk):
 
     def _run_package_pin_action(self, action, set_id, physical_qr=""):
         """Authorize one selected recovery item without blocking other items."""
+        try:
+            self._package_pin_client()
+        except DataGenerationError as exc:
+            self._admin_pin_last_message = str(exc)
+            return str(exc)
         store = self._admin_pin_store
         self.__dict__.pop("_admin_pin_closing_intent", None)
         if action == "LABEL.SUPPORT_HANDOFF":
@@ -22145,7 +22167,12 @@ FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
     "이 PC의 설치 및 사용자 설정을 관리자에게 확인받으세요. "
     "아래 보고서 경로를 IT 담당자에게 전달하세요."
 )
+INSTALLATION_RECOVERY_REQUIRED_MESSAGE = (
+    "설치 또는 복구 상태를 확인해야 해 앱을 멈춘 상태로 유지합니다.\n\n"
+    "자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
+)
 FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
+    "INSTALLATION_RECOVERY_REQUIRED": INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
     "RELAY_RESUME_REQUIRED": (
         "중앙 전송 릴레이가 정지해 있습니다. 신원 복구만으로 전송이 다시 시작되지는 않습니다.\n\n"
         "미전송 기록은 보존됩니다. 같은 Windows 사용자로 초기 설정을 다시 실행하고 "
@@ -22211,6 +22238,22 @@ def _show_first_run_onboarding_error(failure):
                 parent.destroy()
             except tk.TclError:
                 pass
+
+
+def _show_installation_recovery_required(error):
+    failure = CurrentUserOnboardingError(
+        INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
+        report_path=_label_match_runtime_app_root(),
+        status="BLOCKED",
+        cause_code="INSTALLATION_RECOVERY_REQUIRED",
+    )
+    _label_match_startup_trace(
+        "installation_recovery_required",
+        guard_code=error.code,
+        user_message=INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
+    )
+    print(INSTALLATION_RECOVERY_REQUIRED_MESSAGE, file=sys.stderr)
+    _show_first_run_onboarding_error(failure)
 
 
 def _show_bootstrap_integrity_absent_warning():
@@ -22429,8 +22472,9 @@ def main(argv=None):
     if hosted_result is not None:
         return hosted_result
     verify_factory_contract_startup()
-    _label_match_startup_trace("main_enter")
     try:
+        check_user_data_open(_label_match_runtime_app_root())
+        _label_match_startup_trace("main_enter")
         if _first_run_onboarding_enabled():
             app_root = _label_match_runtime_app_root()
             try:
@@ -22451,6 +22495,9 @@ def main(argv=None):
                 ):
                     _label_match_startup_trace("bootstrap_integrity_absent")
                     _show_bootstrap_integrity_absent_warning()
+            except WriterFenceError as exc:
+                _show_installation_recovery_required(exc)
+                return ONBOARDING_EXIT_CODE
             except CurrentUserOnboardingError as exc:
                 _label_match_startup_trace(
                     "current_user_onboarding_blocked",
@@ -22468,6 +22515,12 @@ def main(argv=None):
             _run_label_match_application,
             data_scope=data_scope,
         )
+    except WriterFenceError as exc:
+        _show_installation_recovery_required(exc)
+        return ONBOARDING_EXIT_CODE
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return ONBOARDING_EXIT_CODE
     except ItemCatalogSyncError as exc:
         catalog_context = get_catalog_attempt_context_from_error(exc)
         try:

@@ -223,7 +223,7 @@ def commit_relay_handoff(preflight, manifest, credential, receipt, authorization
                 'message_ko': RESUME_MESSAGE}
 
 
-def recovered_stop_release(paths):
+def recovered_stop_release(paths, *, credential_input=None):
     """Read the protected local commit; never treat a public report as authority."""
     from direct_sync_runtime import load_credentials_from_json
     database = _safe_path(paths.direct_sync_root / 'queue/direct_sync_relay.sqlite3')
@@ -232,7 +232,8 @@ def recovered_stop_release(paths):
     with _connect(database, readonly=True) as conn:
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (HANDOFF_TABLE,)).fetchone() is None:
             return None
-    credential = load_credentials_from_json(paths.credential_path)
+    credential = (load_credentials_from_json(paths.credential_path, credential_input=credential_input)
+                  if credential_input is not None else load_credentials_from_json(paths.credential_path))
     identity = _json_file(paths.identity_path)
     owner = current_owner()
     if owner['producer_install_id'] != identity['producer_install_id']:

@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once, utc_now_text  # noqa: E402
+from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once, utc_now_text, prepare_credentials_from_json  # noqa: E402
 from writer_session_fence import writer_sink  # noqa: E402
 
 
@@ -487,8 +487,7 @@ def _persist_scan_runtime_status(config: DirectSyncRuntimeConfig, status: dict) 
         handle.write("\n")
 
 
-@writer_sink("raw_relay_runner")
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Label_Match direct-sync relay runner")
     parser.add_argument("--db-path", required=True)
     parser.add_argument("--spool-dir", required=True)
@@ -512,21 +511,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-enqueue-files", type=int, default=100)
     parser.add_argument("--min-source-file-age-seconds", type=int, default=0)
     parser.add_argument("--baseline-existing-source-files", action="store_true")
+    return parser
+
+
+@writer_sink("raw_relay_runner")
+def main(argv: list[str] | None = None, *, credential_input=None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.enqueue_source_file and args.scan_source_dir:
         parser.error("--enqueue-source-file and --scan-source-dir are mutually exclusive")
     if args.baseline_existing_source_files and not args.scan_source_dir:
         parser.error("--baseline-existing-source-files requires --scan-source-dir")
 
-    from label_data_generation import record_user_data_open
+    from label_data_generation import check_user_data_open, record_user_data_open, normalize_data_arguments
     from label_match_product_host import _default_product_root
     from current_user_onboarding import resolve_current_user_onboarding_paths
     product_root = _default_product_root()
+    normalize_data_arguments(args, ("db_path", "producer_manifest_path", "credential_path", "scan_source_dir",
+        "enqueue_source_file", "spool_dir", "log_path", "runtime_status_path", "upload_status_dir", "operator_pause_path", "tls_ca_bundle_path"))
+    roots = (Path(args.db_path).parent, Path(args.producer_manifest_path).parent, Path(args.credential_path).parent,
+        Path(args.scan_source_dir) if args.scan_source_dir else
+        Path(args.enqueue_source_file).parent if args.enqueue_source_file else Path(args.db_path).parent)
+    roots += (Path(args.spool_dir),)
+    if args.operator_pause_path:
+        roots += (Path(args.operator_pause_path).parent,)
+    input_roots = tuple(Path(value).parent for value in (args.tls_ca_bundle_path,) if value)
+    check_user_data_open(product_root, (*roots, *input_roots))
+    if credential_input is None:
+        credential_input = prepare_credentials_from_json(args.credential_path, app_root=product_root)
     paths = resolve_current_user_onboarding_paths(product_root)
     source_roots = ([Path(args.scan_source_dir).expanduser().absolute()] if args.scan_source_dir else
                     [Path(args.enqueue_source_file).expanduser().absolute().parent] if args.enqueue_source_file else [])
-    record_user_data_open(product_root, (paths.data_root, paths.ledger_path.parent,
-                                        Path(args.db_path).absolute().parent, *source_roots))
+    record_user_data_open(product_root, (paths.data_root, paths.ledger_path.parent, *roots, *source_roots))
     config = _build_config(args)
     if args.baseline_existing_source_files:
         try:
@@ -545,6 +561,7 @@ def main(argv: list[str] | None = None) -> int:
             config,
             source_file_path=args.enqueue_source_file,
             relative_path=args.relative_path,
+            credential_input=credential_input,
         )
     elif args.scan_source_dir:
         try:
@@ -586,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
                     config,
                     source_file_path=delta_source_file,
                     relative_path=relative_path,
+                    credential_input=credential_input,
                 )
                 if current["status"] in {"paused_by_operator", "blocked_queue_backpressure", "blocked_disk_pressure"}:
                     preflight_status = current
@@ -662,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
                 targeted_drain_results = []
                 relay_status = None
                 for relay_id in list(pending_delta_progress):
-                    current_status = run_relay_once(config, target_relay_id=relay_id)
+                    current_status = run_relay_once(config, target_relay_id=relay_id, credential_input=credential_input)
                     last_result = (
                         current_status.get("last_result")
                         if isinstance(current_status.get("last_result"), dict)
@@ -681,7 +699,7 @@ def main(argv: list[str] | None = None) -> int:
                     targeted_drain_results.append(targeted_result)
                     relay_status = current_status
                 if relay_status is None:
-                    relay_status = run_relay_once(config)
+                    relay_status = run_relay_once(config, credential_input=credential_input)
                 relay_status["scan_status"] = status["scan_status"]
                 relay_status["scan_enqueued_count"] = enqueued_count
                 relay_status["scan_attempted_count"] = attempted_count
@@ -705,7 +723,7 @@ def main(argv: list[str] | None = None) -> int:
         if "scan_status" in status:
             _persist_scan_runtime_status(config, status)
     else:
-        status = run_relay_once(config)
+        status = run_relay_once(config, credential_input=credential_input)
     print(f"direct_sync_relay_status={status['status']}")
     if "scan_status" in status:
         print(f"direct_sync_scan_status={status['scan_status']}")

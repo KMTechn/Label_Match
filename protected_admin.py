@@ -139,15 +139,16 @@ def current_process_sid() -> str:
         kernel32.CloseHandle(token)
 
 
-def default_protected_admin_profile_path() -> str:
-    override = os.environ.get(PROTECTED_ADMIN_PROFILE_ENV, "").strip()
+def default_protected_admin_profile_path(*, environ=None) -> str:
+    values = os.environ if environ is None else environ
+    override = values.get(PROTECTED_ADMIN_PROFILE_ENV, "").strip()
     if override:
         return override
     program_data = next(
         (
-            os.environ.get(name, "").strip()
+            values.get(name, "").strip()
             for name in PROGRAM_DATA_ENV_NAMES
-            if os.environ.get(name, "").strip()
+            if values.get(name, "").strip()
         ),
         r"C:\ProgramData",
     )
@@ -297,6 +298,11 @@ def load_protected_admin_profile(
         profile_path or default_protected_admin_profile_path(),
         label="protected administrator profile",
     )
+    from label_data_generation import DataGenerationError, check_user_data_open
+    try:
+        check_user_data_open(Path(__file__).resolve().parent, (target.parent,))
+    except DataGenerationError as exc:
+        raise ProtectedAdminProfileError(str(exc)) from exc
 
     def reject_duplicate_fields(
         pairs: list[tuple[str, Any]],

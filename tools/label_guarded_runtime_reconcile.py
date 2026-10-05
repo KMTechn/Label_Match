@@ -92,6 +92,22 @@ def _preflight_output(path: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, normalize_data_arguments
+    try:
+        normalize_data_arguments(args, ("client_db", "server_db", "identity", "credential", "preimage", "client_backup",
+            "live_client_proof", "server_initializer_proof", "server_source_root", "server_launcher", "server_executable",
+            "stop_marker", "portable_root", "tls_ca_bundle"))
+        roots = tuple(Path(value).parent for value in (args.client_db, args.server_db, args.identity, args.credential, args.stop_marker))
+        evidence_roots = tuple(Path(value).parent for value in (
+            args.preimage, args.client_backup, args.live_client_proof, args.server_initializer_proof))
+        input_roots = tuple(Path(value).parent for value in (args.tls_ca_bundle,) if value)
+        check_user_data_open(ROOT, (*roots, *evidence_roots, *input_roots))
+        from direct_sync_runtime import prepare_credentials_from_json
+        credential_input = prepare_credentials_from_json(args.credential, app_root=ROOT)
+        record_user_data_open(ROOT, roots)
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return RECONCILE_EXIT_CODE
     evidence_path = Path(args.evidence_output).expanduser().resolve(strict=False)
     receipt_path = Path(args.receipt_output).expanduser().resolve(strict=False)
     started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -118,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             server_db_path=args.server_db,
             identity_path=args.identity,
             credential_path=args.credential,
+            credential_input=credential_input,
             stop_marker_path=args.stop_marker,
             portable_root=args.portable_root,
             receipt_output_path=args.receipt_output,

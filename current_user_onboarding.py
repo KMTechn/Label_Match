@@ -23,7 +23,7 @@ from current_user_scheduled_task import (
 )
 from direct_sync_push import manifest_hash
 from enrollment_mutex import EnrollmentMutex, EnrollmentMutexError
-from direct_sync_runtime import load_credentials_from_json
+from direct_sync_runtime import load_credentials_from_json, prepare_credentials_from_json
 from label_exact_clone_resolution import read_pinned_json, validate_resolution_receipt
 from label_match_product_host import _default_product_root, requires_bootstrap_integrity
 from label_match_single_instance import SingleInstanceError, resolve_data_scope
@@ -44,7 +44,7 @@ from user_relay import (
     user_relay_stop_path,
 )
 from writer_session_fence import writer_sink
-from label_data_generation import record_user_data_open
+from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
 
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
@@ -112,6 +112,7 @@ def _portable_stop_marker_release_preflight(
     paths: CurrentUserOnboardingPaths,
     *,
     environ: Mapping[str, str] | None = None,
+    credential_input=None,
 ) -> dict[str, Any]:
     marker = user_relay_stop_path(paths.direct_sync_root)
     if not marker.exists():
@@ -195,7 +196,8 @@ def _portable_stop_marker_release_preflight(
     ).strip().lower()
     if not receipt_value and not expected_receipt_hash:
         from registration_relay_recovery import recovered_stop_release
-        recovered = recovered_stop_release(paths)
+        recovered = (recovered_stop_release(paths, credential_input=credential_input)
+                     if credential_input is not None else recovered_stop_release(paths))
         if recovered is not None:
             return recovered
     if not receipt_value or len(expected_receipt_hash) != 64 or any(
@@ -204,7 +206,9 @@ def _portable_stop_marker_release_preflight(
         raise ValueError(
             "relay stop marker requires a pinned EXACT_CLONE_RUNTIME_CONFLICT receipt"
         )
-    receipt_path = _resolved(receipt_value)
+    from label_data_generation import resolve_data_path
+    receipt_path = resolve_data_path(receipt_value)
+    check_user_data_open(paths.app_root, (receipt_path.parent,), environ=environ)
     try:
         receipt = read_pinned_json(
             receipt_path,
@@ -713,6 +717,7 @@ def inspect_current_user_state(
     *,
     profile_loader: Callable[[Path], Any] = _default_profile_loader,
     credential_loader: Callable[[Path], Any] = load_credentials_from_json,
+    credential_input=None,
 ) -> dict[str, Any]:
     state_paths = {
         "identity": paths.identity_path,
@@ -744,7 +749,10 @@ def inspect_current_user_state(
     try:
         identity = _read_json(paths.identity_path, "producer identity")
         manifest = _read_json(paths.producer_manifest_path, "producer manifest")
-        credential = _read_json(paths.credential_path, "producer credential")
+        if credential_input is not None and credential_input.error is not None:
+            raise credential_input.error
+        credential = (credential_input.payload if credential_input is not None else
+                      _read_json(paths.credential_path, "producer credential"))
         registration = _read_json(paths.registration_report_path, "registration report")
         profile_payload = _read_json(paths.logistics_profile_path, "logistics profile")
         required_identity = {
@@ -776,7 +784,9 @@ def inspect_current_user_state(
             raise ValueError("producer credential is not current-user scoped")
         if str(profile_payload.get("credential_scope") or "") != "current_user":
             raise ValueError("logistics profile is not current-user scoped")
-        resolved_credential = credential_loader(paths.credential_path)
+        resolved_credential = (credential_loader(paths.credential_path, credential_input=credential_input)
+            if credential_input is not None and credential_loader is load_credentials_from_json else
+            credential_loader(paths.credential_path))
         resolved_profile = profile_loader(paths.logistics_profile_path)
         if resolved_credential is None or resolved_profile is None:
             raise ValueError("credential/profile readback returned no value")
@@ -817,7 +827,8 @@ def _configured_tls_ca_bundle_source(
     values = os.environ if environ is None else environ
     explicit = str(values.get(ENROLLMENT_TLS_CA_BUNDLE_PATH_ENV) or "").strip()
     if explicit:
-        return explicit
+        from label_data_generation import resolve_data_path
+        return str(resolve_data_path(explicit))
     if paths.bootstrap_tls_ca_bundle_path.is_file():
         return str(paths.bootstrap_tls_ca_bundle_path)
     return ""
@@ -828,6 +839,7 @@ def _registration_runner(
     *,
     server_base_url: str,
     environ: Mapping[str, str] | None = None,
+    tls_ca_source: str | None = None,
 ) -> int:
     from tools import register_label_match_worker_pc
 
@@ -855,7 +867,8 @@ def _registration_runner(
         "--report-path",
         str(paths.registration_report_path),
     ]
-    tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
+    if tls_ca_source is None:
+        tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
     if tls_ca_source:
         arguments.extend(["--tls-ca-bundle-path", tls_ca_source])
     return int(register_label_match_worker_pc.main(arguments))
@@ -901,6 +914,39 @@ def apply_current_user_runtime_environment(
     values[REQUIRED_ENV] = "1"
 
 
+def prepare_current_user_data_open(
+    app_root: str | os.PathLike[str],
+    *,
+    environ: Mapping[str, str] | None = None,
+    installer_admission: bool = False,
+):
+    """Admit existing onboarding inputs without recording or changing state."""
+    admit = check_user_data_open
+    if installer_admission:
+        from label_data_generation import check_installer_user_data_open
+        admit = check_installer_user_data_open
+    try:
+        admit(Path(app_root), environ=environ)
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=Path(app_root),
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
+    paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
+    try:
+        admit(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+            paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent), environ=environ)
+        tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
+        if tls_ca_source:
+            admit(paths.app_root, (Path(tls_ca_source).parent,), environ=environ)
+        credential_input = (prepare_credentials_from_json(paths.credential_path,
+            app_root=paths.app_root, environ=environ,
+            **({"installer_admission": True} if installer_admission else {}))
+            if paths.credential_path.is_file() else None)
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
+    return paths, tls_ca_source, credential_input
+
+
 @writer_sink("current_user_onboarding")
 def onboard_current_user(
     app_root: str | os.PathLike[str],
@@ -928,8 +974,14 @@ def onboard_current_user(
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = start_user_relay_process,
 ) -> dict[str, Any]:
-    paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
-    tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
+    paths, tls_ca_source, credential_input = prepare_current_user_data_open(app_root, environ=environ)
+    try:
+        record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+                                               paths.direct_sync_root, paths.queue_dir,
+                                               paths.logistics_profile_path.parent))
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     for directory in (
         paths.data_root,
         paths.settings_path.parent,
@@ -1034,7 +1086,7 @@ def onboard_current_user(
         state = inspect_current_user_state(
             paths,
             profile_loader=profile_loader,
-            credential_loader=credential_loader,
+            credential_loader=credential_loader, credential_input=credential_input,
         )
         report["initial_state"] = state
         require_registration_recovery(state)
@@ -1053,7 +1105,7 @@ def onboard_current_user(
             state = inspect_current_user_state(
                 paths,
                 profile_loader=profile_loader,
-                credential_loader=credential_loader,
+                credential_loader=credential_loader, credential_input=credential_input,
             )
         if state["status"] == "RECOVERY_REQUIRED":
             raise ValueError(str(state.get("reason") or "partial current-user state"))
@@ -1066,7 +1118,7 @@ def onboard_current_user(
                 state = inspect_current_user_state(
                     paths,
                     profile_loader=profile_loader,
-                    credential_loader=credential_loader,
+                    credential_loader=credential_loader, credential_input=credential_input,
                 )
                 require_registration_recovery(state)
                 if state["status"] == "RECOVERY_REQUIRED":
@@ -1079,9 +1131,14 @@ def onboard_current_user(
                             paths,
                             server_base_url=server_base_url,
                             environ=environ,
+                            tls_ca_source=tls_ca_source,
                         )
                     else:
                         return_code = registration_runner(paths)
+                    # Registration can create/replace this locator; admit that new
+                    # input once before its readback and keep it for later loaders.
+                    credential_input = (prepare_credentials_from_json(paths.credential_path,
+                        app_root=paths.app_root, environ=environ) if paths.credential_path.is_file() else None)
                     if type(return_code) is not int:
                         raise CurrentUserOnboardingError(
                             "registration result is UNKNOWN because no exit code was returned",
@@ -1091,7 +1148,7 @@ def onboard_current_user(
                     if return_code != 0:
                         require_registration_recovery(inspect_current_user_state(
                             paths, profile_loader=profile_loader,
-                            credential_loader=credential_loader,
+                            credential_loader=credential_loader, credential_input=credential_input,
                         ))
                         if paths.registration_report_path.is_file():
                             registration_failure = _read_json(
@@ -1115,7 +1172,7 @@ def onboard_current_user(
                     state = inspect_current_user_state(
                         paths,
                         profile_loader=profile_loader,
-                        credential_loader=credential_loader,
+                        credential_loader=credential_loader, credential_input=credential_input,
                     )
                     if state["status"] != "READY":
                         raise ValueError(
@@ -1135,8 +1192,7 @@ def onboard_current_user(
                 "configured TLS CA bundle was not persisted in the logistics profile"
             )
 
-        record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent),
-                              environ=environ, opener=lambda: ledger_factory(paths.ledger_path))
+        ledger_factory(paths.ledger_path)
         if not paths.ledger_path.is_file():
             raise ValueError("current-user business ledger readback failed")
         report["settings"] = dict(settings_factory(paths))
@@ -1149,6 +1205,7 @@ def onboard_current_user(
         report["stop_marker_release"] = _portable_stop_marker_release_preflight(
             paths,
             environ=environ,
+            credential_input=credential_input,
         )
         report["relay_autostart"] = dict(autostart_installer(paths.app_root))
         autostart_status = str(report["relay_autostart"].get("status") or "")
@@ -1272,7 +1329,18 @@ def remove_current_user_setup(
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = request_user_relay_stop,
 ) -> dict[str, Any]:
+    try:
+        check_user_data_open(Path(app_root), environ=environ)
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=Path(app_root),
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
+    try:
+        check_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+            paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent), environ=environ)
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=paths.removal_report_path,
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     paths.status_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
         "report_version": REMOVAL_REPORT_VERSION,
@@ -1361,8 +1429,13 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--app-root", default=str(_default_app_root()))
     parser.add_argument("--server-base-url", default=DEFAULT_SERVER_BASE_URL)
+    parser.add_argument("--check-data-generation-only", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.check_data_generation_only:
+            prepare_current_user_data_open(args.app_root, installer_admission=True)
+            print("onboarding_data_generation_status=PASS")
+            return 0
         report = onboard_current_user(
             args.app_root,
             server_base_url=args.server_base_url,
@@ -1371,7 +1444,7 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     except CurrentUserOnboardingError as exc:
         print(f"onboarding_status={exc.status}")
         print(f"onboarding_report={exc.report_path}")
-        if exc.status == "RECOVERY_REQUIRED":
+        if exc.status == "RECOVERY_REQUIRED" or exc.cause_code == "DATA_GENERATION_REFUSED":
             print(str(exc))
         return ONBOARDING_EXIT_CODE
     print(f"onboarding_status={report['status']}")
@@ -1394,6 +1467,8 @@ def removal_main(argv: list[str] | None = None) -> int:
     except CurrentUserOnboardingError as exc:
         print(f"current_user_removal_status={exc.status}")
         print(f"current_user_removal_report={exc.report_path}")
+        if exc.cause_code == "DATA_GENERATION_REFUSED":
+            print(str(exc))
         return ONBOARDING_EXIT_CODE
     paths = resolve_current_user_onboarding_paths(args.app_root)
     print(f"current_user_removal_status={report['status']}")

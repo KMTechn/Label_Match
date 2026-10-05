@@ -781,6 +781,15 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         print("BLOCKED: unsupported command-line argument", file=sys.stderr)
         return 2
+    from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, resolve_data_path
+    try:
+        args.profile_path = str(resolve_data_path(args.profile_path))
+        roots = (Path(args.profile_path).parent,)
+        check_user_data_open(REPO_ROOT, roots)
+        record_user_data_open(REPO_ROOT, roots)
+    except DataGenerationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if args.dry_run:
         try:
             report = install_protected_admin_profile(

@@ -22,6 +22,7 @@ from user_relay_stop_marker import (
     read_stop_marker,
 )
 from writer_session_fence import WriterFenceError, WriterFencedError, writer_admission, writer_sink
+from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
 
 USER_RELAY_MODE = "--label-match-user-relay"
 DIRECT_SYNC_RELAY_MODE = "--label-match-direct-sync-relay"
@@ -459,7 +460,7 @@ def run_persistent_relay_loop(
                             "status": "UNKNOWN",
                             "reason": "relay cycle returned no status value",
                         }
-                except WriterFenceError:
+                except (WriterFenceError, DataGenerationError):
                     raise
                 except Exception as exc:
                     cycle = {
@@ -795,7 +796,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, credential_input=None) -> int:
     args = build_parser().parse_args(argv)
     app_root = (
         Path(
@@ -818,7 +819,18 @@ def main(argv: list[str] | None = None) -> int:
         unprotect_current_user_secret,
     )
 
+    from label_data_generation import normalize_data_arguments
+    normalize_data_arguments(args, ("direct_sync_root", "scan_source_dir"))
+    selected_roots = tuple(Path(value) for value in (args.direct_sync_root, args.scan_source_dir) if value)
+    check_user_data_open(app_root, selected_roots)
     paths = resolve_current_user_onboarding_paths(app_root)
+    from direct_sync_runtime import prepare_credentials_from_json
+    selected_direct_sync_root = Path(args.direct_sync_root) if args.direct_sync_root else paths.direct_sync_root
+    if credential_input is None:
+        credential_input = prepare_credentials_from_json(selected_direct_sync_root / "credential.json", app_root=app_root)
+    record_user_data_open(app_root, (paths.data_root, paths.ledger_path.parent,
+                                    paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent,
+                                    *selected_roots))
     apply_current_user_runtime_environment(paths)
     profile = load_logistics_runtime_profile(
         required=True,
