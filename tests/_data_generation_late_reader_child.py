@@ -6,7 +6,6 @@ import io
 import json
 import os
 from pathlib import Path
-import shutil
 import ssl
 import sys
 from types import SimpleNamespace
@@ -24,7 +23,10 @@ events = {'locator_reads': 0, 'secret_reads': 0, 'decrypt_calls': 0,
           'tls_reads': 0, 'connections': 0, 'mutations': 0}
 ca = setup['external'] / 'private-ca.pem'
 import certifi
-shutil.copyfile(certifi.where(), ca)
+bundle = Path(certifi.where()).read_bytes()
+ca_bytes = bundle[bundle.index(b'-----BEGIN CERTIFICATE-----'):]
+ca_bytes = ca_bytes[:ca_bytes.index(b'-----END CERTIFICATE-----') + len(b'-----END CERTIFICATE-----')] + b'\n'
+ca.write_bytes(ca_bytes)
 source = work / 'source.csv'
 source.write_bytes(b'isolated-data\n')
 import direct_sync_push as push
@@ -88,7 +90,7 @@ if consumer == 'profile':
     profile_path = profile_root / 'profile.json'
     secret_path = profile_root / 'secrets' / 'profile.dpapi'
     ca = profile_root / 'private-ca.pem'
-    shutil.copyfile(certifi.where(), ca)
+    ca.write_bytes(ca_bytes)
     fixture_tree = ast.parse((repo/'tests/test_logistics_runtime_profile.py').read_text(encoding='utf-8-sig'))
     fixture_node = next(n for n in fixture_tree.body if isinstance(n, ast.FunctionDef) and n.name == '_profile')
     fixture_ns = {'Path': Path, 'json': json}
@@ -109,7 +111,7 @@ if state == 'late-high':
     version = list(map(int, str(setup['identity']['version']).lstrip('v').split('.')))
     version[-1] += 1
     version = 'v' + '.'.join(map(str, version))
-    record_generation([secret_path.parent/'data-generation.json'] if consumer=='profile' else setup['marker'], app_id='Label_Match', subject_sid=setup['subject'],
+    record_generation(secret_path.parent/'data-generation.json' if consumer=='profile' else setup['marker'], app_id='Label_Match', subject_sid=setup['subject'],
         version=version, build_id=hashlib.sha256(b'isolated-higher-build').hexdigest()[:40], data_compatible_min_version=version)
 
 before = setup['snapshot']()
@@ -126,6 +128,7 @@ def decrypt(value):
     return original_decrypt(value)
 runtime._dpapi_unprotect_current_user = decrypt
 error_type = ''
+error_locations = []
 returned = False
 try:
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -166,10 +169,12 @@ try:
         returned = True
 except Exception as exc:
     error_type = type(exc).__name__
+    import traceback
+    error_locations = [{'file':Path(frame.filename).name,'line':frame.lineno,'function':frame.name} for frame in traceback.extract_tb(exc.__traceback__)]
 finally:
     Path.open = original_open
 result = {'consumer': consumer, 'state': state, 'returned': returned, 'error_type': error_type,
-          'events': events, 'state_unchanged': setup['snapshot']() == before,
+          'error_locations':error_locations, 'events': events, 'state_unchanged': setup['snapshot']() == before,
           'native_calls': setup['events']['native_calls']}
 output.write_text(json.dumps(result, indent=2), encoding='utf-8')
 print(json.dumps(result))
