@@ -67,6 +67,7 @@ RECOVERY_SCHEMAS = {
             "scanner_failure_result": _TEXT,
             "scanner_failure_details": _TEXT,
             "shortage_confirmed": _BOOLEAN,
+            "shortage_confirmed_at": _TIME,
             "shortage_confirmation_pending": _BOOLEAN,
             "shortage_release_pending": _BOOLEAN,
             "shortage_released": _BOOLEAN,

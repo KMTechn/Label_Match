@@ -11220,6 +11220,7 @@ class Label_Match(tk.Tk):
                 self._finalize_set(self.Results.PASS)
                 return
             self.update_big_display("부족 확정 · 취소 카드로 되돌리거나 다음 현품표를 스캔하세요.", "primary")
+            self._arm_shortage_confirmation_timeout()
             return
         if state_data:
             held_set_id = str((state_data.get("current_set_info") or {}).get("id") or "")
@@ -15034,6 +15035,8 @@ class Label_Match(tk.Tk):
     def _confirm_scanner_shortage(self):
         previous = copy.deepcopy(self.current_set_info)
         self.current_set_info.setdefault("local_completed_at", datetime.now(timezone.utc).isoformat())
+        self.current_set_info["shortage_confirmed_at"] = datetime.fromtimestamp(
+            time.time(), timezone.utc).isoformat()
         snapshot = copy.deepcopy(self.current_set_info)
         missing = self.TOTAL_SCAN_COUNT - len(snapshot["raw"])
         self.current_set_info.update(shortage_confirmed=True,
@@ -15043,6 +15046,7 @@ class Label_Match(tk.Tk):
             self.current_set_info.update(previous)
             return self._publish_durable_commit_block(PackageLogisticsError("short confirmation decision save failed"))
         self._scanner_shortage_undo = snapshot
+        self._shortage_confirmation_deadline = time.monotonic() + 60.0
         if self._finalize_set(self.Results.PASS):
             details = self.set_details_map[str(snapshot.get("completion_identity") or snapshot["id"])]
             self.current_set_info["shortage_undo_snapshot"] = snapshot
@@ -15050,10 +15054,67 @@ class Label_Match(tk.Tk):
             self._play_sound("scan_master")
             self.update_big_display(f"부족 {missing}개로 확정", "primary")
 
+    def _cancel_shortage_confirmation_timeout(self):
+        state = self.__dict__
+        job = state.pop("_shortage_confirmation_after_id", None)
+        state.pop("_shortage_confirmation_token", None)
+        state.pop("_shortage_confirmation_deadline", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except (AttributeError, TclError):
+                pass
+
+    def _arm_shortage_confirmation_timeout(self):
+        """Use durable wall time once on recovery, then the owner's monotonic clock."""
+        state = self.__dict__
+        current = state.get("current_set_info") or {}
+        snapshot = state.get("_scanner_shortage_undo") or current.get("shortage_undo_snapshot")
+        if not snapshot or state.get("_shortage_confirmation_token") is not None:
+            return
+        stamp = current.get("shortage_confirmed_at") or snapshot.get("shortage_confirmed_at")
+        if not stamp:
+            stamp = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
+        if not current.get("shortage_confirmed_at"):
+            current["shortage_confirmed_at"] = stamp
+            if not self.data_manager.save_current_state({"current_set_info": current}):
+                current.pop("shortage_confirmed_at", None)
+                self._publish_durable_commit_block(PackageLogisticsError("short confirmation time save failed"))
+                return
+        if state.get("_shortage_confirmation_deadline") is None:
+            confirmed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            if confirmed.tzinfo is None:
+                confirmed = confirmed.replace(tzinfo=timezone.utc)
+            age = max(0.0, time.time() - confirmed.timestamp())
+            remaining = 0.0 if current.get("shortage_release_pending") else max(0.0, 60.0 - age)
+            state["_shortage_confirmation_deadline"] = time.monotonic() + remaining
+        token = state["_shortage_confirmation_token"] = object()
+        self._expire_shortage_confirmation(token)
+
+    def _expire_shortage_confirmation(self, token):
+        state = self.__dict__
+        if state.get("_shortage_confirmation_token") is not token:
+            return
+        state.pop("_shortage_confirmation_after_id", None)
+        remaining = state["_shortage_confirmation_deadline"] - time.monotonic()
+        if remaining > 0:
+            state["_shortage_confirmation_after_id"] = self.after(
+                max(1, int(remaining * 1000 + 0.999)),
+                lambda: self._expire_shortage_confirmation(token))
+            return
+        if self._release_shortage_confirmation():
+            if state.get("operator_workbench_ready"):
+                self._render_operator_workbench()
+        else:
+            # Preserve the original decision/key when a durable release fails.
+            state["_shortage_confirmation_after_id"] = self.after(
+                1000, lambda: self._expire_shortage_confirmation(token))
+
     def _release_shortage_confirmation(self):
         current = self.__dict__.get("current_set_info") or {}
         snapshot = self.__dict__.get("_scanner_shortage_undo") or current.get("shortage_undo_snapshot")
         if not snapshot:
+            self._cancel_shortage_confirmation_timeout()
             return True
         try:
             current["shortage_release_pending"] = True
@@ -15072,13 +15133,14 @@ class Label_Match(tk.Tk):
                 self.package_outbox.mark_local_completion_committed(metadata["idempotency_key"])
             self._replay_scanner_audits()
             checkpoint = copy.deepcopy(self.current_set_info)
-            for name in ("shortage_undo_snapshot", "shortage_completion_details", "shortage_release_pending", "shortage_release_audit"):
+            for name in ("shortage_undo_snapshot", "shortage_completion_details", "shortage_release_pending", "shortage_release_audit", "shortage_confirmed_at"):
                 checkpoint.pop(name, None)
             if not self.data_manager.save_current_state({"current_set_info": checkpoint}):
                 raise PackageLogisticsError("short confirmation release state save failed")
             self.current_set_info.clear()
             self.current_set_info.update(checkpoint)
             self.__dict__.pop("_scanner_shortage_undo", None)
+            self._cancel_shortage_confirmation_timeout()
             if released.get("scanner_only"):
                 self._start_package_outbox_drain()
             return True
@@ -15107,6 +15169,7 @@ class Label_Match(tk.Tk):
                 restored["completion_identity"] = f"{set_id}-undo"
                 restored["transition_row_key"] = ""
                 restored.pop("local_completed_at", None)
+                restored.pop("shortage_confirmed_at", None)
                 self._cancel_deferred_capture_for_set(snapshot)
                 restored.pop("deferred_intent_id", None)
                 if restored.get("scanner_only"):
@@ -15133,6 +15196,7 @@ class Label_Match(tk.Tk):
             self._rebuild_global_scanned_set_from_details()
             self.current_set_info = restored
             self.__dict__.pop("_scanner_shortage_undo", None)
+            self._cancel_shortage_confirmation_timeout()
             self._update_summary_tree()
         elif current.get("raw"):
             restored = copy.deepcopy(current)
@@ -17409,6 +17473,8 @@ class Label_Match(tk.Tk):
                           "error_count": 0, "has_error_or_reset": False,
                           "shortage_undo_snapshot": copy.deepcopy(self._scanner_shortage_undo),
                           "shortage_completion_details": copy.deepcopy(details)}
+            if self.current_set_info.get("shortage_confirmed_at"):
+                checkpoint["shortage_confirmed_at"] = self.current_set_info["shortage_confirmed_at"]
             if not self.data_manager.save_current_state({"current_set_info": checkpoint}):
                 return self._publish_durable_commit_block(PackageLogisticsError("short confirmation undo save failed"))
             self._shortage_durable_checkpoint = checkpoint
@@ -17488,6 +17554,8 @@ class Label_Match(tk.Tk):
             self._completed_set_behind_scans = (
                 set_id_for_log, int(self.__dict__.get("_ui_lane_generation", 0)),
             )
+        if returned and self.__dict__.get("_scanner_shortage_undo"):
+            self._arm_shortage_confirmation_timeout()
         return returned
 
     def _return_to_idle_after_finalized_set(self):
