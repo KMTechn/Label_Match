@@ -69,11 +69,13 @@ def _run_clean_install_receipt_gate_harness(
     )
     # The receipt gate uses the real packet/G checks, with native state supplied
     # by an absent-machine double instead of the host's Run/tasks/relay.
-    installer_source = installer_source.replace("$before = Snapshot", """
+    installer_source = installer_source.replace("$legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot", """
 function Snapshot { [pscustomobject]@{exists=$false;kind='';data=''} }
 function Relays { @() }
 function Get-ScheduledTask { @() }
-$before = Snapshot
+function Get-LabelCurrentUserScheduledTasks { @() }
+function Get-LabelOfficialLegacyTaskSnapshot { return $null }
+$legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot
 """, 1)
     from tools.build_portable_release_candidate import _copy_application, RUNTIME_ROOT_FILES
     from tests.test_current_user_onboarding import _write_bootstrap_inventory_record
@@ -240,6 +242,8 @@ function Product([string]$Root, [string]$Mode) {{
 }}
 function Snapshot {{ return [ordered]@{{ exists = $false; kind = ''; data = '' }} }}
 function Get-ScheduledTask {{ return $null }}
+function Get-LabelCurrentUserScheduledTasks {{ return $null }}
+function Get-LabelOfficialLegacyTaskSnapshot {{ return $null }}
 function UnquiescedProductWriters {{
     if ($script:unexpectedWriter) {{
         return [pscustomobject]@{{ ExecutablePath = 'C:\isolated\pythonw.exe'; CommandLine = 'pythonw.exe --unexpected' }}

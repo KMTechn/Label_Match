@@ -18,7 +18,10 @@ def functions(path, names):
     # PowerShell's parser supplies only function definitions; installer top-level
     # code is never evaluated. The returned bodies may then be tested with mocks.
     names = ['ConvertTo-LabelTaskSid', *names]
+    if path == 'INSTALL_CANONICAL_PORTABLE.ps1':
+        names = ['Protect-LabelFailureText', *names]
     return f"""
+. {quote(ROOT/'tools/failure_redaction.ps1')}
 $tokens=$null; $errors=$null
 $tree=[Management.Automation.Language.Parser]::ParseFile({quote(ROOT/path)},[ref]$tokens,[ref]$errors)
 if ($errors.Count) {{ throw 'Installer parse failed' }}
