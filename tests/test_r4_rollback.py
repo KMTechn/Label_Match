@@ -17,7 +17,7 @@ def test_rollback_independent_tail_and_generation_custody(tmp_path, engine, case
         assert record['writer_fence_still_started']
         assert record['guidance_present']
         return
-    assert record['g_calls'] == 2
+    assert record['g_calls'] == 4
     assert record['code_restored'] is True
     assert counts['product'] == counts['run_restore'] == counts['task_restore'] == 1
     for phase in ('writer_absence', 'code_restore', 'run_restore', 'task_restore',
