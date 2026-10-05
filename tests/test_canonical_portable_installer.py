@@ -767,13 +767,24 @@ def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
     restored_true = rollback.index("$audit.rollback.runtime_restored = $true")
     assert product < zero_readback < restore < restore_task < exact_readback < restored_true
     for token in (
-        "$audit.status = 'ROLLBACK_FAILED'",
+        "$audit.status = if ($legacyFirstRegistration) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }",
         "$audit.rollback.runtime_restored = $false",
         "$audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name",
         "ROLLBACK_AUDIT_PERSISTENCE_FAILED",
         "AUTOSTART_ROLLBACK_FAILED",
     ):
         assert token in rollback
+
+
+@pytest.mark.parametrize("status", ["FAILED_ROLLBACK_INCOMPLETE", "ROLLBACK_FAILED"])
+def test_rollback_status_contract_refuses_changed_branch(monkeypatch, status):
+    source = _source()
+    assignment = "$audit.status = if ($legacyFirstRegistration) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }"
+    assert source.count(assignment) == 1
+    changed = source.replace(assignment, assignment.replace("'" + status + "'", "'PASS'"), 1)
+    monkeypatch.setattr(__import__(__name__, fromlist=["_source"]), "_source", lambda: changed)
+    with pytest.raises(AssertionError):
+        test_rollback_is_fail_closed_and_persists_explicit_failure()
 
 
 @pytest.mark.parametrize(

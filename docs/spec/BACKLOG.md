@@ -499,3 +499,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - 설치 통합 F1 회귀: 비동기 CSV writer 완료 전 읽기의 0행 실패를 재현하여 fixture에 log_queue.join 경계만 추가. 기존 취소 1행·새 세트·capture 보존 단언 유지, 제품 변경0. 최종 실행 근거는 sub-264 REPORT.
 
 - 설치 통합 canonical fixture: 실제 relay-exit 함수·startup 의존 코드 보충, 현재 rollback exact locator, 예상 밖 writer 거절 음성 추가. 제품 변경0·기존 단언 불변; sub-264 REPORT.
+
+- rollback static 상태는 현재 exact legacy/ordinary 조건문을 확인하며 기존 ROLLBACK_FAILED 의미를 보존한다. 각 branch를 성공으로 바꾼 입력은 거절; msg_b0774576a440의 exact static 계약 교정 범위.
