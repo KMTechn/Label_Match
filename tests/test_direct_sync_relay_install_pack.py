@@ -814,7 +814,7 @@ def test_install_pack_apply_supports_stored_password_task_without_leaking_passwo
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     report_text = report_path.read_text(encoding="utf-8-sig")
     assert report["task_principal"]["mode"] == "stored_password"
-    assert report["task_principal"]["password_source"] == "env:TASK_PASSWORD_FOR_TEST"
+    assert report["task_principal"]["password_source"] == "[REDACTED:field]"
     assert report["task_principal"]["password_in_report"] is False
     assert report["task_runtime_acl"]["enabled"] is True
     assert report["task_runtime_acl"]["principal"] == "TEST1\\kmtech-remote-admin"
@@ -957,7 +957,7 @@ def test_install_pack_apply_supports_password_file_without_leaking_password(tmp_
     report_text = report_path.read_text(encoding="utf-8-sig")
     assert report["status"] == "PASS"
     assert report["task_principal"]["mode"] == "stored_password"
-    assert report["task_principal"]["password_source"] == "file"
+    assert report["task_principal"]["password_source"] == "[REDACTED:field]"
     assert report["scheduled_task_create_command"][report["scheduled_task_create_command"].index("/RP") + 1] == "[redacted]"
     assert "file-task-password" not in report_text
     password, source, error = module._read_task_password(argparse.Namespace(task_run_password_env="", task_run_password_file=str(password_file)))

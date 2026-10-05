@@ -42,7 +42,7 @@ TEST_MODE_ENV = "KMTECH_LABEL_WRITER_TEST_MODE"
 
 # The code-derived scanner normalizes this literal to zero before hashing its
 # own source closure, so updating the pin is deterministic rather than cyclic.
-WRITER_INVENTORY_SHA256 = "ec621bb1f333fcfd7b825e20a533ad38de411c6161bca9ccc56f77adf35e6d6a"
+WRITER_INVENTORY_SHA256 = "ebc14b9c0d079d8765c097db8dcf9565f726d47374e75809564bf38a2bf6cc8d"
 
 DELEGATION_TOKEN_ENV = "KMTECH_LABEL_WRITER_DELEGATION_TOKEN"
 DELEGATION_SESSION_ENV = "KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID"

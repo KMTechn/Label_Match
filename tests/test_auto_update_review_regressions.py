@@ -285,7 +285,9 @@ def test_failed_apply_persists_original_exception_chain(monkeypatch, tmp_path):
 
 def test_prepare_failure_reaches_relay_status_with_original_cause(monkeypatch, tmp_path):
     import user_relay
-    def fail(_): raise OSError(5, "original-prepare-sentinel")
+    secret = 'synthetic-relay-failure-token-09876'
+    monkeypatch.setenv('KMTECH_LABEL_WRITER_DELEGATION_TOKEN', secret)
+    def fail(_): raise OSError(5, "original-prepare-sentinel " + secret + ' credential=synthetic-relay-file-secret')
     monkeypatch.setattr(updates, "prepare_feed_packet", fail)
     monkeypatch.setattr(user_relay, "run_session_direct_sync_once", lambda **k: {"status": "PASS", "returncode": 0})
     monkeypatch.setattr(user_relay, "_read_json", lambda _: {"status": "RUNNING"})
@@ -296,6 +298,11 @@ def test_prepare_failure_reaches_relay_status_with_original_cause(monkeypatch, t
     evidence = json.loads(path.read_text(encoding="utf-8"))
     assert "original-prepare-sentinel" in evidence["launch_failure_details"][0]["message"]
     assert "original-prepare-sentinel" not in json.dumps(result)
+    reference = evidence['launch_failure_details'][0]['full_exception_trace']
+    for saved in (path, Path(reference['path'])):
+        content = saved.read_bytes()
+        assert secret.encode() not in content
+        assert b'synthetic-relay-file-secret' not in content
 
 
 def test_failure_diagnostics_mask_quoted_authority_and_bound_original_text():

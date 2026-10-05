@@ -44,12 +44,14 @@ def _now() -> str:
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    from failure_redaction import redact_json_for_sink
+    protected = redact_json_for_sink(dict(payload))
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(
-                dict(payload), handle, ensure_ascii=False, indent=2, sort_keys=True
+                protected, handle, ensure_ascii=False, indent=2, sort_keys=True
             )
             handle.write("\n")
             handle.flush()
