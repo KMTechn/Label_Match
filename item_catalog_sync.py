@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import csv
 import datetime as dt
 import json
@@ -1066,7 +1068,7 @@ def refresh_item_catalog(
             if tls_ca_bundle_path:
                 from label_data_generation import check_user_data_open, resolve_data_path
                 tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
-                check_user_data_open(Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
+                check_user_data_open(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
                 request_kwargs["verify"] = tls_ca_bundle_path
         transport = get or (_hardened_get if central_enrolled else requests.get)
         _update_catalog_attempt_context(request_sent=True)

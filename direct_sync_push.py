@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import csv
 import hashlib
 import hmac
@@ -665,7 +667,7 @@ def restore_raw_artifact_to_file(
     if tls_ca_bundle_path:
         from label_data_generation import check_user_data_open, resolve_data_path
         tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
-        check_user_data_open(Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
+        check_user_data_open(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
     restore_metadata = restore_metadata_from_upload_metadata(metadata)
     expected_digest = str(restore_metadata["content_sha256"])
     expected_byte_length = int(restore_metadata["byte_length"])
@@ -1343,7 +1345,7 @@ def upload_source_file(
     if tls_ca_bundle_path:
         from label_data_generation import check_user_data_open, resolve_data_path
         tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
-        check_user_data_open(Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
+        check_user_data_open(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
     if session is None:
         import requests
 

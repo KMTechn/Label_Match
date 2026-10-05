@@ -9,6 +9,8 @@ credential/endpoint/install tuple so a credential change cannot inherit it.
 
 from __future__ import annotations
 
+import sys
+
 from pathlib import Path
 
 import hashlib
@@ -203,7 +205,7 @@ def _post_lease_request(
     if tls_ca_bundle_path:
         from label_data_generation import check_user_data_open, resolve_data_path
         tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
-        check_user_data_open(Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
+        check_user_data_open(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
     if session is None:
         import requests
 

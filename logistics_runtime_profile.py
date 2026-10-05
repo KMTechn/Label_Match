@@ -726,7 +726,7 @@ def load_logistics_runtime_profile(
         label="runtime profile",
     )
     from label_data_generation import check_user_data_open
-    app_root = Path(__file__).resolve().parent
+    app_root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
     check_user_data_open(app_root, (path.parent,), environ=values)
     if not path.exists():
         if required_value or explicit_path:

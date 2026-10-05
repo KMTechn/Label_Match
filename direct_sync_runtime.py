@@ -804,10 +804,10 @@ def enqueue_completed_source_file(
     if config.tls_ca_bundle_path:
         from label_data_generation import check_user_data_open, resolve_data_path
         selected_ca = resolve_data_path(config.tls_ca_bundle_path)
-        check_user_data_open(Path(__file__).resolve().parent, (selected_ca.parent,))
+        check_user_data_open(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent, (selected_ca.parent,))
     if credential_input is not None and credentials is None:
         credential_input = prepare_credentials_from_json(
-            config.credential_path, app_root=Path(__file__).resolve().parent,
+            config.credential_path, app_root=Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent,
         )
     if _paused_by_operator(config).get("paused"):
         return _write_paused_status(config, event="enqueue_paused_by_operator")
@@ -930,10 +930,10 @@ def run_relay_once(
     if config.tls_ca_bundle_path:
         from label_data_generation import check_user_data_open, resolve_data_path
         selected_ca = resolve_data_path(config.tls_ca_bundle_path)
-        check_user_data_open(Path(__file__).resolve().parent, (selected_ca.parent,))
+        check_user_data_open(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent, (selected_ca.parent,))
     if credential_input is not None and credentials is None:
         credential_input = prepare_credentials_from_json(
-            config.credential_path, app_root=Path(__file__).resolve().parent,
+            config.credential_path, app_root=Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent,
         )
     if _paused_by_operator(config).get("paused"):
         return _write_paused_status(config, event="relay_paused_by_operator")
