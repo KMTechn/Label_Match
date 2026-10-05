@@ -1,10 +1,10 @@
 # 조립 실패 기록 및 제품 상태 계약
 
-2026-10-06 REDACTION-CONTRACT SHA256 `a8708fd307dd55ae309f5f18a0b3dac603302862a6d269a9c815862112f137e7`의 0e 컷 전 범위를 따른다. 설치기·업데이트 적용기·지원 도구의 예외 문장/child 출력/가변 안내만 허용 필드 공개 레코드로 바꾸며, 고정 문구와 성공 status/path 줄은 유지하고 `tools/failure_redaction_rules.json`의 `safe_messages`에 등록한다. 업무 앱 로그와 스캔 화면은 이 범위 밖이다.
+2026-10-06 REDACTION-CONTRACT SHA256 `a8708fd307dd55ae309f5f18a0b3dac603302862a6d269a9c815862112f137e7`의 0e 컷 전 범위를 따른다. 04:0x 지시에 따라 설치기·업데이트 적용기·지원 도구에서 예외 문장·child/프로세스 출력·명령줄·외부 입력값을 포함할 수 있는 공개 자리만 허용 필드 공개 레코드로 바꾼다. 고정 문구와 자체 계산한 개수·ID·코드·시각·경로를 내는 줄은 80a93ab 바이트를 유지하고 `tools/failure_redaction_rules.json`의 `safe_messages`에 등록한다. 업무 앱 로그와 스캔 화면은 이 범위 밖이다.
 
 `public_record` / `ConvertTo-KmtechPublicRecord`는 코드·고정 문구·형식 이름·위치·정수·SHA·식별자·시각·절대 경로·bool/null만 받는다. 정확한 키가 suffix보다 먼저이며, 거절한 값은 내보내지 않고 유효한 키 이름과 `PUBLIC_FIELD_NONCONFORMING`만 남긴다. 상세 가림과 64 KiB 제한은 기존 보호 보고서/private evidence에서 유지한다.
 
-등록/제거 CLI 실패는 stderr의 `LABEL_MATCH_INSTALLER_FAILURE=<compact JSON>`으로 원인을 공개한다. `onboarding_status`/`current_user_removal_status` 및 성공 stdout/exit는 유지한다. 실패 보고서 경로/SHA는 이 예외를 처리하는 시도가 원자 게시한 실제 UTF-8 바이트에만 결속한다. 게시 실패 또는 조기 자료 판 거절에는 `REPORT_UNAVAILABLE`만 남기고 옛 보고서를 참조하지 않는다. 같은 onboarding/removal 보고서에 가린 첫 원인 traceback을 보존한다.
+등록/제거 CLI 실패는 stderr의 `LABEL_MATCH_INSTALLER_FAILURE=<compact JSON>`으로 원인을 공개한다. `onboarding_status`/`current_user_removal_status`, 고정 틀의 report 경로 줄 및 성공 stdout/exit는 유지한다. 이 경로 안내 줄은 게시 증명이 아니다. 공개 실패 레코드의 보고서 경로/SHA는 이 예외를 처리하는 시도가 원자 게시한 실제 UTF-8 바이트에만 결속한다. 게시 실패 또는 조기 자료 판 거절에는 `REPORT_UNAVAILABLE`만 남기고 옛 보고서를 참조하지 않는다. 같은 onboarding/removal 보고서에 가린 첫 원인 traceback을 보존한다.
 
 지원 제거가 다시 읽는 audit의 중첩 거래·복구 필드는 1a machine metadata로 보존하며 전체 파일을 평탄화하지 않는다. 진단 하위 레코드와 안내만 공개 레코드로 바꾼다. 정확한 출력 자리 목록과 실제 검증 한계는 `work/program/w9setupprep/sub-310/INVENTORY.md` 및 `REPORT.md`에 기록한다. 호스트에서 실제 설치/ACL·GUI·VM·서버 수용은 수행하지 않는다.
 

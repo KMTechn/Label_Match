@@ -1524,9 +1524,8 @@ def onboarding_main(argv: list[str] | None = None) -> int:
             require_bootstrap_integrity=requires_bootstrap_integrity(args.app_root),
         )
     except CurrentUserOnboardingError as exc:
-        from failure_redaction import public_record
-        status = public_record({"status": exc.status}).get("status", "FAILED")
-        print(f"onboarding_status={status}")
+        print(f"onboarding_status={exc.status}")
+        print(f"onboarding_report={exc.report_path}")
         _emit_installer_failure(exc, "CURRENT_USER_ONBOARDING")
         return ONBOARDING_EXIT_CODE
     print(f"onboarding_status={report['status']}")
@@ -1547,9 +1546,8 @@ def removal_main(argv: list[str] | None = None) -> int:
     try:
         report = remove_current_user_setup(args.app_root)
     except CurrentUserOnboardingError as exc:
-        from failure_redaction import public_record
-        status = public_record({"status": exc.status}).get("status", "FAILED")
-        print(f"current_user_removal_status={status}")
+        print(f"current_user_removal_status={exc.status}")
+        print(f"current_user_removal_report={exc.report_path}")
         _emit_installer_failure(exc, "CURRENT_USER_REMOVAL")
         return ONBOARDING_EXIT_CODE
     paths = resolve_current_user_onboarding_paths(args.app_root)

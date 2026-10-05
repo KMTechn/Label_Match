@@ -17,7 +17,7 @@ VECTORS = json.loads((ROOT / "tests/fixtures/public_output_vectors.json").read_t
     ("onboarding_main", "RECOVERY_REQUIRED", "DATA_GENERATION_REFUSED"),
     ("removal_main", "UNKNOWN", "DATA_GENERATION_REFUSED"),
 ])
-def test_cli_failure_does_not_publish_old_report_or_exception_text(
+def test_cli_failure_preserves_fixed_lines_and_rejects_stale_report_binding(
     monkeypatch, tmp_path, capsys, cli, status, cause,
 ):
     marker = uuid.uuid4().hex
@@ -34,11 +34,16 @@ def test_cli_failure_does_not_publish_old_report_or_exception_text(
     assert getattr(onboarding, cli)(["--app-root", str(tmp_path)]) == onboarding.ONBOARDING_EXIT_CODE
     streams = capsys.readouterr()
     assert marker not in streams.out + streams.err, "free-form cause was public"
-    assert str(old) not in streams.out + streams.err, "stale report was public"
+    # The baseline status/path lines are category B; only the typed failure
+    # record is a binding to same-attempt published diagnostic bytes.
+    prefix = "onboarding" if cli == "onboarding_main" else "current_user_removal"
+    assert streams.out == f"{prefix}_status={status}\n{prefix}_report={old}\n"
+    assert str(old) not in streams.err, "stale report binding was public"
     assert streams.err.startswith("LABEL_MATCH_INSTALLER_FAILURE=")
     record = json.loads(streams.err.split("=", 1)[1])
     assert record["status"] == status
     assert record["report_status"] == "REPORT_UNAVAILABLE"
+    assert "report_path" not in record and "report_sha256" not in record
 
 
 def test_atomic_report_reference_matches_published_utf8(tmp_path):
@@ -343,3 +348,25 @@ def test_untrusted_server_error_code_stays_in_same_attempt_private_report(tmp_pa
     raw=Path(reference['report_path']).read_bytes()
     assert hashlib.sha256(raw).hexdigest()==reference['report_sha256']
     assert marker.encode() in raw
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_protected_admin_failure_preserves_computed_type_without_exception_body(monkeypatch, tmp_path, capsys, dry_run):
+    import getpass
+    import label_data_generation as generation
+    from tools import install_protected_admin as installer
+    marker = uuid.uuid4().hex
+    monkeypatch.setattr(generation, "resolve_data_path", lambda value: Path(value))
+    monkeypatch.setattr(generation, "check_user_data_open", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generation, "record_user_data_open", lambda *args, **kwargs: None)
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: uuid.NAMESPACE_DNS.hex)
+    def fail(*args, **kwargs):
+        raise RuntimeError(marker)
+    monkeypatch.setattr(installer, "install_protected_admin_profile", fail)
+    arguments = ["--profile-path", str(tmp_path / "profile.json"), "--reader-principal", "S-1-5-21-100-200-300-400"]
+    if dry_run:
+        arguments.append("--dry-run")
+    assert installer.main(arguments) == 2
+    streams = capsys.readouterr()
+    assert streams.out == "" and streams.err == "BLOCKED: RuntimeError\n"
+    assert marker not in streams.out + streams.err

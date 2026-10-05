@@ -569,6 +569,12 @@
     "production apply requires the canonical Label_Match field layout",
     "program_data_root must not be a filesystem root",
     "scan_source_dir must be absolute for app runtime ACL",
-    "scan_source_dir must not be a filesystem root"
+    "scan_source_dir must not be a filesystem root",
+    "BLOCKED: {exception_type}",
+    "current_user_removal_report={report_path}",
+    "current_user_removal_status={status}",
+    "onboarding_report={report_path}",
+    "onboarding_status={status}",
+    "관리자 복구에 필요한 인수가 빠졌습니다: {missing_option_names}. 서버 root 담당자가 기존 producer의 producer_self_enrolled_credentials에서 producer_id, source_host_id, producer_install_id, active_manifest_hashes_json을 읽고 producer_manifest_path 파일의 pc_identity.pc_id와 대조해 전달해야 합니다. 이 신원·해시는 비밀이 아니며 임의로 새 값을 만들지 마세요. 일회용 승인 파일과 TLS CA는 별도로 준비하고 비밀 값은 출력하지 마세요."
   ]
 }

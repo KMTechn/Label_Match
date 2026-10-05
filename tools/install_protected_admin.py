@@ -800,7 +800,7 @@ def main(argv: list[str] | None = None) -> int:
                 replace=args.replace,
             )
         except Exception as exc:
-            __import__("failure_redaction").emit_support_failure(exc)
+            print(f"BLOCKED: {exc.__class__.__name__}", file=sys.stderr)
             return 2
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
         return 0
@@ -833,7 +833,7 @@ def main(argv: list[str] | None = None) -> int:
                 replace=args.replace,
             )
         except Exception as exc:
-            __import__("failure_redaction").emit_support_failure(exc)
+            print(f"BLOCKED: {exc.__class__.__name__}", file=sys.stderr)
             return 2
     finally:
         first_entry = ""

@@ -2519,7 +2519,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"registration_report={report_path.resolve()}")
             return 3
         if isinstance(exc, AdminRecoveryArgumentsRequired):
-            __import__("failure_redaction").emit_support_failure(exc)
+            print(str(exc))
         blocked = {
             "report_version": "label-match-worker-pc-registration-v1",
             "status": "BLOCKED",
@@ -2573,7 +2573,7 @@ def main(argv: list[str] | None = None) -> int:
                 blocked["blocked_reason"] += (
                     ": 서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요"
                 )
-                _emit_registration_notice(blocked["blocked_reason"], exc)
+                print(blocked["blocked_reason"])
             if exc.error_code == "admin_recovery_required" or (
                 exc.status_code == 409 and exc.error_code == "producer_identity_conflict"
             ):
