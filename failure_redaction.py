@@ -27,8 +27,11 @@ def assert_machine_metadata_text(text, environ=None):
         value = str(value or "")
         if not value:
             continue
+        units = value.encode('utf-16-be', errors='surrogatepass')
+        unicode_escaped = ''.join('\\u%04x' % int.from_bytes(units[index:index + 2], 'big')
+                                  for index in range(0, len(units), 2))
         forms = (value, json.dumps(value, ensure_ascii=True)[1:-1],
-                 json.dumps(value, ensure_ascii=False)[1:-1])
+                 json.dumps(value, ensure_ascii=False)[1:-1], unicode_escaped)
         if any(form in text for form in forms):
             raise ValueError("PRODUCT_METADATA_SECRET_VALUE_REFUSED")
 

@@ -24,3 +24,5 @@ rollback 시험 입력은 조립 판의 phase stack 및 공식 옛 relay 조회 
 순수 G의 명시 서명 역방향 회귀는 실제 전체 `362f30f` 소스를 자체 표준 builder로 만든다. audit-index companion `ac745f0` 전체 소스를 순수 G라고 취급하지 않는다. 조립 후보의 companion 역방향 거절 단언과 r4 시험 단언은 유지한다.
 
 기존 정방향 회귀의 v2.0.95 조상 `a56a58769c43d1b19abdd9881425f95a49dbd7f7`는 원 표준 stock의 before 바이트를 보존하는 정확한 조립 선언만 추가한다. 현장 해당 없음: 설치 실측 입력이 아닌 기존 승인 G 시험 입력이며 G/min 및 역방향 허용은 바꾸지 않는다. TEST1은 새 설치이므로 별도 조상 선언이 없다.
+
+같은 판 번호의 `2c46de16f2303117e88d4794bf3793f0d7de8c76`도 기존 `test_data_generation_pin_upgrade_pair.py:22`가 전체 소스의 정방향을 단언한다. 해당 원 표준 stock before를 결속하는 정확 선언으로 보존한다. 현장 해당 없음이며 역방향/변조 거절은 그대로다.

@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+v2.0.95 2c46de1의 전체 source 정방향은 기존 delayed-reader pair 시험이 요구하는 승인 입력이다. 원 표준 stock before에 정확히 결속하는 조립 선언으로 보존한다(현장 해당 없음). prototype 4070818/160d2b4와 TEST1에 추가 선언은 없다.
+
 REDACTION-CONTRACT 1a의 Python machine writer도 대조했다. update transition/active, settings, relay stop marker는 진단과 파일 종류별로 분리해 원 직렬화 바이트를 보존하고 쓰기 전에 비밀 값을 거절한다. 실제 writer body에 >64 KiB, 식별자 보존 및 원문/JSON escape 비밀의 기존 대상·없는 부모 무변경 회귀를 추가했다. writer sink membership와 기존 G는 그대로다.
 
 v2.0.95 조상 a56a587의 실제 표준 stock before를 보존해 기존 정방향 G 시험 입력을 조립 선언에 결속했다(현장 해당 없음). 순수 G 서명 역방향 입력은 전체 362f30f이며 companion ac745 전체는 같은 계약의 입력이 아니다. TEST1 새 설치에는 추가 선언이 없다.

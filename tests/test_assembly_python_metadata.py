@@ -1,7 +1,5 @@
 """Real metadata serialization/write bodies, with synthetic secret lookup only."""
-import functools
 import json
-from pathlib import Path
 import uuid
 
 import pytest
@@ -70,3 +68,11 @@ def test_machine_writer_refuses_secret_before_target_or_parent_mutation(kind, es
         WRITERS[kind](target, payload)
     assert target.read_bytes() == original
     assert [path.name for path in target.parent.iterdir()] == [target.name]
+
+
+def test_metadata_assertion_refuses_fully_unicode_escaped_json():
+    secret = 'fixture-' + uuid.uuid4().hex + chr(0x20ac)
+    encoded = ''.join('\\u%04x' % ord(character) for character in secret)
+    with pytest.raises(ValueError, match='^PRODUCT_METADATA_SECRET_VALUE_REFUSED$'):
+        failure_redaction.assert_machine_metadata_text('{"value":"' + encoded + '"}',
+                                                       environ={'KMTECH_FIXTURE_PASSWORD': secret})
