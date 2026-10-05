@@ -1466,7 +1466,7 @@ function Import-LabelOfficialLegacyTaskFunctions([string]$Path) {
     $tokens=$null;$errors=$null
     $tree=[Management.Automation.Language.Parser]::ParseFile($Path,[ref]$tokens,[ref]$errors)
     if ($errors.Count) { throw 'LEGACY_RELAY_HELPER_PARSE_FAILED' }
-    foreach ($name in @('Get-LabelOfficialLegacyTaskExpectation','Get-LabelOfficialLegacyPrincipalModes','Get-LabelOfficialLegacyTaskExpectations','ConvertTo-LabelLegacyTaskPath','Get-LabelOfficialLegacyTaskFingerprint','Get-LabelOfficialLegacyTaskSnapshot','Assert-LabelOfficialLegacyTaskStopped','Invoke-LabelOfficialLegacyTaskTransition')) {
+    foreach ($name in @('Get-LabelOfficialLegacyTaskExpectation','Get-LabelOfficialLegacyPrincipalModes','Get-LabelOfficialLegacyTaskExpectations','ConvertTo-LabelLegacyTaskPath','Get-LabelOfficialLegacyTaskFingerprint','Get-LabelOfficialLegacyTaskSnapshot','Assert-LabelOfficialLegacyTaskLauncher','Assert-LabelOfficialLegacyTaskStopped','Invoke-LabelOfficialLegacyTaskTransition')) {
         $definitions=@($tree.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
         if ($definitions.Count -ne 1) { throw 'LEGACY_RELAY_HELPER_DEFINITION_FAILED' }
         . ([scriptblock]::Create($definitions[0].Extent.Text))
@@ -4021,6 +4021,7 @@ $generationDowngradeDecision = Assert-LabelDataDowngrade -MarkerPaths $generatio
     -TargetVersion $generationTargetVersion `
     -TargetBuildId ([string]$sourceManifest.source_commit)
 $legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot
+Assert-LabelOfficialLegacyTaskLauncher $legacyRelayBefore
 $before = Snapshot
 # Use the verified guarded caller's existing product entrypoint. The target
 # app-root stays the source release, including compatible pre-G source packets.

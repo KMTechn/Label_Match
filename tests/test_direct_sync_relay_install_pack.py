@@ -1959,7 +1959,7 @@ def test_install_pack_blocks_relative_program_data_root(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
-            "tools/direct_sync_relay_install_pack.py",
+            str(Path(__file__).resolve().parents[1] / "tools/direct_sync_relay_install_pack.py"),
             "--app-root",
             str(tmp_path / "portable"),
             "--producer-manifest-path",
@@ -1974,10 +1974,11 @@ def test_install_pack_blocks_relative_program_data_root(tmp_path):
         check=False,
         capture_output=True,
         text=True,
+        cwd=tmp_path,
     )
 
     assert completed.returncode == 2
     assert completed.stderr.strip() == "program_data_root must be an absolute path"
     assert not report_path.exists()
     assert (manifest_path.read_bytes(), credential_path.read_bytes()) == original_inputs
-    assert not (Path.cwd() / "relative-runtime-root").exists()
+    assert not (tmp_path / "relative-runtime-root").exists()

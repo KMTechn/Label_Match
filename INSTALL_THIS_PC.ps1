@@ -1131,6 +1131,66 @@ function Get-LabelOfficialLegacyTaskSnapshot {
     }
 }
 
+function Assert-LabelOfficialLegacyTaskLauncher($Snapshot) {
+    # No official task means no historical launcher is required. This read-only
+    # admission runs in the canonical caller before its first filesystem write.
+    if ($null -eq $Snapshot) { return }
+    try {
+        if ($Snapshot.fingerprint.matched -isnot [bool] -or -not $Snapshot.fingerprint.matched) {
+            throw 'Legacy task identity was not admitted.'
+        }
+        $document=[xml]::new();$document.XmlResolver=$null;$document.LoadXml([string]$Snapshot.xml)
+        $actions=@($document.SelectNodes('/*[local-name()="Task"]/*[local-name()="Actions"]/*[local-name()="Exec"]'))
+        if ($actions.Count -ne 1) { throw 'Legacy action differs.' }
+        $arguments=[regex]::Replace(([string]$actions[0].Arguments).Trim(),'\s+',' ')
+        if ($arguments -cnotmatch '^//B //NoLogo (.+)$') { throw 'Legacy launcher arguments differ.' }
+        $launcher=[IO.Path]::GetFullPath($Matches[1].Trim('"'))
+        if ([IO.Path]::GetExtension($launcher) -ine '.vbs') { throw 'Legacy launcher type differs.' }
+        function Assert-OrdinaryLegacyLauncher([string]$Path) {
+            $item=Get-Item -LiteralPath $Path -ErrorAction Stop
+            if ($item.PSIsContainer -or $item.Length -eq 0 -or $item.Length -gt 1048576) {
+                throw 'Legacy launcher is not a bounded ordinary file.'
+            }
+            for ($ancestor=$Path; $ancestor; $ancestor=[IO.Path]::GetDirectoryName($ancestor)) {
+                if ([IO.File]::GetAttributes($ancestor) -band [IO.FileAttributes]::ReparsePoint) {
+                    throw 'Legacy launcher path is a reparse point.'
+                }
+            }
+        }
+        Assert-OrdinaryLegacyLauncher $launcher
+        $stream=[IO.File]::Open($launcher,'Open','Read','Read')
+        try {
+            if ($stream.Length -gt 1048576) { throw 'Legacy launcher is oversized.' }
+            $reader=[IO.StreamReader]::new($stream,[Text.UTF8Encoding]::new($false,$true),$true)
+            try { $launcherText=$reader.ReadToEnd().Replace("`r`n","`n").TrimEnd([char[]]"`r`n") }
+            finally { $reader.Dispose() }
+        } finally { $stream.Dispose() }
+        $assignments=@([regex]::Matches($launcherText,'(?m)^(wrapper|runner)\s*=\s*"((?:""|[^"])*)"\s*$'))
+        if ($assignments.Count -ne 1) { throw 'Legacy wrapper binding differs.' }
+        $wrapper=[IO.Path]::GetFullPath($assignments[0].Groups[2].Value.Replace('""','"'))
+        $extension=[IO.Path]::GetExtension($wrapper).ToLowerInvariant()
+        if ($extension -notin @('.ps1','.cmd') -or
+            -not [StringComparer]::OrdinalIgnoreCase.Equals($wrapper,[IO.Path]::ChangeExtension($launcher,$extension))) {
+            throw 'Legacy wrapper path differs.'
+        }
+        Assert-OrdinaryLegacyLauncher $wrapper
+        $binding=$wrapper.Replace('"','""')
+        $expected=@('Set shell = CreateObject("WScript.Shell")')
+        if ($extension -ceq '.ps1') {
+            $expected+=@('powerShell = shell.ExpandEnvironmentStrings("%SystemRoot%") & "\System32\WindowsPowerShell\v1.0\powershell.exe"',
+                ('wrapper = "'+$binding+'"'),
+                'command = """" & powerShell & """ -NoProfile -ExecutionPolicy Bypass -File """ & wrapper & """"')
+        } else {
+            $expected+=@('comspec = shell.ExpandEnvironmentStrings("%ComSpec%")',('runner = "'+$binding+'"'),
+                'command = """" & comspec & """ /d /c """ & runner & """"')
+        }
+        $expected+=@('exitCode = shell.Run(command, 0, True)','WScript.Quit exitCode')
+        if ($launcherText -cne ($expected -join "`n")) { throw 'Legacy launcher content differs.' }
+    } catch {
+        throw [InvalidOperationException]::new('Healthy lifecycle task belongs to another principal/command.', $_.Exception)
+    }
+}
+
 function Assert-LabelOfficialLegacyTaskStopped([string]$Name) {
     $service=New-Object -ComObject 'Schedule.Service';$service.Connect()
     $task=$service.GetFolder('\').GetTask($Name)

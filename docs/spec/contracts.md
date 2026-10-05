@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+옛 공식 relay task의 launcher admission은 첫 상태 변경보다 앞선다. task 0이면 launcher 0을 허용하고, task가 있으면 기존 identity 및 action VBS와 동명 wrapper의 존재·ordinary/no-reparse·공식 실행 template 일관성을 요구한다. 불일치는 기존 거절 안내를 사용한다.
+
 relay install pack의 `--program-data-root`는 절대 경로 인수다. 상대 경로는 정규화·보호 판독·generation 기록 전 exit 2로 거절하고 상태/report를 쓰지 않는다.
 
 첫 설치의 옛 공식 relay Disable 전이는 기존 보호 base 준비를 먼저 거친다. Restore는 기존 base 요구를 유지하고, 설치자 owner record는 일반 코드 배치가 작성한다. 잘못된 전이 인수는 base 준비 전 거절하며, 진단 가림 과정은 원 예외 타입·원인과 빈 metadata 객체를 보존한다.
