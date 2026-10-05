@@ -3,6 +3,12 @@
   "path_suffix": "(?i)(_FILE|_PATH|_DIR|_ROOT)$",
   "digest_suffix": "(?i)(_sha256|_sha256s|_fingerprint|_hash)$",
   "short_secret_digest": "(?i)(pin|otp|password)",
+  "identifier_patterns": {
+    "_(?:TRANSACTION|SESSION|ATTEMPT)_ID$": "(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}|[0-9A-Fa-f]{64})",
+    "_PID$": "[1-9][0-9]{0,9}",
+    "_START$": "(?:windows-filetime|linux-startticks):[1-9][0-9]{0,24}",
+    "_MUTEX$": "(?:Local|Global)\\\\[A-Za-z0-9._-]{1,200}"
+  },
   "explicit": [
     "DEFECT_FINAL_DEFECT_CLAIM_TOKEN",
     "DEFECT_FINAL_DEFECT_INTAKE_CLAIM_TOKEN",

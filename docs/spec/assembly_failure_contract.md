@@ -1,6 +1,6 @@
 # 조립 실패 기록 및 제품 상태 계약
 
-2026-10-06 REDACTION-CONTRACT SHA256 `d7b26a3583343ffddc6004b74c01a6a80968ed4ff1424d9ca91b37c4371b4531`의 0e 컷 전 범위를 따른다. 설치기·업데이트 적용기·지원 도구의 예외 문장/child 출력/가변 안내만 허용 필드 공개 레코드로 바꾸며, 고정 문구와 성공 status/path 줄은 유지하고 `tools/failure_redaction_rules.json`의 `safe_messages`에 등록한다. 업무 앱 로그와 스캔 화면은 이 범위 밖이다.
+2026-10-06 REDACTION-CONTRACT SHA256 `a8708fd307dd55ae309f5f18a0b3dac603302862a6d269a9c815862112f137e7`의 0e 컷 전 범위를 따른다. 설치기·업데이트 적용기·지원 도구의 예외 문장/child 출력/가변 안내만 허용 필드 공개 레코드로 바꾸며, 고정 문구와 성공 status/path 줄은 유지하고 `tools/failure_redaction_rules.json`의 `safe_messages`에 등록한다. 업무 앱 로그와 스캔 화면은 이 범위 밖이다.
 
 `public_record` / `ConvertTo-KmtechPublicRecord`는 코드·고정 문구·형식 이름·위치·정수·SHA·식별자·시각·절대 경로·bool/null만 받는다. 정확한 키가 suffix보다 먼저이며, 거절한 값은 내보내지 않고 유효한 키 이름과 `PUBLIC_FIELD_NONCONFORMING`만 남긴다. 상세 가림과 64 KiB 제한은 기존 보호 보고서/private evidence에서 유지한다.
 
@@ -8,7 +8,11 @@
 
 지원 제거가 다시 읽는 audit의 중첩 거래·복구 필드는 1a machine metadata로 보존하며 전체 파일을 평탄화하지 않는다. 진단 하위 레코드와 안내만 공개 레코드로 바꾼다. 정확한 출력 자리 목록과 실제 검증 한계는 `work/program/w9setupprep/sub-310/INVENTORY.md` 및 `REPORT.md`에 기록한다. 호스트에서 실제 설치/ACL·GUI·VM·서버 수용은 수행하지 않는다.
 
-환경 이름이 `_TRANSACTION_ID`, `_SESSION_ID`, `_ATTEMPT_ID`로 끝나고 값이 엄격 UUID 또는 32/64자리 16진수일 때만 비밀 값 치환에서 제외한다. 명시 비밀 이름은 예외를 받지 않는다. Python과 PowerShell은 같은 12개 합성 벡터를 사용한다. PowerShell child 출력 reader에도 같은 판정 함수를 전달한다.
+환경 이름이 `_TRANSACTION_ID`, `_SESSION_ID`, `_ATTEMPT_ID`로 끝나고 값이 엄격 UUID 또는 32/64자리 16진수일 때만 비밀 값 치환에서 제외한다. `_PID`, `_START`, `_MUTEX`도 계약의 엄격한 값 모양과 이름 끝이 함께 맞을 때만 제외한다. 명시 비밀 이름은 예외를 받지 않는다. Python과 PowerShell은 같은 18개 합성 벡터를 사용하며 식별자 값 규칙은 공통 rules JSON에서 읽는다. PowerShell child 출력 reader에도 같은 판정 함수를 전달한다.
+
+텍스트 가림은 key와 value를 분리해 검사한다. `RuntimeError:` 같은 일반 접두문 뒤의 assignment·인용 mapping도 계속 검색하며, 비밀 value와 metadata value는 경계를 보존한다. status·JSONL 로그·보호 진단 및 PS5.1/PS7 child capture의 최종 변환에 같은 규칙을 적용한다. 길이 제한과 traceback 맥락은 유지한다.
+
+C# bounded capture는 일반 접두문 뒤의 인용/비인용 assignment도 잘림 전에 가린다. chunk를 넘는 value와 이미 가린 환경 이름 표지를 보존하며, 비밀 배열·객체 및 metadata 예외는 기존 경계를 따른다. C# capture/최종 변환에 같은 14 벡터와 추가 4벡터(예외 접두문 2, 64 KiB 초과 plain/접두문 assignment 2)를 적용한다. 최종 sink가 정상 JSON을 다시 직렬화하는 경우에는 필드 값의 정확한 일치로, 일반 텍스트와 잘림 속성은 원 기대값으로 비교한다.
 
 | writer / 파일 종류 | 처리 |
 | --- | --- |
