@@ -11,6 +11,38 @@ ROOT = Path(__file__).resolve().parents[1]
 VECTORS = json.loads((ROOT / "tests/fixtures/failure_redaction_vectors.json").read_text(encoding="utf-8"))["vectors"]
 
 
+def test_python_exception_mapping_masks_single_quoted_secret_and_keeps_cause():
+    import secrets
+    secret = secrets.token_hex(24)
+    text = "TypeError: original cause " + repr({"secret": secret, "enabled": False})
+    actual = redact_for_sink(text, {})
+    assert secret not in actual, "synthetic secret escaped common text redaction"
+    assert "TypeError: original cause" in actual and "False" in actual
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_single_quoted_exception_mapping_masks_before_bounded_child_retention(tmp_path, engine):
+    result = run_functions(tmp_path, ROOT / "INSTALL_CANONICAL_PORTABLE.ps1",
+                           ["Initialize-LabelChildOutputReader"], r'''
+$value=[Guid]::NewGuid().ToString('N')+('x'*12000)
+$text="TypeError: original cause {'secret': '"+$value+"', 'enabled': false}"
+$actual=ConvertTo-KmtechRedactedSinkText $text @{}
+if($actual.Contains($value) -or -not $actual.Contains('TypeError: original cause')){throw 'Common text mapping redaction failed'}
+Initialize-LabelChildOutputReader
+$rules=$Script:KmtechRedactionRules
+$masker=[LabelJsonFieldMasker]::new($rules.pattern,$rules.path_suffix,$rules.digest_suffix,$rules.short_secret_digest,$rules.field)
+$parts=[Collections.Generic.List[string]]::new()
+for($start=0;$start -lt $text.Length;$start+=7){
+ $parts.Add($masker.Push($text.Substring($start,[Math]::Min(7,$text.Length-$start))))
+}
+$parts.Add($masker.Finish());$captured=$parts -join ''
+if($captured.Contains($value) -or $captured.Contains(('x'*32)) -or -not $captured.Contains('TypeError: original cause')){throw 'Chunked mapping redaction failed'}
+'PASS'
+''', engine=engine)
+    assert result.returncode == 0, "isolated mapping redaction failed; child evidence retained"
+    assert result.stdout.strip() == "PASS"
+
+
 def generated(vector):
     spec = vector["text_generator"]
     return spec["head"] + spec["fill_char"] * spec["fill_bytes"] + spec["tail"]

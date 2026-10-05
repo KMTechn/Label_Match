@@ -2288,7 +2288,7 @@ public sealed class LabelJsonFieldMasker {
  private readonly Regex secret, path, digest, shortSecret;
  private readonly string marker;
  private readonly StringBuilder token = new StringBuilder();
- private int state, depth; private bool escaped, quoted;
+ private int state, depth; private bool escaped, quoted; private char quote, nestedQuote;
  public LabelJsonFieldMasker(string pattern,string paths,string digests,string shorts,string replacement) {
   secret=new Regex(pattern+"|(?i)^(pin|otp|password)$");path=new Regex(paths);
   digest=new Regex(digests);shortSecret=new Regex(shorts);marker="\""+replacement+"\"";
@@ -2303,12 +2303,12 @@ public sealed class LabelJsonFieldMasker {
    while(again) {
     again=false;
     if(state==0) {
-     if(c=='"') {token.Append(c);state=1;escaped=false;} else output.Append(c);
+     if(c=='"' || c=='\'') {quote=c;token.Append(c);state=1;escaped=false;} else output.Append(c);
     } else if(state==1) {
      token.Append(c);
      if(escaped) escaped=false;
      else if(c=='\\') escaped=true;
-     else if(c=='"') state=2;
+     else if(c==quote) state=2;
      // Long non-key strings remain ordinary text; secret values use state 4.
      if(token.Length>1024) {output.Append(token);token.Clear();state=7;}
     } else if(state==2) {
@@ -2320,17 +2320,17 @@ public sealed class LabelJsonFieldMasker {
      } else {output.Append(token);token.Clear();state=0;again=true;}
     } else if(state==3) {
      if(Char.IsWhiteSpace(c)) output.Append(c);
-     else if(c=='"') {output.Append(marker);state=4;escaped=false;}
+     else if(c=='"' || c=='\'') {quote=c;output.Append(marker);state=4;escaped=false;}
      else if(c=='{' || c=='[') {output.Append(marker);state=5;depth=1;quoted=false;escaped=false;}
      else {token.Append(c);state=6;}
     } else if(state==4 || state==7) {
      if(state==7) output.Append(c);
      if(escaped) escaped=false;
      else if(c=='\\') escaped=true;
-     else if(c=='"') state=0;
+     else if(c==quote) state=0;
     } else if(state==5) {
-     if(quoted) {if(escaped) escaped=false;else if(c=='\\') escaped=true;else if(c=='"') quoted=false;}
-     else if(c=='"') quoted=true;
+     if(quoted) {if(escaped) escaped=false;else if(c=='\\') escaped=true;else if(c==nestedQuote) quoted=false;}
+     else if(c=='"' || c=='\'') {nestedQuote=c;quoted=true;}
      else if(c=='{' || c=='[') depth++;
      else if(c=='}' || c==']') {if(--depth==0) state=0;}
     } else if(state==6) {

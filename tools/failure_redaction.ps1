@@ -42,13 +42,14 @@ function ConvertTo-KmtechRedactedSinkText {
             $Text = $Text.Replace($form,$replacement)
         }
     }
-    $Text = [regex]::Replace($Text, '(?<![A-Za-z0-9_.-])(?<key>"(?:\\.|[^"\\])*"|[A-Za-z_][\w.-]*)(?<separator>\s*[:=]\s*)(?<value>"(?:\\.|[^"\\])*"|[^\s,;}]+)', [Text.RegularExpressions.MatchEvaluator]{
+    $Text = [regex]::Replace($Text, '(?<![A-Za-z0-9_.-])(?<key>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[A-Za-z_][\w.-]*)(?<separator>\s*[:=]\s*)(?<value>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[^\s,;}]+)', [Text.RegularExpressions.MatchEvaluator]{
         param($match)
-        $key=$match.Groups['key'].Value.Trim('"');$value=$match.Groups['value'].Value
+        $quotes=[char[]]@('"',"'")
+        $key=$match.Groups['key'].Value.Trim($quotes);$value=$match.Groups['value'].Value
         $metadata=($value -cin @('true','false','null') -or $key -match $rules.path_suffix -or
             ($key -match $rules.digest_suffix -and $key -notmatch $rules.short_secret_digest))
-        if ($metadata -or ($key -notmatch $rules.pattern -and $key -inotmatch '^(pin|otp|password)$') -or $value.Trim('"').StartsWith('[REDACTED:')) { return $match.Value }
-        $replacement=if($value.StartsWith('"')){'"'+$rules.field+'"'}else{$rules.field}
+        if ($metadata -or ($key -notmatch $rules.pattern -and $key -inotmatch '^(pin|otp|password)$') -or $value.Trim($quotes).StartsWith('[REDACTED:')) { return $match.Value }
+        $replacement=if($value.StartsWith('"') -or $value.StartsWith("'")){$value.Substring(0,1)+$rules.field+$value.Substring(0,1)}else{$rules.field}
         return $match.Groups['key'].Value+$match.Groups['separator'].Value+$replacement
     })
     $Text=[regex]::Replace($Text,'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"'',;]+',[Text.RegularExpressions.MatchEvaluator]{param($match) $match.Groups[1].Value+$rules.field})

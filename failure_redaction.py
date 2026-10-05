@@ -58,15 +58,16 @@ def redact_for_sink(text, environ=None, *, redact_values=()):
         for form in dict.fromkeys(forms):
             text = text.replace(form, f"[REDACTED:{name}]")
     def assignment(match):
-        key = match['key'].strip('"')
+        key = match['key'].strip("\"'")
         value = match['value']
         metadata = (value in ('true', 'false', 'null') or re.search(RULES['path_suffix'], key)
                     or (re.search(RULES['digest_suffix'], key) and not re.search(RULES['short_secret_digest'], key)))
         sensitive = re.search(RULES['pattern'], key) or key.lower() in ('pin', 'otp', 'password')
-        if not sensitive or metadata or value.strip('"').startswith('[REDACTED:'):
+        if not sensitive or metadata or value.strip("\"'").startswith('[REDACTED:'):
             return match[0]
-        return match['key'] + match['separator'] + (json.dumps(RULES['field']) if value.startswith('"') else RULES['field'])
-    text = re.sub(r'(?<![A-Za-z0-9_.-])(?P<key>"(?:\\.|[^"\\])*"|[A-Za-z_][\w.-]*)(?P<separator>\s*[:=]\s*)(?P<value>"(?:\\.|[^"\\])*"|[^\s,;}]+)', assignment, text)
+        quote = value[0] if value.startswith(('"', "'")) else ''
+        return match['key'] + match['separator'] + quote + RULES['field'] + quote
+    text = re.sub(r"""(?<![A-Za-z0-9_.-])(?P<key>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*)(?P<separator>\s*[:=]\s*)(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)""", assignment, text)
     text = re.sub(r'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"\',;]+', lambda match: match[1] + RULES['field'], text)
     if notes:
         text += "\n" + "\n".join(notes)

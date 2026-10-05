@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+예외 args의 Python 단일 인용 mapping도 비밀 field 가림을 거친다. Python·PS 공용 text 가림과 bounded child C# reader 모두 인용 경계/escape를 인식해 원인 메시지·타입·trace는 보존하고 비밀 value를 사용자 sink에 다시 연결하지 않는다.
+
 relay install pack의 상대 program-data root는 경로 정규화와 G 판독/기록 전에 인수 오류로 거절한다. 거절은 정적 stderr 안내와 exit 2만 남기고 report·자료·generation을 쓰지 않는다. 유효한 sealed app fixture에서 입력 바이트와 runtime 부재를 함께 검증한다.
 
 조립 fixture 교정: receipt gate는 실제 읽기 전용 G 진입과 표준 의존성을 제공하고 다른 제품 mode는 계속 거절한다. 제거 진단 회귀는 실제 clean source identity, 예약 작업 대역은 제품과 같은 가림 helper 입력을 사용한다. isolated child의 program-data override 잔류를 제거했다. 원 실패 XML과 변경 전 증거는 sub-292에 보존한다.
