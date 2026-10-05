@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+첫 설치의 옛 공식 relay Disable 전이는 기존 보호 base 준비를 먼저 거친다. Restore는 기존 base 요구를 유지하고, 설치자 owner record는 일반 코드 배치가 작성한다. 잘못된 전이 인수는 base 준비 전 거절하며, 진단 가림 과정은 원 예외 타입·원인과 빈 metadata 객체를 보존한다.
+
 <a id="scanner-only-packaging"></a>
 
 유지보수 active fence가 있으면 중앙 포장·교환·인쇄·PIN·등록·런타임 임대는 첫 HTTP 전에 거절한다. 공개 임대 갱신과 CLI 등록·부분 복구·관리자 복구도 같은 admission을 확인한다. 원 명령·멱등 키·pending 임대 요청·UNKNOWN·복구 원본을 보존하고 해제 뒤 같은 내구 요청을 재시도한다.

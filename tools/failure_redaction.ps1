@@ -110,7 +110,9 @@ function ConvertTo-KmtechRedactedSinkObject {
     if ($Value -is [string]) { return ConvertTo-KmtechRedactedSinkText -Text $Value -Environment $Environment }
     if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
         $result = [ordered]@{}
-        $names = if ($Value -is [Collections.IDictionary]) { @($Value.Keys) } else { @($Value.PSObject.Properties.Name) }
+        $names = if ($Value -is [Collections.IDictionary]) { @($Value.Keys) } else {
+            @($Value.PSObject.Properties | ForEach-Object { $_.Name })
+        }
         foreach ($name in $names) {
             $entry = if ($Value -is [Collections.IDictionary]) { $Value[$name] } else { $Value.$name }
             $rules=$Script:KmtechRedactionRules

@@ -1689,12 +1689,17 @@ if (
         $ExpectedSourceByteCount -lt 1
     )
 ) { throw "Trusted portable source inventory pins are required." }
+if ($LegacyRelayTransition -and
+    ($DryRun -or $Uninstall -or $StartupUpdateRestorePreimage -or $WriterFenceAttemptId -cnotmatch '^[0-9a-f]{32}$')) {
+    throw 'LEGACY_RELAY_TRANSITION_INVALID'
+}
 if (-not $DryRun.IsPresent -and -not $testOverride) {
     Assert-AlreadyElevated
-    if (-not $Uninstall.IsPresent -and -not $StartupUpdateRestorePreimage -and -not $LegacyRelayTransition) {
+    if (-not $Uninstall.IsPresent -and -not $StartupUpdateRestorePreimage -and
+        (-not $LegacyRelayTransition -or $LegacyRelayTransition -ceq 'Disable')) {
         try {
             Initialize-LabelProtectedInstallBase $installRootFull
-            Write-LabelInstallerOwnerRecord $installRootFull
+            if (-not $LegacyRelayTransition) { Write-LabelInstallerOwnerRecord $installRootFull }
             Write-ElevationLog 'PREPARATION' ($Script:LabelAncestorPreparationEvents.ToArray() | ConvertTo-Json -Depth 8 -Compress)
         }
         catch {
@@ -1715,7 +1720,6 @@ if (-not $DryRun.IsPresent -and -not $testOverride) {
 
 if ($LegacyRelayTransition -or $StartupUpdateRestorePreimage) {
     if ($LegacyRelayTransition) {
-        if ($DryRun -or $Uninstall -or $StartupUpdateRestorePreimage -or $WriterFenceAttemptId -cnotmatch '^[0-9a-f]{32}$') { throw 'LEGACY_RELAY_TRANSITION_INVALID' }
         Assert-ProtectedCodeAncestors (Split-Path -Parent $installRootFull)
         $directory=Join-Path (Split-Path -Parent $installRootFull) ('.legacy-relay.'+$WriterFenceAttemptId)
     } else {

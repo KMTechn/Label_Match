@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+sub-300 첫 설치 P1: canonical base가 없는 옛 공식 작업 PC에서도 Disable 전이 전에 기존 보호 base 초기화를 수행한다. 설치자 owner record는 일반 배치에서만 쓰며 G·DACL 결정 B는 바꾸지 않는다. StrictMode 진단의 빈 객체를 안전하게 열거해 원 예외를 보존한다. 격리된 실제 제어 흐름 회귀와 실제 PC 설치 수용은 구분한다(후자는 coordinator 예행 대상).
+
 v2.0.95 2c46de1의 전체 source 정방향은 기존 delayed-reader pair 시험이 요구하는 승인 입력이다. 원 표준 stock before에 정확히 결속하는 조립 선언으로 보존한다(현장 해당 없음). prototype 4070818/160d2b4와 TEST1에 추가 선언은 없다.
 
 REDACTION-CONTRACT 1a의 Python machine writer도 대조했다. update transition/active, settings, relay stop marker는 진단과 파일 종류별로 분리해 원 직렬화 바이트를 보존하고 쓰기 전에 비밀 값을 거절한다. 실제 writer body에 >64 KiB, 식별자 보존 및 원문/JSON escape 비밀의 기존 대상·없는 부모 무변경 회귀를 추가했다. writer sink membership와 기존 G는 그대로다.
