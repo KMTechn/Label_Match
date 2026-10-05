@@ -302,9 +302,13 @@ def test_failure_diagnostics_mask_quoted_authority_and_bound_original_text():
     value = 'original-message-sentinel {"authorization":"Bearer synthetic-value","credential":"synthetic-credential"} token=synthetic-token'
     chain = updates.launch_failure_details(RuntimeError(value + "x" * 20000), include_original=True)
     message = chain[0].get("message", "")
-    assert "original-message-sentinel" in message
-    assert all(secret not in message for secret in ("synthetic-value", "synthetic-credential", "synthetic-token"))
-    assert len(message) <= 8192
+    from failure_redaction import validate_failure_evidence
+    reference = validate_failure_evidence(chain[0]['full_exception_trace'])
+    trace = Path(reference['path']).read_text(encoding='utf-8')
+    assert "original-message-sentinel" in trace
+    assert all(secret not in message + trace for secret in ("synthetic-value", "synthetic-credential", "synthetic-token"))
+    assert len(message) <= 300
+    assert len(trace.encode('utf-8')) <= 65536
 
 
 def test_diagnostic_storage_failure_preserves_original_relay_outcome(monkeypatch, tmp_path):

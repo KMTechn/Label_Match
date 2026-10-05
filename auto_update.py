@@ -1450,8 +1450,8 @@ def safe_update_text(value: Any, *, limit: int = 300) -> str:
 def child_failure_output(completed: Any) -> dict[str, Any]:
     from failure_redaction import redact_for_sink
     return {"returncode": completed.returncode,
-            "stdout": redact_for_sink(getattr(completed, "stdout", "")),
-            "stderr": redact_for_sink(getattr(completed, "stderr", ""))}
+            "stdout": redact_for_sink(getattr(completed, "stdout", "") or ""),
+            "stderr": redact_for_sink(getattr(completed, "stderr", "") or "")}
 
 
 def launch_failure_details(error: BaseException, *, include_original: bool = False) -> list[dict[str, Any]]:

@@ -45,8 +45,9 @@ LOCAL_TEST_TASK_ENV_NAMES = (
     "REQUESTS_CA_BUNDLE",
     "SSL_CERT_FILE",
 )
-COMMAND_OUTPUT_LIMIT = 16 * 1024
-DIAGNOSTIC_TEXT_LIMIT = 512
+from failure_redaction import RULES as FAILURE_SINK_RULES
+COMMAND_OUTPUT_LIMIT = FAILURE_SINK_RULES['limit']
+DIAGNOSTIC_TEXT_LIMIT = 300
 CHILD_FAILURE_CODES = frozenset(
     {
         "CHILD_EXCEPTION",
@@ -56,22 +57,11 @@ CHILD_FAILURE_CODES = frozenset(
         "CHILD_PROCESS_TIMEOUT",
     }
 )
-SENSITIVE_DIAGNOSTIC_RE = re.compile(
-    r"(?i)\b([A-Za-z0-9_-]*(?:token|password|secret|authorization|cookie|api[_-]?key)"
-    r"[A-Za-z0-9_-]*)\b"
-    r"(\s*[:=]\s*)([^\s,;]+)"
-)
-BEARER_DIAGNOSTIC_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
-
-
 def _bounded_diagnostic_text(
     value: object, *, redact_values: Sequence[object] = ()
 ) -> str:
     from failure_redaction import redact_for_sink
-    text = str(value or "")
-    for raw_value in sorted({str(item) for item in redact_values if str(item)}, key=len, reverse=True):
-        text = text.replace(raw_value, "[REDACTED:field]")
-    lines = redact_for_sink(text).splitlines()
+    lines = redact_for_sink(value or "", redact_values=redact_values).splitlines()
     return next((line for line in reversed(lines) if line.strip()), "")[-300:]
 
 
@@ -1324,10 +1314,10 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     }
 
 
-def _bounded_captured_text(value: str) -> tuple[str, bool, int]:
+def _bounded_captured_text(value: str, *, redact_values=()) -> tuple[str, bool, int]:
     from failure_redaction import redact_for_sink
     encoded = value.encode("utf-8", errors="replace")
-    protected = redact_for_sink(value)
+    protected = redact_for_sink(value, redact_values=redact_values)
     return protected, "[TRUNCATED:" in protected, len(encoded)
 
 
@@ -1373,8 +1363,8 @@ def _run_in_process_main(entrypoint, arguments: Sequence[str]) -> dict:
             returncode = 1
             failure_code = "CHILD_EXCEPTION"
             inner_exception = exc
-    stdout, stdout_truncated, stdout_bytes = _bounded_captured_text(stdout_buffer.getvalue())
-    stderr, stderr_truncated, stderr_bytes = _bounded_captured_text(stderr_buffer.getvalue())
+    stdout, stdout_truncated, stdout_bytes = _bounded_captured_text(stdout_buffer.getvalue(), redact_values=arguments)
+    stderr, stderr_truncated, stderr_bytes = _bounded_captured_text(stderr_buffer.getvalue(), redact_values=arguments)
     result = {
         "returncode": returncode,
         "stdout": stdout,
@@ -1453,8 +1443,8 @@ def _run_command(command: Sequence[str]) -> dict:
         returncode, failure_code, inner_exception = 1, "CHILD_PROCESS_START_FAILED", exc
     def decoded(value):
         return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
-    stdout, stdout_truncated, stdout_bytes = _bounded_captured_text(decoded(stdout_raw))
-    stderr, stderr_truncated, stderr_bytes = _bounded_captured_text(decoded(stderr_raw))
+    stdout, stdout_truncated, stdout_bytes = _bounded_captured_text(decoded(stdout_raw), redact_values=command[1:])
+    stderr, stderr_truncated, stderr_bytes = _bounded_captured_text(decoded(stderr_raw), redact_values=command[1:])
     result = dict(returncode=returncode, stdout=stdout, stderr=stderr, stdout_bytes=stdout_bytes,
                   stderr_bytes=stderr_bytes, stdout_truncated=stdout_truncated,
                   stderr_truncated=stderr_truncated, timed_out=timed_out, command_identity=command_identity)

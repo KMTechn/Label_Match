@@ -69,6 +69,10 @@ def _pair_layouts(tmp_path, baseline_source, candidate_source):
             target = package / relative
             target.parent.mkdir(exist_ok=True)
             shutil.copyfile(source / relative, target)
+        for relative in getattr(own_builder, 'FAILURE_SINK_DATA', ()):
+            target = package / relative
+            target.parent.mkdir(exist_ok=True)
+            shutil.copyfile(source / relative, target)
         # Stock uses committed blobs, not CRLF checkout data. Keep the same
         # serialization for tracked LF inputs while allowing candidate edits.
         eol = subprocess.check_output(['git', '-C', str(source), 'ls-files',

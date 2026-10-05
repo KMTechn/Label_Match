@@ -9,10 +9,13 @@ import tempfile
 RULES = json.loads((Path(__file__).parent / "tools/failure_redaction_rules.json").read_text(encoding="utf-8"))
 
 
-def redact_for_sink(text, environ=None):
+def redact_for_sink(text, environ=None, *, redact_values=()):
     if environ is None:
         environ = os.environ
-    text = str(text)
+    text = text.decode('utf-8', errors='replace') if isinstance(text, bytes) else str(text)
+    for value in sorted({str(item) for item in redact_values if len(str(item)) >= 4}, key=len, reverse=True):
+        for form in dict.fromkeys((json.dumps(value)[1:-1], value.replace("'", "''"), value.replace('"', '""'), value)):
+            text = text.replace(form, RULES['field'])
     notes = []
     entries = [(name, value) for name, value in environ.items()
                if (re.search(RULES["pattern"], name) or name in RULES["explicit"])
@@ -29,6 +32,17 @@ def redact_for_sink(text, environ=None):
                  value.replace("'", "''"), value.replace('"', '""'), value)
         for form in dict.fromkeys(forms):
             text = text.replace(form, f"[REDACTED:{name}]")
+    def assignment(match):
+        key = match['key'].strip('"')
+        value = match['value']
+        metadata = (value in ('true', 'false', 'null') or re.search(RULES['path_suffix'], key)
+                    or (re.search(RULES['digest_suffix'], key) and not re.search(RULES['short_secret_digest'], key)))
+        sensitive = re.search(RULES['pattern'], key) or key.lower() in ('pin', 'otp', 'password')
+        if not sensitive or metadata or value.strip('"').startswith('[REDACTED:'):
+            return match[0]
+        return match['key'] + match['separator'] + (json.dumps(RULES['field']) if value.startswith('"') else RULES['field'])
+    text = re.sub(r'(?P<key>"(?:\\.|[^"\\])*"|[A-Za-z_][\w.-]*)(?P<separator>\s*[:=]\s*)(?P<value>"(?:\\.|[^"\\])*"|[^\s,;}]+)', assignment, text)
+    text = re.sub(r'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"\',;]+', lambda match: match[1] + RULES['field'], text)
     if notes:
         text += "\n" + "\n".join(notes)
     raw = text.encode("utf-8")

@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+예행 4회차 sub-274: 실패 전문 가림·보존, current 없는 보호 startup 복원, 보호 선행 rollback, 오류 수와 독립된 안전 readback, 일반 지원 재개, 공식 옛 relay 작업의 Enabled 전환, 중첩 phase 기록을 교정한다. onboarding 복원 위임 목록에 실제 nested source `auto_update_fixed_helper`를 추가하며 writer 목록 76과 기존 G를 유지한다. 새 stock 및 동일 기준 집중 회귀 결과와 sub-278 단언 불변 추출 diff는 [sub-274 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-274/REPORT.md)에 기록한다. 실제 공개 v2.0.38 작업/암호 저장 Enable·Disable, 일반 실패 지원 재개, G 거절 두 갈래의 native 수용은 예행 5회차 guest 검증 전까지 NOT TESTED다.
+
 legacy upgrade guard의 G/nextfix 조합은 정의된 exact tuple을 사용하고 시험 helper의 중복 BOM을 제거한다. 기존 66개 read-only 선언/stock/archive preflight와 신규 source/self·BOM 구문 회귀는 [sub-242 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-242/REPORT.md)에서 기준/후보별 결과를 구분한다. 실제 설치·공개 v2.0.38의 백업/새 설치·등록 복구/현장 rollback 수용은 별도이며, 호스트에서 실행하지 않는다.
 
 첫 재실행의 남은 17개는 금지 입력을 성공시킨 결함이 아니라 G writer/file source-set 선거절을 옛 semantics 문자열로 기대하던 시험 결함이다. G writer 추가를 독립적으로 대조한 뒤 정확한 첫 거절 코드만 교정하며 기존 부정 입력·nonzero exit·불변 자료 단언은 유지한다. 원 실패 및 최종 재실행 결과는 같은 보고서에서 구분한다.

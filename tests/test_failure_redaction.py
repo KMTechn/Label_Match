@@ -92,7 +92,7 @@ public static class FailureProbe {
   Console.Error.WriteLine("Traceback (most recent call last):");
   for(int n=0;n<40;n++) Console.Error.Write(new String('x',4091)+value+"\n");
   Console.Error.WriteLine("ValueError: final synthetic cause "+value);
-  Console.Out.WriteLine("{\"status\":\"FAILED\",\"credential\":{\"secret\":\"syntheticFileValue0987\"}}");
+  Console.Out.WriteLine("{\"status\":\"FAILED\",\"credential\":{\"secret\":\""+new String('q',160000)+"syntheticFileValue0987\"},\"padding\":\""+new String('p',80000)+"\"}");
   Environment.Exit(1);
  }
 }
