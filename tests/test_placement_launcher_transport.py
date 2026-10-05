@@ -20,6 +20,12 @@ def transport_command(tmp_path, launcher, payload):
     """Prepare inputs, then use the actual product bootstrap without elevation."""
     code = tmp_path / "transport-code.ps1"
     data = tmp_path / "transport-data.json"
+    # Literal launcher extraction excludes the common definitions that the
+    # real producer composes after its param block. Load that same dependency.
+    if "ConvertTo-KmtechRedactedSinkText" in launcher:
+        boundary = launcher.index("\n") + 1
+        redactor = str(ROOT / "tools/failure_redaction.ps1").replace("'", "''")
+        launcher = launcher[:boundary] + ". '" + redactor + "'\n" + launcher[boundary:]
     code.write_bytes(launcher.encode("utf-8"))
     data.write_bytes(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     source = INSTALLER.read_text(encoding="utf-8-sig")

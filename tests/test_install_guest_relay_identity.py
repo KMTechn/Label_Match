@@ -61,4 +61,4 @@ $result=Get-LabelOfficialLegacyTaskFingerprint $map['task.name'] $map['task.path
     actual = json.loads(output.read_text())
     assert actual['matched'] is True
     assert actual['sha256'] == ENTRY['sha256']
-    assert actual['field_fingerprints'] == ENTRY['field_sha256']
+    assert actual['fields'] == ENTRY['field_sha256']
