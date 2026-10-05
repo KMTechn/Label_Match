@@ -756,7 +756,9 @@ def test_top_level_installer_owns_current_user_lifecycle_and_preimage() -> None:
 
 def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
     source = _source()
-    rollback = source[source.index("    $original = $_\n    if (-not $mutated)") :]
+    start = source.index("function Invoke-LabelCanonicalRollback")
+    end = source.index("\nfunction ", start + 1)
+    rollback = source[start:end] + source[source.index("    $original = $_"): ]
 
     assert "try { Product $install '--remove-current-user-setup' } catch {}" not in rollback
     product = rollback.index("Product $rollbackProductRoot '--remove-current-user-setup'")
