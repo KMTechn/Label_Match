@@ -227,6 +227,12 @@ def test_relay_restart_discovers_csv_in_effective_data_root(
     (app_root / "app").mkdir()
     (app_root / "runtime" / "python.exe").write_bytes(b"runtime")
     (app_root / "app" / "main.py").write_text("pass\n", encoding="utf-8")
+    from tests.test_direct_sync_relay_install_pack import _seal_generation_release_input
+    import subprocess
+    source_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1], text=True
+    ).strip()
+    _seal_generation_release_input(app_root, source_commit)
     settings_path.parent.mkdir(parents=True)
     if source_case != "missing":
         value = "" if source_case == "empty" else None if source_case == "null" else str(custom_data)
