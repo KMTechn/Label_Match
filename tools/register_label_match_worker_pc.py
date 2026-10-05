@@ -2269,7 +2269,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _registration_storage_preflight(args)
     except (ValueError, WriterFenceError) as exc:
-        print(redact_for_sink(str(exc)).rstrip().splitlines()[-1][-300:])
+        lines = redact_for_sink(str(exc)).rstrip().splitlines()
+        print(lines[-1][-300:] if lines else UNKNOWN_MESSAGE)
         print(UNKNOWN_MESSAGE, file=sys.stderr)
         return 2
 
