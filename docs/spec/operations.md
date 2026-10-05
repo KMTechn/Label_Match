@@ -1179,3 +1179,5 @@ sub-192 native 배치 원인: 예약 작업 XML 비교는 이적의 null-aware t
 sub-192 native rollback 원인: absent-code rollback은 부모 admission을 쥔 채 같은 admission을 요구하는 상승 자식을 기다리지 않는다. 기존 이적 caller-authority 검증처럼 부모 admission 안에서 실제 session lease의 이름·타입·보유와 정확한 RESTORING tuple/token/만료/source를 확인하고 재귀 보유만 균형 해제한다. session authority 원 보유는 유지한 채 admission을 자식에게 넘긴다. pinned helper는 기존 canonical_placement admission을 직접 획득하고 같은 위임 및 별도 프로세스의 HeldByOther를 확인한 뒤에만 hash로 증명된 파일을 제거한다. guard·잠금·일반 writer fence를 생략하지 않는다. 실제 rollback call 및 PS5.1/7 native 부모·자식 mutex RED 2 FAIL(timeout) → GREEN 14 PASS; 잘못된 token/source·busy child·부모 권한/tuple/만료와 child 실패 보존을 확인했다. 시험 fence 시간은 두 JSON adapter에서 string을 유지하는 유효 RFC 형식이다. 실제 상승/고친 packet guest는 NOT TESTED며 원 native child timeout을 보존한다.
 
 F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join 완료 뒤 수행한다. 취소·새 세트·capture 보존 단언은 유지하며 제품의 취소 흐름과 로그 API는 바꾸지 않는다. 완료 전 읽기에서 이벤트 0건인 실패와 종료 뒤 취소 1행 관측을 sub-264에 보존한다.
+
+설치기 회귀 fixture는 실제 Wait-LabelRelayPreimageExit와 격리된 writer 관측을 바인딩하며 예상 밖 writer 거절을 확인한다. isolated main 입력에는 실제 auto_update/writer_session_fence 파일을 포함하고 rollback locator는 현재 original-error 경계를 정확히 선택한다. 원 phase·행 수·순서 단언은 유지한다.

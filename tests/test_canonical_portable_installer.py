@@ -192,7 +192,7 @@ $before = Snapshot
 
 
 def _run_pristine_removal_gate_harness(
-    tmp_path: Path, *, pristine_install: bool = True
+    tmp_path: Path, *, pristine_install: bool = True, unexpected_writer: bool = False
 ) -> dict[str, object]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     source = _source()
@@ -207,6 +207,8 @@ def _run_pristine_removal_gate_harness(
         "    $unquiesced = @(UnquiescedProductWriters)", removal_anchor_index
     )
     removal_block = source[block_start:block_end]
+    wait_start = source.index("function Wait-LabelRelayPreimageExit")
+    relay_exit = source[wait_start:source.index("\nfunction HealthyLifecycle", wait_start)]
     harness = tmp_path / "pristine-removal-gate.ps1"
     marker = tmp_path / "label_match_user_relay.stop.json"
     removal_report = tmp_path / "current_user_removal.json"
@@ -214,6 +216,10 @@ def _run_pristine_removal_gate_harness(
         rf"""
 $ErrorActionPreference = 'Stop'
 $script:removalCalls = 0
+$script:unexpectedWriter = {'$true' if unexpected_writer else '$false'}
+$old = @()
+$legacyFirstRegistration = $false
+$healthyWithoutCode = $false
 $pristineInstall = {'$true' if pristine_install else '$false'}
 $healthyLifecycle = $null
 $healthyRemovedInstall = $false
@@ -234,6 +240,13 @@ function Product([string]$Root, [string]$Mode) {{
 }}
 function Snapshot {{ return [ordered]@{{ exists = $false; kind = ''; data = '' }} }}
 function Get-ScheduledTask {{ return $null }}
+function UnquiescedProductWriters {{
+    if ($script:unexpectedWriter) {{
+        return [pscustomobject]@{{ ExecutablePath = 'C:\isolated\pythonw.exe'; CommandLine = 'pythonw.exe --unexpected' }}
+    }}
+    return @()
+}}
+{relay_exit}
 
 {removal_block}
 
@@ -626,6 +639,11 @@ def test_pristine_install_skips_removal_without_creating_stop_marker(
     }
 
 
+def test_pristine_removal_wait_refuses_unexpected_writer(tmp_path: Path) -> None:
+    with pytest.raises(AssertionError, match="Unexpected writer remains after normal removal"):
+        _run_pristine_removal_gate_harness(tmp_path, unexpected_writer=True)
+
+
 @pytest.mark.parametrize("residue", PRISTINE_RESIDUE_KINDS)
 def test_every_residue_kind_keeps_removal_enabled(
     tmp_path: Path, residue: str
@@ -734,7 +752,7 @@ def test_top_level_installer_owns_current_user_lifecycle_and_preimage() -> None:
 
 def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
     source = _source()
-    rollback = source[source.index("catch {\n    $original = $_") :]
+    rollback = source[source.index("    $original = $_\n    if (-not $mutated)") :]
 
     assert "try { Product $install '--remove-current-user-setup' } catch {}" not in rollback
     product = rollback.index("Product $rollbackProductRoot '--remove-current-user-setup'")
@@ -1191,6 +1209,8 @@ def test_portable_main_imports_label_match_under_isolated_python(
     app = tmp_path / "app"
     app.mkdir()
     (app / "main.py").write_bytes((ROOT / "portable" / "main.py").read_bytes())
+    for name in ("auto_update.py", "writer_session_fence.py"):
+        (app / name).write_bytes((ROOT / name).read_bytes())
     (app / "Label_Match.py").write_text(
         "def main() -> int:\n    return 0\n",
         encoding="utf-8",
