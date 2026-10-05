@@ -2374,6 +2374,7 @@ $relayPath = Join-Path $statusRoot 'label_match_user_relay.json'
 $generationDowngradeDecision = Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
     -TargetVersion $generationTargetVersion `
     -TargetBuildId ([string]$sourceManifest.source_commit)
+$before = Snapshot
 # Use the verified guarded caller's existing product entrypoint. The target
 # app-root stays the source release, including compatible pre-G source packets.
 # Finish nested admission before audit/preimage writes, elevation, or any fence.
@@ -2384,7 +2385,6 @@ if (-not (Same $generationProductRoot $source)) {
 }
 Product $generationProductRoot '--onboard-current-user' `
     (@('--app-root', $source, '--check-data-generation-only') + $onboardingArguments)
-$before = Snapshot
 $old = @(Relays)
 $scheduledTasksAtPreflight = @(
     Get-ScheduledTask -ErrorAction Stop | Where-Object {
