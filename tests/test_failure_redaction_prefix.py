@@ -100,11 +100,15 @@ foreach($case in $inputRecord.cases) {
 
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
 @pytest.mark.parametrize('prefix', ('', 'RuntimeError: '), ids=('plain', 'exception'))
-def test_capture_masks_exception_assignment_before_truncation(tmp_path, engine, prefix):
+@pytest.mark.parametrize('retained_context', (False, True), ids=('value-only', 'retained-context'))
+def test_capture_masks_exception_assignment_before_truncation(tmp_path, engine, prefix, retained_context):
     sentinel = uuid.uuid4().hex + uuid.uuid4().hex
+    text = prefix + 'password=' + sentinel * 3000
+    if retained_context:
+        text = 'X' * 60000 + '\n' + text + '\n' + 'Y' * 10000
     inputs = tmp_path / 'overflow-input.json'
     inputs.write_text(json.dumps(dict(synthetic=sentinel,
-        text=prefix + 'password=' + sentinel * 3000)), encoding='utf-8')
+        text=text, truncated=retained_context)), encoding='utf-8')
     result = run_functions(tmp_path, ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1',
         ['Initialize-LabelChildOutputReader', 'Protect-LabelFailureText', 'ConvertTo-LabelFailureOutput'], r'''
 function Get-KmtechSinkEnvironment { return @{} }
@@ -117,6 +121,7 @@ try {
     $capture.Completion.Wait()
     $snapshot=[LabelChildOutputReader]::Snapshot($capture)
     $converted=ConvertTo-LabelFailureOutput $snapshot
+    if($snapshot.Truncated -ne $inputRecord.truncated) { throw 'Sanitized capture truncation differs' }
     if($snapshot.Text.Contains([string]$inputRecord.synthetic)) { throw 'Capture exposure before truncation' }
     if($converted.text.Contains([string]$inputRecord.synthetic)) { throw 'Converted exposure after truncation' }
     if([Text.Encoding]::UTF8.GetByteCount($converted.text) -gt 65536) { throw 'Capture byte limit exceeded' }
