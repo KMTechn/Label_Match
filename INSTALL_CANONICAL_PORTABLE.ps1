@@ -1019,6 +1019,7 @@ if startup_changes is not None:
             raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
         for relative,path in left.items():
             if relative in expected_additions:
+                if relative in right:raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: '+relative)
                 if release_digest(path) != allowed_additions[relative]:raise ValueError(startup_delta_reason(relative, 'WRITER_TRANSITION_ADDED_ASSET_DIFFERS'))
             elif relative in all_directions:
                 before,after=all_directions[relative]
@@ -1291,7 +1292,7 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
     # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
     $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
     $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
-        -ProbeBytes $probeBytes -ExpectedSha256 '32cc5bf2b39230fb863f96bdc6632eadca86d7ace1401a970281eb5561f31ed6' `
+        -ProbeBytes $probeBytes -ExpectedSha256 '78c70cd7f7b965c88cb9a9746bfb8a8c170fe619978394aceb301d23ca666470' `
         -ProbeArguments @($Source, $Installed, $generationReverse) -FailureMessage 'Installed writer transition is unsupported: '
     return $stdout | ConvertFrom-Json
 }
