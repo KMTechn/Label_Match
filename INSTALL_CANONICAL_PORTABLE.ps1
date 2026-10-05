@@ -674,11 +674,11 @@ legacy_label_transition = all(
 # initialize. Everything else stays checked and downgrade is not admitted.
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-  'c3f0b6ccda1e31bb1b4ba4fca90af01ca2ac22d975b9f8b2cc9196eeffeb6e98'),
+  'b50af633f572991163356f2fd85afbad8e30d982876d05932e72bb4b833eba64'),
  ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-  'c3f0b6ccda1e31bb1b4ba4fca90af01ca2ac22d975b9f8b2cc9196eeffeb6e98'),
+  'b50af633f572991163356f2fd85afbad8e30d982876d05932e72bb4b833eba64'),
  ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
-  'c3f0b6ccda1e31bb1b4ba4fca90af01ca2ac22d975b9f8b2cc9196eeffeb6e98')}
+  'b50af633f572991163356f2fd85afbad8e30d982876d05932e72bb4b833eba64')}
 scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -723,7 +723,7 @@ scan_input_transition = (
 # through the existing recovery schema. Downgrade is not admitted.
 nextfix_label_path = 'app/Label_Match.py'
 nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
- 'c3f0b6ccda1e31bb1b4ba4fca90af01ca2ac22d975b9f8b2cc9196eeffeb6e98')
+ 'b50af633f572991163356f2fd85afbad8e30d982876d05932e72bb4b833eba64')
 nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -756,7 +756,7 @@ nextfix_label_transition = (
 
 # a20cd01 -> this scanner source: exact forward-only source pair, the same
 # pinned companion deltas, and unchanged writer membership/runtime/contracts.
-scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', 'c3f0b6ccda1e31bb1b4ba4fca90af01ca2ac22d975b9f8b2cc9196eeffeb6e98')
+scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', 'b50af633f572991163356f2fd85afbad8e30d982876d05932e72bb4b833eba64')
 scanner_transition = (
     (installed / nextfix_label_path).is_file() and
     (source / nextfix_label_path).is_file() and
@@ -1384,7 +1384,7 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
     # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
     $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
     $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
-        -ProbeBytes $probeBytes -ExpectedSha256 'bbee9b51ed1ce9133cdbbf922400c5fcc9d8864ce4ff8f878059027e79068fc2' `
+        -ProbeBytes $probeBytes -ExpectedSha256 '3dddf4e918598e772015be216796c9d588f8ef28f4f4e82ccb0daaa3c18ba3dc' `
         -ProbeArguments @($Source, $Installed, $generationReverse) -FailureMessage 'Installed writer transition is unsupported: '
     return $stdout | ConvertFrom-Json
 }
