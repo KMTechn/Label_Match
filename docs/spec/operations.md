@@ -1189,3 +1189,5 @@ sub-192 native rollback 원인: absent-code rollback은 부모 admission을 쥔 
 F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join 완료 뒤 수행한다. 취소·새 세트·capture 보존 단언은 유지하며 제품의 취소 흐름과 로그 API는 바꾸지 않는다. 완료 전 읽기에서 이벤트 0건인 실패와 종료 뒤 취소 1행 관측을 sub-264에 보존한다.
 
 설치기 회귀 fixture는 실제 Wait-LabelRelayPreimageExit와 격리된 writer 관측을 바인딩하며 예상 밖 writer 거절을 확인한다. isolated main 입력에는 실제 auto_update/writer_session_fence 파일을 포함하고 rollback locator는 현재 original-error 경계를 정확히 선택한다. 원 phase·행 수·순서 단언은 유지한다.
+
+옛 공식 relay 정체성은 Export-ScheduledTask XML로 판정한다. 실측 계약에 따라 누락 RunLevel은 LeastPrivilege, SYSTEM의 누락 LogonType은 ServiceAccount로 정규화하며 사용자 누락 LogonType은 ABSENT로 거절한다. 명시한 요소와 생략한 요소는 같은 지문이고 모르는 값은 기존 거절이다. 저장 암호/InteractiveToken 동일 작업자 인정은 한 상수에 켜며 native 실패 복원/성공 전환 회차가 실패하면 닫는다.

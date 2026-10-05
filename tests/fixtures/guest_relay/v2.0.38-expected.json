@@ -1,0 +1,189 @@
+﻿{
+  "schema": "kmtech-old-relay-identity-entry-v1",
+  "app": "Label_Match",
+  "tag": "v2.0.38",
+  "mechanism": "scheduled_task",
+  "branch": "stored_password_current_user",
+  "field_templates": {
+    "task.path": "\\",
+    "task.name": "direct-sync-relay-{label_match_source_host_id}",
+    "action.count": "1",
+    "action.type": "Exec",
+    "action.command": "{system_directory}\\wscript.exe",
+    "action.arguments": "//B //NoLogo {program_data}\\KMTech\\DirectSync\\{label_match_source_host_id}\\bin\\run_direct-sync-relay-{label_match_source_host_id}.vbs",
+    "action.workdir": "",
+    "principal.user": "{current_user}",
+    "principal.logon_type": "Password",
+    "principal.run_level": "LeastPrivilege",
+    "trigger.count": "1",
+    "trigger.type": "TimeTrigger",
+    "trigger.repetition_interval": "PT1M"
+  },
+  "source_refs": {
+    "task.path": {
+      "tag": "v2.0.38",
+      "file": "install_label_match_direct_sync.ps1",
+      "line": 58
+    },
+    "task.name": {
+      "tag": "v2.0.38",
+      "file": "install_label_match_direct_sync.ps1",
+      "line": 58
+    },
+    "action.count": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 124
+    },
+    "action.type": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 124
+    },
+    "action.command": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 124
+    },
+    "action.arguments": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 124
+    },
+    "action.workdir": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 124
+    },
+    "principal.user": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 234
+    },
+    "principal.logon_type": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 234
+    },
+    "principal.run_level": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 234
+    },
+    "trigger.count": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 199
+    },
+    "trigger.type": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 199
+    },
+    "trigger.repetition_interval": {
+      "tag": "v2.0.38",
+      "file": "tools/direct_sync_relay_install_pack.py",
+      "line": 199
+    }
+  },
+  "verified_by": "guest",
+  "acceptance_status": "two_assigned_lab_proofs_proven; remaining_two_proofs_owned_by_LM_rehearsal_5",
+  "normalized_fields": {
+    "task.path": "\\",
+    "task.name": "direct-sync-relay-label-match-km-w9r-1002-5b5f5dd30add",
+    "action.count": "1",
+    "action.type": "Exec",
+    "action.command": "c:\\windows\\system32\\wscript.exe",
+    "action.arguments": "//B //NoLogo c:\\programdata\\kmtech\\directsync\\label-match-km-w9r-1002-5b5f5dd30add\\bin\\run_direct-sync-relay-label-match-km-w9r-1002-5b5f5dd30add.vbs",
+    "action.workdir": "",
+    "principal.user": "CURRENT_USER",
+    "principal.logon_type": "Password",
+    "principal.run_level": "LeastPrivilege",
+    "trigger.count": "1",
+    "trigger.type": "TimeTrigger",
+    "trigger.repetition_interval": "PT1M"
+  },
+  "field_sha256": {
+    "action.arguments": "2c78ed2bd1a2e15d23a7f71220fb88f8d36910a46ed8d359b41f085193a2712f",
+    "action.command": "a887318c77bfd2067b3511c0d3a5ad06656712e5c866551eb9711a17ccea06db",
+    "action.count": "13d7a5787d6f8fe46bc74a90d810f6ae02773736206ffac2c252d927f1ea6944",
+    "action.type": "cedf8cd5fe2f38e19545818a6f5d720224e2194f3a80ed1be482ca619a647821",
+    "action.workdir": "31ae0f83debbd0ac7c88cd1bb3b1e6b54045c900a6567d9398da177eeb105243",
+    "principal.logon_type": "0327c8849aaf26c9913653f351437f968db63e3a8ac0832cdc6e6bf15f54c229",
+    "principal.run_level": "78f57f4d0823450514f2e5d9b55f21dbd3c16d4a7061a63b9885d8c54e6ef90d",
+    "principal.user": "04b31090225dbc969abf02adc4317919445594542b0246cd3f28edc2addb59fb",
+    "task.name": "563630bbcdbe0bc5844630b7f576a88d57b14d92debf3eed4b9c9dc4a950e013",
+    "task.path": "8b80c4dd7508e52bd42c2675c8f1fadd39b25d17e83d330f8e8287197bdbd69e",
+    "trigger.count": "89821fb336a8638a07a8268c2dcfba0dd91cc7ec35fb8c7330b783846f7db551",
+    "trigger.repetition_interval": "f8e5612eebb35c40ae2f1ff88267ea64ec35d485a98fccece23e930576865f89",
+    "trigger.type": "40a23ab9bdeb1ddbdab0910afdc7f5bfcf259c2161e1b5e326c4e3c792aaee11"
+  },
+  "sha256": "50f20b204391b4ad10629b361ab8a54f32f1df3da777359a37df45e9d0a3caea",
+  "guest_context": {
+    "windows_caption": "Windows 11 Pro",
+    "windows_version": "10.0.26200",
+    "windows_build": "26200",
+    "ansi_code_page": 949,
+    "guest_computer": "KM-W9R-1002",
+    "official_zip_sha256": "07e7983efb101c727c0039fd9d7d48f1412bbd9797ed296805551a29f1c71e12",
+    "registration": "FAILED_MANIFEST_INVALID_LM; BYPASSED_BY_EXPLICIT_AUTHORITY_FOR_COMMAND_WITNESS",
+    "wrapper_launcher_written": false,
+    "full_official_installation": "NOT_PROVEN",
+    "contract_sha256": "298c972938316f203d16ba21f998b40cb2ec55a11e7c94efbecdc5a793bb0a6b",
+    "object_xml_equal": true,
+    "object_identity_sha256": "50f20b204391b4ad10629b361ab8a54f32f1df3da777359a37df45e9d0a3caea",
+    "raw_xml_sha256": "af9fc0c552b591f25758965d540be6a812897d8700f175fa71381188f890a80d",
+    "xml_element_counts": {
+      "RunLevel": 0,
+      "LogonType": 1
+    },
+    "object_effective_values": {
+      "RunLevel": "Limited",
+      "LogonType": "Password"
+    },
+    "xml_export_encoding": "UTF16LE_BOM",
+    "disable_identity_unchanged": true,
+    "enable_identity_unchanged": true,
+    "reenabled_xml_bytes_equal": true,
+    "scheduled_logon_only_proven": true,
+    "last_task_result": 1,
+    "last_run": "2026-10-05T05:56:01Z",
+    "operational_events": [
+      {
+        "event_id": 102,
+        "result_codes": [],
+        "utc": "2026-10-05T05:56:02.3213016Z",
+        "principal_value_sha256": "caf5823708fb81ebb1f36f1860b81c1984cea5e63c700506198a36ef3257c44f"
+      },
+      {
+        "event_id": 201,
+        "result_codes": [
+          "0x80070001"
+        ],
+        "utc": "2026-10-05T05:56:02.3209268Z"
+      },
+      {
+        "event_id": 200,
+        "result_codes": [],
+        "utc": "2026-10-05T05:56:01.9877964Z"
+      },
+      {
+        "event_id": 100,
+        "result_codes": [],
+        "utc": "2026-10-05T05:56:01.9877951Z",
+        "principal_value_sha256": "caf5823708fb81ebb1f36f1860b81c1984cea5e63c700506198a36ef3257c44f"
+      },
+      {
+        "event_id": 129,
+        "result_codes": [],
+        "utc": "2026-10-05T05:56:01.9875502Z"
+      },
+      {
+        "event_id": 107,
+        "result_codes": [],
+        "utc": "2026-10-05T05:56:01.980363Z"
+      }
+    ],
+    "business_relay_execution": "NOT_TESTED_ACTION_FILES_ABSENT"
+  }
+}

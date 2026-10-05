@@ -1030,9 +1030,18 @@ function Get-LabelOfficialLegacyTaskFingerprint([string]$TaskName,[string]$TaskP
     $sid = ConvertTo-LabelTaskSid ([string]$principal.UserId)
     $actor=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $user=if($sid -ceq 'S-1-5-18'){'SYSTEM'}elseif($sid -ceq $actor){'CURRENT_USER'}else{throw 'Healthy lifecycle task belongs to another principal/command.'}
+    # Exported XML may omit effective defaults. Normalize only defaults
+    # measured for official tasks; missing user LogonType stays unrecognized.
+    $logonNodes = @($principal.SelectNodes("*[local-name()='LogonType']"))
+    $runLevelNodes = @($principal.SelectNodes("*[local-name()='RunLevel']"))
+    if ($logonNodes.Count -gt 1 -or $runLevelNodes.Count -gt 1) { throw 'Healthy lifecycle task belongs to another principal/command.' }
+    $logonType = if ($logonNodes.Count -eq 0) { if ($user -ceq 'SYSTEM') { 'ServiceAccount' } else { 'ABSENT' } } else { [string]$logonNodes[0].InnerText }
+    $runLevel = if ($runLevelNodes.Count -eq 0) { 'LeastPrivilege' } else { [string]$runLevelNodes[0].InnerText }
+    if ($logonType -cnotin @('ServiceAccount','Password','InteractiveToken','ABSENT') -or
+        $runLevel -cnotin @('LeastPrivilege','HighestAvailable')) { throw 'Healthy lifecycle task belongs to another principal/command.' }
     $expectations=@(Get-LabelOfficialLegacyTaskExpectations | Where-Object {
         [string]$_['task.name'] -ieq $TaskName -and [string]$_['principal.user'] -ceq $user -and
-        [string]$_['principal.logon_type'] -ceq [string]$principal.LogonType
+        [string]$_['principal.logon_type'] -ceq $logonType
     })
     if($expectations.Count -ne 1){throw 'Healthy lifecycle task belongs to another principal/command.'}
     $expected=$expectations[0]
@@ -1044,7 +1053,7 @@ function Get-LabelOfficialLegacyTaskFingerprint([string]$TaskName,[string]$TaskP
         'action.count'=[string]$actions.Count;'action.type'=$action.LocalName
         'action.command'=(ConvertTo-LabelLegacyTaskPath ([string]$action.Command))
         'action.arguments'=$arguments;'action.workdir'=(ConvertTo-LabelLegacyTaskPath ([string]$action.WorkingDirectory))
-        'principal.user'=$user;'principal.logon_type'=[string]$principal.LogonType;'principal.run_level'=[string]$principal.RunLevel
+        'principal.user'=$user;'principal.logon_type'=$logonType;'principal.run_level'=$runLevel
         'trigger.count'=[string]$triggers.Count;'trigger.type'=$trigger.LocalName;'trigger.repetition_interval'=[string]$trigger.Repetition.Interval
     }
     $fields=[ordered]@{};$lines=@()
