@@ -1,7 +1,5 @@
 """Run the installer's actual read-only upgrade probe on isolated source copies."""
 import json
-import importlib.util
-import ast
 from pathlib import Path
 import shutil
 import subprocess
@@ -32,46 +30,8 @@ def pair(tmp_path, baseline_source):
 
 
 def _package_pair(tmp_path, baseline_source):
-    result = []
-    for name, source in (('old', baseline_source), ('new', ROOT)):
-        package = tmp_path / name
-        spec = importlib.util.spec_from_file_location(name + '_g_builder', source / 'tools/build_portable_release_candidate.py')
-        own_builder = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(own_builder)
-        own_builder._copy_application(source, package / 'app')
-        (package / 'runtime').mkdir()
-        (package / 'runtime' / 'fixture').write_bytes(b'identical runtime preimage')
-        (package / 'launch-label-match.cmd').write_bytes(b'identical launcher fixture\r\n')
-        for relative in ('INSTALL_THIS_PC.ps1',
-                         'tools/bootstrap_integrity.ps1', 'tools/label_writer_fence.ps1',
-                         'tools/label_writer_fence_contract.json'):
-            target = package / relative
-            target.parent.mkdir(exist_ok=True)
-            shutil.copyfile(source / relative, target)
-        for relative in getattr(own_builder, 'FAILURE_SINK_DATA', ()):
-            target = package / relative
-            target.parent.mkdir(exist_ok=True)
-            shutil.copyfile(source / relative, target)
-        declarations = ast.parse((source / 'Label_Match.py').read_text(encoding='utf-8-sig'))
-        version = next(ast.literal_eval(node.value) for node in declarations.body if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'APP_VERSION' for t in node.targets))
-        commit = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
-        (package / 'portable-manifest.json').write_text(json.dumps({'schema':'label-match-portable-tree-v1', 'version':version, 'source_commit':commit, 'data_compatible_min_version':version}), encoding='utf-8')
-        # Stock uses committed blobs, not CRLF checkout data. Keep the same
-        # serialization for tracked LF inputs while allowing candidate edits.
-        eol = subprocess.check_output(['git', '-C', str(source), 'ls-files',
-                                       '--eol', '-z']).decode('utf-8')
-        for row in filter(None, eol.split('\0')):
-            metadata, relative = row.split('\t', 1)
-            if not metadata.startswith('i/lf'):
-                continue
-            targets = [package / 'app' / relative, package / relative]
-            if relative == 'portable/main.py':
-                targets.append(package / 'app/main.py')
-            for target in targets:
-                if target.is_file():
-                    target.write_bytes(target.read_bytes().replace(b'\r\n', b'\n'))
-        result.append(package)
-    return result
+    from tests.test_data_generation_upgrade_pair_r4 import _pair_layouts
+    return _pair_layouts(tmp_path, baseline_source, ROOT)
 
 
 @pytest.fixture(scope='module')
