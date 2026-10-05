@@ -11,6 +11,9 @@
 | `Save-FirstRegistrationAttempt` → `Save-LabelMachineMetadata`: 첫 등록 시도 기록 | 동일. 시도·거래·세션 결속 값을 보존 |
 | `Write-BootstrapUtf8Json`: bootstrap 무결성 기록 | 원 UTF-8 JSON 바이트 보존, 쓰기 전에 비밀 값 존재 시 거절 |
 | `direct_sync_relay_install_pack._write_json`: `--report-path` 진단 보고서 | 기존 공용 가림 유지. 제품 설정 writer가 아님 |
+| `current_user_onboarding._write_machine_json_atomic`: settings | 원 직렬화 UTF-8 보존, 쓰기 전 비밀 값 거절. report writer와 분리 |
+| `user_relay._write_machine_json_atomic`: relay stop marker | 동일. 원 요청/lineage 결속을 보존하고 진단 status/evidence writer와 분리 |
+| `auto_update.write_json_durable`: transition/active 및 machine record | 원 직렬화 UTF-8 보존, 쓰기 전 비밀 값 거절. `failure-<32 hex>.json`만 고정 진단 파일 종류로 가림 |
 
 제품 상태에는 가림이나 64 KiB 상한을 적용하지 않는다. 비밀 쓰기 거절은 디렉터리·임시 파일·기존 대상 변경 전에 발생한다. 회귀는 두 metadata writer 각각에 대해 PS5.1/PS7의 64 KiB 초과 정확한 바이트 일치와 합성 비밀의 원문·JSON escape 거절을 확인한다. 공용 `kmtech_shared`는 변경하지 않는다.
 

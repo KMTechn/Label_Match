@@ -472,17 +472,25 @@ def resolve_current_user_onboarding_paths(
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
-    if payload.get("report_version") in (ONBOARDING_REPORT_VERSION, REMOVAL_REPORT_VERSION):
-        from failure_redaction import redact_json_for_sink
-        payload = redact_json_for_sink(dict(payload))
+    from failure_redaction import redact_json_for_sink
+    serialized = json.dumps(redact_json_for_sink(dict(payload)), ensure_ascii=False,
+                            indent=2, sort_keys=True) + "\n"
+    _write_json_bytes_atomic(path, serialized)
+
+
+def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    from failure_redaction import assert_machine_metadata_text
+    serialized = json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    assert_machine_metadata_text(serialized)
+    _write_json_bytes_atomic(path, serialized)
+
+
+def _write_json_bytes_atomic(path: Path, serialized: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(
-                dict(payload), handle, ensure_ascii=False, indent=2, sort_keys=True
-            )
-            handle.write("\n")
+            handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
@@ -910,7 +918,7 @@ def _ensure_user_settings(paths: CurrentUserOnboardingPaths) -> dict[str, Any]:
     )
     template = next((path for path in candidates if path.is_file()), None)
     payload = _read_json(template, "packaged settings template") if template else {}
-    _write_json_atomic(paths.settings_path, payload)
+    _write_machine_json_atomic(paths.settings_path, payload)
     return {
         "status": "CREATED",
         "path": str(paths.settings_path),

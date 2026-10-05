@@ -475,16 +475,20 @@ def write_json_durable(path: Path, payload: Mapping[str, Any]) -> None:
     import ctypes
     from ctypes import wintypes
 
+    # failure-<uuid>.json is a diagnostic snapshot, never a recovery input.
+    if re.fullmatch(r"failure-[0-9a-f]{32}\.json", path.name):
+        from failure_redaction import redact_json_for_sink
+        serialized = json.dumps(redact_json_for_sink(dict(payload)), sort_keys=True,
+                                separators=(",", ":"), ensure_ascii=True) + "\n"
+    else:
+        from failure_redaction import assert_machine_metadata_text
+        serialized = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"),
+                                ensure_ascii=True) + "\n"
+        assert_machine_metadata_text(serialized)
     _assert_no_reparse_components(path)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     with temporary.open("x", encoding="utf-8", newline="\n") as output:
-        from failure_redaction import redact_for_sink
-        protected = dict(payload)
-        for name in ("reason", "message", "last_error", "error"):
-            if isinstance(protected.get(name), str):
-                protected[name] = redact_for_sink(protected[name])
-        json.dump(protected, output, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-        output.write("\n")
+        output.write(serialized)
         output.flush()
         os.fsync(output.fileno())
     if os.name == "nt":

@@ -20,6 +20,19 @@ def _secret_environment_entries(environ):
             yield name, value
 
 
+def assert_machine_metadata_text(text, environ=None):
+    """Refuse secrets before writing unchanged machine metadata bytes."""
+    environ = os.environ if environ is None else environ
+    for _name, value in _secret_environment_entries(environ):
+        value = str(value or "")
+        if not value:
+            continue
+        forms = (value, json.dumps(value, ensure_ascii=True)[1:-1],
+                 json.dumps(value, ensure_ascii=False)[1:-1])
+        if any(form in text for form in forms):
+            raise ValueError("PRODUCT_METADATA_SECRET_VALUE_REFUSED")
+
+
 def redact_for_sink(text, environ=None, *, redact_values=()):
     if environ is None:
         environ = os.environ

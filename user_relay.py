@@ -46,15 +46,24 @@ def _now() -> str:
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     from failure_redaction import redact_json_for_sink
-    protected = redact_json_for_sink(dict(payload))
+    serialized = json.dumps(redact_json_for_sink(dict(payload)), ensure_ascii=False,
+                            indent=2, sort_keys=True) + "\n"
+    _write_json_bytes_atomic(path, serialized)
+
+
+def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    from failure_redaction import assert_machine_metadata_text
+    serialized = json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    assert_machine_metadata_text(serialized)
+    _write_json_bytes_atomic(path, serialized)
+
+
+def _write_json_bytes_atomic(path: Path, serialized: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(
-                protected, handle, ensure_ascii=False, indent=2, sort_keys=True
-            )
-            handle.write("\n")
+            handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
@@ -771,7 +780,7 @@ def request_user_relay_stop(
                 "request_id": request_id,
                 "requested_at": requested_at,
             }
-        _write_json_atomic(stop_path, marker_payload)
+        _write_machine_json_atomic(stop_path, marker_payload)
         marker_value, _marker_raw, marker_hash = read_stop_marker(stop_path)
         if marker_value != marker_payload:
             raise UserRelayError("relay stop marker readback differs")
