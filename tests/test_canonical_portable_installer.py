@@ -704,9 +704,21 @@ def test_exact_clone_conflict_without_receipt_remains_gated(tmp_path: Path) -> N
     combined = completed.stdout + completed.stderr
     assert completed.returncode != 0
     assert "receipt_gate_status=PASS" not in completed.stdout
-    assert (
-        "Pinned conflict-resolution receipt source validation is required." in combined
-    )
+    public_lines = [line for line in combined.splitlines() if line.startswith("LABEL_MATCH_INSTALLER_FAILURE=")]
+    assert len(public_lines) == 1, combined
+    public = json.loads(public_lines[0].split("=", 1)[1])
+    assert public["status"] == "FAILED"
+    assert public["reason_code"] == "INSTALLER_FAILED"
+    assert public["guidance"] == json.loads((ROOT / "tools/failure_redaction_rules.json").read_text(encoding="utf-8"))["safe_messages"][0]
+    report_path = Path(public["report_path"])
+    assert report_path.is_file()
+    report_bytes = report_path.read_bytes()
+    assert hashlib.sha256(report_bytes).hexdigest() == public["report_sha256"]
+    private_cause = report_bytes.decode("utf-8")
+    original_cause = 'Pinned conflict-resolution receipt source validation is required.'
+    assert original_cause not in combined
+    assert original_cause in private_cause
+
 
 
 def test_installer_exposes_inspection_equivalent_v2_interface() -> None:
@@ -1189,7 +1201,7 @@ try {{
     exit 0
 }}
 catch {{
-    Write-Output ('product_error=' + [string]$_.Exception.Message)
+    Write-Output ('LABEL_MATCH_INSTALLER_FAILURE=' + ((Get-LabelLaunchFailure $_ 'product') | ConvertTo-Json -Compress -Depth 5))
     exit 0
 }}
 """,
@@ -1223,13 +1235,31 @@ catch {{
     return completed.stdout
 
 
+
 def test_product_failure_includes_child_stderr_and_delegation_env(
     tmp_path: Path,
 ) -> None:
     output = _run_product_stderr_harness(tmp_path)
-    assert "product_error=Product mode failed: --onboard-current-user/3" in output
+    combined = output
+    public_lines = [line for line in combined.splitlines() if line.startswith("LABEL_MATCH_INSTALLER_FAILURE=")]
+    assert len(public_lines) == 1, combined
+    public = json.loads(public_lines[0].split("=", 1)[1])
+    assert public["status"] == "FAILED"
+    assert public["reason_code"] == "CHILD_NONZERO_EXIT"
+    assert public["stage"] == "CURRENT_USER_ONBOARDING"
+    assert public["exit_code"] == 3
+    assert public["guidance"] == json.loads((ROOT / "tools/failure_redaction_rules.json").read_text(encoding="utf-8"))["safe_messages"][0]
+    report_path = Path(public["report_path"])
+    assert report_path.is_file()
+    report_bytes = report_path.read_bytes()
+    assert hashlib.sha256(report_bytes).hexdigest() == public["report_sha256"]
+    private_cause = report_bytes.decode("utf-8")
+    assert 'product_error=Product mode failed: --onboard-current-user/3' not in output
     assert "repro-delegation-token-value-32ok" not in output
-    assert "token=[REDACTED:KMTECH_LABEL_WRITER_DELEGATION_TOKEN]" in output
+    assert 'token=[REDACTED:KMTECH_LABEL_WRITER_DELEGATION_TOKEN]' not in output
+    assert 'token=[REDACTED:KMTECH_LABEL_WRITER_DELEGATION_TOKEN]' in private_cause
+    assert 'repro-delegation-token-value-32ok' not in private_cause
+
 
 
 def test_portable_main_imports_label_match_under_isolated_python(
@@ -1543,6 +1573,13 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
         "parameters": parameters,
     }
     launcher = match.group("body")
+    # Contract 0e: reproduce the verified redactor prelude supplied by the product launcher.
+    payload["failure_path"] = str(tmp_path / "sentinel-failure.json")
+    launcher = launcher.lstrip("\r\n")
+    header, separator, tail = launcher.partition("\n")
+    assert header == "param([byte[]]$PayloadBytes)" and separator
+    redactor = (ROOT / "tools/failure_redaction.ps1").as_posix().replace("'", "''")
+    launcher = header + separator + f". '{redactor}'\n" + tail
     encoded_launcher = transport_command(tmp_path, launcher, payload)
     powershell = (
         Path(os.environ["SystemRoot"])
@@ -1571,8 +1608,23 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
 
     combined = completed.stdout + completed.stderr
     assert completed.returncode != 0
-    assert expected_message in combined
+    public_lines = [line for line in combined.splitlines() if line.startswith("LABEL_MATCH_INSTALLER_FAILURE=")]
+    assert len(public_lines) == 1, combined
+    public = json.loads(public_lines[0].split("=", 1)[1])
+    assert public["status"] == "FAILED"
+    assert public["reason_code"] == "INSTALLER_FAILED"
+    assert public["guidance"] == json.loads((ROOT / "tools/failure_redaction_rules.json").read_text(encoding="utf-8"))["safe_messages"][0]
+    report_path = Path(public["report_path"])
+    assert report_path.is_file()
+    report_bytes = report_path.read_bytes()
+    assert hashlib.sha256(report_bytes).hexdigest() == public["report_sha256"]
+    private_cause = report_bytes.decode("utf-8")
+    assert expected_message not in combined
+    assert expected_message in private_cause
     assert "HELPER_MUST_NOT_RUN" not in combined
+
+    assert 'HELPER_MUST_NOT_RUN' not in private_cause
+
 
 
 def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
@@ -2201,6 +2253,12 @@ def test_placement_child_preserves_original_failure_without_delegation_secret(tm
     if not executable:
         pytest.skip(f"{engine} is required")
     body = re.search(r"\$launcher = @'\r?\n(.*?)\r?\n'@", _source(), re.DOTALL).group(1)
+    # Bind the same redactor prelude that InvokeFrozenPlacementHelper inserts after param.
+    body = body.lstrip("\r\n")
+    header, separator, tail = body.partition("\n")
+    assert header == "param([byte[]]$PayloadBytes)" and separator
+    redactor = (ROOT / "tools/failure_redaction.ps1").as_posix().replace("'", "''")
+    body = header + separator + f". '{redactor}'\n" + tail
     integrity = tmp_path / "integrity.ps1"
     writer = tmp_path / "writer.ps1"
     generation = tmp_path / "generation.ps1"
@@ -2246,9 +2304,30 @@ def test_placement_child_preserves_original_failure_without_delegation_secret(tm
     assert record["exit_code"] == child.returncode
     assert record["exception_type"] and record["hresult"] is not None
     expected = "Elevated helper byte pin differs" if phase == "PIN_VALIDATION" else "ORIGINAL_PLACEMENT_FAILURE"
-    assert expected in record["message"]
+    combined = child.stdout + child.stderr
+    public_lines = [line for line in combined.splitlines() if line.startswith("LABEL_MATCH_INSTALLER_FAILURE=")]
+    assert len(public_lines) == 1, combined
+    public = json.loads(public_lines[0].split("=", 1)[1])
+    assert public["status"] == "FAILED"
+    assert public["reason_code"] == "INSTALLER_FAILED"
+    assert public["guidance"] == json.loads((ROOT / "tools/failure_redaction_rules.json").read_text(encoding="utf-8"))["safe_messages"][0]
+    report_path = Path(public["report_path"])
+    assert report_path.is_file()
+    report_bytes = report_path.read_bytes()
+    assert hashlib.sha256(report_bytes).hexdigest() == public["report_sha256"]
+    private_cause = report_bytes.decode("utf-8")
+    assert record["message"] == public["guidance"]
+    assert public["report_path"] == record["full_exception_trace"]["path"]
+    assert public["report_sha256"] == record["full_exception_trace"]["sha256"]
+    assert expected not in record["message"]
+    assert expected not in combined
+    assert expected in private_cause
     assert parameters["WriterFenceDelegationToken"] not in failure.read_text(encoding="utf-8")
     assert parameters["WriterFenceDelegationToken"] not in child.stderr
+
+    assert parameters["WriterFenceDelegationToken"] not in private_cause
+    assert parameters["WriterFenceDelegationToken"] not in child.stdout
+
 
 
 @pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
@@ -2355,57 +2434,6 @@ def test_pretransaction_failure_diagnostics_survive_supported_user_removal(tmp_p
 def test_pretransaction_failure_boundary_rethrows_and_retires_only_own_run(tmp_path, engine, failure_phase):
     from tests.test_shared_ancestor_protection import run_functions
 
-    result = run_functions(tmp_path, INSTALLER, ["Save", "Archive-PretransactionFailure", "Full"], r'''
-$tokens=$null;$errors=$null
-$ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
-$boundary=@($ast.FindAll({param($n)
- $n -is [Management.Automation.Language.TryStatementAst] -and
- $n.Body.Extent.Text.Contains('$frozenPlacement = FreezePlacementHelper')
-},$true))
-if($boundary.Count -ne 1){throw 'Pretransaction recovery boundary missing.'}
-$runId='boundary-run';$localAuditRoot=Join-Path $env:LM_BOUNDARY_ROOT 'install-audit'
-. $env:LM_BOUNDARY_SHARED
-[void][IO.Directory]::CreateDirectory($localAuditRoot)
-$auditPath=Join-Path $localAuditRoot ('canonical-portable-'+$runId+'.json')
-$EvidencePath=Join-Path $env:LM_BOUNDARY_ROOT 'external-evidence.json'
-if($env:LM_BOUNDARY_PHASE -eq 'external-evidence'){
- $blocked=Join-Path $env:LM_BOUNDARY_ROOT 'blocked'
- [IO.File]::WriteAllText($blocked,'preserve path obstruction')
- $EvidencePath=Join-Path $blocked 'external-evidence.json'
-}
-$audit=[ordered]@{status='PREIMAGE_SAVED';code_placement='PENDING';rollback=@{applied=$false}}
-Save $auditPath $audit
-$source=$env:LM_BOUNDARY_ROOT;$receiptSource=@{critical_file_sha256=@{}}
-[void][IO.Directory]::CreateDirectory((Join-Path $source 'app\kmtech_shared\powershell'))
-[IO.File]::WriteAllBytes((Join-Path $source 'app\kmtech_shared\powershell\data_generation.ps1'),
- [IO.File]::ReadAllBytes((Join-Path $env:LM_BOUNDARY_SOURCE 'kmtech_shared\powershell\data_generation.ps1')))
-function FreezePlacementHelper {param($Source,$AuditRoot,$RunId,$Expected)
- $script:freezeCalls++
- $frozen=Join-Path $AuditRoot ('canonical-portable-'+$RunId+'-helper')
- [void][IO.Directory]::CreateDirectory($frozen)
- [IO.File]::WriteAllText((Join-Path $frozen 'failure.ps1'),'unique failed input')
- throw 'ORIGINAL_FROZEN_HELPER_FAILURE'
-}
-function Enter-LabelWriterSessionAuthority {throw 'Writer authority must remain untouched.'}
-function Start-LabelWriterFence {throw 'Writer fence must remain untouched.'}
-$rejected=$false
-$script:freezeCalls=0
-try{. ([ScriptBlock]::Create($boundary[0].Extent.Text))}
-catch{
- $originalFailure=$_
- if($env:LM_BOUNDARY_PHASE -eq 'frozen' -and $_.Exception.Message -cne 'ORIGINAL_FROZEN_HELPER_FAILURE'){throw}
- if($env:LM_BOUNDARY_PHASE -eq 'external-evidence' -and $script:freezeCalls -ne 0){throw 'Evidence failure did not precede helper evaluation.'}
- $rejected=$true
-}
-if(-not $rejected){throw 'Original failure was swallowed.'}
-$retained=Join-Path (Join-Path ($localAuditRoot+'-pretransaction-failures') $runId) (Split-Path -Leaf $auditPath)
-$evidence=Get-Content -LiteralPath $retained -Raw | ConvertFrom-Json
-if($evidence.failure.message -cne $originalFailure.Exception.Message){throw 'Original failure differs from retained audit.'}
-if($env:LM_BOUNDARY_PHASE -eq 'external-evidence' -and [IO.File]::ReadAllText($blocked) -cne 'preserve path obstruction'){throw 'Existing path obstruction changed.'}
-if($evidence.status -cne 'FAILED_PRETRANSACTION' -or
- $evidence.recovery.transaction_started -or -not $evidence.recovery.artifacts_archived -or
- $evidence.rollback.applied -or (Test-Path -LiteralPath $localAuditRoot)) {throw 'Pretransaction recovery state differs.'}
-'RECOVERED'
-''', engine=engine, values={"LM_BOUNDARY_ROOT": str(tmp_path), "LM_BOUNDARY_SOURCE": str(ROOT), "LM_BOUNDARY_SHARED": str(ROOT / "kmtech_shared/powershell/portable.ps1"), "LM_BOUNDARY_PHASE": failure_phase})
+    result = run_functions(tmp_path, INSTALLER, ["Save", "Archive-PretransactionFailure", "Full"], "\n$tokens=$null;$errors=$null\n$ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)\n$boundary=@($ast.FindAll({param($n)\n $n -is [Management.Automation.Language.TryStatementAst] -and\n $n.Body.Extent.Text.Contains('$frozenPlacement = FreezePlacementHelper')\n},$true))\nif($boundary.Count -ne 1){throw 'Pretransaction recovery boundary missing.'}\n$runId='boundary-run';$localAuditRoot=Join-Path $env:LM_BOUNDARY_ROOT 'install-audit'\n. $env:LM_BOUNDARY_SHARED\n. $env:LM_BOUNDARY_REDACTION\n[void][IO.Directory]::CreateDirectory($localAuditRoot)\n$auditPath=Join-Path $localAuditRoot ('canonical-portable-'+$runId+'.json')\n$EvidencePath=Join-Path $env:LM_BOUNDARY_ROOT 'external-evidence.json'\nif($env:LM_BOUNDARY_PHASE -eq 'external-evidence'){\n $blocked=Join-Path $env:LM_BOUNDARY_ROOT 'blocked'\n [IO.File]::WriteAllText($blocked,'preserve path obstruction')\n $EvidencePath=Join-Path $blocked 'external-evidence.json'\n}\n$audit=[ordered]@{status='PREIMAGE_SAVED';code_placement='PENDING';rollback=@{applied=$false}}\nSave $auditPath $audit\n$source=$env:LM_BOUNDARY_ROOT;$receiptSource=@{critical_file_sha256=@{}}\n[void][IO.Directory]::CreateDirectory((Join-Path $source 'app\\kmtech_shared\\powershell'))\n[IO.File]::WriteAllBytes((Join-Path $source 'app\\kmtech_shared\\powershell\\data_generation.ps1'),\n [IO.File]::ReadAllBytes((Join-Path $env:LM_BOUNDARY_SOURCE 'kmtech_shared\\powershell\\data_generation.ps1')))\nfunction FreezePlacementHelper {param($Source,$AuditRoot,$RunId,$Expected)\n $script:freezeCalls++\n $frozen=Join-Path $AuditRoot ('canonical-portable-'+$RunId+'-helper')\n [void][IO.Directory]::CreateDirectory($frozen)\n [IO.File]::WriteAllText((Join-Path $frozen 'failure.ps1'),'unique failed input')\n throw 'ORIGINAL_FROZEN_HELPER_FAILURE'\n}\nfunction Enter-LabelWriterSessionAuthority {throw 'Writer authority must remain untouched.'}\nfunction Start-LabelWriterFence {throw 'Writer fence must remain untouched.'}\n$rejected=$false\n$script:freezeCalls=0\ntry{. ([ScriptBlock]::Create($boundary[0].Extent.Text))}\ncatch{\n $originalFailure=$_\n if($env:LM_BOUNDARY_PHASE -eq 'frozen' -and $_.Exception.Message -cne 'ORIGINAL_FROZEN_HELPER_FAILURE'){throw}\n if($env:LM_BOUNDARY_PHASE -eq 'external-evidence' -and $script:freezeCalls -ne 0){throw 'Evidence failure did not precede helper evaluation.'}\n $rejected=$true\n}\nif(-not $rejected){throw 'Original failure was swallowed.'}\n$retained=Join-Path (Join-Path ($localAuditRoot+'-pretransaction-failures') $runId) (Split-Path -Leaf $auditPath)\n$evidence=Get-Content -LiteralPath $retained -Raw | ConvertFrom-Json\n$publicFailure=$evidence.failure\nif($publicFailure.status -cne 'FAILED' -or $publicFailure.reason_code -cne 'INSTALLER_FAILED'){throw 'typed failure differs'}\nif($publicFailure.guidance -cne [string]$Script:KmtechRedactionRules.safe_messages[0]){throw 'public guidance differs'}\nif(-not (Test-Path -LiteralPath $publicFailure.report_path -PathType Leaf)){throw 'first failure report absent'}\nif((Get-FileHash -LiteralPath $publicFailure.report_path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $publicFailure.report_sha256){throw 'first failure report bytes differ'}\n$privateCause=[IO.File]::ReadAllText($publicFailure.report_path,[Text.Encoding]::UTF8)\nif(-not $privateCause.Contains($originalFailure.Exception.Message)){throw 'first failure lost'}\n$publicText=$publicFailure | ConvertTo-Json -Compress -Depth 5\nif($publicText.Contains($originalFailure.Exception.Message)){throw 'first failure exposed in public record'}\nWrite-Output ('LABEL_MATCH_INSTALLER_FAILURE='+$publicText)\nif($env:LM_BOUNDARY_PHASE -eq 'external-evidence' -and [IO.File]::ReadAllText($blocked) -cne 'preserve path obstruction'){throw 'Existing path obstruction changed.'}\nif($evidence.status -cne 'FAILED_PRETRANSACTION' -or\n $evidence.recovery.transaction_started -or -not $evidence.recovery.artifacts_archived -or\n $evidence.rollback.applied -or (Test-Path -LiteralPath $localAuditRoot)) {throw 'Pretransaction recovery state differs.'}\n'RECOVERED'\n", engine=engine, values={"LM_BOUNDARY_ROOT": str(tmp_path), "LM_BOUNDARY_SOURCE": str(ROOT), "LM_BOUNDARY_SHARED": str(ROOT / "kmtech_shared/powershell/portable.ps1"), "LM_BOUNDARY_PHASE": failure_phase, "LM_BOUNDARY_REDACTION": str(ROOT / "tools/failure_redaction.ps1")})
     assert result.returncode == 0, result.stdout + result.stderr
     assert "RECOVERED" in result.stdout
