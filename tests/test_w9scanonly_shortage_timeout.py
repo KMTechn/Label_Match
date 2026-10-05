@@ -208,6 +208,25 @@ def test_failed_timer_release_retries_the_original_decision(shortage, monkeypatc
     assert len(completions(app)) == 1
 
 
+def test_failed_shortage_undo_never_releases_a_cancelled_completion(shortage, monkeypatch):
+    from tests.test_legacy_label_transition import _events
+    app, identity, advance, _jobs, queued, _master, _clock = shortage
+    save = app.data_manager.save_current_state
+
+    def fail_undo_checkpoint(state):
+        current = state['current_set_info']
+        return False if str(current.get('completion_identity') or '').endswith('-undo') else save(state)
+
+    monkeypatch.setattr(app.data_manager, 'save_current_state', fail_undo_checkpoint)
+    advance(59)
+    scan(app, 'KMCMD:UNDO')
+    assert len(app.blocks) == 1
+    assert app.data_manager.flush(timeout=5)
+    assert len(_events(app.save_directory, app.Events.TRAY_COMPLETION_CANCELLED)) == 1
+    advance(61)
+    assert queued == [] and app.package_outbox.get_by_set_id(identity) is None
+
+
 def test_live_timer_uses_monotonic_clock_after_wall_clock_jumps(shortage, monkeypatch):
     app, identity, advance, _jobs, queued, _master, _clock = shortage
     original = label_module.time.time

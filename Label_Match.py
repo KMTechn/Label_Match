@@ -15160,6 +15160,9 @@ class Label_Match(tk.Tk):
             details = self.set_details_map.get(set_id) or current.get("shortage_completion_details")
             if not details:
                 return self._ignore_product_scan("KMCMD:UNDO", "되돌릴 미달 확정이 없습니다.")
+            # Once UNDO starts, a partially durable cancellation must never
+            # race the timer into releasing the cancelled completion.
+            self._cancel_shortage_confirmation_timeout()
             try:
                 log_details = {"cancelled_set_id": set_id, "details": details, "reason": "SHORTAGE_UNDO"}
                 self._commit_package_cancellation_local_event(
@@ -15196,7 +15199,6 @@ class Label_Match(tk.Tk):
             self._rebuild_global_scanned_set_from_details()
             self.current_set_info = restored
             self.__dict__.pop("_scanner_shortage_undo", None)
-            self._cancel_shortage_confirmation_timeout()
             self._update_summary_tree()
         elif current.get("raw"):
             restored = copy.deepcopy(current)
