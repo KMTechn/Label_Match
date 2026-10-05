@@ -2848,6 +2848,11 @@ function Get-LabelLaunchFailure($Failure, [string]$Phase) {
         foreach($key in @('call','placement_child_failure','label_legacy_native_failure','startup_restore_failures')) {
             if($exception.Data.Contains($key)) {$privateData[$key]=$exception.Data[$key]}
         }
+        # Preserve a typed native call even when the free-text redactor treats
+        # the colon in a Token API name as a secret assignment separator.
+        if ($privateData.Contains('call') -and [string]$privateData.call -cmatch '\A([A-Za-z_][A-Za-z0-9_]{0,127}):([A-Za-z_0-9][A-Za-z0-9_]{0,127})\z') {
+            $privateData.native_call_function=$Matches[1];$privateData.native_call_variant=$Matches[2]
+        }
         $privateChain += [ordered]@{exception_type=$exception.GetType().FullName;native_error=$(if($exception -is [ComponentModel.Win32Exception]){$exception.NativeErrorCode}else{$null});details=$privateData}
         $exception=$exception.InnerException
     }

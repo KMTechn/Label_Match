@@ -257,7 +257,12 @@ function ConvertTo-KmtechPublicDiagnosticTree {
             }
             return $result
         }
-        if (@($fields.Keys | Where-Object {$_ -cin @('message','last_line','inner_exception_message','stdout','stderr','exception_chain')}).Count) {
+        $textKeys=@('message','last_line','inner_exception_message','stdout','stderr','exception_chain')
+        $freeText=@($fields.Keys | Where-Object {
+            $_ -cin $textKeys -and $fields[$_] -and -not ($fields[$_] -is [string] -and
+                ($Script:KmtechRedactionRules.safe_messages -ccontains $fields[$_] -or $Script:KmtechRedactionRules.allowed_codes -ccontains $fields[$_]))
+        }).Count -gt 0
+        if ($freeText -or ($fields.Contains('full_exception_trace') -and @($fields.Keys | Where-Object {$_ -cin $textKeys}).Count)) {
             $candidate=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';guidance=[string]$Script:KmtechRedactionRules.safe_messages[0]}
             foreach ($key in $fields.Keys) {
                 if ($key -cin @('message','last_line','inner_exception_message','stdout','stderr','exception_chain')) {continue}
@@ -276,8 +281,8 @@ function ConvertTo-KmtechPublicDiagnosticTree {
         $result=[ordered]@{}
         foreach ($key in $fields.Keys) {
             $item=$fields[$key]
-            if ($key -cin @('failure','error','error_message','reason') -and $item -is [string] -and $item) {
-                if ($Script:KmtechRedactionRules.allowed_codes -ccontains $item) {$result[$key]=$item}
+            if ($key -cin @('failure','error','error_message','reason','blocked_reason','message_ko','registration_report_summary_error') -and $item -is [string] -and $item) {
+                if ($Script:KmtechRedactionRules.allowed_codes -ccontains $item -or $Script:KmtechRedactionRules.safe_messages -ccontains $item) {$result[$key]=$item}
                 else {$result[$key]=ConvertTo-KmtechPublicDiagnosticTree ([ordered]@{message=$item})}
             } else {$result[$key]=ConvertTo-KmtechPublicDiagnosticTree $item}
         }

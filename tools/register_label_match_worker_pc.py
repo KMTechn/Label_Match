@@ -234,6 +234,15 @@ def _write_json(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> Non
         raise
 
 
+def _write_registration_report(path, report):
+    # Keep status/identity/recovery binding fields intact. Only free diagnostic
+    # notices leave this report for same-attempt existing private evidence.
+    from failure_redaction import public_diagnostic_tree
+    public = public_diagnostic_tree(report)
+    _write_json(path, public)
+    return public
+
+
 def _safe_token(value: str, fallback: str) -> str:
     text = str(value or "").strip() or fallback
     text = SAFE_TOKEN_RE.sub("-", text).strip(".-_")
@@ -2393,7 +2402,7 @@ def main(argv: list[str] | None = None) -> int:
                     recovery_progress.redacted_summary()
                 )
                 report["report_path"] = str(report_path.resolve())
-                _write_json(report_path, report)
+                report = _write_registration_report(report_path, report)
                 _verify_json_file(
                     report_path,
                     report,
@@ -2430,7 +2439,7 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
         report["report_path"] = str(report_path.resolve())
-        _write_json(report_path, report)
+        report = _write_registration_report(report_path, report)
         _verify_json_file(report_path, report, label="registration report")
         print(f"registration_report={report_path.resolve()}")
         if report.get("partial_recovery_message_ko"):
@@ -2461,7 +2470,7 @@ def main(argv: list[str] | None = None) -> int:
                     "만료·종결 뒤에는 새 승인을 요청하고 같은 명령의 --admin-recovery-secret-file에 새 승인 파일을 지정하세요."),
                 "admin_recovery_progress": recovery_progress.redacted_summary(),
             }
-            _write_json(report_path, diagnostic)
+            diagnostic = _write_registration_report(report_path, diagnostic)
             __import__("failure_redaction").emit_support_failure(RuntimeError(diagnostic["message_ko"]))
             print(f"registration_report={report_path.resolve()}")
             return 3 if recovery_progress.server_credential_rotated else 2
@@ -2486,7 +2495,7 @@ def main(argv: list[str] | None = None) -> int:
                 {key: value for key, value in report_context.items() if value is not None}
             )
             try:
-                _write_json(report_path, blocked)
+                blocked = _write_registration_report(report_path, blocked)
                 _verify_json_file(
                     report_path,
                     blocked,
@@ -2587,7 +2596,7 @@ def main(argv: list[str] | None = None) -> int:
             # boundary. Explicit administrator recovery decisions take precedence.
             blocked["failure_category"] = "NETWORK_OR_SERVER_UNAVAILABLE"
         blocked["report_path"] = str(report_path.resolve())
-        _write_json(report_path, blocked)
+        blocked = _write_registration_report(report_path, blocked)
         print(f"registration_report={report_path.resolve()}")
         return 2
     finally:

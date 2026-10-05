@@ -524,6 +524,25 @@
     "startup_update_status=REGISTERED_LOGON_SYSTEM_CODE_ONLY",
     "startup_update_task=",
     "tls_ca_bootstrap_status=ABSENT",
-    "tls_ca_bootstrap_status=PASS"
+    "tls_ca_bootstrap_status=PASS",
+    "--producer-manifest-path and --credential-path are required unless --self-enroll is used",
+    "--uninstall and --rollback are mutually exclusive",
+    "Refusing to remove a historical task with different ownership/command. 기존 작업은 보존했습니다. canonical 설치기의 지원 제거를 실행하세요.",
+    "an existing application writer continues working",
+    "bootstrap integrity record is absent",
+    "candidate normal stop could not be proven",
+    "command failed",
+    "current-user onboarding state is partial",
+    "direct --enrollment-token is disabled for apply; use env/file token delivery",
+    "non_windows_runtime",
+    "path exists and is not a directory",
+    "previous version readiness failed",
+    "program_data_root is required",
+    "source-mode onboarding",
+    "task password source requires --task-run-user",
+    "task_run_user_not_configured",
+    "typed command output did not identify the expected operation",
+    "typed command output was not valid JSON",
+    "writer absence is unproven"
   ]
 }

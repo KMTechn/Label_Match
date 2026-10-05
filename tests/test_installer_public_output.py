@@ -304,3 +304,28 @@ $public=Get-LabelLaunchFailure ([pscustomobject]@{Exception=$typedChildFailure})
     assert hashlib.sha256(published).hexdigest() == public["report_sha256"]
     assert (Path(public["report_path"]) == report) is fresh
     assert report.read_bytes() == original
+
+
+
+def test_fixed_diagnostic_messages_keep_their_existing_schema():
+    from failure_redaction import RULES, public_diagnostic_tree
+    original={"status":"PASS", "message":RULES["safe_messages"][0],
+              "transaction_id":"a"*32,"data_preserved":True}
+    assert public_diagnostic_tree(original) == original
+
+
+def test_registration_report_privatizes_free_reason_without_changing_recovery_fields(tmp_path):
+    from tools import register_label_match_worker_pc as register
+    marker=uuid.uuid4().hex
+    original={"status":"BLOCKED","blocked_reason":marker,"producer_install_id":"a"*32,
+              "server_credential_rotated":False,"local_rollback_performed":False}
+    path=tmp_path / "registration.json"
+    public=register._write_registration_report(path,original)
+    stored=json.loads(path.read_text())
+    assert stored==public
+    assert all(stored[k]==original[k] for k in original if k!='blocked_reason')
+    assert marker not in json.dumps(stored)
+    reference=stored['blocked_reason']
+    raw=Path(reference['report_path']).read_bytes()
+    assert hashlib.sha256(raw).hexdigest()==reference['report_sha256']
+    assert marker.encode() in raw

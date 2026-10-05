@@ -152,7 +152,10 @@ def public_diagnostic_tree(value):
             return {key: (public_diagnostic_tree({"message": item})
                           if key in ("stdout", "stderr") and item else public_diagnostic_tree(item))
                     for key, item in value.items()}
-        if text_keys.intersection(value):
+        free_text = any(value.get(key) and not (isinstance(value[key], str) and
+                        (value[key] in RULES["safe_messages"] or value[key] in RULES["allowed_codes"]))
+                        for key in text_keys)
+        if free_text or (text_keys.intersection(value) and "full_exception_trace" in value):
             candidate = {"status": "FAILED", "reason_code": "INSTALLER_FAILED", "guidance": RULES["safe_messages"][0]}
             candidate.update((key, item) for key, item in value.items() if key not in text_keys)
             for source, target in (("type", "exception_type"), ("inner_exception_type", "exception_type"),
@@ -167,7 +170,7 @@ def public_diagnostic_tree(value):
             return public_record(candidate)
         result = {}
         for key, item in value.items():
-            if key in ("failure", "error", "error_message", "reason") and isinstance(item, str) and item and item not in RULES["allowed_codes"]:
+            if key in ("failure", "error", "error_message", "reason", "blocked_reason", "message_ko", "registration_report_summary_error") and isinstance(item, str) and item and item not in RULES["allowed_codes"] and item not in RULES["safe_messages"]:
                 result[key] = public_diagnostic_tree({"message": item})
             else:
                 result[key] = public_diagnostic_tree(item)

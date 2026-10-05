@@ -125,7 +125,8 @@ Get-LabelLaunchFailure $failure 'rollback' | ConvertTo-Json -Depth 8 -Compress
     assert hashlib.sha256(raw).hexdigest() == payload['report_sha256']
     protected=json.loads(raw)
     assert protected['phase'] == 'rollback'
-    assert protected['exception_chain'][1]['details']['call']=='DuplicateTokenEx:primary'
+    assert protected['exception_chain'][1]['details']['native_call_function']=='DuplicateTokenEx'
+    assert protected['exception_chain'][1]['details']['native_call_variant']=='primary'
     assert protected['exception_chain'][1]['native_error']==5
     assert '[REDACTED:field]' in protected['trace']
     assert payload['exception_type'].endswith('Win32Exception')
