@@ -40,3 +40,5 @@ rollback 시험 입력은 조립 판의 phase stack 및 공식 옛 relay 조회 
 등록 도구의 source 고정 안내는 원 stdout과 중첩 report 문자열을 유지한다. 서버가 준 미등록 error code는 가변 진단으로 보호 보고서에 보존하며 HTTP 상태·거래·복구 metadata는 유지한다. exact-clone 지원 도구의 예외 레코드는 기존 `UNKNOWN`과 client/server state mutated·stop marker removed의 false 값을 유지한다. 실패 예외의 자유 문장을 검사하던 테스트만 실제 게시 SHA와 보호 trace 소비로 교정하며 기존 exit·원본 파일 보존·상태 변경 거절 단언은 유지한다.
 
 초기 shared leaf pin 검사에는 가림 helper가 아직 없다. 최상위 trap은 `Get-LabelLaunchFailure`와 `ConvertTo-KmtechPublicRecord`가 모두 로드된 뒤에만 보호 보고서 경로를 호출하고, 그 전에는 기존 고정 `FAILED` / `INSTALLER_FAILED` / `REPORT_UNAVAILABLE` 레코드와 nonzero exit로 끝난다. 미로드 helper의 두 번째 예외로 첫 거절을 대체하지 않는다. pin 검사 순서와 G 판정은 유지하며, 이 조기 거절에 이전 보고서를 결속하지 않는다. 실제 stock PS5/PS7의 정상·한 바이트 변조 관측은 sub-315 REPORT에 보존한다.
+
+PS7 placement child의 보호 trace는 원 `CreateNew` handle과 보호 ACL, 첫 원인 가림, durable flush, UTF-8 SHA 및 원 phase/exit를 유지한다. .NET Core에서 없는 정적 `File.SetAccessControl` 대신 같은 ACL을 `Set-Acl -LiteralPath -AclObject -ErrorAction Stop`으로 적용한다. sub-315의 실제 PS5.1 두 사례는 보호 trace를 저장했으나 PS7 두 사례는 0바이트/참조 없음으로 실패한 근거를 보존했다. 교정 뒤 양쪽 엔진의 실제 파일/SHA 및 공개 셀·142·stock 검증은 sub-315 REPORT에 별도로 기록한다.

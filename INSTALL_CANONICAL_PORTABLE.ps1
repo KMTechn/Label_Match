@@ -1960,7 +1960,7 @@ trap {
             }
             $traceAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
                 [Security.Principal.WindowsIdentity]::GetCurrent().User,'Read','Allow'))
-            [IO.File]::SetAccessControl($tracePath,$traceAcl)
+            Set-Acl -LiteralPath $tracePath -AclObject $traceAcl -ErrorAction Stop
             $traceStream.Write($traceBytes,0,$traceBytes.Length);$traceStream.Flush($true)
         } finally { $traceStream.Dispose() }
         $record.full_exception_trace = [ordered]@{path=$tracePath;sha256=(Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash.ToLowerInvariant();limit_bytes=65536;truncated=$truncated}
