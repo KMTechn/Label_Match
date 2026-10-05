@@ -9,6 +9,8 @@ credential/endpoint/install tuple so a credential change cannot inherit it.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import hashlib
 import hmac
 import json
@@ -198,6 +200,10 @@ def _post_lease_request(
     timeout: int,
     tls_ca_bundle_path: str = "",
 ) -> tuple[Dict[str, Any] | None, RuntimePreparation | None]:
+    if tls_ca_bundle_path:
+        from label_data_generation import check_user_data_open, resolve_data_path
+        tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
+        check_user_data_open(Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
     if session is None:
         import requests
 

@@ -4083,6 +4083,10 @@ def _update_candidate_from_manifest(
 
 
 def _check_private_manifest_for_updates(*, tls_ca_bundle_path=""):
+    if tls_ca_bundle_path:
+        from label_data_generation import check_user_data_open, resolve_data_path
+        tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
+        check_user_data_open(_label_match_runtime_app_root(), (Path(tls_ca_bundle_path).parent,))
     manifest_url = _get_update_manifest_url()
     if not manifest_url:
         print("private_manifest updater is enabled, but no manifest URL is configured.")
@@ -9441,14 +9445,22 @@ class Label_Match(tk.Tk):
     def _package_pin_client(self):
         client = self.__dict__.get("_admin_pin_client")
         if client is None:
-            paths = resolve_current_user_onboarding_paths(
-                _label_match_runtime_app_root()
+            from direct_sync_runtime import prepare_credentials_from_json
+            from label_data_generation import resolve_data_path
+            app_root = _label_match_runtime_app_root()
+            paths = resolve_current_user_onboarding_paths(app_root)
+            selected_ca = _label_match_client_tls_ca_bundle_path(
+                self.__dict__.get("package_logistics_client")
+            )
+            if selected_ca:
+                selected_ca = str(resolve_data_path(selected_ca))
+                check_user_data_open(app_root, (Path(selected_ca).parent,))
+            credential_input = prepare_credentials_from_json(
+                paths.credential_path, app_root=app_root,
             )
             client = AdminPinClient.from_credential_path(
-                paths.credential_path,
-                tls_ca_bundle_path=_label_match_client_tls_ca_bundle_path(
-                    self.__dict__.get("package_logistics_client")
-                ),
+                paths.credential_path, tls_ca_bundle_path=selected_ca,
+                credential_input=credential_input,
             )
             self._admin_pin_client = client
         return client
@@ -10007,6 +10019,11 @@ class Label_Match(tk.Tk):
 
     def _run_package_pin_action(self, action, set_id, physical_qr=""):
         """Authorize one selected recovery item without blocking other items."""
+        try:
+            self._package_pin_client()
+        except DataGenerationError as exc:
+            self._admin_pin_last_message = str(exc)
+            return str(exc)
         store = self._admin_pin_store
         self.__dict__.pop("_admin_pin_closing_intent", None)
         if action == "LABEL.SUPPORT_HANDOFF":

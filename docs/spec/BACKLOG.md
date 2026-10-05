@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+GUI PIN·명단 client는 실제 첫 요청 때 locator 위치 G → JSON 한 번 → 하위 보호 secret/TLS owner G를 다시 확인하고 그 CredentialInput을 loader에 넘긴다. startup의 허용이나 준비 입력을 첫 PIN 판독 근거로 재사용하지 않는다. relay의 반복 run/enqueue는 상태 기록·lease reset 전에 현재 locator를 다시 준비하며, profile 재판독과 각 앱 transport의 TLS CA 판독에도 기존 G를 적용한다. 거절은 보호 판독·복호·연결과 해당 회차 상태 변경보다 먼저이고 PIN 화면은 기존 쉬운 한국어 원인을 표시한다. 공용 G helper·syntax guard·writer membership은 보존하며 byte/line 변경에 따른 pin과 exact forward 선언만 표준 재생성한다. `auto_update.py`가 없는 이 기준 `2c46de1`의 별도 업데이트 consumer는 조립판에서 확인한다. [sub-281 구현·별도 process 대조](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-281/REPORT.md)의 범위는 호스트 격리이며 실제 GUI·DPAPI·서버·stock은 NOT TESTED다.
+
 외부 CA·conflict receipt·보호 관리자 verifier의 G parent 누락을 sub-262에서 교정한다. legacy install-pack fixture는 실제 release identity와 bootstrap inventory 입력을 보충하며 기존 단언을 유지한다. headless/정의-only 회귀와 stock 거절 근거는 [sub-262](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-262/REPORT.md)에 결속하고 독립 재확인·중앙 병합·native 수용은 1차 후속이다.
 
 legacy upgrade guard의 G/nextfix 조합은 정의된 exact tuple을 사용하고 시험 helper의 중복 BOM을 제거한다. 기존 66개 read-only 선언/stock/archive preflight와 신규 source/self·BOM 구문 회귀는 [sub-242 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-242/REPORT.md)에서 기준/후보별 결과를 구분한다. 실제 설치·공개 v2.0.38의 백업/새 설치·등록 복구/현장 rollback 수용은 별도이며, 호스트에서 실행하지 않는다.

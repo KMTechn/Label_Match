@@ -788,6 +788,8 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 <a id="first-field-data-generation"></a>
 ### 첫 현장 설치와 자료 세대 복구
 
+GUI PIN·명단 client는 실제 첫 요청 때 locator 위치 G → JSON 한 번 → 하위 보호 secret/TLS owner G를 다시 확인하고 그 CredentialInput을 loader에 넘긴다. startup의 허용이나 준비 입력을 첫 PIN 판독 근거로 재사용하지 않는다. relay의 반복 run/enqueue는 상태 기록·lease reset 전에 현재 locator를 다시 준비하며, profile 재판독과 각 앱 transport의 TLS CA 판독에도 기존 G를 적용한다. 거절은 보호 판독·복호·연결과 해당 회차 상태 변경보다 먼저이고 PIN 화면은 기존 쉬운 한국어 원인을 표시한다. 공용 G helper·syntax guard·writer membership은 보존하며 byte/line 변경에 따른 pin과 exact forward 선언만 표준 재생성한다. `auto_update.py`가 없는 이 기준 `2c46de1`의 별도 업데이트 consumer는 조립판에서 확인한다. [sub-281 구현·별도 process 대조](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-281/REPORT.md)의 범위는 호스트 격리이며 실제 GUI·DPAPI·서버·stock은 NOT TESTED다.
+
 credential locator는 위치의 parent G 통과 뒤 한 번만 판독한다. DPAPI의 명시 secret_data_dir 또는 기본 CompanyProducerConnector root와 보호 파일 parent도 판독·암호 해제·generation/report 기록 전에 G로 검사한다. 직접 operator/runner/canary/reconcile와 온보딩은 이미 읽은 locator 객체와 해석한 owner를 같은 loader에 전달한다. runner의 enqueue·backpressure drain·run은 같은 입력을 공유한다. JSON 형식·중복 키 실패는 credential 검증 경로의 기존 report로 남기며 경로 해석·접근 거부만 UNKNOWN admission으로 거절한다. sub-268의 전수 표와 격리 별도 process 회귀가 근거이며 native 설치·자격 저장소·GUI는 별도 수용 범위다.
 
 canonical은 audit/preimage 저장·elevation·writer fence보다 앞에서 기존 제품 `--onboard-current-user --check-data-generation-only`를 호출한다. 이 읽기 전용 호출과 실제 onboarding은 같은 owner admission 함수를 사용하며 locator만 읽고 보호 파일·generation·report·업무/설치 상태는 변경하지 않는다. 판정은 검증된 installer 제품 코드로 실행하되 app-root는 설치할 source release로 유지하여 호환되는 옛 source도 그 판으로 검사한다. nested 거절이 코드 교체 뒤에 나타나 rollback G까지 막는 순서를 예방하며 rollback guard는 유지한다. 현재 앱 업데이트는 외부 설치기 안내만 제공하므로 canonical 적용에도 같은 경계가 적용된다.
