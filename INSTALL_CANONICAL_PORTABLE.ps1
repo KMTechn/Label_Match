@@ -2346,13 +2346,17 @@ public sealed class LabelJsonFieldMasker {
      if(state==8 && keyChar) {
       token.Append(c);
       if(token.Length>1024) {output.Append(token);token.Clear();state=9;}
-     } else if(Char.IsWhiteSpace(c)) {token.Append(c);state=10;}
+     } else if(Char.IsWhiteSpace(c)) {
+      if(state==8) output.Append(token);
+      output.Append(c);state=10;
+     }
      else if(c==':' || c=='=') {
       string key=token.ToString().Trim();
-      output.Append(token);output.Append(c);token.Clear();bareKey=true;
+      if(state==8) output.Append(token);
+      output.Append(c);token.Clear();bareKey=true;
       bool metadata=path.IsMatch(key) || (digest.IsMatch(key) && !shortSecret.IsMatch(key));
       state=Sensitive(key) ? 3 : (metadata ? 11 : 0);
-     } else {output.Append(token);token.Clear();state=0;again=true;}
+     } else {if(state==8) output.Append(token);token.Clear();state=0;again=true;}
     } else if(state==9) {
      if(Char.IsLetterOrDigit(c) || c=='_' || c=='.' || c=='-') output.Append(c);
      else {state=0;again=true;}
@@ -2384,7 +2388,7 @@ public sealed class LabelJsonFieldMasker {
   string value=token.ToString();token.Clear();
   if(state==6) return value=="true" || value=="false" || value=="null" ? value : (bareKey ? rawMarker : marker);
   if(state==13) return marker;
-  return state==1 || state==2 || state==8 || state==10 ? value : "";
+  return state==1 || state==2 || state==8 ? value : "";
  }
 }
 

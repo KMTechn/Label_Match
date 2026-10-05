@@ -101,14 +101,17 @@ foreach($case in $inputRecord.cases) {
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
 @pytest.mark.parametrize('prefix', ('', 'RuntimeError: '), ids=('plain', 'exception'))
 @pytest.mark.parametrize('retained_context', (False, True), ids=('value-only', 'retained-context'))
-def test_capture_masks_exception_assignment_before_truncation(tmp_path, engine, prefix, retained_context):
+@pytest.mark.parametrize('wide_separator', (False, True), ids=('adjacent-key', 'distant-key'))
+def test_capture_masks_exception_assignment_before_truncation(
+    tmp_path, engine, prefix, retained_context, wide_separator,
+):
     sentinel = uuid.uuid4().hex + uuid.uuid4().hex
-    text = prefix + 'password=' + sentinel * 3000
+    text = prefix + 'password' + (' ' * 83200 if wide_separator else '') + '=' + sentinel * 3000
     if retained_context:
         text = 'X' * 60000 + '\n' + text + '\n' + 'Y' * 10000
     inputs = tmp_path / 'overflow-input.json'
     inputs.write_text(json.dumps(dict(synthetic=sentinel,
-        text=text, truncated=retained_context)), encoding='utf-8')
+        text=text, truncated=retained_context or wide_separator)), encoding='utf-8')
     result = run_functions(tmp_path, ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1',
         ['Initialize-LabelChildOutputReader', 'Protect-LabelFailureText', 'ConvertTo-LabelFailureOutput'], r'''
 function Get-KmtechSinkEnvironment { return @{} }
