@@ -41,7 +41,7 @@ def redact_for_sink(text, environ=None, *, redact_values=()):
         if not sensitive or metadata or value.strip('"').startswith('[REDACTED:'):
             return match[0]
         return match['key'] + match['separator'] + (json.dumps(RULES['field']) if value.startswith('"') else RULES['field'])
-    text = re.sub(r'(?P<key>"(?:\\.|[^"\\])*"|[A-Za-z_][\w.-]*)(?P<separator>\s*[:=]\s*)(?P<value>"(?:\\.|[^"\\])*"|[^\s,;}]+)', assignment, text)
+    text = re.sub(r'(?<![A-Za-z0-9_.-])(?P<key>"(?:\\.|[^"\\])*"|[A-Za-z_][\w.-]*)(?P<separator>\s*[:=]\s*)(?P<value>"(?:\\.|[^"\\])*"|[^\s,;}]+)', assignment, text)
     text = re.sub(r'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"\',;]+', lambda match: match[1] + RULES['field'], text)
     if notes:
         text += "\n" + "\n".join(notes)

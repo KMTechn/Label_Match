@@ -32,7 +32,7 @@ function ConvertTo-KmtechRedactedSinkText {
             $Text = $Text.Replace($form,$replacement)
         }
     }
-    $Text = [regex]::Replace($Text, '(?<key>"(?:\\.|[^"\\])*"|[A-Za-z_][\w.-]*)(?<separator>\s*[:=]\s*)(?<value>"(?:\\.|[^"\\])*"|[^\s,;}]+)', [Text.RegularExpressions.MatchEvaluator]{
+    $Text = [regex]::Replace($Text, '(?<![A-Za-z0-9_.-])(?<key>"(?:\\.|[^"\\])*"|[A-Za-z_][\w.-]*)(?<separator>\s*[:=]\s*)(?<value>"(?:\\.|[^"\\])*"|[^\s,;}]+)', [Text.RegularExpressions.MatchEvaluator]{
         param($match)
         $key=$match.Groups['key'].Value.Trim('"');$value=$match.Groups['value'].Value
         $metadata=($value -cin @('true','false','null') -or $key -match $rules.path_suffix -or
