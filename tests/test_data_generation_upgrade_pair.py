@@ -72,20 +72,15 @@ def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     # an explicit signed marker permits the original ten-file G reversal.
     assert reverse.returncode != 0
     assert 'WRITER_TRANSITION_SOURCE_SET_DIFFERS' in reverse.stderr
-    legacy = new.parent / 'original-g'
-    shutil.copytree(new, legacy)
-    for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py',
-                     'app/producer_runtime_client.py', 'app/tools/register_label_match_worker_pc.py'):
-        (legacy / relative).write_bytes((old / relative).read_bytes())
-    # Keep the pure G regression at its committed inventory and actual probe.
-    # Today's exact after pins include four new companion writers; mixing
-    # those pins with historical transport bytes is not a valid release.
-    for relative in ('app/writer_session_fence.py', 'tools/label_writer_fence.ps1'):
-        (legacy / relative).write_bytes(subprocess.check_output([
-            'git', '-C', str(ROOT), 'show', ORIGINAL_G_COMMIT + ':' + relative.removeprefix('app/')]))
+    historical = new.parent / 'original-g-source'
+    subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout',
+                    '-c', 'core.autocrlf=false', str(ROOT), str(historical)],
+                   check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(historical), 'checkout', '--quiet', '--detach',
+                    ORIGINAL_G_COMMIT], check=True, capture_output=True)
+    from tests.test_data_generation_upgrade_pair_r4 import _pair_layouts
+    _, legacy = _pair_layouts(new.parent / 'original-g', historical, historical)
     installer = legacy / 'INSTALL_CANONICAL_PORTABLE.ps1'
-    installer.write_bytes(subprocess.check_output([
-        'git', '-C', str(ROOT), 'show', ORIGINAL_G_COMMIT + ':INSTALL_CANONICAL_PORTABLE.ps1']))
     original_reverse = probe(old, legacy, signed=True, installer=installer)
     assert original_reverse.returncode == 0, original_reverse.stderr[-2000:]
     assert json.loads(original_reverse.stdout)['compatibility'] == 'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE'
