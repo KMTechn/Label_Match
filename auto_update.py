@@ -1663,6 +1663,7 @@ def prepare_feed_packet(app_root: Path) -> dict[str, Any]:
     import requests
     from Label_Match import _verify_update_manifest_signature as verify_update_manifest_signature, _update_candidate_from_manifest as update_candidate_from_private_manifest, _sha256_file as file_sha256
     from current_user_onboarding import resolve_current_user_onboarding_paths, _default_profile_loader
+    from label_data_generation import check_user_data_open
 
     control = control_root(app_root)
     if control is None:
@@ -1674,13 +1675,19 @@ def prepare_feed_packet(app_root: Path) -> dict[str, Any]:
     active = read_json(control / "active.json")
     fixed_helper(control, "Verify", code_root=version_bundle(control, active["sha"]))
     current = version_manifest(version_bundle(control, active["sha"]))
-    profile = _default_profile_loader(resolve_current_user_onboarding_paths(app_root.parent).logistics_profile_path) if policy.get("profile_auth") else None
+    profile = None
+    if policy.get("profile_auth"):
+        profile_path = resolve_current_user_onboarding_paths(app_root.parent).logistics_profile_path
+        check_user_data_open(app_root, (profile_path.parent,))
+        profile = _default_profile_loader(profile_path)
     feed = urlsplit(policy["feed_url"])
     origin = lambda url: (url.scheme.lower(), (url.hostname or "").lower(), url.port or 443)
     if profile is not None and origin(feed) != origin(urlsplit(profile.base_url)):
         raise ValueError("profile authentication requires the configured authority origin")
     def fetch(session, url):
         assert_https_update_url(url)
+        if profile is not None and profile.tls_ca_bundle_path:
+            check_user_data_open(app_root, (Path(profile.tls_ca_bundle_path).parent,))
         session.cookies.clear()
         headers = {"Authorization": "Bearer " + profile.bearer_token} if profile is not None and origin(urlsplit(url)) == origin(feed) else {}
         response = session.get(url, headers=headers, timeout=10, stream=True, allow_redirects=False, verify=(profile.tls_ca_bundle_path or True) if profile is not None else True)

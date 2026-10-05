@@ -1,3 +1,5 @@
+조립판 자동 업데이트 다운로드는 실제 profile 위치 G 뒤 profile을 한 번 판독하고, loader의 secret/TLS owner G를 통과한다. 각 HTTP 요청의 TLS CA 첫 판독 직전에도 현재 G를 재확인한다. 늦은 거절은 해당 보호 판독·복호·접속·다운로드 상태 변경 전에 끝나며 기존 업데이트 상태 계약을 보존한다. 격리 회귀와 stock/랩 수용은 별도로 기록한다.
+
 # Label_Match 진행·공백·추가 제안
 
 GUI PIN·명단 client는 실제 첫 요청 때 locator 위치 G → JSON 한 번 → 하위 보호 secret/TLS owner G를 다시 확인하고 그 CredentialInput을 loader에 넘긴다. startup의 허용이나 준비 입력을 첫 PIN 판독 근거로 재사용하지 않는다. relay의 반복 run/enqueue는 상태 기록·lease reset 전에 현재 locator를 다시 준비하며, profile 재판독과 각 앱 transport의 TLS CA 판독에도 기존 G를 적용한다. 거절은 보호 판독·복호·연결과 해당 회차 상태 변경보다 먼저이고 PIN 화면은 기존 쉬운 한국어 원인을 표시한다. 공용 G helper·syntax guard·writer membership은 보존하며 byte/line 변경에 따른 pin과 exact forward 선언만 표준 재생성한다. `auto_update.py`가 없는 이 기준 `2c46de1`의 별도 업데이트 consumer는 조립판에서 확인한다. [sub-281 구현·별도 process 대조](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-281/REPORT.md)의 범위는 호스트 격리이며 실제 GUI·DPAPI·서버·stock은 NOT TESTED다.
