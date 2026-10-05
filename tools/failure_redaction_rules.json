@@ -406,7 +406,6 @@
     "WRITER_TRANSITION_SOURCE_SET_DIFFERS",
     "X13B_PINNED_SHARED_LEAF_ADOPTION",
     "Z",
-    "STORAGE_ROOT_SPLIT_PRESERVED",
     "admin_recovery_required",
     "enrollment_unauthorized",
     "producer_identity_conflict",

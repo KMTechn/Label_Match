@@ -430,13 +430,10 @@ def resolve_current_user_onboarding_paths(
         # Preserve the existing onboarding ledger even when GUI CSV/outbox
         # already live in a custom root.  Never move or merge either store.
         ledger_path = legacy_ledger
-        from failure_redaction import public_diagnostic_tree
-        diagnostic = public_diagnostic_tree({"message":
-            f"storage_root_split_preserved: data_root={data_root} onboarding_ledger={ledger_path}",
-            "reason_code": "STORAGE_ROOT_SPLIT_PRESERVED",
-            "data_root": str(data_root), "onboarding_ledger_path": str(ledger_path)})
-        logging.getLogger(__name__).warning("LABEL_MATCH_INSTALLER_FAILURE=" +
-            json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":")))
+        logging.getLogger(__name__).warning(
+            "storage_root_split_preserved: data_root=%s onboarding_ledger=%s",
+            data_root, ledger_path,
+        )
     if _is_legacy_sync_path(ledger_path):
         raise CurrentUserOnboardingError(
             "current-user onboarding state must not use the legacy Sync root",
