@@ -1,5 +1,7 @@
 """Transport changes admit exact bytes only within existing release directions."""
 import ast
+import hashlib
+import re
 import subprocess
 
 import pytest
@@ -40,15 +42,21 @@ def test_transport_guard_refuses_changed_bytes_on_either_side(tmp_path, nextfix_
     with (changed / 'app' / name).open('a', encoding='utf-8') as stream:
         stream.write(CHANGED_LINE)
     _pin(changed)
-    result = _nextfix_probe(tmp_path, changed if side == 'candidate' else candidate,
-        changed if side == 'installed' else old)
-    assert result.returncode != 0
+    source = changed if side == 'candidate' else candidate
+    installed = changed if side == 'installed' else old
+    before = {(tree, path.relative_to(tree)): hashlib.sha256(path.read_bytes()).digest()
+              for tree in (source, installed) for path in tree.rglob('*') if path.is_file()}
+    result = _nextfix_probe(tmp_path, source, installed)
+    assert result.returncode == 1
+    assert {(tree, path.relative_to(tree)): hashlib.sha256(path.read_bytes()).digest()
+            for tree in (source, installed) for path in tree.rglob('*') if path.is_file()} == before
     # A changed signed-transport pair cannot authorize the roster's exact
     # post -> _post_path writer identity mapping; identity validation now
     # rejects either side before the per-file semantics comparison.
     # F5 retirement also needs the exact logistics/workflow pair. A mutation
     # on either side invalidates that source-identity adapter, so these two
     # modules now fail the same identity check before ordinary AST comparison.
-    reason = ('WRITER_TRANSITION_SOURCE_SET_DIFFERS' if name in {'label_admin_pin.py', 'package_logistics.py', 'phs_label_workflow.py'}
+    # The quiesced runtime adapter likewise requires the exact client pair.
+    reason = ('WRITER_TRANSITION_SOURCE_SET_DIFFERS' if name in {'label_admin_pin.py', 'package_logistics.py', 'phs_label_workflow.py', 'producer_runtime_client.py'}
               else 'WRITER_TRANSITION_SEMANTICS_DIFFER')
-    assert reason in result.stderr
+    assert set(re.findall(r'\bWRITER_TRANSITION_[A-Z_]+\b', result.stderr)) == {reason}
