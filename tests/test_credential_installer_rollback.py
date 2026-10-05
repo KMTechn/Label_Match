@@ -103,7 +103,7 @@ $writerTransactionId=[Guid]::NewGuid().ToString('N'); $writerStartedAt=[DateTime
 $writerDelegationToken=[Guid]::NewGuid().ToString('N')+[Guid]::NewGuid().ToString('N')
 $writerOrchestratorSha256=Sha {_quote(REPO / 'INSTALL_CANONICAL_PORTABLE.ps1')}
 $writerContractSha256=Sha {_quote(REPO / 'tools/label_writer_fence.ps1')}
-$writerEnvironmentBefore=@($WriterDelegationEnvironmentNames | ForEach-Object { [Environment]::GetEnvironmentVariable($_, 'Process') })
+$writerEnvironmentBefore=@($WriterDelegationEnvironmentNames | ForEach-Object {{ [Environment]::GetEnvironmentVariable($_, 'Process') }})
 {rollback_sources}
 $writerAuthority=Enter-LabelWriterSessionAuthority -SessionId $writerSessionId -AttemptId $writerAttemptId -OrchestratorSha256 $writerOrchestratorSha256 -ReplacementTransactionId $writerTransactionId -WriterContractSha256 $writerContractSha256
 [void](Start-LabelWriterFence -ControlRoot $writerFenceControlRoot -Status 'RESTORING' -SessionId $writerSessionId -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId -SessionStartedAtUtc $writerStartedAt -OrchestratorSha256 $writerOrchestratorSha256 -WriterContractSha256 $writerContractSha256 -AuthorityOwnedByCaller)
