@@ -7,7 +7,7 @@ import shutil
 import subprocess
 
 import pytest
-from test_writer_transition import _definitions, _environment, _quote
+from tests.test_writer_transition import _definitions, _environment, _quote
 
 REPO = Path(__file__).resolve().parents[1]
 
