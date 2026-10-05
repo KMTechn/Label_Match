@@ -306,6 +306,10 @@ function Write-BootstrapUtf8Json {
     )
     $temporary = "$Path.tmp.$PID"
     $json = $Payload | ConvertTo-Json -Depth 8
+    if (-not (Get-Command Assert-KmtechMachineMetadataText -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot 'failure_redaction.ps1')
+    }
+    Assert-KmtechMachineMetadataText -Text ($json + [Environment]::NewLine)
     [IO.File]::WriteAllText($temporary, $json + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $temporary -Destination $Path -Force | Out-Null
 }

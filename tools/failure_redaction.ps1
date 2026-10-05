@@ -89,6 +89,21 @@ function Get-KmtechSinkReplacements {
     return ,$result
 }
 
+function Assert-KmtechMachineMetadataText {
+    param([AllowEmptyString()][string]$Text, [Collections.IDictionary]$Environment = $null)
+    if ($null -eq $Environment) { $Environment = Get-KmtechSinkEnvironment }
+    foreach ($name in $Environment.Keys) {
+        $value = [string]$Environment[$name]
+        if (-not $value -or -not (Test-KmtechSecretEnvironmentValue -Name ([string]$name) -Value $value)) { continue }
+        $escaped = ($value | ConvertTo-Json -Compress)
+        $escaped = $escaped.Substring(1, $escaped.Length - 2)
+        $unicode = -join @($value.ToCharArray() | ForEach-Object { '\u{0:x4}' -f [int]$_ })
+        foreach ($form in @($value, $escaped, $unicode, $value.Replace("'", "''"), $value.Replace('"', '""')) | Select-Object -Unique) {
+            if ($Text.Contains($form)) { throw 'PRODUCT_METADATA_SECRET_VALUE_REFUSED' }
+        }
+    }
+}
+
 function ConvertTo-KmtechRedactedSinkObject {
     param([AllowNull()]$Value, [Collections.IDictionary]$Environment = $null)
     if ($null -eq $Value) { return $null }

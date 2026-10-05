@@ -1582,6 +1582,15 @@ function Save([string]$Path, $Value) {
     Move-Item $temp $Path -Force
 }
 
+function Save-LabelMachineMetadata([string]$Path, $Value) {
+    $json = ($Value | ConvertTo-Json -Depth 30) + [Environment]::NewLine
+    Assert-KmtechMachineMetadataText -Text $json
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+    $temp = "$Path.tmp.$PID"
+    [IO.File]::WriteAllText($temp, $json, (New-Object Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $temp -Destination $Path -Force
+}
+
 
 function Archive-PretransactionFailure([string]$AuditRoot, [string]$RunId) {
     # Before writer authority/fence acquisition, another installer may publish
@@ -3121,7 +3130,7 @@ function Move-LegacyFirstRegistrationState(
         for ($index = 0; $index -lt $resolved.Count; $index++) {
             $initialMap += [ordered]@{original_path=$resolved[$index]; quarantined_path=(Join-Path $quarantine ('state-' + $index)); preimage='ABSENT'; status='PENDING'; attempts=0; failure_type=''}
         }
-        Save $progressPath ([ordered]@{schema='label-match-first-registration-quarantine-v1'; root=$quarantine; state_paths=$initialMap; restored_absent=$false})
+        Save-LabelMachineMetadata $progressPath ([ordered]@{schema='label-match-first-registration-quarantine-v1'; root=$quarantine; state_paths=$initialMap; restored_absent=$false})
     }
     $moves = @()
     for ($index = 0; $index -lt $resolved.Count; $index++) {
@@ -3163,7 +3172,7 @@ function Move-LegacyFirstRegistrationState(
         for ($pending = $index + 1; $pending -lt $resolved.Count; $pending++) {
             $map += [ordered]@{original_path=$resolved[$pending]; quarantined_path=(Join-Path $quarantine ('state-' + $pending)); preimage='ABSENT'; status='PENDING'; attempts=0; failure_type=''}
         }
-        Save $progressPath ([ordered]@{schema='label-match-first-registration-quarantine-v1'; root=$quarantine; state_paths=$map; restored_absent=$false})
+        Save-LabelMachineMetadata $progressPath ([ordered]@{schema='label-match-first-registration-quarantine-v1'; root=$quarantine; state_paths=$map; restored_absent=$false})
     }
     $ancestorMoves = @()
     if ($DeferredPaths.Count -eq 0) {
@@ -3192,7 +3201,7 @@ function Move-LegacyFirstRegistrationState(
     $remaining = @($readback | Where-Object { $_.state -cne 'ABSENT' })
     $remaining += @($ancestorMoves | Where-Object { $_.state -cnotin @('ABSENT', 'RETAINED_FOR_ATTEMPT_AUDIT') })
     $result = [ordered]@{schema='label-match-first-registration-quarantine-v1'; root=$quarantine; state_paths=$moves; ancestors=$ancestorMoves; absence_readback=$readback; remaining_paths=$remaining; restored_absent=($remaining.Count -eq 0); server_registration_may_exist=$ServerRegistrationMayExist; server_rollback_performed=$false}
-    Save $progressPath $result
+    Save-LabelMachineMetadata $progressPath $result
     return $result
 }
 
@@ -3255,7 +3264,7 @@ function Read-FirstRegistrationAttempt(
 }
 
 function Save-FirstRegistrationAttempt($Record, [string]$Path) {
-    if ($null -ne $Record) { Save $Path $Record }
+    if ($null -ne $Record) { Save-LabelMachineMetadata $Path $Record }
 }
 
 function Save-LabelRollbackContext {
