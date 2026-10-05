@@ -1219,3 +1219,5 @@ F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join
 설치기 회귀 fixture는 실제 Wait-LabelRelayPreimageExit와 격리된 writer 관측을 바인딩하며 예상 밖 writer 거절을 확인한다. isolated main 입력에는 실제 auto_update/writer_session_fence 파일을 포함하고 rollback locator는 현재 original-error 경계를 정확히 선택한다. 원 phase·행 수·순서 단언은 유지한다.
 
 옛 공식 relay 정체성은 Export-ScheduledTask XML로 판정한다. 실측 계약에 따라 누락 RunLevel은 LeastPrivilege, SYSTEM의 누락 LogonType은 ServiceAccount로 정규화하며 사용자 누락 LogonType은 ABSENT로 거절한다. 명시한 요소와 생략한 요소는 같은 지문이고 모르는 값은 기존 거절이다. 저장 암호/InteractiveToken 동일 작업자 인정은 한 상수에 켜며 native 실패 복원/성공 전환 회차가 실패하면 닫는다.
+
+공식 LM v2.0.38의 VBS writer는 CRLF 문자열에 CRLF 출력 변환을 적용하여 CR CR LF를 저장한다. 옛 launcher admission은 동명 wrapper로 렌더한 이 전체 본문을 기존 LF/CRLF 비교의 정확한 대안 한 가지로 인정한다. 추가 빈 줄·혼합 CR CR LF·바뀐 명령은 계속 거절하며 wrapper 경로·ordinary-file 검사는 유지한다. 80a93ab에서 공식 writer가 보존된 472바이트 VBS와 같은 SHA를 재생성했고 PS5.1/7 모두 CR CR LF 입력만 거절한 RED 2 FAIL을 보존했다. 최종 후보의 검사와 native 설치 한계는 w9setupprep/sub-311 REPORT에 기록한다; 실제 guest 설치·rollback은 별도 확인 대상이다.

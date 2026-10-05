@@ -529,7 +529,7 @@ shared_replacements = {
         'bf7ccf44e5abd14b3211bbea9b1e22d3b4a53525b4d4bc760c1893ca2da63a69'),
     'INSTALL_THIS_PC.ps1': (
         '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
-        '709dd05f7270278c9a065ce843adf6f84e5b74a6a591c336fb6e153a96e0621b'),
+        '66750951473c37ecb196a0fef966d541001a03405ac87bc075a6c00452bbef88'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
         '96101ce38befdf9dcca09ec42abd571aa441ad312f35bf3d14fd7effc97db963'),

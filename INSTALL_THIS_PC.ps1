@@ -1162,7 +1162,7 @@ function Assert-LabelOfficialLegacyTaskLauncher($Snapshot) {
         try {
             if ($stream.Length -gt 1048576) { throw 'Legacy launcher is oversized.' }
             $reader=[IO.StreamReader]::new($stream,[Text.UTF8Encoding]::new($false,$true),$true)
-            try { $launcherText=$reader.ReadToEnd().Replace("`r`n","`n").TrimEnd([char[]]"`r`n") }
+            try { $launcherText=$reader.ReadToEnd().TrimEnd([char[]]"`r`n") }
             finally { $reader.Dispose() }
         } finally { $stream.Dispose() }
         $assignments=@([regex]::Matches($launcherText,'(?m)^(wrapper|runner)\s*=\s*"((?:""|[^"])*)"\s*$'))
@@ -1185,7 +1185,10 @@ function Assert-LabelOfficialLegacyTaskLauncher($Snapshot) {
                 'command = """" & comspec & """ /d /c """ & runner & """"')
         }
         $expected+=@('exitCode = shell.Run(command, 0, True)','WScript.Quit exitCode')
-        if ($launcherText -cne ($expected -join "`n")) { throw 'Legacy launcher content differs.' }
+        # Official v2.0.38 translated CRLF text to CR CR LF. Admit only that
+        # complete rendered body in addition to the existing LF/CRLF comparison.
+        if ($launcherText.Replace("`r`n","`n") -cne ($expected -join "`n") -and
+            $launcherText -cne ($expected -join "`r`r`n")) { throw 'Legacy launcher content differs.' }
     } catch {
         throw [InvalidOperationException]::new('Healthy lifecycle task belongs to another principal/command.', $_.Exception)
     }

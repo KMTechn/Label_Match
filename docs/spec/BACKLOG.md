@@ -550,3 +550,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - rollback static 상태는 현재 exact legacy/ordinary 조건문을 확인하며 기존 ROLLBACK_FAILED 의미를 보존한다. 각 branch를 성공으로 바꾼 입력은 거절; msg_b0774576a440의 exact static 계약 교정 범위.
 
 - 2026-10-05 조립: 실패 가림 식별자 예외와 제품 상태 writer 분리 완료. 계약·writer 표 및 회귀 범위는 assembly_failure_contract.md 참조; 최종 조립 stock 수용은 sub-292 REPORT로 확인.
+
+- 2026-10-06 공식 옛 LM VBS: v2.0.38 writer의 CR CR LF 전체 본문을 launcher admission의 정확한 대안으로 인정. 보존 VBS 472바이트 완전 재생성 및 PS5.1/7 RED 2 FAIL 확인; source ownership :2929 귀속은 원 native의 principal/command 결합 문구와 달라 폐기. 최종 조립·stock 근거는 sub-311 REPORT, 실제 relay-01 설치/rollback은 NOT TESTED이며 coordinator guest 읽기로 native 단계 귀속을 별도 확인한다.
