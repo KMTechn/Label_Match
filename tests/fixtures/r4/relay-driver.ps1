@@ -1,5 +1,6 @@
 param([string]$Repo,[string]$Output,[string]$InputPath)
 $ErrorActionPreference='Stop'
+. (Join-Path $Repo 'tools/failure_redaction.ps1')
 $ExtractedFunctionNames=@('Get-LabelOfficialLegacyTaskExpectation','Get-LabelOfficialLegacyTaskExpectations',
     'Get-LabelOfficialLegacyPrincipalModes','Get-LabelOfficialLegacyTaskFingerprint',
     'Get-LabelOfficialLegacyTaskSnapshot','Assert-LabelOfficialLegacyTaskStopped','Invoke-LabelOfficialLegacyTaskTransition')
