@@ -1,5 +1,7 @@
 # Label_Match 운영·복구·검증
 
+공식 legacy relay의 repetition_interval은 SCHEMA의 XmlConvert TimeSpan 왕복으로 정규화한다. 같은 기간의 다른 표기는 같은 13개 필드 지문을 유지하고 다른/무효 기간은 기존 소유권 오류로 상태 변경 전에 거절한다. 기존 정규 표기와 공유 기대값 지문은 불변이며 PS5.1·7 격리 회귀 10 PASS다.
+
 GUI/onboarding의 legacy readback·현재 사용자 task 제거와 source 판 확인 Git 호출은 CREATE_NO_WINDOW를 명시한다. source resident/autostart는 확인된 sibling pythonw.exe를 쓰며 없으면 기존 오류로 거절한다. one-shot console·packaged/portable·r4 bootstrap과 과거 task ownership 정의는 보존한다. GUI 바로가기·작업자 시작은 manifest.entrypoint의 runtime\pythonw.exe -I -B app\main.py 또는 관리 설치 bootstrap에 직접 연결한다. portable launch-label-match.cmd는 콘솔 전용이며 현장 작업자 GUI 시작에 쓰지 않는다. mock 회귀 22 PASS; 실제 Explorer·로그온·스캐너 포커스는 NOT TESTED다.
 
 rollback 최종 예외와 원 설치 예외의 재전달은 기존 Get-LabelLaunchFailure의 공용 가림/마지막 줄(300자 이하)을 사용한다. 원 예외 chain/type과 가린 원인 전문/참조는 기존 감사·보호 evidence에 보존하며 raw message를 사용자 sink로 다시 연결하지 않는다.

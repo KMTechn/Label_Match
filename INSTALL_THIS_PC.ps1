@@ -1054,7 +1054,7 @@ function Get-LabelOfficialLegacyTaskFingerprint([string]$TaskName,[string]$TaskP
         'action.command'=(ConvertTo-LabelLegacyTaskPath ([string]$action.Command))
         'action.arguments'=$arguments;'action.workdir'=(ConvertTo-LabelLegacyTaskPath ([string]$action.WorkingDirectory))
         'principal.user'=$user;'principal.logon_type'=$logonType;'principal.run_level'=$runLevel
-        'trigger.count'=[string]$triggers.Count;'trigger.type'=$trigger.LocalName;'trigger.repetition_interval'=[string]$trigger.Repetition.Interval
+        'trigger.count'=[string]$triggers.Count;'trigger.type'=$trigger.LocalName;'trigger.repetition_interval'=[Xml.XmlConvert]::ToString([Xml.XmlConvert]::ToTimeSpan([string]$trigger.Repetition.Interval))
     }
     $fields=[ordered]@{};$lines=@()
     $hash = [Security.Cryptography.SHA256]::Create()
