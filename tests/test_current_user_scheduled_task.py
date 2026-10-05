@@ -94,6 +94,23 @@ def test_task_script_refuses_manual_start_and_task_stop() -> None:
     assert "schtasks /run" not in source.lower()
 
 
+def test_task_powershell_accepts_sam_account_principal_readback(tmp_path) -> None:
+    from tests.test_shared_ancestor_protection import run_functions
+    source = scheduled_task._TASK_POWERSHELL
+    assert "$sam = $userName.Split('\\')[-1]" not in source
+    assert "-ieq $sam" not in source
+    boundary = tmp_path / "task-boundary.ps1"
+    boundary.write_text(source, encoding="utf-8-sig")
+    result = run_functions(tmp_path, boundary, ["ConvertTo-LabelTaskSid"], r'''
+$identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+$account=$identity.Name.Split('\')[-1]
+if((ConvertTo-LabelTaskSid $account) -cne $identity.User.Value){throw 'SAM SID binding differs'}
+if((ConvertTo-LabelTaskSid $identity.Name) -cne $identity.User.Value){throw 'Account SID binding differs'}
+'PASS'
+''')
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_task_operation_sends_script_as_encoded_command(monkeypatch, tmp_path):
     root = _canonical_fixture(monkeypatch, tmp_path)
     captured: dict[str, object] = {}
@@ -110,12 +127,6 @@ def test_task_operation_sends_script_as_encoded_command(monkeypatch, tmp_path):
     assert command[command.index("-EncodedCommand") + 1]
     assert captured["input"] in (None, "")
     assert command[-2:] != ["-Command", "-"]
-
-
-def test_task_powershell_accepts_sam_account_principal_readback() -> None:
-    source = scheduled_task._TASK_POWERSHELL
-    assert "$sam = $userName.Split('\\')[-1]" in source
-    assert "-ieq $sam" in source
 
 
 @pytest.mark.parametrize(

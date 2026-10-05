@@ -4,6 +4,8 @@ GUI PIN·명단 client는 실제 첫 요청 때 locator 위치 G → JSON 한 �
 
 외부 CA·conflict receipt·보호 관리자 verifier의 G parent 누락을 sub-262에서 교정한다. legacy install-pack fixture는 실제 release identity와 bootstrap inventory 입력을 보충하며 기존 단언을 유지한다. headless/정의-only 회귀와 stock 거절 근거는 [sub-262](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-262/REPORT.md)에 결속하고 독립 재확인·중앙 병합·native 수용은 1차 후속이다.
 
+예행 4회차 sub-274: 실패 전문 가림·보존, current 없는 보호 startup 복원, 보호 선행 rollback, 오류 수와 독립된 안전 readback, 일반 지원 재개, 공식 옛 relay 작업의 Enabled 전환, 중첩 phase 기록을 교정한다. onboarding 복원 위임 목록에 실제 nested source `auto_update_fixed_helper`를 추가하며 writer 목록 76과 기존 G를 유지한다. 새 stock 및 동일 기준 집중 회귀 결과와 sub-278 단언 불변 추출 diff는 [sub-274 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-274/REPORT.md)에 기록한다. 실제 공개 v2.0.38 작업/암호 저장 Enable·Disable, 일반 실패 지원 재개, G 거절 두 갈래의 native 수용은 예행 5회차 guest 검증 전까지 NOT TESTED다.
+
 legacy upgrade guard의 G/nextfix 조합은 정의된 exact tuple을 사용하고 시험 helper의 중복 BOM을 제거한다. 기존 66개 read-only 선언/stock/archive preflight와 신규 source/self·BOM 구문 회귀는 [sub-242 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-242/REPORT.md)에서 기준/후보별 결과를 구분한다. 실제 설치·공개 v2.0.38의 백업/새 설치·등록 복구/현장 rollback 수용은 별도이며, 호스트에서 실행하지 않는다.
 
 첫 재실행의 남은 17개는 금지 입력을 성공시킨 결함이 아니라 G writer/file source-set 선거절을 옛 semantics 문자열로 기대하던 시험 결함이다. G writer 추가를 독립적으로 대조한 뒤 정확한 첫 거절 코드만 교정하며 기존 부정 입력·nonzero exit·불변 자료 단언은 유지한다. 원 실패 및 최종 재실행 결과는 같은 보고서에서 구분한다.
@@ -25,6 +27,12 @@ coordinator가 허용한 정확한 G 전환 선언 확장을 별도 커밋으로
 LM-A1/LM-B4: 빈 화면 종료 확인을 줄였고 F5의 새 날짜 교환·전용 조회·단추·선택 창·전용 시험은 제거했다. 이전 판이 미완료 journal을 남길 수 있으므로 건별 복구·hold·PIN intent·v1 형식과 같은 요청의 prepare/print/activate는 보존한다. 잠금 면제는 복구 두 source만 남는다.
 
 LM mainloop 종료 누락(P2, 2026-10-04 정정): 예외·직접 반환·종료 접수 직후 반환의 non-daemon UI lane 잔류를 고쳤다. 마감은 지연 표시 시점이며 정상/비정상 종료 모두 유한 지연의 결과 적용·정리를 끝까지 기다린다. 일반 sink 표시와 시작 시 삭제 실패의 비차단을 검증한다. 영구 I/O 정지·실제 Tk/장비/서버는 남는다. 동결 전 병합되지 않으면 알려진 한계는 앱이 닫히고 다시 안 켜지면 PC 재시작이며 컷 뒤 바로 병합한다.
+
+새 PC 판정은 정해진 bootstrap CA 디렉터리의 ca-bundle.pem 한 파일만 있을 때 기존 bounded certificate-only 검사로 공개 인증서만 확인하여 새 설치를 허용한다. 개인키·잘못된 인증서·다른 파일·빈 디렉터리·재분석 경로·정체/credential/profile/설치 영수증 흔적은 이 예외에 해당하지 않으며 기존 수명주기/복구 판정을 유지한다. 설치 통합 후보에서는 기존 9개 startup 조상 before를 보존하고 각 조상의 추가 변경 파일/추가 파일 및 e89 전진 통합을 정확 LF 쌍으로 결속한다. 기존 순수 G의 명시 서명 역방향은 e89/362f30f 역사 쌍에서 보존하고 startup 통합 후보의 역방향은 거절한다. 기존 inventory 생성기로 76개 sink와 Python/PowerShell pin을 함께 갱신하고, stdin probe의 최종 SHA를 다시 결속한다. 새 wildcard·역방향 선언은 추가하지 않는다. 격리 시험·stock·독립 검토·실제 설치 수용은 서로 구분하며 통합 근거는 D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-247/REPORT.md를 따른다. PS5.1·PS7 회귀와 실제 guest 설치 결과는 별도 근거다.
+
+
+canonical probe의 명령줄 길이 결함은 고정 SHA256 검사 후 동일 UTF-8 bytes stdin 실행으로 교정한다. PS5.1/PS7 실제 자식 회귀·정식 기준 대비 guard 실패 집합·stock packet·빈 guest 1회 예행은 `D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-166/REPORT.md`에서 PROVEN/FAILED/NOT TESTED로 구분하며 출시 수용은 별도다. w9next 교정 이식은 coordinator 소유다.
+
 
 <a id="busy-scan-durable-fifo"></a>
 
@@ -428,4 +436,84 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 설정 저장 조건과 안내를 일치시키고 건별 복구의 원 기술 정보를 읽기 전용 상세에 보존했다. 소스·합성 headless 보장과 실제 화면 수용을 구별한다. 실제 랩에서 작업 중 설정 안내, 복구 항목 선택·스크롤·원 SHA/UNKNOWN 확인은 NOT TESTED다. 제품의 완전한 CSV/queue/identity/F5/receipt 동시점 백업·복원과 미전송분 재개의 공개 보장은 아직 없다; raw artifact 다운로드나 코드 rollback을 그 보장으로 승격하지 않는다.
 
-- canonical rollback 선행 오류 뒤 독립 복원 단계를 모두 시도하고 실패를 보존한다. 코드·old-target G·runtime preimage가 증명되면 fence 해제와 옛 relay 재시작을 반드시 시도하며, 미증명 상태는 정지/fence와 한국어 지원 안내를 유지한다(sub-268). 일반 held-fence 지원 재개 진입점과 guest 1회 PROVEN은 미완료이며 운영 수용 범위로 남긴다.
+## LM-StartupUpdate1 · 로그온 자동 코드 적용의 실기 수용
+
+- 예행 3회차의 tree 지표 오류는 루트 integrity record를 payload 지표에서만 제외하여 교정한다. 실제 교정 stock의 설치기 지표 함수와 추가 파일/하위 동명/1 B 변경 거절을 확인하고 예행 4회차 입력으로 전달한다. 공용 상위 ACL preimage 복원 지시는 철회됐으며 결정 B 일치와 실패 뒤 앱 부모 재설치 admission을 확인한다. LegacyCA·공용 Apps 및 모든 기존 하위의 guest 전후 ACL/옛 앱 재시작은 예행 4회차에서 확인해야 한다. frozen archive의 실제 staged producer→consumer 계약 연결도 같은 후보에서 검증한다.
+
+- 설치 통합 최종 후보: ac745f0의 audit-index 전진 쌍과 74c02c2의 짧은 상승 전달을 합치고, G metadata가 없는 lifecycle/installer fixture와 staged verifier의 오래된 task keyword 거절을 교정한다. 기존 수락한 v2.0.94의 네 조상 전진을 정확 선언으로 보존해 총 14 조상을 결속하고 G 부정 delta의 보고 이유를 복원한다. 실제 판 기록은 stock builder 결과와 source/G 판을 대조한다. [sub-264 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-264/REPORT.md)의 PROVEN/FAILED/UNPROVEN과 시험 비교를 수용 근거로 쓰며 독립 검토·w9next 병합·native 예행은 1차 소유다.
+
+- sub-254 상승 launcher: 긴 script/payload를 private 감사 파일과 SHA256에 결속하고 상승 명령은 16,000자 이하의 bootstrap으로 제한한다. 259자 경로·20자 사용자, 한 바이트 변조/부재/reparse, 읽기 이후 쓰기·교체 거절, 기존 helper 결과와 UAC 취소 대역의 실제 rollback 회귀를 확인했다([동작·증명 경계](operations.md#placement-launcher-transport)). 실제 RunAs·새 packet의 공개 v2.0.38 업그레이드·P1/P2 독립 검토는 중앙 OPEN이며 배치 성공으로 승격하지 않는다.
+
+- sub-153 SYSTEM 작업 XML: XML에서 허용하지 않는 ServiceAccount LogonType만 생략했다. Task1.4·SYSTEM SID·HighestAvailable·사용자 SID trigger·고정 action/조건과 preimage 복원은 유지한다. emitted principal의 정식 schema 유형·필수 업무 필드 회귀는 PS5.1·PS7 RED4→GREEN14이며 실제 랩 task 등록/되읽기·독립 확인·최종 선언/pin은 OPEN이다.
+
+- sub-153 부재 관측: canonical 작업 조회 5자리의 오류 숨김, Run 관측 2자리의 넓은 부재 처리, 제거 후 FileNotFoundException 부재 되읽기와 선택적 설정의 디렉터리 건너뛰기를 교정했다. 정확한 API 부재만 인정하고 접근 거부·다른 오류는 실패한다. PS5.1·PS7 주입 회귀와 원 실패는 sub-153 REPORT에 보존한다. 실제 새 설치·복구·제거의 scheduler/registry 수용은 중앙 랩 OPEN이다.
+
+- sub-150/153 strict leaf: 두 literal 상위 폴더를 bootstrap/검증된 daily의 기존 exact ACL 규칙으로 통일하고 직접 admission의 없는 폴더 생성·허용을 거절한다. standalone 제거도 helper를 로드하지 않는 경계 안에서 공유 순수 판정의 정확한 사본과 AST 대조 회귀를 사용한다. ordinary 준비의 기본 모양/없는 바탕 사전 읽기와 다른 leaf mask는 유지한다. 실제 NTFS 회귀와 기준 대비 집중 실패 집합은 sub-153 REPORT에 기록한다. 최종 선언/pin 재생성·독립 확인·빈 guest 새 설치/공개 v2.0.38 업그레이드는 중앙 OPEN이다.
+
+- sub-141 상위 바탕 준비: 공유 두 폴더의 관측 기본→보호 ACL, SID 신뢰·ACE 집합 비교·전파 뒤 재읽기·중간 상태/멱등·사전 검사→상승 준비→앱 부모→신뢰 재검사·종료 코드 61–66을 옮겼다. D: 격리 실제 NTFS와 PS5.1/PS7 source 회귀를 REPORT에 기록한다. exact-after/companion/source/writer 선언은 재생성하지 않았으며 목록과 독립 검토·빈 W9R-lab-ready-01 새 packet 설치 1회는 중앙 OPEN이다. 이적의 증거 위치·메모리 wrapper·ACL reset 범위·실패 복구·재진입은 이 단위 밖이다.
+
+- 10/02 sub-99: R1 native 일반 사용자 mutex 재열기, R2 전체 placement 함수 묶음, R3 실패→검증 복귀/UNKNOWN·claim, R5 세 feed gate, R6 실제 PS5.1 BOM decode를 좁은 회귀로 교정했다. (g) Python bootstrap PID 소비자는 실제 active relay readback으로 교정했고 canonical (g)(h)는 기존 defer/일반 시작을 유지한다. R4 유한 자식 진단은 교정했으나 상주 stream은 1차 결정으로 OPEN이다. 별도 relay bounded/masked startup log·설치기 exit/log 회수와 logger 초기화 전 crash 랩 증거가 필요하다. 핀 재생성·재검토·실제 Windows 수용은 중앙 잔여다.
+
+- R4 유한 자식 helper/task/relay-cycle의 원 출력·exit와 준비/전이/ready-read/persistent-cycle 원 예외 사슬은 가림·상한을 두어 보존한다. 상주 자식 stream은 부모 종료 뒤에도 가림·상한·handle 수명을 유지할 logging/launcher 작업이 OPEN이다. 기존 실제 native/설치 수용을 이 headless 교정으로 완료 처리하지 않는다.
+
+회사 feed 설정은 검증된 canonical 빌드 입력이며 설치 뒤 보호 SHA로 변조를 거절한다. app/main.py·패키지·실제 app/tools companion도 정확한 preimage/후보 선언에 포함한다. 원 아카이브 누락 실패 13건은 보존한다.
+
+- 구현: 내구 상태기계·서명된 미래 exact 양방향 쌍·실제 기존 version 상승·READY·코드만 복귀, 고정 SYSTEM helper·작업 preimage, GUI/relay 토큰 경계, 정확한 공개 키 회전과 기존 release 핀을 추가했다. 소비자 원문 SHA는 전이 증거다. policy 미래 allowlist나 추가 승인 체계는 없다. 빈 feed·업무 중 적용 끔이 기본이다.
+- PROVEN 범위: 독립 clone 집중 기존 비교, 새 순수/주입 경계, source-derived inventory와 공개 키 정확 쌍. 개수·버전·환경·원 실패·한계는 w9setupprep sub-88 REPORT.md에 기록한다.
+- 10/03 sub-128 구현: [서명 쌍 계약](PAIR-RULE-CONTRACT.md)과 [지원 수명주기](LIFECYCLE-DESIGN.md)를 이식했다. 정상 A/B→C, control 비의존 제거·사용자 제거, 내용 증명 개별 이동·미확정/목록 보존 및 자료 경로 거절을 구현했다. headless 회귀 판/수치/원 실패는 sub-128 REPORT.md이며 실제 Windows 수용은 OPEN이다. CONFIRMED 후 임의 feed 하향은 지원하지 않는다.
+- OPEN / NOT TESTED: 중앙 전체 suite·stock builder/실제 packet·독립 검토 및 로그온/빠른 시작/전원 손실/옛 판 등록/교체/제거/재설치/복귀 랩. 작업 ACL readback, 실제 0x18B 토큰의 모든 native 시작 자리, 실패 진단·Run 다음 로그온 복구, 데이터/미완료/outbox 보존을 확인한다. 실제 w9next packet matching-key·feed/manifest 게시·최종 병합은 중앙 담당이다.
+
+- 10/02 w9setupprep sub-104: 통합 기준 `134bab3`와 이식판 `3104b0e`에서 같은 invalid-receipt restart 시험의 GUI 없는 `__new__` fixture가 실제 scanner notice의 Tk 속성으로 들어가 RecursionError를 냈다. notice만 수집하는 fixture로 고치고 OPERATOR_REVIEW·재전송 금지·다음 스캔 차단 단언을 유지하면서 안내 제목/내용도 확인한다. 제품/수량/멤버십/receipt 계약은 변경하지 않는다. 원 FAILED와 최종 focused/collect 근거는 `D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-104/REPORT.md`에 보존하며 실제 GUI 수용은 NOT TESTED다.
+- sub-104 충돌 해소 마감: legacy/scan/nextfix의 동일값 중복 선언 5개를 제거했다. 전후 모든 literal mapping 동일·BOM 유지이며 source/writer/companion pin 재생성은 이식 뒤 중앙 단계로 유보한다.
+
+- sub-128/129 중앙 잔여: 동결 뒤 exact-after/추가 asset 선언, Python·PowerShell inventory/fence pin, app/tools companion 및 설치기·stock source digest를 같은 최종 입력으로 한 번 재생성한다. committed db1f114의 선언 대기는 43건(기존 40 + startup old_key/new_key/apply_helper 3)이다. 추가 3건은 lifecycle sink·canonical_placement 행이 빠진 startup_candidate_membership의 SOURCE_SET_DIFFERS가 예상 검사를 선행하여 발생한다. 원 실패를 보존하고 membership도 최종 source에서 재생성해 재검증한다. 독립 검토와 실제 설치/작업/로그온/제거/전원 단절/relay·credential·옛 첫 등록·업무 자료 불변 수용까지 Ready로 올리지 않는다. 중앙 hub 반영은 코디네이터 소유다.
+
+- sub-130 N1: 건강한 A/A·A/B 및 다음 C에서 사용자 제거→재등록의 표식 검증을 고정 owner/actual active 문맥으로 교정했다. 정상 제거의 정확한 ID/SHA·부재 증거를 요구하고 credential handoff·conflict receipt의 권한은 유지한다. source headless 검증과 원 실패는 sub-130 REPORT.md이며 실제 Windows 설치·relay/Run·credential 수용은 OPEN이다.
+- sub-130/136 N2: canonical 내장 URL gate의 ASCII host·빈 userinfo·port 검사와 PC 설정 gate를 맞췄다. PC의 scheme 추출도 대소문자 무관하게 처리하여 `HTTPS`·`hTtPs`의 빈 userinfo·비 ASCII 호스트를 거절한다. 정상 사내 주소·punycode·IPv4/IPv6 및 scheme/호스트 대소문자 변형 허용과 기존 호스팅 별칭 거절을 유지한다. runtime/내장/PC 함수 교차 회귀이며 실제 feed/설치 수용과 최종 선언 재생성은 OPEN이다.
+- LM-U1/sub-143: PC gate가 runtime의 query 금지 목록과 이름 정규화를 사용하도록 맞췄다. 기존 세 경로 교차 회귀에 모든 금지 이름·두 접두사·percent/대소문자/하이픈/빈 값 및 정상 주소 사례를 추가했다. 독립 검토·최종 선언 재생성·실제 feed/설치는 OPEN이다.
+- sub-130 N3: archive 후보 fixture는 staged/unstaged 변경이 있는 입력을 거절하며 candidate의 공개 설정·적용 helper도 해당 committed archive에서 읽는다. 검증 집계는 실제 실행 XML과 입력 SHA·clean 상태로 계산하고 RED/중간/재사용 증거를 최종 합계에 중복 가산하지 않는다. 최종 source SHA·판정·선언 대기 목록은 sub-130 REPORT.md에 기록한다.
+
+- LM-T1: 예약 작업의 계정 표현을 SID로 결속하고 raw XML/기존 구조 거절을 유지한다. PS5.1/7 격리 함수 회귀와 원 실패는 sub-158 REPORT에 기록한다. 실제 등록·로그온·제거 수용과 최종 선언/pin은 중앙 후속 OPEN이다.
+
+- sub-158 소유자 규칙: 특권 SID 셋 순수 함수를 설치/준비/daily/적용/제거 경계에 통일하고 D NTFS 회귀와 경계 사본 동등성을 확인한다. 실제 SYSTEM/TrustedInstaller 소유권 설정·랩 설치와 최종 pin 수용은 OPEN이다.
+
+- LM-O1: canonical Snapshot과 현재 사용자 relay 관측의 key 없음 판단을 native RegOpenKeyExW 코드 2로 한정하고 나머지 오류/race 실패를 보존한다. PS5.1/7 격리 회귀는 sub-158 REPORT; 실제 registry 오류·Run/설치 수용과 최종 선언/pin은 OPEN이다.
+
+- sub-158 조건부 교정: sub-155가 확인한 db1f114의 canonical_placement source 중복을 정식 가지에서 하나의 실제 placement/removal admission으로 모았다. PS5.1/7 위임·timeout/해제와 duplicate 거절 회귀를 보존한다. 선언/pin/최종 packet 및 실제 lifecycle 수용은 OPEN이다.
+
+
+- sub-177: 고정 helper 원 bytes hash 유지 + UTF-8 디코드 선두 BOM 하나 제거를 canonical 다섯 실행 자리에 적용하고, preimage 뒤·writer 거래 전 실패의 해당 run 진단/임시 상태를 보존 archive하여 새 설치 판정을 안전하게 이어간다. 기존 receipt·등록·data residue 거절 및 거래 안 rollback은 유지한다. [동작·회복 경계](operations.md#verified-helper-text-pretransaction)와 D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-177/REPORT.md에 실제 회귀/예행/실패 한계를 기록한다. 정식 선언/pin·독립 검토·현장 수용은 중앙 후속 OPEN이다.
+
+
+<a id="w9setupprep-sub192-child"></a>
+
+- 배치 자식 실패 보존과 선택값: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.
+
+
+<a id="w9setupprep-sub192-archive"></a>
+
+- 거래 전 실패의 다른 실행 보존: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.
+
+
+<a id="w9setupprep-sub192-removal"></a>
+
+- 실패한 설치 자신의 fence와 지원 사용자 제거: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.
+
+
+<a id="w9setupprep-sub192-rollback"></a>
+
+- 되돌리기 독립 단계와 정확한 끝 상태: source 회귀 PROVEN. 정식 선언/pin 재생성 0; 예행 packet·native 수용·독립 검토는 [sub-192 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-192/REPORT.md)의 실제 결과와 남은 한계를 따른다.
+
+- 10/04 sub-192 추가/sub-197 P2-1: FAILED_SUPPORTED_REMOVAL_REQUIRED의 정확한 자기 실패도 지원 제거 상태로 수용한다. 종료/살아 있는 소유자와 비실패 상태 회귀 RED→GREEN; guest ROLLBACK_FAILED의 제거 성공과 구별한다. 소유자 신뢰 경계 P2-2는 별도 교정하며 선언/pin 재생성은 0이다.
+
+- 10/04 sub-192 추가/sub-197 P2-2: 실패 fence의 지원 제거를 기존 protected code-parent 소유자 기록의 run/PID/native 생성 FILETIME과 정확한 fence tuple에 결속했다. mutable audit 단독·상충/live/unknown·중복은 전체 거절하고 활성 writer/authority를 유지한다. 위조/중복 RED→GREEN, PS5.1/7 NTFS immutable 발행 및 native PID 회귀; positive privileged ACL/실제 guest 발행은 NOT TESTED다. 추가 교정은 정식 가지에만 두며 선언/pin/stock 재생성 0이다. 고정 예행 packet guest의 최초 InnerText 실패와 rollback 실패는 원 출력으로 보존하고 native 설치 수용은 OPEN이다.
+
+- 10/04 sub-192 native 원인 (가): 실제 startup task XML comparer의 빠진 선택 노드/기본 true export 형태를 PS5.1/7 공통 CLR node/count 비교로 교정했다. 원문·엄격한 ownership 비교 유지, RED 16 FAIL·8 PASS → GREEN 24 PASS. 선언/pin/추가 guest는 0이며 고친 packet의 native 설치 증명은 동결 후 OPEN이다.
+
+- 10/04 sub-192 native 원인 (나): absent-code rollback의 부모 admission/자식 admission 자기 경합을 정확한 기존 session authority/token 위임으로 교정했다. 부모가 원 authority를 유지하며 검증 후 admission을 넘기고 자식은 기존 admission·HeldByOther 검사 뒤만 제거한다. PS5.1/7 native mutex RED 2 FAIL → GREEN 14 PASS, 잘못된 위임·busy child 거절과 실패/fence 보존. 선언/pin/추가 guest 0; 고친 packet native 수용 OPEN이다.
+
+- 설치 통합 F1 회귀: 비동기 CSV writer 완료 전 읽기의 0행 실패를 재현하여 fixture에 log_queue.join 경계만 추가. 기존 취소 1행·새 세트·capture 보존 단언 유지, 제품 변경0. 최종 실행 근거는 sub-264 REPORT.
+
+- 설치 통합 canonical fixture: 실제 relay-exit 함수·startup 의존 코드 보충, 현재 rollback exact locator, 예상 밖 writer 거절 음성 추가. 제품 변경0·기존 단언 불변; sub-264 REPORT.
+
+- rollback static 상태는 현재 exact legacy/ordinary 조건문을 확인하며 기존 ROLLBACK_FAILED 의미를 보존한다. 각 branch를 성공으로 바꾼 입력은 거절; msg_b0774576a440의 exact static 계약 교정 범위.

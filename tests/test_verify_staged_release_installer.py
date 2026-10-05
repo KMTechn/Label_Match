@@ -73,6 +73,86 @@ def test_verifier_proves_code_only_current_user_topology(tmp_path):
     assert report["original_package_unchanged"] is True
 
 
+def _archive_consumer():
+    path = MODULE_PATH.with_name("build_release_archive.py")
+    spec = importlib.util.spec_from_file_location("staged_archive_consumer_for_tests", path)
+    assert spec and spec.loader
+    consumer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = consumer
+    spec.loader.exec_module(consumer)
+    return consumer
+
+
+def _write_staged_report(package, report):
+    (package / "staged-installer-verification.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def test_real_staged_producer_report_is_accepted_by_archive_consumer(tmp_path):
+    package = _package(tmp_path)
+    report = verifier.verify_staged_package(package)
+    _write_staged_report(package, report)
+    consumer = _archive_consumer()
+    consumer._validate_staged_installer(package)
+
+
+@pytest.mark.parametrize("damage", ("missing", "wrong"))
+def test_archive_consumer_refuses_missing_or_wrong_elevation_authority(tmp_path, damage):
+    package = _package(tmp_path)
+    report = verifier.verify_staged_package(package)
+    if damage == "missing":
+        del report["bootstrap_contract"]["elevation_authority"]
+    else:
+        report["bootstrap_contract"]["elevation_authority"] = "unreviewed"
+    _write_staged_report(package, report)
+    consumer = _archive_consumer()
+    with pytest.raises(consumer.ReleaseArchiveError, match="code-only bootstrap contract"):
+        consumer._validate_staged_installer(package)
+
+
+@pytest.mark.parametrize("damage", ("third-call", "changed-arguments"))
+def test_invalid_task_creation_is_false_and_refused_by_archive_consumer(tmp_path, damage):
+    package = _package(tmp_path)
+    report = verifier.verify_staged_package(package)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    source = installer.read_text(encoding="utf-8")
+    if damage == "third-call":
+        source += "\nRegister-ScheduledTask -TaskName bad\n"
+    else:
+        source = source.replace(
+            "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
+            "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force -User bad", 1
+        )
+    installer.write_text(source, encoding="utf-8")
+    with pytest.raises(verifier.StagedInstallerVerificationError,
+                       match="retired enrollment/task authority") as caught:
+        verifier.verify_staged_package(package)
+    assert caught.value.legacy_authority_contract["task_creation_tokens_absent"] is False
+    report["legacy_authority_contract"].update(caught.value.legacy_authority_contract)
+    _write_staged_report(package, report)
+    consumer = _archive_consumer()
+    with pytest.raises(consumer.ReleaseArchiveError, match="retired task-authority contract"):
+        consumer._validate_staged_installer(package)
+
+
+@pytest.mark.parametrize("damage", ("missing", "wrong-path", "wrong-hash"))
+def test_archive_consumer_refuses_invalid_integrity_helper_binding(tmp_path, damage):
+    package = _package(tmp_path)
+    report = verifier.verify_staged_package(package)
+    entrypoint = report["public_entrypoint"]
+    if damage == "missing":
+        del entrypoint["integrity_helper_sha256"]
+    elif damage == "wrong-path":
+        entrypoint["integrity_helper_path"] = "tools/unreviewed.ps1"
+    else:
+        entrypoint["integrity_helper_sha256"] = "0" * 64
+    _write_staged_report(package, report)
+    consumer = _archive_consumer()
+    with pytest.raises(consumer.ReleaseArchiveError, match="public bootstrap binding"):
+        consumer._validate_staged_installer(package)
+
+
 @pytest.mark.parametrize(
     "relative", sorted(verifier.FORBIDDEN_ACTIVE_AUTHORITY_MEMBERS)
 )
@@ -112,6 +192,27 @@ def test_verifier_requires_onedir_runtime(tmp_path):
         verifier.StagedInstallerVerificationError,
         match="required staged members",
     ):
+        verifier.verify_staged_package(package)
+
+
+@pytest.mark.parametrize("damage", ("task-name", "unguarded", "helper", "inline-helper"))
+def test_verifier_refuses_registration_outside_exact_startup_task_contract(tmp_path, damage):
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    source = installer.read_text(encoding="utf-8")
+    if damage == "task-name":
+        source = source.replace("Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
+                                "Register-ScheduledTask -TaskName bad -Xml $spec.xml -Force", 1)
+    elif damage == "unguarded":
+        source = source.replace("Invoke-LabelStartupUpdateTaskMutation {", "& {", 1)
+    else:
+        helper = package / "tools/bootstrap_integrity.ps1"
+        extra = "\nRegister-ScheduledTask -TaskName bad\n" if damage == "helper" else "\nfunction Forbidden { Register-ScheduledTask -TaskName bad }\n"
+        helper.write_text(helper.read_text(encoding="utf-8") + extra,
+                          encoding="utf-8")
+    installer.write_text(source, encoding="utf-8")
+    with pytest.raises(verifier.StagedInstallerVerificationError,
+                       match="retired enrollment/task authority"):
         verifier.verify_staged_package(package)
 
 

@@ -79,6 +79,7 @@ def test_child_exit_status_survives_undecodable_output(monkeypatch, returncode):
     assert result == {
         "status": "PASS" if returncode == 0 else "FAIL",
         "returncode": returncode,
+        **({"child_output": {"returncode": returncode, "stdout": "\ufffd", "stderr": "\ufffd"}} if returncode else {}),
     }
 
 
@@ -181,7 +182,11 @@ def test_persistent_loop_retries_failure_then_records_success(tmp_path, raise_ex
         assert first["status"] == "UNKNOWN"
         assert first["reason"] == "relay cycle did not return a result"
         assert first["error_type"] == "TypeError"
-        assert set(first) == {"status", "reason", "error_type", "exception_frames"}
+        assert set(first) == {"status", "reason", "error_type", "exception_frames", "failure_evidence_path", "failure_evidence_status"}
+        assert first["failure_evidence_status"] == "PROVEN"
+        evidence = json.loads(Path(first["failure_evidence_path"]).read_text(encoding="utf-8"))
+        assert "private-cycle-message" in evidence["launch_failure_details"][0]["message"]
+        assert "private-cycle-payload" not in json.dumps(evidence)
         frames = first["exception_frames"]
         assert len(frames) == 8
         assert all(set(frame) == {"file", "function", "line"} for frame in frames)
@@ -384,6 +389,8 @@ def existing_relay_start(monkeypatch, tmp_path):
         return SimpleNamespace(pid=314159, poll=lambda: 0)
 
     monkeypatch.setattr(user_relay.subprocess, "Popen", duplicate_child)
+    import auto_update
+    monkeypatch.setattr(auto_update, "start_ordinary_process", duplicate_child)
     return SimpleNamespace(app=app_root, state=state, path=status_path,
                            payload=payload, launches=launches)
 

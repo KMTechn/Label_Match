@@ -4,6 +4,8 @@ param(
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
     [string]$EvidencePath = "",
     [string]$ServerBaseUrl = "",
+    [string]$ResumeRollbackAuditPath = "",
+    [string]$ExpectedRollbackAuditSha256 = "",
     [switch]$PlanOnly,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$SkipSignatureValidationForTest
@@ -345,10 +347,26 @@ function Arg([string]$Value) {
     return $Value
 }
 
-function Command([string]$Root) {
+function Command([string]$Root, [switch]$StartupUpdate) {
+    if ($StartupUpdate) {
+        return ('{0} -I -B {1} --bootstrap --role relay -- --label-match-user-relay' -f (Arg (Join-Path $Root 'runtime\pythonw.exe')), (Arg (Join-Path $Root 'app\auto_update.py')))
+    }
+    if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $Root) 'update-control\policy.json')) {
+        return Command $Root -StartupUpdate
+    }
     return ('{0} -I -B {1} --label-match-user-relay' -f
         (Arg (Join-Path $Root 'runtime\pythonw.exe')),
         (Arg (Join-Path $Root 'app\main.py')))
+}
+
+function RelayCodeRoot([string]$Root) {
+    $control=Join-Path (Split-Path -Parent $Root) 'update-control'
+    if (-not (Test-Path -LiteralPath (Join-Path $control 'policy.json'))) { return $Root }
+    $active=Get-Content -LiteralPath (Join-Path $control 'active.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$active.schema -cne 'label-match-startup-update-v1' -or [string]$active.sha -cnotmatch '^[0-9a-f]{40}$') { throw 'Startup update active code is invalid.' }
+    $version=Join-Path (Join-Path (Split-Path -Parent $Root) 'versions') ([string]$active.sha)
+    if (-not (Test-Path -LiteralPath (Join-Path $version 'app\main.py'))) { throw 'Startup update active code is absent.' }
+    return $version
 }
 
 function ServerBaseUrlOrigin([string]$Value) {
@@ -402,6 +420,44 @@ function Manifest([string]$Root, [bool]$UnsignedOk) {
     }
     Assert-KmtechCPythonSignature $Root $UnsignedOk
     return $value
+}
+
+function Invoke-LabelPinnedProbe([string]$Python, [byte[]]$ProbeBytes,
+    [string]$ExpectedSha256, [string[]]$ProbeArguments = @(),
+    [string]$FailureMessage = 'Pinned Python probe failed: ') {
+    # Hash and execute the same bytes; no mutable temporary script path.
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { $actual = [BitConverter]::ToString($sha256.ComputeHash($ProbeBytes)).Replace('-', '').ToLowerInvariant() }
+    finally { $sha256.Dispose() }
+    if ($actual -cne $ExpectedSha256) { throw 'PINNED_PROBE_SHA256_MISMATCH' }
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Python
+    $startInfo.Arguments = '-I -B -'
+    foreach ($argument in $ProbeArguments) { $startInfo.Arguments += ' ' + (Arg $argument) }
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
+    try {
+        # Drain both pipes while writing the program and waiting for its exit.
+        Initialize-LabelChildOutputReader
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = [LabelChildOutputReader]::Read($process.StandardError)
+        try { $process.StandardInput.BaseStream.Write($ProbeBytes, 0, $ProbeBytes.Length) }
+        finally { $process.StandardInput.Close() }
+        $process.WaitForExit()
+        $output = $stdout.GetAwaiter().GetResult()
+        $errorOutput = ConvertTo-LabelFailureOutput ($stderr.GetAwaiter().GetResult())
+        if ($process.ExitCode -ne 0) {
+            $bytes = [Text.Encoding]::UTF8.GetBytes($output)
+            $out = [ordered]@{text=(Protect-LabelFailureText $output);byte_count=$bytes.Length;truncated=($bytes.Length -gt 65536);limit_bytes=65536}
+            throw (New-LabelChildFailure $FailureMessage $process.ExitCode $out $errorOutput)
+        }
+        return $output
+    }
+    finally { $process.Dispose() }
 }
 
 function Assert-WriterTransition([string]$Source, [string]$Installed) {
@@ -473,10 +529,10 @@ shared_replacements = {
         'bf7ccf44e5abd14b3211bbea9b1e22d3b4a53525b4d4bc760c1893ca2da63a69'),
     'INSTALL_THIS_PC.ps1': (
         '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
-        '5b43cc1c66b2e43aa855ce876e1c7515ca3cea403069002d3da82a597131a766'),
+        '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
-        '60531b973d2c835c2b834136f34d61831e083180790aae28faaa96ba1d7a907c'),
+        'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'),
 }
 shared_additions = {
     'app/kmtech_shared/powershell/portable.ps1':
@@ -487,8 +543,8 @@ def release_digest(path):
     return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
 
 # G-DECISIONS #2/#7: exact e89c188 preimage and three pinned leaves.
-data_generation_replacements = {'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145', 'd0483a90b7c42923e4e638dbf45fbd3162768e6ca15fa2184fa7b71b0f84fda1'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', 'fb6f7a7db58874eb761d1a4fe88964be49c74d9ce871db9ab3b8d41e285a3017'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '5b43cc1c66b2e43aa855ce876e1c7515ca3cea403069002d3da82a597131a766'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', '60531b973d2c835c2b834136f34d61831e083180790aae28faaa96ba1d7a907c'), 'app/writer_session_fence.py': ('26d4d4900f55cafbfad24099065ecfdd6b275327e60b93ac63d67186a05e09e5', '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'), 'tools/label_writer_fence.ps1': ('fbff47dd51d1d4503ef0dd0e9ec6796adaf943882f6771a19e85059d694de976', '3e8d3ea9ead7b30590aad953c27a185a362d43dc8620a8c18514ac239e8b06a4')}
-data_generation_additions = {'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}
+data_generation_replacements = {'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/writer_session_fence.py': ('26d4d4900f55cafbfad24099065ecfdd6b275327e60b93ac63d67186a05e09e5', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('fbff47dd51d1d4503ef0dd0e9ec6796adaf943882f6771a19e85059d694de976', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b')}
+data_generation_additions = {'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}
 data_generation_transition = all(
     (source / relative).is_file() and release_digest(source / relative) == after
     for relative, (_, after) in data_generation_replacements.items()
@@ -536,7 +592,7 @@ integrity_order_transition = (
     release_digest(installed / integrity_order_path) ==
         'bfd59326ad76a400c70a62d78622b518a549e844c4bf4725f59eb7525c20a57f' and
     release_digest(source / integrity_order_path) ==
-        'cbe541306148f28a9e95317f6885cfca0e7b0e6744f81befd15b7727844109d1'
+        '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'
 )
 
 shared_transition = all(
@@ -555,9 +611,11 @@ shared_transition = all(
 # preimage ignores, so no data migration; downgrade is not admitted.
 legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
+                        '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
+ 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
+                                    '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
  'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
@@ -584,20 +642,18 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
                                      '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'),
  'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
                                      'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'),
- 'app/ui/workflow_snapshot_adapter.py': ('f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411',
+  'app/ui/workflow_snapshot_adapter.py': ('f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411',
                                          '661d0167c8966d510dc85233e32b4ee5dda781ff3d9b4fca20a1f0c797a5a4d2'),
  'app/ui/workflow_view_state.py': ('6959c71768296a68d88de2d46a76b80f177ab7c5e2bff0fde0cddb3fa9ada718',
                                    'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
- 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787',
-                             'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
  'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c',
-                                 '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'),
+                                 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'),
  'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
                                                     '9ff8ef6e353b215c1abe50b7809bd730e98a563e67aacaeeb88f632fc99b503d'),
  'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    'cbe541306148f28a9e95317f6885cfca0e7b0e6744f81befd15b7727844109d1')}
+                                    '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb')}
 legacy_label_additions = {'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'}
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
@@ -618,11 +674,11 @@ legacy_label_transition = all(
 # initialize. Everything else stays checked and downgrade is not admitted.
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-  '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
+  '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'),
  ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-  '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
+  '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'),
  ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
-  '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed')}
+  '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914')}
 scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -667,7 +723,7 @@ scan_input_transition = (
 # through the existing recovery schema. Downgrade is not admitted.
 nextfix_label_path = 'app/Label_Match.py'
 nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
- '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed')
+ '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914')
 nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -700,7 +756,7 @@ nextfix_label_transition = (
 
 # a20cd01 -> this scanner source: exact forward-only source pair, the same
 # pinned companion deltas, and unchanged writer membership/runtime/contracts.
-scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed')
+scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914')
 scanner_transition = (
     (installed / nextfix_label_path).is_file() and
     (source / nextfix_label_path).is_file() and
@@ -712,11 +768,11 @@ scanner_transition = (
 # files, writer membership and contracts retain their ordinary checks.
 current_user_profile_replacements = {
     'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
-    'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'),
+    'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'),
     'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
     'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
-    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', 'cbe541306148f28a9e95317f6885cfca0e7b0e6744f81befd15b7727844109d1'),
-    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', 'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'),
+    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'),
+    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
 }
 # Exact writer bytes from the same accepted profile/scan preimages; their
 # inventory pins differ. No additional release direction is admitted.
@@ -754,9 +810,9 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/sealed_transfer_exchange.py': ({'f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2'},
                                      '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'),
  'app/user_relay.py': ({'07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7'},
-                       '6edac91cef60878847ec1954e0b8c39978105a6df003984f056d421823e1262f'),
+                       'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'),
  'app/writer_session_fence.py': ({'7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', 'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', 'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50'},
-                                 '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e')}
+                                 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333')}
 remote_transport_transition = (
     legacy_label_transition or scan_input_transition or nextfix_label_transition
     or scanner_transition or current_user_profile_transition
@@ -789,13 +845,13 @@ roster_additions = {'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b749433
 # This feature's exact reviewed branch baseline is independent of the older
 # accepted release tables; never broaden their historical preimages.
 roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062',
-                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
+                        '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'),
  'app/label_admin_pin.py': ('159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8',
                             'be6ccfe4d74fd423d6dfcd7095ba1c92fa340c7be2ae4ade50127a1232f82d84'),
  'app/writer_session_fence.py': ('8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6',
-                                 '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'),
+                                 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'),
  'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a',
-                                  '3e8d3ea9ead7b30590aad953c27a185a362d43dc8620a8c18514ac239e8b06a4')}
+                                  '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b')}
 # Exact additional runtime changes for the already accepted roster baseline.
 roster_baseline_companions = {'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55',
                              'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'),
@@ -846,6 +902,181 @@ roster_transition = roster_transport_forward and all(
 )
 if roster_transport_forward and not roster_transition:
     raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Every changed byte and added asset below is an exact committed release pair.
+# Public trust rotation additionally requires this precise old/new configuration.
+from typing import Any, Mapping
+from urllib.parse import urlparse, parse_qsl
+UPDATE_GITHUB_UPDATE_HOSTS = {"github.com", "githubusercontent.com", "github.io"}
+UPDATE_SECRET_QUERY_KEYS = {
+    "access_token",
+    "api_key",
+    "client_secret",
+    "github_token",
+    "pat",
+    "private_key",
+    "sig",
+    "signature",
+    "token",
+}
+UPDATE_SECRET_QUERY_PREFIXES = ("x_amz_", "x_goog_")
+def _assert_https_update_url(url, *, require_zip=False):
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError("Update URL must be HTTPS")
+    if not parsed.hostname or not parsed.hostname.isascii():
+        raise ValueError("업데이트 주소의 호스트는 ASCII IP 또는 도메인이어야 합니다.")
+    parsed.port  # Reject a malformed port before requesting a URL.
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Update URL must not include userinfo")
+    if parsed.fragment:
+        raise ValueError("Update URL must not include fragments")
+    if require_zip and not parsed.path.lower().endswith(".zip"):
+        raise ValueError("Update artifact URL must point to a .zip file")
+    for key, _value in parse_qsl(parsed.query, keep_blank_values=True):
+        normalized_key = key.lower().replace("-", "_")
+        if normalized_key in UPDATE_SECRET_QUERY_KEYS or normalized_key.startswith(UPDATE_SECRET_QUERY_PREFIXES):
+            raise ValueError("Update URL must not contain raw token query parameters")
+def _is_github_hosted_update_url(url):
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return any(host == root or host.endswith("." + root) for root in UPDATE_GITHUB_UPDATE_HOSTS)
+assert_https_update_url = _assert_https_update_url
+def policy_from_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
+
+    if not isinstance(settings, Mapping):
+        raise ValueError("auto-update settings must be an object")
+    allowed = {"feed_url", "channel", "apply_during_work", "profile_auth"}
+    if set(settings) - allowed:
+        raise ValueError("auto-update settings contain unsupported fields")
+    feed = settings.get("feed_url", "")
+    if not isinstance(feed, str):
+        raise ValueError("auto-update feed must be a string")
+    if feed:
+        assert_https_update_url(feed)
+        if _is_github_hosted_update_url(feed):
+            raise ValueError("daily update feed cannot use GitHub hosting")
+    if settings.get("apply_during_work", False) is not False:
+        raise ValueError("applying during work requires separate scanner acceptance")
+    channel = settings.get("channel", "stable")
+    if not isinstance(channel, str) or re.fullmatch(r"[a-z0-9_-]{1,32}", channel) is None:
+        raise ValueError("auto-update channel is malformed")
+    auth = settings.get("profile_auth", bool(feed))
+    if feed and auth is not True:
+        raise ValueError("company feed requires existing device authentication")
+    if type(auth) is not bool:
+        raise ValueError("profile authentication setting must be a boolean")
+    return {"feed_url": feed, "channel": channel, "apply_during_work": False, "profile_auth": auth}
+def canonical_startup_settings(settings: Mapping[str, Any]) -> bytes:
+    return (json.dumps(policy_from_settings(settings), sort_keys=True, indent=2) + "\n").encode("utf-8")
+
+startup_release_replacements = {'3f4574a176f45253d746b397ad979896f266d062': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_context.py': ('95b57100a5bf2014a8dc7685455342233fb8bcd9f78e04a92332ae2fab320422', '32835bfbd588afd84fae494aabeab2add65f2ecb0b22aa0bb2478951107afe51'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_snapshot_adapter.py': ('f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411', '661d0167c8966d510dc85233e32b4ee5dda781ff3d9b4fca20a1f0c797a5a4d2'), 'app/ui/workflow_view_state.py': ('6959c71768296a68d88de2d46a76b80f177ab7c5e2bff0fde0cddb3fa9ada718', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('25f0f9f7b70d27e1b4e7f939720f694ae954670b94dc52c0a9c82d9f310a6794', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, '6479eca6c2c03f17d5f0fcf8b662a83045f96039': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/Label_Match.py': ('b18a13700497a1064226271f2419b51acf34c008b3f82e69340ec2b64f8846f6', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_transition.py': ('a5927e064c0468257c54e408e3164c67512f225cb78dceb49c231ffd8df83c8b', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_logistics.py': ('85a71ef78d268fae7f7aad9e21ae68920a6b23d5437e598a5822512fa45a6d89', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/ui/workflow_view_state.py': ('39bfffcbd6819406ded9c62f8c298d53b5148c6448cd1143b8343363ca0d5136', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('2c78bd842bfcb8fe74793b84ea36cb06c2af3664faf2872ad0cbb888bb2361be', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('3f94563728cd665a55c134eb34c5b5de0be4fcb1c0a31ce5525d74017f71a959', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox.py': ('00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'app/sealed_transfer_exchange.py': ('a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, '731ca29b14a5a9f98ec4f4935382548891557d95': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/Label_Match.py': ('cbb55194b55969017b22851b9645ed92d676071122f2fbac763161f05729fc45', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('1d55c96bff15a0ddba47fe65a39b033c67dd30c2ea95f19f41bd4fb4b0ecc253', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('f5e36a8d7142a0e130ef712b35178052d1d11140853ac98310b591f9eb8e7f20', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'app/sealed_transfer_exchange.py': ('a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, '817d393b7316735921c2aa6ede271a04cbea20fd': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/Label_Match.py': ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('c89453e181b94b7b018b1be78b1fad76d73d0fecd4f728ee6cf395fed6afbf27', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, '92abdaa377b2b3255c25ff0e5e331c3a4f1ddfa4': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/Label_Match.py': ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('6525f38c350d1d875a6943c3b858b417cbeaac8a7b03e1f984f8584f8445d42f', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, 'b00712c410770f1d023b09aa9a1de4743a81b1b6': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/Label_Match.py': ('c6a122c91e2f6437bb8857986884899d4336469bfb83ee7731b83a81376e9aec', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('f333164e0306008d17b8eddaabb0da44bead475f9008181b97231839698bbbcc', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('ed16a3a03ecdac3ae8c01ca41c124f6ddb4340d12834a8dd83ed8bad2f0049bd', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'app/sealed_transfer_exchange.py': ('a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, 'c5e051b4b126aaab259d57d451be14f98d18d87e': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/Label_Match.py': ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('503dae7aa0250925287745c61a82b9268da59b2855f87d9ba1bd638b724b9cfb', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('2406ca2a3c36016007f14a940ad5f432b7736c62e30d4414f8c1ead4de55d034', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, 'c83c72c26fd4352803500792abd27096b28c58de': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/Label_Match.py': ('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('18204c0518d4e72d1443062546a7a03d2df47a78fc2a7d3cbb929540d05a55f9', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, 'e88011c6fb6a773feb174ba29cad431edda54eeb': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/Label_Match.py': ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('d55c7eabc25a2260845893fe21da5df7d1075f2734db898632f9a46023a6a68e', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, 'e89c18879f5bf59ddcd550152bf26ffedc4d687a': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('26d4d4900f55cafbfad24099065ecfdd6b275327e60b93ac63d67186a05e09e5', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('fbff47dd51d1d4503ef0dd0e9ec6796adaf943882f6771a19e85059d694de976', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, '0cf041446e6eb3cfecb64055c3affccb359c3685': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f58eaf3f9f5841d9de2fbfd5a74a63c969e38c92', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_worker_roster.py': ('17b35efc3fb9f9a4589590d1cc8b0accaf2eba1cb9a482ffeaf669e12dc6ce32', '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('e649873611c442930e8d635c5836752ea1203273676a3269443a9bf403755bca', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('e3256e6129ab819075d38cb582559a25d312683c57995e1cfde92dbae66feb89', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, '4b7630f2ca25a08933a9482d8fed6946e79df688': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('500955366215a113f3c0ffd284d86d6364aadb86e00b097a4cefedb3cbb1ff7e', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, '640d770e62d41236fa51cf0e38112c331b023fe8': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('75fdd2d1422825f52320d3373acd12366b244e8ca00aa531a052983c09694227', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('2929ffe042131ccc8cc905dbbad084be0fbab0585d70100252d3ee682c66346b', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('5dc1377d481970f75c6a6330a2c2ea9987b016de4cea7f86f5788299a23b0f73', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('89dd2e7e3ac09fb125905a00f49e6ce3b2c6f9d5420b0d47535124336f36ecf9', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, '134bab3c2059ce500f752a3ba09eb83a6d2c0b40': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('6f07e89f69d66bb979abaef58aa4ff514fb839756bc9f4b5b727b5c0cf4d2022', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('4585720051d266fa077005456b0da590b273ad8ab29bc5391cff2e6aa9f74224', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('0d44faf4128286d49fc4285d26b9901d563c86eba0fe62d669c53a4a382c7b7d', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/writer_session_fence.py': ('8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}, '464830d78a305acb7aa01a7a7afc9e72a924a5c9': {'INSTALL_THIS_PC.ps1': ('7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744', '4788059f337fccd3383e1d5baec2980b826e98172d0e6a62e316c8b8db4ee3ce'), 'app/auto_update.py': ('f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f'), 'app/current_user_onboarding.py': ('3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/writer_session_fence.py': ('354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('d67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'), 'app/user_relay.py': ('b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d', 'eb2ea5ccf2099ccf1102be57e5555573512c1f7dcaa626f332a36afbf1147ad7'), 'app/tools/direct_sync_relay_install_pack.py': ('5a4368f2bb692dd37f406f449e607390024668a8101929577d88c549ad7093e5', '44edf6f901bd558734d33a56b0f8cf1d8a611bcc6397f3c3a581c3cb845951ec')}}
+startup_release_additions = {'3f4574a176f45253d746b397ad979896f266d062': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '6479eca6c2c03f17d5f0fcf8b662a83045f96039': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '731ca29b14a5a9f98ec4f4935382548891557d95': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '817d393b7316735921c2aa6ede271a04cbea20fd': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '92abdaa377b2b3255c25ff0e5e331c3a4f1ddfa4': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'b00712c410770f1d023b09aa9a1de4743a81b1b6': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'c5e051b4b126aaab259d57d451be14f98d18d87e': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'c83c72c26fd4352803500792abd27096b28c58de': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'e88011c6fb6a773feb174ba29cad431edda54eeb': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'e89c18879f5bf59ddcd550152bf26ffedc4d687a': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '0cf041446e6eb3cfecb64055c3affccb359c3685': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '4b7630f2ca25a08933a9482d8fed6946e79df688': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '640d770e62d41236fa51cf0e38112c331b023fe8': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '134bab3c2059ce500f752a3ba09eb83a6d2c0b40': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'bdd00e4dbdf4e7067138f352ba9422af6c142cc30f9989e79646662bdb80765f', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '464830d78a305acb7aa01a7a7afc9e72a924a5c9': {'app/failure_redaction.py': 'e64a33541c46384895e8efba1bc0f865830f40f8545c1e648182de734697e90f', 'app/tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '693c3f30cc7f0aa43aff201ee213c714f8f7fe47f19f33fb9a5e387e1d81ba29', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}}
+startup_public_key_pair = ('f570df63d4dd49f5ac5db2d414839fa0372a37605c7bdaddd385f684c948aae3', 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671')
+startup_candidate_membership = [('auto_update_copy_prepared_file', 'auto_update.py', 'copy_prepared_file', 'decorator'), ('auto_update_create_download_stage', 'auto_update.py', 'create_download_stage', 'decorator'), ('auto_update_create_protected_stage', 'auto_update.py', 'create_protected_stage', 'decorator'), ('auto_update_extract_prepared_code', 'auto_update.py', 'extract_prepared_code', 'decorator'), ('auto_update_fixed_helper', 'auto_update.py', 'fixed_helper', 'decorator'), ('auto_update_launch_version', 'auto_update.py', 'launch_version', 'decorator'), ('auto_update_persist_switch', 'auto_update.py', 'persist_switch', 'decorator'), ('auto_update_preserve_candidate_version', 'auto_update.py', 'preserve_candidate_version', 'decorator'), ('auto_update_publish_download', 'auto_update.py', 'publish_download', 'decorator'), ('auto_update_request_apply_task', 'auto_update.py', 'request_apply_task', 'decorator'), ('auto_update_request_bootstrap', 'auto_update.py', 'request_bootstrap', 'decorator'), ('auto_update_restore_preimage', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation'), ('auto_update_supported_lifecycle_transition', 'auto_update.py', 'supported_lifecycle_transition', 'decorator'), ('auto_update_task_mutation', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation'), ('auto_update_write_download_bytes', 'auto_update.py', 'write_download_bytes', 'decorator'), ('auto_update_write_download_chunk', 'auto_update.py', 'write_download_chunk', 'decorator'), ('auto_update_write_json_durable', 'auto_update.py', 'write_json_durable', 'decorator'), ('canonical_placement', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation'), ('current_user_onboarding', 'current_user_onboarding.py', 'onboard_current_user', 'decorator'), ('current_user_setup_removal', 'current_user_onboarding.py', 'remove_current_user_setup', 'decorator'), ('data_generation_record', 'label_data_generation.py', 'record_user_data_open', 'decorator'), ('direct_sync_enqueue', 'direct_sync_runtime.py', 'enqueue_completed_source_file', 'decorator'), ('direct_sync_relay_cycle', 'direct_sync_runtime.py', 'run_relay_once', 'decorator'), ('direct_sync_upload', 'direct_sync_push.py', 'upload_source_file', 'decorator'), ('gui_deferred_capture_cancel', 'Label_Match.py', 'Label_Match._cancel_deferred_capture_for_set', 'decorator'), ('gui_direct_sync', 'Label_Match.py', '_label_match_run_and_record_session_direct_sync', 'decorator'), ('gui_label_recovery_hold', 'Label_Match.py', 'Label_Match._hold_label_recovery', 'decorator'), ('gui_package_cancel_enqueue', 'Label_Match.py', 'Label_Match._queue_authoritative_package_cancellation', 'decorator'), ('gui_package_enqueue', 'Label_Match.py', 'Label_Match._queue_authoritative_package', 'decorator'), ('gui_package_pin_changed_hold_recovery', 'Label_Match.py', 'Label_Match._resume_changed_pin_hold', 'decorator'), ('gui_package_pin_changed_restore', 'Label_Match.py', 'Label_Match._restore_changed_pin_file', 'decorator'), ('gui_package_pin_file_move_recovery', 'Label_Match.py', 'Label_Match._recover_package_pin_moves', 'decorator'), ('gui_package_recovery_audit', 'Label_Match.py', 'Label_Match._audit_package_recovery_action', 'decorator'), ('gui_package_recovery_hold', 'Label_Match.py', 'Label_Match._hold_package_recovery_set', 'decorator'), ('gui_shutdown_stall_notice', 'label_match_single_instance.py', '_set_shutdown_stall_notice', 'decorator'), ('label_admin_pin_attempt_audit', 'package_outbox.py', 'PackageOutbox.audit_pin_attempt', 'decorator'), ('label_admin_pin_changed_hold_prepare', 'label_admin_pin.py', 'AdminPinIntentStore.stage_changed_hold', 'decorator'), ('label_admin_pin_changed_hold_state', 'label_admin_pin.py', 'AdminPinIntentStore.finish_changed_hold', 'decorator'), ('label_admin_pin_file_move', 'label_admin_pin.py', 'AdminPinIntentStore.stage_file_move', 'decorator'), ('label_admin_pin_file_move_state', 'label_admin_pin.py', 'AdminPinIntentStore.finish_file_move', 'decorator'), ('label_admin_pin_intent_prepare', 'label_admin_pin.py', 'AdminPinIntentStore.prepare', 'decorator'), ('label_admin_pin_intent_transition', 'label_admin_pin.py', 'AdminPinIntentStore.transition', 'decorator'), ('label_admin_pin_request', 'label_admin_pin.py', 'AdminPinClient._post_path', 'decorator'), ('package_cancel', 'package_logistics.py', 'PackageLogisticsClient.cancel_package', 'decorator'), ('package_cancellation_drain', 'package_logistics.py', 'PackageCancellationOutboxProcessor.drain', 'decorator'), ('package_create', 'package_logistics.py', 'PackageLogisticsClient.create_package', 'decorator'), ('package_operation_lease', 'package_logistics.py', 'PackageLogisticsClient.issue_operation_lease', 'decorator'), ('package_outbox_drain', 'package_logistics.py', 'PackageOutboxProcessor.drain', 'decorator'), ('package_transfer_reseal', 'package_logistics.py', 'PackageLogisticsClient.replace_and_reseal_transfer', 'decorator'), ('persistent_relay_cycle', 'user_relay.py', 'run_persistent_relay_loop', 'bounded_context'), ('persistent_relay_status', 'user_relay.py', 'run_persistent_relay_loop', 'bounded_context'), ('phs_current_recovery', 'phs_label_workflow.py', 'PHSLabelExchangeCoordinator._resume_current', 'decorator'), ('phs_exchange_activate', 'package_logistics.py', 'PackageLogisticsClient.activate_phs_label_exchange', 'decorator'), ('phs_exchange_prepare', 'package_logistics.py', 'PackageLogisticsClient.prepare_phs_label_exchange', 'decorator'), ('phs_label_adopt', 'package_logistics.py', 'PackageLogisticsClient.adopt_phs_label', 'decorator'), ('phs_print_complete', 'package_logistics.py', 'PackageLogisticsClient.complete_phs_label_print', 'decorator'), ('phs_print_request', 'package_logistics.py', 'PackageLogisticsClient.request_phs_label_print', 'decorator'), ('phs_reconciliation_prepare', 'package_logistics.py', 'PackageLogisticsClient.prepare_phs_reconciliation_label_exchange', 'decorator'), ('phs_reconciliation_recovery', 'phs_label_workflow.py', 'PHSLabelExchangeCoordinator.recover_reconciliation', 'decorator'), ('raw_relay_runner', 'tools/direct_sync_relay_runner.py', 'main', 'decorator'), ('registration_relay_recovery', 'registration_relay_recovery.py', 'commit_relay_handoff', 'decorator'), ('relay_batch_claim', 'direct_sync_push.py', 'claim_next_relay_batch', 'decorator'), ('relay_batch_drain', 'direct_sync_push.py', 'drain_one_relay_batch', 'decorator'), ('relay_child_launch', 'user_relay.py', 'run_session_direct_sync_once', 'decorator'), ('relay_queue_schema', 'direct_sync_push.py', 'init_relay_queue_schema', 'decorator'), ('relay_spool_enqueue', 'direct_sync_push.py', 'enqueue_source_file_for_relay', 'decorator'), ('relay_stale_lease_reset', 'direct_sync_push.py', 'reset_stale_relay_leases', 'decorator'), ('scheduled_task_remove', 'current_user_scheduled_task.py', 'remove_current_user_scheduled_task', 'decorator'), ('sealed_transfer_attempt', 'sealed_transfer_exchange.py', 'SealedTransferExchangeCoordinator.attempt', 'decorator'), ('sealed_transfer_drain', 'sealed_transfer_exchange.py', 'SealedTransferExchangeCoordinator.drain_pending', 'decorator'), ('sealed_transfer_prepare', 'sealed_transfer_exchange.py', 'SealedTransferExchangeCoordinator.prepare', 'decorator'), ('user_relay_autostart_install', 'user_relay.py', 'install_user_relay_autostart', 'decorator'), ('user_relay_autostart_remove', 'user_relay.py', 'remove_user_relay_autostart', 'decorator'), ('user_relay_process_start', 'user_relay.py', 'start_user_relay_process', 'decorator'), ('user_relay_stop_release', 'user_relay.py', 'release_user_relay_stop_marker', 'decorator'), ('user_relay_stop_request', 'user_relay.py', 'request_user_relay_stop', 'decorator')]
+installed_manifest = json.loads((installed / 'portable-manifest.json').read_text(encoding='utf-8-sig'))
+startup_from = installed_manifest.get('source_commit')
+startup_changes = startup_release_replacements.get(startup_from)
+if startup_changes is not None:
+    startup_changes = dict(startup_changes)
+    # Preserve the existing exact scanner Label preimage with its e88011c
+    # companions; every other byte still follows the same committed declaration.
+    startup_scanner = startup_from.startswith('e88011c') and release_digest(installed/'app/Label_Match.py') == scanner_label_pair[0]
+    if startup_scanner:
+        startup_changes['app/Label_Match.py'] = scanner_label_pair
+        # Exact e880 companions with the already accepted scanner preimage and recomputed pins.
+        startup_changes.update({'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'), 'tools/label_writer_fence.ps1': ('6ee3e545a1b3d9bf6e4722a2802e57bca8276d92593fe480c8990501a8db7b8a', '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b')})
+    allowed_additions = dict(startup_release_additions[startup_from])
+    settings_path=source/'app/auto-update-settings.json'
+    settings_raw=settings_path.read_bytes()
+    try:
+        settings_canonical=canonical_startup_settings(json.loads(settings_raw))
+        if settings_raw != settings_canonical:raise ValueError('noncanonical settings')
+    except (ValueError,TypeError):
+        raise ValueError('WRITER_TRANSITION_ADDED_ASSET_DIFFERS: startup settings') from None
+    if 'app/auto-update-settings.json' in allowed_additions:
+        allowed_additions['app/auto-update-settings.json']=hashlib.sha256(settings_canonical).hexdigest()
+    all_directions = {**startup_changes}
+    candidate_pin,candidate_sources=identity(source)
+    if candidate_sources != startup_candidate_membership:
+        raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
+    _, startup_installed_sources = identity(installed)
+    generation_writer = ('data_generation_record', 'label_data_generation.py', 'record_user_data_open', 'decorator')
+    startup_generation_delta = generation_writer in candidate_sources and generation_writer not in startup_installed_sources
+    startup_addition_already_installed = any((installed / relative).exists() for relative in allowed_additions)
+    def startup_delta_reason(relative, ordinary):
+        # Preserve the approved G membership refusal for invalid code deltas.
+        # This changes only the reason at an already-failing exact byte check.
+        python_source = relative.startswith('app/') and relative.endswith('.py') and not relative.startswith('app/site-packages/')
+        if startup_generation_delta and not startup_addition_already_installed:
+            # Keep the historical e880 profile refusal at its onboarding boundary.
+            if startup_from.startswith('e88011c') and ordinary == 'WRITER_TRANSITION_SEMANTICS_DIFFER' and relative in {
+                'app/logistics_runtime_profile.py', 'app/tools/install_logistics_runtime_profile.py', 'app/enrollment_mutex.py',
+            }:
+                return 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py'
+            if python_source or relative == 'tools/label_writer_fence.ps1':
+                return 'WRITER_TRANSITION_SOURCE_SET_DIFFERS'
+        return ordinary + ': ' + relative
+    key_path='app/update-manifest-key-config.json'
+    old_key_digest=release_digest(installed/key_path)
+    new_key_digest=release_digest(source/key_path)
+    if old_key_digest != new_key_digest and (old_key_digest,new_key_digest) != startup_public_key_pair:
+        raise ValueError('WRITER_TRANSITION_PUBLIC_KEY_PAIR_DIFFERS')
+    if old_key_digest != new_key_digest:all_directions[key_path]=(old_key_digest,new_key_digest)
+    for directory in ('app','runtime'):
+        left,right=files(source,directory),files(installed,directory)
+        expected_additions={p for p in allowed_additions if p.startswith(directory+'/')}
+        if left.keys() != right.keys() | expected_additions:
+            raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
+        for relative,path in left.items():
+            if relative in expected_additions:
+                if relative in right:raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: '+relative)
+                if release_digest(path) != allowed_additions[relative]:raise ValueError(startup_delta_reason(relative, 'WRITER_TRANSITION_ADDED_ASSET_DIFFERS'))
+            elif relative in all_directions:
+                before,after=all_directions[relative]
+                if release_digest(right[relative]) != before or release_digest(path) != after:raise ValueError(startup_delta_reason(relative, 'WRITER_TRANSITION_SEMANTICS_DIFFER'))
+            elif digest(path) != digest(right[relative]):
+                raise ValueError(startup_delta_reason(relative, 'WRITER_TRANSITION_SEMANTICS_DIFFER'))
+    for relative in ('INSTALL_THIS_PC.ps1','launch-label-match.cmd','tools/bootstrap_integrity.ps1','tools/label_writer_fence.ps1','tools/label_writer_fence_contract.json','tools/apply_prepared_update.ps1'):
+        if relative in allowed_additions:
+            if (installed/relative).exists() or release_digest(source/relative)!=allowed_additions[relative]:raise ValueError('WRITER_TRANSITION_ADDED_ASSET_DIFFERS')
+        elif relative in all_directions:
+            before,after=all_directions[relative]
+            if release_digest(installed/relative)!=before or release_digest(source/relative)!=after:raise ValueError(startup_delta_reason(relative, 'WRITER_TRANSITION_CONTRACT_DIFFERS'))
+        elif digest(source/relative)!=digest(installed/relative):raise ValueError(startup_delta_reason(relative, 'WRITER_TRANSITION_CONTRACT_DIFFERS'))
+    compatibility=('PINNED_WORKER_RECORD_IDENTITY' if startup_from == '0cf041446e6eb3cfecb64055c3affccb359c3685' else 'PINNED_MAINLOOP_EXIT_CLEANUP' if startup_from == '4b7630f2ca25a08933a9482d8fed6946e79df688' else 'PINNED_MAINLOOP_EXIT_NOTICE' if startup_from == '640d770e62d41236fa51cf0e38112c331b023fe8' else 'PINNED_DATA_GENERATION_G' if startup_from == 'e89c18879f5bf59ddcd550152bf26ffedc4d687a' else 'PINNED_LEGACY_LABEL_TRANSITION_MODE' if startup_from.startswith('3f4574a') else 'PINNED_SCAN_INPUT_FIX' if startup_from.startswith(('c83c72c','817d393','92abdaa')) else 'PINNED_W9NEXTFIX_LABEL_RECOVERY' if startup_from.startswith('e88011c') else 'PINNED_STARTUP_UPDATE_BOOTSTRAP')
+    if startup_scanner: compatibility='PINNED_W9SCANONLY_WORKFLOW'
+    candidate_pin,candidate_sources=identity(source)
+    installed_pin,installed_sources=identity(installed)
+    print(json.dumps(dict(installed_inventory_sha256=installed_pin,candidate_inventory_sha256=candidate_pin,compatibility=compatibility)))
+    sys.exit(0)
+
 candidate_pin, candidate_sources = identity(source)
 installed_pin, installed_sources = identity(installed)
 if roster_transition:
@@ -914,7 +1145,7 @@ if candidate_sources != installed_sources and not (shutdown_notice_forward or sh
     raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 # Exact stage-one 0cf0414 to stage-two bytes; state and pending stay additive.
 worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f58eaf3f9f5841d9de2fbfd5a74a63c969e38c92',
-                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
+                        '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'),
  'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55',
                              'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'),
  'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec',
@@ -930,9 +1161,9 @@ worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f5
  'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c',
                                      '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'),
  'app/writer_session_fence.py': ('e649873611c442930e8d635c5836752ea1203273676a3269443a9bf403755bca',
-                                 '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'),
+                                 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'),
  'tools/label_writer_fence.ps1': ('e3256e6129ab819075d38cb582559a25d312683c57995e1cfde92dbae66feb89',
-                                  '3e8d3ea9ead7b30590aad953c27a185a362d43dc8620a8c18514ac239e8b06a4'),
+                                  '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b'),
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee')}
 worker_record_transition = all(
@@ -943,13 +1174,13 @@ worker_record_transition = all(
 )
 # Exact 4b7630f shutdown repair; durable formats are unchanged.
 mainloop_exit_replacements = {'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70',
-                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
+                        '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'),
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8',
-                                 '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'),
+                                 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'),
  'tools/label_writer_fence.ps1': ('500955366215a113f3c0ffd284d86d6364aadb86e00b097a4cefedb3cbb1ff7e',
-                                  '3e8d3ea9ead7b30590aad953c27a185a362d43dc8620a8c18514ac239e8b06a4')}
+                                  '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b')}
 mainloop_exit_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
@@ -958,13 +1189,13 @@ mainloop_exit_transition = all(
 )
 # Exact prior cleanup candidate -> corrected notice-and-wait policy.
 mainloop_exit_notice_replacements = {'app/Label_Match.py': ('75fdd2d1422825f52320d3373acd12366b244e8ca00aa531a052983c09694227',
-                        '19e20f39cb37fe66a20f078b610e858548bd91eab744b6d11e8af73b3bdd59ed'),
+                        '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'),
  'app/label_match_single_instance.py': ('2929ffe042131ccc8cc905dbbad084be0fbab0585d70100252d3ee682c66346b',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('5dc1377d481970f75c6a6330a2c2ea9987b016de4cea7f86f5788299a23b0f73',
-                                 '207b7e6a6f25d04c91c3419ea752cfe0c1eee36eb7bc6e00fc5489ec06570d3e'),
+                                 'b7d70c23411376b9e2d56c691fe16eae9d4b0501b5b6041eebf2ccab26c39333'),
  'tools/label_writer_fence.ps1': ('89dd2e7e3ac09fb125905a00f49e6ce3b2c6f9d5420b0d47535124336f36ecf9',
-                                  '3e8d3ea9ead7b30590aad953c27a185a362d43dc8620a8c18514ac239e8b06a4')}
+                                  '3db9393bd94a7eef5ea9b1f708842611a97bb7b290eb9633752f168c69af381b')}
 mainloop_exit_notice_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
@@ -1141,9 +1372,6 @@ compatibility = ('SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE' if data_generation_
                  'PINNED_DATA_GENERATION_G' if (data_generation_transition or data_generation_companion_transition) else 'UNCHANGED_PRODUCTION_AST_AND_CONTRACTS')
 print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_inventory_sha256=candidate_pin, compatibility=compatibility)))
 '@
-    $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = Join-Path $Source 'runtime\python.exe'
-    # Windows argv quoting; the probe is literal source, never shell input.
     $generationReverse = 'no-data-compatibility-override'
     $generationVariable = Get-Variable -Name generationDowngradeDecision -ErrorAction SilentlyContinue
     if ($null -ne $generationVariable) {
@@ -1153,27 +1381,12 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
             $generationReverse = 'signed-compatible-downgrade'
         }
     }
-    $startInfo.Arguments = '-I -B - ' +
-        (Arg $Source) + ' ' + (Arg $Installed) + ' ' + (Arg $generationReverse)
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $startInfo.RedirectStandardInput = $true
-    $process = [Diagnostics.Process]::Start($startInfo)
-    try {
-        $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe)
-        $process.StandardInput.BaseStream.Write($probeBytes, 0, $probeBytes.Length)
-        $process.StandardInput.Close()
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-        if ($process.ExitCode -ne 0) {
-            throw ('Installed writer transition is unsupported: ' + $stderr.Trim())
-        }
-        return $stdout | ConvertFrom-Json
-    }
-    finally { $process.Dispose() }
+    # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
+    $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
+    $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
+        -ProbeBytes $probeBytes -ExpectedSha256 '9496c6af0ea091eb7beaed82a058f8e98c57df7bb487fab308471ba39af98c30' `
+        -ProbeArguments @($Source, $Installed, $generationReverse) -FailureMessage 'Installed writer transition is unsupported: '
+    return $stdout | ConvertFrom-Json
 }
 
 function ReplacementPreimage([string]$InstallRootValue, $ExpectedInventory, [string[]]$Before) {
@@ -1190,19 +1403,42 @@ function ReplacementPreimage([string]$InstallRootValue, $ExpectedInventory, [str
     return $root
 }
 
+function Open-LabelRunKey([string]$SubKey) {
+    # OpenSubKey can hide native errors as null. Only Win32 code 2 is absence.
+    if (-not ('KmtechLabelRunRegistryNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class KmtechLabelRunRegistryNative {
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
+    public static extern int RegOpenKeyExW(IntPtr root, string subKey, uint options, uint access, out IntPtr key);
+}
+'@
+    }
+    $handle = [IntPtr]::Zero
+    $status = [KmtechLabelRunRegistryNative]::RegOpenKeyExW([IntPtr]::new(-2147483647), $SubKey, 0, 1, [ref]$handle)
+    if ($status -eq 2) { return $null }
+    if ($status -ne 0) { throw [ComponentModel.Win32Exception]::new($status) }
+    if ($handle -eq [IntPtr]::Zero) { throw 'RUN_REGISTRY_HANDLE_INVALID' }
+    $ownedHandle = [Microsoft.Win32.SafeHandles.SafeRegistryHandle]::new($handle, $true)
+    try { return [Microsoft.Win32.RegistryKey]::FromHandle($ownedHandle) }
+    catch { $ownedHandle.Dispose(); throw }
+}
+
 function Snapshot {
-    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($RunKey, $false)
+    $key = Open-LabelRunKey $RunKey
     if ($null -eq $key) { return [ordered]@{ exists = $false; kind = ''; data = '' } }
     try {
-        try { $kind = [string]$key.GetValueKind($RunName) }
-        catch [IO.IOException] { return [ordered]@{ exists = $false; kind = ''; data = '' } }
+        if ($RunName -notin $key.GetValueNames()) { return [ordered]@{ exists = $false; kind = ''; data = '' } }
+        $kind = [string]$key.GetValueKind($RunName)
         if ($kind -notin @('String', 'ExpandString')) { throw "Unsupported Run type: $kind" }
-        $data = [string]$key.GetValue(
+        $data = $key.GetValue(
             $RunName,
             $null,
             [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
         )
-        return [ordered]@{ exists = $true; kind = $kind; data = $data }
+        if ($null -eq $data) { throw 'Run value disappeared during snapshot.' }
+        return [ordered]@{ exists = $true; kind = $kind; data = [string]$data }
     }
     finally { $key.Dispose() }
 }
@@ -1226,11 +1462,27 @@ function TextSha([string]$Value) {
     return ByteSha ((New-Object Text.UTF8Encoding($false)).GetBytes($Value))
 }
 
+function Import-LabelOfficialLegacyTaskFunctions([string]$Path) {
+    $tokens=$null;$errors=$null
+    $tree=[Management.Automation.Language.Parser]::ParseFile($Path,[ref]$tokens,[ref]$errors)
+    if ($errors.Count) { throw 'LEGACY_RELAY_HELPER_PARSE_FAILED' }
+    foreach ($name in @('Get-LabelOfficialLegacyTaskExpectation','Get-LabelOfficialLegacyPrincipalModes','Get-LabelOfficialLegacyTaskExpectations','ConvertTo-LabelLegacyTaskPath','Get-LabelOfficialLegacyTaskFingerprint','Get-LabelOfficialLegacyTaskSnapshot','Assert-LabelOfficialLegacyTaskStopped','Invoke-LabelOfficialLegacyTaskTransition')) {
+        $definitions=@($tree.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
+        if ($definitions.Count -ne 1) { throw 'LEGACY_RELAY_HELPER_DEFINITION_FAILED' }
+        . ([scriptblock]::Create($definitions[0].Extent.Text))
+    }
+}
+
+function Get-LabelCurrentUserScheduledTasks {
+    $official=Get-LabelOfficialLegacyTaskSnapshot
+    return @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' -and
+        ($null -eq $official -or [string]$official.name -ine [string]$_.TaskName)
+    })
+}
+
 function ScheduledTaskSnapshot([string]$AuditRoot, [string]$RunId) {
-    $task = Get-ScheduledTask `
-        -TaskName $CanonicalTaskName `
-        -TaskPath '\' `
-        -ErrorAction SilentlyContinue
+    $task = Get-LabelCurrentUserScheduledTasks
     if ($null -eq $task) {
         return [pscustomobject][ordered]@{
             exists = $false
@@ -1255,10 +1507,7 @@ function ScheduledTaskSnapshot([string]$AuditRoot, [string]$RunId) {
 }
 
 function RestoreScheduledTask($Before) {
-    $existing = Get-ScheduledTask `
-        -TaskName $CanonicalTaskName `
-        -TaskPath '\' `
-        -ErrorAction SilentlyContinue
+    $existing = Get-LabelCurrentUserScheduledTasks
     if (-not [bool]$Before.exists) {
         if ($null -ne $existing) {
             Unregister-ScheduledTask `
@@ -1266,7 +1515,7 @@ function RestoreScheduledTask($Before) {
                 -TaskPath '\' `
                 -Confirm:$false
         }
-        if ($null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)) {
+        if ($null -ne (Get-LabelCurrentUserScheduledTasks)) {
             throw 'Scheduled task absence restore readback failed.'
         }
         return
@@ -1289,7 +1538,17 @@ function RestoreScheduledTask($Before) {
     else {
         Disable-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' | Out-Null
     }
-    $restored = Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\'
+    Assert-LabelRollbackTaskPreimage $Before
+}
+
+function Assert-LabelRollbackTaskPreimage($Before) {
+    $matches = @(Get-LabelCurrentUserScheduledTasks)
+    if (-not [bool]$Before.exists) {
+        if ($matches.Count -ne 0) { throw 'Scheduled task absence readback failed.' }
+        return
+    }
+    if ($matches.Count -ne 1) { throw 'Scheduled task preimage readback is ambiguous.' }
+    $restored = $matches[0]
     $restoredXml = [string](Export-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\')
     if (
         [bool]$restored.Settings.Enabled -ne [bool]$Before.enabled -or
@@ -1317,10 +1576,84 @@ function Save([string]$Path, $Value) {
     $temp = "$Path.tmp.$PID"
     [IO.File]::WriteAllText(
         $temp,
-        ($Value | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
+        ((ConvertTo-KmtechRedactedSinkObject $Value) | ConvertTo-Json -Depth 30) + [Environment]::NewLine,
         (New-Object Text.UTF8Encoding($false))
     )
     Move-Item $temp $Path -Force
+}
+
+
+function Archive-PretransactionFailure([string]$AuditRoot, [string]$RunId) {
+    # Before writer authority/fence acquisition, another installer may publish
+    # here. Retain only this run's literal snapshot entries outside the active
+    # root; never classify an existing receipt or registration as pristine.
+    $Script:LabelPretransactionActiveRootRetained = $false
+    if ($RunId -cnotmatch '^[a-zA-Z0-9-]+$') { throw 'Pretransaction run identity is invalid.' }
+    $auditRootPath = [IO.Path]::GetFullPath($AuditRoot).TrimEnd('\')
+    if ((Split-Path -Leaf $auditRootPath) -cne 'install-audit') {
+        throw 'Pretransaction audit root identity differs.'
+    }
+    if ((Get-Item -LiteralPath $auditRootPath).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Pretransaction audit root is a reparse point.'
+    }
+    $archiveParent = $auditRootPath + '-pretransaction-failures'
+    if (Test-Path -LiteralPath $archiveParent) {
+        $archiveItem = Get-Item -LiteralPath $archiveParent
+        if (-not $archiveItem.PSIsContainer -or
+            ($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Pretransaction archive parent is not an ordinary directory.'
+        }
+    }
+    $archiveRoot = Join-Path $archiveParent $RunId
+    if (Test-Path -LiteralPath $archiveRoot) { throw 'Pretransaction archive already exists.' }
+    [void][IO.Directory]::CreateDirectory($archiveParent)
+    $prefix = 'canonical-portable-' + $RunId
+    $allEntries = @(Get-ChildItem -LiteralPath $auditRootPath -Force)
+    $entries = @($allEntries | Where-Object {
+        $_.Name -ceq ($prefix + '.json') -or
+            $_.Name.StartsWith($prefix + '.json.tmp.', [StringComparison]::Ordinal) -or
+            $_.Name -cin @(($prefix + '-helper'), ($prefix + '-task-preimage.xml'),
+                ($prefix + '-stop-preimage.json'), ($prefix + '-removal-preimage.json'),
+                ($prefix + '-first-registration-attempt.json'))
+    })
+    foreach ($entry in $entries) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Pretransaction artifact is a reparse point.'
+        }
+    }
+    if ($entries.Count -eq 0) { throw 'Pretransaction artifacts are absent.' }
+    [void][IO.Directory]::CreateDirectory($archiveRoot)
+    foreach ($entry in $entries) {
+        # The captured literal list belongs to this run. Another installer can
+        # publish after enumeration; its active root and entries stay in place.
+        $entryPath = [IO.Path]::GetFullPath($entry.FullName)
+        if ([IO.Path]::GetDirectoryName($entryPath) -cne $auditRootPath -or
+            [IO.Path]::GetFileName($entryPath) -cne $entry.Name) {
+            throw 'Pretransaction artifact literal boundary differs.'
+        }
+        $currentEntry = Get-Item -LiteralPath $entryPath -ErrorAction Stop
+        if ($currentEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Pretransaction artifact became a reparse point.'
+        }
+        Move-Item -LiteralPath $entryPath -Destination (Join-Path $archiveRoot $entry.Name) -ErrorAction Stop
+    }
+    # Native nonrecursive deletion is atomic with respect to nonempty state
+    # and open handles. A concurrent record or live handle keeps this root.
+    if (Test-Path -LiteralPath $auditRootPath) {
+        if ((Get-Item -LiteralPath $auditRootPath).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Pretransaction active audit root became a reparse point.'
+        }
+        try { [IO.Directory]::Delete($auditRootPath, $false) }
+        catch [IO.IOException] {
+            $Script:LabelPretransactionActiveRootRetained = $true
+            [Console]::Error.WriteLine('Pretransaction active audit root retained: nonempty or open handle.')
+        }
+        catch [UnauthorizedAccessException] {
+            $Script:LabelPretransactionActiveRootRetained = $true
+            [Console]::Error.WriteLine('Pretransaction active audit root retained: native access denied.')
+        }
+    }
+    return $archiveRoot
 }
 
 function FreezePlacementHelper(
@@ -1470,7 +1803,7 @@ try { $actual = ([BitConverter]::ToString($hash.ComputeHash($bytes))).Replace('-
 finally { $hash.Dispose() }
 if ($actual -cne '@@integrity-sha@@') { throw 'Frozen integrity helper byte pin differs.' }
 $utf8 = New-Object Text.UTF8Encoding($false, $true)
-. ([ScriptBlock]::Create($utf8.GetString($bytes))) -SharedCodeRoot '@@shared-root@@'
+. ([ScriptBlock]::Create(($utf8.GetString($bytes) -replace '^\uFEFF', ''))) -SharedCodeRoot '@@shared-root@@'
 $probeRoot = $utf8.GetString([Convert]::FromBase64String('@@root-base64@@'))
 [void](Assert-BootstrapIntegrityRecord $probeRoot)
 '@.Replace('@@integrity-path@@', $integrityPath.Replace("'", "''")).Replace(
@@ -1491,8 +1824,55 @@ $probeRoot = $utf8.GetString([Convert]::FromBase64String('@@root-base64@@'))
     if ($LASTEXITCODE -ne 0) { throw 'Installed bootstrap integrity differs.' }
 }
 
+function Invoke-LabelDelegatedPlacementHelper($Frozen, [hashtable]$HelperParameters, $AuthorityLease) {
+    $control = [string]$HelperParameters.WriterFenceControlRoot
+    $admission = Enter-LabelWriterAdmission -ControlRoot $control -TimeoutMilliseconds 90000
+    try {
+        $active = Read-LabelWriterFence $control
+        # As in Container_Audit, verify this thread's actual session lease;
+        # HeldByOther is for the separate child. Balance only the recursion.
+        if ($null -eq $AuthorityLease -or $AuthorityLease.acquired -isnot [bool] -or
+            -not [bool]$AuthorityLease.acquired -or $AuthorityLease.mutex -isnot [Threading.Mutex] -or
+            [string]$AuthorityLease.name -cne [string]$active.session_authority_mutex_name) {
+            throw 'LABEL_PLACEMENT_CALLER_AUTHORITY_INVALID'
+        }
+        try { $owned = $AuthorityLease.mutex.WaitOne(0) }
+        catch [Threading.AbandonedMutexException] { throw 'LABEL_PLACEMENT_CALLER_AUTHORITY_ABANDONED' }
+        if (-not $owned) { throw 'LABEL_PLACEMENT_CALLER_AUTHORITY_NOT_OWNED' }
+        $AuthorityLease.mutex.ReleaseMutex()
+        if ([string]$active.status -cne 'RESTORING' -or
+            [string]$active.session_id -cne [string]$HelperParameters.WriterFenceSessionId -or
+            [string]$active.attempt_id -cne [string]$HelperParameters.WriterFenceAttemptId -or
+            [string]$active.replacement_transaction_id -cne [string]$HelperParameters.WriterFenceReplacementTransactionId -or
+            [string]$active.delegation_sha256 -cne (Get-LabelWriterFenceStringSha256 ([string]$HelperParameters.WriterFenceDelegationToken)) -or
+            'canonical_placement' -cnotin @($active.delegated_sources) -or
+            (ConvertTo-LabelWriterFenceUtc ([string]$active.delegation_expires_at_utc)) -lt [DateTime]::UtcNow -or
+            $HelperParameters.Uninstall -isnot [bool] -or -not [bool]$HelperParameters.Uninstall) {
+            throw 'LABEL_PLACEMENT_CHILD_DELEGATION_INVALID'
+        }
+    }
+    finally { Exit-LabelWriterAdmission $admission }
+    # Keep the original session authority held across dispatch. The pinned
+    # helper acquires admission itself and checks this exact delegation and
+    # HeldByOther before mutation; ordinary writers still refuse the fence.
+    return InvokeFrozenPlacementHelper $Frozen $HelperParameters
+}
+
 function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters) {
+    $Script:LabelPlacementChildFailure = $null
+    $failureBase = [string]$HelperParameters.ElevationLogPath
+    if ([string]::IsNullOrEmpty($failureBase)) {
+        $failureBase = Join-Path ([IO.Path]::GetTempPath()) 'label-placement'
+    }
+    $failurePath = $failureBase + '-child-' + [Guid]::NewGuid().ToString('N') + '.json'
+    for ($ancestor = [IO.Path]::GetDirectoryName($failurePath); $ancestor; $ancestor = [IO.Path]::GetDirectoryName($ancestor)) {
+        if (([IO.File]::Exists($ancestor) -or [IO.Directory]::Exists($ancestor)) -and
+            ([IO.File]::GetAttributes($ancestor) -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Placement diagnostic parent is a reparse point.'
+        }
+    }
     $payload = [ordered]@{
+        failure_path = $failurePath
         helper_path = [string]$Frozen.helper_path
         helper_sha256 = [string]$Frozen.helper_sha256
         integrity_path = Join-Path ([string]$Frozen.root) 'tools\bootstrap_integrity.ps1'
@@ -1504,17 +1884,82 @@ function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters) {
         parameters = $HelperParameters
     }
     $payloadJson = $payload | ConvertTo-Json -Depth 5 -Compress
-    $payloadBase64 = [Convert]::ToBase64String(
-        (New-Object Text.UTF8Encoding($false)).GetBytes($payloadJson)
-    )
     $launcher = @'
+param([byte[]]$PayloadBytes)
 $ErrorActionPreference = 'Stop'
-$payloadText = (New-Object Text.UTF8Encoding($false, $true)).GetString(
-    [Convert]::FromBase64String('@@payload-base64@@')
-)
+$payloadText = (New-Object Text.UTF8Encoding($false, $true)).GetString($PayloadBytes)
 $payload = $payloadText | ConvertFrom-Json
+$placementPhase = 'PIN_VALIDATION'
+trap {
+    $childError = $_
+    $childExit = 1
+    $exception = $childError.Exception
+    for ($depth = 0; $null -ne $exception -and $depth -lt 8; $depth++) {
+        if ($exception.Data.Contains('installation_preparation_exit_code')) {
+            $childExit = [int]$exception.Data['installation_preparation_exit_code']; break
+        }
+        $exception = $exception.InnerException
+    }
+    $sinkEnvironment = Get-KmtechSinkEnvironment
+    $sinkEnvironment['KMTECH_LABEL_WRITER_DELEGATION_TOKEN'] = [string]$payload.parameters.WriterFenceDelegationToken
+    $message = ConvertTo-KmtechRedactedSinkText -Text ([string]$childError.Exception.Message) -Environment $sinkEnvironment
+    $trace = ConvertTo-KmtechRedactedSinkText -Text ($childError.Exception.ToString() + [Environment]::NewLine + [string]$childError.ScriptStackTrace) -Environment $sinkEnvironment
+    $message = @($message -split '\r?\n' | Where-Object { $_.Trim() })[-1]
+    if ($message.Length -gt 300) { $message = $message.Substring($message.Length-300) }
+    $record = [ordered]@{
+        schema = 'label-match-placement-child-failure-v1'; phase = $placementPhase
+        exit_code = $childExit; exception_type = $childError.Exception.GetType().FullName
+        hresult = $childError.Exception.HResult; message = $message
+    }
+    $nativeException=$childError.Exception
+    while($null -ne $nativeException){
+        if($nativeException.Data.Contains('label_legacy_native_failure')){
+            $record.legacy_native_failure=$nativeException.Data['label_legacy_native_failure']
+            $record.exception_type=$record.legacy_native_failure.exception_type
+            $record.hresult=$record.legacy_native_failure.hresult;break
+        }
+        $nativeException=$nativeException.InnerException
+    }
+    try {
+        $tracePath = [string]$payload.failure_path + '.trace.txt'
+        $traceBytes = [Text.Encoding]::UTF8.GetBytes($trace)
+        $truncated = $trace.Contains('[TRUNCATED:')
+        $traceStream = [IO.File]::Open($tracePath, 'CreateNew', 'Write', 'Read')
+        try {
+            $traceAcl = [Security.AccessControl.FileSecurity]::new()
+            $traceAcl.SetAccessRuleProtection($true,$false)
+            foreach ($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+                [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+                $traceAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','Allow'))
+            }
+            $traceAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.WindowsIdentity]::GetCurrent().User,'Read','Allow'))
+            [IO.File]::SetAccessControl($tracePath,$traceAcl)
+            $traceStream.Write($traceBytes,0,$traceBytes.Length);$traceStream.Flush($true)
+        } finally { $traceStream.Dispose() }
+        $record.full_exception_trace = [ordered]@{path=$tracePath;sha256=(Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash.ToLowerInvariant();limit_bytes=65536;truncated=$truncated}
+    } catch { $record.trace_failure_type = $_.Exception.GetType().Name }
+    try {
+        $stream = [IO.File]::Open([string]$payload.failure_path, 'CreateNew', 'Write', 'Read')
+        try {
+            $bytes = [Text.Encoding]::UTF8.GetBytes(((ConvertTo-KmtechRedactedSinkObject $record -Environment $sinkEnvironment) | ConvertTo-Json -Compress))
+            $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+        } finally { $stream.Dispose() }
+    } catch { [Console]::Error.WriteLine('Placement child diagnostic could not be saved.') }
+    [Console]::Error.WriteLine($message)
+    exit $childExit
+}
+$pinnedStreams = [Collections.Generic.List[IO.Stream]]::new()
 function PinnedBytes([string]$Path, [string]$Expected) {
-    [byte[]]$bytes = [IO.File]::ReadAllBytes($Path)
+    for ($item = [IO.Path]::GetFullPath($Path); $item; $item = [IO.Path]::GetDirectoryName($item)) {
+        if ([IO.File]::GetAttributes($item) -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Elevated helper is a reparse point: $Path"
+        }
+    }
+    $stream = [IO.File]::Open($Path, 'Open', 'Read', 'Read')
+    $pinnedStreams.Add($stream)
+    if ($stream.Length -gt 16777216) { throw 'Elevated helper is not bounded.' }
+    [byte[]]$bytes = ([IO.BinaryReader]::new($stream)).ReadBytes([int]$stream.Length)
     $hash = [Security.Cryptography.SHA256]::Create()
     try {
         $actual = ([BitConverter]::ToString($hash.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
@@ -1558,10 +2003,12 @@ function Get-RequiredExternalInteger($Object, [string]$Name) {
 [byte[]]$helperBytes = PinnedBytes ([string]$payload.helper_path) ([string]$payload.helper_sha256)
 [byte[]]$dataGenerationBytes = PinnedBytes ([string]$payload.data_generation_path) ([string]$payload.data_generation_sha256)
 $utf8 = New-Object Text.UTF8Encoding($false, $true)
-. ([ScriptBlock]::Create($utf8.GetString($integrityBytes))) -SharedCodeRoot (Split-Path (Split-Path ([string]$payload.integrity_path) -Parent) -Parent)
-. ([ScriptBlock]::Create($utf8.GetString($writerFenceBytes)))
-. ([ScriptBlock]::Create($utf8.GetString($dataGenerationBytes)))
-$helper = [ScriptBlock]::Create($utf8.GetString($helperBytes))
+$placementPhase = 'HELPER_LOADING'
+. ([ScriptBlock]::Create(($utf8.GetString($integrityBytes) -replace '^\uFEFF', ''))) -SharedCodeRoot (Split-Path (Split-Path ([string]$payload.integrity_path) -Parent) -Parent)
+. ([ScriptBlock]::Create(($utf8.GetString($writerFenceBytes) -replace '^\uFEFF', '')))
+. ([ScriptBlock]::Create(($utf8.GetString($dataGenerationBytes) -replace '^\uFEFF', '')))
+$helper = [ScriptBlock]::Create(($utf8.GetString($helperBytes) -replace '^\uFEFF', ''))
+$placementPhase = 'PARAMETER_VALIDATION'
 $parameterNames = @(
     'SourceRoot',
     'InstallRoot',
@@ -1587,7 +2034,7 @@ $parameterNames = @(
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
-    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall')) }).Count -ne 0
+    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit','InstallerRunId','InstallerOwnerProcessId','InstallerOwnerProcessStartedAtFileTime','LegacyRelayTransition','LegacyRelayPreimageSha256')) }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
 $expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
 $expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
@@ -1619,6 +2066,12 @@ $invokeParameters = @{
     ReplaceExistingVerifiedPortable = Get-RequiredExternalBoolean $payload.parameters 'ReplaceExistingVerifiedPortable'
     DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
 }
+foreach ($name in @('ExpectedActiveCommit','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','LegacyRelayTransition','LegacyRelayPreimageSha256')) {
+    $property = $payload.parameters.PSObject.Properties[$name]
+    $invokeParameters[$name] = if ($null -eq $property) { '' } else { [string]$property.Value }
+}
+foreach($n in @('InstallerRunId','InstallerOwnerProcessStartedAtFileTime')){$p=$payload.parameters.PSObject.Properties[$n];if($null -ne $p){$invokeParameters[$n]=[string]$p.Value}}
+if($null -ne $payload.parameters.PSObject.Properties['InstallerOwnerProcessId']){$op=Get-RequiredExternalInteger $payload.parameters 'InstallerOwnerProcessId';if($op -le 0 -or $op -gt [int]::MaxValue){throw 'Invalid installer owner PID.'};$invokeParameters.InstallerOwnerProcessId=[int]$op}
 $Script:LabelWriterFenceAdmissionProductionRoot = [string]$invokeParameters.WriterFenceControlRoot
 if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
     (Get-RequiredExternalBoolean $payload.parameters 'Uninstall')) {
@@ -1634,13 +2087,85 @@ if ($null -ne $payload.parameters.PSObject.Properties['Uninstall'] -and
     }
     $invokeParameters.Uninstall = $true
 }
+$placementPhase = 'HELPER_EXECUTION'
 & $helper @invokeParameters
 if (-not $?) { exit 4 }
 exit 0
-'@.Replace('@@payload-base64@@', $payloadBase64)
+'@
+    $redactionPrelude = '$Script:KmtechRedactionRules = ' + "'" + (($Script:KmtechRedactionRules | ConvertTo-Json -Compress).Replace("'","''")) + "' | ConvertFrom-Json" + [Environment]::NewLine
+    foreach ($name in @('Get-KmtechSinkEnvironment','ConvertTo-KmtechRedactedSinkText','ConvertTo-KmtechRedactedSinkObject')) {
+        $redactionPrelude += 'function ' + $name + ' {' + (Get-Command $name).Definition + '}' + [Environment]::NewLine
+    }
+    # Keep the launcher's param block first; preceding statements turn param
+    # into a command and lose the byte payload before the failure trap exists.
+    $parameterHeader = 'param([byte[]]$PayloadBytes)'
+    $parameterEnd = $launcher.IndexOf([char]10)
+    if (-not $launcher.StartsWith($parameterHeader) -or $parameterEnd -lt 0) { throw 'Placement launcher parameter header differs.' }
+    $launcher = $launcher.Insert($parameterEnd + 1, $redactionPrelude)
+    $launcher = $launcher -replace '(?m)^[\t ]+', ''
+    [byte[]]$launcherBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($launcher)
+    [byte[]]$payloadBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($payloadJson)
+    # Stay within the already supported diagnostic path length (MAX_PATH).
+    $transportBase = $failurePath.Substring(0, $failurePath.Length - 5)
+    $launcherPath = $transportBase + '.ps1'
+    $payloadPath = $transportBase + '.dat'
+    # The audit parent was checked above. Only these new, unpredictable files
+    # are owned here. Publish private bytes after protecting their read access;
+    # elevation trusts the in-memory hashes, never an adjacent manifest.
+    $privateAcl = New-Object Security.AccessControl.FileSecurity
+    $privateAcl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User,
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+        [void]$privateAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, ([Security.AccessControl.FileSystemRights]::ReadAndExecute -bor
+                [Security.AccessControl.FileSystemRights]::Delete), 'Allow'))
+    }
+    $createdPaths = @()
+    try {
+        foreach ($entry in @(@($launcherPath, $launcherBytes), @($payloadPath, $payloadBytes))) {
+            $stream = [IO.File]::Open([string]$entry[0], 'CreateNew', 'Write', 'None')
+            $createdPaths += [string]$entry[0]
+            try {
+                [IO.File]::SetAccessControl([string]$entry[0], $privateAcl)
+                $stream.Write([byte[]]$entry[1], 0, $entry[1].Length)
+                $stream.Flush($true)
+            } finally { $stream.Dispose() }
+        }
+    $bootstrap = @'
+$ErrorActionPreference='Stop'
+$streams=[Collections.Generic.List[IO.Stream]]::new()
+function ReadPinned([string]$p,[string]$expected){
+ for($a=[IO.Path]::GetFullPath($p);$a;$a=[IO.Path]::GetDirectoryName($a)){
+  if([IO.File]::GetAttributes($a) -band [IO.FileAttributes]::ReparsePoint){throw 'Placement transport reparse point.'}
+ }
+ $s=[IO.File]::Open($p,'Open','Read','Read');$streams.Add($s)
+ if($s.Length -gt 16777216){throw 'Placement transport is not bounded.'}
+ [byte[]]$b=([IO.BinaryReader]::new($s)).ReadBytes([int]$s.Length)
+ $h=[Security.Cryptography.SHA256]::Create()
+ try{$actual=([BitConverter]::ToString($h.ComputeHash($b))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()}
+ if($actual -cne $expected){throw 'Placement transport byte pin differs.'}
+ return ,$b
+}
+try{
+ [byte[]]$code=ReadPinned '@@launcher-path@@' '@@launcher-sha@@'
+ [byte[]]$data=ReadPinned '@@payload-path@@' '@@payload-sha@@'
+ # Read handles deny write/delete until execution finishes. Execute only the
+ # verified memory buffers, with no second read or path-based invocation.
+ & ([ScriptBlock]::Create(([Text.UTF8Encoding]::new($false,$true)).GetString($code))) -PayloadBytes $data
+}catch{[Console]::Error.WriteLine('Placement launcher transport rejected.');exit 1}
+finally{foreach($s in $streams){$s.Dispose()}}
+'@
+    $bootstrap = $bootstrap.Replace('@@launcher-path@@', $launcherPath.Replace("'", "''")).Replace(
+        '@@launcher-sha@@', (ByteSha $launcherBytes)).Replace(
+        '@@payload-path@@', $payloadPath.Replace("'", "''")).Replace(
+        '@@payload-sha@@', (ByteSha $payloadBytes))
     $encodedLauncher = [Convert]::ToBase64String(
-        [Text.Encoding]::Unicode.GetBytes($launcher)
+        [Text.Encoding]::Unicode.GetBytes($bootstrap)
     )
+    if ($encodedLauncher.Length + 80 -gt 16000) {
+        throw 'Placement launcher command is not bounded.'
+    }
     $winps = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
     $process = Start-Process `
         -FilePath $winps `
@@ -1657,7 +2182,35 @@ exit 0
         -WindowStyle Hidden `
         -Wait `
         -PassThru
-    return [int]$process.ExitCode
+    $childExit = [int]$process.ExitCode
+    if (Test-Path -LiteralPath $failurePath -PathType Leaf) {
+        $diagnosticItem = Get-Item -LiteralPath $failurePath
+        if (($diagnosticItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $diagnosticItem.Length -gt 65536) {
+            throw 'Placement child failure evidence is not a bounded ordinary file.'
+        }
+        $record = [IO.File]::ReadAllText($failurePath) | ConvertFrom-Json
+        if ([string]$record.schema -cne 'label-match-placement-child-failure-v1' -or
+            [int]$record.exit_code -ne $childExit) { throw 'Placement child failure evidence differs.' }
+        $Script:LabelPlacementChildFailure = $record
+        if ($null -ne $record.PSObject.Properties['full_exception_trace']) {
+            $tracePath = [string]$record.full_exception_trace.path
+            if ($tracePath -cne ($failurePath + '.trace.txt')) { throw 'Placement trace path differs.' }
+            $traceItem = Get-Item -LiteralPath $tracePath
+            if (($traceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $traceItem.Length -gt 65536) { throw 'Placement trace is not a bounded ordinary file.' }
+            $traceBytes = [IO.File]::ReadAllBytes($tracePath)
+            if ((ByteSha $traceBytes) -cne [string]$record.full_exception_trace.sha256) { throw 'Placement trace bytes differ.' }
+            $record | Add-Member -NotePropertyName full_exception_trace_text -NotePropertyValue ((New-Object Text.UTF8Encoding($false,$true)).GetString($traceBytes))
+        }
+    }
+    return $childExit
+    }
+    finally {
+        foreach ($createdPath in $createdPaths) {
+            if ([IO.File]::Exists($createdPath)) {
+                Remove-Item -LiteralPath $createdPath -ErrorAction Stop
+            }
+        }
+    }
 }
 
 function Relays {
@@ -1697,47 +2250,258 @@ function Assert-RollbackRelayPreimage([object[]]$ExpectedRelays) {
     return $actualRelays
 }
 
-function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @()) {
+function Protect-LabelFailureText([string]$Text) {
+    if ($Text.TrimStart().StartsWith('{') -or $Text.TrimStart().StartsWith('[')) {
+        try {
+            $value = $Text | ConvertFrom-Json -ErrorAction Stop
+            return ConvertTo-KmtechRedactedSinkText -Text ((ConvertTo-KmtechRedactedSinkObject $value) | ConvertTo-Json -Depth 30)
+        } catch { }
+    }
+    return ConvertTo-KmtechRedactedSinkText -Text $Text
+}
+
+function Initialize-LabelChildOutputReader {
+    # 64 KiB per stream covers a traceback/JSON report without unbounded audit growth.
+    # On overflow retain the tail, where Python puts its lowest exception and cause.
+    if ('LabelChildOutputReader' -as [type]) { [LabelChildOutputReader]::Configure((Get-KmtechSinkReplacements),$Script:KmtechRedactionRules.pattern,$Script:KmtechRedactionRules.path_suffix,$Script:KmtechRedactionRules.digest_suffix,$Script:KmtechRedactionRules.short_secret_digest,$Script:KmtechRedactionRules.field); return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
+
+// Mask JSON secret values before bounded retention, including values spanning
+// chunks. A truncated JSON document can no longer be parsed by the sink writer.
+public sealed class LabelJsonFieldMasker {
+ private readonly Regex secret, path, digest, shortSecret;
+ private readonly string marker;
+ private readonly StringBuilder token = new StringBuilder();
+ private int state, depth; private bool escaped, quoted;
+ public LabelJsonFieldMasker(string pattern,string paths,string digests,string shorts,string replacement) {
+  secret=new Regex(pattern+"|(?i)^(pin|otp|password)$");path=new Regex(paths);
+  digest=new Regex(digests);shortSecret=new Regex(shorts);marker="\""+replacement+"\"";
+ }
+ private bool Sensitive(string key) {
+  return secret.IsMatch(key) && !path.IsMatch(key) && !(digest.IsMatch(key) && !shortSecret.IsMatch(key));
+ }
+ public string Push(string text) {
+  var output=new StringBuilder();
+  foreach(char c in text) {
+   bool again=true;
+   while(again) {
+    again=false;
+    if(state==0) {
+     if(c=='"') {token.Append(c);state=1;escaped=false;} else output.Append(c);
+    } else if(state==1) {
+     token.Append(c);
+     if(escaped) escaped=false;
+     else if(c=='\\') escaped=true;
+     else if(c=='"') state=2;
+     // Long non-key strings remain ordinary text; secret values use state 4.
+     if(token.Length>1024) {output.Append(token);token.Clear();state=7;}
+    } else if(state==2) {
+     if(Char.IsWhiteSpace(c)) {token.Append(c);}
+     else if(c==':') {
+      string raw=token.ToString().Trim();string key=raw.Substring(1,raw.Length-2);
+      try {key=Regex.Unescape(key);} catch(ArgumentException) {}
+      output.Append(token);output.Append(c);token.Clear();state=Sensitive(key) ? 3 : 0;
+     } else {output.Append(token);token.Clear();state=0;again=true;}
+    } else if(state==3) {
+     if(Char.IsWhiteSpace(c)) output.Append(c);
+     else if(c=='"') {output.Append(marker);state=4;escaped=false;}
+     else if(c=='{' || c=='[') {output.Append(marker);state=5;depth=1;quoted=false;escaped=false;}
+     else {token.Append(c);state=6;}
+    } else if(state==4 || state==7) {
+     if(state==7) output.Append(c);
+     if(escaped) escaped=false;
+     else if(c=='\\') escaped=true;
+     else if(c=='"') state=0;
+    } else if(state==5) {
+     if(quoted) {if(escaped) escaped=false;else if(c=='\\') escaped=true;else if(c=='"') quoted=false;}
+     else if(c=='"') quoted=true;
+     else if(c=='{' || c=='[') depth++;
+     else if(c=='}' || c==']') {if(--depth==0) state=0;}
+    } else if(state==6) {
+     if(c==',' || c=='}' || c==']' || Char.IsWhiteSpace(c)) {
+      string value=token.ToString();output.Append(value=="true" || value=="false" || value=="null" ? value : marker);
+      token.Clear();state=0;again=true;
+     } else if(token.Length<16) token.Append(c);
+    }
+   }
+  }
+  return output.ToString();
+ }
+ public string Finish() {
+  string value=token.ToString();token.Clear();
+  if(state==6) return value=="true" || value=="false" || value=="null" ? value : marker;
+  return state==1 || state==2 ? value : "";
+ }
+}
+
+public sealed class LabelChildOutput {
+ public string Text; public long ByteCount; public bool Truncated;
+ public Task Completion;
+}
+public static class LabelChildOutputReader {
+ private static KeyValuePair<string,string>[] replacements = new KeyValuePair<string,string>[0];
+ private static string pattern, paths, digests, shorts, field;
+ public static void Configure(Dictionary<string,string> values,string patternValue,string pathValue,string digestValue,string shortValue,string fieldValue) {
+  replacements = values.OrderByDescending(v => v.Key.Length).ThenBy(v => v.Key, StringComparer.Ordinal).ToArray();
+  pattern=patternValue;paths=pathValue;digests=digestValue;shorts=shortValue;field=fieldValue;
+ }
+ public static LabelChildOutput Capture(StreamReader reader) {
+  var result = new LabelChildOutput {Text = ""};
+  result.Completion = Drain(reader, result, replacements); return result;
+ }
+ public static async Task<LabelChildOutput> Read(StreamReader reader) {
+  var result = Capture(reader); await result.Completion.ConfigureAwait(false); return Snapshot(result);
+ }
+ public static LabelChildOutput Snapshot(LabelChildOutput result) {
+  lock (result) {return new LabelChildOutput {Text=result.Text,ByteCount=result.ByteCount,Truncated=result.Truncated};}
+ }
+ private static string Clip(string value, int maximum, bool tail) {
+  byte[] raw = Encoding.UTF8.GetBytes(value);
+  if (raw.Length <= maximum) return value;
+  if (tail) {
+   int start=raw.Length-maximum; while ((raw[start]&0xC0)==0x80) start++;
+   return Encoding.UTF8.GetString(raw,start,raw.Length-start);
+  }
+  int end=maximum; while ((raw[end]&0xC0)==0x80) end--;
+  return Encoding.UTF8.GetString(raw,0,end);
+ }
+ private static async Task Drain(StreamReader reader, LabelChildOutput result, KeyValuePair<string,string>[] forms) {
+  var buffer = new char[4096]; string pending="", head="", tail="";
+  var masker = new LabelJsonFieldMasker(pattern,paths,digests,shorts,field);
+  long rawCount=0, sanitizedCount=0; int count; bool headDone=false;
+  int overlap=forms.Length==0 ? 2 : forms.Max(v=>v.Key.Length)+2;
+  Action<string> emit = part => {
+   int headRoom = 8192-Encoding.UTF8.GetByteCount(head);
+   if (headRoom>0 && !headDone) {
+    string prefix=Clip(part,headRoom,false); head+=prefix;part=part.Substring(prefix.Length);
+    headDone=part.Length>0 || Encoding.UTF8.GetByteCount(head)==8192;
+   }
+   tail=Clip(tail+part,65536-Encoding.UTF8.GetByteCount(head),true);
+   string output=head+tail;
+   bool truncated=sanitizedCount>65536;
+   if (truncated) {
+    int tailBudget=65536-Encoding.UTF8.GetByteCount(head);
+    string clipped=tail, marker;
+    for(;;) {
+     clipped=Clip(tail,tailBudget,true);
+     long omitted=sanitizedCount-Encoding.UTF8.GetByteCount(head)-Encoding.UTF8.GetByteCount(clipped);
+     marker="\n[TRUNCATED: "+omitted+" bytes omitted]\n";
+     int next=65536-Encoding.UTF8.GetByteCount(head)-Encoding.UTF8.GetByteCount(marker);
+     if(next>=tailBudget) break;tailBudget=next;
+    }
+    output=head+marker+clipped;
+   }
+   lock(result) {result.Text=output;result.ByteCount=rawCount;result.Truncated=truncated;}
+  };
+  try {
+   while((count=await reader.ReadAsync(buffer,0,buffer.Length).ConfigureAwait(false))!=0) {
+    rawCount+=Encoding.UTF8.GetByteCount(buffer,0,count);
+    pending+=new string(buffer,0,count);
+    foreach(var entry in forms) pending=pending.Replace(entry.Key,entry.Value);
+    int split=Math.Max(0,pending.Length-overlap);
+    if(split>0 && Char.IsHighSurrogate(pending[split-1])) split--;
+    string part=masker.Push(pending.Substring(0,split));pending=pending.Substring(split);
+    sanitizedCount+=Encoding.UTF8.GetByteCount(part);emit(part);
+   }
+  } catch(ObjectDisposedException) {} catch(IOException) {}
+  foreach(var entry in forms) pending=pending.Replace(entry.Key,entry.Value);
+  pending=masker.Push(pending)+masker.Finish();
+  sanitizedCount+=Encoding.UTF8.GetByteCount(pending);emit(pending);
+ }
+}
+'@
+    [LabelChildOutputReader]::Configure((Get-KmtechSinkReplacements),$Script:KmtechRedactionRules.pattern,$Script:KmtechRedactionRules.path_suffix,$Script:KmtechRedactionRules.digest_suffix,$Script:KmtechRedactionRules.short_secret_digest,$Script:KmtechRedactionRules.field)
+}
+
+function ConvertTo-LabelFailureOutput($Output) {
+    return [ordered]@{text=(Protect-LabelFailureText ([string]$Output.Text));byte_count=$Output.ByteCount;truncated=$Output.Truncated;limit_bytes=65536}
+}
+
+function New-LabelChildFailure([string]$Mode, [int]$ExitCode, $Stdout, $Stderr) {
+    $record = [ordered]@{schema='label-match-child-output-v1';mode=$Mode;exit_code=$ExitCode;stdout=$Stdout;stderr=$Stderr}
+    $text = [string]$Stderr.text
+    if ([string]::IsNullOrWhiteSpace($text)) { $text = [string]$Stdout.text }
+    $lines = @($text -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $last = if ($lines.Count) { [string]$lines[-1] } else { 'child returned no diagnostic output' }
+    # Summaries avoid disclosing user paths; full sanitized streams stay in the audit.
+    $last = [regex]::Replace($last, '(?i)[A-Z]:[\\/][^\r\n"'']*|\\\\[^\r\n"'']+', '[PATH]')
+    $types = [regex]::Matches($text, '(?m)^([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception))\s*:')
+    $type = if ($types.Count) { $types[$types.Count - 1].Groups[1].Value } else { 'ChildNonzeroExit' }
+    if ($last.Length -gt 300) { $last = $last.Substring($last.Length - 300) }
+    $record.lowest_exception_type = $type
+    $record.last_line = $last
+    foreach ($streamName in @('stdout','stderr')) {
+        $output = $record[$streamName]
+        if ([string]::IsNullOrEmpty([string]$output.text)) { continue }
+        try {
+        $directory = Join-Path ([IO.Path]::GetTempPath()) ('label-product-diagnostic-'+[Guid]::NewGuid().ToString('N'))
+        [void](New-Item -ItemType Directory -Path $directory -ErrorAction Stop)
+        $acl = [Security.AccessControl.DirectorySecurity]::new()
+        $acl.SetAccessRuleProtection($true,$false)
+        foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User,
+            [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+            [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+        }
+        Set-Acl -LiteralPath $directory -AclObject $acl
+        $path = Join-Path $directory ($streamName+'.txt')
+        $bytes = [Text.Encoding]::UTF8.GetBytes((Protect-LabelFailureText ([string]$output.text)))
+        $file = [IO.File]::Open($path,'CreateNew','Write','Read')
+        try { $file.Write($bytes,0,$bytes.Length);$file.Flush($true) } finally { $file.Dispose() }
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try { $digest=([BitConverter]::ToString($hash.ComputeHash([IO.File]::ReadAllBytes($path)))).Replace('-','').ToLowerInvariant() }
+        finally { $hash.Dispose() }
+        $output.full_output = [ordered]@{path=$path;sha256=$digest;limit_bytes=65536;truncated=$output.truncated}
+        } catch { $output.evidence_failure_type=$_.Exception.GetType().FullName }
+        # The audit remains valid JSON and carries a pinned reference to the full stream.
+        $output.text = if ($streamName -ceq 'stderr') { $last } else { '' }
+    }
+    $exception = [InvalidOperationException]::new("Product mode failed: $Mode/$ExitCode ${type}: $last")
+    $exception.Data['child_output'] = $record
+    return $exception
+}
+
+function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @(), [string]$LogicalAppRoot = '') {
+    if ([string]::IsNullOrEmpty($LogicalAppRoot)) { $LogicalAppRoot = $Root }
     $args = '-I -B {0} {1} --app-root {2}' -f
         (Arg (Join-Path $Root 'app\main.py')),
         $Mode,
-        (Arg $Root)
+        (Arg $LogicalAppRoot)
     foreach ($extraArgument in $ExtraArguments) { $args += ' ' + (Arg $extraArgument) }
-    $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) (
-        'label-product-' + $PID + '-' + [Guid]::NewGuid().ToString('N') + '.out'
-    )
-    $stderrPath = Join-Path ([IO.Path]::GetTempPath()) (
-        'label-product-' + $PID + '-' + [Guid]::NewGuid().ToString('N') + '.err'
-    )
+    Initialize-LabelChildOutputReader
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = Join-Path $Root 'runtime\pythonw.exe'
+    $startInfo.Arguments = $args
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
     try {
-        $process = Start-Process `
-            (Join-Path $Root 'runtime\pythonw.exe') `
-            -ArgumentList $args `
-            -WindowStyle Hidden `
-            -PassThru `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath
-        # Start-Process -Wait includes the persistent relay child; wait only for the product host.
-        Wait-Process -InputObject $process
-        $null = $process.HasExited
+        $stdoutCapture = [LabelChildOutputReader]::Capture($process.StandardOutput)
+        $stderrCapture = [LabelChildOutputReader]::Capture($process.StandardError)
+        # Wait only for this product host, never the persistent relay child.
+        $process.WaitForExit()
         $exitCode = [int]$process.ExitCode
-        $stdout = ''
-        $stderr = ''
-        if (Test-Path -LiteralPath $stdoutPath) {
-            $stdout = [IO.File]::ReadAllText($stdoutPath)
-        }
-        if (Test-Path -LiteralPath $stderrPath) {
-            $stderr = [IO.File]::ReadAllText($stderrPath)
-        }
+        # A persistent child can inherit these pipes. Capture its host's final
+        # buffered output without waiting for that child's lifetime or stopping it.
+        [void]$stdoutCapture.Completion.Wait(1000)
+        [void]$stderrCapture.Completion.Wait(1000)
+        $stdout = ConvertTo-LabelFailureOutput ([LabelChildOutputReader]::Snapshot($stdoutCapture))
+        $stderr = ConvertTo-LabelFailureOutput ([LabelChildOutputReader]::Snapshot($stderrCapture))
         if ($exitCode -ne 0) {
-            $detail = (($stderr + ' ' + $stdout) -replace '\s+', ' ').Trim()
-            if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) }
-            throw "Product mode failed: $Mode/$exitCode $detail"
+            throw (New-LabelChildFailure $Mode $exitCode $stdout $stderr)
         }
     }
     finally {
-        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        $process.Dispose()
     }
 }
 
@@ -1761,13 +2525,19 @@ function Get-LabelPortableDataVersion([string]$Root, $Manifest) {
 function Assert-LabelRollbackGeneration {
     # Before any rollback cleanup or old-code selection, retain the opened
     # generation. Code-only failures before data open still have no markers.
-    if ($existingVerified -and -not [string]::IsNullOrEmpty($replacementRollbackRoot)) {
-        $generationRollbackManifest = Manifest $replacementRollbackRoot $SkipSignatureValidationForTest
-        $generationRollbackVersion = Get-LabelPortableDataVersion $replacementRollbackRoot $generationRollbackManifest
+    if ($existingVerified) {
+        $generationRollbackRoot = if ($replacementRollbackRoot) { $replacementRollbackRoot } else { $install }
+        $generationRollbackManifest = Manifest $generationRollbackRoot $SkipSignatureValidationForTest
+        $generationRollbackVersion = Get-LabelPortableDataVersion $generationRollbackRoot $generationRollbackManifest
         [void](Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
             -TargetVersion $generationRollbackVersion -TargetBuildId ([string]$generationRollbackManifest.source_commit))
+        # Both predicates are mandatory before any old-code/setup mutation.
+        # A refused generation never starts the old target inventory walk.
+        if ([string](PortableInventory $generationRollbackRoot).sha256 -cne [string]$installedPreimageInventory.sha256) {
+            throw 'Exact rollback generation target is unproven; current code and data are preserved.'
+        }
     }
-    elseif (-not $existingVerified -and (Test-Path -LiteralPath $install -PathType Container)) {
+    elseif (-not $existingVerified) {
         $generationAbsence = Get-KmtechDataDowngradeDecision -MarkerPaths $generationMarkerPaths `
             -TargetVersion 'v0.0.0' -TargetBuildId ('0' * 40) -AppId 'Label_Match' -SubjectSid $generationSubjectSid
         if ($generationAbsence.allowed -ne $true -or $null -ne $generationAbsence.version) {
@@ -1840,13 +2610,176 @@ function RestoreWriterDelegationEnvironment($Before) {
     }
 }
 
+function Initialize-CanonicalUserProcessApi {
+    if ('LabelMatchCanonicalUserProcess' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
+public static class LabelMatchCanonicalUserProcess {
+    public sealed class Security { public string sid; public int session_id; public bool elevated; public int integrity_rid; }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    struct Startup {
+        public int cb; public string reserved, desktop, title;
+        public int x,y,cx,cy,xChars,yChars,fill,flags; public short show,reservedBytes;
+        public IntPtr reserved2,input,output,error;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ProcessInfo { public IntPtr process,thread; public int pid,tid; }
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int kind,IntPtr info,int length,out int needed);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool DuplicateTokenEx(IntPtr token,uint access,IntPtr attributes,int level,int type,out IntPtr copy);
+    [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+    static extern bool CreateProcessWithTokenW(IntPtr token,uint logon,string application,StringBuilder command,uint flags,IntPtr environment,string directory,ref Startup startup,out ProcessInfo process);
+    [DllImport("userenv.dll",SetLastError=true)] static extern bool CreateEnvironmentBlock(out IntPtr environment,IntPtr token,bool inherit);
+    [DllImport("userenv.dll")] static extern bool DestroyEnvironmentBlock(IntPtr environment);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("user32.dll")] static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out int pid);
+    static void Check(bool success, string call) { if (!success) { var error=new Win32Exception(Marshal.GetLastWin32Error()); error.Data["call"]=call; throw error; } }
+    static int Integer(IntPtr token,int kind) {
+        IntPtr data=Marshal.AllocHGlobal(4);
+        try { int needed; Check(GetTokenInformation(token,kind,data,4,out needed),"GetTokenInformation"); return Marshal.ReadInt32(data); }
+        finally { Marshal.FreeHGlobal(data); }
+    }
+    [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+    [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid,uint index);
+    static int Integrity(IntPtr token) {
+        int needed; GetTokenInformation(token,25,IntPtr.Zero,0,out needed);
+        if(needed<=0 || needed>65536) throw new InvalidOperationException("Token integrity sizing differs.");
+        IntPtr data=Marshal.AllocHGlobal(needed);
+        try { Check(GetTokenInformation(token,25,data,needed,out needed),"GetTokenInformation:integrity");
+            IntPtr sid=Marshal.ReadIntPtr(data); int count=Marshal.ReadByte(GetSidSubAuthorityCount(sid));
+            if(count<=0) throw new InvalidOperationException("Token integrity SID differs.");
+            return Marshal.ReadInt32(GetSidSubAuthority(sid,(uint)(count-1)));
+        } finally { Marshal.FreeHGlobal(data); }
+    }
+    static Security Inspect(IntPtr token) {
+        using (WindowsIdentity identity=new WindowsIdentity(token)) {
+            return new Security {sid=identity.User.Value,session_id=Integer(token,12),elevated=Integer(token,20)!=0,integrity_rid=Integrity(token)};
+        }
+    }
+    public static Security Read(int pid) {
+        using (Process process=Process.GetProcessById(pid)) {
+            IntPtr token; Check(OpenProcessToken(process.Handle,8,out token),"OpenProcessToken:child");
+            try { return Inspect(token); } finally { CloseHandle(token); }
+        }
+    }
+    public static int StartLimited(string command,string sid,int session) {
+        IntPtr shell=GetShellWindow(); int shellPid;
+        if (shell==IntPtr.Zero || GetWindowThreadProcessId(shell,out shellPid)==0)
+            throw new InvalidOperationException("Canonical interactive shell is unavailable.");
+        using (Process shellProcess=Process.GetProcessById(shellPid)) {
+            IntPtr token; Check(OpenProcessToken(shellProcess.Handle,10,out token),"OpenProcessToken:shell");
+            IntPtr primary=IntPtr.Zero,environment=IntPtr.Zero;
+            try {
+                Security security=Inspect(token);
+                if (security.elevated || security.integrity_rid!=8192 || security.sid!=sid || security.session_id!=session || session<=0)
+                    throw new InvalidOperationException("Canonical interactive shell security differs.");
+                Check(DuplicateTokenEx(token,0x18B,IntPtr.Zero,2,1,out primary),"DuplicateTokenEx:primary");
+                security=Inspect(primary);
+                if (security.elevated || security.integrity_rid!=8192 || security.sid!=sid || security.session_id!=session)
+                    throw new InvalidOperationException("Canonical normal-user token differs.");
+                Check(CreateEnvironmentBlock(out environment,primary,false),"CreateEnvironmentBlock");
+                Startup startup=new Startup(); startup.cb=Marshal.SizeOf(typeof(Startup)); startup.desktop="winsta0\\default";
+                ProcessInfo child;
+                Check(CreateProcessWithTokenW(primary,0,null,new StringBuilder(command),0x08000400,environment,null,ref startup,out child),"CreateProcessWithTokenW");
+                try { return child.pid; } finally { CloseHandle(child.thread); CloseHandle(child.process); }
+            } finally {
+                if (environment!=IntPtr.Zero) DestroyEnvironmentBlock(environment);
+                if (primary!=IntPtr.Zero) CloseHandle(primary);
+                CloseHandle(token);
+            }
+        }
+    }
+}
+'@
+}
+function Get-CanonicalRelaySecurity([int]$ProcessId) {
+    Initialize-CanonicalUserProcessApi
+    return [LabelMatchCanonicalUserProcess]::Read($ProcessId)
+}
+function Start-CanonicalLimitedRelay([string]$Line, [string]$UserSid, [int]$SessionId) {
+    Initialize-CanonicalUserProcessApi
+    return [LabelMatchCanonicalUserProcess]::StartLimited($Line, $UserSid, $SessionId)
+}
 function StartRaw([string]$Line) {
-    $created = Invoke-CimMethod `
-        -ClassName Win32_Process `
-        -MethodName Create `
-        -Arguments @{ CommandLine = $Line }
-    if ([uint32]$created.ReturnValue -ne 0) { throw 'Rollback process start failed.' }
-    return [int]$created.ProcessId
+    $caller = Get-CanonicalRelaySecurity $PID
+    if ([int]$caller.session_id -le 0) { throw 'Canonical relay requires an interactive user session.' }
+    if ([bool]$caller.elevated) {
+        # Reuse the same user's existing desktop token. Never fall back to the
+        # installer token, another account, credentials, or a scheduled task.
+        $newPid = Start-CanonicalLimitedRelay $Line ([string]$caller.sid) ([int]$caller.session_id)
+    }
+    else {
+        $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$Line}
+        if ([uint32]$created.ReturnValue -ne 0) { throw 'Rollback process start failed.' }
+        $newPid = [int]$created.ProcessId
+    }
+    $security = Get-CanonicalRelaySecurity $newPid
+    if ([bool]$security.elevated -or [int]$security.integrity_rid -ne 8192 -or [string]$security.sid -cne [string]$caller.sid -or
+        [int]$security.session_id -ne [int]$caller.session_id) {
+        throw 'Canonical relay normal-user security readback failed.'
+    }
+    return [int]$newPid
+}
+
+function Invoke-LabelRollbackStep([string]$Phase, [scriptblock]$Action) {
+    # Dot-source this helper so successful restoration assignments remain in
+    # the transaction scope. Each independent phase records its own failure.
+    if ($null -eq $Script:LabelRollbackPhaseStack) { $Script:LabelRollbackPhaseStack = [Collections.Generic.Stack[string]]::new() }
+    $Script:LabelRollbackPhaseStack.Push($Phase)
+    try {
+        . $Action
+        $Script:LabelRollbackSteps.Add([ordered]@{phase=$Script:LabelRollbackPhaseStack.Peek();status='PROVEN'})
+    }
+    catch {
+        $Script:LabelRollbackErrors.Add($_)
+        $failure = Get-LabelLaunchFailure $_ $Script:LabelRollbackPhaseStack.Peek()
+        $Script:LabelRollbackFailures.Add($failure)
+        $Script:LabelRollbackSteps.Add([ordered]@{phase=$Script:LabelRollbackPhaseStack.Peek();status='FAILED'})
+    }
+    finally { [void]$Script:LabelRollbackPhaseStack.Pop() }
+}
+
+function Get-LabelLaunchFailure($Failure, [string]$Phase) {
+    $chain = @(); $exception=$Failure.Exception
+    $childOutput = $null
+    $legacyNativeFailure = $null
+    while ($null -ne $exception) {
+        $call = if ($exception.Data.Contains('call')) { [string]$exception.Data['call'] } else { '' }
+        $code = if ($exception -is [ComponentModel.Win32Exception]) { [int]$exception.NativeErrorCode } else { $null }
+        $chain += [ordered]@{type=$exception.GetType().FullName;call=$call;win32_error=$code}
+        if ($exception.Data.Contains('child_output')) { $childOutput = $exception.Data['child_output'] }
+        if ($exception.Data.Contains('label_legacy_native_failure')) { $legacyNativeFailure = $exception.Data['label_legacy_native_failure'] }
+        $exception=$exception.InnerException
+    }
+    $placement = if ($Failure.Exception.Data.Contains('placement_child_failure')) { $Failure.Exception.Data['placement_child_failure'] } else { $null }
+    $baseException = $Failure.Exception.GetBaseException()
+    $baseMessage = Protect-LabelFailureText ([string]$baseException.Message)
+    $lastLine = @($baseMessage -split '\r?\n' | Where-Object { $_.Trim() })[-1]
+    if ($lastLine.Length -gt 300) { $lastLine = $lastLine.Substring($lastLine.Length-300) }
+    return [ordered]@{phase=$Phase;exception_chain=$chain;message=(Protect-LabelFailureText ([string]$Failure.Exception.Message));exception_type=$(if($null -ne $legacyNativeFailure){$legacyNativeFailure.exception_type}else{$baseException.GetType().FullName});last_line=$lastLine;child_output=$childOutput;placement_child_failure=$placement;legacy_native_failure=$legacyNativeFailure}
+}
+function Wait-LabelRelayPreimageExit([object[]]$Expected) {
+    $deadline=(Get-Date).AddSeconds(15)
+    do {
+        $remaining=@(UnquiescedProductWriters)
+        foreach ($row in $remaining) {
+            $matches=@($Expected | Where-Object {
+                (Same ([string]$_.ExecutablePath) ([string]$row.ExecutablePath)) -and
+                (Normalize-RelayExecutableQuoting ([string]$_.CommandLine) ([string]$_.ExecutablePath)) -ceq
+                (Normalize-RelayExecutableQuoting ([string]$row.CommandLine) ([string]$row.ExecutablePath))
+            })
+            if ($matches.Count -ne 1) { throw 'Unexpected writer remains after normal removal.' }
+        }
+        if ($remaining.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    throw 'Normal relay process exit remains unproven.'
 }
 
 function HealthyLifecycle([string]$Root, [string]$Installed, [string]$Mode = 'inspect', [string]$ExpectedStateSha256 = '') {
@@ -1916,6 +2849,11 @@ def inspect():
         _validated_node(marker)
         if raw != canonical_marker_bytes(marker):
             raise ValueError('healthy lifecycle stop marker is not canonical')
+        if mode in ('inspect_recovery', 'release_recovery') and expected:
+            if marker_hash != expected:
+                raise ValueError('recovery stop request differs')
+            result.update(marker_present=True, request_id=marker['request_id'], marker_sha256=marker_hash)
+            return paths, result
         removal = read_bounded_json(paths.removal_report_path, label='normal removal report')
         relay = removal.get('relay_process', {})
         if (removal.get('status') != 'PASS_DATA_PRESERVED' or removal.get('data_preserved') is not True or
@@ -1926,9 +2864,9 @@ def inspect():
         result.update(marker_present=True, request_id=marker['request_id'], marker_sha256=marker_hash)
     return paths, result
 
-if mode == 'inspect':
+if mode in ('inspect', 'inspect_recovery'):
     _, result = inspect()
-elif mode == 'release' and expected:
+elif mode in ('release', 'release_recovery') and expected:
     # The canonical transaction still holds its active writer fence. Admission
     # validates the candidate identity and exact session delegation before the
     # marker is inspected or removed; ordinary onboarding retains its own guard.
@@ -1944,46 +2882,39 @@ else:
     raise ValueError('unsupported healthy lifecycle operation')
 print(json.dumps(result, sort_keys=True))
 '@
-    $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = Join-Path $Root 'runtime\python.exe'
-    $startInfo.Arguments = '-I -B -c "' + $probe.Replace('"', '\"') + '" ' +
-        (Arg $Root) + ' ' + (Arg $Installed) + ' ' + (Arg $Mode) + ' ' + (Arg $ExpectedStateSha256)
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $process = [Diagnostics.Process]::Start($startInfo)
-    try {
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-        if ($process.ExitCode -ne 0) {
-            throw ('Pinned conflict-resolution receipt source validation is required; healthy lifecycle validation failed: ' + $stderr.Trim())
-        }
-        return $stdout | ConvertFrom-Json
+    # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
+    $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
+    $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Root 'runtime\python.exe') `
+        -ProbeBytes $probeBytes -ExpectedSha256 '0b515260a4cf6dec9fdf8aaa935cfaaad2a0a5d92b0f4716c0e03c1ae96e8ff4' `
+        -ProbeArguments @($Root, $Installed, $Mode, $ExpectedStateSha256) -FailureMessage 'Pinned conflict-resolution receipt source validation is required; healthy lifecycle validation failed: '
+    return $stdout | ConvertFrom-Json
+}
+
+function ConvertTo-LabelTaskSid([string]$Identity) {
+    if ([string]::IsNullOrWhiteSpace($Identity)) { throw 'TASK_USER_ID_UNRESOLVED' }
+    if ($Identity -match '^S-1-') {
+        return [Security.Principal.SecurityIdentifier]::new($Identity).Value
     }
-    finally { $process.Dispose() }
+    return [Security.Principal.NTAccount]::new($Identity).Translate([Security.Principal.SecurityIdentifier]).Value
 }
 
 function Assert-HealthyLifecycleOwnership($Run, $RelayValues, $Tasks, [string]$Installed) {
     if ($Run.exists -and ([string]$Run.kind -cne 'String' -or [string]$Run.data -cne (Command $Installed))) {
         throw 'Healthy lifecycle autostart belongs to another command.'
     }
+    $relayRoot=RelayCodeRoot $Installed
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     if (@($RelayValues).Count -gt 1) { throw 'Healthy lifecycle relay ownership is ambiguous.' }
     foreach ($relay in $RelayValues) {
         $owner = Invoke-CimMethod -InputObject $relay -MethodName GetOwnerSid -ErrorAction Stop
         if ($owner.ReturnValue -ne 0 -or [string]$owner.Sid -cne $userSid -or
-            -not (Same ([string]$relay.ExecutablePath) (Join-Path $Installed 'runtime\pythonw.exe')) -or
-            (Normalize-RelayExecutableQuoting ([string]$relay.CommandLine) (Join-Path $Installed 'runtime\pythonw.exe')) -cne (Command $Installed)) {
+            -not (Same ([string]$relay.ExecutablePath) (Join-Path $relayRoot 'runtime\pythonw.exe')) -or
+            (Normalize-RelayExecutableQuoting ([string]$relay.CommandLine) (Join-Path $relayRoot 'runtime\pythonw.exe')) -cne (Command $relayRoot)) {
             throw 'Healthy lifecycle relay belongs to another owner or command.'
         }
     }
     foreach ($task in $Tasks) {
-        $owner = New-Object Security.Principal.NTAccount([string]$task.Principal.UserId)
-        $taskSid = if ([string]$task.Principal.UserId -match '^S-1-') {
-            [string]$task.Principal.UserId
-        } else { $owner.Translate([Security.Principal.SecurityIdentifier]).Value }
+        $taskSid = ConvertTo-LabelTaskSid ([string]$task.Principal.UserId)
         if ($taskSid -cne $userSid -or [string]$task.Principal.RunLevel -cne 'Limited' -or
             [string]$task.Principal.LogonType -cne 'Interactive') {
             throw 'Healthy lifecycle task belongs to another principal.'
@@ -2006,15 +2937,63 @@ function Test-PristineInstallState(
     $RunSnapshotValue,
     [object[]]$RelaySnapshotValue,
     [object[]]$ScheduledTaskValues,
-    [string[]]$ResiduePaths
+    [string[]]$ResiduePaths,
+    [string]$BootstrapCaPath = "",
+    [string]$PythonPath = "",
+    [string]$AppRoot = ""
 ) {
     if (Test-Path -LiteralPath $InstallRootValue) { return $false }
     if ([bool]$RunSnapshotValue.exists) { return $false }
     if (@($RelaySnapshotValue).Count -ne 0) { return $false }
     if (@($ScheduledTaskValues).Count -ne 0) { return $false }
+    # A public trust bundle is not producer registration. Admit only the
+    # expected leaf in its otherwise empty directory, using the existing
+    # bounded, certificate-only profile validator. Nothing is removed.
+    $publicCaOnly = $false
+    $caParent = ''
+    if (-not [string]::IsNullOrWhiteSpace($BootstrapCaPath)) {
+        $BootstrapCaPath = [IO.Path]::GetFullPath($BootstrapCaPath)
+        $caParent = [IO.Path]::GetDirectoryName($BootstrapCaPath)
+        $ancestor = $BootstrapCaPath
+        while ($ancestor) {
+            try { $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop }
+            catch [Management.Automation.ItemNotFoundException] { $item = $null }
+            if ($null -ne $item -and
+                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                return $false
+            }
+            $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+        }
+        if (Test-Path -LiteralPath $caParent) {
+            if (-not (Test-Path -LiteralPath $caParent -PathType Container)) { return $false }
+            $entries = @(Get-ChildItem -LiteralPath $caParent -Force -ErrorAction Stop)
+            if ($entries.Count -ne 1 -or $entries[0].PSIsContainer -or
+                -not [StringComparer]::OrdinalIgnoreCase.Equals($entries[0].FullName, $BootstrapCaPath) -or
+                [string]::IsNullOrWhiteSpace($PythonPath) -or [string]::IsNullOrWhiteSpace($AppRoot)) {
+                return $false
+            }
+            $certificateProbe = @'
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    from tools.install_logistics_runtime_profile import _resolve_tls_ca_bundle
+    _resolve_tls_ca_bundle(sys.argv[2], sys.argv[2])
+except Exception:
+    sys.exit(1)
+'@
+            $output = @(& $PythonPath -I -B -c $certificateProbe $AppRoot $BootstrapCaPath)
+            if ($LASTEXITCODE -ne 0 -or $output.Count -ne 0) { return $false }
+            $publicCaOnly = $true
+        }
+    }
     foreach ($path in $ResiduePaths) {
         if ([string]::IsNullOrWhiteSpace($path)) {
             throw 'Pristine-install residue path is empty.'
+        }
+        if ($publicCaOnly -and
+            ([StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($path), $BootstrapCaPath) -or
+             [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($path), $caParent))) {
+            continue
         }
         if (Test-Path -LiteralPath $path) { return $false }
     }
@@ -2039,7 +3018,8 @@ function Test-LegacyFirstRegistrationState(
         'PINNED_LEGACY_LABEL_TRANSITION_MODE',
         'PINNED_SCAN_INPUT_FIX',
         'PINNED_W9NEXTFIX_LABEL_RECOVERY',
-        'PINNED_CURRENT_USER_PROFILE_SELECTION'
+        'PINNED_CURRENT_USER_PROFILE_SELECTION',
+        'PINNED_STARTUP_UPDATE_BOOTSTRAP'
     )
     if (-not $ExistingVerified -or
         [string]$WriterTransition.compatibility -cnotin $pinnedDirections -or
@@ -2278,11 +3258,620 @@ function Save-FirstRegistrationAttempt($Record, [string]$Path) {
     if ($null -ne $Record) { Save $Path $Record }
 }
 
+function Save-LabelRollbackContext {
+    # Only restoration inputs are persisted; delegation is regenerated on resume.
+    $values = [ordered]@{}
+    foreach ($name in @('before','old','taskBefore','stopBefore','healthyRemovalReportBefore',
+        'removalReportExisted','existingVerified','installedPreimageInventory','replacementRollbackRoot',
+        'receiptSource','writerTransition','legacyFirstRegistration','healthyRemovedInstall',
+        'firstRegistrationStateVerified','firstRegistrationStarted','firstRegistrationAttempt',
+        'firstRegistrationAttemptPath','firstRegistrationStatePaths','firstRegistrationAbsentAncestors',
+        'rollbackSources','restoreSources')) {
+        $variable = Get-Variable -Name $name -Scope 1 -ErrorAction SilentlyContinue
+        $values[$name] = if ($null -ne $variable) { $variable.Value } else { $null }
+    }
+    $audit.recovery_context = [ordered]@{operator_sid=$generationSubjectSid;source_root=$source;
+        orchestrator_sha256=$writerOrchestratorSha256;writer_contract_sha256=$writerContractSha256;
+        generation_marker_paths=@($generationMarkerPaths);values=$values}
+}
+
+function Invoke-LabelGenerationRefusalRecovery {
+    $audit.rollback.generation_refused = $true
+    $audit.rollback.guidance = '새 판이 이 PC 자료를 열어 옛 판으로 되돌릴 수 없습니다. 새 판과 자료를 보존합니다. 같은 새 판을 다시 시작하거나 호환 수정판을 설치하세요. 관리자 지원 재개: INSTALL_CANONICAL_PORTABLE.ps1 -ResumeRollbackAuditPath <감사 파일> -ExpectedRollbackAuditSha256 <감사 SHA256>.'
+    $newVersionProven = $false
+    . Invoke-LabelRollbackStep 'retained_candidate_readback' {
+        if (-not $rollbackCustodyReady -or -not $rollbackProtectionReady) { throw 'Retained candidate protection is unproven.' }
+        if ($audit.Contains('legacy_relay_task_preimage')) {
+            $legacy=Get-LabelOfficialLegacyTaskSnapshot
+            if ($null -eq $legacy -or $legacy.enabled) { throw 'Legacy relay stop is unproven.' }
+        }
+        $manifest = Manifest $install $SkipSignatureValidationForTest
+        [void](Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
+            -TargetVersion (Get-LabelPortableDataVersion $install $manifest) -TargetBuildId ([string]$manifest.source_commit))
+        InvokeFrozenIntegrityProbe $frozenPlacement $install
+        if ([string](PortableInventory $install).sha256 -cne [string]$receiptSource.sha256) { throw 'Retained candidate code differs.' }
+        $stopProof = $audit.rollback.new_relay_stop
+        $mode = if ($null -ne $stopProof) { 'inspect_recovery' } else { 'inspect' }
+        $state = HealthyLifecycle $source $install $mode ([string]$stopProof.stop_request_sha256)
+        if ([string]$state.status -cne 'HEALTHY_CURRENT_USER' -or ($state.marker_present -and $null -eq $stopProof)) { throw 'Retained candidate identity/stop state is unproven.' }
+        $relay = Get-Content -LiteralPath $relayPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([string]$relay.status -cne 'READY' -or -not (Test-RelayPersistentRetry $relay)) { throw 'Retained candidate relay readiness is unproven.' }
+        $run = Snapshot
+        if (-not $run.exists -or [string]$run.data -cne $wanted) { throw 'Retained candidate autostart differs.' }
+        $newVersionProven = $true
+    }
+    if ($newVersionProven) {
+        . Invoke-LabelRollbackStep 'retained_candidate_fence_release' {
+            if ($null -ne $audit.rollback.new_relay_stop) {
+                [void](Set-LabelWriterFenceDelegation -ControlRoot $writerFenceControlRoot -Status 'RESTORING' -SessionId $writerSessionId -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId -DelegationToken $writerDelegationToken -DelegatedSources @('user_relay_stop_release') -LifetimeSeconds 600)
+                [void](HealthyLifecycle $source $install 'release_recovery' ([string]$audit.rollback.new_relay_stop.stop_request_sha256))
+            }
+            if ($writerFenceStarted) {
+                [void](Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId -TimeoutMilliseconds 90000)
+                $writerFenceStarted = $false
+                $audit.writer_fence.status = 'RELEASED_FOR_RETAINED_CANDIDATE'
+            }
+            $audit.rollback.retained_candidate_ready = $true
+        }
+    } else {
+        # Never reinstate an old launcher after G refuses. Remove only the exact
+        # candidate Run command; a foreign persistence entry is retained/reported.
+        . Invoke-LabelRollbackStep 'retained_candidate_autostart_stop' {
+            $run = Snapshot
+            if ($run.exists -and [string]$run.data -cne $wanted) { throw 'Autostart ownership is unproven; administrator recovery required.' }
+            if ($run.exists) { Restore ([pscustomobject]@{exists=$false;kind='';data=''}) }
+            if ((Snapshot).exists) { throw 'Candidate autostart absence is unproven.' }
+            $audit.rollback.retained_candidate_ready = $false
+        }
+    }
+}
+
+function Invoke-LabelResumeRollback {
+    if ($PlanOnly -or [string]::IsNullOrWhiteSpace($ExpectedRollbackAuditSha256)) { throw 'Supported rollback resume requires the exact audit SHA256.' }
+    if (-not $testMode -and -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw '지원 복구는 같은 작업 사용자의 관리자 PowerShell에서 실행하세요.'
+    }
+    $localAuditRoot = Join-Path $lad 'KMTech\Label_Match\install-audit'
+    $auditPath = Full $ResumeRollbackAuditPath 'rollback audit'
+    if (-not (Same (Split-Path -Parent $auditPath) $localAuditRoot)) { throw 'Rollback audit is outside the original operator audit root.' }
+    $item = Get-Item -LiteralPath $auditPath
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 1048576 -or
+        $ExpectedRollbackAuditSha256 -cnotmatch '^[0-9a-f]{64}$' -or (Sha $auditPath) -cne $ExpectedRollbackAuditSha256) { throw 'Rollback audit pin/ordinary-file check failed.' }
+    $saved = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$saved.schema -cne 'label-match-canonical-portable-install-v1' -or
+        [string]$saved.status -cnotin @('ROLLBACK_FAILED','FAILED_ROLLBACK_INCOMPLETE','FAILED_ROLLED_BACK') -or
+        -not (Same ([string]$saved.install_root) $install) -or [string]$saved.source_commit -cne [string]$sourceManifest.source_commit) { throw 'Rollback audit identity/status differs.' }
+    $context = $saved.recovery_context
+    if ($null -eq $context -or [string]$context.operator_sid -cne $generationSubjectSid -or
+        [string]$context.orchestrator_sha256 -cne (Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1'))) { throw 'Rollback context belongs to a different user or installer.' }
+    $audit = [ordered]@{}
+    foreach ($property in $saved.PSObject.Properties) { $audit[$property.Name] = $property.Value }
+    foreach ($name in @('rollback','writer_fence')) {
+        $map = [ordered]@{}
+        foreach ($property in $audit[$name].PSObject.Properties) { $map[$property.Name] = $property.Value }
+        $audit[$name] = $map
+    }
+    foreach ($name in @('before','old','taskBefore','stopBefore','healthyRemovalReportBefore',
+        'removalReportExisted','existingVerified','installedPreimageInventory','replacementRollbackRoot',
+        'writerTransition','legacyFirstRegistration','healthyRemovedInstall','firstRegistrationStateVerified',
+        'firstRegistrationStarted','firstRegistrationAttempt','firstRegistrationAttemptPath',
+        'firstRegistrationStatePaths','firstRegistrationAbsentAncestors','rollbackSources','restoreSources')) {
+        if ($null -eq $context.values.PSObject.Properties[$name]) { throw 'Rollback context input is absent.' }
+        Set-Variable -Name $name -Value $context.values.$name
+    }
+    $old = @($old)
+    $generationMarkerPaths = @(@($generationMarkerPaths) + @($context.generation_marker_paths) | Select-Object -Unique)
+    $receiptSource = ReceiptSource $source $sourceManifest
+    $runId = [string]$audit.run_id
+    $elevationLogPath = [string]$audit.elevation_log_path
+    $recoveryRunId = $runId + '-resume-' + [Guid]::NewGuid().ToString('N')
+    $frozenPlacement = FreezePlacementHelper $source $localAuditRoot $recoveryRunId $receiptSource.critical_file_sha256 $source
+    . ([string]$frozenPlacement.writer_fence_path)
+    $writerOrchestratorSha256 = [string]$context.orchestrator_sha256
+    $writerContractSha256 = [string]$context.writer_contract_sha256
+    if ($writerContractSha256 -cne [string]$frozenPlacement.writer_fence_sha256) { throw 'Recovery writer contract differs.' }
+    $writerSessionId = [string]$audit.writer_fence.session_id
+    $writerAttemptId = [string]$audit.writer_fence.attempt_id
+    $writerTransactionId = [string]$audit.writer_fence.replacement_transaction_id
+    $writerStartedAt = [string]$audit.writer_fence.session_started_at_utc
+    $writerDelegationToken = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
+    $Script:LabelWriterFenceInstalledIdentity = [pscustomobject]@{session_id=$writerSessionId;attempt_id=$writerAttemptId;
+        replacement_transaction_id=$writerTransactionId;orchestrator_sha256=$writerOrchestratorSha256;
+        writer_contract_sha256=$writerContractSha256;inventory_sha256=[string]$writerTransition.installed_inventory_sha256}
+    $writerEnvironmentBefore = @($WriterDelegationEnvironmentNames | ForEach-Object { [Environment]::GetEnvironmentVariable($_, 'Process') })
+    $writerAuthority = Enter-LabelWriterSessionAuthority -SessionId $writerSessionId -AttemptId $writerAttemptId `
+        -OrchestratorSha256 $writerOrchestratorSha256 -ReplacementTransactionId $writerTransactionId -WriterContractSha256 $writerContractSha256
+    try {
+        $active = Read-LabelWriterFence $writerFenceControlRoot -AllowAbsent
+        $writerFenceStarted = $null -ne $active
+        if ($writerFenceStarted -and ([string]$active.session_id -cne $writerSessionId -or [string]$active.attempt_id -cne $writerAttemptId -or
+            [string]$active.replacement_transaction_id -cne $writerTransactionId -or [string]$active.orchestrator_sha256 -cne $writerOrchestratorSha256 -or
+            [string]$active.writer_contract_sha256 -cne $writerContractSha256)) { throw 'Held fence is not this recorded transaction.' }
+        $helperParameters = @{InstallerRunId=$runId;InstallerOwnerProcessId=[int]$PID;
+            InstallerOwnerProcessStartedAtFileTime=[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString();
+            SourceRoot=$source;InstallRoot=$install;ElevationLogPath=$elevationLogPath;
+            ExpectedBootstrapScriptSha256=[string]$frozenPlacement.helper_sha256;VerifiedBootstrapScriptPath=[string]$frozenPlacement.helper_path;
+            BootstrapIntegrityPreloaded=$true;WriterFenceFunctionsPreloaded=$true;WriterFenceControlRoot=$writerFenceControlRoot;
+            DataGenerationSubjectSid=$generationSubjectSid;DataGenerationMarkerPaths=@($generationMarkerPaths);
+            WriterFenceSessionId=$writerSessionId;WriterFenceAttemptId=$writerAttemptId;WriterFenceReplacementTransactionId=$writerTransactionId;
+            WriterFenceDelegationToken=$writerDelegationToken;AllowNoncanonicalLayoutForTest=[bool]$testMode;DryRun=$false;
+            ExpectedSourceAggregateSha256=[string]$receiptSource.bootstrap_aggregate_sha256;
+            ExpectedSourceFileCount=[int]$receiptSource.file_count;ExpectedSourceByteCount=[uint64]$receiptSource.byte_count}
+        . Invoke-LabelCanonicalRollback
+        $audit.status = 'FAILED_ROLLED_BACK'
+        $audit.rollback.supported_resume = 'PROVEN'
+    } catch {
+        $audit.status = 'ROLLBACK_FAILED'
+        $audit.rollback.resume_failure = Get-LabelLaunchFailure $_ 'supported_resume'
+        throw
+    } finally {
+        try {
+            Save $auditPath $audit
+            if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+        } finally {
+            RestoreWriterDelegationEnvironment $writerEnvironmentBefore
+            if ($null -ne $writerAuthority) { Exit-LabelWriterSessionAuthority $writerAuthority }
+            $Script:LabelWriterFenceInstalledIdentity = $null
+        }
+    }
+}
+
+function Stop-LabelRollbackCandidateRelay {
+    $live = @(Relays)
+    if ($live.Count -eq 0) { return }
+    foreach ($row in $live) {
+        $security = Get-CanonicalRelaySecurity ([int]$row.ProcessId)
+        if ([string]$security.sid -cne $generationSubjectSid) { throw 'Candidate relay owner is unproven.' }
+    }
+    $probe = @'
+import json, pathlib, sys
+root, state = map(pathlib.Path, sys.argv[1:3])
+sys.path[:0] = [str(root / 'app'), str(root / 'app/site-packages')]
+from user_relay import request_user_relay_stop
+proof = request_user_relay_stop(state, timeout_seconds=15.0)
+if proof['status'] != 'ABSENT':
+    raise RuntimeError('candidate relay did not stop normally')
+print(json.dumps(proof, sort_keys=True))
+'@
+    $bytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n","`n"))
+    $output = Invoke-LabelPinnedProbe -Python (Join-Path $source 'runtime/python.exe') -ProbeBytes $bytes `
+        -ExpectedSha256 'b0944e7a09135c3079da4c115fea3609434841a94739fa5615ab88e6254d4529' -ProbeArguments @($source,$defaultDirectSyncRoot) -FailureMessage 'Candidate relay protection failed: '
+    $audit.rollback.new_relay_stop = $output | ConvertFrom-Json
+    if (@(Relays).Count -ne 0) { throw 'Candidate relay process absence is unproven.' }
+}
+
+function Invoke-LabelCanonicalRollback {
+        $audit.rollback.runtime_restored = $false
+        $Script:LabelRollbackErrors = [Collections.Generic.List[object]]::new()
+        $Script:LabelRollbackFailures = [Collections.Generic.List[object]]::new()
+        $Script:LabelRollbackSteps = [Collections.Generic.List[object]]::new()
+        $rollbackCustodyReady = $false
+        $rollbackQuiescent = $false
+        $rollbackAuthenticationReady = -not $legacyFirstRegistration
+        $rollbackUsesInstalled = $false
+        $rollbackGenerationReady = $false
+        $rollbackPreimageProven = $false
+        $rollbackStartupProven = $false
+        $rollbackRuntimeProven = $false
+        $rollbackProtectionReady = $false
+        . Invoke-LabelRollbackStep 'deployment_custody' {
+            if (-not $writerFenceStarted) {
+                # Final audit persistence can fail after the success path released
+                # its fence. Reacquire the same session before stopping/restoring
+                # any runtime or code; all existing phase checks still apply.
+                if ($null -eq $writerAuthority) {
+                    $writerAuthority = Enter-LabelWriterSessionAuthority `
+                        -SessionId $writerSessionId `
+                        -AttemptId $writerAttemptId `
+                        -OrchestratorSha256 $writerOrchestratorSha256 `
+                        -ReplacementTransactionId $writerTransactionId `
+                        -WriterContractSha256 $writerContractSha256
+                }
+                [void](Start-LabelWriterFence `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -SessionStartedAtUtc $writerStartedAt `
+                    -OrchestratorSha256 $writerOrchestratorSha256 `
+                    -WriterContractSha256 $writerContractSha256 `
+                    -AuthorityOwnedByCaller)
+                $writerFenceStarted = $true
+            }
+            if ($writerFenceStarted) {
+                [void](Set-LabelWriterFenceDelegation `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -DelegationToken $writerDelegationToken `
+                    -DelegatedSources $rollbackSources `
+                    -LifetimeSeconds 600)
+                SetWriterDelegationEnvironment `
+                    $writerDelegationToken `
+                    $writerSessionId `
+                    $writerAttemptId `
+                    $writerTransactionId
+            }
+            $rollbackCustodyReady = $true
+        }
+        if ($rollbackCustodyReady) {
+            . Invoke-LabelRollbackStep 'candidate_relay_stop' {
+                Stop-LabelRollbackCandidateRelay
+                $rollbackProtectionReady = $true
+            }
+        }
+        . Invoke-LabelRollbackStep 'generation_before' {
+            Assert-LabelRollbackGeneration
+            $rollbackGenerationReady = $true
+        }
+        if ($rollbackGenerationReady -and $rollbackCustodyReady) {
+            $rollbackGenerationReady = $false
+            . Invoke-LabelRollbackStep 'generation_after' {
+                Assert-LabelRollbackGeneration
+                $rollbackGenerationReady = $true
+            }
+        }
+        if ($rollbackGenerationReady -and $rollbackCustodyReady) {
+            . Invoke-LabelRollbackStep 'current_user_removal' {
+            $rollbackProductRoot = if (Test-Path (Join-Path $install 'runtime\pythonw.exe')) {
+                $install
+            }
+            else { $source }
+            $rollbackUsesInstalled = $false
+            if (Same $rollbackProductRoot $install) {
+                InvokeFrozenIntegrityProbe $frozenPlacement $install
+                $rollbackInventory = PortableInventory $install
+                if ($existingVerified -and [string]$rollbackInventory.sha256 -ceq [string]$installedPreimageInventory.sha256) {
+                    $rollbackUsesInstalled = $true
+                }
+                elseif ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
+                    throw 'Rollback tree differs from both validated identities.'
+                }
+            }
+            if ($writerFenceStarted) {
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $rollbackUsesInstalled)
+            }
+            if (-not ($healthyRemovedInstall -and -not (Test-Path -LiteralPath $install))) {
+                # No new setup has run while the exact legacy preimage remains
+                # installed. Do not ask that old code to create removal state.
+                if (-not ($legacyFirstRegistration -and $rollbackUsesInstalled)) {
+                    Product $rollbackProductRoot '--remove-current-user-setup' -LogicalAppRoot $install
+                }
+            }
+            }
+            . Invoke-LabelRollbackStep 'writer_absence' {
+                [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+                $rollbackQuiescent = $true
+            }
+            if ($rollbackQuiescent) {
+                . Invoke-LabelRollbackStep 'registration_preimage' {
+            if ($legacyFirstRegistration) {
+                # Detach authentication before restoring legacy code. Keep its
+                # own active fence until the guarded placement helper completes.
+                $firstRegistrationAttempt.status = 'FAILED_ROLLBACK_INCOMPLETE'
+                Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+                $stateMutationLease = Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
+                try {
+                    $authPaths = @($firstRegistrationStatePaths | Where-Object { -not (Same $_ $defaultDirectSyncRoot) })
+                    if (-not $firstRegistrationStateVerified -and
+                        @(FirstRegistrationAbsence $authPaths | Where-Object { $_.state -cne 'ABSENT' }).Count -ne 0) {
+                        throw 'Unowned state appeared before the first-registration recheck; preserved.'
+                    }
+                    $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
+                        $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
+                        $firstRegistrationStarted @($defaultDirectSyncRoot) $firstRegistrationAbsentAncestors $localAuditRoot
+                    if (-not $audit.rollback.first_registration_state.restored_absent) {
+                        throw 'First-registration authentication cleanup is incomplete; legacy code remains fenced.'
+                    }
+                }
+                finally { Exit-LabelWriterAdmission $stateMutationLease }
+            }
+                    $rollbackAuthenticationReady = $true
+                }
+                if ($rollbackAuthenticationReady) {
+                    . Invoke-LabelRollbackStep 'code_restore' {
+            if ($existingVerified -and -not $rollbackUsesInstalled) {
+                if ([string]::IsNullOrEmpty($replacementRollbackRoot)) {
+                    throw 'Exact installed code preimage is unavailable for rollback.'
+                }
+                # Reuse the same pinned placement helper and its verified-tree
+                # replacement contract, now with the already validated preimage.
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $false)
+                [void](Set-LabelWriterFenceDelegation `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -DelegationToken $writerDelegationToken `
+                    -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
+                    -LifetimeSeconds 600)
+                # INSTALL_THIS_PC consumes a release tree: its manifest metrics
+                # exclude the installed bootstrap record. Reconstruct that exact
+                # release view without changing or deleting the retained backup.
+                $rollbackSource = Join-Path (Split-Path -Parent $auditPath) ($writerTransactionId + '-rollback-source')
+                if ($legacyFirstRegistration) {
+                    # A failed placement keeps its source as recovery evidence.
+                    # A resumed rollback stages a new copy instead of colliding.
+                    $rollbackSource += '-' + [Guid]::NewGuid().ToString('N')
+                }
+                if (Test-Path -LiteralPath $rollbackSource) { throw 'Rollback source staging already exists.' }
+                [void](New-Item -ItemType Directory -Path $rollbackSource)
+                $robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'
+                & $robocopy $replacementRollbackRoot $rollbackSource /E /XJ /MT:16 /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $replacementRollbackRoot 'bootstrap-integrity.json') | Out-Null
+                if ($LASTEXITCODE -lt 0 -or $LASTEXITCODE -ge 8) { throw "Rollback source copy failed: $LASTEXITCODE" }
+                $restoreParameters = $helperParameters.Clone()
+                $restoreParameters.SourceRoot = $rollbackSource
+                $restoreParameters.ExpectedSourceAggregateSha256 = [string]$installedPreimageInventory.bootstrap_aggregate_sha256
+                $restoreParameters.ExpectedSourceFileCount = [int]$installedPreimageInventory.file_count
+                $restoreParameters.ExpectedSourceByteCount = [uint64]$installedPreimageInventory.byte_count
+                $restoreExitCode = InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters
+                if ($restoreExitCode -ne 0) { throw "Exact code rollback failed: $restoreExitCode" }
+                InvokeFrozenIntegrityProbe $frozenPlacement $install
+                $restoredInventory = PortableInventory $install
+                if ([string]$restoredInventory.sha256 -cne [string]$installedPreimageInventory.sha256) {
+                    throw 'Restored code differs from the validated installed preimage.'
+                }
+                $audit.rollback.code_placement = 'RESTORED_PREIMAGE'
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+            }
+            if (-not $existingVerified -and (Test-Path -LiteralPath $install)) {
+                InvokeFrozenIntegrityProbe $frozenPlacement $install
+                $rollbackInventory = PortableInventory $install
+                if ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
+                    throw 'Absent-code rollback tree differs from the validated candidate.'
+                }
+                [void](Set-LabelWriterFenceDelegation `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -DelegationToken $writerDelegationToken `
+                    -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
+                    -LifetimeSeconds 600)
+                $removeParameters = $helperParameters.Clone()
+                $removeParameters.ReplaceExistingVerifiedPortable = $false
+                $removeParameters.Uninstall = $true
+                $removeExit = Invoke-LabelDelegatedPlacementHelper $frozenPlacement $removeParameters $writerAuthority
+                if ($removeExit -ne 0 -or (Test-Path -LiteralPath $install)) {
+                    throw 'Absent-code rollback failed to restore code absence.'
+                }
+            }
+            if (-not $existingVerified -and -not (Test-Path -LiteralPath $install)) {
+                $audit.rollback.code_placement = 'RESTORED_ABSENCE'
+            }
+            $audit.rollback.code_restored = $existingVerified -or -not (Test-Path -LiteralPath $install)
+            $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
+                    }
+                }
+            }
+        }
+        if ($rollbackGenerationReady) {
+            $rollbackGenerationReady = $false
+            . Invoke-LabelRollbackStep 'generation_preimage' {
+                Assert-LabelRollbackGeneration
+                $rollbackGenerationReady = $true
+            }
+        }
+        if ($rollbackGenerationReady) {
+            . Invoke-LabelRollbackStep 'user_preimage_admission' {
+        $ownerMutationLease = $null
+        try {
+            if ($writerFenceStarted) {
+                $ownerMutationLease = Enter-LabelWriterAdmission `
+                    -ControlRoot $writerFenceControlRoot `
+                    -TimeoutMilliseconds 90000
+            }
+            . Invoke-LabelRollbackStep 'run_restore' { Restore $before }
+            . Invoke-LabelRollbackStep 'task_restore' { RestoreScheduledTask $taskBefore }
+            . Invoke-LabelRollbackStep 'stop_marker_restore' {
+            if ([bool]$stopBefore.exists) {
+                Copy-Item -LiteralPath ([string]$stopBefore.backup_path) -Destination $stop -Force
+                if ((Sha $stop) -cne [string]$stopBefore.sha256) {
+                    throw 'stop marker restore failed'
+                }
+            }
+            elseif (Test-Path $stop) {
+                Remove-Item $stop -Force
+            }
+            }
+            . Invoke-LabelRollbackStep 'removal_report_restore' {
+            if (Test-Path -LiteralPath $removalPath) {
+                $removalProof=Join-Path $localAuditRoot ('canonical-portable-'+$runId+'-failed-removal-proof.json')
+                if (-not (Test-Path -LiteralPath $removalProof)) { Copy-Item -LiteralPath $removalPath -Destination $removalProof }
+                $audit.rollback.removal_failure_proof=[ordered]@{path=$removalProof;sha256=(Sha $removalProof)}
+            }
+            if ($null -ne $healthyRemovalReportBefore) {
+                Copy-Item -LiteralPath $healthyRemovalReportBefore.backup_path -Destination $removalPath -Force
+                if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) {
+                    throw 'Normal removal report preimage restoration failed.'
+                }
+                $audit.rollback.removal_report_restored = $true
+            }
+            elseif (-not $removalReportExisted -and (Test-Path -LiteralPath $removalPath)) {
+                Remove-Item -LiteralPath $removalPath -Force
+                if (Test-Path -LiteralPath $removalPath) { throw 'Removal report absence restoration failed.' }
+                $audit.rollback.removal_report_restored = $true
+            }
+            }
+        }
+        finally {
+            if ($null -ne $ownerMutationLease) {
+                Exit-LabelWriterAdmission $ownerMutationLease
+            }
+        }
+            }
+            . Invoke-LabelRollbackStep 'official_legacy_task_restore' {
+                if ($audit.Contains('legacy_relay_task_preimage')) {
+                    $parameters=$helperParameters.Clone()
+                    $parameters.LegacyRelayTransition='Restore'
+                    $parameters.LegacyRelayPreimageSha256=[string]$audit.legacy_relay_task_preimage.sha256
+                    $parameters.ReplaceExistingVerifiedPortable=$false
+                    if ((InvokeFrozenPlacementHelper $frozenPlacement $parameters) -ne 0) { throw 'LEGACY_RELAY_RESTORE_FAILED' }
+                    $readback=Get-LabelOfficialLegacyTaskSnapshot
+                    if ($null -eq $readback -or $readback.fingerprint.sha256 -cne [string]$audit.legacy_relay_task_preimage.fingerprint.sha256 -or
+                        $readback.enabled -ne [bool]$audit.legacy_relay_task_preimage.enabled) { throw 'LEGACY_RELAY_RESTORE_READBACK_FAILED' }
+                }
+            }
+            . Invoke-LabelRollbackStep 'protected_startup_restore' {
+        if ($audit.Contains('startup_update_preimage')) {
+            $restoreParameters=$helperParameters.Clone()
+            $restoreParameters.StartupUpdateRestorePreimage=[string]$audit.startup_update_preimage.path
+            $restoreParameters.StartupUpdateRestoreSha256=[string]$audit.startup_update_preimage.sha256
+            $restoreParameters.ReplaceExistingVerifiedPortable=$false
+            if ((InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters) -ne 0) { throw 'Startup update preimage restoration failed.' }
+        }
+        $rollbackStartupProven = $true
+            }
+            . Invoke-LabelRollbackStep 'preimage_readback' {
+        $check = Snapshot
+        if (
+            [bool]$check.exists -ne [bool]$before.exists -or
+            [string]$check.kind -cne [string]$before.kind -or
+            [string]$check.data -cne [string]$before.data
+        ) { throw 'registry restore failed' }
+                if ($existingVerified) {
+                    InvokeFrozenIntegrityProbe $frozenPlacement $install
+                    if ([string](PortableInventory $install).sha256 -cne [string]$installedPreimageInventory.sha256) {
+                        throw 'Rollback final code preimage differs.'
+                    }
+                } elseif (Test-Path -LiteralPath $install) { throw 'Rollback final code absence differs.' }
+                Assert-LabelRollbackTaskPreimage $taskBefore
+                if ($audit.Contains('legacy_relay_task_preimage')) {
+                    $legacy=Get-LabelOfficialLegacyTaskSnapshot
+                    if ($null -eq $legacy -or $legacy.fingerprint.sha256 -cne [string]$audit.legacy_relay_task_preimage.fingerprint.sha256 -or
+                        $legacy.enabled -ne [bool]$audit.legacy_relay_task_preimage.enabled) { throw 'Legacy task final preimage differs.' }
+                }
+                if ([bool]$stopBefore.exists) {
+                    if (-not (Test-Path -LiteralPath $stop -PathType Leaf) -or (Sha $stop) -cne [string]$stopBefore.sha256) { throw 'Rollback stop preimage differs.' }
+                } elseif (Test-Path -LiteralPath $stop) { throw 'Rollback stop absence differs.' }
+                if ($null -ne $healthyRemovalReportBefore) {
+                    if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) { throw 'Rollback removal preimage differs.' }
+                } elseif (-not $removalReportExisted -and (Test-Path -LiteralPath $removalPath)) { throw 'Rollback removal absence differs.' }
+                [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+                $rollbackPreimageProven = $true
+                $audit.rollback.code_restored = $true
+            }
+            # Keep protection when any prerequisite failed. Starting the old
+            # relay before exact restoration and fence release is forbidden.
+            $rollbackRuntimeProven = $rollbackCustodyReady -and $rollbackPreimageProven -and $rollbackStartupProven
+            $rollbackReleaseGenerationProven = $false
+            . Invoke-LabelRollbackStep 'generation_release' {
+                Assert-LabelRollbackGeneration
+                $rollbackReleaseGenerationProven = $true
+            }
+            $rollbackRuntimeProven = $rollbackRuntimeProven -and $rollbackReleaseGenerationProven
+            if ($rollbackRuntimeProven) {
+                . Invoke-LabelRollbackStep 'fence_release' {
+        $firstRegistrationRollbackLease = $null
+        try {
+            if ($legacyFirstRegistration) {
+                # Keep ordinary writers excluded while releasing the fence and
+                # moving its own root. Session authority alone is a different mutex.
+                $firstRegistrationRollbackLease = Enter-LabelWriterAdmission `
+                    -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
+            }
+            if ($writerFenceStarted) {
+                $releasedFence = Stop-LabelWriterFence `
+                    -ControlRoot $writerFenceControlRoot `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -TimeoutMilliseconds 90000
+                $writerFenceStarted = $false
+                $audit.writer_fence.status = 'RELEASED_AFTER_ROLLBACK'
+                $audit.writer_fence.writer_inventory_sha256 = [string]$releasedFence.writer_inventory_sha256
+            }
+            if ($legacyFirstRegistration) {
+                $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
+                    $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
+                    $firstRegistrationStarted @() $firstRegistrationAbsentAncestors $localAuditRoot
+                $audit.rollback.first_registration_state.retry_conflict_action = 'USE_SUPPORTED_ADMIN_RECOVERY'
+                if (-not $audit.rollback.first_registration_state.restored_absent) {
+                    # Retain custody across a final directory/ancestor move
+                    # failure as well; a retry adopts only this exact session.
+                    [void](Start-LabelWriterFence -ControlRoot $writerFenceControlRoot -Status 'RESTORING' `
+                        -SessionId $writerSessionId -AttemptId $writerAttemptId `
+                        -ReplacementTransactionId $writerTransactionId -SessionStartedAtUtc $writerStartedAt `
+                        -OrchestratorSha256 $writerOrchestratorSha256 -WriterContractSha256 $writerContractSha256 `
+                        -AuthorityOwnedByCaller)
+                    $writerFenceStarted = $true
+                    [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+                    throw 'First-registration final absence restoration is incomplete.'
+                }
+            }
+        }
+        finally {
+            if ($null -ne $firstRegistrationRollbackLease) {
+                Exit-LabelWriterAdmission $firstRegistrationRollbackLease
+            }
+        }
+                }
+                if (-not $writerFenceStarted) {
+        foreach ($item in $old) {
+            . Invoke-LabelRollbackStep 'relay_restart' {
+            $newPid = StartRaw ([string]$item.CommandLine)
+            Start-Sleep -Seconds 3
+            $restored = Get-CimInstance `
+                Win32_Process `
+                -Filter "ProcessId = $newPid" `
+                -ErrorAction SilentlyContinue
+            if (
+                $null -eq $restored -or
+                -not (Same ([string]$restored.ExecutablePath) ([string]$item.ExecutablePath))
+            ) { throw 'runtime restore failed' }
+            }
+        }
+                }
+            }
+        }
+        if (-not $rollbackGenerationReady) {
+            . Invoke-LabelGenerationRefusalRecovery
+        }
+        if ($rollbackGenerationReady) {
+        . Invoke-LabelRollbackStep 'final_readback' {
+        [void](Assert-RollbackRelayPreimage -ExpectedRelays $old)
+        $check = Snapshot
+        if (
+            [bool]$check.exists -ne [bool]$before.exists -or
+            [string]$check.kind -cne [string]$before.kind -or
+            [string]$check.data -cne [string]$before.data
+        ) { throw 'registry restore failed' }
+        }
+        }
+        $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted
+        if ($writerFenceStarted) {
+            $audit.rollback.guidance = '복원 정합을 확인하지 못해 전송을 멈췄습니다. 자료와 복구 기록을 보존하세요. 같은 새 판을 다시 시작하거나 호환 수정판을 설치하려면 관리자 PowerShell에서 INSTALL_CANONICAL_PORTABLE.ps1 -ResumeRollbackAuditPath <감사 파일> -ExpectedRollbackAuditSha256 <감사 SHA256> 를 실행하세요.'
+        }
+        $audit.rollback.steps = $Script:LabelRollbackSteps.ToArray()
+        $audit.rollback.step_failures = $Script:LabelRollbackFailures.ToArray()
+        if ($Script:LabelRollbackErrors.Count -gt 0) { throw $Script:LabelRollbackErrors[0] }
+}
+
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot)
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')
 $source = Full $SourceRoot 'SourceRoot'
+function Read-CanonicalStartupLifecycle([string]$HostRoot, [string]$Root) {
+    $parent = Split-Path -Parent $Root
+    if (-not (Test-Path -LiteralPath (Join-Path $parent 'update-control')) -and
+        -not (Test-Path -LiteralPath (Join-Path $parent 'removed.json'))) { return $null }
+    $output = @(& (Join-Path $HostRoot 'runtime\python.exe') -I -B `
+        (Join-Path $HostRoot 'app\main.py') --label-match-lifecycle-context --install-root $parent --operation install)
+    if ($LASTEXITCODE -ne 0) { throw ('SUPPORTED_REMOVAL_REQUIRED:' + ($output -join "`n")) }
+    $context = ($output -join "`n") | ConvertFrom-Json
+    if ([string]$context.status -cne 'PASS') { throw 'SUPPORTED_REMOVAL_REQUIRED' }
+    return $context
+}
 $install = Full $InstallRoot 'InstallRoot'
+$startupLifecycle = $null
+$lifecycleInstalled = $install
+
 if (-not $testMode -and -not (Same $install $CanonicalRoot)) {
     throw 'InstallRoot is not canonical.'
 }
@@ -2290,6 +3879,14 @@ $serverBaseUrl = ServerBaseUrlOrigin $ServerBaseUrl
 $onboardingArguments = OnboardingArguments $serverBaseUrl
 $serverBaseUrlSource = if ($serverBaseUrl) { 'explicit' } else { 'product_default' }
 $sourceManifest = Manifest $source $SkipSignatureValidationForTest
+. (Join-Path $source 'app/tools/failure_redaction.ps1')
+. Import-LabelOfficialLegacyTaskFunctions (Join-Path $source 'INSTALL_THIS_PC.ps1')
+if (-not $testMode -and -not $PlanOnly -and -not $ResumeRollbackAuditPath) {
+    $startupLifecycle = Read-CanonicalStartupLifecycle $source $install
+    if ($null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
+        $lifecycleInstalled = [string]$startupLifecycle.active_code_root
+    }
+}
 $receiptSource = $null
 $conflictReceiptSupplied = (
     -not [string]::IsNullOrWhiteSpace(
@@ -2302,7 +3899,7 @@ $conflictReceiptSupplied = (
 if ($conflictReceiptSupplied) {
     $receiptSource = ReceiptSource $source $sourceManifest
 }
-$wanted = Command $install
+$wanted = Command $install -StartupUpdate:($sourceManifest.startup_update_protocol -eq 1)
 if ($PlanOnly) {
     "install_status=PLAN_ONLY"
     "install_root=$install"
@@ -2406,9 +4003,15 @@ $generationMarkerPaths = @($generationMarkerPaths) + @(
 $onboardingPath = Join-Path $statusRoot 'current_user_onboarding.json'
 $removalPath = Join-Path $statusRoot 'current_user_removal.json'
 $relayPath = Join-Path $statusRoot 'label_match_user_relay.json'
+if ($ResumeRollbackAuditPath) {
+    . Invoke-LabelResumeRollback
+    'rollback_resume_status=PROVEN'
+    exit 0
+}
 $generationDowngradeDecision = Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
     -TargetVersion $generationTargetVersion `
     -TargetBuildId ([string]$sourceManifest.source_commit)
+$legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot
 $before = Snapshot
 # Use the verified guarded caller's existing product entrypoint. The target
 # app-root stays the source release, including compatible pre-G source packets.
@@ -2422,7 +4025,7 @@ Product $generationProductRoot '--onboard-current-user' `
     (@('--app-root', $source, '--check-data-generation-only') + $onboardingArguments)
 $old = @(Relays)
 $scheduledTasksAtPreflight = @(
-    Get-ScheduledTask -ErrorAction Stop | Where-Object {
+    Get-LabelCurrentUserScheduledTasks | Where-Object {
         [StringComparer]::OrdinalIgnoreCase.Equals(
             [string]$_.TaskName,
             $CanonicalTaskName
@@ -2437,6 +4040,8 @@ $pristineResiduePaths = @(
     $stop,
     (Join-Path $selectedDirectSyncRoot 'control\label_match_user_relay.stop.json'),
     (Join-Path $selectedDirectSyncRoot 'credential.json'),
+    # Receipts/recovery evidence are existing state, even without a credential.
+    (Join-Path $lad 'KMTech\Label_Match\install-audit'),
     # User data/settings are preserved by removal, so their presence still means the PC is not pristine.
     $defaultDataRoot,
     $selectedDataRoot,
@@ -2492,7 +4097,10 @@ $pristineInstall = Test-PristineInstallState `
     $before `
     $old `
     $scheduledTasksAtPreflight `
-    $pristineResiduePaths
+    $pristineResiduePaths `
+    $bootstrapCaPath `
+    (Join-Path $source 'runtime\python.exe') `
+    (Join-Path $source 'app')
 $healthyLifecycle = $null
 if (-not $conflictReceiptSupplied -and -not $pristineInstall) {
     if (-not (Same $selectedDirectSyncRoot $defaultDirectSyncRoot) -or
@@ -2512,18 +4120,18 @@ $existingVerified = $false
 $installedPreimageInventory = $null
 $candidate = $sourceManifest
 if (Test-Path -LiteralPath $install) {
-    $candidate = Manifest $install $SkipSignatureValidationForTest
+    $candidate = Manifest $lifecycleInstalled $SkipSignatureValidationForTest
     InvokeFrozenIntegrityProbe ([pscustomobject]@{
         root = $source
         integrity_sha256 = [string]$receiptSource.critical_file_sha256.bootstrap_integrity_helper
-    }) $install
-    $installedPreimageInventory = PortableInventory $install
+    }) $lifecycleInstalled
+    $installedPreimageInventory = PortableInventory $lifecycleInstalled
     $existingVerified = $true
     if ([string]$candidate.source_commit -ceq [string]$sourceManifest.source_commit) {
         $placement = 'REUSED_VERIFIED'
     }
 }
-$writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $install } else { $source })
+$writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $lifecycleInstalled } else { $source })
 $legacyFirstRegistration = $false
 $firstRegistrationStateVerified = $false
 $firstRegistrationStarted = $false
@@ -2550,7 +4158,7 @@ if ($null -ne $firstRegistrationResume) {
 elseif ($legacyFirstRegistration) {
     $firstRegistrationAbsentAncestors = @(FirstRegistrationAbsentAncestors $firstRegistrationStatePaths)
 }
-if (-not $conflictReceiptSupplied -and -not $pristineInstall -and -not $legacyFirstRegistration) {
+if ($null -eq $startupLifecycle -and -not $conflictReceiptSupplied -and -not $pristineInstall -and -not $legacyFirstRegistration) {
     $healthyLifecycle = HealthyLifecycle $source $install
 }
 $healthyWithoutCode = $null -ne $healthyLifecycle -and -not $existingVerified
@@ -2638,6 +4246,7 @@ $audit = [ordered]@{
     rollback = [ordered]@{ available = $true; applied = $false; runtime_restored = $false }
 }
 Save $auditPath $audit
+try {
 if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
 $guardedHelperOrigin = $source
 $placementCriticalHashes = $receiptSource.critical_file_sha256
@@ -2659,6 +4268,22 @@ $frozenPlacement = FreezePlacementHelper `
     $runId `
     $placementCriticalHashes `
     $guardedHelperOrigin
+# The ordinary preflight uses only the already pinned/frozen integrity helper.
+$preparationIntegrityBytes = PinnedFileBytes (Join-Path ([string]$frozenPlacement.root) 'tools\bootstrap_integrity.ps1') ([string]$frozenPlacement.integrity_sha256)
+. ([ScriptBlock]::Create((([Text.UTF8Encoding]::new($false, $true)).GetString($preparationIntegrityBytes) -replace '^\uFEFF', ''))) -SharedCodeRoot ([string]$frozenPlacement.root)
+if (-not $testMode) {
+    try { Assert-LabelProtectedInstallPath (Split-Path -Parent $install) -AllowSupportedPreparation }
+    catch {
+        $admissionFailure = $_
+        $audit.status = 'FAILED_PREPARATION_ADMISSION'
+        $audit.preparation_failure = [ordered]@{
+            exit_code = Get-InstallationPreparationExitCode $admissionFailure
+            message = $admissionFailure.Exception.Message
+        }
+        try { Save $auditPath $audit } catch { }
+        throw $admissionFailure
+    }
+}
 . ([string]$frozenPlacement.writer_fence_path)
 
 $writerSessionId = [Guid]::NewGuid().ToString('N')
@@ -2666,6 +4291,7 @@ $writerAttemptId = [Guid]::NewGuid().ToString('N')
 $writerTransactionId = [Guid]::NewGuid().ToString('N')
 $writerDelegationToken = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))
 $writerStartedAt = [DateTime]::UtcNow.ToString('o')
+$writerOwnerStartedAtFileTime = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString()
 $writerOrchestratorSha256 = Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1')
 $writerContractSha256 = [string]$frozenPlacement.writer_fence_sha256
 if ($null -ne $firstRegistrationResume) {
@@ -2770,14 +4396,53 @@ $restoreSources = @(
     'user_relay_autostart_install',
     'user_relay_process_start',
     'user_relay_stop_release',
-    'user_relay_stop_request'
+    'user_relay_stop_request',
+    'auto_update_task_mutation',
+    'auto_update_restore_preimage',
+    'auto_update_fixed_helper'
 )
 $rollbackSources = @(
     'current_user_setup_removal',
     'scheduled_task_remove',
     'user_relay_autostart_remove',
-    'user_relay_stop_request'
+    'user_relay_stop_request',
+    'auto_update_task_mutation',
+    'auto_update_restore_preimage'
 )
+}
+catch {
+    $pretransactionFailure = $_
+    $audit.status = 'FAILED_PRETRANSACTION'
+    $audit.failure = [ordered]@{
+        type = $pretransactionFailure.Exception.GetType().FullName
+        message = $pretransactionFailure.Exception.Message
+    }
+    $audit.recovery = [ordered]@{ transaction_started = $false; artifacts_archived = $false }
+    try {
+        Save $auditPath $audit
+        $archiveRoot = Archive-PretransactionFailure $localAuditRoot $runId
+        $audit.recovery.artifacts_archived = $true
+        $audit.recovery.active_audit_root_retained = $Script:LabelPretransactionActiveRootRetained
+        $audit.recovery.archive_root = $archiveRoot
+        Save (Join-Path $archiveRoot (Split-Path -Leaf $auditPath)) $audit
+        if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+    }
+    catch {
+        # A partial archive is retained, and no receipt/guard is relaxed to retry.
+        # Report both failures while preserving the original ErrorRecord.
+        $archiveFailure = $_
+        $pretransactionFailure.Exception.Data['pretransaction_recovery_failure'] = $archiveFailure.Exception.Message
+        $audit.recovery.failure = $archiveFailure.Exception.Message
+        $retainedAuditPath = Join-Path (Join-Path ($localAuditRoot + '-pretransaction-failures') $runId) (Split-Path -Leaf $auditPath)
+        if (Test-Path -LiteralPath $auditPath) { $retainedAuditPath = $auditPath }
+        try {
+            Save $retainedAuditPath $audit
+            if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+        } catch { }
+    }
+    $Script:LabelWriterFenceInstalledIdentity = $null
+    throw $pretransactionFailure
+}
 $mutated = $false
 $replacementRollbackRoot = if ($null -ne $firstRegistrationResume) { [string]$firstRegistrationResume.code_backup_root } else { '' }
 $replacementBackupsBefore = @()
@@ -2815,6 +4480,11 @@ try {
     $mutated = $true
     $audit.writer_fence = [ordered]@{
         status = 'QUIESCING'
+        owner_process_id = [int]$PID
+        owner_process_started_at_filetime = $writerOwnerStartedAtFileTime
+        orchestrator_sha256 = $writerOrchestratorSha256
+        writer_contract_sha256 = $writerContractSha256
+        session_started_at_utc = $writerStartedAt
         session_id = $writerSessionId
         attempt_id = $writerAttemptId
         replacement_transaction_id = $writerTransactionId
@@ -2824,6 +4494,8 @@ try {
     Save $auditPath $audit
     if ($null -ne $firstRegistrationResume) {
         $helperParameters = @{
+            InstallerRunId=$runId; InstallerOwnerProcessId=[int]$PID
+            InstallerOwnerProcessStartedAtFileTime=$writerOwnerStartedAtFileTime
             SourceRoot=$source; InstallRoot=$install; ElevationLogPath=$elevationLogPath
             ExpectedBootstrapScriptSha256=[string]$frozenPlacement.helper_sha256
             VerifiedBootstrapScriptPath=[string]$frozenPlacement.helper_path; BootstrapIntegrityPreloaded=$true
@@ -2885,10 +4557,11 @@ try {
                 [string]$removal.status -cne 'PASS_DATA_PRESERVED' -or
                 [string]$removal.relay_process.status -cne 'ABSENT' -or
                 (Get-Item $removalPath).LastWriteTimeUtc -lt $removalStarted.AddSeconds(-1) -or
-                $null -ne (Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue)
+                $null -ne (Get-LabelCurrentUserScheduledTasks)
             ) { throw 'Removal readback failed.' }
         }
     }
+    Wait-LabelRelayPreimageExit $old
     $unquiesced = @(UnquiescedProductWriters)
     if ($unquiesced.Count -ne 0) {
         throw 'Writer quiescence failed: a Label product writer process remains.'
@@ -2919,9 +4592,14 @@ try {
             -AttemptId $writerAttemptId `
             -ReplacementTransactionId $writerTransactionId `
             -DelegationToken $writerDelegationToken `
-            -DelegatedSources @('canonical_placement') `
+            -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage',`
+            'auto_update_supported_lifecycle_transition','auto_update_persist_switch','auto_update_write_json_durable','auto_update_fixed_helper') `
             -LifetimeSeconds 600)
         $helperParameters = @{
+            InstallerRunId = $runId
+            InstallerOwnerProcessId = [int]$PID
+            InstallerOwnerProcessStartedAtFileTime = $writerOwnerStartedAtFileTime
+            ExpectedActiveCommit = $(if ($null -ne $startupLifecycle) { [string]$startupLifecycle.from_commit } else { "" })
             SourceRoot = $source
             InstallRoot = $install
             ElevationLogPath = $elevationLogPath
@@ -2947,22 +4625,56 @@ try {
             $replacementBackupsBefore = @(Get-ChildItem -LiteralPath (Split-Path -Parent $install) -Directory -Force |
                 Where-Object { $_.Name -like '.current.rollback.*' } | ForEach-Object { $_.FullName })
         }
+        if ($null -ne $legacyRelayBefore) {
+            $legacyDirectory=Join-Path (Split-Path -Parent $install) ('.legacy-relay.'+$writerAttemptId)
+            $audit.legacy_relay_task_preimage=[ordered]@{path=$legacyDirectory;sha256=$legacyRelayBefore.xml_sha256;enabled=$legacyRelayBefore.enabled;fingerprint=$legacyRelayBefore.fingerprint}
+            Save $auditPath $audit
+            $transitionParameters=$helperParameters.Clone()
+            $transitionParameters.LegacyRelayTransition='Disable'
+            $transitionParameters.LegacyRelayPreimageSha256=[string]$legacyRelayBefore.xml_sha256
+            $transitionParameters.ReplaceExistingVerifiedPortable=$false
+            if ((InvokeFrozenPlacementHelper $frozenPlacement $transitionParameters) -ne 0) { throw 'LEGACY_RELAY_TRANSITION_FAILED' }
+            $readback=Get-LabelOfficialLegacyTaskSnapshot
+            if ($null -eq $readback -or $readback.enabled -or $readback.fingerprint.sha256 -cne $legacyRelayBefore.fingerprint.sha256) { throw 'LEGACY_RELAY_DISABLED_READBACK_FAILED' }
+            $audit.legacy_relay_task_preimage.transition='DISABLED_RETAINED'
+        }
         $placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters
-        if ($existingVerified) {
+        if ($existingVerified -and $null -eq $startupLifecycle) {
             $replacementRollbackRoot = ReplacementPreimage $install $installedPreimageInventory $replacementBackupsBefore
             if ($legacyFirstRegistration) {
                 $firstRegistrationAttempt.code_backup_root = $replacementRollbackRoot
                 Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
             }
         }
-        if ($placementExitCode -ne 0) { throw "Code placement failed: $placementExitCode" }
+        if ($placementExitCode -ne 0) {
+            $audit.placement_child_failure = $Script:LabelPlacementChildFailure
+            Save $auditPath $audit
+            $preparationDiagnostic = Get-InstallationPreparationDiagnostic $placementExitCode
+            if ($null -ne $preparationDiagnostic) {
+                $failure = [InvalidOperationException]::new(($preparationDiagnostic.message + ' [' + $preparationDiagnostic.code + ']'))
+                $failure.Data['installation_preparation_exit_code'] = $placementExitCode
+                throw $failure
+            }
+            if ($null -ne $Script:LabelPlacementChildFailure) {
+                throw ('Code placement failed: {0}; child {1}/{2}: {3}' -f $placementExitCode,
+                    $Script:LabelPlacementChildFailure.phase, $Script:LabelPlacementChildFailure.exception_type,
+                    $Script:LabelPlacementChildFailure.message)
+            }
+            throw "Code placement failed: $placementExitCode"
+
+        }
         $placement = 'PASS'
     }
-    $installedManifest = Manifest $install $SkipSignatureValidationForTest
+    $productInstall = $install
+    if ($null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
+        $accepted = Read-CanonicalStartupLifecycle $source $install
+        $productInstall = [string]$accepted.active_code_root
+    }
+    $installedManifest = Manifest $productInstall $SkipSignatureValidationForTest
     if ([string]$installedManifest.source_commit -cne [string]$sourceManifest.source_commit) {
         throw 'Installed identity differs.'
     }
-    $installedInventory = PortableInventory $install
+    $installedInventory = PortableInventory $productInstall
     if (
         [string]$installedInventory.schema_version -cne [string]$receiptSource.schema_version -or
         [string]$installedInventory.algorithm -cne [string]$receiptSource.algorithm -or
@@ -2970,6 +4682,10 @@ try {
         [uint64]$installedInventory.byte_count -ne [uint64]$receiptSource.byte_count -or
         [string]$installedInventory.sha256 -cne [string]$receiptSource.sha256
     ) { throw 'Installed full portable inventory differs before Product execution.' }
+    $startupPreimage = Join-Path (Split-Path -Parent $install) ('.startup-update-install.' + $writerAttemptId)
+    if (Test-Path -LiteralPath (Join-Path $startupPreimage 'preimage.json')) {
+        $audit.startup_update_preimage = [ordered]@{path=$startupPreimage;sha256=(Sha (Join-Path $startupPreimage 'preimage.json'))}
+    }
     $audit.code_placement = $placement
     $audit.code_state = 'PRESENT'
     $audit.runtime_pythonw_sha256 = Sha (Join-Path $install 'runtime\pythonw.exe')
@@ -3005,7 +4721,7 @@ try {
         $firstRegistrationAttempt.registration_started = $true
         Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
     }
-    try { Product $install '--onboard-current-user' $onboardingArguments }
+    try { Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start') }
     catch { $onboardingFailure = $_ }
     if ($null -ne $onboardingFailure -and -not (Test-Path -LiteralPath $onboardingPath)) {
         throw $onboardingFailure
@@ -3019,7 +4735,7 @@ try {
         $onboarding.server_registration_verified -ceq $false -and
         (Get-Item -LiteralPath $onboardingPath).LastWriteTimeUtc -ge $started.AddSeconds(-1)) {
         if ($after.exists -or @(Relays).Count -ne 0 -or
-            @(Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction SilentlyContinue).Count -ne 0 -or
+            @(Get-LabelCurrentUserScheduledTasks).Count -ne 0 -or
             (Test-Path -LiteralPath $stop)) {
             throw 'Recovery-required registration must leave persistence absent.'
         }
@@ -3054,7 +4770,22 @@ try {
     ) { throw 'Onboarding Run readback failed.' }
     if (Test-Path -LiteralPath $stop) { throw 'Relay stop marker survived onboarding.' }
 
-    $pidValue = [int]$onboarding.relay_start.process_id
+    $officialBeforeRelease=Get-LabelOfficialLegacyTaskSnapshot
+    if($null -ne $officialBeforeRelease -and $officialBeforeRelease.enabled){throw 'LEGACY_RELAY_DISABLED_READBACK_FAILED'}
+    [void](Stop-LabelWriterFence `
+        -ControlRoot $writerFenceControlRoot `
+        -SessionId $writerSessionId `
+        -AttemptId $writerAttemptId `
+        -ReplacementTransactionId $writerTransactionId `
+        -TimeoutMilliseconds 90000)
+    $writerFenceStarted = $false
+    Exit-LabelWriterSessionAuthority $writerAuthority
+    $writerAuthority = $null
+
+    if ([string]$onboarding.relay_start.status -cne 'DEFERRED_CANONICAL_INSTALL') { throw 'Canonical relay was not deferred.' }
+    $activeCodeRoot = Join-Path (Join-Path (Split-Path -Parent $install) 'versions') ([string]$installedManifest.source_commit)
+    $pidValue = StartRaw (Command $activeCodeRoot)
+    $audit.relay_launch_security = Get-CanonicalRelaySecurity $pidValue
     Start-Sleep -Seconds 5
     $process = Get-CimInstance `
         Win32_Process `
@@ -3062,7 +4793,7 @@ try {
         -ErrorAction SilentlyContinue
     if (
         $null -eq $process -or
-        -not (Same ([string]$process.ExecutablePath) (Join-Path $install 'runtime\pythonw.exe'))
+        -not (Same ([string]$process.ExecutablePath) (Join-Path $activeCodeRoot 'runtime\pythonw.exe'))
     ) { throw 'Relay process proof failed.' }
 
     $deadline = (Get-Date).AddSeconds(75)
@@ -3083,16 +4814,8 @@ try {
         throw 'Fresh relay status proof failed.'
     }
 
-    [void](Stop-LabelWriterFence `
-        -ControlRoot $writerFenceControlRoot `
-        -SessionId $writerSessionId `
-        -AttemptId $writerAttemptId `
-        -ReplacementTransactionId $writerTransactionId `
-        -TimeoutMilliseconds 90000)
-    $writerFenceStarted = $false
-    Exit-LabelWriterSessionAuthority $writerAuthority
-    $writerAuthority = $null
-
+    $officialFinal=Get-LabelOfficialLegacyTaskSnapshot
+    if($null -ne $officialFinal -and $officialFinal.enabled){throw 'LEGACY_RELAY_DISABLED_READBACK_FAILED'}
     $audit.status = 'PASS'
     if ($legacyFirstRegistration) {
         $firstRegistrationAttempt.status = 'PASS'
@@ -3127,346 +4850,27 @@ try {
     "elevation_log_path=$elevationLogPath"
 }
 catch {
+    if (-not $mutated -and $null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
+        $audit.status = 'FAILED_SUPPORTED_REMOVAL_REQUIRED'
+        $audit.failure = $_.Exception.GetType().Name
+        $audit.recovery_guidance = '자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요.'
+        Save $auditPath $audit
+        throw
+    }
     $original = $_
+    if ($null -ne $Script:LabelPlacementChildFailure) { $original.Exception.Data['placement_child_failure'] = $Script:LabelPlacementChildFailure }
+    $audit.failure_type = $original.Exception.GetType().Name
+    $audit.failure_details = Get-LabelLaunchFailure $original 'forward'
+    Save-LabelRollbackContext
+    try { Save $auditPath $audit }
+    catch { $audit.rollback.initial_audit_failure = Get-LabelLaunchFailure $_ 'initial_audit_save' }
     if (-not $mutated) { throw $original }
     $rollbackFailures = New-Object 'System.Collections.Generic.List[object]'
     $rollbackRuntimeVerified = $false
     $rollbackRuntimePreimageVerified = $false
     $audit.rollback.code_restored = $false
     try {
-      try {
-        Assert-LabelRollbackGeneration
-        if ($mutated) {
-            if (-not $writerFenceStarted) {
-                # Final audit persistence can fail after the success path released
-                # its fence. Reacquire the same session before stopping/restoring
-                # any runtime or code; all existing phase checks still apply.
-                if ($null -eq $writerAuthority) {
-                    $writerAuthority = Enter-LabelWriterSessionAuthority `
-                        -SessionId $writerSessionId `
-                        -AttemptId $writerAttemptId `
-                        -OrchestratorSha256 $writerOrchestratorSha256 `
-                        -ReplacementTransactionId $writerTransactionId `
-                        -WriterContractSha256 $writerContractSha256
-                }
-                [void](Start-LabelWriterFence `
-                    -ControlRoot $writerFenceControlRoot `
-                    -Status 'RESTORING' `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -SessionStartedAtUtc $writerStartedAt `
-                    -OrchestratorSha256 $writerOrchestratorSha256 `
-                    -WriterContractSha256 $writerContractSha256 `
-                    -AuthorityOwnedByCaller)
-                $writerFenceStarted = $true
-            }
-            if ($writerFenceStarted) {
-                [void](Set-LabelWriterFenceDelegation `
-                    -ControlRoot $writerFenceControlRoot `
-                    -Status 'RESTORING' `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -DelegationToken $writerDelegationToken `
-                    -DelegatedSources $rollbackSources `
-                    -LifetimeSeconds 600)
-                SetWriterDelegationEnvironment `
-                    $writerDelegationToken `
-                    $writerSessionId `
-                    $writerAttemptId `
-                    $writerTransactionId
-            }
-            # RESTORING delegation excludes the new generation sink. Recheck
-            # after that admission barrier and before any setup-state cleanup.
-            Assert-LabelRollbackGeneration
-            $rollbackProductRoot = if (Test-Path (Join-Path $install 'runtime\pythonw.exe')) {
-                $install
-            }
-            else { $source }
-            $rollbackUsesInstalled = $false
-            if (Same $rollbackProductRoot $install) {
-                InvokeFrozenIntegrityProbe $frozenPlacement $install
-                $rollbackInventory = PortableInventory $install
-                if ($existingVerified -and [string]$rollbackInventory.sha256 -ceq [string]$installedPreimageInventory.sha256) {
-                    $rollbackUsesInstalled = $true
-                }
-                elseif ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
-                    throw 'Rollback tree differs from both validated identities.'
-                }
-            }
-            if ($writerFenceStarted) {
-                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $rollbackUsesInstalled)
-            }
-            if (-not ($healthyRemovedInstall -and -not (Test-Path -LiteralPath $install))) {
-                # No new setup has run while the exact legacy preimage remains
-                # installed. Do not ask that old code to create removal state.
-                if (-not ($legacyFirstRegistration -and $rollbackUsesInstalled)) {
-                    try { Product $rollbackProductRoot '--remove-current-user-setup' }
-                    catch {
-                        $rollbackFailures.Add([ordered]@{ stage='product_remove'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message })
-                    }
-                }
-            }
-            [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
-            if ($legacyFirstRegistration) {
-                # Detach authentication before restoring legacy code. Keep its
-                # own active fence until the guarded placement helper completes.
-                $firstRegistrationAttempt.status = 'FAILED_ROLLBACK_INCOMPLETE'
-                Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
-                $stateMutationLease = Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
-                try {
-                    $authPaths = @($firstRegistrationStatePaths | Where-Object { -not (Same $_ $defaultDirectSyncRoot) })
-                    if (-not $firstRegistrationStateVerified -and
-                        @(FirstRegistrationAbsence $authPaths | Where-Object { $_.state -cne 'ABSENT' }).Count -ne 0) {
-                        throw 'Unowned state appeared before the first-registration recheck; preserved.'
-                    }
-                    $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
-                        $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
-                        $firstRegistrationStarted @($defaultDirectSyncRoot) $firstRegistrationAbsentAncestors $localAuditRoot
-                    if (-not $audit.rollback.first_registration_state.restored_absent) {
-                        throw 'First-registration authentication cleanup is incomplete; legacy code remains fenced.'
-                    }
-                }
-                finally { Exit-LabelWriterAdmission $stateMutationLease }
-            }
-            if ($existingVerified -and -not $rollbackUsesInstalled) {
-                Assert-LabelRollbackGeneration
-                if ([string]::IsNullOrEmpty($replacementRollbackRoot)) {
-                    throw 'Exact installed code preimage is unavailable for rollback.'
-                }
-                # Reuse the same pinned placement helper and its verified-tree
-                # replacement contract, now with the already validated preimage.
-                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $false)
-                [void](Set-LabelWriterFenceDelegation `
-                    -ControlRoot $writerFenceControlRoot `
-                    -Status 'RESTORING' `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -DelegationToken $writerDelegationToken `
-                    -DelegatedSources @('canonical_placement') `
-                    -LifetimeSeconds 600)
-                # INSTALL_THIS_PC consumes a release tree: its manifest metrics
-                # exclude the installed bootstrap record. Reconstruct that exact
-                # release view without changing or deleting the retained backup.
-                $rollbackSource = Join-Path (Split-Path -Parent $auditPath) ($writerTransactionId + '-rollback-source')
-                if ($legacyFirstRegistration) {
-                    # A failed placement keeps its source as recovery evidence.
-                    # A resumed rollback stages a new copy instead of colliding.
-                    $rollbackSource += '-' + [Guid]::NewGuid().ToString('N')
-                }
-                if (Test-Path -LiteralPath $rollbackSource) { throw 'Rollback source staging already exists.' }
-                [void](New-Item -ItemType Directory -Path $rollbackSource)
-                $robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'
-                & $robocopy $replacementRollbackRoot $rollbackSource /E /XJ /MT:16 /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $replacementRollbackRoot 'bootstrap-integrity.json') | Out-Null
-                if ($LASTEXITCODE -lt 0 -or $LASTEXITCODE -ge 8) { throw "Rollback source copy failed: $LASTEXITCODE" }
-                $restoreParameters = $helperParameters.Clone()
-                $restoreParameters.SourceRoot = $rollbackSource
-                $restoreParameters.ExpectedSourceAggregateSha256 = [string]$installedPreimageInventory.bootstrap_aggregate_sha256
-                $restoreParameters.ExpectedSourceFileCount = [int]$installedPreimageInventory.file_count
-                $restoreParameters.ExpectedSourceByteCount = [uint64]$installedPreimageInventory.byte_count
-                $restoreExitCode = InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters
-                if ($restoreExitCode -ne 0) { throw "Exact code rollback failed: $restoreExitCode" }
-                InvokeFrozenIntegrityProbe $frozenPlacement $install
-                $restoredInventory = PortableInventory $install
-                if ([string]$restoredInventory.sha256 -cne [string]$installedPreimageInventory.sha256) {
-                    throw 'Restored code differs from the validated installed preimage.'
-                }
-                $audit.rollback.code_placement = 'RESTORED_PREIMAGE'
-                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
-            }
-            if (-not $existingVerified -and (Test-Path -LiteralPath $install)) {
-                Assert-LabelRollbackGeneration
-                InvokeFrozenIntegrityProbe $frozenPlacement $install
-                $rollbackInventory = PortableInventory $install
-                if ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
-                    throw 'Absent-code rollback tree differs from the validated candidate.'
-                }
-                [void](Set-LabelWriterFenceDelegation `
-                    -ControlRoot $writerFenceControlRoot `
-                    -Status 'RESTORING' `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -DelegationToken $writerDelegationToken `
-                    -DelegatedSources @('canonical_placement') `
-                    -LifetimeSeconds 600)
-                $removeParameters = $helperParameters.Clone()
-                $removeParameters.ReplaceExistingVerifiedPortable = $false
-                $removeParameters.Uninstall = $true
-                # As with setup-preimage restoration below, the orchestrator
-                # holds writer admission for the entire privileged mutation.
-                $codeRemovalAdmission = Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
-                try { $removeExit = InvokeFrozenPlacementHelper $frozenPlacement $removeParameters }
-                finally { Exit-LabelWriterAdmission $codeRemovalAdmission }
-                if ($removeExit -ne 0 -or (Test-Path -LiteralPath $install)) {
-                    throw 'Absent-code rollback failed to restore code absence.'
-                }
-            }
-            if (-not $existingVerified -and -not (Test-Path -LiteralPath $install)) {
-                $audit.rollback.code_placement = 'RESTORED_ABSENCE'
-            }
-            Assert-LabelRollbackGeneration
-            $audit.rollback.code_restored = $existingVerified -or -not (Test-Path -LiteralPath $install)
-            $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
-        }
-      }
-      catch {
-          $rollbackFailures.Add([ordered]@{ stage='code_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message })
-      }
-      try {
-        # Independently restore setup under the old-target G and held fence
-        # even when code restoration failed. Code proof gates release/restart.
-        Assert-LabelRollbackGeneration
-        if (-not $audit.rollback.code_restored -and -not $writerFenceStarted) { throw 'Rollback code is unverified and writer custody is absent; setup restoration remains blocked.' }
-        $ownerMutationLease = $null
-        try {
-            if ($writerFenceStarted) {
-                $ownerMutationLease = Enter-LabelWriterAdmission `
-                    -ControlRoot $writerFenceControlRoot `
-                    -TimeoutMilliseconds 90000
-            }
-            try { Restore $before }
-            catch { $rollbackFailures.Add([ordered]@{ stage='run_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-            try { RestoreScheduledTask $taskBefore }
-            catch { $rollbackFailures.Add([ordered]@{ stage='task_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-            try {
-            if ([bool]$stopBefore.exists) {
-                Copy-Item -LiteralPath ([string]$stopBefore.backup_path) -Destination $stop -Force
-                if ((Sha $stop) -cne [string]$stopBefore.sha256) {
-                    throw 'stop marker restore failed'
-                }
-            }
-            elseif (Test-Path $stop) {
-                Remove-Item $stop -Force
-            }
-            }
-            catch { $rollbackFailures.Add([ordered]@{ stage='stop_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-            try {
-            if ($null -ne $healthyRemovalReportBefore) {
-                Copy-Item -LiteralPath $healthyRemovalReportBefore.backup_path -Destination $removalPath -Force
-                if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) {
-                    throw 'Normal removal report preimage restoration failed.'
-                }
-                $audit.rollback.removal_report_restored = $true
-            }
-            elseif (-not $removalReportExisted -and (Test-Path -LiteralPath $removalPath)) {
-                Remove-Item -LiteralPath $removalPath -Force
-                if (Test-Path -LiteralPath $removalPath) { throw 'Removal report absence restoration failed.' }
-                $audit.rollback.removal_report_restored = $true
-            }
-            }
-            catch { $rollbackFailures.Add([ordered]@{ stage='removal_report_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-        }
-        finally {
-            if ($null -ne $ownerMutationLease) {
-                Exit-LabelWriterAdmission $ownerMutationLease
-            }
-        }
-      }
-      catch { $rollbackFailures.Add([ordered]@{ stage='setup_restore_admission'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-      try {
-        # Task restoration already checks its exact XML/enabled readback.
-        # Keep the fence if any required state cannot be demonstrated intact.
-        if (@($rollbackFailures | Where-Object { $_.stage -in @('task_restore','stop_restore','removal_report_restore','setup_restore_admission') }).Count -ne 0) {
-            throw '자동 시작 설정 복원을 확인하지 못했습니다. 앱을 멈춘 상태와 자료를 보존하고 관리자에게 지원 복구를 요청하세요.'
-        }
-        $rollbackRunReadback = Snapshot
-        if ([bool]$rollbackRunReadback.exists -ne [bool]$before.exists -or
-            [string]$rollbackRunReadback.kind -cne [string]$before.kind -or
-            [string]$rollbackRunReadback.data -cne [string]$before.data) { throw '자동 시작 설정이 설치 전 상태와 다릅니다. 관리자에게 지원 복구를 요청하세요.' }
-        if ([bool]$stopBefore.exists) {
-            if (-not (Test-Path -LiteralPath $stop -PathType Leaf) -or (Sha $stop) -cne [string]$stopBefore.sha256) { throw '앱 정지 상태 복원을 확인하지 못했습니다. 관리자에게 지원 복구를 요청하세요.' }
-        }
-        elseif (Test-Path -LiteralPath $stop) { throw '앱 정지 상태가 설치 전 상태와 다릅니다. 관리자에게 지원 복구를 요청하세요.' }
-        [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
-        $rollbackRuntimePreimageVerified = $true
-      }
-      catch { $rollbackFailures.Add([ordered]@{ stage='runtime_preimage'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-      try {
-        Assert-LabelRollbackGeneration
-        if (-not $audit.rollback.code_restored) { throw 'Rollback code preimage is not verified; fence release remains blocked.' }
-        if (-not $rollbackRuntimePreimageVerified) { throw '자동 시작 설정과 앱 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 관리자에게 지원 복구를 요청하세요.' }
-        if ($legacyFirstRegistration -and -not $audit.rollback.first_registration_state.restored_absent) {
-            throw 'First-registration authentication cleanup is not verified; fence release remains blocked.'
-        }
-        $firstRegistrationRollbackLease = $null
-        try {
-            if ($legacyFirstRegistration) {
-                # Keep ordinary writers excluded while releasing the fence and
-                # moving its own root. Session authority alone is a different mutex.
-                $firstRegistrationRollbackLease = Enter-LabelWriterAdmission `
-                    -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
-            }
-            if ($writerFenceStarted) {
-                $releasedFence = Stop-LabelWriterFence `
-                    -ControlRoot $writerFenceControlRoot `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -TimeoutMilliseconds 90000
-                $writerFenceStarted = $false
-                $audit.writer_fence.status = 'RELEASED_AFTER_ROLLBACK'
-                $audit.writer_fence.writer_inventory_sha256 = [string]$releasedFence.writer_inventory_sha256
-            }
-            if ($legacyFirstRegistration) {
-                $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
-                    $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
-                    $firstRegistrationStarted @() $firstRegistrationAbsentAncestors $localAuditRoot
-                $audit.rollback.first_registration_state.retry_conflict_action = 'USE_SUPPORTED_ADMIN_RECOVERY'
-                if (-not $audit.rollback.first_registration_state.restored_absent) {
-                    # Retain custody across a final directory/ancestor move
-                    # failure as well; a retry adopts only this exact session.
-                    [void](Start-LabelWriterFence -ControlRoot $writerFenceControlRoot -Status 'RESTORING' `
-                        -SessionId $writerSessionId -AttemptId $writerAttemptId `
-                        -ReplacementTransactionId $writerTransactionId -SessionStartedAtUtc $writerStartedAt `
-                        -OrchestratorSha256 $writerOrchestratorSha256 -WriterContractSha256 $writerContractSha256 `
-                        -AuthorityOwnedByCaller)
-                    $writerFenceStarted = $true
-                    [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
-                    throw 'First-registration final absence restoration is incomplete.'
-                }
-            }
-        }
-        finally {
-            if ($null -ne $firstRegistrationRollbackLease) {
-                Exit-LabelWriterAdmission $firstRegistrationRollbackLease
-            }
-        }
-      }
-      catch { $rollbackFailures.Add([ordered]@{ stage='fence_release'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-        foreach ($item in $old) {
-          try {
-            Assert-LabelRollbackGeneration
-            if (-not $audit.rollback.code_restored -or -not $rollbackRuntimePreimageVerified -or $writerFenceStarted) { throw '코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 다시 시작하지 않았습니다. 자료를 보존하고 관리자에게 지원 복구를 요청하세요.' }
-            $newPid = StartRaw ([string]$item.CommandLine)
-            Start-Sleep -Seconds 3
-            $restored = Get-CimInstance `
-                Win32_Process `
-                -Filter "ProcessId = $newPid" `
-                -ErrorAction SilentlyContinue
-            if (
-                $null -eq $restored -or
-                -not (Same ([string]$restored.ExecutablePath) ([string]$item.ExecutablePath))
-            ) { throw 'runtime restore failed' }
-          }
-          catch { $rollbackFailures.Add([ordered]@{ stage='relay_restart'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-        }
-      try {
-        [void](Assert-RollbackRelayPreimage -ExpectedRelays $old)
-        $check = Snapshot
-        if (
-            [bool]$check.exists -ne [bool]$before.exists -or
-            [string]$check.kind -cne [string]$before.kind -or
-            [string]$check.data -cne [string]$before.data
-        ) { throw 'registry restore failed' }
-      }
-      catch { $rollbackFailures.Add([ordered]@{ stage='runtime_readback'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-        $rollbackRuntimeVerified = $audit.rollback.code_restored -and $rollbackRuntimePreimageVerified -and -not $writerFenceStarted -and
-            @($rollbackFailures | Where-Object { $_.stage -in @('relay_restart','runtime_readback','fence_release') }).Count -eq 0
-        $audit.rollback.step_failures = @($rollbackFailures.ToArray())
-        if ($rollbackFailures.Count -ne 0) { throw 'One or more rollback steps failed; all guarded recovery steps were attempted.' }
+        . Invoke-LabelCanonicalRollback
         $audit.status = 'FAILED_ROLLED_BACK'
         if ($legacyFirstRegistration) {
             $firstRegistrationAttempt.status = 'FAILED_ROLLED_BACK'
@@ -3477,6 +4881,7 @@ catch {
         $audit.rollback.applied = $mutated
         $audit.rollback.runtime_restored = $true
         $audit.failure_type = $original.Exception.GetType().Name
+        $audit.failure_details = Get-LabelLaunchFailure $original 'forward'
         Save $auditPath $audit
         if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
     }
@@ -3486,17 +4891,17 @@ catch {
             $audit.status = if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }
             $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
             $audit.rollback.applied = $mutated
-            $audit.rollback.runtime_restored = $rollbackRuntimeVerified
-            $audit.rollback.step_failures = @($rollbackFailures.ToArray())
-            $audit.rollback.runtime_preimage_verified = $rollbackRuntimePreimageVerified
-            $audit.user_message = if ($rollbackRuntimeVerified) {
-                '설치 복구 중 일부 단계가 실패했지만 설치 전 앱 상태를 확인하고 앱을 다시 시작했습니다. 기록을 보존하고 관리자에게 설치 점검을 요청하세요.'
-            } else {
-                '설치 전 코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요.'
-            }
+            $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted
             $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
+            $audit.rollback.failure_details = Get-LabelLaunchFailure $rollbackFailure 'rollback'
+            $runReadback=Snapshot
+            if (-not $writerFenceStarted -and [bool]$runReadback.exists -eq [bool]$before.exists -and [string]$runReadback.kind -ceq [string]$before.kind -and [string]$runReadback.data -ceq [string]$before.data) {
+                $audit.rollback.relay_recovery_status='RUN_RESTORED_RELAY_NEXT_LOGON'
+                $audit.rollback.guidance='자동 시작 설정은 복원됐습니다. 다음 로그온 때 전송을 재개하며 설치 결과는 실패입니다.'
+            }
             $audit.failure_type = $original.Exception.GetType().Name
-            if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) {
+        $audit.failure_details = Get-LabelLaunchFailure $original 'forward'
+            if ($legacyFirstRegistration) {
                 if (-not $writerFenceStarted) {
                     # A final cleanup can throw before returning its readback.
                     # Retain custody for exceptions as well as reported residue.
@@ -3550,10 +4955,19 @@ catch {
     throw $original
 }
 finally {
-    RestoreWriterDelegationEnvironment $writerEnvironmentBefore
-    if ($null -ne $writerAuthority) {
-        Exit-LabelWriterSessionAuthority $writerAuthority
-        $writerAuthority = $null
+    # Keep the first cause and every attempted rollback phase in the same audit.
+    try {
+        if ($null -ne $original -and $null -ne $Script:LabelRollbackSteps) {
+            $audit.rollback.steps = $Script:LabelRollbackSteps.ToArray()
+            $audit.rollback.step_failures = $Script:LabelRollbackFailures.ToArray()
+            Save $auditPath $audit
+        }
+    } finally {
+        RestoreWriterDelegationEnvironment $writerEnvironmentBefore
+        if ($null -ne $writerAuthority) {
+            Exit-LabelWriterSessionAuthority $writerAuthority
+            $writerAuthority = $null
+        }
+        $Script:LabelWriterFenceInstalledIdentity = $null
     }
-    $Script:LabelWriterFenceInstalledIdentity = $null
 }

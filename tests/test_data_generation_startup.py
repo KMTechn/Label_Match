@@ -242,10 +242,27 @@ def test_existing_portable_metadata_carries_signed_proof_without_app_additions(m
 
 @pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
 def test_failed_launch_does_not_record_generation(shell, tmp_path):
+    # The product now starts its captured child through Process.Start. Compile
+    # a console fixture; it executes no app, registry, credentials or relay.
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    compiler = tmp_path / "compile-failed-child.ps1"
+    executable = str(runtime / "pythonw.exe").replace("'", "''")
+    compiler.write_text(
+        "$ErrorActionPreference='Stop'\n"
+        f"Add-Type -OutputAssembly '{executable}' -OutputType ConsoleApplication -TypeDefinition @'\n"
+        "public class FailedProductFixture { public static int Main(string[] args) { "
+        "System.Console.Error.WriteLine(\"fixture launch failure\"); return 1; } }\n'@\n",
+        encoding="utf-8-sig")
+    compiled = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(compiler)],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if compiled.returncode:
+        raise RuntimeError("Isolated native failure fixture did not compile")
     text = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
     prefix = text[:text.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
     script = tmp_path / "launch-failure.ps1"
-    script.write_text(prefix + "\nfunction Start-Process { throw 'fixture launch failure' }\n" +
+    script.write_text(prefix + f"\n. '{ROOT.as_posix()}/tools/failure_redaction.ps1'\n" +
                      f"try {{ Product '{tmp_path.as_posix()}' '--onboard-current-user' }} catch {{ $_.Exception.Message }}\n",
                      encoding="utf-8-sig")
     completed = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(script)],

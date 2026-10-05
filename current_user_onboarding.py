@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -117,15 +117,25 @@ def _portable_stop_marker_release_preflight(
     marker = user_relay_stop_path(paths.direct_sync_root)
     if not marker.exists():
         return {"status": "NOT_REQUIRED", "marker_present": False}
-    if os.path.normcase(str(paths.app_root)) != os.path.normcase(
+    from auto_update import installation_root, resolve_lifecycle_context
+    owner_root = paths.app_root
+    managed = installation_root(paths.app_root)
+    if managed is not None and (managed / "update-control").exists():
+        context = resolve_lifecycle_context(managed, operation="register")
+        if _resolved(context["active_code_root"]) != paths.app_root:
+            raise ValueError("relay resume active code changed during registration")
+        owner_root = _resolved(context["fixed_root"])
+    owner_paths = replace(paths, app_root=owner_root,
+        bootstrap_integrity_path=owner_root / "bootstrap-integrity.json")
+    if os.path.normcase(str(owner_root)) != os.path.normcase(
         str(CANONICAL_PORTABLE_ROOT)
     ):
         raise ValueError(
             "relay stop marker is a safety fence until the canonical portable root is installed"
         )
-    manifest_path = paths.app_root / "portable-manifest.json"
-    installer_path = paths.app_root / "INSTALL_CANONICAL_PORTABLE.ps1"
-    integrity_path = paths.app_root / "bootstrap-integrity.json"
+    manifest_path = owner_root / "portable-manifest.json"
+    installer_path = owner_root / "INSTALL_CANONICAL_PORTABLE.ps1"
+    integrity_path = owner_root / "bootstrap-integrity.json"
     if not all(
         path.is_file() for path in (manifest_path, installer_path, integrity_path)
     ) or manifest_path.stat().st_size > 64 * 1024:
@@ -135,7 +145,7 @@ def _portable_stop_marker_release_preflight(
     manifest = _read_json(manifest_path, "canonical portable manifest")
     source_commit = str(manifest.get("source_commit") or "").lower()
     source_tree = str(manifest.get("source_tree") or "").lower()
-    runtime = paths.app_root / "runtime" / "pythonw.exe"
+    runtime = owner_root / "runtime" / "pythonw.exe"
     expected_runtime_hash = str(manifest.get("runtime_pythonw_sha256") or "").lower()
     if (
         manifest.get("schema") != "label-match-portable-tree-v1"
@@ -158,10 +168,10 @@ def _portable_stop_marker_release_preflight(
     integrity = _read_json(integrity_path, "canonical bootstrap integrity record")
     rows: list[dict[str, Any]] = []
     for file_path in sorted(
-        (path for path in paths.app_root.rglob("*") if path.is_file()),
-        key=lambda path: path.relative_to(paths.app_root).as_posix().encode("utf-16-be"),
+        (path for path in owner_root.rglob("*") if path.is_file()),
+        key=lambda path: path.relative_to(owner_root).as_posix().encode("utf-16-be"),
     ):
-        relative = file_path.relative_to(paths.app_root).as_posix()
+        relative = file_path.relative_to(owner_root).as_posix()
         if relative.casefold() == integrity_path.name.casefold():
             continue
         file_stat = file_path.lstat()
@@ -181,7 +191,7 @@ def _portable_stop_marker_release_preflight(
     if (
         integrity.get("schema_version") != PORTABLE_BOOTSTRAP_INTEGRITY_VERSION
         or integrity.get("status") != "PASS"
-        or str(integrity.get("code_root") or "") not in {".", str(paths.app_root)}
+        or str(integrity.get("code_root") or "") not in {".", str(owner_root)}
         or integrity.get("file_count") != len(rows)
         or aggregate is None
         or integrity.get("identity_profile_created") is not False
@@ -195,11 +205,16 @@ def _portable_stop_marker_release_preflight(
         values.get(CONFLICT_RECEIPT_SHA256_ENV) or ""
     ).strip().lower()
     if not receipt_value and not expected_receipt_hash:
-        from registration_relay_recovery import recovered_stop_release
-        recovered = (recovered_stop_release(paths, credential_input=credential_input)
-                     if credential_input is not None else recovered_stop_release(paths))
+        from registration_relay_recovery import recovered_stop_release, _normal_stop
+        recovered = (recovered_stop_release(owner_paths, credential_input=credential_input)
+                     if credential_input is not None else recovered_stop_release(owner_paths))
         if recovered is not None:
             return recovered
+        if paths.removal_report_path.is_file():
+            normal = _normal_stop(paths.direct_sync_root, owner_root)
+            return {"status": "SUPPORTED_USER_REMOVAL_PROVEN", "marker_present": True,
+                "current_stop_marker_request_id": normal["request_id"],
+                "current_stop_marker_sha256": normal["sha256"]}
     if not receipt_value or len(expected_receipt_hash) != 64 or any(
         character not in "0123456789abcdef" for character in expected_receipt_hash
     ):
@@ -227,7 +242,7 @@ def _portable_stop_marker_release_preflight(
         identity_path=paths.identity_path,
         credential_path=paths.credential_path,
         stop_marker_path=marker,
-        portable_root=paths.app_root,
+        portable_root=owner_root,
         allow_portable_relocation=True,
     )
     return {
@@ -457,6 +472,9 @@ def resolve_current_user_onboarding_paths(
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    if payload.get("report_version") in (ONBOARDING_REPORT_VERSION, REMOVAL_REPORT_VERSION):
+        from failure_redaction import redact_json_for_sink
+        payload = redact_json_for_sink(dict(payload))
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
@@ -973,7 +991,13 @@ def onboard_current_user(
     relay_launcher: Callable[
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = start_user_relay_process,
+    defer_canonical_relay_start: bool = False,
 ) -> dict[str, Any]:
+    from auto_update import installation_root, resolve_lifecycle_context, assert_registration_storage
+    managed = installation_root(Path(app_root))
+    if managed is not None and (managed / "update-control").exists():
+        context = resolve_lifecycle_context(managed, operation="register")
+        app_root = context["active_code_root"]
     paths, tls_ca_source, credential_input = prepare_current_user_data_open(app_root, environ=environ)
     try:
         record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
@@ -982,6 +1006,8 @@ def onboard_current_user(
     except DataGenerationError as exc:
         raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
             status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
+    assert_registration_storage(Path(app_root), (paths.data_root, paths.settings_path,
+        paths.direct_sync_root, paths.logistics_profile_path, paths.ledger_path))
     for directory in (
         paths.data_root,
         paths.settings_path.parent,
@@ -1225,7 +1251,7 @@ def onboard_current_user(
                 report_path=paths.onboarding_report_path,
                 status="UNKNOWN",
             )
-        if migration_status != "ABSENT":
+        if migration_status not in {"ABSENT", "DISABLED_RETAINED_OFFICIAL"}:
             raise ValueError("historical current-user scheduled task retirement was not proven")
         # The marker is a safety fence.  It is released only after canonical
         # install ownership, HKCU, and historical task absence all read back.
@@ -1245,7 +1271,15 @@ def onboard_current_user(
         else:
             release = {"status": "NOT_REQUIRED"}
         report["stop_marker_release"]["release"] = release
-        report["relay_start"] = dict(relay_launcher(paths.app_root))
+        if defer_canonical_relay_start:
+            from writer_session_fence import active_fence, canonical_control_root, _delegation_matches
+            values = os.environ if environ is None else environ
+            fence = active_fence(canonical_control_root(values), environ=values)
+            if fence is None or not _delegation_matches(fence, source="current_user_onboarding", environ=values):
+                raise ValueError("deferred relay start requires exact canonical installer ownership")
+            report["relay_start"] = {"status": "DEFERRED_CANONICAL_INSTALL"}
+        else:
+            report["relay_start"] = dict(relay_launcher(paths.app_root))
         relay_start_status = str(report["relay_start"].get("status") or "")
         if relay_start_status in {"", "UNKNOWN"}:
             raise CurrentUserOnboardingError(
@@ -1253,7 +1287,7 @@ def onboard_current_user(
                 report_path=paths.onboarding_report_path,
                 status="UNKNOWN",
             )
-        if relay_start_status != "ALIVE":
+        if relay_start_status != ("DEFERRED_CANONICAL_INSTALL" if defer_canonical_relay_start else "ALIVE"):
             raise ValueError("current-user relay survival was not proven")
         apply_current_user_runtime_environment(paths, environ=environ)
         report.update(
@@ -1299,6 +1333,8 @@ def onboard_current_user(
         report["status"] = "FAILED"
         report["failure"] = str(exc)[:500]
         report["error_type"] = exc.__class__.__name__
+        from auto_update import launch_failure_details
+        report["launch_failure_details"] = launch_failure_details(exc)
         from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout
         cause_code = (
             'RELAY_RESUME_REQUIRED' if report.get('relay_resume_required') else
@@ -1329,6 +1365,12 @@ def remove_current_user_setup(
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = request_user_relay_stop,
 ) -> dict[str, Any]:
+    from auto_update import installation_root
+    managed = installation_root(Path(app_root))
+    if managed is not None:
+        # User removal must work even when machine control cannot be decoded.
+        # Its report and persistence belong to the stable owner, not active B.
+        app_root = managed / "current"
     try:
         check_user_data_open(Path(app_root), environ=environ)
     except DataGenerationError as exc:
@@ -1359,36 +1401,37 @@ def remove_current_user_setup(
         "failure": "",
     }
     try:
-        report["relay_autostart"] = dict(autostart_remover())
-        report["relay_process"] = dict(relay_stopper(paths.direct_sync_root))
-        if str(report["relay_process"].get("status") or "") in {"", "UNKNOWN"}:
-            raise CurrentUserOnboardingError(
-                "current-user relay removal result is UNKNOWN",
-                report_path=paths.removal_report_path,
-                status="UNKNOWN",
-            )
-        if report["relay_process"].get("status") != "ABSENT":
-            raise ValueError("current-user relay process absence is UNKNOWN")
-        report["scheduled_task"] = dict(scheduled_task_remover(paths.app_root))
-        autostart_status = str(report["relay_autostart"].get("status") or "")
-        scheduled_task_status = str(report["scheduled_task"].get("status") or "")
-        relay_status = str(report["relay_process"].get("status") or "")
-        if (
-            autostart_status in {"", "UNKNOWN"}
-            or scheduled_task_status in {"", "UNKNOWN"}
-            or relay_status in {"", "UNKNOWN"}
+        failures = []
+        for step, key, callback, arguments in (
+            ("run", "relay_autostart", autostart_remover, ()),
+            ("relay", "relay_process", relay_stopper, (paths.direct_sync_root,)),
+            ("task", "scheduled_task", scheduled_task_remover, (paths.app_root,)),
         ):
+            if step == "task" and report.get("relay_process", {}).get("status") != "ABSENT":
+                report[key] = {"status": "NOT_TESTED_RELAY_UNPROVEN"}
+                continue
+            try:
+                report[key] = dict(callback(*arguments))
+                status = str(report[key].get("status") or "")
+                if status in {"", "UNKNOWN"}:
+                    raise CurrentUserOnboardingError(
+                        f"current-user {step} removal result is UNKNOWN",
+                        report_path=paths.removal_report_path, status="UNKNOWN",
+                    )
+                if status != "ABSENT":
+                    raise ValueError(f"current-user {step} absence was not proven")
+            except Exception as exc:
+                failures.append({"step": step, "error_type": type(exc).__name__,
+                                 "failure": str(exc)[:500],
+                                 "status": getattr(exc, "status", "FAILED")})
+        if failures:
+            report["removal_failures"] = failures
+            status = "UNKNOWN" if any(item["status"] == "UNKNOWN" for item in failures) else "FAILED"
             raise CurrentUserOnboardingError(
-                "current-user removal result is UNKNOWN",
-                report_path=paths.removal_report_path,
-                status="UNKNOWN",
+                "current-user removal remains incomplete: " + "; ".join(
+                    item["step"] + ": " + item["failure"] for item in failures),
+                report_path=paths.removal_report_path, status=status,
             )
-        if autostart_status != "ABSENT":
-            raise ValueError("HKCU relay persistence absence was not proven")
-        if scheduled_task_status != "ABSENT":
-            raise ValueError("current-user task absence was not proven")
-        if relay_status != "ABSENT":
-            raise ValueError("current-user relay process absence is UNKNOWN")
         report.update({"status": "PASS_DATA_PRESERVED", "completed_at": _now()})
         _write_json_atomic(paths.removal_report_path, report)
         return report
@@ -1430,6 +1473,7 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--app-root", default=str(_default_app_root()))
     parser.add_argument("--server-base-url", default=DEFAULT_SERVER_BASE_URL)
     parser.add_argument("--check-data-generation-only", action="store_true")
+    parser.add_argument("--defer-canonical-relay-start", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.check_data_generation_only:
@@ -1438,6 +1482,7 @@ def onboarding_main(argv: list[str] | None = None) -> int:
             return 0
         report = onboard_current_user(
             args.app_root,
+            defer_canonical_relay_start=args.defer_canonical_relay_start,
             server_base_url=args.server_base_url,
             require_bootstrap_integrity=requires_bootstrap_integrity(args.app_root),
         )

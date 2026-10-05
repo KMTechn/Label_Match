@@ -413,8 +413,10 @@ def test_declared_nextfix_pair_is_exactly_e88011c_and_this_tree():
 
 @pytest.fixture(scope="module")
 def nextfix_archive_layouts(tmp_path_factory):
-    root = tmp_path_factory.mktemp("nextfix-source-archives")
     head = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+    dirty = subprocess.check_output(["git", "-C", str(ROOT), "diff", "HEAD", "--name-only"], text=True).strip()
+    assert not dirty, "archive verification requires a clean committed candidate"
+    root = tmp_path_factory.mktemp("nextfix-source-archives")
     layouts = []
     for name, revision in (("old", NEXTFIX_BASE), ("candidate", head)):
         archive = root / (name + ".zip")
@@ -436,8 +438,41 @@ def nextfix_archive_layouts(tmp_path_factory):
             target.parent.mkdir(exist_ok=True)
             origin = "portable/launch-label-match.cmd" if relative == "launch-label-match.cmd" else relative
             target.write_bytes((source / origin).read_bytes())
+        # Minimal manifest/source fixture, never a stock builder or actual packet.
+        (layout / "portable-manifest.json").write_text(json.dumps({"source_commit":
+            subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", revision], text=True).strip()}), encoding="utf-8")
+        if name == "candidate":
+            (layout / "app/auto-update-settings.json").write_text(json.dumps({"feed_url":"", "channel":"stable",
+                "apply_during_work":False, "profile_auth":False}, sort_keys=True, indent=2)+"\n", encoding="utf-8", newline="\n")
+            public=json.loads((source / "config/update-manifest-key-config.json").read_text(encoding="utf-8-sig"))
+            (layout / "app/update-manifest-key-config.json").write_text(json.dumps(public,ensure_ascii=True,sort_keys=True,indent=2)+"\n",encoding="utf-8")
+            shutil.copyfile(source / "tools/apply_prepared_update.ps1",layout / "tools/apply_prepared_update.ps1")
+        else:
+            shutil.copyfile(ROOT / "tests/fixtures/LM-e88011c-public-key-config.json",layout / "app/update-manifest-key-config.json")
         layouts.append(layout)
     return tuple(layouts)
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_nextfix_archive_refuses_uncommitted_candidate(tmp_path, tmp_path_factory, monkeypatch, staged):
+    # Exercise the real fixture against its own .git, never the shared repository.
+    candidate = tmp_path / "candidate-source"
+    candidate.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(candidate), *args], check=True,
+            capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    git("init", "--quiet")
+    source = candidate / "candidate.py"
+    source.write_text("committed = True\n", encoding="utf-8")
+    git("add", "candidate.py")
+    git("-c", "user.name=isolated-fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "--quiet", "-m", "isolated candidate")
+    source.write_text("committed = False\n", encoding="utf-8")
+    if staged:
+        git("add", "candidate.py")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", candidate)
+    with pytest.raises(AssertionError, match="clean committed candidate"):
+        nextfix_archive_layouts.__wrapped__(tmp_path_factory)
 
 
 def _nextfix_probe(tmp_path, source, installed):
@@ -676,3 +711,72 @@ def test_roster_baseline_refuses_unreviewed_bytes(tmp_path, roster_baseline_pack
     result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(source)} {_quote(old)}", _environment(tmp_path))
     assert result.returncode != 0, result.stdout
     assert reason in result.stderr, result.stdout + result.stderr
+
+
+def _assert_extended_ancestor_refuses_delta(tmp_path, packages, change):
+    old, candidate = packages[:2]
+    if change == "reverse":
+        source, installed = old, candidate
+    else:
+        source = _tree(candidate, tmp_path / "candidate", ["app/Label_Match.py"])
+        installed = old
+        if change == "one-byte":
+            with (source / "app/Label_Match.py").open("ab") as stream:
+                stream.write(b"\n")
+        else:
+            (source / "app/unlisted_extension.py").write_bytes(b"VALUE = 1\n")
+        _pin(source)
+    result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(source)} {_quote(installed)}", _environment(tmp_path))
+    assert result.returncode != 0, result.stdout
+    assert "WRITER_TRANSITION_" in result.stderr
+
+
+@pytest.mark.parametrize("change", ("one-byte", "unlisted", "reverse"))
+def test_stage_one_extended_exact_ancestor_refuses_delta(tmp_path, worker_record_packages, change):
+    _assert_extended_ancestor_refuses_delta(tmp_path, worker_record_packages, change)
+
+
+@pytest.mark.parametrize("change", ("one-byte", "unlisted", "reverse"))
+def test_mainloop_extended_exact_ancestor_refuses_delta(tmp_path, mainloop_exit_packages, change):
+    _assert_extended_ancestor_refuses_delta(tmp_path, mainloop_exit_packages, change)
+
+
+@pytest.mark.parametrize("change", ("one-byte", "unlisted", "reverse"))
+def test_roster_extended_exact_ancestor_refuses_delta(tmp_path, roster_baseline_packages, change):
+    _assert_extended_ancestor_refuses_delta(tmp_path, roster_baseline_packages, change)
+
+
+@pytest.mark.parametrize("change", ["old_key","new_key","apply_helper","startup_settings"])
+def test_startup_guard_accepts_only_exact_public_rotation_and_new_helpers(tmp_path,nextfix_archive_layouts,change):
+    old,candidate=nextfix_archive_layouts
+    relative={"old_key":"app/update-manifest-key-config.json","new_key":"app/update-manifest-key-config.json",
+              "apply_helper":"tools/apply_prepared_update.ps1","startup_settings":"app/auto-update-settings.json"}[change]
+    source=_tree(candidate,tmp_path/"candidate",[relative])
+    installed=_tree(old,tmp_path/"installed",[relative]) if change=="old_key" else old
+    changed=installed if change=="old_key" else source
+    with (changed/relative).open("ab") as stream: stream.write(b"X")
+    _pin(source)
+    result=_nextfix_probe(tmp_path,source,installed)
+    assert result.returncode != 0
+    assert ("PUBLIC_KEY_PAIR_DIFFERS" if change.endswith("key") else "ADDED_ASSET_DIFFERS") in result.stderr
+
+
+@pytest.mark.parametrize('change',[None,'http','github','unknown','apply','format'])
+def test_company_feed_is_an_exact_validated_startup_build_input(tmp_path,nextfix_archive_layouts,change):
+    import auto_update
+    old,candidate=nextfix_archive_layouts
+    relative='app/auto-update-settings.json'
+    source=_tree(candidate,tmp_path/'candidate',[relative])
+    value={'feed_url':'https://company.test/lm/feed','channel':'stable','profile_auth':True,'apply_during_work':False}
+    if change=='http':value['feed_url']='http://company.test/lm/feed'
+    elif change=='github':value['feed_url']='https://github.com/org/feed'
+    elif change=='unknown':value['unexpected']=True
+    elif change=='apply':value['apply_during_work']=True
+    elif change=='format':value['profile_auth']='true'
+    (source/relative).write_text(json.dumps(value,sort_keys=True,indent=2)+'\n',encoding='utf-8',newline='\n')
+    _pin(source)
+    result=_nextfix_probe(tmp_path,source,old)
+    assert (result.returncode==0)==(change is None),result.stdout+result.stderr
+    if change is None:
+        assert (source/relative).read_bytes()==auto_update.canonical_startup_settings(value)
+    else:assert 'ADDED_ASSET_DIFFERS: startup settings' in result.stderr

@@ -227,6 +227,11 @@ def _usable_output_streams() -> Iterator[None]:
 
 def dispatch_product_mode(argv: Sequence[str]) -> int | None:
     arguments = list(argv)
+    from auto_update import startup_gate
+    if arguments and arguments[0] in {DIRECT_SYNC_RELAY_MODE, USER_RELAY_MODE}:
+        result = startup_gate(Path(__file__).resolve().parent, arguments, role="relay")
+        if result is not None:
+            return result
     # A stale historical trigger must not fall through into a hidden GUI.
     if arguments and arguments[0] == RETIRED_SCHEDULED_RELAY_MODE:
         return 2

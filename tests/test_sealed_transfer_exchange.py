@@ -1469,7 +1469,12 @@ def test_invalid_receipt_stays_review_blocked_across_restart_without_repost(tmp_
     from tests.label_test_presentation import prepare_label_presentation
     prepare_label_presentation(app)
     app.run_tests = True
+    notices = []
+    app._show_scanner_notice = lambda title, message: notices.append((title, message))
     assert app._sealed_transfer_exchange_blocks_local_action("다음 스캔") is True
+    assert len(notices) == 1
+    assert notices[0][0] == "제품 교체 확인 필요"
+    assert "운영자 확인 잠금" in notices[0][1] and "다음 스캔" in notices[0][1]
 
 
 def test_multi_member_donor_is_rejected_before_reseal_command(tmp_path):

@@ -33,7 +33,9 @@ def _quote(value: object) -> str:
 
 def _definitions() -> str:
     source = INSTALLER.read_text(encoding="utf-8-sig")
-    return source[: source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")] + "\n. (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + ")\n"
+    return (source[: source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
+            + "\n. " + _quote(ROOT / "tools/failure_redaction.ps1")
+            + "\n. (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + ")\n")
 
 
 def _environment(root: Path) -> dict[str, str]:
@@ -232,6 +234,8 @@ def _upgrade_preflight(candidate: Path, installed: Path) -> str:
     return f"""
 $source = {_quote(candidate)}
 $install = {_quote(installed)}
+$lifecycleInstalled = $install
+$startupLifecycle = $null
 $SkipSignatureValidationForTest = $true
 $sourceManifest = Manifest $source $true
 $receiptSource = PortableInventory $source

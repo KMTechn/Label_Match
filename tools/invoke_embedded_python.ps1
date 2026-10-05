@@ -1,3 +1,4 @@
+. (Join-Path $PSScriptRoot 'failure_redaction.ps1')
 if (-not ("KMTech.LabelMatchEmbeddedPythonHost" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -117,18 +118,11 @@ function ConvertTo-BoundedDiagnosticText {
         [AllowNull()][object]$Value,
         [int]$MaximumLength = 512
     )
-    $text = [string]$Value
-    $text = [regex]::Replace($text, '[\x00-\x1F\x7F]+', ' ')
-    $text = [regex]::Replace(
-        $text,
-        '(?i)\b([A-Za-z0-9_-]*(?:token|password|secret|authorization|cookie|api[_-]?key)[A-Za-z0-9_-]*)\b(\s*[:=]\s*)([^\s,;]+)',
-        '$1$2[redacted]'
-    )
-    $text = [regex]::Replace($text, '(?i)\bbearer\s+[^\s,;]+', 'Bearer [redacted]')
-    $text = [regex]::Replace($text.Trim(), '\s+', ' ')
-    if ($text.Length -gt $MaximumLength) {
-        return $text.Substring(0, $MaximumLength)
-    }
+    $text = ConvertTo-KmtechRedactedSinkText -Text ([string]$Value)
+    $lines = @($text -split '\r?\n' | Where-Object { $_.Trim() })
+    $text = if ($lines.Count) { [string]$lines[-1] } else { '' }
+    $maximum = [Math]::Min(300, $MaximumLength)
+    if ($text.Length -gt $maximum) { return $text.Substring($text.Length-$maximum) }
     return $text
 }
 
@@ -142,6 +136,44 @@ function Get-DiagnosticProperty([AllowNull()][object]$Value, [string]$Name) {
     if (-not (Test-DiagnosticProperty $Value $Name)) { return $null }
     if ($Value -is [System.Collections.IDictionary]) { return $Value[$Name] }
     return $Value.PSObject.Properties[$Name].Value
+}
+
+function New-InstallerFailureEvidenceDirectory {
+    $directory = Join-Path ([IO.Path]::GetTempPath()) ('label-embedded-diagnostic-' + [Guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $directory -ErrorAction Stop)
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User,
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+    }
+    Set-Acl -LiteralPath $directory -AclObject $acl
+    return $directory
+}
+
+function Write-InstallerFailureEvidence([string]$Text) {
+    $Text = ConvertTo-KmtechRedactedSinkText -Text $Text
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Text)
+    $truncated = $Text.Contains('[TRUNCATED:')
+    $directory = New-InstallerFailureEvidenceDirectory
+    $path = Join-Path $directory 'trace.txt'
+    $stream = [IO.File]::Open($path, 'CreateNew', 'Write', 'Read')
+    try { $stream.Write($bytes,0,$bytes.Length);$stream.Flush($true) } finally { $stream.Dispose() }
+    return [ordered]@{path=$path;sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant();limit_bytes=65536;truncated=$truncated}
+}
+
+function Assert-InstallerFailureEvidence($Reference) {
+    $path = [IO.Path]::GetFullPath([string](Get-DiagnosticProperty $Reference 'path'))
+    $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if (-not $path.StartsWith($temp,[StringComparison]::OrdinalIgnoreCase) -or
+        (Split-Path -Leaf (Split-Path -Parent $path)) -cnotmatch '^label-embedded-diagnostic-[0-9a-f]{32}$' -or
+        (Split-Path -Leaf $path) -cne 'trace.txt') { throw 'CHILD_FAILURE_EVIDENCE_PATH_INVALID' }
+    foreach ($itemPath in @((Split-Path -Parent $path),$path)) {
+        if (((Get-Item -LiteralPath $itemPath).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'CHILD_FAILURE_EVIDENCE_LINK_INVALID' }
+    }
+    if ((Get-Item -LiteralPath $path).Length -gt 65536 -or
+        (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string](Get-DiagnosticProperty $Reference 'sha256')) { throw 'CHILD_FAILURE_EVIDENCE_BYTES_DIFFER' }
 }
 
 function New-InstallerFailureDiagnostic {
@@ -175,6 +207,8 @@ function New-InstallerFailureDiagnostic {
         failure_code = $code
     }
     if ($null -ne $Exception) {
+        try { $diagnostic['full_exception_trace'] = Write-InstallerFailureEvidence ($Exception.ToString()) }
+        catch { $diagnostic['evidence_failure'] = [ordered]@{type=$_.Exception.GetType().Name;last_line=ConvertTo-BoundedDiagnosticText $_.Exception.Message 300} }
         $inner = $Exception
         $innerDepth = 0
         while (
@@ -233,6 +267,15 @@ function ConvertTo-InstallerFailureDiagnostic {
             $diagnostic["inner_exception_message"] = $exceptionMessage
         }
     }
+    if (Test-DiagnosticProperty $Candidate 'full_exception_trace') {
+        $reference = Get-DiagnosticProperty $Candidate 'full_exception_trace'
+        if (Test-DiagnosticProperty $reference 'evidence_failure') {
+            $diagnostic['evidence_failure'] = ConvertTo-KmtechRedactedSinkObject (Get-DiagnosticProperty $reference 'evidence_failure')
+        } else {
+            Assert-InstallerFailureEvidence $reference
+            $diagnostic['full_exception_trace'] = $reference
+        }
+    }
     return $diagnostic
 }
 
@@ -274,9 +317,12 @@ function Invoke-KMTechEmbeddedPython {
         }
     }
 
+    $failureEvidenceDirectory = New-InstallerFailureEvidenceDirectory
+    $failureEvidencePath = Join-Path $failureEvidenceDirectory 'trace.txt'
     $request = [ordered]@{
         script = $resolvedScriptPath
         argv = @($Arguments | ForEach-Object { [string]$_ })
+        failure_evidence_path = $failureEvidencePath
     } | ConvertTo-Json -Compress -Depth 4
     $requestBase64 = [Convert]::ToBase64String(
         [System.Text.Encoding]::UTF8.GetBytes($request)
@@ -318,28 +364,36 @@ import os
 import re
 import runpy
 import sys
+import hashlib
+import traceback
 
 _request = json.loads(base64.b64decode(os.environ["KMTECH_LABEL_MATCH_EMBEDDED_REQUEST_B64"]))
 sys.argv = [_request["script"], *[str(value) for value in _request.get("argv", [])]]
 _exit_code = 0
 _diagnostic = None
 
+from failure_redaction import redact_for_sink, redact_json_for_sink
+
+def _protected_message(value):
+    return redact_for_sink(str(value or ""))
+
 def _bounded_message(value):
-    text = str(value or "")[:4096]
-    for raw_value in sorted(
-        {str(item) for item in _request.get("argv", []) if str(item)},
-        key=len,
-        reverse=True,
-    ):
-        text = text.replace(raw_value, "[redacted]")
-    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
-    text = re.sub(
-        r"(?i)\b([A-Za-z0-9_-]*(?:token|password|secret|authorization|cookie|api[_-]?key)[A-Za-z0-9_-]*)\b(\s*[:=]\s*)([^\s,;]+)",
-        r"\1\2[redacted]",
-        text,
-    )
-    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
-    return " ".join(text.split())[:512]
+    lines = _protected_message(value).splitlines()
+    return next((line for line in reversed(lines) if line.strip()), "")[-300:]
+
+def _failure_evidence(exc):
+    text = _protected_message(''.join(traceback.TracebackException.from_exception(exc).format()))
+    raw = text.encode('utf-8')
+    path = _request['failure_evidence_path']
+    try:
+        with open(path, 'xb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception as error:
+        return dict(evidence_failure=dict(type=type(error).__name__, last_line=_bounded_message(error)))
+    return dict(path=path, sha256=hashlib.sha256(raw).hexdigest(), limit_bytes=65536,
+                truncated='[TRUNCATED:' in text)
 
 try:
     runpy.run_path(_request["script"], run_name="__main__")
@@ -356,6 +410,7 @@ except SystemExit as _exc:
             "command_identity": os.path.basename(_request["script"]),
             "child_exit_code": _exit_code,
             "failure_code": "CHILD_NONZERO_EXIT",
+            "full_exception_trace": _failure_evidence(_exc),
         }
 except BaseException as _exc:
     _exit_code = 1
@@ -366,6 +421,7 @@ except BaseException as _exc:
         "failure_code": "CHILD_EXCEPTION",
         "inner_exception_type": type(_exc).__name__,
         "inner_exception_message": _bounded_message(_exc),
+        "full_exception_trace": _failure_evidence(_exc),
     }
 os.environ["KMTECH_LABEL_MATCH_EMBEDDED_EXIT_CODE"] = str(_exit_code)
 if _diagnostic is not None:
@@ -394,16 +450,20 @@ if _diagnostic is not None:
                 $diagnosticBytes = [Convert]::FromBase64String($diagnosticText)
                 if ($diagnosticBytes.Length -le 4096) {
                     $diagnosticJson = [System.Text.Encoding]::UTF8.GetString($diagnosticBytes)
-                    $FailureDiagnostic.Value = $diagnosticJson | ConvertFrom-Json
+                    $FailureDiagnostic.Value = ConvertTo-InstallerFailureDiagnostic ($diagnosticJson | ConvertFrom-Json) 'embedded_python'
                 }
             }
             catch {
-                $FailureDiagnostic.Value = $null
+                $FailureDiagnostic.Value = New-InstallerFailureDiagnostic 'embedded_python' $exitCode 'CHILD_EXCEPTION' $_.Exception
+                if ($exitCode -eq 0) { $exitCode = 1 }
             }
         }
         return $exitCode
     }
     finally {
+        if (-not (Test-Path -LiteralPath $failureEvidencePath)) {
+            Remove-Item -LiteralPath $failureEvidenceDirectory -ErrorAction SilentlyContinue
+        }
         foreach ($name in @(
             $requestName,
             $exitName,

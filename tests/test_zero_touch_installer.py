@@ -28,7 +28,9 @@ def _run_legacy_task_removal_harness(tmp_path: Path, scenario: str):
     start = installer_text.index("function Get-LegacyTaskByNameFailClosed")
     end = installer_text.index("function Test-CurrentUserRelayPersistencePresent")
     harness = tmp_path / f"legacy-task-{scenario}.ps1"
-    harness.write_text(installer_text[start:end] + r"""
+    resolver_start = installer_text.index("function ConvertTo-LabelTaskSid")
+    resolver_end = installer_text.index("function Assert-LabelStartupUpdateTaskDefinition", resolver_start)
+    harness.write_text(installer_text[resolver_start:resolver_end] + installer_text[start:end] + r"""
 $ErrorActionPreference = 'Stop'
 $scenario = $env:KMTECH_LEGACY_TASK_SCENARIO
 $script:queryCalls = 0
@@ -259,10 +261,11 @@ def test_bootstrap_is_minimal_code_only_onedir_contract():
     assert "'/reset', '/L'" in text
     assert "acl_readback_status=UNKNOWN" in text
     reuse_index = text.index("$bootstrapStatus = 'REUSED'")
-    final_acl_index = text.index("Set-HardenedCodeAcl $installRootFull -Recursive")
+    final_acl_index = text.index("Set-HardenedCodeAcl $placementRoot -Recursive")
     success_index = text.index('Write-Output "bootstrap_status=$bootstrapStatus"')
     assert reuse_index < final_acl_index < success_index
-    assert "Register-ScheduledTask" not in text
+    from tools.verify_staged_release_installer import _assert_bootstrap_source
+    _assert_bootstrap_source(INSTALLER, ROOT / "tools/bootstrap_integrity.ps1")
     assert "New-ScheduledTask" not in text
     assert "Start-ScheduledTask" not in text
     assert "self-enroll" not in text
@@ -275,6 +278,22 @@ def test_bootstrap_is_minimal_code_only_onedir_contract():
     assert "-File $BootstrapScriptPath" not in text
     assert "Test-CurrentUserRelayPersistencePresent" in text
     assert "--remove-current-user-setup" in text
+
+
+@pytest.mark.parametrize("damage", ("old-acl-target", "third-task"))
+def test_integrated_bootstrap_refuses_previous_acl_target_and_extra_task(tmp_path, monkeypatch, damage):
+    from tools.verify_staged_release_installer import StagedInstallerVerificationError
+    text = INSTALLER.read_text(encoding="utf-8-sig")
+    if damage == "old-acl-target":
+        text = text.replace("Set-HardenedCodeAcl $placementRoot -Recursive", "Set-HardenedCodeAcl $installRootFull -Recursive")
+    else:
+        text += "\nRegister-ScheduledTask -TaskName unreviewed\n"
+    path = tmp_path / "INSTALL_THIS_PC.ps1"
+    path.write_text(text, encoding="utf-8-sig")
+    monkeypatch.setattr(__name__ + ".INSTALLER", path)
+    expected = ValueError if damage == "old-acl-target" else StagedInstallerVerificationError
+    with pytest.raises(expected):
+        test_bootstrap_is_minimal_code_only_onedir_contract()
 
 
 def test_bootstrap_powershell_parses():

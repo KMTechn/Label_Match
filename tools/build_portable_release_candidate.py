@@ -59,6 +59,7 @@ LEGACY_INSTALLER_FILENAME = "INSTALL_THIS_PC.ps1"
 BOOTSTRAP_INTEGRITY_HELPER = Path("tools/bootstrap_integrity.ps1")
 WRITER_FENCE_HELPER = Path("tools/label_writer_fence.ps1")
 WRITER_FENCE_CONTRACT = Path("tools/label_writer_fence_contract.json")
+FAILURE_SINK_DATA = (Path("tools/failure_redaction.ps1"), Path("tools/failure_redaction_rules.json"))
 SHARED_POWERSHELL_LEAF = Path("kmtech_shared/powershell/portable.ps1")
 DATA_GENERATION_POWERSHELL_LEAF = Path("kmtech_shared/powershell/data_generation.ps1")
 THIRD_PARTY = {
@@ -302,6 +303,8 @@ def _copy_application(repo_root: Path, app_root: Path) -> list[Path]:
         shutil.copy2(source, app_root / name)
     tools_root = app_root / "tools"
     tools_root.mkdir()
+    for relative in FAILURE_SINK_DATA:
+        shutil.copy2(repo_root / relative, app_root / relative)
     tool_sources = _discover_portable_tool_sources(repo_root)
     for source in tool_sources:
         relative = source.relative_to(repo_root / "tools")
@@ -477,7 +480,10 @@ def build(
     update_manifest_public_key_config: str,
     data_generation_update_manifest: Path | None = None,
     data_generation_update_signature: Path | None = None,
+    auto_update_settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    from auto_update import policy_from_settings, source_version_literal
+    startup_policy=policy_from_settings(auto_update_settings or {})
     repo_root = repo_root.resolve()
     python_home = python_home.resolve()
     output = output.resolve()
@@ -550,7 +556,10 @@ def build(
         output.mkdir(parents=True)
         _runtime_source(python_home, output / "runtime")
         app_root = output / "app"
+        version = source_version_literal((repo_root / "Label_Match.py").read_bytes())
         tool_sources = _copy_application(repo_root, app_root)
+        if source_version_literal((app_root / "Label_Match.py").read_bytes()) != version:
+            raise PortableBuildError("copied application version differs")
         update_key_config_sha256 = _write_update_key_config(
             app_root,
             update_manifest_public_key_config,
@@ -589,6 +598,8 @@ def build(
             )
         writer_fence_target = output / WRITER_FENCE_HELPER
         shutil.copy2(writer_fence_source, writer_fence_target)
+        for relative in FAILURE_SINK_DATA:
+            shutil.copy2(repo_root / relative, output / relative)
         writer_fence_contract_source = repo_root / WRITER_FENCE_CONTRACT
         if not writer_fence_contract_source.is_file():
             raise PortableBuildError(
@@ -598,6 +609,8 @@ def build(
             writer_fence_contract_source,
             output / WRITER_FENCE_CONTRACT,
         )
+        shutil.copy2(repo_root / "tools/apply_prepared_update.ps1", output / "tools/apply_prepared_update.ps1")
+        (app_root / "auto-update-settings.json").write_text(json.dumps(startup_policy, sort_keys=True, indent=2)+"\n", encoding="utf-8", newline="\n")
         native = _app_native_inventory(app_root)
         forbidden_roots = [
             name
@@ -619,6 +632,13 @@ def build(
             "source_tree": source_tree,
             "version": data_version,
             "data_compatible_min_version": data_floor,
+            "startup_update_protocol": 1,
+            "startup_update_helper_sha256": _sha256(output / "tools/apply_prepared_update.ps1"),
+            "helper_sha256": _sha256(output / "INSTALL_THIS_PC.ps1"),
+            "integrity_helper_sha256": _sha256(output / "tools/bootstrap_integrity.ps1"),
+            "writer_fence_helper_sha256": _sha256(output / "tools/label_writer_fence.ps1"),
+            "writer_session_contract_sha256": _sha256(output / "tools/label_writer_fence_contract.json"),
+            "writer_sink_inventory_contract_sha256": next(node.value.value for node in ast.parse((repo_root / "writer_session_fence.py").read_text(encoding="utf-8-sig")).body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "WRITER_INVENTORY_SHA256" for target in node.targets)),
             "python_version": ".".join(str(value) for value in EXPECTED_PYTHON),
             "python_home": str(python_home),
             "runtime_python_sha256": _sha256(output / "runtime" / "python.exe"),
@@ -656,7 +676,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repo-root", type=Path, default=Path(__file__).resolve().parents[1]
     )
-    parser.add_argument("--update-manifest-public-key-config", required=True)
+    parser.add_argument("--update-manifest-public-key-config", default=None)
+    parser.add_argument("--auto-update-settings", type=Path)
     parser.add_argument("--data-generation-update-manifest", type=Path)
     parser.add_argument("--data-generation-update-signature", type=Path)
     return parser.parse_args(argv)
@@ -668,7 +689,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         args.repo_root,
         args.python_home,
         args.output,
-        update_manifest_public_key_config=args.update_manifest_public_key_config,
+        update_manifest_public_key_config=(args.update_manifest_public_key_config or json.dumps(json.loads((args.repo_root / "config/update-manifest-key-config.json").read_text(encoding="utf-8-sig"))["manifest_public_key"])),
+        auto_update_settings=(json.loads(args.auto_update_settings.read_text(encoding="utf-8-sig")) if args.auto_update_settings else None),
         data_generation_update_manifest=args.data_generation_update_manifest,
         data_generation_update_signature=args.data_generation_update_signature,
     )

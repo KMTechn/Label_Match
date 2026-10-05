@@ -1,4 +1,5 @@
 import base64
+from tests.test_placement_launcher_transport import transport_command
 import hashlib
 import json
 import os
@@ -66,15 +67,53 @@ def _run_clean_install_receipt_gate_harness(
         "Write-Output 'receipt_gate_status=PASS'\nexit 0\n\n" + sentinel,
         1,
     )
+    # The receipt gate uses the real packet/G checks, with native state supplied
+    # by an absent-machine double instead of the host's Run/tasks/relay.
+    installer_source = installer_source.replace("$legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot", """
+function Snapshot { [pscustomobject]@{exists=$false;kind='';data=''} }
+function Relays { @() }
+function Get-ScheduledTask { @() }
+function Get-LabelCurrentUserScheduledTasks { @() }
+function Get-LabelOfficialLegacyTaskSnapshot { return $null }
+$legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot
+""", 1)
+    from tools.build_portable_release_candidate import _copy_application, RUNTIME_ROOT_FILES
+    from tests.test_current_user_onboarding import _write_bootstrap_inventory_record
+    from label_data_generation import CURRENT_VERSION
+    import shutil
+    import zipfile
+    python_home = Path(sys.base_prefix)
+    runtime_root = source_root / "runtime"
+    (runtime_root / "DLLs").mkdir(parents=True)
+    for name in RUNTIME_ROOT_FILES:
+        shutil.copy2(python_home / name, runtime_root / name)
+    for extension in (python_home / "DLLs").iterdir():
+        if extension.is_file() and extension.suffix.lower() in {".dll", ".pyd"}:
+            shutil.copy2(extension, runtime_root / "DLLs" / extension.name)
+    # CPython's supported stdlib ZIP keeps the real runtime self-contained
+    # while the receipt gate's full inventory stays within its existing budget.
+    with zipfile.ZipFile(runtime_root / "python312.zip", "w", zipfile.ZIP_STORED) as archive:
+        for directory, directories, files in os.walk(python_home / "Lib"):
+            directories[:] = sorted(name for name in directories
+                                    if name not in {"site-packages", "__pycache__", "test", "ensurepip", "idlelib", "turtledemo"})
+            for name in sorted(files):
+                path = Path(directory) / name
+                archive.write(path, path.relative_to(python_home / "Lib").as_posix())
+    runtime_check = subprocess.run([str(runtime_root / "python.exe"), "-I", "-B", "-c",
+                                   "import encodings, sys; assert sys.version_info[:3] == (3, 12, 10)"],
+                                  check=False, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert runtime_check.returncode == 0, "Isolated CPython fixture did not start"
+    _copy_application(ROOT, source_root / "app")
     files = {
-        "runtime/python.exe": b"unsigned-python-fixture\n",
-        "runtime/pythonw.exe": b"unsigned-pythonw-fixture\n",
+        "runtime/python.exe": (source_root / "runtime/python.exe").read_bytes(),
+        "runtime/pythonw.exe": (source_root / "runtime/pythonw.exe").read_bytes(),
         "app/main.py": b"raise SystemExit('must not run')\n",
         "launch-label-match.cmd": b"@echo off\r\nexit /b 99\r\n",
         "INSTALL_CANONICAL_PORTABLE.ps1": installer_source.encode("utf-8"),
-        "INSTALL_THIS_PC.ps1": b"throw 'placement helper must not run'\n",
-        "tools/bootstrap_integrity.ps1": b"throw 'integrity helper must not run'\n",
-        "tools/label_writer_fence.ps1": b"throw 'writer fence must not run'\n",
+        "INSTALL_THIS_PC.ps1": (ROOT / "INSTALL_THIS_PC.ps1").read_bytes(),
+        "tools/bootstrap_integrity.ps1": (ROOT / "tools/bootstrap_integrity.ps1").read_bytes(),
+        "tools/label_writer_fence.ps1": WRITER_FENCE_HELPER.read_bytes(),
+        "tools/label_writer_fence_contract.json": (ROOT / "tools/label_writer_fence_contract.json").read_bytes(),
         **shared_bootstrap_files("app/"),
     }
     for relative, content in files.items():
@@ -84,6 +123,7 @@ def _run_clean_install_receipt_gate_harness(
 
     manifest = {
         "schema": "label-match-portable-tree-v1",
+        "version": CURRENT_VERSION,
         "entrypoint": "runtime/pythonw.exe app/main.py",
         "launcher": "launch-label-match.cmd",
         "source_commit": "1" * 40,
@@ -102,6 +142,7 @@ def _run_clean_install_receipt_gate_harness(
         encoding="utf-8",
         newline="\n",
     )
+    _write_bootstrap_inventory_record(source_root)
 
     powershell = (
         Path(os.environ["SystemRoot"])
@@ -153,7 +194,7 @@ def _run_clean_install_receipt_gate_harness(
 
 
 def _run_pristine_removal_gate_harness(
-    tmp_path: Path, *, pristine_install: bool = True
+    tmp_path: Path, *, pristine_install: bool = True, unexpected_writer: bool = False
 ) -> dict[str, object]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     source = _source()
@@ -168,6 +209,8 @@ def _run_pristine_removal_gate_harness(
         "    $unquiesced = @(UnquiescedProductWriters)", removal_anchor_index
     )
     removal_block = source[block_start:block_end]
+    wait_start = source.index("function Wait-LabelRelayPreimageExit")
+    relay_exit = source[wait_start:source.index("\nfunction HealthyLifecycle", wait_start)]
     harness = tmp_path / "pristine-removal-gate.ps1"
     marker = tmp_path / "label_match_user_relay.stop.json"
     removal_report = tmp_path / "current_user_removal.json"
@@ -175,6 +218,10 @@ def _run_pristine_removal_gate_harness(
         rf"""
 $ErrorActionPreference = 'Stop'
 $script:removalCalls = 0
+$script:unexpectedWriter = {'$true' if unexpected_writer else '$false'}
+$old = @()
+$legacyFirstRegistration = $false
+$healthyWithoutCode = $false
 $pristineInstall = {'$true' if pristine_install else '$false'}
 $healthyLifecycle = $null
 $healthyRemovedInstall = $false
@@ -195,6 +242,15 @@ function Product([string]$Root, [string]$Mode) {{
 }}
 function Snapshot {{ return [ordered]@{{ exists = $false; kind = ''; data = '' }} }}
 function Get-ScheduledTask {{ return $null }}
+function Get-LabelCurrentUserScheduledTasks {{ return $null }}
+function Get-LabelOfficialLegacyTaskSnapshot {{ return $null }}
+function UnquiescedProductWriters {{
+    if ($script:unexpectedWriter) {{
+        return [pscustomobject]@{{ ExecutablePath = 'C:\isolated\pythonw.exe'; CommandLine = 'pythonw.exe --unexpected' }}
+    }}
+    return @()
+}}
+{relay_exit}
 
 {removal_block}
 
@@ -587,6 +643,11 @@ def test_pristine_install_skips_removal_without_creating_stop_marker(
     }
 
 
+def test_pristine_removal_wait_refuses_unexpected_writer(tmp_path: Path) -> None:
+    with pytest.raises(AssertionError, match="Unexpected writer remains after normal removal"):
+        _run_pristine_removal_gate_harness(tmp_path, unexpected_writer=True)
+
+
 @pytest.mark.parametrize("residue", PRISTINE_RESIDUE_KINDS)
 def test_every_residue_kind_keeps_removal_enabled(
     tmp_path: Path, residue: str
@@ -669,7 +730,7 @@ def test_top_level_installer_owns_current_user_lifecycle_and_preimage() -> None:
         "label-match-canonical-portable-install-v1",
         "INSTALL_THIS_PC.ps1",
         "Product $removalRoot '--remove-current-user-setup'",
-        "Product $install '--onboard-current-user'",
+        "Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start')",
         "PREIMAGE_SAVED",
         "FAILED_ROLLED_BACK",
         "stop_marker_preimage",
@@ -680,22 +741,24 @@ def test_top_level_installer_owns_current_user_lifecycle_and_preimage() -> None:
         "ReceiptSource $source $sourceManifest",
     ):
         assert token in source
-    assert "(Arg $Root)" in source
+    assert "(Arg $LogicalAppRoot)" in source
     assert "Register-ScheduledTask" in source
     assert "Start-ScheduledTask" not in source
     assert "Stop-ScheduledTask" not in source
     assert "schtasks /run" not in source.lower()
     assert source.index("Product $removalRoot '--remove-current-user-setup'") < source.index(
-        "InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
+        "$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
     )
     assert source.index("ReceiptSource $source $sourceManifest") < source.index(
-        "InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
+        "$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
     )
 
 
 def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
     source = _source()
-    rollback = source[source.index("catch {\n    $original = $_") :]
+    start = source.index("function Invoke-LabelCanonicalRollback")
+    end = source.index("\nfunction ", start + 1)
+    rollback = source[start:end] + source[source.index("    $original = $_"): ]
 
     assert "try { Product $install '--remove-current-user-setup' } catch {}" not in rollback
     product = rollback.index("Product $rollbackProductRoot '--remove-current-user-setup'")
@@ -710,13 +773,24 @@ def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
     restored_true = rollback.index("$audit.rollback.runtime_restored = $true")
     assert product < zero_readback < restore < restore_task < exact_readback < restored_true
     for token in (
-        "$audit.status = 'ROLLBACK_FAILED'",
+        "$audit.status = if ($legacyFirstRegistration) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }",
         "$audit.rollback.runtime_restored = $false",
         "$audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name",
         "ROLLBACK_AUDIT_PERSISTENCE_FAILED",
         "AUTOSTART_ROLLBACK_FAILED",
     ):
         assert token in rollback
+
+
+@pytest.mark.parametrize("status", ["FAILED_ROLLBACK_INCOMPLETE", "ROLLBACK_FAILED"])
+def test_rollback_status_contract_refuses_changed_branch(monkeypatch, status):
+    source = _source()
+    assignment = "$audit.status = if ($legacyFirstRegistration) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }"
+    assert source.count(assignment) == 1
+    changed = source.replace(assignment, assignment.replace("'" + status + "'", "'PASS'"), 1)
+    monkeypatch.setattr(__import__(__name__, fromlist=["_source"]), "_source", lambda: changed)
+    with pytest.raises(AssertionError):
+        test_rollback_is_fail_closed_and_persists_explicit_failure()
 
 
 @pytest.mark.parametrize(
@@ -1062,7 +1136,7 @@ def _product_functions() -> str:
     source = _source()
     start = source.index("function Arg([string]$Value) {")
     end = source.index("\n$WriterDelegationEnvironmentNames = @(")
-    return source[start:end]
+    return f". '{(ROOT / 'tools/failure_redaction.ps1').as_posix()}'\n" + source[start:end]
 
 
 def _run_product_stderr_harness(tmp_path: Path) -> str:
@@ -1143,7 +1217,8 @@ def test_product_failure_includes_child_stderr_and_delegation_env(
 ) -> None:
     output = _run_product_stderr_harness(tmp_path)
     assert "product_error=Product mode failed: --onboard-current-user/3" in output
-    assert "token=repro-delegation-token-value-32ok" in output
+    assert "repro-delegation-token-value-32ok" not in output
+    assert "token=[REDACTED:KMTECH_LABEL_WRITER_DELEGATION_TOKEN]" in output
 
 
 def test_portable_main_imports_label_match_under_isolated_python(
@@ -1152,6 +1227,8 @@ def test_portable_main_imports_label_match_under_isolated_python(
     app = tmp_path / "app"
     app.mkdir()
     (app / "main.py").write_bytes((ROOT / "portable" / "main.py").read_bytes())
+    for name in ("auto_update.py", "writer_session_fence.py"):
+        (app / name).write_bytes((ROOT / name).read_bytes())
     (app / "Label_Match.py").write_text(
         "def main() -> int:\n    return 0\n",
         encoding="utf-8",
@@ -1200,8 +1277,7 @@ def test_top_level_freezes_and_pins_the_uac_helper_before_copy() -> None:
 def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path) -> None:
     source = _source()
     match = re.search(
-        r"\$launcher = @'\r?\n(?P<body>.*?)\r?\n'@\.Replace"
-        r"\('@@payload-base64@@', \$payloadBase64\)",
+        r"\$launcher = @'\r?\n(?P<body>.*?)\r?\n'@",
         source,
         re.DOTALL,
     )
@@ -1294,11 +1370,8 @@ def test_encoded_elevated_launcher_binds_named_helper_parameters(tmp_path: Path)
         "data_generation_sha256": hashlib.sha256((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes()).hexdigest(),
         "parameters": parameters,
     }
-    payload_base64 = base64.b64encode(
-        json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    launcher = match.group("body").replace("@@payload-base64@@", payload_base64)
-    encoded_launcher = base64.b64encode(launcher.encode("utf-16-le")).decode("ascii")
+    launcher = match.group("body")
+    encoded_launcher = transport_command(tmp_path, launcher, payload)
     powershell = (
         Path(os.environ["SystemRoot"])
         / "System32"
@@ -1409,8 +1482,7 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
 ) -> None:
     source = _source()
     match = re.search(
-        r"\$launcher = @'\r?\n(?P<body>.*?)\r?\n'@\.Replace"
-        r"\('@@payload-base64@@', \$payloadBase64\)",
+        r"\$launcher = @'\r?\n(?P<body>.*?)\r?\n'@",
         source,
         re.DOTALL,
     )
@@ -1459,11 +1531,8 @@ def test_encoded_elevated_launcher_rejects_actual_non_scalar_sentinels(
         "data_generation_sha256": hashlib.sha256((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes()).hexdigest(),
         "parameters": parameters,
     }
-    payload_base64 = base64.b64encode(
-        json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    launcher = match.group("body").replace("@@payload-base64@@", payload_base64)
-    encoded_launcher = base64.b64encode(launcher.encode("utf-16-le")).decode("ascii")
+    launcher = match.group("body")
+    encoded_launcher = transport_command(tmp_path, launcher, payload)
     powershell = (
         Path(os.environ["SystemRoot"])
         / "System32"
@@ -1500,8 +1569,7 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
 ) -> None:
     source = _source()
     match = re.search(
-        r"\$launcher = @'\r?\n(?P<body>.*?)\r?\n'@\.Replace"
-        r"\('@@payload-base64@@', \$payloadBase64\)",
+        r"\$launcher = @'\r?\n(?P<body>.*?)\r?\n'@",
         source,
         re.DOTALL,
     )
@@ -1579,11 +1647,8 @@ def test_encoded_launcher_runs_actual_helper_with_preloaded_pinned_integrity(
         "data_generation_sha256": hashlib.sha256((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes()).hexdigest(),
         "parameters": parameters,
     }
-    payload_base64 = base64.b64encode(
-        json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    launcher = match.group("body").replace("@@payload-base64@@", payload_base64)
-    encoded_launcher = base64.b64encode(launcher.encode("utf-16-le")).decode("ascii")
+    launcher = match.group("body")
+    encoded_launcher = transport_command(tmp_path, launcher, payload)
     powershell = (
         Path(os.environ["SystemRoot"])
         / "System32"
@@ -1644,7 +1709,8 @@ def test_portable_builder_packages_v2_installer_helper_and_integrity_tool() -> N
 
 def test_plan_only_contract_is_stdout_only_and_non_mutating() -> None:
     source = _source()
-    plan_block = source[source.index("if ($PlanOnly)") : source.index("$runId =")]
+    plan_start = source.index("if ($PlanOnly)")
+    plan_block = source[plan_start : source.index("$runId =", plan_start)]
 
     assert "install_status=PLAN_ONLY" in plan_block
     assert "registry_changed=false" in plan_block
@@ -1947,7 +2013,9 @@ def test_server_base_url_is_validated_first_and_reaches_only_onboarding() -> Non
     assert validation < source.index("if ($PlanOnly)")
     assert validation < source.index("$before = Snapshot")
     assert source.count("$onboardingArguments") == 2
-    assert "Product $install '--onboard-current-user' $onboardingArguments" in source
+    assert "Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start')" in source
+    onboarding = source.index("try { Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start') }")
+    assert source.index("$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters") < onboarding < source.index("$after = Snapshot", onboarding)
     assert "'--remove-current-user-setup' $onboardingArguments" not in source
     assert "onboarding_server_base_url = [ordered]@{" in source
     launcher_parameters = source[
@@ -1955,3 +2023,378 @@ def test_server_base_url_is_validated_first_and_reaches_only_onboarding() -> Non
     ]
     assert "ServerBaseUrl" not in launcher_parameters
     assert "ServerBaseUrl" not in _source(HELPER)
+
+
+@pytest.mark.parametrize("damage", ("old-marker", "old-onboarding", "onboarding-before-placement"))
+def test_integrated_lifecycle_static_contract_refuses_previous_shape(monkeypatch, damage):
+    source = _source()
+    onboarding = "try { Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start') }"
+    if damage == "old-marker":
+        source = source.replace("REUSED_VERIFIED", "REUSED")
+    elif damage == "old-onboarding":
+        source = source.replace(onboarding, "try { Product $install '--onboard-current-user' $onboardingArguments }")
+    else:
+        assert source.count(onboarding) == 1
+        source = source.replace(onboarding, "")
+        placement = "$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters"
+        source = source.replace(placement, onboarding + "\n        " + placement, 1)
+    helper = _source(HELPER)
+    monkeypatch.setattr(__name__ + "._source", lambda path=INSTALLER: source if path == INSTALLER else helper)
+    with pytest.raises(AssertionError):
+        if damage == "old-marker":
+            test_top_level_installer_owns_current_user_lifecycle_and_preimage()
+        else:
+            test_server_base_url_is_validated_first_and_reaches_only_onboarding()
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("scenario", (
+    "public-ca", "private-key", "identity", "credential", "extra-file",
+    "empty-directory", "invalid-certificate", "receipt", "credential-only", "absent-ca",
+))
+def test_pristine_public_bootstrap_ca_preserves_other_residue(tmp_path, engine, scenario):
+    from tests.test_logistics_runtime_profile import _private_ca_pem
+    from tests.test_shared_ancestor_protection import run_functions
+
+    ca = tmp_path / "bootstrap" / "ca-bundle.pem"
+    if scenario not in {"credential-only", "absent-ca"}:
+        ca.parent.mkdir()
+    if scenario not in {"empty-directory", "credential-only", "absent-ca"}:
+        content = _private_ca_pem()
+        if scenario == "private-key":
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric import ec
+            content += ec.generate_private_key(ec.SECP256R1()).private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        elif scenario == "invalid-certificate":
+            content = b"-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n"
+        ca.write_bytes(content)
+    identity = tmp_path / "direct-sync" / "producer_identity.json"
+    credential = tmp_path / "direct-sync" / "credential.json"
+    receipt = tmp_path / "install-audit" / "receipt.json"
+    if scenario in {"identity", "credential", "credential-only", "receipt", "extra-file"}:
+        residue = {"identity": identity, "credential": credential, "receipt": receipt,
+                   "credential-only": credential, "extra-file": ca.parent / "unexpected.json"}[scenario]
+        residue.parent.mkdir(parents=True, exist_ok=True)
+        residue.write_text("{}", encoding="utf-8")
+    before = {p.relative_to(tmp_path).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+              for p in tmp_path.rglob("*") if p.is_file()}
+    result = run_functions(tmp_path, INSTALLER, ["Test-PristineInstallState"], r'''
+$ca=$env:LM_PRISTINE_CA
+$paths=@((Split-Path -Parent $ca),$ca,$env:LM_PRISTINE_IDENTITY,
+ $env:LM_PRISTINE_CREDENTIAL,(Split-Path -Parent $env:LM_PRISTINE_RECEIPT))
+$actual=Test-PristineInstallState $env:LM_PRISTINE_INSTALL `
+ ([pscustomobject]@{exists=$false}) @() @() $paths `
+ $ca $env:LM_PRISTINE_PYTHON $env:LM_PRISTINE_APP
+[pscustomobject]@{pristine=[bool]$actual}|ConvertTo-Json -Compress
+''', engine=engine, values={
+        "LM_PRISTINE_CA": str(ca), "LM_PRISTINE_INSTALL": str(tmp_path / "current"),
+        "LM_PRISTINE_IDENTITY": str(identity), "LM_PRISTINE_CREDENTIAL": str(credential),
+        "LM_PRISTINE_RECEIPT": str(receipt), "LM_PRISTINE_PYTHON": sys.executable,
+        "LM_PRISTINE_APP": str(ROOT),
+    })
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert json.loads(result.stdout)["pristine"] is (scenario in {"public-ca", "absent-ca"})
+    assert {name: hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            for name in before} == before
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("tamper", (False, True))
+def test_pinned_bom_integrity_helper_executes_verified_bytes(tmp_path, engine, tamper):
+    from tests.test_shared_ancestor_protection import run_functions
+
+    expected = hashlib.sha256(INTEGRITY_HELPER.read_bytes()).hexdigest()
+    result = run_functions(tmp_path, INSTALLER, ["ByteSha", "PinnedFileBytes"], r'''
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
+$statement=@($ast.FindAll({param($n)
+ $n -is [Management.Automation.Language.PipelineAst] -and
+ $n.Extent.Text.StartsWith('. ([ScriptBlock]::Create', [StringComparison]::Ordinal) -and
+ $n.Extent.Text.Contains('preparationIntegrityBytes')
+},$true))
+if($statement.Count -ne 1){throw 'Ordinary verified-byte execution site missing.'}
+$preparationIntegrityBytes=PinnedFileBytes $env:LM_BOM_HELPER $env:LM_BOM_SHA
+$frozenPlacement=[pscustomobject]@{root=$env:LM_BOM_ROOT}
+# Execute the actual product statement, never the installer entrypoint.
+. ([ScriptBlock]::Create($statement[0].Extent.Text))
+if(-not (Get-Command Assert-BootstrapIntegrityRecord -CommandType Function -ErrorAction SilentlyContinue)) {
+ throw 'Actual BOM helper did not define its integrity function.'
+}
+'EXECUTED'
+''', engine=engine, values={
+        "LM_BOM_HELPER": str(INTEGRITY_HELPER), "LM_BOM_ROOT": str(ROOT),
+        "LM_BOM_SHA": ("0" * 64) if tamper else expected,
+    })
+    if tamper:
+        assert result.returncode != 0
+        assert "EXECUTED" not in result.stdout
+        assert "pin" in result.stderr.lower()
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "EXECUTED" in result.stdout
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("existing", (False, True))
+@pytest.mark.parametrize("frozen_acl", (False, True))
+def test_pretransaction_failure_preserves_evidence_and_next_install_state(tmp_path, engine, existing, frozen_acl):
+    from tests.test_shared_ancestor_protection import run_functions
+
+    result = run_functions(tmp_path, INSTALLER, ["Save", "Archive-PretransactionFailure", "Test-PristineInstallState"], r'''
+$auditRoot=Join-Path $env:LM_ARCHIVE_ROOT 'install-audit'
+[void][IO.Directory]::CreateDirectory($auditRoot)
+$runId='regression-run'
+$auditPath=Join-Path $auditRoot ('canonical-portable-'+$runId+'.json')
+$audit=[ordered]@{status='FAILED_PRETRANSACTION';code_placement='PENDING';rollback=@{applied=$false}}
+Save $auditPath $audit
+[IO.File]::WriteAllText(($auditPath+'.tmp.123'),'unique interrupted audit write')
+$frozen=Join-Path $auditRoot ('canonical-portable-'+$runId+'-helper')
+[void][IO.Directory]::CreateDirectory($frozen)
+$helper=Join-Path $frozen 'helper.ps1'
+[IO.File]::WriteAllText($helper,'unique original failure evidence')
+if($env:LM_ARCHIVE_FROZEN -eq '1'){
+ $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+ $acl=Get-Acl -LiteralPath $frozen
+ $rights=[Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete
+ $inherit=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+ [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,$rights,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Deny))
+ Set-Acl -LiteralPath $frozen -AclObject $acl
+}
+if($env:LM_ARCHIVE_EXISTING -eq '1'){
+ [IO.File]::WriteAllText((Join-Path $auditRoot 'existing-receipt.json'),'preserve unrelated receipt')
+}
+$archive=Archive-PretransactionFailure $auditRoot $runId
+if(-not (Test-Path -LiteralPath (Join-Path $archive ('canonical-portable-'+$runId+'.json')))) {throw 'Audit lost.'}
+if([IO.File]::ReadAllText((Join-Path $archive ('canonical-portable-'+$runId+'.json.tmp.123'))) -cne 'unique interrupted audit write') {throw 'Interrupted audit bytes lost.'}
+if([IO.File]::ReadAllText((Join-Path $archive ('canonical-portable-'+$runId+'-helper\helper.ps1'))) -cne 'unique original failure evidence') {throw 'Helper evidence changed.'}
+$pristine=Test-PristineInstallState (Join-Path $env:LM_ARCHIVE_ROOT 'current') ([pscustomobject]@{exists=$false}) @() @() @($auditRoot)
+if($pristine -ne ($env:LM_ARCHIVE_EXISTING -ne '1')) {throw 'Next install residue contract differs.'}
+if($env:LM_ARCHIVE_EXISTING -eq '1' -and [IO.File]::ReadAllText((Join-Path $auditRoot 'existing-receipt.json')) -cne 'preserve unrelated receipt') {throw 'Existing preimage changed.'}
+# Supported removal has no new code, Run, task, relay or registration to undo;
+# forensic archive remains a preserved local diagnostic, outside active audit.
+[pscustomobject]@{pristine=$pristine;archived=$true}|ConvertTo-Json -Compress
+''', engine=engine, values={"LM_ARCHIVE_ROOT": str(tmp_path), "LM_ARCHIVE_EXISTING": "1" if existing else "0", "LM_ARCHIVE_FROZEN": "1" if frozen_acl else "0"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["archived"] is True
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("phase", ("PIN_VALIDATION", "HELPER_EXECUTION"))
+def test_placement_child_preserves_original_failure_without_delegation_secret(tmp_path, engine, phase):
+    import shutil
+
+    executable = shutil.which(engine)
+    if not executable:
+        pytest.skip(f"{engine} is required")
+    body = re.search(r"\$launcher = @'\r?\n(.*?)\r?\n'@", _source(), re.DOTALL).group(1)
+    integrity = tmp_path / "integrity.ps1"
+    writer = tmp_path / "writer.ps1"
+    generation = tmp_path / "generation.ps1"
+    helper = tmp_path / "helper.ps1"
+    failure = tmp_path / "child-failure.json"
+    integrity.write_text("param([string]$SharedCodeRoot)\n", encoding="utf-8-sig")
+    writer.write_bytes(WRITER_FENCE_HELPER.read_bytes())
+    generation.write_bytes((ROOT / "kmtech_shared/powershell/data_generation.ps1").read_bytes())
+    parameters = {name: str(tmp_path) for name in (
+        "SourceRoot", "InstallRoot", "ElevationLogPath", "ExpectedBootstrapScriptSha256",
+        "VerifiedBootstrapScriptPath", "ExpectedSourceAggregateSha256", "WriterFenceControlRoot",
+        "WriterFenceSessionId", "WriterFenceAttemptId", "WriterFenceReplacementTransactionId",
+        "WriterFenceDelegationToken",
+    )}
+    parameters.update(ExpectedSourceFileCount=1, ExpectedSourceByteCount=1,
+        BootstrapIntegrityPreloaded=True, WriterFenceFunctionsPreloaded=True,
+        AllowNoncanonicalLayoutForTest=True, ReplaceExistingVerifiedPortable=False, DryRun=False)
+    parameters.update(InstallerRunId='20261004T000000000Z-' + 'a' * 32,
+        InstallerOwnerProcessId=os.getpid(), InstallerOwnerProcessStartedAtFileTime='1')
+    from protected_admin import current_process_sid
+    parameters.update(DataGenerationSubjectSid=current_process_sid(),
+        DataGenerationMarkerPaths=[str(tmp_path / "data-generation.json")])
+    parameters["WriterFenceDelegationToken"] = "synthetic-private-delegation-" + "x" * 64
+    declarations = [f"[{'switch' if isinstance(value, bool) else 'long' if isinstance(value, int) else 'string[]' if isinstance(value, list) else 'string'}]${name}"
+                    for name, value in parameters.items()]
+    declarations.extend(("[string]$ExpectedActiveCommit", "[string]$StartupUpdateRestorePreimage", "[string]$StartupUpdateRestoreSha256"))
+    helper.write_text("param(" + ",".join(declarations) + ")\nthrow ('ORIGINAL_PLACEMENT_FAILURE ' + $WriterFenceDelegationToken)\n", encoding="utf-8-sig")
+    payload = dict(helper_path=str(helper), helper_sha256=hashlib.sha256(helper.read_bytes()).hexdigest(),
+        integrity_path=str(integrity), integrity_sha256=hashlib.sha256(integrity.read_bytes()).hexdigest(),
+        writer_fence_path=str(writer), writer_fence_sha256=hashlib.sha256(writer.read_bytes()).hexdigest(),
+        data_generation_path=str(generation), data_generation_sha256=hashlib.sha256(generation.read_bytes()).hexdigest(),
+        failure_path=str(failure), parameters=parameters)
+    if phase == "PIN_VALIDATION":
+        payload["integrity_sha256"] = "0" * 64
+    script = tmp_path / "child.ps1"
+    script.write_text(base64.b64decode(transport_command(tmp_path, body, payload)).decode("utf-16-le"), encoding="utf-8-sig")
+    child = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW)
+    assert child.returncode != 0
+    assert failure.exists(), "Original elevated child failure was not preserved"
+    record = json.loads(failure.read_text(encoding="utf-8"))
+    assert record["phase"] == phase
+    assert record["exit_code"] == child.returncode
+    assert record["exception_type"] and record["hresult"] is not None
+    expected = "Elevated helper byte pin differs" if phase == "PIN_VALIDATION" else "ORIGINAL_PLACEMENT_FAILURE"
+    assert expected in record["message"]
+    assert parameters["WriterFenceDelegationToken"] not in failure.read_text(encoding="utf-8")
+    assert parameters["WriterFenceDelegationToken"] not in child.stderr
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("wrapper", ("probe", "placement"))
+def test_pinned_bom_integrity_encoded_wrappers_without_native_launch(tmp_path, engine, wrapper):
+    from tests.test_shared_ancestor_protection import run_functions
+
+    result = run_functions(tmp_path, INSTALLER,
+        ["ByteSha", "PinnedFileBytes", "InvokeFrozenIntegrityProbe", "InvokeFrozenPlacementHelper"], r'''
+$root=$env:LM_BOM_ROOT
+$integrity=Join-Path $root 'tools\bootstrap_integrity.ps1'
+$writer=Join-Path $root 'tools\label_writer_fence.ps1'
+$helper=Join-Path $root 'INSTALL_THIS_PC.ps1'
+$generation=Join-Path $root 'kmtech_shared\powershell\data_generation.ps1'
+$frozen=[pscustomobject]@{root=$root;helper_path=$helper;writer_fence_path=$writer;
+ data_generation_path=$generation;data_generation_sha256=(Get-FileHash -LiteralPath $generation).Hash.ToLowerInvariant();
+ integrity_sha256=(Get-FileHash -LiteralPath $integrity).Hash.ToLowerInvariant();
+ writer_fence_sha256=(Get-FileHash -LiteralPath $writer).Hash.ToLowerInvariant();
+ helper_sha256=(Get-FileHash -LiteralPath $helper).Hash.ToLowerInvariant()}
+function Join-Path {param($Path,$ChildPath)
+ if($ChildPath -ceq 'WindowsPowerShell\v1.0\powershell.exe'){return 'Capture-Encoded'}
+ Microsoft.PowerShell.Management\Join-Path -Path $Path -ChildPath $ChildPath
+}
+function Capture-Encoded {param([switch]$NoLogo,[switch]$NoProfile,[switch]$NonInteractive,$ExecutionPolicy,$EncodedCommand)
+ $global:captured=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($EncodedCommand))
+ $global:LASTEXITCODE=0
+}
+function Start-Process {param($FilePath,$Verb,$ArgumentList,$WindowStyle,[switch]$Wait,[switch]$PassThru)
+ $global:captured=[IO.File]::ReadAllText($launcherPath)
+ $global:capturedPayload=[IO.File]::ReadAllBytes($payloadPath)
+ [pscustomobject]@{ExitCode=0}
+}
+if($env:LM_BOM_WRAPPER -eq 'probe'){
+ InvokeFrozenIntegrityProbe $frozen (Join-Path $env:LM_BOM_TMP 'absent-install')
+ $boundary=$captured.IndexOf('$probeRoot =')
+}else{
+ [void](InvokeFrozenPlacementHelper $frozen @{})
+ $boundary=$captured.IndexOf('$parameterNames =')
+}
+if($boundary -le 0){throw 'Encoded product helper boundary missing.'}
+Remove-Item Function:\Join-Path
+Remove-Item Function:\Start-Process
+# Execute the generated byte-read/hash/decode prefix from the product wrapper.
+# The domain operation and actual placement helper entrypoint are excluded.
+$env:LM_BOM_PREFIX_SOURCE=Join-Path $env:LM_BOM_TMP 'verified-prefix.ps1'
+$env:LM_BOM_PREFIX_PAYLOAD=Join-Path $env:LM_BOM_TMP 'verified-payload.dat'
+[IO.File]::WriteAllText($env:LM_BOM_PREFIX_SOURCE,$captured.Substring(0,$boundary),(New-Object Text.UTF8Encoding($false)))
+if($env:LM_BOM_WRAPPER -eq 'placement'){[IO.File]::WriteAllBytes($env:LM_BOM_PREFIX_PAYLOAD,$capturedPayload)}
+$prefixRunner=Join-Path $env:LM_BOM_TMP 'prefix-runner.ps1'
+[IO.File]::WriteAllText($prefixRunner,@'
+$ErrorActionPreference='Stop'
+$prefixParameters=@{}
+if($env:LM_BOM_WRAPPER -eq 'placement'){$prefixParameters.PayloadBytes=[IO.File]::ReadAllBytes($env:LM_BOM_PREFIX_PAYLOAD)}
+. ([ScriptBlock]::Create([IO.File]::ReadAllText($env:LM_BOM_PREFIX_SOURCE))) @prefixParameters
+if(-not (Get-Command Assert-BootstrapIntegrityRecord -CommandType Function -ErrorAction SilentlyContinue)){throw 'Actual integrity helper did not execute.'}
+if($env:LM_BOM_WRAPPER -eq 'placement'){
+ if(-not (Get-Command Enter-LabelWriterSessionAuthority -CommandType Function -ErrorAction SilentlyContinue)){throw 'Actual writer helper did not execute.'}
+ if(-not (Get-Command Get-KmtechDataDowngradeDecision -CommandType Function -ErrorAction SilentlyContinue)){throw 'Actual G helper did not execute.'}
+ if($null -eq $helper.Ast.ParamBlock){throw 'Actual placement helper BOM hides its parameters.'}
+}
+'EXECUTED'
+'@,(New-Object Text.UTF8Encoding($false)))
+$start=New-Object Diagnostics.ProcessStartInfo
+$start.FileName=$env:LM_BOM_ENGINE
+$start.Arguments='-NoLogo -NoProfile -NonInteractive -File "'+$prefixRunner+'"'
+$start.UseShellExecute=$false;$start.CreateNoWindow=$true
+$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+$child=[Diagnostics.Process]::Start($start)
+$stdout=$child.StandardOutput.ReadToEndAsync();$stderr=$child.StandardError.ReadToEndAsync()
+$child.WaitForExit()
+Write-Output $stdout.GetAwaiter().GetResult()
+if($child.ExitCode -ne 0){throw $stderr.GetAwaiter().GetResult()}
+$child.Dispose()
+''', engine="powershell.exe", values={"LM_BOM_ROOT": str(ROOT), "LM_BOM_TMP": str(tmp_path), "LM_BOM_WRAPPER": wrapper, "LM_BOM_ENGINE": engine})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "EXECUTED" in result.stdout
+
+
+def test_pretransaction_failure_diagnostics_survive_supported_user_removal(tmp_path, monkeypatch):
+    import auto_update
+    from current_user_onboarding import remove_current_user_setup
+
+    monkeypatch.setattr(auto_update, "installation_root", lambda _root: None)
+    archive = tmp_path / "local/KMTech/Label_Match/install-audit-pretransaction-failures/run"
+    archive.mkdir(parents=True)
+    original = archive / "canonical-portable-run.json"
+    original.write_bytes(b'{"status":"FAILED_PRETRANSACTION","unique_failure":true}')
+    before = original.read_bytes()
+    # Call the unchanged removal domain with all three native persistence
+    # callbacks substituted; writer admission/native CLI is the guest's scope.
+    report = remove_current_user_setup.__wrapped__(
+        tmp_path / "app", environ={"LOCALAPPDATA": str(tmp_path / "local"),
+                                  "LABEL_MATCH_SAVE_DIR": str(tmp_path / "data")},
+        autostart_remover=lambda: {"status": "ABSENT"},
+        scheduled_task_remover=lambda _root: {"status": "ABSENT"},
+        relay_stopper=lambda _root: {"status": "ABSENT"},
+    )
+    assert report["status"] == "PASS_DATA_PRESERVED"
+    assert original.read_bytes() == before
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("failure_phase", ("frozen", "external-evidence"))
+def test_pretransaction_failure_boundary_rethrows_and_retires_only_own_run(tmp_path, engine, failure_phase):
+    from tests.test_shared_ancestor_protection import run_functions
+
+    result = run_functions(tmp_path, INSTALLER, ["Save", "Archive-PretransactionFailure", "Full"], r'''
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
+$boundary=@($ast.FindAll({param($n)
+ $n -is [Management.Automation.Language.TryStatementAst] -and
+ $n.Body.Extent.Text.Contains('$frozenPlacement = FreezePlacementHelper')
+},$true))
+if($boundary.Count -ne 1){throw 'Pretransaction recovery boundary missing.'}
+$runId='boundary-run';$localAuditRoot=Join-Path $env:LM_BOUNDARY_ROOT 'install-audit'
+. $env:LM_BOUNDARY_SHARED
+[void][IO.Directory]::CreateDirectory($localAuditRoot)
+$auditPath=Join-Path $localAuditRoot ('canonical-portable-'+$runId+'.json')
+$EvidencePath=Join-Path $env:LM_BOUNDARY_ROOT 'external-evidence.json'
+if($env:LM_BOUNDARY_PHASE -eq 'external-evidence'){
+ $blocked=Join-Path $env:LM_BOUNDARY_ROOT 'blocked'
+ [IO.File]::WriteAllText($blocked,'preserve path obstruction')
+ $EvidencePath=Join-Path $blocked 'external-evidence.json'
+}
+$audit=[ordered]@{status='PREIMAGE_SAVED';code_placement='PENDING';rollback=@{applied=$false}}
+Save $auditPath $audit
+$source=$env:LM_BOUNDARY_ROOT;$receiptSource=@{critical_file_sha256=@{}}
+[void][IO.Directory]::CreateDirectory((Join-Path $source 'app\kmtech_shared\powershell'))
+[IO.File]::WriteAllBytes((Join-Path $source 'app\kmtech_shared\powershell\data_generation.ps1'),
+ [IO.File]::ReadAllBytes((Join-Path $env:LM_BOUNDARY_SOURCE 'kmtech_shared\powershell\data_generation.ps1')))
+function FreezePlacementHelper {param($Source,$AuditRoot,$RunId,$Expected)
+ $script:freezeCalls++
+ $frozen=Join-Path $AuditRoot ('canonical-portable-'+$RunId+'-helper')
+ [void][IO.Directory]::CreateDirectory($frozen)
+ [IO.File]::WriteAllText((Join-Path $frozen 'failure.ps1'),'unique failed input')
+ throw 'ORIGINAL_FROZEN_HELPER_FAILURE'
+}
+function Enter-LabelWriterSessionAuthority {throw 'Writer authority must remain untouched.'}
+function Start-LabelWriterFence {throw 'Writer fence must remain untouched.'}
+$rejected=$false
+$script:freezeCalls=0
+try{. ([ScriptBlock]::Create($boundary[0].Extent.Text))}
+catch{
+ $originalFailure=$_
+ if($env:LM_BOUNDARY_PHASE -eq 'frozen' -and $_.Exception.Message -cne 'ORIGINAL_FROZEN_HELPER_FAILURE'){throw}
+ if($env:LM_BOUNDARY_PHASE -eq 'external-evidence' -and $script:freezeCalls -ne 0){throw 'Evidence failure did not precede helper evaluation.'}
+ $rejected=$true
+}
+if(-not $rejected){throw 'Original failure was swallowed.'}
+$retained=Join-Path (Join-Path ($localAuditRoot+'-pretransaction-failures') $runId) (Split-Path -Leaf $auditPath)
+$evidence=Get-Content -LiteralPath $retained -Raw | ConvertFrom-Json
+if($evidence.failure.message -cne $originalFailure.Exception.Message){throw 'Original failure differs from retained audit.'}
+if($env:LM_BOUNDARY_PHASE -eq 'external-evidence' -and [IO.File]::ReadAllText($blocked) -cne 'preserve path obstruction'){throw 'Existing path obstruction changed.'}
+if($evidence.status -cne 'FAILED_PRETRANSACTION' -or
+ $evidence.recovery.transaction_started -or -not $evidence.recovery.artifacts_archived -or
+ $evidence.rollback.applied -or (Test-Path -LiteralPath $localAuditRoot)) {throw 'Pretransaction recovery state differs.'}
+'RECOVERED'
+''', engine=engine, values={"LM_BOUNDARY_ROOT": str(tmp_path), "LM_BOUNDARY_SOURCE": str(ROOT), "LM_BOUNDARY_SHARED": str(ROOT / "kmtech_shared/powershell/portable.ps1"), "LM_BOUNDARY_PHASE": failure_phase})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "RECOVERED" in result.stdout

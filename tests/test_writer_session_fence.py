@@ -169,7 +169,7 @@ def test_public_mutex_contract_vectors_and_uppercase_nonascii_regression(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
-    assert set(contract) == {"schema", "app_id", "all_writer_fence"}
+    assert set(contract) == {"schema", "app_id", "all_writer_fence", "startup_update"}
     assert contract["schema"] == "label-writer-fence-contract-v1"
     assert contract["app_id"] == fence.APP_ID
     fence_contract = contract["all_writer_fence"]
@@ -542,6 +542,16 @@ def test_writer_started_while_placement_holds_admission_is_denied_nonmutating(
     assert "WRITER_GATE_TIMEOUT" in completed.stdout
 
 
+def test_public_mutex_contract_refuses_an_additional_top_level_key(tmp_path, monkeypatch):
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    contract["unreviewed"] = {}
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+    monkeypatch.setattr(__name__ + ".CONTRACT", path)
+    with pytest.raises(AssertionError):
+        test_public_mutex_contract_vectors_and_uppercase_nonascii_regression(tmp_path, monkeypatch)
+
+
 def test_installer_fences_then_quiesces_before_placement_and_restores() -> None:
     source = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8")
 
@@ -549,8 +559,8 @@ def test_installer_fences_then_quiesces_before_placement_and_restores() -> None:
     fence_start = source.index("Start-LabelWriterFence")
     quiesce_delegation = source.index("-DelegatedSources $rollbackSources", fence_start)
     quiesce = source.index("Product $removalRoot '--remove-current-user-setup'")
-    placement = source.index("InvokeFrozenPlacementHelper $frozenPlacement $helperParameters")
-    restore = source.index("Product $install '--onboard-current-user'")
+    placement = source.index("$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters")
+    restore = source.index("Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start')")
     fence_stop = source.index("Stop-LabelWriterFence", restore)
     assert (
         preimage
@@ -562,7 +572,8 @@ def test_installer_fences_then_quiesces_before_placement_and_restores() -> None:
         < fence_stop
     )
     assert "WriterFenceFunctionsPreloaded = $true" in source
-    assert "-DelegatedSources @('canonical_placement')" in source
+    assert ("-DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage',`\n"
+            "            'auto_update_supported_lifecycle_transition','auto_update_persist_switch','auto_update_write_json_durable','auto_update_fixed_helper')") in source
 
 
 def test_negative_admission_depth_fails_closed_instead_of_bypassing_active_fence(

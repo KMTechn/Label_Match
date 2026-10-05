@@ -658,6 +658,7 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
     expected_bootstrap = {
         "canonical_code_root": "C:\\KMTech\\Apps\\Label_Match\\current",
         "elevation_points": ["code_placement"],
+        "elevation_authority": "canonical_pinned_in_memory_caller",
         "identity_profile_created": False,
         "state_scope": "current_user_first_run",
         "exact_inventory_readback": True,
@@ -703,10 +704,15 @@ def _validate_staged_installer(package_root: Path) -> dict[str, object]:
     public_entrypoint = report.get("public_entrypoint")
     if (
         not isinstance(public_entrypoint, dict)
-        or set(public_entrypoint) != {"path", "sha256"}
+        or set(public_entrypoint) != {
+            "path", "sha256", "integrity_helper_path", "integrity_helper_sha256"
+        }
         or public_entrypoint.get("path") != "INSTALL_THIS_PC.ps1"
         or public_entrypoint.get("sha256")
         != _sha256(package_root / "INSTALL_THIS_PC.ps1")
+        or public_entrypoint.get("integrity_helper_path") != "tools/bootstrap_integrity.ps1"
+        or public_entrypoint.get("integrity_helper_sha256")
+        != _sha256(package_root / "tools/bootstrap_integrity.ps1")
     ):
         raise ReleaseArchiveError("staged public bootstrap binding is invalid")
     runtime_host = report.get("runtime_host")

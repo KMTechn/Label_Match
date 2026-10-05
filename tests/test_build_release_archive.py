@@ -141,6 +141,7 @@ def _package(tmp_path: Path) -> Path:
     required_payloads = {
         "CENTRAL_LOGISTICS_PC_ROLLOUT.md": b"rollout",
         "INSTALL_THIS_PC.ps1": b"# installer wrapper\n",
+        "tools/bootstrap_integrity.ps1": b"# integrity helper\n",
         "Label_Match.exe": b"main executable",
         "Label_Match_Protected_Admin_Install.exe": b"protected admin",
         "PROTECTED_ADMIN_PROVISIONING.md": b"protected admin docs",
@@ -285,6 +286,8 @@ def _package(tmp_path: Path) -> Path:
         "public_entrypoint": {
             "path": "INSTALL_THIS_PC.ps1",
             "sha256": archive_builder._sha256(public_entrypoint),
+            "integrity_helper_path": "tools/bootstrap_integrity.ps1",
+            "integrity_helper_sha256": archive_builder._sha256(root / "tools/bootstrap_integrity.ps1"),
         },
         "runtime_host": {
             "path": "Label_Match.exe",
@@ -297,6 +300,7 @@ def _package(tmp_path: Path) -> Path:
         "bootstrap_contract": {
             "canonical_code_root": r"C:\KMTech\Apps\Label_Match\current",
             "elevation_points": ["code_placement"],
+            "elevation_authority": "canonical_pinned_in_memory_caller",
             "identity_profile_created": False,
             "state_scope": "current_user_first_run",
             "exact_inventory_readback": True,

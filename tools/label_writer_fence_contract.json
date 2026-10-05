@@ -28,5 +28,14 @@
         "expected_mutex_name": "Local\\KMTech.LabelMatch.WriterAdmission.v1.9fc5d500e16beaf5"
       }
     ]
+  },
+  "startup_update": {
+    "schema": "label-match-startup-update-v1",
+    "control_root": "<install-parent>/update-control",
+    "versions": "<install-parent>/versions/<source-commit>",
+    "system_scope": "code only",
+    "user_scope": "same SID/session, medium token",
+    "apply_during_work": false,
+    "compatibility": "installed-key authenticated exact signed forward and local-rollback directions, actual writer hashes and increasing signed version; raw consumer hashes retained as evidence"
   }
 }

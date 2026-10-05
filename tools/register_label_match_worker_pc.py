@@ -1860,7 +1860,20 @@ def _admin_recover(
     return response_payload, descriptor, token_source, recovery_path, authorization
 
 
+def _registration_storage_preflight(args: argparse.Namespace) -> None:
+    from auto_update import assert_registration_storage
+    paths = [getattr(args, "data_dir", "") or DEFAULT_DIRECT_SYNC_ROOT,
+             getattr(args, "sync_dir", "") or DEFAULT_LABEL_MATCH_DATA_ROOT]
+    for name in ("identity_path", "manifest_path", "credential_path", "receipt_path", "report_path",
+                 "logistics_profile_path", "tls_ca_bundle_path"):
+        value = getattr(args, name, "")
+        if value:
+            paths.append(value)
+    assert_registration_storage(ROOT, paths)
+
+
 def build_payloads(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    _registration_storage_preflight(args)
     endpoint_url = _endpoint_from_args(args)
     data_dir = str(Path(args.data_dir or DEFAULT_DIRECT_SYNC_ROOT).expanduser().resolve())
     sync_dir = str(Path(args.sync_dir or DEFAULT_LABEL_MATCH_DATA_ROOT).expanduser().resolve())
@@ -2177,6 +2190,7 @@ def apply_registration(
 ) -> dict[str, Any]:
     """Apply through the shared mutex, including direct imported callers."""
 
+    _registration_storage_preflight(args)
     guard = EnrollmentMutex(
         getattr(
             args,
@@ -2251,6 +2265,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--receipt-path", default="")
     parser.add_argument("--report-path", default="")
     args = parser.parse_args(argv)
+    try:
+        _registration_storage_preflight(args)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
 
     data_dir = Path(args.data_dir or DEFAULT_DIRECT_SYNC_ROOT).expanduser().resolve()
     report_path = Path(args.report_path).expanduser() if args.report_path else data_dir / "status" / DEFAULT_REPORT_FILENAME
