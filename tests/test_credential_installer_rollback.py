@@ -13,7 +13,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
-@pytest.mark.parametrize("failure", ["product", "task", "generation"])
+@pytest.mark.parametrize("failure", ['product', 'task', 'generation', 'code'])
 def test_rollback_attempts_guarded_tail_and_preserves_failures(tmp_path, shell, failure):
     executable = shutil.which(shell)
     if not executable:
@@ -91,6 +91,7 @@ function Get-KmtechDataDowngradeDecision([string[]]$MarkerPaths,[string]$TargetV
     & $script:realDecision -MarkerPaths $MarkerPaths -TargetVersion $TargetVersion -AppId $AppId -SubjectSid $SubjectSid -TargetBuildId $TargetBuildId
 }}
 function InvokeFrozenIntegrityProbe($Frozen,$Root) {{
+ if ('{failure}' -ceq 'code') {{ throw 'injected code verification failure' }}
     [void](PinnedFileBytes (Join-Path $Frozen.root 'tools/bootstrap_integrity.ps1') $Frozen.integrity_sha256)
     [void](Assert-BootstrapIntegrityRecord $Root)
 }}
@@ -151,3 +152,7 @@ $result=@{{attempts=$script:attempts;fence_active=(Test-Path (Get-LabelWriterFen
         if failure == "task":
             assert result["attempts"]["run"] == 1
             assert result["attempts"]["task"] == 1
+
+    if failure == "code":
+        assert result["attempts"]["run"] == 1
+        assert result["attempts"]["task"] == 1
