@@ -495,3 +495,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - 10/04 sub-192 native 원인 (가): 실제 startup task XML comparer의 빠진 선택 노드/기본 true export 형태를 PS5.1/7 공통 CLR node/count 비교로 교정했다. 원문·엄격한 ownership 비교 유지, RED 16 FAIL·8 PASS → GREEN 24 PASS. 선언/pin/추가 guest는 0이며 고친 packet의 native 설치 증명은 동결 후 OPEN이다.
 
 - 10/04 sub-192 native 원인 (나): absent-code rollback의 부모 admission/자식 admission 자기 경합을 정확한 기존 session authority/token 위임으로 교정했다. 부모가 원 authority를 유지하며 검증 후 admission을 넘기고 자식은 기존 admission·HeldByOther 검사 뒤만 제거한다. PS5.1/7 native mutex RED 2 FAIL → GREEN 14 PASS, 잘못된 위임·busy child 거절과 실패/fence 보존. 선언/pin/추가 guest 0; 고친 packet native 수용 OPEN이다.
+
+- 설치 통합 F1 회귀: 비동기 CSV writer 완료 전 읽기의 0행 실패를 재현하여 fixture에 log_queue.join 경계만 추가. 기존 취소 1행·새 세트·capture 보존 단언 유지, 제품 변경0. 최종 실행 근거는 sub-264 REPORT.

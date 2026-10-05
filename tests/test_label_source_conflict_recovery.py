@@ -665,6 +665,7 @@ def test_partial_old_label_set_holding_another_labels_capture_cancels_with_f1(tm
         assert not app.current_set_info.get("deferred_intent_id")
         assert app._reset_current_set(full_reset=True) is True  # F1
         assert not Path(app._package_current_state_path()).exists()
+        app.data_manager.log_queue.join()  # Observe the asynchronous CSV writer after task_done.
         [(_event, cancelled)] = _events(tmp_path, "SET_CANCELLED")
         assert cancelled["set_id"] == LAB_SET
         _scan(module, app, _legacy_set(44)[0])
