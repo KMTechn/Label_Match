@@ -606,7 +606,12 @@ finally {{ Exit-LabelWriterAdmission $lease }}
             "print(process.pid)\n",
             encoding="utf-8",
         )
-        code = _definitions() + _session_setup(candidate, install) + f"""
+        rollback_context = (
+            "$firstRegistrationResume = $null\n$legacyFirstRegistration = $false\n"
+            + ". (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + " 'data_generation.ps1')\n"
+            if failure == "rollback-remove" else ""
+        )
+        code = _definitions() + rollback_context + _session_setup(candidate, install) + f"""
 $state = {_quote(state)}
 $testMode = $true
 $SkipSignatureValidationForTest = $true
