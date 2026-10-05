@@ -208,7 +208,7 @@ function New-InstallerFailureDiagnostic {
     }
     if ($null -ne $Exception) {
         try { $diagnostic['full_exception_trace'] = Write-InstallerFailureEvidence ($Exception.ToString()) }
-        catch { $diagnostic['evidence_failure'] = [ordered]@{type=$_.Exception.GetType().Name;last_line=ConvertTo-BoundedDiagnosticText $_.Exception.Message 300} }
+        catch { $diagnostic['evidence_failure'] = [ordered]@{type=$_.Exception.GetType().Name;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0]} }
         $inner = $Exception
         $innerDepth = 0
         while (
@@ -220,7 +220,7 @@ function New-InstallerFailureDiagnostic {
             $innerDepth += 1
         }
         $diagnostic["inner_exception_type"] = ConvertTo-BoundedDiagnosticText ($inner.GetType().Name) 128
-        $message = ConvertTo-BoundedDiagnosticText $inner.Message 512
+        $message = [string]$Script:KmtechRedactionRules.safe_messages[0]
         if (-not [string]::IsNullOrWhiteSpace($message)) {
             $diagnostic["inner_exception_message"] = $message
         }
@@ -262,7 +262,7 @@ function ConvertTo-InstallerFailureDiagnostic {
         }
     }
     if (Test-DiagnosticProperty $Candidate "inner_exception_message") {
-        $exceptionMessage = ConvertTo-BoundedDiagnosticText (Get-DiagnosticProperty $Candidate "inner_exception_message") 512
+        $exceptionMessage = [string]$Script:KmtechRedactionRules.safe_messages[0]
         if (-not [string]::IsNullOrWhiteSpace($exceptionMessage)) {
             $diagnostic["inner_exception_message"] = $exceptionMessage
         }
@@ -379,7 +379,7 @@ def _protected_message(value):
 
 def _bounded_message(value):
     lines = _protected_message(value).splitlines()
-    return next((line for line in reversed(lines) if line.strip()), "")[-300:]
+    return __import__("failure_redaction").RULES["safe_messages"][0]
 
 def _failure_evidence(exc):
     text = _protected_message(''.join(traceback.TracebackException.from_exception(exc).format()))
@@ -391,7 +391,7 @@ def _failure_evidence(exc):
             stream.flush()
             os.fsync(stream.fileno())
     except Exception as error:
-        return dict(evidence_failure=dict(type=type(error).__name__, last_line=_bounded_message(error)))
+        return dict(evidence_failure=dict(type=type(error).__name__, report_status="REPORT_UNAVAILABLE"))
     return dict(path=path, sha256=hashlib.sha256(raw).hexdigest(), limit_bytes=65536,
                 truncated='[TRUNCATED:' in text)
 

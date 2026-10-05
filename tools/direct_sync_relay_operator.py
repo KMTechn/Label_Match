@@ -39,6 +39,8 @@ def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any])
 
 
 def _emit(report: Mapping[str, Any], report_path: str = "") -> int:
+    from failure_redaction import public_diagnostic_tree
+    report = public_diagnostic_tree(dict(report))
     if report_path:
         _write_json_atomic(report_path, report)
     print(f"direct_sync_operator_status={report.get('status', 'FAIL')}")
@@ -52,7 +54,7 @@ def _emit(report: Mapping[str, Any], report_path: str = "") -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Label_Match direct-sync relay operator control")
+    parser = __import__("failure_redaction").InstallerArgumentParser(description="Label_Match direct-sync relay operator control")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     status_parser = subparsers.add_parser("status", help="Report local relay queue and pause state")
@@ -125,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
                             if getattr(args, "credential_path", "") else None)
         record_user_data_open(ROOT, roots)
     except DataGenerationError as exc:
-        print(str(exc), file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return 2
     try:
         if args.command == "status":
@@ -176,4 +178,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

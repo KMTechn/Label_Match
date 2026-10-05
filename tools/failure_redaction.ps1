@@ -168,3 +168,95 @@ function Write-KmtechProtectedFailureSidecar {
     if($sha -cne $expected){throw 'Diagnostic readback differs.'}
     return [ordered]@{path=$path;sha256=$sha;bytes=$bytes.Length;limit_bytes=65536;truncated=$protected.Contains('[TRUNCATED:')}
 }
+function ConvertTo-KmtechPublicRecord {
+    param([Collections.IDictionary]$Fields,
+          [string[]]$AllowedCodes = $Script:KmtechRedactionRules.allowed_codes,
+          [string[]]$SafeMessages = $Script:KmtechRedactionRules.safe_messages)
+    $patterns = @{
+        key='\A[a-z][a-z0-9_]{0,63}\z'; identifier='\A[A-Za-z_][A-Za-z0-9_.]{0,127}\z'
+        sha256='\A[0-9a-f]{64}\z'; commit='\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z'
+        version='\Av?[0-9]{1,5}(?:\.[0-9]{1,5}){1,3}\z'
+        id='\A(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}|[0-9A-Fa-f]{64})\z'
+        utc='\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?Z\z'
+        path='\A(?:[A-Za-z]:\\[^\x00-\x1f"<>|?*]{0,256}|/[^\x00-\x1f]{0,255})\z'
+    }
+    $result = [ordered]@{}; $bad = [Collections.Generic.List[string]]::new(); $invalid = 0
+    foreach ($key in $Fields.Keys) {
+        if ($key -isnot [string] -or -not [regex]::IsMatch($key,$patterns.key)) { $invalid++; continue }
+        $value=$Fields[$key]; $kind=''
+        switch -CaseSensitive ($key) {
+            {$_ -cin @('status','stage','code')} {$kind='code';break}
+            'guidance' {$kind='message';break}
+            {$_ -cin @('exception_type','location_module','location_function')} {$kind='identifier';break}
+            {$_ -cin @('exit_code','location_line')} {$kind='integer';break}
+            'version' {$kind='version';break}
+            'utc' {$kind='utc';break}
+            default {
+                foreach ($rule in @(
+                    @('_(status|stage|code)$','code'), @('_message$','message'),
+                    @('_(count|bytes|ms|line)$','integer'), @('_sha256$','sha256'),
+                    @('_commit$','commit'), @('_version$','version'), @('_id$','id'),
+                    @('_utc$','utc'), @('_(path|dir|root|file)$','path'))) {
+                    if ([regex]::IsMatch($key,$rule[0])) {$kind=$rule[1];break}
+                }
+            }
+        }
+        $allowed=$null -eq $value -or $value -is [bool]
+        if (-not $allowed) {
+            if ($kind -ceq 'integer') {
+                $allowed=$value -is [byte] -or $value -is [sbyte] -or $value -is [int16] -or $value -is [uint16] -or $value -is [int32] -or $value -is [uint32] -or $value -is [int64] -or $value -is [uint64]
+            } elseif ($value -is [string]) {
+                if ($kind -ceq 'code') {$allowed=$AllowedCodes -ccontains $value}
+                elseif ($kind -ceq 'message') {$allowed=$SafeMessages -ccontains $value}
+                elseif ($patterns.ContainsKey($kind)) {$allowed=[regex]::IsMatch($value,$patterns[$kind])}
+            }
+        }
+        if ($allowed) {$result[$key]=$value} else {$bad.Add($key)}
+    }
+    if ($bad.Count) {$result.nonconforming_fields=@($bad.ToArray())}
+    if ($invalid) {$result.nonconforming_invalid_key_count=$invalid}
+    if ($bad.Count -or $invalid) {$result.public_record_code='PUBLIC_FIELD_NONCONFORMING'}
+    return $result
+}
+
+function ConvertTo-KmtechPublicDiagnosticTree {
+    param([AllowNull()][object]$Value)
+    # Transaction/recovery metadata is re-read by supported removal. Only the
+    # diagnostic subrecords are public records; those are never recovery input.
+    if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
+        $fields=[ordered]@{}
+        if ($Value -is [Collections.IDictionary]) {
+            foreach ($key in $Value.Keys) {$fields[[string]$key]=$Value[$key]}
+        } else { foreach ($property in $Value.PSObject.Properties) {$fields[$property.Name]=$property.Value} }
+        if (@($fields.Keys | Where-Object {$_ -cin @('message','last_line','inner_exception_message','stdout','stderr','exception_chain')}).Count) {
+            $candidate=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';guidance=[string]$Script:KmtechRedactionRules.safe_messages[0]}
+            foreach ($key in $fields.Keys) {
+                if ($key -cin @('message','last_line','inner_exception_message','stdout','stderr','exception_chain')) {continue}
+                $candidate[$key]=$fields[$key]
+            }
+            foreach ($pair in @(@('type','exception_type'),@('inner_exception_type','exception_type'),@('child_exit_code','exit_code'),@('failure_code','reason_code'))) {
+                if ($fields.Contains($pair[0])) {$candidate[$pair[1]]=$fields[$pair[0]]}
+            }
+            try {
+                $reference=Write-KmtechProtectedFailureSidecar -Text ($Value | ConvertTo-Json -Depth 30)
+                $candidate.report_path=[string]$reference.path
+                $candidate.report_sha256=[string]$reference.sha256
+            } catch {$candidate.report_status='REPORT_UNAVAILABLE'}
+            return ConvertTo-KmtechPublicRecord $candidate
+        }
+        $result=[ordered]@{}
+        foreach ($key in $fields.Keys) {
+            $item=$fields[$key]
+            if ($key -cin @('failure','error','error_message','reason') -and $item -is [string] -and $item) {
+                if ($Script:KmtechRedactionRules.allowed_codes -ccontains $item) {$result[$key]=$item}
+                else {$result[$key]=ConvertTo-KmtechPublicDiagnosticTree ([ordered]@{message=$item})}
+            } else {$result[$key]=ConvertTo-KmtechPublicDiagnosticTree $item}
+        }
+        return $result
+    }
+    if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+        $rows=@(foreach ($item in $Value) {ConvertTo-KmtechPublicDiagnosticTree $item})
+        return ,$rows
+    }
+    return $Value
+}

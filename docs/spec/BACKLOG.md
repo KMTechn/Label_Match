@@ -548,3 +548,6 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - rollback static 상태는 현재 exact legacy/ordinary 조건문을 확인하며 기존 ROLLBACK_FAILED 의미를 보존한다. 각 branch를 성공으로 바꾼 입력은 거절; msg_b0774576a440의 exact static 계약 교정 범위.
 
 - 2026-10-05 조립: 실패 가림 식별자 예외와 제품 상태 writer 분리 완료. 계약·writer 표 및 회귀 범위는 assembly_failure_contract.md 참조; 최종 조립 stock 수용은 sub-292 REPORT로 확인.
+# 설치 공개 실패 기록 수렴 (sub-310, 2026-10-06)
+
+컷 전 범위는 설치기·업데이트 적용기·지원 도구의 가변 진단 출력이며 업무 로그/스캔 화면은 제외한다. 허용 필드/고정 문구 표와 같은 시도 보호 보고서의 경로·UTF-8 SHA 결속, 게시 실패/옛 보고서 회귀를 추가한다. 고정 안내·성공 출력 및 지원 제거의 거래·복구 metadata를 유지한다. 전수 자리 분류·RED→GREEN·접두/긴 assignment 병합·선언 재생성·focused/조립142의 실제 판정과 남은 native/GUI 한계는 sub-310 REPORT에 기록하며 전체 준비 완료로 간주하지 않는다. 전면 공개 형식 통일은 컷 뒤 범위다.

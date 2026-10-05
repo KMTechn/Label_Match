@@ -5,8 +5,178 @@ from pathlib import Path
 import re
 import hashlib
 import tempfile
+import argparse
 
 RULES = json.loads((Path(__file__).parent / "tools/failure_redaction_rules.json").read_text(encoding="utf-8"))
+
+
+class InstallerArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        emit_support_failure(ValueError(message))
+        raise SystemExit(2)
+
+
+def redact_success_summary(value):
+    """Preserve the success schema while removing URL credentials and secrets."""
+    from urllib.parse import urlsplit, urlunsplit
+    def clean(item):
+        if isinstance(item, dict):
+            result = {}
+            for key, field in item.items():
+                if isinstance(field, str) and (key == "url" or key.endswith("_url")):
+                    try:
+                        parts = urlsplit(field)
+                        field = urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1],
+                                            parts.path, "", ""))
+                    except ValueError:
+                        field = "[REDACTED:url]"
+                result[key] = clean(field)
+            return result
+        if isinstance(item, list):
+            return [clean(field) for field in item]
+        return item
+    return redact_json_for_sink(clean(value))
+
+
+def public_record(fields, allowed_codes=None, safe_messages=None):
+    """Allow only typed, source-declared fields in a public diagnostic record."""
+    codes = set(RULES["allowed_codes"] if allowed_codes is None else allowed_codes)
+    messages = set(RULES["safe_messages"] if safe_messages is None else safe_messages)
+    patterns = {
+        "key": r"[a-z][a-z0-9_]{0,63}", "identifier": r"[A-Za-z_][A-Za-z0-9_.]{0,127}",
+        "sha256": r"[0-9a-f]{64}", "commit": r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+        "version": r"v?[0-9]{1,5}(?:\.[0-9]{1,5}){1,3}",
+        "id": r"(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}|[0-9A-Fa-f]{64})",
+        "utc": r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?Z",
+        "path": r'(?:[A-Za-z]:\\[^\x00-\x1f"<>|?*]{0,256}|/[^\x00-\x1f]{0,255})',
+    }
+    result, invalid, nonconforming = {}, 0, []
+    for key, value in fields.items():
+        if not isinstance(key, str) or re.fullmatch(patterns["key"], key) is None:
+            invalid += 1
+            continue
+        kind = None
+        if key in ("status", "stage", "code"):
+            kind = "code"
+        elif key == "guidance":
+            kind = "message"
+        elif key in ("exception_type", "location_module", "location_function"):
+            kind = "identifier"
+        elif key in ("exit_code", "location_line"):
+            kind = "integer"
+        elif key in ("version", "utc"):
+            kind = key
+        else:
+            for suffixes, candidate in (
+                (("_status", "_stage", "_code"), "code"), (("_message",), "message"),
+                (("_count", "_bytes", "_ms", "_line"), "integer"),
+                (("_sha256",), "sha256"), (("_commit",), "commit"), (("_version",), "version"),
+                (("_id",), "id"), (("_utc",), "utc"), (("_path", "_dir", "_root", "_file"), "path"),
+            ):
+                if key.endswith(suffixes):
+                    kind = candidate
+                    break
+        allowed = value is None or type(value) is bool
+        if not allowed:
+            if kind == "integer":
+                allowed = type(value) is int
+            elif isinstance(value, str):
+                if kind == "code":
+                    allowed = value in codes
+                elif kind == "message":
+                    allowed = value in messages
+                elif kind in patterns:
+                    allowed = re.fullmatch(patterns[kind], value) is not None
+        if allowed:
+            result[key] = value
+        else:
+            nonconforming.append(key)
+    if nonconforming:
+        result["nonconforming_fields"] = nonconforming
+    if invalid:
+        result["nonconforming_invalid_key_count"] = invalid
+    if nonconforming or invalid:
+        result["public_record_code"] = "PUBLIC_FIELD_NONCONFORMING"
+    return result
+
+
+def public_failure_record(error, stage, *, report_reference=None):
+    """No exception sentences, source lines, locals, or child output are public."""
+    fields = {"status": getattr(error, "status", "FAILED"), "stage": stage,
+              "reason_code": getattr(error, "cause_code", None) or getattr(error, "code", None) or "SETUP_FAILED",
+              "exception_type": type(error).__module__ + "." + type(error).__qualname__,
+              "guidance": RULES["safe_messages"][0]}
+    current, seen = error, set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        frame = current.__traceback__
+        while frame is not None:
+            fields.update(location_module=str(frame.tb_frame.f_globals.get("__name__", "")),
+                          location_function=frame.tb_frame.f_code.co_name, location_line=frame.tb_lineno)
+            frame = frame.tb_next
+        if current.__cause__ is None and (current.__suppress_context__ or current.__context__ is None):
+            fields["exception_type"] = type(current).__module__ + "." + type(current).__qualname__
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    reference = report_reference if report_reference is not None else getattr(error, "_failure_report_ref", None)
+    if isinstance(reference, dict) and set(reference) == {"path", "sha256"}:
+        accepted = public_record({"report_path": reference["path"], "report_sha256": reference["sha256"]})
+        if "report_path" in accepted and "report_sha256" in accepted:
+            fields.update(report_path=reference["path"], report_sha256=reference["sha256"])
+        else:
+            fields["report_status"] = "REPORT_UNAVAILABLE"
+    else:
+        fields["report_status"] = "REPORT_UNAVAILABLE"
+    return public_record(fields)
+
+
+def emit_public_failure(error, stage, *, prefix="LABEL_MATCH_INSTALLER_FAILURE", report_reference=None, stream=None):
+    import sys
+    print(prefix + "=" + json.dumps(public_failure_record(error, stage, report_reference=report_reference),
+                                    ensure_ascii=False, separators=(",", ":")),
+          file=sys.stderr if stream is None else stream, flush=True)
+
+
+def protected_failure_details(error, environ=None):
+    import traceback
+    return {"failure_traceback": redact_for_sink(
+        "".join(traceback.TracebackException.from_exception(error).format()), environ)}
+
+
+def public_diagnostic_tree(value):
+    """Preserve machine-consumed audit structure, allowing only diagnostic fields."""
+    if isinstance(value, dict):
+        text_keys = {"message", "last_line", "inner_exception_message", "stdout", "stderr", "exception_chain"}
+        if text_keys.intersection(value):
+            candidate = {"status": "FAILED", "reason_code": "INSTALLER_FAILED", "guidance": RULES["safe_messages"][0]}
+            candidate.update((key, item) for key, item in value.items() if key not in text_keys)
+            for source, target in (("type", "exception_type"), ("inner_exception_type", "exception_type"),
+                                   ("returncode", "exit_code"), ("failure_code", "reason_code")):
+                if source in value:
+                    candidate[target] = value[source]
+            reference = try_write_failure_evidence(json.dumps(redact_json_for_sink(value), ensure_ascii=False))
+            if "path" in reference and "sha256" in reference:
+                candidate.update(report_path=reference["path"], report_sha256=reference["sha256"])
+            else:
+                candidate["report_status"] = "REPORT_UNAVAILABLE"
+            return public_record(candidate)
+        result = {}
+        for key, item in value.items():
+            if key in ("failure", "error", "error_message", "reason") and isinstance(item, str) and item and item not in RULES["allowed_codes"]:
+                result[key] = public_diagnostic_tree({"message": item})
+            else:
+                result[key] = public_diagnostic_tree(item)
+        return result
+    if isinstance(value, (tuple, list)):
+        return [public_diagnostic_tree(item) for item in value]
+    return value
+
+
+def emit_support_failure(error, *, prefix="LABEL_MATCH_SUPPORT_FAILURE", stage="SUPPORT"):
+    details = protected_failure_details(error)
+    evidence = try_write_failure_evidence(details["failure_traceback"])
+    reference = ({"path": evidence["path"], "sha256": evidence["sha256"]}
+                 if "path" in evidence and "sha256" in evidence else None)
+    emit_public_failure(error, stage, prefix=prefix, report_reference=reference)
 
 
 def _secret_environment_entries(environ):
@@ -146,9 +316,7 @@ def try_write_failure_evidence(text, *, redact_values=()):
     try:
         return write_failure_evidence(text, redact_values=redact_values)
     except Exception as error:
-        lines = redact_for_sink(str(error)).splitlines()
-        return {"evidence_failure": {"type": type(error).__name__,
-                "last_line": next((line for line in reversed(lines) if line.strip()), "")[-300:]}}
+        return public_record({"exception_type": type(error).__name__, "report_status": "REPORT_UNAVAILABLE"})
 
 
 def validate_failure_evidence(reference):

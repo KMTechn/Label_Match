@@ -96,7 +96,7 @@ def _child_failure_diagnostic(
         diagnostic["inner_exception_type"] = _bounded_diagnostic_text(
             exception.__class__.__name__
         )
-        message = _bounded_diagnostic_text(exception, redact_values=redact_values)
+        message = __import__("failure_redaction").RULES["safe_messages"][0]
         if message:
             diagnostic["inner_exception_message"] = message
     return diagnostic
@@ -122,7 +122,7 @@ def _normalize_failure_diagnostic(candidate: object) -> dict | None:
     exception_type = _bounded_diagnostic_text(candidate.get("inner_exception_type"))
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}", exception_type):
         diagnostic["inner_exception_type"] = exception_type
-    exception_message = _bounded_diagnostic_text(candidate.get("inner_exception_message"))
+    exception_message = __import__("failure_redaction").RULES["safe_messages"][0]
     if exception_message:
         diagnostic["inner_exception_message"] = exception_message
     for field in ("full_exception_trace", "stdout_evidence", "stderr_evidence", "last_line"):
@@ -517,8 +517,8 @@ def _write_json(path: Path, payload: dict) -> None:
         if diagnostic is not None:
             payload["failure_diagnostic"] = diagnostic
     path.parent.mkdir(parents=True, exist_ok=True)
-    from failure_redaction import redact_json_for_sink
-    path.write_text(json.dumps(redact_json_for_sink(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    from failure_redaction import redact_json_for_sink, public_diagnostic_tree
+    path.write_text(json.dumps(redact_json_for_sink(public_diagnostic_tree(payload)), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _runtime_paths(program_data_root: str | os.PathLike[str]) -> dict[str, str]:
@@ -1354,12 +1354,12 @@ def _run_in_process_main(entrypoint, arguments: Sequence[str]) -> dict:
             elif isinstance(exc.code, int):
                 returncode = exc.code
             else:
-                print(str(exc.code), file=sys.stderr)
+                __import__("failure_redaction").emit_support_failure(exc)
                 returncode = 1
             if returncode != 0:
                 failure_code = "CHILD_NONZERO_EXIT"
         except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
+            __import__("failure_redaction").emit_support_failure(exc)
             returncode = 1
             failure_code = "CHILD_EXCEPTION"
             inner_exception = exc
@@ -1679,7 +1679,7 @@ def _run_self_enrollment_registration(args: argparse.Namespace) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Label_Match direct-sync relay scheduled-task install pack")
+    parser = __import__("failure_redaction").InstallerArgumentParser(description="Label_Match direct-sync relay scheduled-task install pack")
     parser.add_argument("--app-root", default=_default_app_root())
     parser.add_argument("--app-settings-path", default="")
     parser.add_argument("--runner-exe", default="")
@@ -1748,7 +1748,7 @@ def main(argv: list[str] | None = None) -> int:
         check_user_data_open(Path(args.app_root), (*roots, *input_roots))
         record_user_data_open(Path(args.app_root), roots)
     except DataGenerationError as exc:
-        print(str(exc), file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return 2
     removal = bool(args.uninstall or args.rollback)
 
@@ -1961,4 +1961,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

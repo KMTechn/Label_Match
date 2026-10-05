@@ -2211,7 +2211,7 @@ def apply_registration(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Register this Label_Match PC as an HTTPS producer")
+    parser = __import__("failure_redaction").InstallerArgumentParser(description="Register this Label_Match PC as an HTTPS producer")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--apply", action="store_true")
@@ -2270,7 +2270,7 @@ def main(argv: list[str] | None = None) -> int:
         _registration_storage_preflight(args)
     except (ValueError, WriterFenceError) as exc:
         lines = redact_for_sink(str(exc)).rstrip().splitlines()
-        print(lines[-1][-300:] if lines else UNKNOWN_MESSAGE)
+        __import__("failure_redaction").emit_support_failure(exc)
         print(UNKNOWN_MESSAGE, file=sys.stderr)
         return 2
 
@@ -2445,7 +2445,7 @@ def main(argv: list[str] | None = None) -> int:
             else 1
         )
     except DataGenerationError as exc:
-        print(str(exc), file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return 2
     except Exception as exc:
         if args.recover_partial_local_state:
@@ -2462,7 +2462,7 @@ def main(argv: list[str] | None = None) -> int:
                 "admin_recovery_progress": recovery_progress.redacted_summary(),
             }
             _write_json(report_path, diagnostic)
-            print(diagnostic["message_ko"])
+            __import__("failure_redaction").emit_support_failure(RuntimeError(diagnostic["message_ko"]))
             print(f"registration_report={report_path.resolve()}")
             return 3 if recovery_progress.server_credential_rotated else 2
         if recovery_progress.server_credential_rotated:
@@ -2497,7 +2497,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"registration_report={report_path.resolve()}")
             return 3
         if isinstance(exc, AdminRecoveryArgumentsRequired):
-            print(str(exc))
+            __import__("failure_redaction").emit_support_failure(exc)
         blocked = {
             "report_version": "label-match-worker-pc-registration-v1",
             "status": "BLOCKED",
@@ -2551,7 +2551,7 @@ def main(argv: list[str] | None = None) -> int:
                 blocked["blocked_reason"] += (
                     ": 서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요"
                 )
-                print(blocked["blocked_reason"])
+                __import__("failure_redaction").emit_support_failure(RuntimeError(blocked["blocked_reason"]))
             if exc.error_code == "admin_recovery_required" or (
                 exc.status_code == 409 and exc.error_code == "producer_identity_conflict"
             ):
@@ -2596,4 +2596,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

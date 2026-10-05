@@ -1219,3 +1219,6 @@ F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join
 설치기 회귀 fixture는 실제 Wait-LabelRelayPreimageExit와 격리된 writer 관측을 바인딩하며 예상 밖 writer 거절을 확인한다. isolated main 입력에는 실제 auto_update/writer_session_fence 파일을 포함하고 rollback locator는 현재 original-error 경계를 정확히 선택한다. 원 phase·행 수·순서 단언은 유지한다.
 
 옛 공식 relay 정체성은 Export-ScheduledTask XML로 판정한다. 실측 계약에 따라 누락 RunLevel은 LeastPrivilege, SYSTEM의 누락 LogonType은 ServiceAccount로 정규화하며 사용자 누락 LogonType은 ABSENT로 거절한다. 명시한 요소와 생략한 요소는 같은 지문이고 모르는 값은 기존 거절이다. 저장 암호/InteractiveToken 동일 작업자 인정은 한 상수에 켜며 native 실패 복원/성공 전환 회차가 실패하면 닫는다.
+# 설치·지원 실패 보고서 확인 (2026-10-06)
+
+설치기·업데이트·지원 도구의 가변 오류 안내는 허용 코드와 고정 한국어 안내, 보호 보고서 경로로 표시한다. `LABEL_MATCH_INSTALLER_FAILURE=`의 `report_path`/`report_sha256`는 해당 실패 시도의 게시 결과이며 실제 UTF-8 바이트 SHA256과 대조한다. `REPORT_UNAVAILABLE`이면 이전 보고서를 새 실패 근거로 사용하지 않는다. 작업 사용자/관리자의 기존 보호 보고서 또는 private evidence에서 가린 첫 원인 traceback을 확인한다. 거래·복구 상태는 기존 지원 경로로 처리하고 audit/상태 파일을 수동 편집하지 않는다. [가림·공개 기록 경계](assembly_failure_contract.md)를 따른다.

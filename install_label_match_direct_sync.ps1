@@ -31,6 +31,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+trap {
+    $record=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE'}
+    if (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue) {
+        $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$_.Exception.GetType().FullName;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0];report_status='REPORT_UNAVAILABLE'}
+        try {
+            $reference=Write-KmtechProtectedFailureSidecar -Text $_.Exception.ToString()
+            $fields.Remove('report_status');$fields.report_path=$reference.path;$fields.report_sha256=$reference.sha256
+        } catch { }
+        $record=ConvertTo-KmtechPublicRecord $fields
+    }
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($record | ConvertTo-Json -Compress))
+    exit 1
+}
 $MutableAppRelativePaths = @("_internal/config/app_settings.json")
 . (Join-Path $PSScriptRoot "tools/failure_redaction.ps1")
 . (Join-Path $PSScriptRoot "tools/failure_redaction.ps1")
@@ -102,6 +115,7 @@ function Write-Utf8JsonFile([string]$Path, $Payload) {
     }
     # Runtime settings are authoritative configuration; all other JSON is evidence.
     if ((Split-Path -Leaf $Path) -cne "app_settings.json") {
+        $Payload = ConvertTo-KmtechPublicDiagnosticTree $Payload
         $Payload = ConvertTo-KmtechRedactedSinkObject $Payload
     }
     # Runtime settings are authoritative configuration; all other JSON is evidence.

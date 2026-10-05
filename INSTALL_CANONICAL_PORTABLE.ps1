@@ -11,6 +11,22 @@ param(
     [switch]$SkipSignatureValidationForTest
 )
 
+trap {
+    $publicError = $_
+    $publicExit = 1
+    if ($publicError.Exception.Data.Contains('installation_preparation_exit_code')) {
+        $publicExit = [int]$publicError.Exception.Data['installation_preparation_exit_code']
+    }
+    if (Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) {
+        $publicFailure = Get-LabelLaunchFailure $publicError 'forward'
+    } else {
+        # The pinned helper may not have loaded yet. No error text is emitted.
+        $publicFailure = [ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE'}
+    }
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($publicFailure | ConvertTo-Json -Compress -Depth 5))
+    exit $publicExit
+}
+
 # TEMPLATE-CONFIG-GUARD-BEGIN
 # This guard is the only behavior added to the accepted installer template.
 # It is inert after every Label placeholder is replaced and fails closed before then.
@@ -1576,7 +1592,7 @@ function Save([string]$Path, $Value) {
     $temp = "$Path.tmp.$PID"
     [IO.File]::WriteAllText(
         $temp,
-        ((ConvertTo-KmtechRedactedSinkObject $Value) | ConvertTo-Json -Depth 30) + [Environment]::NewLine,
+        ((ConvertTo-KmtechRedactedSinkObject (ConvertTo-KmtechPublicDiagnosticTree $Value)) | ConvertTo-Json -Depth 30) + [Environment]::NewLine,
         (New-Object Text.UTF8Encoding($false))
     )
     Move-Item $temp $Path -Force
@@ -1911,7 +1927,7 @@ trap {
     }
     $sinkEnvironment = Get-KmtechSinkEnvironment
     $sinkEnvironment['KMTECH_LABEL_WRITER_DELEGATION_TOKEN'] = [string]$payload.parameters.WriterFenceDelegationToken
-    $message = ConvertTo-KmtechRedactedSinkText -Text ([string]$childError.Exception.Message) -Environment $sinkEnvironment
+    $message = [string]$Script:KmtechRedactionRules.safe_messages[0]
     $trace = ConvertTo-KmtechRedactedSinkText -Text ($childError.Exception.ToString() + [Environment]::NewLine + [string]$childError.ScriptStackTrace) -Environment $sinkEnvironment
     $message = @($message -split '\r?\n' | Where-Object { $_.Trim() })[-1]
     if ($message.Length -gt 300) { $message = $message.Substring($message.Length-300) }
@@ -1955,7 +1971,7 @@ trap {
             $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
         } finally { $stream.Dispose() }
     } catch { [Console]::Error.WriteLine('Placement child diagnostic could not be saved.') }
-    [Console]::Error.WriteLine($message)
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ((ConvertTo-KmtechPublicRecord ([ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$record.exception_type;exit_code=$childExit;guidance=$message;report_path=$record.full_exception_trace.path;report_sha256=$record.full_exception_trace.sha256})) | ConvertTo-Json -Compress))
     exit $childExit
 }
 $pinnedStreams = [Collections.Generic.List[IO.Stream]]::new()
@@ -2434,18 +2450,35 @@ function ConvertTo-LabelFailureOutput($Output) {
 }
 
 function New-LabelChildFailure([string]$Mode, [int]$ExitCode, $Stdout, $Stderr) {
-    $record = [ordered]@{schema='label-match-child-output-v1';mode=$Mode;exit_code=$ExitCode;stdout=$Stdout;stderr=$Stderr}
+    $record = [ordered]@{stdout=$Stdout;stderr=$Stderr}
     $text = [string]$Stderr.text
     if ([string]::IsNullOrWhiteSpace($text)) { $text = [string]$Stdout.text }
-    $lines = @($text -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $last = if ($lines.Count) { [string]$lines[-1] } else { 'child returned no diagnostic output' }
-    # Summaries avoid disclosing user paths; full sanitized streams stay in the audit.
-    $last = [regex]::Replace($last, '(?i)[A-Z]:[\\/][^\r\n"'']*|\\\\[^\r\n"'']+', '[PATH]')
     $types = [regex]::Matches($text, '(?m)^([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception))\s*:')
     $type = if ($types.Count) { $types[$types.Count - 1].Groups[1].Value } else { 'ChildNonzeroExit' }
-    if ($last.Length -gt 300) { $last = $last.Substring($last.Length - 300) }
-    $record.lowest_exception_type = $type
-    $record.last_line = $last
+    $last = [string]$Script:KmtechRedactionRules.safe_messages[0]
+    $public = ConvertTo-KmtechPublicRecord ([ordered]@{status='FAILED';stage='CURRENT_USER_ONBOARDING';reason_code='CHILD_NONZERO_EXIT';exit_code=$ExitCode;exception_type=$type;guidance=$last;report_status='REPORT_UNAVAILABLE'})
+    foreach ($stream in @($Stderr,$Stdout)) {
+        foreach ($line in @([string]$stream.text -split '\r?\n')) {
+            if ($line -cnotmatch '^LABEL_MATCH_INSTALLER_FAILURE=(\{[^\r\n]*\})$') { continue }
+            try {
+                $typed = $Matches[1] | ConvertFrom-Json -ErrorAction Stop
+                $fields = [ordered]@{}
+                foreach ($property in $typed.PSObject.Properties) { $fields[$property.Name]=$property.Value }
+                $candidate = ConvertTo-KmtechPublicRecord $fields
+                if ($candidate.Contains('public_record_code') -or -not $candidate.Contains('exception_type') -or -not $candidate.Contains('reason_code')) { continue }
+                if ($candidate.Contains('report_path') -or $candidate.Contains('report_sha256')) {
+                    if (-not $candidate.Contains('report_path') -or -not $candidate.Contains('report_sha256') -or
+                        -not (Test-Path -LiteralPath $candidate.report_path -PathType Leaf) -or
+                        (Get-FileSha256 $candidate.report_path) -cne $candidate.report_sha256) {
+                        $candidate.Remove('report_path'); $candidate.Remove('report_sha256')
+                        $candidate.report_status='REPORT_UNAVAILABLE'
+                    }
+                }
+                $public=$candidate; $public.exit_code=$ExitCode
+                break
+            } catch { }
+        }
+    }
     foreach ($streamName in @('stdout','stderr')) {
         $output = $record[$streamName]
         if ([string]::IsNullOrEmpty([string]$output.text)) { continue }
@@ -2470,10 +2503,21 @@ function New-LabelChildFailure([string]$Mode, [int]$ExitCode, $Stdout, $Stderr) 
         $output.full_output = [ordered]@{path=$path;sha256=$digest;limit_bytes=65536;truncated=$output.truncated}
         } catch { $output.evidence_failure_type=$_.Exception.GetType().FullName }
         # The audit remains valid JSON and carries a pinned reference to the full stream.
-        $output.text = if ($streamName -ceq 'stderr') { $last } else { '' }
+        $output.text = ''
     }
-    $exception = [InvalidOperationException]::new("Product mode failed: $Mode/$ExitCode ${type}: $last")
-    $exception.Data['child_output'] = $record
+    if (-not $public.Contains('report_path')) {
+        foreach ($streamName in @('stderr','stdout')) {
+            $output=$record[$streamName]
+            if ($output.Contains('full_output')) {
+                $public.Remove('report_status')
+                $public.report_path=[string]$output.full_output.path
+                $public.report_sha256=[string]$output.full_output.sha256
+                break
+            }
+        }
+    }
+    $exception = [InvalidOperationException]::new('LABEL_MATCH_CHILD_FAILED')
+    $exception.Data['child_output'] = $public
     return $exception
 }
 
@@ -2755,24 +2799,27 @@ function Invoke-LabelRollbackStep([string]$Phase, [scriptblock]$Action) {
 }
 
 function Get-LabelLaunchFailure($Failure, [string]$Phase) {
-    $chain = @(); $exception=$Failure.Exception
-    $childOutput = $null
-    $legacyNativeFailure = $null
+    $exception=$Failure.Exception; $childOutput=$null
     while ($null -ne $exception) {
-        $call = if ($exception.Data.Contains('call')) { [string]$exception.Data['call'] } else { '' }
-        $code = if ($exception -is [ComponentModel.Win32Exception]) { [int]$exception.NativeErrorCode } else { $null }
-        $chain += [ordered]@{type=$exception.GetType().FullName;call=$call;win32_error=$code}
-        if ($exception.Data.Contains('child_output')) { $childOutput = $exception.Data['child_output'] }
-        if ($exception.Data.Contains('label_legacy_native_failure')) { $legacyNativeFailure = $exception.Data['label_legacy_native_failure'] }
+        if ($exception.Data.Contains('child_output')) { $childOutput=$exception.Data['child_output'] }
         $exception=$exception.InnerException
     }
-    $placement = if ($Failure.Exception.Data.Contains('placement_child_failure')) { $Failure.Exception.Data['placement_child_failure'] } else { $null }
-    $baseException = $Failure.Exception.GetBaseException()
-    $baseMessage = Protect-LabelFailureText ([string]$baseException.Message)
-    $lastLine = @($baseMessage -split '\r?\n' | Where-Object { $_.Trim() })[-1]
-    if ($lastLine.Length -gt 300) { $lastLine = $lastLine.Substring($lastLine.Length-300) }
-    return [ordered]@{phase=$Phase;exception_chain=$chain;message=(Protect-LabelFailureText ([string]$Failure.Exception.Message));exception_type=$(if($null -ne $legacyNativeFailure){$legacyNativeFailure.exception_type}else{$baseException.GetType().FullName});last_line=$lastLine;child_output=$childOutput;placement_child_failure=$placement;legacy_native_failure=$legacyNativeFailure}
+    $baseException=$Failure.Exception.GetBaseException()
+    $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$baseException.GetType().FullName;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0];report_status='REPORT_UNAVAILABLE'}
+    if ($null -ne $childOutput) {
+        foreach ($key in $childOutput.Keys) { $fields[$key]=$childOutput[$key] }
+    }
+    # Native failures retain their first cause in the existing private evidence.
+    if (-not $fields.Contains('report_path')) {
+        try {
+            $reference=Write-KmtechProtectedFailureSidecar -Text ($Failure.Exception.ToString())
+            $fields.Remove('report_status')
+            $fields.report_path=[string]$reference.path; $fields.report_sha256=[string]$reference.sha256
+        } catch { $fields.report_status='REPORT_UNAVAILABLE' }
+    }
+    return ConvertTo-KmtechPublicRecord $fields
 }
+
 function Wait-LabelRelayPreimageExit([object[]]$Expected) {
     $deadline=(Get-Date).AddSeconds(15)
     do {
@@ -4286,10 +4333,8 @@ if (-not $testMode) {
     catch {
         $admissionFailure = $_
         $audit.status = 'FAILED_PREPARATION_ADMISSION'
-        $audit.preparation_failure = [ordered]@{
-            exit_code = Get-InstallationPreparationExitCode $admissionFailure
-            message = $admissionFailure.Exception.Message
-        }
+        $audit.preparation_failure = Get-LabelLaunchFailure $admissionFailure 'preparation'
+        $audit.preparation_failure.exit_code = Get-InstallationPreparationExitCode $admissionFailure
         try { Save $auditPath $audit } catch { }
         throw $admissionFailure
     }
@@ -4423,10 +4468,7 @@ $rollbackSources = @(
 catch {
     $pretransactionFailure = $_
     $audit.status = 'FAILED_PRETRANSACTION'
-    $audit.failure = [ordered]@{
-        type = $pretransactionFailure.Exception.GetType().FullName
-        message = $pretransactionFailure.Exception.Message
-    }
+    $audit.failure = Get-LabelLaunchFailure $pretransactionFailure 'pretransaction'
     $audit.recovery = [ordered]@{ transaction_started = $false; artifacts_archived = $false }
     try {
         Save $auditPath $audit
@@ -4442,7 +4484,7 @@ catch {
         # Report both failures while preserving the original ErrorRecord.
         $archiveFailure = $_
         $pretransactionFailure.Exception.Data['pretransaction_recovery_failure'] = $archiveFailure.Exception.Message
-        $audit.recovery.failure = $archiveFailure.Exception.Message
+        $audit.recovery.failure = Get-LabelLaunchFailure $archiveFailure 'archive'
         $retainedAuditPath = Join-Path (Join-Path ($localAuditRoot + '-pretransaction-failures') $runId) (Split-Path -Leaf $auditPath)
         if (Test-Path -LiteralPath $auditPath) { $retainedAuditPath = $auditPath }
         try {
@@ -4866,7 +4908,7 @@ catch {
         $audit.failure_details = Get-LabelLaunchFailure $_ 'forward'
         $audit.recovery_guidance = '자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요.'
         Save $auditPath $audit
-        throw ([string]$audit.failure_details.last_line)
+        throw ([string]$audit.failure_details.guidance)
     }
     $original = $_
     if ($null -ne $Script:LabelPlacementChildFailure) { $original.Exception.Data['placement_child_failure'] = $Script:LabelPlacementChildFailure }
@@ -4875,7 +4917,7 @@ catch {
     Save-LabelRollbackContext
     try { Save $auditPath $audit }
     catch { $audit.rollback.initial_audit_failure = Get-LabelLaunchFailure $_ 'initial_audit_save' }
-    if (-not $mutated) { throw ([string]$audit.failure_details.last_line) }
+    if (-not $mutated) { throw ([string]$audit.failure_details.guidance) }
     $rollbackFailures = New-Object 'System.Collections.Generic.List[object]'
     $rollbackRuntimeVerified = $false
     $rollbackRuntimePreimageVerified = $false
@@ -4960,9 +5002,9 @@ catch {
                 '; rollback=' + $rollbackFailure.Exception.GetType().Name
             )
         }
-        throw ([string]$audit.rollback.failure_details.last_line)
+        throw ([string]$audit.rollback.failure_details.guidance)
     }
-    throw ([string]$audit.failure_details.last_line)
+    throw ([string]$audit.failure_details.guidance)
 }
 finally {
     # Keep the first cause and every attempted rollback phase in the same audit.

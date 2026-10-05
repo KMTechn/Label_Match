@@ -24,7 +24,7 @@ from label_guarded_runtime_reconcile import (  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = __import__("failure_redaction").InstallerArgumentParser(
         description=(
             "Retire one exact stale Label authority, acquire a fresh authenticated "
             "server fence, and write the secret-free resolution receipt."
@@ -57,6 +57,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _write_new(path: Path, value: dict) -> None:
+    from failure_redaction import public_diagnostic_tree
+    value = public_diagnostic_tree(value)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = (
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -106,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         credential_input = prepare_credentials_from_json(args.credential, app_root=ROOT)
         record_user_data_open(ROOT, roots)
     except DataGenerationError as exc:
-        print(str(exc), file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return RECONCILE_EXIT_CODE
     evidence_path = Path(args.evidence_output).expanduser().resolve(strict=False)
     receipt_path = Path(args.receipt_output).expanduser().resolve(strict=False)
@@ -162,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             _write_new(evidence_path, failure)
         except Exception as write_error:
             failure["evidence_write_failure"] = write_error.__class__.__name__
-        print(json.dumps(failure, ensure_ascii=True, sort_keys=True))
+        __import__("failure_redaction").emit_support_failure(exc)
         return RECONCILE_EXIT_CODE
     evidence = {
         "schema_version": "label-match-guarded-runtime-reconcile-evidence-v1",
@@ -186,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
             "stop_marker_removed": False,
             "secret_material_included": False,
         }
-        print(json.dumps(failure, ensure_ascii=True, sort_keys=True))
+        __import__("failure_redaction").emit_support_failure(exc)
         return RECONCILE_EXIT_CODE
     print(
         json.dumps(
@@ -207,4 +209,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

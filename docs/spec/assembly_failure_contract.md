@@ -1,12 +1,18 @@
 # 조립 실패 기록 및 제품 상태 계약
 
-2026-10-05 REDACTION-CONTRACT SHA256 `b507945ad94ad9f0e3f935b25a2e1cdc210ff9daa15902f9750a14589faa3f30`을 따른다.
+2026-10-06 REDACTION-CONTRACT SHA256 `d7b26a3583343ffddc6004b74c01a6a80968ed4ff1424d9ca91b37c4371b4531`의 0e 컷 전 범위를 따른다. 설치기·업데이트 적용기·지원 도구의 예외 문장/child 출력/가변 안내만 허용 필드 공개 레코드로 바꾸며, 고정 문구와 성공 status/path 줄은 유지하고 `tools/failure_redaction_rules.json`의 `safe_messages`에 등록한다. 업무 앱 로그와 스캔 화면은 이 범위 밖이다.
+
+`public_record` / `ConvertTo-KmtechPublicRecord`는 코드·고정 문구·형식 이름·위치·정수·SHA·식별자·시각·절대 경로·bool/null만 받는다. 정확한 키가 suffix보다 먼저이며, 거절한 값은 내보내지 않고 유효한 키 이름과 `PUBLIC_FIELD_NONCONFORMING`만 남긴다. 상세 가림과 64 KiB 제한은 기존 보호 보고서/private evidence에서 유지한다.
+
+등록/제거 CLI 실패는 stderr의 `LABEL_MATCH_INSTALLER_FAILURE=<compact JSON>`으로 원인을 공개한다. `onboarding_status`/`current_user_removal_status` 및 성공 stdout/exit는 유지한다. 실패 보고서 경로/SHA는 이 예외를 처리하는 시도가 원자 게시한 실제 UTF-8 바이트에만 결속한다. 게시 실패 또는 조기 자료 판 거절에는 `REPORT_UNAVAILABLE`만 남기고 옛 보고서를 참조하지 않는다. 같은 onboarding/removal 보고서에 가린 첫 원인 traceback을 보존한다.
+
+지원 제거가 다시 읽는 audit의 중첩 거래·복구 필드는 1a machine metadata로 보존하며 전체 파일을 평탄화하지 않는다. 진단 하위 레코드와 안내만 공개 레코드로 바꾼다. 정확한 출력 자리 목록과 실제 검증 한계는 `work/program/w9setupprep/sub-310/INVENTORY.md` 및 `REPORT.md`에 기록한다. 호스트에서 실제 설치/ACL·GUI·VM·서버 수용은 수행하지 않는다.
 
 환경 이름이 `_TRANSACTION_ID`, `_SESSION_ID`, `_ATTEMPT_ID`로 끝나고 값이 엄격 UUID 또는 32/64자리 16진수일 때만 비밀 값 치환에서 제외한다. 명시 비밀 이름은 예외를 받지 않는다. Python과 PowerShell은 같은 12개 합성 벡터를 사용한다. PowerShell child 출력 reader에도 같은 판정 함수를 전달한다.
 
 | writer / 파일 종류 | 처리 |
 | --- | --- |
-| `Save`: 설치 audit, evidence, 실패 진단 | 공용 가림 함수, 진단 문자열 상한 적용 |
+| `Save`: 설치 audit, evidence, 실패 진단 | 중첩 거래·복구 metadata 보존, diagnostic subrecord는 public record, 원문은 기존 private evidence |
 | `Save-LabelMachineMetadata`: 첫 등록 격리 진행 기록 | 원 UTF-8 JSON 바이트 보존, 쓰기 전에 비밀 값 존재 시 거절 |
 | `Save-FirstRegistrationAttempt` → `Save-LabelMachineMetadata`: 첫 등록 시도 기록 | 동일. 시도·거래·세션 결속 값을 보존 |
 | `Write-BootstrapUtf8Json`: bootstrap 무결성 기록 | 원 UTF-8 JSON 바이트 보존, 쓰기 전에 비밀 값 존재 시 거절 |

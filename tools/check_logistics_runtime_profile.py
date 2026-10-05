@@ -16,7 +16,7 @@ from logistics_runtime_profile import load_logistics_runtime_profile  # noqa: E4
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate the installed logistics profile.")
+    parser = __import__("failure_redaction").InstallerArgumentParser(description="Validate the installed logistics profile.")
     parser.add_argument("--profile-path")
     parser.add_argument("--optional", action="store_true")
     args = parser.parse_args(argv)
@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         check_user_data_open(REPO_ROOT, roots)
         record_user_data_open(REPO_ROOT, roots)
     except DataGenerationError as exc:
-        print(str(exc), file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return 2
     try:
         profile = load_logistics_runtime_profile(
@@ -39,16 +39,20 @@ def main(argv: list[str] | None = None) -> int:
             profile_path=args.profile_path,
         )
     except Exception as exc:
-        print(f"BLOCKED: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        __import__("failure_redaction").emit_support_failure(exc)
         return 2
     if profile is None:
         print(json.dumps({"status": "optional-not-configured"}, sort_keys=True))
         return 0
     report = profile.redacted_summary()
     report["status"] = "ready"
-    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(__import__("failure_redaction").redact_success_summary(report), ensure_ascii=False, sort_keys=True))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        __import__("failure_redaction").emit_support_failure(error)
+        raise SystemExit(1)

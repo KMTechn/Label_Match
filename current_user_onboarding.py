@@ -430,10 +430,12 @@ def resolve_current_user_onboarding_paths(
         # Preserve the existing onboarding ledger even when GUI CSV/outbox
         # already live in a custom root.  Never move or merge either store.
         ledger_path = legacy_ledger
-        logging.getLogger(__name__).warning(
-            "storage_root_split_preserved: data_root=%s onboarding_ledger=%s",
-            data_root, ledger_path,
-        )
+        from failure_redaction import public_diagnostic_tree
+        diagnostic = public_diagnostic_tree({"message":
+            f"storage_root_split_preserved: data_root={data_root} onboarding_ledger={ledger_path}",
+            "data_root": str(data_root), "onboarding_ledger_path": str(ledger_path)})
+        logging.getLogger(__name__).warning("LABEL_MATCH_INSTALLER_FAILURE=" +
+            json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":")))
     if _is_legacy_sync_path(ledger_path):
         raise CurrentUserOnboardingError(
             "current-user onboarding state must not use the legacy Sync root",
@@ -471,11 +473,11 @@ def resolve_current_user_onboarding_paths(
     )
 
 
-def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> dict[str, str]:
     from failure_redaction import redact_json_for_sink
     serialized = json.dumps(redact_json_for_sink(dict(payload)), ensure_ascii=False,
                             indent=2, sort_keys=True) + "\n"
-    _write_json_bytes_atomic(path, serialized)
+    return _write_json_bytes_atomic(path, serialized)
 
 
 def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
@@ -485,7 +487,7 @@ def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     _write_json_bytes_atomic(path, serialized)
 
 
-def _write_json_bytes_atomic(path: Path, serialized: str) -> None:
+def _write_json_bytes_atomic(path: Path, serialized: str) -> dict[str, str]:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
@@ -496,6 +498,24 @@ def _write_json_bytes_atomic(path: Path, serialized: str) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+    return {"path": str(path), "sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest()}
+
+
+def _publish_failure_report(path: Path, report: Mapping[str, Any], error: BaseException) -> None:
+    from failure_redaction import protected_failure_details
+    error._failure_report_ref = None
+    try:
+        error._failure_report_ref = _write_json_atomic(path, {
+            **report, **protected_failure_details(error),
+        })
+    except Exception:
+        # A secondary publication failure must not replace the original cause.
+        error._failure_report_ref = None
+
+
+def _emit_installer_failure(error: BaseException, stage: str) -> None:
+    from failure_redaction import emit_public_failure
+    emit_public_failure(error, stage)
 
 
 def _read_json(
@@ -1320,12 +1340,14 @@ def onboard_current_user(
         report["error_type"] = exc.__class__.__name__
         report["recovery_action"] = exc.recovery_action
         report["enrollment_mutex"] = dict(exc.mutex_report)
-        _write_json_atomic(paths.onboarding_report_path, report)
-        raise CurrentUserOnboardingError(
+        failure = CurrentUserOnboardingError(
             f"Label_Match enrollment mutex blocked onboarding: {exc.reason_code}",
             report_path=paths.onboarding_report_path,
             status=exc.report_status,
-        ) from exc
+        )
+        failure.__cause__ = exc
+        _publish_failure_report(paths.onboarding_report_path, report, failure)
+        raise failure from exc
     except CurrentUserOnboardingError as exc:
         restore_stop_marker_fence()
         if report.get('relay_resume_required'):
@@ -1334,7 +1356,7 @@ def onboard_current_user(
         report["failure"] = str(exc)
         report["error_type"] = exc.__class__.__name__
         report["cause_code"] = exc.cause_code
-        _write_json_atomic(paths.onboarding_report_path, report)
+        _publish_failure_report(paths.onboarding_report_path, report, exc)
         raise
     except Exception as exc:
         restore_stop_marker_fence()
@@ -1351,13 +1373,15 @@ def onboard_current_user(
             else "SETUP_FAILED"
         )
         report["cause_code"] = cause_code
-        _write_json_atomic(paths.onboarding_report_path, report)
-        raise CurrentUserOnboardingError(
+        failure = CurrentUserOnboardingError(
             f"Label_Match first-run onboarding failed: {exc}",
             report_path=paths.onboarding_report_path,
             status="FAILED",
             cause_code=cause_code,
-        ) from exc
+        )
+        failure.__cause__ = exc
+        _publish_failure_report(paths.onboarding_report_path, report, failure)
+        raise failure from exc
 
 
 @writer_sink("current_user_setup_removal")
@@ -1410,6 +1434,7 @@ def remove_current_user_setup(
     }
     try:
         failures = []
+        first_failure = None
         for step, key, callback, arguments in (
             ("run", "relay_autostart", autostart_remover, ()),
             ("relay", "relay_process", relay_stopper, (paths.direct_sync_root,)),
@@ -1429,9 +1454,13 @@ def remove_current_user_setup(
                 if status != "ABSENT":
                     raise ValueError(f"current-user {step} absence was not proven")
             except Exception as exc:
+                from failure_redaction import protected_failure_details
+                if first_failure is None:
+                    first_failure = exc
                 failures.append({"step": step, "error_type": type(exc).__name__,
                                  "failure": str(exc)[:500],
-                                 "status": getattr(exc, "status", "FAILED")})
+                                 "status": getattr(exc, "status", "FAILED"),
+                                 **protected_failure_details(exc, environ)})
         if failures:
             report["removal_failures"] = failures
             status = "UNKNOWN" if any(item["status"] == "UNKNOWN" for item in failures) else "FAILED"
@@ -1439,7 +1468,7 @@ def remove_current_user_setup(
                 "current-user removal remains incomplete: " + "; ".join(
                     item["step"] + ": " + item["failure"] for item in failures),
                 report_path=paths.removal_report_path, status=status,
-            )
+            ) from first_failure
         report.update({"status": "PASS_DATA_PRESERVED", "completed_at": _now()})
         _write_json_atomic(paths.removal_report_path, report)
         return report
@@ -1451,7 +1480,7 @@ def remove_current_user_setup(
                 "error_type": exc.__class__.__name__,
             }
         )
-        _write_json_atomic(paths.removal_report_path, report)
+        _publish_failure_report(paths.removal_report_path, report, exc)
         raise
     except Exception as exc:
         report.update(
@@ -1461,11 +1490,13 @@ def remove_current_user_setup(
                 "error_type": exc.__class__.__name__,
             }
         )
-        _write_json_atomic(paths.removal_report_path, report)
-        raise CurrentUserOnboardingError(
+        failure = CurrentUserOnboardingError(
             f"Label_Match current-user removal failed: {exc}",
             report_path=paths.removal_report_path,
-        ) from exc
+        )
+        failure.__cause__ = exc
+        _publish_failure_report(paths.removal_report_path, report, failure)
+        raise failure from exc
 
 
 def _default_app_root() -> Path:
@@ -1475,7 +1506,7 @@ def _default_app_root() -> Path:
 
 
 def onboarding_main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = __import__("failure_redaction").InstallerArgumentParser(
         description="Onboard Label_Match for the current user"
     )
     parser.add_argument("--app-root", default=str(_default_app_root()))
@@ -1495,12 +1526,10 @@ def onboarding_main(argv: list[str] | None = None) -> int:
             require_bootstrap_integrity=requires_bootstrap_integrity(args.app_root),
         )
     except CurrentUserOnboardingError as exc:
-        print(f"onboarding_status={exc.status}")
-        print(f"onboarding_report={exc.report_path}")
-        if exc.status == "RECOVERY_REQUIRED" or exc.cause_code == "DATA_GENERATION_REFUSED":
-            from failure_redaction import redact_for_sink
-            lines = redact_for_sink(str(exc)).splitlines()
-            print(next((line for line in reversed(lines) if line.strip()), "")[-300:])
+        from failure_redaction import public_record
+        status = public_record({"status": exc.status}).get("status", "FAILED")
+        print(f"onboarding_status={status}")
+        _emit_installer_failure(exc, "CURRENT_USER_ONBOARDING")
         return ONBOARDING_EXIT_CODE
     print(f"onboarding_status={report['status']}")
     print(f"onboarding_action={report['action']}")
@@ -1512,7 +1541,7 @@ def onboarding_main(argv: list[str] | None = None) -> int:
 
 
 def removal_main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = __import__("failure_redaction").InstallerArgumentParser(
         description="Remove Label_Match current-user setup"
     )
     parser.add_argument("--app-root", default=str(_default_app_root()))
@@ -1520,10 +1549,10 @@ def removal_main(argv: list[str] | None = None) -> int:
     try:
         report = remove_current_user_setup(args.app_root)
     except CurrentUserOnboardingError as exc:
-        print(f"current_user_removal_status={exc.status}")
-        print(f"current_user_removal_report={exc.report_path}")
-        if exc.cause_code == "DATA_GENERATION_REFUSED":
-            print(str(exc))
+        from failure_redaction import public_record
+        status = public_record({"status": exc.status}).get("status", "FAILED")
+        print(f"current_user_removal_status={status}")
+        _emit_installer_failure(exc, "CURRENT_USER_REMOVAL")
         return ONBOARDING_EXIT_CODE
     paths = resolve_current_user_onboarding_paths(args.app_root)
     print(f"current_user_removal_status={report['status']}")
