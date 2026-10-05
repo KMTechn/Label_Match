@@ -627,6 +627,9 @@ $placement = 'INSTALL_REQUIRED'
 $conflictReceiptSupplied = $false
 $sourceManifest = Manifest $source $true
 $receiptSource = PortableInventory $source
+if ({_quote(failure)} -ceq 'rollback-remove') {{
+    $placementCriticalHashes = $receiptSource.critical_file_sha256
+}}
 $frozenPlacement | Add-Member helper_sha256 ([string]$receiptSource.critical_file_sha256.placement_helper)
 $frozenPlacement | Add-Member helper_path (Join-Path $source 'INSTALL_THIS_PC.ps1')
 . (Join-Path $source 'tools/bootstrap_integrity.ps1') -SharedCodeRoot $source
