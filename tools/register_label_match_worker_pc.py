@@ -239,6 +239,11 @@ def _write_registration_report(path, report):
     # notices leave this report for same-attempt existing private evidence.
     from failure_redaction import public_diagnostic_tree
     public = public_diagnostic_tree(report)
+    server_code=public.get("server_error_code")
+    if isinstance(server_code, str) and server_code:
+        from failure_redaction import public_record
+        if "server_error_code" not in public_record({"server_error_code":server_code}):
+            public["server_error_code"]=public_diagnostic_tree({"message":server_code})
     _write_json(path, public)
     return public
 
@@ -2217,6 +2222,14 @@ def apply_registration(
             report,
             progress,
         )
+
+
+def _emit_registration_notice(message, error):
+    redaction = __import__('failure_redaction')
+    if isinstance(message, str) and message in redaction.RULES['safe_messages']:
+        print(message)
+    else:
+        redaction.emit_support_failure(error)
 
 
 def main(argv: list[str] | None = None) -> int:

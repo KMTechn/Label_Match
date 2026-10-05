@@ -1881,7 +1881,14 @@ def test_recovery_missing_arguments_explains_server_readback_before_identity_loo
     if partial:
         argv.append('--recover-partial-local-state')
     assert module.main(argv) == 2
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
+    line = next(line for line in captured.err.splitlines() if line.startswith('LABEL_MATCH_SUPPORT_FAILURE='))
+    public = json.loads(line.split('=', 1)[1])
+    private_bytes = Path(public['report_path']).read_bytes()
+    assert hashlib.sha256(private_bytes).hexdigest() == public['report_sha256']
+    assert 'message' not in public and 'error' not in public
+    assert '--expected-active-manifest-hash' not in captured.out
+    output = private_bytes.decode('utf-8')
     for option in ('--pc-id', '--producer-id', '--source-host-id', '--producer-install-id',
                    '--expected-active-manifest-hash'):
         assert option in output

@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,19 @@ from label_exact_clone_resolution import (
 from tools import label_exact_clone_resolution_receipt as receipt_cli
 
 
+def _public_failure_record(captured):
+    assert captured.err.startswith("LABEL_MATCH_SUPPORT_FAILURE=")
+    public=json.loads(captured.err.split("=",1)[1])
+    private=Path(public["report_path"]).read_bytes()
+    assert hashlib.sha256(private).hexdigest()==public["report_sha256"]
+    assert public["client_state_mutated"] is False
+    assert public["server_state_mutated"] is False
+    assert public["stop_marker_removed"] is False
+    assert "error" not in public and "message" not in public
+    return public
+
+
+
 @pytest.fixture(autouse=True)
 def _stub_live_receipt_revalidation(monkeypatch):
     monkeypatch.setattr(
@@ -17,6 +31,11 @@ def _stub_live_receipt_revalidation(monkeypatch):
         "validate_resolution_receipt",
         lambda *_args, **_kwargs: {"status": "RESOLVED"},
     )
+
+
+def _private_failure_text(captured):
+    public = _public_failure_record(captured)
+    return Path(public['report_path']).read_text(encoding='utf-8')
 
 
 def test_write_new_json_publishes_exclusively(tmp_path):
@@ -314,7 +333,7 @@ def test_rebind_cli_rejects_ancestor_descendant_output_paths(
         )
         == 4
     )
-    assert "ancestor/descendant relationship" in capsys.readouterr().err
+    assert "ancestor/descendant relationship" in _private_failure_text(capsys.readouterr())
     assert not (tmp_path / receipt_relative).exists()
     assert not (tmp_path / evidence_relative).exists()
 
@@ -368,7 +387,7 @@ def test_rebind_cli_rejects_outputs_at_or_below_portable_root_before_scan(
         )
         == 4
     )
-    assert "must be outside the resolved portable root" in capsys.readouterr().err
+    assert "must be outside the resolved portable root" in _private_failure_text(capsys.readouterr())
 
 
 def test_rebind_cli_receipt_collision_preserves_evidence_and_competing_receipt(
@@ -401,7 +420,7 @@ def test_rebind_cli_receipt_collision_preserves_evidence_and_competing_receipt(
     monkeypatch.setattr(receipt_cli, "write_new_json", collide_on_receipt)
 
     assert receipt_cli.main(_rebind_arguments(tmp_path)) == 4
-    stderr = capsys.readouterr().err
+    stderr = _private_failure_text(capsys.readouterr())
     assert "preserved the rebind evidence and any receipt path state" in stderr
     assert "blocked/indeterminate" in stderr
     evidence = json.loads((tmp_path / "rebind-evidence.json").read_text())
@@ -443,7 +462,7 @@ def test_rebind_cli_raw_receipt_publication_error_preserves_evidence(
         receipt_cli.main(_rebind_arguments(tmp_path, output=output))
         == 4
     )
-    stderr = capsys.readouterr().err
+    stderr = _private_failure_text(capsys.readouterr())
     assert "preserved the rebind evidence and any receipt path state" in stderr
     assert "blocked/indeterminate" in stderr
     evidence = json.loads((tmp_path / "rebind-evidence.json").read_text())
@@ -489,7 +508,7 @@ def test_rebind_cli_post_publication_revalidation_preserves_both_outputs(
     receipt = json.loads((tmp_path / "receipt.json").read_text())
     assert evidence["status"] == "PASS"
     assert receipt["status"] == "RESOLVED"
-    stderr = capsys.readouterr().err
+    stderr = _private_failure_text(capsys.readouterr())
     assert "preserved the rebind evidence and any receipt path state" in stderr
     assert "blocked/indeterminate" in stderr
 
@@ -522,7 +541,7 @@ def test_rebind_cli_pinned_receipt_read_failure_preserves_both_outputs(
     receipt = json.loads((tmp_path / "receipt.json").read_text())
     assert evidence["status"] == "PASS"
     assert receipt["status"] == "RESOLVED"
-    stderr = capsys.readouterr().err
+    stderr = _private_failure_text(capsys.readouterr())
     assert "preserved the rebind evidence and any receipt path state" in stderr
     assert "published receipt SHA-256 differs" in stderr
 

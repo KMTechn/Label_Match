@@ -300,7 +300,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         __import__("failure_redaction").emit_support_failure(exc)
         return 2
     except ExactCloneResolutionError as exc:
-        __import__("failure_redaction").emit_support_failure(exc)
+        __import__("failure_redaction").emit_support_failure(exc, fields={
+            "status": "UNKNOWN", "client_state_mutated": False,
+            "server_state_mutated": False, "stop_marker_removed": False})
         return 4
 
 

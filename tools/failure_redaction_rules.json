@@ -406,7 +406,11 @@
     "WRITER_TRANSITION_SOURCE_SET_DIFFERS",
     "X13B_PINNED_SHARED_LEAF_ADOPTION",
     "Z",
-    "STORAGE_ROOT_SPLIT_PRESERVED"
+    "STORAGE_ROOT_SPLIT_PRESERVED",
+    "admin_recovery_required",
+    "enrollment_unauthorized",
+    "producer_identity_conflict",
+    "reattach_proof_required"
   ],
   "safe_messages": [
     "설치 확인에 실패했습니다. 자료와 등록 및 전송 대기를 보존하고 보호 보고서를 확인하세요.",
@@ -543,6 +547,29 @@
     "task_run_user_not_configured",
     "typed command output did not identify the expected operation",
     "typed command output was not valid JSON",
-    "writer absence is unproven"
+    "writer absence is unproven",
+    "scheduled task absence was not proven",
+    "scheduled task delete failed",
+    "scheduled task is still running; stop phase must pass first",
+    "scheduled task ownership was not proven",
+    "self-enrollment registration failed",
+    "source scan baseline failed",
+    "stored-password task mode requires --task-run-password-env or --task-run-password-file",
+    "task run password env var is empty or unavailable",
+    "task run password file is empty",
+    "use only one of --task-run-password-env or --task-run-password-file",
+    "self-enroll failed: admin_recovery_required",
+    "self-enroll failed: enrollment_unauthorized",
+    "self-enroll failed: producer_identity_conflict",
+    "self-enroll failed: reattach_proof_required",
+    "self-enroll failed: admin_recovery_required: 서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요",
+    "self-enroll failed: enrollment_unauthorized: 서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요",
+    "self-enroll failed: producer_identity_conflict: 서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요",
+    "self-enroll failed: reattach_proof_required: 서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요",
+    "noncanonical layout override requires KMTECH_FACTORY_INSTALL_TEST_MODE=1",
+    "production apply requires the canonical Label_Match field layout",
+    "program_data_root must not be a filesystem root",
+    "scan_source_dir must be absolute for app runtime ACL",
+    "scan_source_dir must not be a filesystem root"
   ]
 }

@@ -329,3 +329,17 @@ def test_registration_report_privatizes_free_reason_without_changing_recovery_fi
     raw=Path(reference['report_path']).read_bytes()
     assert hashlib.sha256(raw).hexdigest()==reference['report_sha256']
     assert marker.encode() in raw
+
+
+
+def test_untrusted_server_error_code_stays_in_same_attempt_private_report(tmp_path):
+    from tools import register_label_match_worker_pc as register
+    marker=uuid.uuid4().hex
+    report={"status":"BLOCKED", "server_error_code":marker,"server_http_status":503}
+    public=register._write_registration_report(tmp_path / "report.json",report)
+    assert public['status']=='BLOCKED' and public['server_http_status']==503
+    assert marker not in json.dumps(public)
+    reference=public['server_error_code']
+    raw=Path(reference['report_path']).read_bytes()
+    assert hashlib.sha256(raw).hexdigest()==reference['report_sha256']
+    assert marker.encode() in raw

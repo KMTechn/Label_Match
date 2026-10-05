@@ -180,12 +180,19 @@ def public_diagnostic_tree(value):
     return value
 
 
-def emit_support_failure(error, *, prefix="LABEL_MATCH_SUPPORT_FAILURE", stage="SUPPORT"):
+def emit_support_failure(error, *, prefix="LABEL_MATCH_SUPPORT_FAILURE", stage="SUPPORT", fields=None):
     details = protected_failure_details(error)
     evidence = try_write_failure_evidence(details["failure_traceback"])
     reference = ({"path": evidence["path"], "sha256": evidence["sha256"]}
                  if "path" in evidence and "sha256" in evidence else None)
-    emit_public_failure(error, stage, prefix=prefix, report_reference=reference)
+    if fields is None:
+        emit_public_failure(error, stage, prefix=prefix, report_reference=reference)
+    else:
+        import sys
+        record=public_failure_record(error, stage, report_reference=reference)
+        record=public_record({**record, **fields})
+        print(prefix + "=" + json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+              file=sys.stderr, flush=True)
 
 
 def _secret_environment_entries(environ):

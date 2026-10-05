@@ -14,6 +14,17 @@ import pytest
 from tests.test_current_user_onboarding import _write_bootstrap_inventory_record
 
 
+def _diagnostic_notice_text(value):
+    if isinstance(value, str):
+        return value
+    private=Path(value["report_path"]).read_bytes()
+    assert hashlib.sha256(private).hexdigest()==value["report_sha256"]
+    original=json.loads(private)["message"]
+    assert original not in json.dumps(value), "free diagnostic sentence was public"
+    return original
+
+
+
 def _seal_generation_release_input(app_root, source_commit):
     """Supply code identity while preserving the preflight's damaged runtime."""
     from label_data_generation import CURRENT_VERSION
@@ -317,7 +328,7 @@ def test_install_pack_blocks_raw_credential_secret_even_without_production_env(t
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     report_text = report_path.read_text(encoding="utf-8-sig")
     assert report["status"] == "BLOCKED"
-    assert "raw credential secret is disabled for production install packs" in report["blocked_reason"]
+    assert "raw credential secret is disabled for production install packs" in _diagnostic_notice_text(report["blocked_reason"])
     assert any(
         check["name"] == "production_credential_secret_policy" and check["status"] == "FAIL"
         for check in report["install_preflight"]["checks"]
@@ -1057,7 +1068,7 @@ def test_install_pack_blocks_task_user_without_password_source(tmp_path):
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "BLOCKED"
     assert report["task_principal"]["status"] == "FAIL"
-    assert "requires --task-run-password" in report["blocked_reason"]
+    assert "requires --task-run-password" in _diagnostic_notice_text(report["blocked_reason"])
 
 
 def test_install_pack_apply_defaults_to_system_task_without_password(tmp_path, monkeypatch):
@@ -1160,7 +1171,7 @@ def test_install_pack_blocks_invalid_task_password_sources(tmp_path, monkeypatch
         assert result == 2
         report = json.loads(report_path.read_text(encoding="utf-8-sig"))
         assert report["status"] == "BLOCKED"
-        assert expected_reason in report["blocked_reason"]
+        assert expected_reason in _diagnostic_notice_text(report["blocked_reason"])
 
 
 def test_install_pack_uninstall_skips_task_password_validation(tmp_path, monkeypatch):
@@ -1756,7 +1767,7 @@ def test_install_pack_blocks_missing_release_runtime_preflight(tmp_path):
     assert completed.returncode == 2
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "BLOCKED"
-    assert report["blocked_reason"].startswith("install preflight failed:")
+    assert _diagnostic_notice_text(report["blocked_reason"]).startswith("install preflight failed:")
     assert report["install_preflight"]["status"] == "FAIL"
     assert any(
         check["name"] == "runner_script" and check["status"] == "FAIL"
@@ -1786,7 +1797,7 @@ def test_install_pack_blocks_missing_manifest_preflight(tmp_path):
     assert completed.returncode == 2
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "BLOCKED"
-    assert report["blocked_reason"].startswith("install preflight failed:")
+    assert _diagnostic_notice_text(report["blocked_reason"]).startswith("install preflight failed:")
     assert any(
         check["name"] == "producer_manifest_path" and check["status"] == "FAIL"
         for check in report["install_preflight"]["checks"]
@@ -1815,7 +1826,7 @@ def test_install_pack_blocks_missing_credential_preflight(tmp_path):
     assert completed.returncode == 2
     report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     assert report["status"] == "BLOCKED"
-    assert report["blocked_reason"].startswith("install preflight failed:")
+    assert _diagnostic_notice_text(report["blocked_reason"]).startswith("install preflight failed:")
     assert any(
         check["name"] == "credential_path" and check["status"] == "FAIL"
         for check in report["install_preflight"]["checks"]
