@@ -21,7 +21,9 @@ def test_canonical_launcher_admission_precedes_first_audit_write():
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 @pytest.mark.parametrize("case", ["no-task", "missing-vbs", "missing-wrapper", "foreign-binding",
-                                  "changed-content", "ps1-consistent", "cmd-consistent"])
+                                  "changed-content", "ps1-consistent", "cmd-consistent",
+                                  "ps1-official-crcrlf", "changed-content-crcrlf",
+                                  "foreign-binding-crcrlf", "extra-blank-line", "mixed-crcrlf"])
 def test_actual_launcher_admission_has_zero_writes_on_refusal(tmp_path, engine, case):
     from tools.direct_sync_relay_install_pack import _task_launcher_content
     launcher = tmp_path / "bin/run_owned.vbs"
@@ -30,7 +32,7 @@ def test_actual_launcher_admission_has_zero_writes_on_refusal(tmp_path, engine, 
     protected = tmp_path / "protected-base"
     protected.mkdir()
     if case not in {"no-task", "missing-vbs"}:
-        selected = tmp_path / "foreign.ps1" if case == "foreign-binding" else wrapper
+        selected = tmp_path / "foreign.ps1" if case.startswith("foreign-binding") else wrapper
         text = _task_launcher_content(selected)
         if case == "cmd-consistent":
             text = '\r\n'.join([
@@ -39,9 +41,17 @@ def test_actual_launcher_admission_has_zero_writes_on_refusal(tmp_path, engine, 
                 'runner = "' + str(wrapper) + '"',
                 'command = """" & comspec & """ /d /c """ & runner & """"',
                 'exitCode = shell.Run(command, 0, True)', 'WScript.Quit exitCode', ''])
-        if case == "changed-content":
+        if case.startswith("changed-content"):
             text = text.replace('shell.Run(command, 0, True)', 'shell.Run(command, 1, False)')
-        launcher.write_text(text, encoding="ascii", newline="")
+        if case == "extra-blank-line":
+            text = text.replace('wrapper = ', '\r\nwrapper = ')
+        if case == "mixed-crcrlf":
+            text = text.replace('\r\n', '\n', 1)
+        # The official v2.0.38 writer already returns CRLF; its text writer's
+        # CRLF translation produces CR CR LF on Windows (six separators).
+        launcher.write_text(text, encoding="ascii", newline="\r\n" if case.endswith("crcrlf") else "")
+        if case.endswith("crcrlf"):
+            assert launcher.read_bytes().count(b"\r\r\n") == (5 if case == "mixed-crcrlf" else 6)
     if case not in {"no-task", "missing-wrapper"}:
         wrapper.write_text("exit 0\n", encoding="ascii")
     task = ET.Element("Task")
@@ -76,7 +86,7 @@ if($admitted){'ADMITTED'}else{'REFUSED'}
     (tmp_path / "driver.stdout").write_text(result.stdout, encoding="utf-8")
     (tmp_path / "driver.stderr").write_text(result.stderr, encoding="utf-8")
     assert result.returncode == 0, "isolated launcher driver failed; child evidence retained"
-    allowed = case in {"no-task", "ps1-consistent", "cmd-consistent"}
+    allowed = case in {"no-task", "ps1-consistent", "cmd-consistent", "ps1-official-crcrlf"}
     assert result.stdout.strip() == ("ADMITTED" if allowed else "REFUSED")
     assert (tmp_path / "preparation/evidence").exists() is allowed
     assert all(hashlib.sha256((tmp_path / p).read_bytes()).hexdigest() == digest
