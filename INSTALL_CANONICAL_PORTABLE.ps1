@@ -17,7 +17,8 @@ trap {
     if ($publicError.Exception.Data.Contains('installation_preparation_exit_code')) {
         $publicExit = [int]$publicError.Exception.Data['installation_preparation_exit_code']
     }
-    if (Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) {
+    if ((Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) -and
+        (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue)) {
         $publicFailure = Get-LabelLaunchFailure $publicError 'forward'
     } else {
         # The pinned helper may not have loaded yet. No error text is emitted.
