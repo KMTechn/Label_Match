@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from tests.test_data_generation_upgrade_pair import ROOT, _pair_layouts, probe
+from tests.test_data_generation_upgrade_pair_r4 import ROOT, _pair_layouts, probe
 
 BASE = '464830d78a305acb7aa01a7a7afc9e72a924a5c9'
 
