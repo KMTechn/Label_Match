@@ -29,7 +29,7 @@ if SITE_PACKAGES.is_dir() and str(SITE_PACKAGES) not in sys.path:
 
 import requests  # noqa: E402
 from writer_session_fence import remote_request, writer_sink  # noqa: E402
-from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open  # noqa: E402
+from label_data_generation import DataGenerationError, UNKNOWN_MESSAGE, check_user_data_open, record_user_data_open  # noqa: E402
 
 from enrollment_mutex import (  # noqa: E402
     DEFAULT_ENROLLMENT_MUTEX_TIMEOUT_SECONDS,
@@ -2269,6 +2269,7 @@ def main(argv: list[str] | None = None) -> int:
         _registration_storage_preflight(args)
     except ValueError as exc:
         print(str(exc))
+        print(UNKNOWN_MESSAGE, file=sys.stderr)
         return 2
 
     data_dir = Path(args.data_dir or DEFAULT_DIRECT_SYNC_ROOT).expanduser().resolve()

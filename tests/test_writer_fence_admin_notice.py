@@ -45,6 +45,7 @@ def test_startup_fence_error_keeps_app_stopped_and_explains_recovery(
 
     namespace = {
         "Path": Path,
+        "__file__": str(source),
         "os": os, "sys": sys,
         "WriterFenceError": WriterFenceError,
         "CurrentUserOnboardingError": CurrentUserOnboardingError,
