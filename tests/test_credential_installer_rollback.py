@@ -85,6 +85,7 @@ function Get-CimInstance([string]$ClassName,[string]$Filter,[string]$ErrorAction
  if ($ClassName -ceq 'Win32_Process' -and $Filter -match '^\s*ProcessId\s*=\s*(\d+)\s*$' -and [int]$Matches[1] -eq 2147418112) {{ return $old[0] }}
  & $script:realCim @PSBoundParameters
 }}
+$script:realDecision=(Get-Command Get-KmtechDataDowngradeDecision).ScriptBlock
 function Get-KmtechDataDowngradeDecision([string[]]$MarkerPaths,[string]$TargetVersion,[string]$AppId,[string]$SubjectSid,[string]$TargetBuildId) {{
     $script:attempts.g++
     & $script:realDecision -MarkerPaths $MarkerPaths -TargetVersion $TargetVersion -AppId $AppId -SubjectSid $SubjectSid -TargetBuildId $TargetBuildId
