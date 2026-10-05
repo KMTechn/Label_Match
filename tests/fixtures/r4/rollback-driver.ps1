@@ -95,7 +95,7 @@ $audit=[ordered]@{status='RUNNING';rollback=[ordered]@{};writer_fence=[ordered]@
 $auditPath=Join-Path $Root 'audit.json';$EvidencePath=$null;$writerEnvironmentBefore=$null
 $transaction=@($ast.FindAll({param($n)
     $n -is [Management.Automation.Language.TryStatementAst] -and
-    @($n.CatchClauses | Where-Object {$_.Body.Extent.Text.Contains('$Script:LabelRollbackErrors =')}).Count -gt 0
+    @($n.CatchClauses | Where-Object {$_.Body.Extent.Text.Contains('. Invoke-LabelCanonicalRollback')}).Count -gt 0
 },$true))
 if($transaction.Count -ne 1){throw 'Unique product transaction not found'}
 $catchBody=$transaction[0].CatchClauses[0].Body.Extent.Text
