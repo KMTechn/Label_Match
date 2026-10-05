@@ -117,7 +117,12 @@ def _application_command(
         ]
     source_entrypoint = root / "Label_Match.py"
     if source_entrypoint.is_file() and not getattr(sys, "frozen", False):
-        return [sys.executable, str(source_entrypoint)]
+        runtime = Path(sys.executable).resolve()
+        if not console:
+            runtime = runtime.with_name("pythonw.exe")
+            if not runtime.is_file():
+                raise UserRelayError("the windowless Label_Match source host is unavailable")
+        return [str(runtime), str(source_entrypoint)]
     raise UserRelayError("the hardened Label_Match application host is unavailable")
 
 

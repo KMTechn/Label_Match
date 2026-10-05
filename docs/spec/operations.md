@@ -1,8 +1,10 @@
+# Label_Match 운영·복구·검증
+
+GUI/onboarding의 legacy readback·현재 사용자 task 제거와 source 판 확인 Git 호출은 CREATE_NO_WINDOW를 명시한다. source resident/autostart는 확인된 sibling pythonw.exe를 쓰며 없으면 기존 오류로 거절한다. one-shot console·packaged/portable·r4 bootstrap과 과거 task ownership 정의는 보존한다. GUI 바로가기·작업자 시작은 manifest.entrypoint의 runtime\pythonw.exe -I -B app\main.py 또는 관리 설치 bootstrap에 직접 연결한다. portable launch-label-match.cmd는 콘솔 전용이며 현장 작업자 GUI 시작에 쓰지 않는다. mock 회귀 22 PASS; 실제 Explorer·로그온·스캐너 포커스는 NOT TESTED다.
+
 rollback 최종 예외와 원 설치 예외의 재전달은 기존 Get-LabelLaunchFailure의 공용 가림/마지막 줄(300자 이하)을 사용한다. 원 예외 chain/type과 가린 원인 전문/참조는 기존 감사·보호 evidence에 보존하며 raw message를 사용자 sink로 다시 연결하지 않는다.
 
 조립판 자동 업데이트 다운로드는 실제 profile 위치 G 뒤 profile을 한 번 판독하고, loader의 secret/TLS owner G를 통과한다. 각 HTTP 요청의 TLS CA 첫 판독 직전에도 현재 G를 재확인한다. 늦은 거절은 해당 보호 판독·복호·접속·다운로드 상태 변경 전에 끝나며 기존 업데이트 상태 계약을 보존한다. 격리 회귀와 stock/랩 수용은 별도로 기록한다.
-
-# Label_Match 운영·복구·검증
 
 저장된 F5 복구 journal 시험 자료 `tests/fixtures/f5-recovery-167ac7e/*.journal.json`은 원 LF 바이트와 SHA256을 보존하도록 `.gitattributes`의 `-text`로 고정한다. `core.autocrlf=true` checkout에서도 `tests/test_f5_saved_journals.py`의 다섯 복구 신원·상태 oracle을 그대로 검사한다.
 

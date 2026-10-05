@@ -68,14 +68,17 @@ def release_identity(app_root: Path) -> dict[str, object]:
             commit = subprocess.check_output(
                 ["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=root,
                 timeout=15, stderr=subprocess.DEVNULL, text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             ).strip()
             unchanged = subprocess.run(
                 ["git", "diff", "--quiet", "HEAD"],
                 cwd=root, timeout=15, capture_output=True, check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             ).returncode == 0
             untracked = subprocess.check_output(
                 ["git", "ls-files", "--others", "--exclude-standard"], cwd=root,
                 timeout=15, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise DataGenerationError(UNKNOWN_MESSAGE) from exc

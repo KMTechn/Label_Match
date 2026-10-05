@@ -405,6 +405,7 @@ def read_legacy_system_task_quiescence(
         capture_output=True,
         timeout=30,
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     output = str(getattr(completed, "stdout", "") or "")
     error = str(getattr(completed, "stderr", "") or "")
@@ -466,6 +467,7 @@ def _run_task_removal(
         env=environment,
         timeout=150,
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     output = str(getattr(completed, "stdout", "") or "")
     error = str(getattr(completed, "stderr", "") or "")
