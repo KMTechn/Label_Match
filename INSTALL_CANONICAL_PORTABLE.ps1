@@ -4864,7 +4864,7 @@ catch {
     Save-LabelRollbackContext
     try { Save $auditPath $audit }
     catch { $audit.rollback.initial_audit_failure = Get-LabelLaunchFailure $_ 'initial_audit_save' }
-    if (-not $mutated) { throw $original }
+    if (-not $mutated) { throw ([string]$audit.failure_details.last_line) }
     $rollbackFailures = New-Object 'System.Collections.Generic.List[object]'
     $rollbackRuntimeVerified = $false
     $rollbackRuntimePreimageVerified = $false
@@ -4949,10 +4949,9 @@ catch {
                 '; rollback=' + $rollbackFailure.Exception.GetType().Name
             )
         }
-        throw ([string]$audit.user_message + " AUTOSTART_ROLLBACK_FAILED: " + $rollbackFailure.Exception.Message +
-            '; original=' + $original.Exception.Message)
+        throw ([string]$audit.rollback.failure_details.last_line)
     }
-    throw $original
+    throw ([string]$audit.failure_details.last_line)
 }
 finally {
     # Keep the first cause and every attempted rollback phase in the same audit.
