@@ -2642,7 +2642,11 @@ function Get-LabelLaunchFailure($Failure, [string]$Phase) {
         $exception=$exception.InnerException
     }
     $placement = if ($Failure.Exception.Data.Contains('placement_child_failure')) { $Failure.Exception.Data['placement_child_failure'] } else { $null }
-    return [ordered]@{phase=$Phase;exception_chain=$chain;message=(Protect-LabelFailureText ([string]$Failure.Exception.Message));child_output=$childOutput;placement_child_failure=$placement}
+    $baseException = $Failure.Exception.GetBaseException()
+    $baseMessage = Protect-LabelFailureText ([string]$baseException.Message)
+    $lastLine = @($baseMessage -split '\r?\n' | Where-Object { $_.Trim() })[-1]
+    if ($lastLine.Length -gt 300) { $lastLine = $lastLine.Substring($lastLine.Length-300) }
+    return [ordered]@{phase=$Phase;exception_chain=$chain;message=(Protect-LabelFailureText ([string]$Failure.Exception.Message));exception_type=$baseException.GetType().FullName;last_line=$lastLine;child_output=$childOutput;placement_child_failure=$placement}
 }
 function Wait-LabelRelayPreimageExit([object[]]$Expected) {
     $deadline=(Get-Date).AddSeconds(15)
