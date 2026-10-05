@@ -77,7 +77,7 @@ function Get-LabelCurrentUserScheduledTasks { @() }
 function Get-LabelOfficialLegacyTaskSnapshot { return $null }
 $legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot
 """, 1)
-    from tools.build_portable_release_candidate import _copy_application, RUNTIME_ROOT_FILES
+    from tools.build_portable_release_candidate import _copy_application, _copy_third_party, RUNTIME_ROOT_FILES
     from tests.test_current_user_onboarding import _write_bootstrap_inventory_record
     from label_data_generation import CURRENT_VERSION
     import shutil
@@ -104,10 +104,20 @@ $legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot
                                   check=False, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
     assert runtime_check.returncode == 0, "Isolated CPython fixture did not start"
     _copy_application(ROOT, source_root / "app")
+    site_packages = source_root / "app/site-packages"
+    site_packages.mkdir()
+    _copy_third_party(site_packages)
     files = {
         "runtime/python.exe": (source_root / "runtime/python.exe").read_bytes(),
         "runtime/pythonw.exe": (source_root / "runtime/pythonw.exe").read_bytes(),
-        "app/main.py": b"raise SystemExit('must not run')\n",
+        "app/main.py": (
+            b"import sys\nfrom pathlib import Path\n"
+            b"sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parent / 'site-packages')]\n"
+            b"if sys.argv[1:2] == ['--onboard-current-user'] and '--check-data-generation-only' in sys.argv[2:]:\n"
+            b"    from current_user_onboarding import onboarding_main\n"
+            b"    raise SystemExit(onboarding_main(sys.argv[2:]))\n"
+            b"raise SystemExit('must not run')\n"
+        ),
         "launch-label-match.cmd": b"@echo off\r\nexit /b 99\r\n",
         "INSTALL_CANONICAL_PORTABLE.ps1": installer_source.encode("utf-8"),
         "INSTALL_THIS_PC.ps1": (ROOT / "INSTALL_THIS_PC.ps1").read_bytes(),
@@ -188,7 +198,7 @@ $legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot
         capture_output=True,
         text=True,
         encoding="oem",
-        timeout=30,
+        timeout=120,
         env=environment,
     )
 
@@ -773,11 +783,12 @@ def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
     restored_true = rollback.index("$audit.rollback.runtime_restored = $true")
     assert product < zero_readback < restore < restore_task < exact_readback < restored_true
     for token in (
-        "$audit.status = if ($legacyFirstRegistration) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }",
+        "$audit.status = if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }",
         "$audit.rollback.runtime_restored = $false",
         "$audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name",
         "ROLLBACK_AUDIT_PERSISTENCE_FAILED",
-        "AUTOSTART_ROLLBACK_FAILED",
+        "$audit.rollback.failure_details = Get-LabelLaunchFailure $rollbackFailure 'rollback'",
+        "throw ([string]$audit.rollback.failure_details.last_line)",
     ):
         assert token in rollback
 
@@ -785,7 +796,7 @@ def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
 @pytest.mark.parametrize("status", ["FAILED_ROLLBACK_INCOMPLETE", "ROLLBACK_FAILED"])
 def test_rollback_status_contract_refuses_changed_branch(monkeypatch, status):
     source = _source()
-    assignment = "$audit.status = if ($legacyFirstRegistration) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }"
+    assignment = "$audit.status = if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }"
     assert source.count(assignment) == 1
     changed = source.replace(assignment, assignment.replace("'" + status + "'", "'PASS'"), 1)
     monkeypatch.setattr(__import__(__name__, fromlist=["_source"]), "_source", lambda: changed)
@@ -2329,7 +2340,7 @@ def test_pretransaction_failure_diagnostics_survive_supported_user_removal(tmp_p
     # Call the unchanged removal domain with all three native persistence
     # callbacks substituted; writer admission/native CLI is the guest's scope.
     report = remove_current_user_setup.__wrapped__(
-        tmp_path / "app", environ={"LOCALAPPDATA": str(tmp_path / "local"),
+        ROOT, environ={"LOCALAPPDATA": str(tmp_path / "local"),
                                   "LABEL_MATCH_SAVE_DIR": str(tmp_path / "data")},
         autostart_remover=lambda: {"status": "ABSENT"},
         scheduled_task_remover=lambda _root: {"status": "ABSENT"},

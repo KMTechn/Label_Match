@@ -147,6 +147,9 @@ def test_stop_request_records_a_successor_and_release_is_exact_cas(tmp_path):
 def test_successor_marker_still_blocks_the_path_only_relay_gate(
     monkeypatch, tmp_path
 ):
+    # A prior install-pack fixture may leave this process-wide override behind.
+    # The isolated gate must use this case's ProgramData and explicit roots.
+    monkeypatch.delenv("LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT", raising=False)
     app_root = (tmp_path / "app").resolve()
     direct_root = (tmp_path / "direct").resolve()
     data_root = (tmp_path / "data").resolve()

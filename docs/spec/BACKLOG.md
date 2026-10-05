@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+조립 fixture 교정: receipt gate는 실제 읽기 전용 G 진입과 표준 의존성을 제공하고 다른 제품 mode는 계속 거절한다. 제거 진단 회귀는 실제 clean source identity, 예약 작업 대역은 제품과 같은 가림 helper 입력을 사용한다. isolated child의 program-data override 잔류를 제거했다. 원 실패 XML과 변경 전 증거는 sub-292에 보존한다.
+
 sub-300 첫 설치 P1: canonical base가 없는 옛 공식 작업 PC에서도 Disable 전이 전에 기존 보호 base 초기화를 수행한다. 설치자 owner record는 일반 배치에서만 쓰며 G·DACL 결정 B는 바꾸지 않는다. StrictMode 진단의 빈 객체를 안전하게 열거해 원 예외를 보존한다. 격리된 실제 제어 흐름 회귀와 실제 PC 설치 수용은 구분한다(후자는 coordinator 예행 대상).
 
 v2.0.95 2c46de1의 전체 source 정방향은 기존 delayed-reader pair 시험이 요구하는 승인 입력이다. 원 표준 stock before에 정확히 결속하는 조립 선언으로 보존한다(현장 해당 없음). prototype 4070818/160d2b4와 TEST1에 추가 선언은 없다.

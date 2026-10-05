@@ -15,6 +15,7 @@ for name, part in {
     'LABEL_MATCH_SAVE_DIR':'data', 'LABEL_MATCH_SETTINGS_PATH':'settings/input.json',
     'LABEL_MATCH_LOGISTICS_PROFILE_PATH':'profile/input.json',
     'LABEL_MATCH_DIRECT_SYNC_ROOT':'sync', 'KMTECH_LABEL_WRITER_CONTROL_ROOT':'control',
+    'LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT':'program-sync',
     'TEMP':'temp', 'TMP':'temp',
 }.items():
     os.environ[name]=str(root/part)

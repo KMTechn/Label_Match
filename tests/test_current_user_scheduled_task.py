@@ -346,6 +346,7 @@ function New-ScheduledTaskPrincipal { Deny-TaskMutation 'NewPrincipal' }
     )
     env = dict(os.environ)
     env.update(
+        KMTECH_LABEL_INSTALL_REDACTION_HELPER_PATH=str(Path(scheduled_task.__file__).parent / "tools/failure_redaction.ps1"),
         KMTECH_LABEL_CURRENT_USER_TASK_SPEC=json.dumps(spec),
         KMTECH_LABEL_TASK_TEST_CASE=json.dumps(case),
         KMTECH_LABEL_TASK_TEST_MUTATIONS=str(mutations),
