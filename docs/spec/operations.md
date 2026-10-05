@@ -1082,8 +1082,8 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 
 rollback은 각 단계의 실패를 `audit.rollback.step_failures`에 보존하고, 다른 독립 복원 단계는 모두 시도한다. setup 제거 오류 하나가 Run/task/stop/report 복원과 코드 readback을 건너뛰지 않는다. 기존 old-target G는 각 보호 변경 전에 유지한다. 코드 preimage, old-target G, Run/task/stop 및 정지된 relay의 runtime preimage를 확인한 뒤에만 fence 해제와 각 옛 relay 재시작을 반드시 시도한다. 뒤 readback은 `runtime_restored`로 별도 기록하며 앞 단계 실패는 `ROLLBACK_FAILED`로 남는다.
 
-코드·자료 판·runtime 정합을 증명하지 못하면 fence와 정지를 유지한다. 콘솔과 audit의 `user_message`에 “설치 전 코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요.”를 남긴다. 관리자 앱의 기존 writer-fence 안내를 따른다. fence/marker를 삭제하거나 G를 끄고 앱을 시작하지 않는다.
+코드·자료 판·runtime 정합을 증명하지 못하면 fence와 정지를 유지한다. 콘솔과 audit의 `user_message`에 “설치 전 코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요.”를 남긴다. 앱 시작의 기존 writer-fence 오류는 `_show_installation_recovery_required`를 통해 “설치 또는 복구 상태를 확인해야 해 앱을 멈춘 상태로 유지합니다. 자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요.”를 기존 관리자 오류 화면과 시작 로그에 전달한다. headless 경로와 실제 GUI 표시는 구분한다. fence/marker를 삭제하거나 G를 끄고 앱을 시작하지 않는다.
 
-지원 복구는 원 audit, verified backup, 현재 marker와 setup preimage를 보존한 채 원 실패 단계·코드/자료 판/runtime readback을 확인하는 운영 소유 절차가 필요하다. 현재 legacy 최초등록 재개는 같은 canonical 입력의 `Read-FirstRegistrationAttempt`로 제공되지만 일반 `ROLLBACK_FAILED`의 지원 재개와 guest 1회 수용은 아직 UNPROVEN이다. 일반 실패를 legacy 최초등록으로 꾸미거나 단독 Stop/Abort fence helper로 해제하지 않는다. 코디네이터 guest 검증이 끝나기 전 native 복구를 PROVEN으로 올리지 않는다.
+지원 복구는 원 audit, verified backup, 현재 marker와 setup preimage를 보존한 채 원 실패 단계·코드/자료 판/runtime readback을 확인하는 운영 소유 절차가 필요하다. 현재 legacy 최초등록 재개는 같은 canonical 입력의 `Read-FirstRegistrationAttempt`로 제공되지만 일반 `ROLLBACK_FAILED`의 지원 재개와 guest 1회 수용은 아직 UNPROVEN이다. 코디네이터 결정 `msg_94ca1783634e`에 따라 일반 지원 재개 진입점은 설치 통합 sub-274 범위다. 일반 실패를 legacy 최초등록으로 꾸미거나 단독 Stop/Abort fence helper로 해제하지 않는다. 코디네이터 guest 검증이 끝나기 전 native 복구를 PROVEN으로 올리지 않는다.
 
 앱 내부 updater는 안내만 제공하고 이 외부 canonical 설치 경로를 사용한다. 격리 G/fence 회귀와 실제 사용자 HKCU/작업·relay·UAC·guest 복구 수용은 구분한다.
