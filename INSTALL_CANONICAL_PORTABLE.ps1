@@ -1003,8 +1003,14 @@ if startup_changes is not None:
         # Preserve the approved G membership refusal for invalid code deltas.
         # This changes only the reason at an already-failing exact byte check.
         python_source = relative.startswith('app/') and relative.endswith('.py') and not relative.startswith('app/site-packages/')
-        if startup_generation_delta and not startup_addition_already_installed and (python_source or relative == 'tools/label_writer_fence.ps1'):
-            return 'WRITER_TRANSITION_SOURCE_SET_DIFFERS'
+        if startup_generation_delta and not startup_addition_already_installed:
+            # Keep the historical e880 profile refusal at its onboarding boundary.
+            if startup_from.startswith('e88011c') and ordinary == 'WRITER_TRANSITION_SEMANTICS_DIFFER' and relative in {
+                'app/logistics_runtime_profile.py', 'app/tools/install_logistics_runtime_profile.py', 'app/enrollment_mutex.py',
+            }:
+                return 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/current_user_onboarding.py'
+            if python_source or relative == 'tools/label_writer_fence.ps1':
+                return 'WRITER_TRANSITION_SOURCE_SET_DIFFERS'
         return ordinary + ': ' + relative
     key_path='app/update-manifest-key-config.json'
     old_key_digest=release_digest(installed/key_path)
@@ -1292,7 +1298,7 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
     # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
     $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
     $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
-        -ProbeBytes $probeBytes -ExpectedSha256 '78c70cd7f7b965c88cb9a9746bfb8a8c170fe619978394aceb301d23ca666470' `
+        -ProbeBytes $probeBytes -ExpectedSha256 '0ae601610aa731aa9b8c715951c0ffd954d329f04b21b561e3f59e37f0ee6ab4' `
         -ProbeArguments @($Source, $Installed, $generationReverse) -FailureMessage 'Installed writer transition is unsupported: '
     return $stdout | ConvertFrom-Json
 }
