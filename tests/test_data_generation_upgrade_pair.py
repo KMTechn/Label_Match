@@ -10,6 +10,7 @@ from tools import build_portable_release_candidate as builder
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_COMMIT = 'e89c18879f5bf59ddcd550152bf26ffedc4d687a'
+ORIGINAL_G_COMMIT = 'ac745f0c0c92ff96f36cd403e7c75b4a9805ff89'
 
 
 @pytest.fixture(scope='module')
@@ -56,8 +57,9 @@ def pair(tmp_path, baseline_source):
     return result
 
 
-def probe(source, installed, *, signed=False):
-    text = (ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1').read_text(encoding='utf-8-sig')
+def probe(source, installed, *, signed=False, installer=None):
+    installer = installer or ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1'
+    text = installer.read_text(encoding='utf-8-sig')
     start = text.index("$probe = @'") + len("$probe = @'")
     code = text[start:text.index("\n'@", start)].lstrip()
     return subprocess.run([sys.executable, '-B', '-', str(source), str(installed),
@@ -79,14 +81,40 @@ def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/label_data_manager.py' in reverse.stderr
     legacy = new.parent / 'original-g'
     shutil.copytree(new, legacy)
-    for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py'):
+    for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py',
+                     'app/producer_runtime_client.py', 'app/tools/register_label_match_worker_pc.py'):
         (legacy / relative).write_bytes((old / relative).read_bytes())
-    original_reverse = probe(old, legacy, signed=True)
-    # sub-333 / user G decision 10-05 05:2x: the newly guarded transport
-    # companion is forward only, even with G's historical signed reversal.
-    # Restoring the two audit-index leaves cannot downgrade these guards.
-    assert original_reverse.returncode != 0
-    assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/producer_runtime_client.py' in original_reverse.stderr
+    # Keep the pure G regression at its committed inventory and actual probe.
+    # Today's exact after pins include four new companion writers; mixing
+    # those pins with historical transport bytes is not a valid release.
+    for relative in ('app/writer_session_fence.py', 'tools/label_writer_fence.ps1'):
+        (legacy / relative).write_bytes(subprocess.check_output([
+            'git', '-C', str(ROOT), 'show', ORIGINAL_G_COMMIT + ':' + relative.removeprefix('app/')]))
+    installer = legacy / 'INSTALL_CANONICAL_PORTABLE.ps1'
+    installer.write_bytes(subprocess.check_output([
+        'git', '-C', str(ROOT), 'show', ORIGINAL_G_COMMIT + ':INSTALL_CANONICAL_PORTABLE.ps1']))
+    original_reverse = probe(old, legacy, signed=True, installer=installer)
+    assert original_reverse.returncode == 0, original_reverse.stderr[-2000:]
+    assert json.loads(original_reverse.stdout)['compatibility'] == 'SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE'
+
+
+def test_canonical_installer_preserves_one_utf8_bom_for_windows_powershell():
+    raw = (ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1').read_bytes()
+    assert raw.startswith(b'\xef\xbb\xbf')
+    assert not raw[3:].startswith(b'\xef\xbb\xbf')
+
+
+def test_quiesced_transport_companion_refuses_signed_g_reverse(pair):
+    old, new = pair
+    installed = new.parent / 'quiesced-g'
+    shutil.copytree(new, installed)
+    # Remove the older audit-index companion so this rejection identifies
+    # the independent, forward-only maintenance admission repair.
+    for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py'):
+        (installed / relative).write_bytes((old / relative).read_bytes())
+    reverse = probe(old, installed, signed=True)
+    assert reverse.returncode != 0
+    assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/producer_runtime_client.py' in reverse.stderr
 
 
 @pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice'])
