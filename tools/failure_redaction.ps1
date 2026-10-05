@@ -1,11 +1,21 @@
 $Script:KmtechRedactionRules = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'failure_redaction_rules.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
+function Test-KmtechSecretEnvironmentValue {
+    param([string]$Name, [AllowEmptyString()][string]$Value)
+    $rules = $Script:KmtechRedactionRules
+    if ($Name -cin $rules.explicit) { return $true }
+    if ($Name -notmatch $rules.pattern -or $Name -match $rules.path_suffix) { return $false }
+    if ($Name -match '_(TRANSACTION|SESSION|ATTEMPT)_ID$' -and
+        $Value -imatch '\A([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}|[0-9a-f]{64})\z') { return $false }
+    return $true
+}
+
 function Get-KmtechSinkEnvironment {
     $values = @{}
     # Internal product lookup only: names and values never leave this function.
     $process = [Environment]::GetEnvironmentVariables('Process')
     foreach ($name in $process.Keys) {
-        if (([string]$name -match $Script:KmtechRedactionRules.pattern -or [string]$name -cin $Script:KmtechRedactionRules.explicit) -and [string]$name -notmatch $Script:KmtechRedactionRules.path_suffix) {
+        if (Test-KmtechSecretEnvironmentValue -Name ([string]$name) -Value ([string]$process[$name])) {
             $values[$name] = $process[$name]
         }
     }
@@ -18,7 +28,7 @@ function ConvertTo-KmtechRedactedSinkText {
     if ($null -eq $Environment) { $Environment = Get-KmtechSinkEnvironment }
     $notes = [Collections.Generic.List[string]]::new()
     $entries = @($Environment.Keys | Where-Object {
-        ([string]$_ -match $rules.pattern -or [string]$_ -cin $rules.explicit) -and [string]$_ -notmatch $rules.path_suffix
+        Test-KmtechSecretEnvironmentValue -Name ([string]$_) -Value ([string]$Environment[$_])
     } | Sort-Object @{Expression={([string]$Environment[$_]).Length};Descending=$true}, @{Expression={[string]$_}})
     foreach ($name in $entries) {
         $value = [string]$Environment[$name]

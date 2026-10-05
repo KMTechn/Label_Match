@@ -2093,7 +2093,7 @@ if (-not $?) { exit 4 }
 exit 0
 '@
     $redactionPrelude = '$Script:KmtechRedactionRules = ' + "'" + (($Script:KmtechRedactionRules | ConvertTo-Json -Compress).Replace("'","''")) + "' | ConvertFrom-Json" + [Environment]::NewLine
-    foreach ($name in @('Get-KmtechSinkEnvironment','ConvertTo-KmtechRedactedSinkText','ConvertTo-KmtechRedactedSinkObject')) {
+    foreach ($name in @('Test-KmtechSecretEnvironmentValue','Get-KmtechSinkEnvironment','ConvertTo-KmtechRedactedSinkText','ConvertTo-KmtechRedactedSinkObject')) {
         $redactionPrelude += 'function ' + $name + ' {' + (Get-Command $name).Definition + '}' + [Environment]::NewLine
     }
     # Keep the launcher's param block first; preceding statements turn param

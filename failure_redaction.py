@@ -9,6 +9,17 @@ import tempfile
 RULES = json.loads((Path(__file__).parent / "tools/failure_redaction_rules.json").read_text(encoding="utf-8"))
 
 
+def _secret_environment_entries(environ):
+    identifier_suffix = re.compile(r"_(?:TRANSACTION|SESSION|ATTEMPT)_ID$", re.I)
+    identifier_value = re.compile(r"(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}|[0-9a-f]{64})", re.I)
+    for name, value in environ.items():
+        explicit = name in RULES["explicit"]
+        identifier = identifier_suffix.search(name) and identifier_value.fullmatch(str(value))
+        if explicit or (re.search(RULES["pattern"], name)
+                        and not re.search(RULES["path_suffix"], name) and not identifier):
+            yield name, value
+
+
 def redact_for_sink(text, environ=None, *, redact_values=()):
     if environ is None:
         environ = os.environ
@@ -17,9 +28,7 @@ def redact_for_sink(text, environ=None, *, redact_values=()):
         for form in dict.fromkeys((json.dumps(value)[1:-1], value.replace("'", "''"), value.replace('"', '""'), value)):
             text = text.replace(form, RULES['field'])
     notes = []
-    entries = [(name, value) for name, value in environ.items()
-               if (re.search(RULES["pattern"], name) or name in RULES["explicit"])
-               and not re.search(RULES["path_suffix"], name)]
+    entries = list(_secret_environment_entries(environ))
     for name, value in sorted(entries, key=lambda row: (-len(row[1]), row[0])):
         if not value:
             continue
