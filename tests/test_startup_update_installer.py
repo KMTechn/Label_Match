@@ -111,9 +111,9 @@ try { Wait-LabelRelayPreimageExit @($old); throw 'Foreign accepted' } catch {
 
 def test_launch_failure_keeps_native_call_code_chain_without_messages(tmp_path):
     out=ps(tmp_path,functions("INSTALL_CANONICAL_PORTABLE.ps1",["Get-LabelLaunchFailure"])+"""
-$native=New-Object ComponentModel.Win32Exception(5,'do not emit this message')
+$native=New-Object ComponentModel.Win32Exception(5,'credential=NATIVE_SYNTHETIC_SECRET')
 $native.Data['call']='DuplicateTokenEx:primary'
-$outer=New-Object Exception('do not emit arguments',$native)
+$outer=New-Object Exception('outer launch context',$native)
 $failure=[pscustomobject]@{Exception=$outer}
 Get-LabelLaunchFailure $failure 'rollback' | ConvertTo-Json -Depth 8 -Compress
 """)
@@ -121,7 +121,10 @@ Get-LabelLaunchFailure $failure 'rollback' | ConvertTo-Json -Depth 8 -Compress
     assert payload['phase']=='rollback'
     assert payload['exception_chain'][1]['call']=='DuplicateTokenEx:primary'
     assert payload['exception_chain'][1]['win32_error']==5
-    assert 'do not emit' not in out
+    assert payload['last_line'] == 'credential=[REDACTED:field]'
+    assert 0 < len(payload['last_line']) <= 300
+    assert payload['exception_type'].endswith('Win32Exception')
+    assert 'NATIVE_SYNTHETIC_SECRET' not in out
 
 
 def test_old_run_and_active_version_commands_keep_separate_roots(tmp_path):
