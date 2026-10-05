@@ -1730,6 +1730,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-interactive-task-for-local-test", action="store_true")
     parser.add_argument("--allow-noncanonical-layout-for-test", action="store_true")
     args = parser.parse_args(argv)
+    # Preserve the CLI's absolute-root contract before normalization can turn
+    # a relative argument into an apparently valid path or G records any state.
+    if not Path(args.program_data_root).expanduser().is_absolute():
+        print("program_data_root must be an absolute path", file=sys.stderr)
+        return 2
     from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open, normalize_data_arguments
     try:
         normalize_data_arguments(args, ("app_root", "app_settings_path", "program_data_root", "scan_source_dir",

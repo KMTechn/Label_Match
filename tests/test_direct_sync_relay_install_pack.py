@@ -1954,11 +1954,14 @@ def test_install_pack_apply_without_confirm_creates_task_plan(tmp_path, monkeypa
 
 def test_install_pack_blocks_relative_program_data_root(tmp_path):
     manifest_path, credential_path = make_manifest_and_credential(tmp_path)
+    original_inputs = (manifest_path.read_bytes(), credential_path.read_bytes())
     report_path = tmp_path / "install-pack-relative-root.json"
     completed = subprocess.run(
         [
             sys.executable,
             "tools/direct_sync_relay_install_pack.py",
+            "--app-root",
+            str(tmp_path / "portable"),
             "--producer-manifest-path",
             str(manifest_path),
             "--credential-path",
@@ -1974,7 +1977,7 @@ def test_install_pack_blocks_relative_program_data_root(tmp_path):
     )
 
     assert completed.returncode == 2
-    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
-    assert report["status"] == "BLOCKED"
-    assert report["blocked_reason"] == "program_data_root must be an absolute path"
-    assert report["runtime_path_boundary"]["status"] == "FAIL"
+    assert completed.stderr.strip() == "program_data_root must be an absolute path"
+    assert not report_path.exists()
+    assert (manifest_path.read_bytes(), credential_path.read_bytes()) == original_inputs
+    assert not (Path.cwd() / "relative-runtime-root").exists()
