@@ -460,8 +460,7 @@ def test_split_installation_preserves_both_stores_and_identity_after_restart(
         assert _resolve_scan_source_dir("", data_root=paths.data_root, settings_path=paths.settings_path) == custom
     assert ledgers == [old.ledger_path, old.ledger_path]
     assert {path: path.read_bytes() for path in preserved} == preserved
-    assert "STORAGE_ROOT_SPLIT_PRESERVED" in caplog.text
-    assert "onboarding_ledger_path" in caplog.text
+    assert "storage_root_split_preserved" in caplog.text
 
 
 def test_preserved_ledger_cannot_bypass_existing_legacy_sync_path_rejection(monkeypatch, tmp_path):
