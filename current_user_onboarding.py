@@ -112,6 +112,7 @@ def _portable_stop_marker_release_preflight(
     paths: CurrentUserOnboardingPaths,
     *,
     environ: Mapping[str, str] | None = None,
+    credential_input=None,
 ) -> dict[str, Any]:
     marker = user_relay_stop_path(paths.direct_sync_root)
     if not marker.exists():
@@ -195,7 +196,8 @@ def _portable_stop_marker_release_preflight(
     ).strip().lower()
     if not receipt_value and not expected_receipt_hash:
         from registration_relay_recovery import recovered_stop_release
-        recovered = recovered_stop_release(paths)
+        recovered = (recovered_stop_release(paths, credential_input=credential_input)
+                     if credential_input is not None else recovered_stop_release(paths))
         if recovered is not None:
             return recovered
     if not receipt_value or len(expected_receipt_hash) != 64 or any(
@@ -1181,6 +1183,7 @@ def onboard_current_user(
         report["stop_marker_release"] = _portable_stop_marker_release_preflight(
             paths,
             environ=environ,
+            credential_input=credential_input,
         )
         report["relay_autostart"] = dict(autostart_installer(paths.app_root))
         autostart_status = str(report["relay_autostart"].get("status") or "")

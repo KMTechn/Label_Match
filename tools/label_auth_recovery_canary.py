@@ -117,7 +117,8 @@ def _load_credential_context(path: str | os.PathLike[str], *, credential_input=N
     if not selected.is_file():
         raise FileNotFoundError(str(selected))
     payload = (credential_input.payload if credential_input is not None else read_bounded_json_object(selected))
-    credentials = load_credentials_from_json(selected, credential_input=credential_input)
+    credentials = (load_credentials_from_json(selected, credential_input=credential_input)
+                   if credential_input is not None else load_credentials_from_json(selected))
     forbidden: list[str | bytes] = [
         credentials.producer_id,
         credentials.key_id,

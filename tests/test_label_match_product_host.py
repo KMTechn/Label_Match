@@ -54,7 +54,7 @@ def test_relay_mode_reuses_main_onedir_process_and_forwards_arguments(monkeypatc
     monkeypatch.setattr(
         direct_sync_relay_runner,
         "main",
-        lambda arguments: observed.append(list(arguments)) or 17,
+        lambda arguments, **_prepared_inputs: observed.append(list(arguments)) or 17,
     )
 
     result = product_host.dispatch_product_mode(
@@ -97,7 +97,7 @@ def test_frozen_hosted_relay_warns_and_continues_when_record_is_absent(
         "_verify_frozen_host_integrity",
         lambda: {"status": "ABSENT"},
     )
-    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments: 0)
+    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments, **_prepared_inputs: 0)
 
     assert (
         product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE, *raw_arguments]) == 0
@@ -127,7 +127,7 @@ def test_windowed_host_persists_absent_integrity_warning_without_stderr(
         "_verify_frozen_host_integrity",
         lambda: {"status": "ABSENT"},
     )
-    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments: 0)
+    monkeypatch.setattr(direct_sync_relay_runner, "main", lambda _arguments, **_prepared_inputs: 0)
     monkeypatch.setattr(sys, "stderr", None)
 
     assert (
@@ -150,7 +150,7 @@ def test_windowed_host_persists_absent_integrity_warning_without_stderr(
 def test_windowed_host_supplies_and_restores_output_streams(monkeypatch, raw_arguments):
     observed = []
 
-    def fake_main(arguments):
+    def fake_main(arguments, **_prepared_inputs):
         observed.append((sys.stdout is not None, sys.stderr is not None, arguments))
         return 0
 
@@ -173,7 +173,7 @@ def test_relay_exception_becomes_bounded_redacted_durable_diagnostic(
     log_path = tmp_path / "logs" / "runtime.jsonl"
     secret_text = "secret=must-not-be-persisted"
 
-    def fail(_arguments):
+    def fail(_arguments, **_prepared_inputs):
         raise RuntimeError(secret_text)
 
     monkeypatch.setattr(direct_sync_relay_runner, "main", fail)
@@ -206,7 +206,7 @@ def test_relay_mode_preserves_system_exit_semantics(monkeypatch, raw_arguments):
     monkeypatch.setattr(
         direct_sync_relay_runner,
         "main",
-        lambda _arguments: (_ for _ in ()).throw(SystemExit(7)),
+        lambda _arguments, **_prepared_inputs: (_ for _ in ()).throw(SystemExit(7)),
     )
     with pytest.raises(SystemExit) as caught:
         product_host.dispatch_product_mode([product_host.DIRECT_SYNC_RELAY_MODE, *raw_arguments])
