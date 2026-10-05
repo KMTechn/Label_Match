@@ -82,7 +82,7 @@ from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_pat
 from label_match_product_host import (
     _default_product_root, dispatch_product_mode, requires_bootstrap_integrity,
 )
-from writer_session_fence import writer_sink
+from writer_session_fence import WriterFenceError, writer_sink
 from label_data_manager import DataManager as _DataManager, read_recovery_file
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 from label_admin_pin import (
@@ -22150,7 +22150,12 @@ FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
     "이 PC의 설치 및 사용자 설정을 관리자에게 확인받으세요. "
     "아래 보고서 경로를 IT 담당자에게 전달하세요."
 )
+INSTALLATION_RECOVERY_REQUIRED_MESSAGE = (
+    "설치 또는 복구 상태를 확인해야 해 앱을 멈춘 상태로 유지합니다.\n\n"
+    "자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
+)
 FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
+    "INSTALLATION_RECOVERY_REQUIRED": INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
     "RELAY_RESUME_REQUIRED": (
         "중앙 전송 릴레이가 정지해 있습니다. 신원 복구만으로 전송이 다시 시작되지는 않습니다.\n\n"
         "미전송 기록은 보존됩니다. 같은 Windows 사용자로 초기 설정을 다시 실행하고 "
@@ -22216,6 +22221,22 @@ def _show_first_run_onboarding_error(failure):
                 parent.destroy()
             except tk.TclError:
                 pass
+
+
+def _show_installation_recovery_required(error):
+    failure = CurrentUserOnboardingError(
+        INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
+        report_path=_label_match_runtime_app_root(),
+        status="BLOCKED",
+        cause_code="INSTALLATION_RECOVERY_REQUIRED",
+    )
+    _label_match_startup_trace(
+        "installation_recovery_required",
+        guard_code=error.code,
+        user_message=INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
+    )
+    print(INSTALLATION_RECOVERY_REQUIRED_MESSAGE, file=sys.stderr)
+    _show_first_run_onboarding_error(failure)
 
 
 def _show_bootstrap_integrity_absent_warning():
@@ -22457,6 +22478,9 @@ def main(argv=None):
                 ):
                     _label_match_startup_trace("bootstrap_integrity_absent")
                     _show_bootstrap_integrity_absent_warning()
+            except WriterFenceError as exc:
+                _show_installation_recovery_required(exc)
+                return ONBOARDING_EXIT_CODE
             except CurrentUserOnboardingError as exc:
                 _label_match_startup_trace(
                     "current_user_onboarding_blocked",
@@ -22474,6 +22498,9 @@ def main(argv=None):
             _run_label_match_application,
             data_scope=data_scope,
         )
+    except WriterFenceError as exc:
+        _show_installation_recovery_required(exc)
+        return ONBOARDING_EXIT_CODE
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)
         return ONBOARDING_EXIT_CODE
