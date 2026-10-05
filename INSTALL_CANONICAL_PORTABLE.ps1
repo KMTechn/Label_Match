@@ -4853,9 +4853,10 @@ catch {
     if (-not $mutated -and $null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
         $audit.status = 'FAILED_SUPPORTED_REMOVAL_REQUIRED'
         $audit.failure = $_.Exception.GetType().Name
+        $audit.failure_details = Get-LabelLaunchFailure $_ 'forward'
         $audit.recovery_guidance = '자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요.'
         Save $auditPath $audit
-        throw
+        throw ([string]$audit.failure_details.last_line)
     }
     $original = $_
     if ($null -ne $Script:LabelPlacementChildFailure) { $original.Exception.Data['placement_child_failure'] = $Script:LabelPlacementChildFailure }

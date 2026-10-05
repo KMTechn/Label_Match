@@ -1,6 +1,7 @@
 """Run the installer's actual read-only upgrade probe on isolated source copies."""
 import json
 import importlib.util
+import ast
 from pathlib import Path
 import shutil
 import subprocess
@@ -51,6 +52,10 @@ def _package_pair(tmp_path, baseline_source):
             target = package / relative
             target.parent.mkdir(exist_ok=True)
             shutil.copyfile(source / relative, target)
+        declarations = ast.parse((source / 'Label_Match.py').read_text(encoding='utf-8-sig'))
+        version = next(ast.literal_eval(node.value) for node in declarations.body if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'APP_VERSION' for t in node.targets))
+        commit = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+        (package / 'portable-manifest.json').write_text(json.dumps({'schema':'label-match-portable-tree-v1', 'version':version, 'source_commit':commit, 'data_compatible_min_version':version}), encoding='utf-8')
         # Stock uses committed blobs, not CRLF checkout data. Keep the same
         # serialization for tracked LF inputs while allowing candidate edits.
         eol = subprocess.check_output(['git', '-C', str(source), 'ls-files',
