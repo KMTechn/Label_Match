@@ -134,23 +134,23 @@ try{Product $source '--onboard-current-user';throw 'Actual child did not fail'}
 catch {
  $failure=Get-LabelLaunchFailure $_ 'forward'
  Save $auditPath ([ordered]@{failure_details=$failure})
- Save $summaryPath ([ordered]@{type=$failure.child_output.lowest_exception_type;message=$failure.child_output.last_line})
- [IO.File]::WriteAllText($guide,$_.Exception.Message,[Text.UTF8Encoding]::new($false))
- $record=$failure.child_output
- if($record.lowest_exception_type -cne 'ValueError' -or $record.last_line -notlike '*final synthetic cause*'){throw 'Final child cause was lost'}
- $files=@($auditPath,$summaryPath,$guide)
- foreach($name in @('stdout','stderr')){
-  if(-not $record[$name].full_output.path){throw 'Full child evidence reference absent'}
-  $files+=[string]$record[$name].full_output.path
- }
- foreach($path in $files){
+ Save $summaryPath $failure
+ [IO.File]::WriteAllText($guide,($failure|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+ $record=$failure
+ if($record.exception_type -cne 'ValueError'){throw 'Final child type was lost'}
+ foreach($path in @($auditPath,$summaryPath,$guide)){
   $bytes=[IO.File]::ReadAllBytes($path)
   $text=[Text.Encoding]::UTF8.GetString($bytes)
-  if($text.Contains($secret) -or $text.Contains('syntheticFileValue0987')){throw 'Synthetic secret bytes reached a failure sink'}
-  if($bytes.Length -gt 65536){throw 'Failure sink exceeded the full-output cap'}
+  if($text.Contains($secret) -or $text.Contains('syntheticFileValue0987') -or $text.Contains('final synthetic cause')){throw 'Free cause or secret reached public sink'}
+  if($bytes.Length -gt 65536){throw 'Public failure sink exceeded cap'}
  }
- $stderr=[IO.File]::ReadAllText($record.stderr.full_output.path)
+ $bytes=[IO.File]::ReadAllBytes($record.report_path)
+ $sha=(Get-FileHash -LiteralPath $record.report_path -Algorithm SHA256).Hash.ToLowerInvariant()
+ if($sha -cne $record.report_sha256 -or $bytes.Length -gt 65536){throw 'Protected child report bytes differ'}
+ $stderr=[Text.Encoding]::UTF8.GetString($bytes)
+ if($stderr.Contains($secret) -or $stderr.Contains('syntheticFileValue0987')){throw 'Protected child report contains secrets'}
  if(-not $stderr.StartsWith('Traceback') -or -not $stderr.Contains('[TRUNCATED:') -or -not $stderr.Contains('final synthetic cause')){throw 'Bounded child evidence lost head or tail'}
+
 }
 'PASS'
 ''', values={"LM_FAILURE_ROOT": str(tmp_path)})

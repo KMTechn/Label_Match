@@ -2511,7 +2511,7 @@ function New-LabelChildFailure([string]$Mode, [int]$ExitCode, $Stdout, $Stderr) 
                 if ($candidate.Contains('report_path') -or $candidate.Contains('report_sha256')) {
                     if (-not $candidate.Contains('report_path') -or -not $candidate.Contains('report_sha256') -or
                         -not (Test-Path -LiteralPath $candidate.report_path -PathType Leaf) -or
-                        (Get-FileSha256 $candidate.report_path) -cne $candidate.report_sha256) {
+                        (Get-FileHash -LiteralPath $candidate.report_path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidate.report_sha256) {
                         $candidate.Remove('report_path'); $candidate.Remove('report_sha256')
                         $candidate.report_status='REPORT_UNAVAILABLE'
                     }
@@ -2841,20 +2841,27 @@ function Invoke-LabelRollbackStep([string]$Phase, [scriptblock]$Action) {
 }
 
 function Get-LabelLaunchFailure($Failure, [string]$Phase) {
-    $exception=$Failure.Exception; $childOutput=$null
+    $exception=$Failure.Exception; $childOutput=$null; $privateChain=@()
     while ($null -ne $exception) {
         if ($exception.Data.Contains('child_output')) { $childOutput=$exception.Data['child_output'] }
+        $privateData=[ordered]@{}
+        foreach($key in @('call','placement_child_failure','label_legacy_native_failure','startup_restore_failures')) {
+            if($exception.Data.Contains($key)) {$privateData[$key]=$exception.Data[$key]}
+        }
+        $privateChain += [ordered]@{exception_type=$exception.GetType().FullName;native_error=$(if($exception -is [ComponentModel.Win32Exception]){$exception.NativeErrorCode}else{$null});details=$privateData}
         $exception=$exception.InnerException
     }
     $baseException=$Failure.Exception.GetBaseException()
     $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$baseException.GetType().FullName;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0];report_status='REPORT_UNAVAILABLE'}
     if ($null -ne $childOutput) {
         foreach ($key in $childOutput.Keys) { $fields[$key]=$childOutput[$key] }
+        if ($fields.Contains('report_path') -and $fields.Contains('report_sha256')) {$fields.Remove('report_status')}
     }
     # Native failures retain their first cause in the existing private evidence.
     if (-not $fields.Contains('report_path')) {
         try {
-            $reference=Write-KmtechProtectedFailureSidecar -Text ($Failure.Exception.ToString())
+            $private=[ordered]@{phase=$Phase;trace=$Failure.Exception.ToString();script_stack_trace=[string]$Failure.ScriptStackTrace;exception_chain=$privateChain}
+            $reference=Write-KmtechProtectedFailureSidecar -Text ((ConvertTo-KmtechRedactedSinkObject $private) | ConvertTo-Json -Depth 20)
             $fields.Remove('report_status')
             $fields.report_path=[string]$reference.path; $fields.report_sha256=[string]$reference.sha256
         } catch { $fields.report_status='REPORT_UNAVAILABLE' }

@@ -1,7 +1,7 @@
 {
   "schema": "kmtech-sink-redaction-vectors-v1",
   "contract": "W\\w9setupprep\\REDACTION-CONTRACT.md",
-  "note": "All values are synthetic test strings, not real secrets. | 10-05 20:0x: +2 vectors for contract 2a identifier exception (UUID/32/64-hex values of *_TRANSACTION_ID/_SESSION_ID/_ATTEMPT_ID kept, other values redacted).",
+  "note": "All values are synthetic test strings, not real secrets. | 10-05 20:0x: +2 vectors for contract 2a identifier exception (UUID/32/64-hex values of *_TRANSACTION_ID/_SESSION_ID/_ATTEMPT_ID kept, other values redacted). | 10-06 02:1x: +4 vectors (sub-308) for exception-prefix consumption and redact-before-truncate of long assignments; text_generator = head + fill_char*fill_bytes + tail.",
   "vectors": [
     {
       "id": "env-plain",
@@ -165,6 +165,40 @@
       },
       "text": "pid=synthPid0014 start=synthStart0014 mutex=Session\\synthMutex0014",
       "expected": "pid=[REDACTED:INSPECTION_WORKER_WRITER_DELEGATION_PARENT_PID] start=[REDACTED:INSPECTION_WORKER_WRITER_DELEGATION_ROOT_START] mutex=[REDACTED:INSPECTION_WORKER_WRITER_DELEGATION_MUTEX]"
+    },
+    {
+      "id": "exception-prefix-password-assignment",
+      "environ": {},
+      "text": "RuntimeError: password=057e0c47c53645618dafcf1549ae3fa8c0f74ea90c8343bd8d48ab9da0319d67",
+      "expected": "RuntimeError: password=[REDACTED:field]"
+    },
+    {
+      "id": "exception-prefix-single-quoted-mapping",
+      "environ": {},
+      "text": "RuntimeError: {'password': '057e0c47c53645618dafcf1549ae3fa8c0f74ea90c8343bd8d48ab9da0319d67'}",
+      "expected": "RuntimeError: {'password': '[REDACTED:field]'}"
+    },
+    {
+      "id": "long-password-assignment-plain",
+      "environ": {},
+      "text_generator": {
+        "head": "password=",
+        "fill_char": "O",
+        "fill_bytes": 83200,
+        "tail": ""
+      },
+      "expected": "password=[REDACTED:field]"
+    },
+    {
+      "id": "long-password-assignment-exception-prefix",
+      "environ": {},
+      "text_generator": {
+        "head": "RuntimeError: password=",
+        "fill_char": "O",
+        "fill_bytes": 83200,
+        "tail": ""
+      },
+      "expected": "RuntimeError: password=[REDACTED:field]"
     }
   ]
 }

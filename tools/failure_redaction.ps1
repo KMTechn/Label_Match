@@ -249,6 +249,14 @@ function ConvertTo-KmtechPublicDiagnosticTree {
         if ($Value -is [Collections.IDictionary]) {
             foreach ($key in $Value.Keys) {$fields[[string]$key]=$Value[$key]}
         } else { foreach ($property in $Value.PSObject.Properties) {$fields[$property.Name]=$property.Value} }
+        if ($fields.Contains('returncode') -and ($fields.Contains('stdout') -or $fields.Contains('stderr'))) {
+            $result=[ordered]@{}
+            foreach ($key in $fields.Keys) {
+                if ($key -cin @('stdout','stderr') -and $fields[$key]) {$result[$key]=ConvertTo-KmtechPublicDiagnosticTree ([ordered]@{message=$fields[$key]})}
+                else {$result[$key]=ConvertTo-KmtechPublicDiagnosticTree $fields[$key]}
+            }
+            return $result
+        }
         if (@($fields.Keys | Where-Object {$_ -cin @('message','last_line','inner_exception_message','stdout','stderr','exception_chain')}).Count) {
             $candidate=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';guidance=[string]$Script:KmtechRedactionRules.safe_messages[0]}
             foreach ($key in $fields.Keys) {

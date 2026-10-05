@@ -433,6 +433,7 @@ def resolve_current_user_onboarding_paths(
         from failure_redaction import public_diagnostic_tree
         diagnostic = public_diagnostic_tree({"message":
             f"storage_root_split_preserved: data_root={data_root} onboarding_ledger={ledger_path}",
+            "reason_code": "STORAGE_ROOT_SPLIT_PRESERVED",
             "data_root": str(data_root), "onboarding_ledger_path": str(ledger_path)})
         logging.getLogger(__name__).warning("LABEL_MATCH_INSTALLER_FAILURE=" +
             json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":")))

@@ -146,11 +146,17 @@ def public_diagnostic_tree(value):
     """Preserve machine-consumed audit structure, allowing only diagnostic fields."""
     if isinstance(value, dict):
         text_keys = {"message", "last_line", "inner_exception_message", "stdout", "stderr", "exception_chain"}
+        if "returncode" in value and ("stdout" in value or "stderr" in value):
+            # Command-result metadata is consumed by installation/recovery.
+            # Replace only the stream slots; retain returncode and other state.
+            return {key: (public_diagnostic_tree({"message": item})
+                          if key in ("stdout", "stderr") and item else public_diagnostic_tree(item))
+                    for key, item in value.items()}
         if text_keys.intersection(value):
             candidate = {"status": "FAILED", "reason_code": "INSTALLER_FAILED", "guidance": RULES["safe_messages"][0]}
             candidate.update((key, item) for key, item in value.items() if key not in text_keys)
             for source, target in (("type", "exception_type"), ("inner_exception_type", "exception_type"),
-                                   ("returncode", "exit_code"), ("failure_code", "reason_code")):
+                                   ("returncode", "exit_code"), ("child_exit_code", "exit_code"), ("failure_code", "reason_code")):
                 if source in value:
                     candidate[target] = value[source]
             reference = try_write_failure_evidence(json.dumps(redact_json_for_sink(value), ensure_ascii=False))

@@ -226,3 +226,81 @@ def test_success_profile_summary_omits_url_credentials_and_secret_fields(monkeyp
     if tool == "install":
         assert list(parsed) == sorted(report)
         assert parsed["secret_values_recorded"] is False
+
+
+@pytest.mark.parametrize("lane", ["support", "update", "legacy"])
+def test_actual_failure_boundary_has_no_free_sentence_and_pins_private_report(monkeypatch, tmp_path, capsys, lane):
+    import tempfile
+    import label_data_generation as generation
+    import auto_update
+    from tools import check_logistics_runtime_profile as check
+    from tools import label_legacy_task_quiescence as legacy
+    marker=uuid.uuid4().hex
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(generation, "check_user_data_open", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generation, "record_user_data_open", lambda *args, **kwargs: None)
+    def fail(*args, **kwargs):
+        raise RuntimeError(marker)
+    if lane == "support":
+        monkeypatch.setattr(check, "load_logistics_runtime_profile", fail)
+        assert check.main(["--profile-path", str(tmp_path / "profile.json")]) == 2
+        public=json.loads(capsys.readouterr().err.split("=",1)[1])
+    elif lane == "update":
+        monkeypatch.setattr(auto_update, "resolve_lifecycle_context", fail)
+        assert auto_update.lifecycle_context_main(["--install-root", "C:/KMTech/Apps/Label_Match"]) == 1
+        public=json.loads(capsys.readouterr().err.split("=",1)[1])
+    else:
+        path=tmp_path / "legacy-report.json"
+        assert legacy.main(["--report-path",str(path)],reader=fail) == 4
+        assert marker not in capsys.readouterr().out
+        report=json.loads(path.read_text())
+        assert report["status"] == "FAIL" and report["read_only"] is True
+        public=report["failure"]
+    assert marker not in json.dumps(public), "failure sentence reached public output"
+    raw=Path(public["report_path"]).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == public["report_sha256"]
+    assert marker.encode() in raw
+
+
+def test_secondary_evidence_failure_keeps_original_failure_code(monkeypatch):
+    from tools import direct_sync_relay_install_pack as module
+    value={"failure_code":"CHILD_EXCEPTION", "inner_exception_type":"RuntimeError",
+           "full_exception_trace":{"exception_type":"OSError", "report_status":"REPORT_UNAVAILABLE"}}
+    result=module._normalize_failure_diagnostic(value)
+    assert result["failure_code"] == "CHILD_EXCEPTION"
+    assert result["report_status"] == "REPORT_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("fresh", [False, True])
+def test_canonical_parent_consumes_typed_reference_and_rejects_stale_digest(tmp_path, engine, fresh):
+    from tests.test_shared_ancestor_protection import run_functions
+    marker=uuid.uuid4().hex
+    report=tmp_path / "onboarding.json"
+    report.write_text(marker,encoding="utf-8")
+    original=report.read_bytes()
+    fields={"status":"FAILED","stage":"CURRENT_USER_ONBOARDING","reason_code":"SETUP_FAILED",
+            "exception_type":"builtins.RuntimeError", "location_module":"probe", "location_function":"fail",
+            "location_line":7, "report_path":str(report),
+            "report_sha256":hashlib.sha256(original).hexdigest() if fresh else "0"*64}
+    source=tmp_path / "typed.json"
+    source.write_text(json.dumps(fields,separators=(",",":")),encoding="utf-8")
+    output=tmp_path / "public.json"
+    result=run_functions(tmp_path,ROOT / "INSTALL_CANONICAL_PORTABLE.ps1",
+        ["New-LabelChildFailure","Get-LabelLaunchFailure"], r'''
+$text='LABEL_MATCH_INSTALLER_FAILURE='+[IO.File]::ReadAllText($env:LM_TYPED_INPUT)
+$stdout=[ordered]@{text='';byte_count=0;truncated=$false}
+$stderr=[ordered]@{text=$text;byte_count=[Text.Encoding]::UTF8.GetByteCount($text);truncated=$false}
+$typedChildFailure=New-LabelChildFailure '--onboard-current-user' 17 $stdout $stderr
+$public=Get-LabelLaunchFailure ([pscustomobject]@{Exception=$typedChildFailure}) 'forward'
+[IO.File]::WriteAllText($env:LM_TYPED_OUTPUT,($public | ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+''',engine=engine,values={"LM_TYPED_INPUT":str(source),"LM_TYPED_OUTPUT":str(output)})
+    assert result.returncode == 0, "typed parent reference consumer failed"
+    public=json.loads(output.read_text())
+    assert public["exit_code"] == 17 and public["exception_type"] == "builtins.RuntimeError"
+    assert marker not in json.dumps(public)
+    assert "report_status" not in public
+    published=Path(public["report_path"]).read_bytes()
+    assert hashlib.sha256(published).hexdigest() == public["report_sha256"]
+    assert (Path(public["report_path"]) == report) is fresh
+    assert report.read_bytes() == original

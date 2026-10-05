@@ -129,6 +129,9 @@ def _normalize_failure_diagnostic(candidate: object) -> dict | None:
         if field in candidate:
             if field != "last_line":
                 from failure_redaction import validate_failure_evidence
+                if isinstance(candidate[field], dict) and candidate[field].get("report_status") == "REPORT_UNAVAILABLE":
+                    diagnostic["report_status"] = "REPORT_UNAVAILABLE"
+                    continue
                 if "evidence_failure" in candidate[field]:
                     diagnostic["evidence_failure"] = candidate[field]["evidence_failure"]
                     continue

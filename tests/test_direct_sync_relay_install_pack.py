@@ -1,3 +1,4 @@
+import hashlib
 import argparse
 import base64
 import importlib.util
@@ -1440,9 +1441,12 @@ def test_run_command_preserves_process_start_exception_without_secret_inputs(mon
     assert diagnostic["child_exit_code"] is None
     assert diagnostic["failure_code"] == "CHILD_PROCESS_START_FAILED"
     assert diagnostic["inner_exception_type"] == "FileNotFoundError"
-    assert diagnostic["inner_exception_message"].endswith(
-        "enrollment_token=[REDACTED:field]"
-    )
+    from failure_redaction import RULES
+    assert diagnostic["inner_exception_message"] == RULES["safe_messages"][0]
+    reference=diagnostic["full_exception_trace"]
+    private=Path(reference["path"]).read_bytes()
+    assert hashlib.sha256(private).hexdigest() == reference["sha256"]
+    assert b"synthetic process start failure" in private
     assert len(diagnostic["inner_exception_message"]) <= module.DIAGNOSTIC_TEXT_LIMIT
     assert secret_argument not in serialized
     assert secret_environment not in serialized
@@ -1488,11 +1492,15 @@ def test_import_exception_is_bounded_and_promoted_to_install_report(tmp_path, mo
     assert result == 2
     assert report["status"] == "BLOCKED"
     assert report["self_enrollment_registration"]["returncode"] == 1
-    assert diagnostic["command_identity"] == "tools.register_label_match_worker_pc.main"
-    assert diagnostic["child_exit_code"] is None
-    assert diagnostic["failure_code"] == "CHILD_IMPORT_FAILED"
-    assert diagnostic["inner_exception_type"] == "ImportError"
-    assert len(diagnostic["inner_exception_message"]) <= module.DIAGNOSTIC_TEXT_LIMIT
+    assert diagnostic["exit_code"] is None
+    assert diagnostic["reason_code"] == "CHILD_IMPORT_FAILED"
+    assert diagnostic["exception_type"] == "ImportError"
+    raw=Path(diagnostic["report_path"]).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == diagnostic["report_sha256"]
+    protected=json.loads(raw)
+    assert protected["command_identity"] == "tools.register_label_match_worker_pc.main"
+    trace=protected["full_exception_trace"]
+    assert b"ImportError" in Path(trace["path"]).read_bytes()
     assert "seq184-import-secret" not in serialized
     assert secret_environment not in serialized
 
