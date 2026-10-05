@@ -122,7 +122,7 @@ $audit=[ordered]@{{rollback=[ordered]@{{}};writer_fence=[ordered]@{{status='REST
 try {{
 try {{ throw 'injected install failure' }}
 {tail}
-}} catch {{}}
+}} catch {{ [IO.File]::WriteAllText({_quote(tmp_path / 'caught.private.log')}, ($_ | Out-String)) }}
 $result=@{{attempts=$script:attempts;fence_active=(Test-Path (Get-LabelWriterFenceActivePath $writerFenceControlRoot));audit=$audit;relay_live=$script:relayLive}}
 [IO.File]::WriteAllText({_quote(output)},($result | ConvertTo-Json -Depth 12))
 """
