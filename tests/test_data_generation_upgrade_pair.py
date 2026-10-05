@@ -10,7 +10,9 @@ from tools import build_portable_release_candidate as builder
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_COMMIT = 'e89c18879f5bf59ddcd550152bf26ffedc4d687a'
-ORIGINAL_G_COMMIT = 'ac745f0c0c92ff96f36cd403e7c75b4a9805ff89'
+# The original signed reverse contract belongs to the pure-G source, before
+# ac745's forward-only audit-index companion changes.
+ORIGINAL_G_COMMIT = '362f30f7c6c7a4d952bb4d1ed985adc6f0a8cea8'
 
 
 @pytest.fixture(scope='module')

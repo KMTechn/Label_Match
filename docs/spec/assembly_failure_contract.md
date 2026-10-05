@@ -17,3 +17,7 @@
 rollback 시험 입력은 조립 판의 phase stack 및 공식 옛 relay 조회 의존성을 제공한다. 복원 정합이 증명된 경우 기존 G의 fence 해제·relay 재개 주장은 유지하고, 안내는 r4의 `RUN_RESTORED_RELAY_NEXT_LOGON` 계약을 확인한다. 정합 거절에는 관리자 복구 안내, fence 유지, relay 재개 0을 확인한다.
 
 등록 storage 선검사는 junction의 `WriterFenceError`에도 가린 마지막 오류 줄과 공통 자료 보존·지원 복구 안내를 전달하고 exit 2로 거절한다. 오류 종류에 관계없이 정체 판독·등록·변경보다 먼저 거절하는 경계는 유지한다.
+
+순수 G의 명시 서명 역방향 회귀는 실제 전체 `362f30f` 소스를 자체 표준 builder로 만든다. audit-index companion `ac745f0` 전체 소스를 순수 G라고 취급하지 않는다. 조립 후보의 companion 역방향 거절 단언과 r4 시험 단언은 유지한다.
+
+기존 정방향 회귀의 v2.0.95 조상 `a56a4cb`는 원 표준 stock의 before 바이트를 보존하는 정확한 조립 선언만 추가한다. 현장 해당 없음: 설치 실측 입력이 아닌 기존 승인 G 시험 입력이며 G/min 및 역방향 허용은 바꾸지 않는다. TEST1은 새 설치이므로 별도 조상 선언이 없다.
