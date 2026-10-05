@@ -77,6 +77,7 @@ def test_idle_sixty_seconds_releases_one_authoritative_outbox(shortage):
     app, identity, advance, _jobs, queued, _master, _clock = shortage
     saved = app.data_manager.load_current_state()['current_set_info']
     assert saved['shortage_undo_snapshot']
+    assert saved['shortage_confirmed_at'] == saved['shortage_undo_snapshot']['shortage_confirmed_at']
     advance(59)
     assert app.package_outbox.get_by_set_id(identity) is None
     advance(1)
@@ -92,11 +93,15 @@ def test_boundary_invalidates_even_an_already_queued_timer(shortage, boundary):
     callbacks = [entry[1] for entry in jobs.values()]
     advance(59)
     if boundary == 'next_scan':
-        scan(app, master.replace('ITG-WORK-ONE', 'ITG-NEXT').replace('LBL-WORK-PACKAGE', 'LBL-NEXT'))
+        following = master.replace('ITG-WORK-ONE', 'ITG-NEXT').replace('LBL-WORK-PACKAGE', 'LBL-NEXT')
+        scan(app, following)
+        assert app.current_set_info['raw'] == [following]
     elif boundary == 'undo':
         scan(app, 'KMCMD:UNDO')
     else:
         assert app._release_shortage_confirmation()
+    assert queued == ([] if boundary == 'undo' else [identity])
+    assert bool(app.package_outbox.get_by_set_id(identity)) == (boundary != 'undo')
     advance(1)
     for callback in callbacks:
         callback()  # A Tk callback already dequeued before after_cancel.
