@@ -1136,7 +1136,7 @@ def _product_functions() -> str:
     source = _source()
     start = source.index("function Arg([string]$Value) {")
     end = source.index("\n$WriterDelegationEnvironmentNames = @(")
-    return source[start:end]
+    return f". '{(ROOT / 'tools/failure_redaction.ps1').as_posix()}'\n" + source[start:end]
 
 
 def _run_product_stderr_harness(tmp_path: Path) -> str:
@@ -1709,7 +1709,8 @@ def test_portable_builder_packages_v2_installer_helper_and_integrity_tool() -> N
 
 def test_plan_only_contract_is_stdout_only_and_non_mutating() -> None:
     source = _source()
-    plan_block = source[source.index("if ($PlanOnly)") : source.index("$runId =")]
+    plan_start = source.index("if ($PlanOnly)")
+    plan_block = source[plan_start : source.index("$runId =", plan_start)]
 
     assert "install_status=PLAN_ONLY" in plan_block
     assert "registry_changed=false" in plan_block

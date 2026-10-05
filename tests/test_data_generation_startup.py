@@ -245,7 +245,8 @@ def test_failed_launch_does_not_record_generation(shell, tmp_path):
     text = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
     prefix = text[:text.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
     script = tmp_path / "launch-failure.ps1"
-    script.write_text(prefix + "\nfunction Start-Process { throw 'fixture launch failure' }\n" +
+    script.write_text(prefix + f"\n. '{ROOT.as_posix()}/tools/failure_redaction.ps1'\n" +
+                     "function Start-Process { throw 'fixture launch failure' }\n" +
                      f"try {{ Product '{tmp_path.as_posix()}' '--onboard-current-user' }} catch {{ $_.Exception.Message }}\n",
                      encoding="utf-8-sig")
     completed = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(script)],
