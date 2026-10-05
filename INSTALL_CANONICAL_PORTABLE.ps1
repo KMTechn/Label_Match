@@ -3281,10 +3281,10 @@ catch {
           $rollbackFailures.Add([ordered]@{ stage='code_restore'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message })
       }
       try {
-        # Every later mutation independently retains the old-target G and
-        # requires a verified code preimage. An earlier failure cannot skip it.
+        # Independently restore setup under the old-target G and held fence
+        # even when code restoration failed. Code proof gates release/restart.
         Assert-LabelRollbackGeneration
-        if (-not $audit.rollback.code_restored) { throw 'Rollback code preimage is not verified; setup restore remains blocked.' }
+        if (-not $audit.rollback.code_restored -and -not $writerFenceStarted) { throw 'Rollback code is unverified and writer custody is absent; setup restoration remains blocked.' }
         $ownerMutationLease = $null
         try {
             if ($writerFenceStarted) {
