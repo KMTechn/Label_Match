@@ -1,0 +1,996 @@
+{
+  "tags": [
+    {
+      "tag": "v1.0.0",
+      "commit": "5213c02a2cd692d5429523a0ceb10bc4d4b4bb7a",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v1.0.0"
+    },
+    {
+      "tag": "v1.0.1",
+      "commit": "3ff89b9c98feed1bfbdc522baf8e8a3df69e0845",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v1.0.1"
+    },
+    {
+      "tag": "v1.0.3",
+      "commit": "3ff89b9c98feed1bfbdc522baf8e8a3df69e0845",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v1.0.3"
+    },
+    {
+      "tag": "v1.0.4",
+      "commit": "3ff89b9c98feed1bfbdc522baf8e8a3df69e0845",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v1.0.4"
+    },
+    {
+      "tag": "v1.0.5",
+      "commit": "143eacd7ff6e05887f843d5c2bcf48b63c3a6d8a",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v1.0.5"
+    },
+    {
+      "tag": "v2.0.0",
+      "commit": "c8100967a25c87d07e1949e79e0d08ad1fb20925",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v2.0.0"
+    },
+    {
+      "tag": "v2.0.1",
+      "commit": "8b2b6b0ac79e545a3f982d8070ca02a0bd01cd33",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v2.0.1"
+    },
+    {
+      "tag": "v2.0.2",
+      "commit": "61bd8b62daf1ff491303a016e47be0f52e89f283",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v2.0.2"
+    },
+    {
+      "tag": "v2.0.3",
+      "commit": "308369c0e17c71ad3054ffbf82e083024e3e857c",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v2.0.3"
+    },
+    {
+      "tag": "v2.0.4",
+      "commit": "96c23a2b4cebcb4d5c589244ea9de3eff08be701",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v2.0.4"
+    },
+    {
+      "tag": "v2.0.5",
+      "commit": "ecad55cadc04d2c3745189ea4e60a5c6dd0ffc36",
+      "relay_creator": false,
+      "expected_families": [],
+      "proceed_if_exact_match": false,
+      "source_references": "official-identities.json#tags/v2.0.5"
+    },
+    {
+      "tag": "v2.0.6",
+      "commit": "55fb4cdf1fab809f0347799117e591e9c3c56a15",
+      "relay_creator": true,
+      "expected_families": [
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.6"
+    },
+    {
+      "tag": "v2.0.7",
+      "commit": "2ad1ad6129bc358c7b70e77cace48d65d2b6b0ce",
+      "relay_creator": true,
+      "expected_families": [
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.7"
+    },
+    {
+      "tag": "v2.0.8",
+      "commit": "b7416c61f8700a2b7b51269211499a8bb4b2d169",
+      "relay_creator": true,
+      "expected_families": [
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.8"
+    },
+    {
+      "tag": "v2.0.9",
+      "commit": "2a968029e388ffdc9d82217e570a7924600d9ab2",
+      "relay_creator": true,
+      "expected_families": [
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.9"
+    },
+    {
+      "tag": "v2.0.10",
+      "commit": "7de21d46cade2f68b6f0a6f0b982c893d3b7bcbf",
+      "relay_creator": true,
+      "expected_families": [
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.10"
+    },
+    {
+      "tag": "v2.0.11",
+      "commit": "401fdb0aae18e9299b265b36503ec506d0ce2ec4",
+      "relay_creator": true,
+      "expected_families": [
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.11"
+    },
+    {
+      "tag": "v2.0.12",
+      "commit": "d1d1a82da771bbf6c808b2d38594ee0d2eca2654",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.12"
+    },
+    {
+      "tag": "v2.0.13",
+      "commit": "f89fbf1b6503ef42c0e8193c49f81b6d32734c34",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.13"
+    },
+    {
+      "tag": "v2.0.14",
+      "commit": "6fc7ad4f13f94fb00ceefe515e4943cd35562ea7",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.14"
+    },
+    {
+      "tag": "v2.0.15",
+      "commit": "9fffb73f67aaa22da85d7864f268dc439734ff1c",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.15"
+    },
+    {
+      "tag": "v2.0.16",
+      "commit": "69a32af9f2635407415872e130e32f282170160e",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.16"
+    },
+    {
+      "tag": "v2.0.17",
+      "commit": "c865d7e262639229dad9e402cb5fc48669f2cbcb",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.17"
+    },
+    {
+      "tag": "v2.0.18",
+      "commit": "9409d1634336ccaf87866109b1148e5ed57f220f",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.18"
+    },
+    {
+      "tag": "v2.0.19",
+      "commit": "75e69cdb2d73466a77d3afb88e9f08c8996830ca",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.19"
+    },
+    {
+      "tag": "v2.0.20",
+      "commit": "d56c9adeae35a283080edfd3e868f1da61ad6c9e",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.20"
+    },
+    {
+      "tag": "v2.0.21",
+      "commit": "6d852f2b1ec28d844c8d145be847cbfba91ece24",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.21"
+    },
+    {
+      "tag": "v2.0.22",
+      "commit": "ca9c4f258e0388c84787cb9a67c7b72937b7f643",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.22"
+    },
+    {
+      "tag": "v2.0.23",
+      "commit": "da0407543acf6224d66218b7fe51c13f5d815048",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.23"
+    },
+    {
+      "tag": "v2.0.24",
+      "commit": "aaba9c254937748de767fcb20c8d231e47b434b3",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.24"
+    },
+    {
+      "tag": "v2.0.25",
+      "commit": "8cb7cf9290efaa337f4886c181052d0bd1d5a48a",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.25"
+    },
+    {
+      "tag": "v2.0.26",
+      "commit": "da0e2df8997eae1a64f57e9650f6ee879a90241f",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.26"
+    },
+    {
+      "tag": "v2.0.27",
+      "commit": "d1c58319772fc980aa803858e9e765dc60a1c17a",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.27"
+    },
+    {
+      "tag": "v2.0.28",
+      "commit": "fd5c095ac2f022635caad3e1241562bcfd824db2",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.28"
+    },
+    {
+      "tag": "v2.0.29",
+      "commit": "e536f83fdd7ca5ac0e0bd90757ea8e4154279211",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.29"
+    },
+    {
+      "tag": "v2.0.30",
+      "commit": "1b3b1b70e3cb9933e64b8e7f54f7477a3fa2b5d8",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.30"
+    },
+    {
+      "tag": "v2.0.31",
+      "commit": "cad551a633d55f8883e544ad187cf22ddd829abe",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.31"
+    },
+    {
+      "tag": "v2.0.32",
+      "commit": "1356afa2add526ece6e4eec88d35727c28a39977",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.32"
+    },
+    {
+      "tag": "v2.0.33",
+      "commit": "279793a5d676218dec9cccb52bd210cc6cd6d001",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.33"
+    },
+    {
+      "tag": "v2.0.34",
+      "commit": "8ff269a7bc0cbb3156c78b543e2e2ee51b1667ac",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.34"
+    },
+    {
+      "tag": "v2.0.35",
+      "commit": "d97c8de4ae7596943cdac22f933aa030590f1bf2",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.35"
+    },
+    {
+      "tag": "v2.0.36",
+      "commit": "1cef233c06739ef16a4614b0d42b68b8a69d45e2",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.36"
+    },
+    {
+      "tag": "v2.0.37",
+      "commit": "dfbe61111e7b25c7a6a4fc8dd351770080daf298",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.37"
+    },
+    {
+      "tag": "v2.0.38",
+      "commit": "f24a35ca2c1d1813f0ed6aeff8ce68032aba8c07",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.38"
+    },
+    {
+      "tag": "v2.0.39",
+      "commit": "ded31409bb553367811aa4f1aeedaf3ce162ef38",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.39"
+    },
+    {
+      "tag": "v2.0.40",
+      "commit": "24594d4334d8b3e9b3434ad1a46d78a772f85584",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.40"
+    },
+    {
+      "tag": "v2.0.57",
+      "commit": "bf91e394b02e3a2e807260b4e9fa965ec4d63c2d",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.57"
+    },
+    {
+      "tag": "v2.0.60",
+      "commit": "3ea523cd9578e63b5c297f64405fb5c8d9d0b815",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.60"
+    },
+    {
+      "tag": "v2.0.61",
+      "commit": "863b9921f4825d661178b672d7230e41a946e2ec",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000",
+        "official-system-dbce3b83"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.61"
+    },
+    {
+      "tag": "v2.0.62",
+      "commit": "8f98e0e4283736ec168417007088bb68e7a402b1",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000",
+        "official-system-dbce3b83"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.62"
+    },
+    {
+      "tag": "v2.0.63",
+      "commit": "71738a8cf2c1f7fac82afcd8122e7f1075f683bd",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-916fe819",
+        "official-interactive-3f45c000",
+        "official-system-dbce3b83"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.63"
+    },
+    {
+      "tag": "v2.0.64",
+      "commit": "e44bfa5ceb08437738335ddb0a1c3277fef728aa",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-1a30ae29",
+        "official-interactive-dc8daff9",
+        "official-system-ab41d336"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.64"
+    },
+    {
+      "tag": "v2.0.66",
+      "commit": "c77cd7ec1f46ba448b879027355dd38a69515256",
+      "relay_creator": true,
+      "expected_families": [
+        "official-password-1a30ae29",
+        "official-interactive-dc8daff9",
+        "official-system-ab41d336"
+      ],
+      "proceed_if_exact_match": true,
+      "source_references": "official-identities.json#tags/v2.0.66"
+    }
+  ],
+  "vectors": [
+    {
+      "id": "official-interactive-3f45c000",
+      "family": "official-interactive-3f45c000",
+      "source_tags": [
+        "v2.0.6",
+        "v2.0.7",
+        "v2.0.8",
+        "v2.0.9",
+        "v2.0.10",
+        "v2.0.11",
+        "v2.0.12",
+        "v2.0.13",
+        "v2.0.14",
+        "v2.0.15",
+        "v2.0.16",
+        "v2.0.17",
+        "v2.0.18",
+        "v2.0.19",
+        "v2.0.20",
+        "v2.0.21",
+        "v2.0.22",
+        "v2.0.23",
+        "v2.0.24",
+        "v2.0.25",
+        "v2.0.26",
+        "v2.0.27",
+        "v2.0.28",
+        "v2.0.29",
+        "v2.0.30",
+        "v2.0.31",
+        "v2.0.32",
+        "v2.0.33",
+        "v2.0.34",
+        "v2.0.35",
+        "v2.0.36",
+        "v2.0.37",
+        "v2.0.38",
+        "v2.0.39",
+        "v2.0.40",
+        "v2.0.57",
+        "v2.0.60",
+        "v2.0.61",
+        "v2.0.62",
+        "v2.0.63"
+      ],
+      "mutation": null,
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "official-password-916fe819",
+      "family": "official-password-916fe819",
+      "source_tags": [
+        "v2.0.12",
+        "v2.0.13",
+        "v2.0.14",
+        "v2.0.15",
+        "v2.0.16",
+        "v2.0.17",
+        "v2.0.18",
+        "v2.0.19",
+        "v2.0.20",
+        "v2.0.21",
+        "v2.0.22",
+        "v2.0.23",
+        "v2.0.24",
+        "v2.0.25",
+        "v2.0.26",
+        "v2.0.27",
+        "v2.0.28",
+        "v2.0.29",
+        "v2.0.30",
+        "v2.0.31",
+        "v2.0.32",
+        "v2.0.33",
+        "v2.0.34",
+        "v2.0.35",
+        "v2.0.36",
+        "v2.0.37",
+        "v2.0.38",
+        "v2.0.39",
+        "v2.0.40",
+        "v2.0.57",
+        "v2.0.60",
+        "v2.0.61",
+        "v2.0.62",
+        "v2.0.63"
+      ],
+      "mutation": null,
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "official-system-dbce3b83",
+      "family": "official-system-dbce3b83",
+      "source_tags": [
+        "v2.0.61",
+        "v2.0.62",
+        "v2.0.63"
+      ],
+      "mutation": null,
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "official-password-1a30ae29",
+      "family": "official-password-1a30ae29",
+      "source_tags": [
+        "v2.0.64",
+        "v2.0.66"
+      ],
+      "mutation": null,
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "official-interactive-dc8daff9",
+      "family": "official-interactive-dc8daff9",
+      "source_tags": [
+        "v2.0.64",
+        "v2.0.66"
+      ],
+      "mutation": null,
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "official-system-ab41d336",
+      "family": "official-system-ab41d336",
+      "source_tags": [
+        "v2.0.64",
+        "v2.0.66"
+      ],
+      "mutation": null,
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "different-task.path",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "task.path"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-task.name",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "task.name"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-action.count",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "action.count"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-action.type",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "action.type"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-action.command",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "action.command"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-action.arguments",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "action.arguments"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-action.workdir",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "action.workdir"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-principal.user",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "principal.user"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-principal.logon_type",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "principal.logon_type"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-principal.run_level",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "principal.run_level"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-trigger.count",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "trigger.count"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-trigger.type",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "trigger.type"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "different-trigger.repetition_interval",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "trigger.repetition_interval"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "record-only-Author",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "record_only": "Author"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "record-only-Date",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "record_only": "Date"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "record-only-StartBoundary",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "record_only": "StartBoundary"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "record-only-Settings",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "record_only": "Settings"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "record-only-schema_version",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "record_only": "schema_version"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "record-only-URI",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "record_only": "URI"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "multiple",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "scenario": "multiple"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "running",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "scenario": "running"
+      },
+      "proceed": false,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "disabled",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "scenario": "disabled"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "install"
+    },
+    {
+      "id": "rollback-allowed",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "scenario": "rollback-allowed"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "rollback"
+    },
+    {
+      "id": "rollback-refused",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "scenario": "rollback-refused"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "rollback"
+    },
+    {
+      "id": "other-user",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "scenario": "other-user"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "not-in-any-family",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "scenario": "not-in-any-family"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "query-failure",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "scenario": "query-failure"
+      },
+      "proceed": false,
+      "reason_code": "Healthy lifecycle task belongs to another ",
+      "mode": "install"
+    },
+    {
+      "id": "remove-retains-definition",
+      "family": "official-password-916fe819",
+      "mutation": null,
+      "proceed": true,
+      "reason_code": null,
+      "mode": "remove"
+    },
+    {
+      "id": "remove-foreign-command",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "field": "action.command"
+      },
+      "proceed": false,
+      "reason_code": "Refusing to remove a historical task with different ",
+      "mode": "remove"
+    },
+    {
+      "id": "rollback-disabled-preimage",
+      "family": "official-password-916fe819",
+      "mutation": {
+        "scenario": "disabled"
+      },
+      "proceed": true,
+      "reason_code": null,
+      "mode": "rollback"
+    }
+  ]
+}
