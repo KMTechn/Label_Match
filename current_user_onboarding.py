@@ -1490,7 +1490,9 @@ def onboarding_main(argv: list[str] | None = None) -> int:
         print(f"onboarding_status={exc.status}")
         print(f"onboarding_report={exc.report_path}")
         if exc.status == "RECOVERY_REQUIRED" or exc.cause_code == "DATA_GENERATION_REFUSED":
-            print(str(exc))
+            from failure_redaction import redact_for_sink
+            lines = redact_for_sink(str(exc)).splitlines()
+            print(next((line for line in reversed(lines) if line.strip()), "")[-300:])
         return ONBOARDING_EXIT_CODE
     print(f"onboarding_status={report['status']}")
     print(f"onboarding_action={report['action']}")
