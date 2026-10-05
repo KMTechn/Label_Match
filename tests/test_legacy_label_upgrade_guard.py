@@ -713,6 +713,39 @@ def test_roster_baseline_refuses_unreviewed_bytes(tmp_path, roster_baseline_pack
     assert reason in result.stderr, result.stdout + result.stderr
 
 
+def _assert_extended_ancestor_refuses_delta(tmp_path, packages, change):
+    old, candidate = packages[:2]
+    if change == "reverse":
+        source, installed = old, candidate
+    else:
+        source = _tree(candidate, tmp_path / "candidate", ["app/Label_Match.py"])
+        installed = old
+        if change == "one-byte":
+            with (source / "app/Label_Match.py").open("ab") as stream:
+                stream.write(b"\n")
+        else:
+            (source / "app/unlisted_extension.py").write_bytes(b"VALUE = 1\n")
+        _pin(source)
+    result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(source)} {_quote(installed)}", _environment(tmp_path))
+    assert result.returncode != 0, result.stdout
+    assert "WRITER_TRANSITION_" in result.stderr
+
+
+@pytest.mark.parametrize("change", ("one-byte", "unlisted", "reverse"))
+def test_stage_one_extended_exact_ancestor_refuses_delta(tmp_path, worker_record_packages, change):
+    _assert_extended_ancestor_refuses_delta(tmp_path, worker_record_packages, change)
+
+
+@pytest.mark.parametrize("change", ("one-byte", "unlisted", "reverse"))
+def test_mainloop_extended_exact_ancestor_refuses_delta(tmp_path, mainloop_exit_packages, change):
+    _assert_extended_ancestor_refuses_delta(tmp_path, mainloop_exit_packages, change)
+
+
+@pytest.mark.parametrize("change", ("one-byte", "unlisted", "reverse"))
+def test_roster_extended_exact_ancestor_refuses_delta(tmp_path, roster_baseline_packages, change):
+    _assert_extended_ancestor_refuses_delta(tmp_path, roster_baseline_packages, change)
+
+
 @pytest.mark.parametrize("change", ["old_key","new_key","apply_helper","startup_settings"])
 def test_startup_guard_accepts_only_exact_public_rotation_and_new_helpers(tmp_path,nextfix_archive_layouts,change):
     old,candidate=nextfix_archive_layouts

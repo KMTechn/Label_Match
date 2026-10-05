@@ -424,7 +424,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 - 예행 3회차의 tree 지표 오류는 루트 integrity record를 payload 지표에서만 제외하여 교정한다. 실제 교정 stock의 설치기 지표 함수와 추가 파일/하위 동명/1 B 변경 거절을 확인하고 예행 4회차 입력으로 전달한다. 공용 상위 ACL preimage 복원 지시는 철회됐으며 결정 B 일치와 실패 뒤 앱 부모 재설치 admission을 확인한다. LegacyCA·공용 Apps 및 모든 기존 하위의 guest 전후 ACL/옛 앱 재시작은 예행 4회차에서 확인해야 한다. frozen archive의 실제 staged producer→consumer 계약 연결도 같은 후보에서 검증한다.
 
-- 설치 통합 최종 후보: ac745f0의 audit-index 전진 쌍과 74c02c2의 짧은 상승 전달을 합치고, G metadata가 없는 lifecycle/installer fixture와 staged verifier의 오래된 task keyword 거절을 교정한다. 실제 판 기록은 stock builder 결과와 source/G 판을 대조한다. [sub-264 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-264/REPORT.md)의 PROVEN/FAILED/UNPROVEN과 시험 비교를 수용 근거로 쓰며 독립 검토·w9next 병합·native 예행은 1차 소유다.
+- 설치 통합 최종 후보: ac745f0의 audit-index 전진 쌍과 74c02c2의 짧은 상승 전달을 합치고, G metadata가 없는 lifecycle/installer fixture와 staged verifier의 오래된 task keyword 거절을 교정한다. 기존 수락한 v2.0.94의 네 조상 전진을 정확 선언으로 보존해 총 14 조상을 결속하고 G 부정 delta의 보고 이유를 복원한다. 실제 판 기록은 stock builder 결과와 source/G 판을 대조한다. [sub-264 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-264/REPORT.md)의 PROVEN/FAILED/UNPROVEN과 시험 비교를 수용 근거로 쓰며 독립 검토·w9next 병합·native 예행은 1차 소유다.
 
 - sub-254 상승 launcher: 긴 script/payload를 private 감사 파일과 SHA256에 결속하고 상승 명령은 16,000자 이하의 bootstrap으로 제한한다. 259자 경로·20자 사용자, 한 바이트 변조/부재/reparse, 읽기 이후 쓰기·교체 거절, 기존 helper 결과와 UAC 취소 대역의 실제 rollback 회귀를 확인했다([동작·증명 경계](operations.md#placement-launcher-transport)). 실제 RunAs·새 packet의 공개 v2.0.38 업그레이드·P1/P2 독립 검토는 중앙 OPEN이며 배치 성공으로 승격하지 않는다.
 
