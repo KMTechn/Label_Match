@@ -1932,6 +1932,11 @@ def test_plan_only_reports_explicit_or_product_default_server_base_url(
 
 def test_server_base_url_is_validated_first_and_reaches_only_onboarding() -> None:
     source = _source()
+    # Verify admission separately; retain the original state-changing URL oracle.
+    read_only_admission = "Product $generationProductRoot '--onboard-current-user' `\n    (@('--app-root', $source, '--check-data-generation-only') + $onboardingArguments)\n"
+    assert source.count(read_only_admission) == 1
+    assert source.index(read_only_admission) < source.index('$old = @(Relays)')
+    source = source.replace(read_only_admission, '')
     parameter_block = source[
         source.index("param(") : source.index(")", source.index("param("))
     ]

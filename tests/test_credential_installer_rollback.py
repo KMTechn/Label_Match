@@ -53,6 +53,10 @@ def test_rollback_attempts_guarded_tail_and_preserves_failures(tmp_path, shell, 
 . (Get-LabelSharedPortableLeafPath {_quote(REPO)} 'data_generation.ps1')
 . {_quote(REPO / 'tools/label_writer_fence.ps1')}
 . {_quote(REPO / 'tools/bootstrap_integrity.ps1')} -SharedCodeRoot {_quote(REPO)}
+# JSON I/O adapter retains strings on PS7.5+ (the PS5.1 product default).
+if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {{
+    $PSDefaultParameterValues['ConvertFrom-Json:DateKind']='String'
+}}
 $source={_quote(tree)}; $install=$source; $existingVerified=$true; $mutated=$true
 $replacementRollbackRoot=$source; $legacyFirstRegistration=$false; $healthyRemovedInstall=$false
 $healthyRemovalReportBefore=$null; $removalReportExisted=$false; $SkipSignatureValidationForTest=$true
@@ -103,6 +107,11 @@ $writerTransactionId=[Guid]::NewGuid().ToString('N'); $writerStartedAt=[DateTime
 $writerDelegationToken=[Guid]::NewGuid().ToString('N')+[Guid]::NewGuid().ToString('N')
 $writerOrchestratorSha256=Sha {_quote(REPO / 'INSTALL_CANONICAL_PORTABLE.ps1')}
 $writerContractSha256=Sha {_quote(REPO / 'tools/label_writer_fence.ps1')}
+$Script:LabelWriterFenceInstalledIdentity=[pscustomobject]@{{
+ session_id=$writerSessionId; attempt_id=$writerAttemptId; replacement_transaction_id=$writerTransactionId;
+ orchestrator_sha256=$writerOrchestratorSha256; writer_contract_sha256=$writerContractSha256;
+ inventory_sha256=$Script:LabelWriterFenceInventorySha256
+}}
 $writerEnvironmentBefore=@($WriterDelegationEnvironmentNames | ForEach-Object {{ [Environment]::GetEnvironmentVariable($_, 'Process') }})
 {rollback_sources}
 $writerAuthority=Enter-LabelWriterSessionAuthority -SessionId $writerSessionId -AttemptId $writerAttemptId -OrchestratorSha256 $writerOrchestratorSha256 -ReplacementTransactionId $writerTransactionId -WriterContractSha256 $writerContractSha256
