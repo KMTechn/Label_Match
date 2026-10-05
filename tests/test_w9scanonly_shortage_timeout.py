@@ -14,7 +14,7 @@ from tests.test_w9scanonly_short_tray import scanner_clock  # noqa: F401
 
 
 @pytest.fixture
-def shortage(central, scanner_clock, monkeypatch):
+def shortage(central, scanner_clock, monkeypatch, request):
     app, dialogs, case, root, _releases = central
     jobs = {}
     sequence = [0]
@@ -45,10 +45,24 @@ def shortage(central, scanner_clock, monkeypatch):
     identity = app.current_set_info['id']
     scan(app, sample)
     scanner_clock[0] += 5
-    scan(app, master)
+    slow_completion = getattr(request, 'param', '') == 'slow_completion'
+    lane = app.ui_lane
+    if slow_completion:
+        commit = app._commit_finalized_set_durable
+
+        def delayed_commit(**kwargs):
+            scanner_clock[0] += 61
+            return commit(**kwargs)
+
+        monkeypatch.setattr(app, '_commit_finalized_set_durable', delayed_commit)
+        app.ui_lane = None
+    try:
+        scan(app, master)
+    finally:
+        app.ui_lane = lane
     root.run_until(lambda: not app.ui_lane.is_busy(), timeout=5)
     assert len(completions(app)) == 1 and not app.blocks and not dialogs
-    assert app.package_outbox.get_by_set_id(identity) is None
+    assert bool(app.package_outbox.get_by_set_id(identity)) == slow_completion
     queued = []
     queue = type(app)._queue_authoritative_package
 
@@ -225,6 +239,19 @@ def test_failed_shortage_undo_never_releases_a_cancelled_completion(shortage, mo
     assert len(_events(app.save_directory, app.Events.TRAY_COMPLETION_CANCELLED)) == 1
     advance(61)
     assert queued == [] and app.package_outbox.get_by_set_id(identity) is None
+
+
+@pytest.mark.parametrize('shortage', ['slow_completion'], indirect=True)
+def test_slow_completion_cannot_restore_undo_after_immediate_expiry(shortage):
+    from tests.test_legacy_label_transition import _events
+    app, identity, advance, _jobs, queued, _master, _clock = shortage
+    assert app.package_outbox.get_by_set_id(identity) is not None
+    assert not app.current_set_info.get('shortage_undo_snapshot')
+    scan(app, 'KMCMD:UNDO')
+    assert app.data_manager.flush(timeout=5)
+    assert _events(app.save_directory, app.Events.TRAY_COMPLETION_CANCELLED) == []
+    advance(60)
+    assert queued == [] and len(completions(app)) == 1
 
 
 def test_live_timer_uses_monotonic_clock_after_wall_clock_jumps(shortage, monkeypatch):

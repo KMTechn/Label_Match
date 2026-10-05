@@ -15047,7 +15047,7 @@ class Label_Match(tk.Tk):
             return self._publish_durable_commit_block(PackageLogisticsError("short confirmation decision save failed"))
         self._scanner_shortage_undo = snapshot
         self._shortage_confirmation_deadline = time.monotonic() + 60.0
-        if self._finalize_set(self.Results.PASS):
+        if self._finalize_set(self.Results.PASS) and self.__dict__.get("_scanner_shortage_undo"):
             details = self.set_details_map[str(snapshot.get("completion_identity") or snapshot["id"])]
             self.current_set_info["shortage_undo_snapshot"] = snapshot
             self.current_set_info["shortage_completion_details"] = details
