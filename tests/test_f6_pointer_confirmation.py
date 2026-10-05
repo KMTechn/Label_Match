@@ -27,6 +27,8 @@ class Widget:
 
     config = configure
     def cget(self, key): return self.options.get(key)
+    def instate(self, states): return 'disabled' in states and self.options['state'] == 'disabled'
+    def state(self, states): self.options['button_states'] = list(states)
     def winfo_width(self): return 100
     def winfo_height(self): return 30
     def winfo_children(self): return self.children
@@ -100,8 +102,11 @@ def app(monkeypatch):
 
 
 def click(app):
-    return app._confirm_pointer_action(NS(widget=app.workflow_notice_action_button,
-                                         num=1, x=10, y=10))
+    event = NS(widget=app.workflow_notice_action_button, num=1, x=10, y=10)
+    pressed = app.workflow_notice_action_button.bindings.get('<ButtonPress-1>')
+    if pressed is not None:
+        pressed(event)
+    return app._confirm_pointer_action(event)
 
 
 def start(app, place):
@@ -258,6 +263,22 @@ def test_disabled_or_outside_pointer_release_cannot_approve(app, disabled, outsi
     app._confirm_pointer_action(NS(widget=button, num=1, x=120 if outside else 10, y=10))
     assert approved(app, 'delete') == 0
     button.configure(state='normal')
+    click(app)
+    assert approved(app, 'delete') == 1
+
+
+def test_press_on_old_notice_cannot_release_into_new_approval(app):
+    start(app, 'delete')
+    button = app.workflow_notice_action_button
+    event = NS(widget=button, num=1, x=10, y=10)
+    pressed = button.bindings.get('<ButtonPress-1>')
+    if pressed is not None:
+        pressed(event)
+    # The same button now represents a different confirmation before mouse-up.
+    app.set_details_map['completed']['item_name'] = 'NEW TARGET'
+    start(app, 'delete')
+    app._confirm_pointer_action(event)
+    assert approved(app, 'delete') == 0
     click(app)
     assert approved(app, 'delete') == 1
 

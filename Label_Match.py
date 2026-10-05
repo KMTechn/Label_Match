@@ -20313,12 +20313,14 @@ class Label_Match(tk.Tk):
         )
         # The existing keyboard/command callback only reports rejected input.
         reject = self._refuse_dialog_scan
+        self._pointer_confirmation_pressed = None
         self._pointer_confirmation = (notice, reject, action)
         self._phs_label_guidance_notice = notice
         self._workflow_notice_action = reject
         self._workflow_notice_action_text = action_text
         button = self.__dict__.get("workflow_notice_action_button")
         if button is not None:
+            button.bind("<ButtonPress-1>", self._press_pointer_confirmation)
             button.bind("<ButtonRelease-1>", self._confirm_pointer_action)
             button.bind("<KeyPress>", self._pointer_confirmation_key)
             button.bind("<Return>", self._pointer_confirmation_key)
@@ -20335,15 +20337,31 @@ class Label_Match(tk.Tk):
             return self._acknowledge_workflow_notice(event)
         return None
 
+    def _press_pointer_confirmation(self, event):
+        pending = self.__dict__.get("_pointer_confirmation")
+        button = self.__dict__.get("workflow_notice_action_button")
+        self._pointer_confirmation_pressed = None
+        if (pending and self.__dict__.get("_workflow_notice_action") is pending[1]
+                and self.__dict__.get("_phs_label_guidance_notice") is pending[0]
+                and getattr(event, "widget", None) is button
+                and getattr(event, "num", None) == 1
+                and not button.instate(["disabled"])
+                and 0 <= event.x < button.winfo_width()
+                and 0 <= event.y < button.winfo_height()):
+            self._pointer_confirmation_pressed = pending
+        return None
+
     def _confirm_pointer_action(self, event):
         pending = self.__dict__.get("_pointer_confirmation")
         if not pending or self.__dict__.get("_workflow_notice_action") is not pending[1]:
             return None
         button = self.__dict__.get("workflow_notice_action_button")
-        if (self.__dict__.get("_phs_label_guidance_notice") is not pending[0]
+        button.state(["!pressed"])
+        if (self.__dict__.pop("_pointer_confirmation_pressed", None) is not pending
+                or self.__dict__.get("_phs_label_guidance_notice") is not pending[0]
                 or getattr(event, "widget", None) is not button
                 or getattr(event, "num", None) != 1
-                or str(button.cget("state")) == "disabled"
+                or button.instate(["disabled"])
                 or not (0 <= event.x < button.winfo_width()
                         and 0 <= event.y < button.winfo_height())):
             return "break"
