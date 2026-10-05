@@ -478,7 +478,12 @@ def write_json_durable(path: Path, payload: Mapping[str, Any]) -> None:
     _assert_no_reparse_components(path)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     with temporary.open("x", encoding="utf-8", newline="\n") as output:
-        json.dump(payload, output, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        from failure_redaction import redact_for_sink
+        protected = dict(payload)
+        for name in ("reason", "message", "last_error", "error"):
+            if isinstance(protected.get(name), str):
+                protected[name] = redact_for_sink(protected[name])
+        json.dump(protected, output, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         output.write("\n")
         output.flush()
         os.fsync(output.fileno())
@@ -719,8 +724,9 @@ def lifecycle_context_main(arguments: list[str]) -> int:
                 expected_from_commit=args.expected_from_commit, operation=args.operation)
     except Exception as error:
         message = str(error) if str(error).startswith("설치가 만드는") else "자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요."
-        print(json.dumps(dict(status="FAILED", message=message,
-                             errors=launch_failure_details(error, include_original=True)), ensure_ascii=True))
+        from failure_redaction import redact_json_for_sink
+        print(json.dumps(redact_json_for_sink(dict(status="FAILED", message=message,
+                             errors=launch_failure_details(error, include_original=True))), ensure_ascii=True))
         return 1
     print(json.dumps(result, ensure_ascii=True))
     return 0
@@ -1433,25 +1439,19 @@ def process_security(process_id: int) -> dict[str, Any]:
         kernel.CloseHandle(process)
 
 
-def safe_update_text(value: Any, *, limit: int = 8192) -> str:
-    """Keep bounded original diagnostics while masking authority-bearing values."""
-    from direct_sync_runtime import _operator_safe_error_message
-
+def safe_update_text(value: Any, *, limit: int = 300) -> str:
+    """Keep the sanitized final exception line short enough for user guidance."""
+    from failure_redaction import redact_for_sink
     text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
-    names = r"(?:authorization|credential|password|secret|token|signature|[A-Za-z0-9_-]*(?:_token|_key|_secret|_password))"
-    text = re.sub(r'(?i)(["\']' + names + r'["\']\s*:\s*)("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')',
-                  lambda match: match[1] + '"[redacted]"', text)
-    text = re.sub(r'(?i)(\b' + names + r'\s*[=:]\s*)([^\s;,]+)',
-                  lambda match: match[1] + "[redacted]", text)
-    text = re.sub(r"(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", "[redacted]", text)
-    text = re.sub(r"(?i)(https?://)[^/\s@]+@", r"\1[redacted]@", text)
-    return _operator_safe_error_message(text, limit=limit)
+    lines = redact_for_sink(text).splitlines()
+    return next((line for line in reversed(lines) if line.strip()), "")[-min(limit, 300):]
 
 
 def child_failure_output(completed: Any) -> dict[str, Any]:
+    from failure_redaction import redact_for_sink
     return {"returncode": completed.returncode,
-            "stdout": safe_update_text(getattr(completed, "stdout", "")),
-            "stderr": safe_update_text(getattr(completed, "stderr", ""))}
+            "stdout": redact_for_sink(getattr(completed, "stdout", "")),
+            "stderr": redact_for_sink(getattr(completed, "stderr", ""))}
 
 
 def launch_failure_details(error: BaseException, *, include_original: bool = False) -> list[dict[str, Any]]:
@@ -1469,16 +1469,20 @@ def launch_failure_details(error: BaseException, *, include_original: bool = Fal
         detail = {"type": type(error).__module__ + "." + type(error).__name__, "call": call,
                   "win32_error": code if type(code) is int else None}
         if include_original:
+            from failure_redaction import try_write_failure_evidence
+            import traceback
             detail["message"] = safe_update_text(str(error))
+            detail["full_exception_trace"] = try_write_failure_evidence(
+                "".join(traceback.TracebackException.from_exception(error).format()))
         output = getattr(error, "child_output", None)
         if include_original and isinstance(output, Mapping):
             detail["child_output"] = {"returncode": output.get("returncode"),
-                                     "stdout": safe_update_text(output.get("stdout")),
-                                     "stderr": safe_update_text(output.get("stderr"))}
+                                     "stdout_evidence": try_write_failure_evidence(output.get("stdout", "")),
+                                     "stderr_evidence": try_write_failure_evidence(output.get("stderr", ""))}
         elif include_original and (getattr(error, "stdout", None) or getattr(error, "stderr", None)):
             detail["child_output"] = {"returncode": getattr(error, "returncode", None),
-                                     "stdout": safe_update_text(getattr(error, "stdout", "")),
-                                     "stderr": safe_update_text(getattr(error, "stderr", ""))}
+                                     "stdout_evidence": try_write_failure_evidence(getattr(error, "stdout", "")),
+                                     "stderr_evidence": try_write_failure_evidence(getattr(error, "stderr", ""))}
         chain.append(detail)
         error = error.__cause__ or error.__context__
     return chain

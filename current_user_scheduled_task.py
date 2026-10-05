@@ -186,6 +186,7 @@ _TASK_POWERSHELL = r"""
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $spec = $env:KMTECH_LABEL_CURRENT_USER_TASK_SPEC | ConvertFrom-Json
+. ([string]$env:KMTECH_LABEL_INSTALL_REDACTION_HELPER_PATH)
 if (
     [string]$spec.schema -cne 'label-match-current-user-task-v1' -or
     [string]$spec.task_name -cne 'direct-sync-relay-label-match' -or
@@ -290,6 +291,30 @@ try {
     if ([bool]$beforeLegacy.exists -and [string]$beforeLegacy.state -ine 'Disabled') {
         throw 'Enabled historical Label task requires normal owned-task cleanup by the public installer.'
     }
+    if ([bool]$beforeCanonical.exists -and [string]$beforeCanonical.execute -match '(?i)wscript\.exe"?$') {
+        # The immutable installed helper supplies the same public identity bundle
+        # as canonical preflight. This branch only retains a stopped disabled task.
+        $code=Split-Path -Parent ([string]$spec.working_directory)
+        . (Join-Path $code 'tools/bootstrap_integrity.ps1') -SharedCodeRoot $code
+        [void](Assert-BootstrapIntegrityRecord -Root $code)
+        $tokens=$null;$errors=$null
+        $tree=[Management.Automation.Language.Parser]::ParseFile((Join-Path $code 'INSTALL_THIS_PC.ps1'),[ref]$tokens,[ref]$errors)
+        if($errors.Count){throw 'LEGACY_RELAY_HELPER_PARSE_FAILED'}
+        foreach($name in @('ConvertTo-LabelTaskSid','Get-LabelOfficialLegacyTaskExpectation','Get-LabelOfficialLegacyPrincipalModes','Get-LabelOfficialLegacyTaskExpectations','ConvertTo-LabelLegacyTaskPath','Get-LabelOfficialLegacyTaskFingerprint','Get-LabelOfficialLegacyTaskSnapshot','Assert-LabelOfficialLegacyTaskStopped')){
+            $definitions=@($tree.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
+            if($definitions.Count -ne 1){throw 'LEGACY_RELAY_HELPER_DEFINITION_FAILED'}
+            . ([scriptblock]::Create($definitions[0].Extent.Text))
+        }
+        $official=Get-LabelOfficialLegacyTaskSnapshot
+        if($null -eq $official -or $official.enabled){throw 'Refusing to remove a historical task with different ownership/command.'}
+        Assert-LabelOfficialLegacyTaskStopped $official.name
+        $report.status='DISABLED_RETAINED_OFFICIAL'
+        $report.action='RETAINED'
+        $report.preimage=[ordered]@{official=$official.fingerprint;xml_sha256=$official.xml_sha256}
+        $report.official=$official.fingerprint
+        ConvertTo-KmtechRedactedSinkObject $report | ConvertTo-Json -Depth 20 -Compress
+        exit 0
+    }
     if ([bool]$beforeCanonical.exists) {
         if (-not (Test-ExactTask $beforeCanonical)) {
             throw 'Refusing to retire a current-user task with different ownership or command.'
@@ -331,14 +356,14 @@ try {
     $report.status = 'ABSENT'
     $report.canonical = $afterCanonical
     $report.legacy = $beforeLegacy
-    $report | ConvertTo-Json -Depth 20 -Compress
+    ConvertTo-KmtechRedactedSinkObject $report | ConvertTo-Json -Depth 20 -Compress
     exit 0
 }
 catch {
     # Keep a failed migration disabled; never recreate/re-enable an obsolete lane.
     $report.status = 'FAILED'
     $report.failure = $_.Exception.Message
-    $report | ConvertTo-Json -Depth 20 -Compress
+    ConvertTo-KmtechRedactedSinkObject $report | ConvertTo-Json -Depth 20 -Compress
     exit 1
 }
 """
@@ -419,6 +444,7 @@ def _run_task_removal(
             "current-user scheduled-task registration is available only on Windows"
         )
     environment = os.environ.copy()
+    environment["KMTECH_LABEL_INSTALL_REDACTION_HELPER_PATH"] = str(Path(__file__).parent / "tools/failure_redaction.ps1")
     environment["KMTECH_LABEL_CURRENT_USER_TASK_SPEC"] = json.dumps(
         dict(spec), ensure_ascii=True, separators=(",", ":"), sort_keys=True
     )
@@ -465,7 +491,10 @@ def _run_task_removal(
         detail = str(
             report.get("failure") or error or "scheduled-task operation failed"
         )
-        raise CurrentUserScheduledTaskError(detail[:500])
+        from failure_redaction import redact_for_sink
+        failure = CurrentUserScheduledTaskError(redact_for_sink(detail).splitlines()[-1][-300:])
+        failure.child_output = {"stdout": redact_for_sink(output), "stderr": redact_for_sink(error)}
+        raise failure
     return report
 
 
@@ -481,7 +510,7 @@ def remove_current_user_scheduled_task(
     report = _run_task_removal(spec, runner=runner)
     if (
         report.get("schema") != TASK_CONTRACT_VERSION
-        or report.get("status") != "ABSENT"
+        or report.get("status") not in {"ABSENT", "DISABLED_RETAINED_OFFICIAL"}
         or report.get("manual_start") is not False
         or report.get("process_or_task_stopped") is not False
     ):

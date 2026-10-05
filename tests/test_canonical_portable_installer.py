@@ -1211,7 +1211,8 @@ def test_product_failure_includes_child_stderr_and_delegation_env(
 ) -> None:
     output = _run_product_stderr_harness(tmp_path)
     assert "product_error=Product mode failed: --onboard-current-user/3" in output
-    assert "token=repro-delegation-token-value-32ok" in output
+    assert "repro-delegation-token-value-32ok" not in output
+    assert "token=[REDACTED:KMTECH_LABEL_WRITER_DELEGATION_TOKEN]" in output
 
 
 def test_portable_main_imports_label_match_under_isolated_python(

@@ -7,20 +7,30 @@ INSTALLER = Path(__file__).resolve().parents[1] / 'INSTALL_CANONICAL_PORTABLE.ps
 
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
 def test_packet_runtime_removal_binds_canonical_logical_root(tmp_path, engine):
-    result = run_functions(tmp_path, INSTALLER, ['Arg', 'Product'], r'''
+    result = run_functions(tmp_path, INSTALLER, ['Arg', 'Product', 'Initialize-LabelChildOutputReader',
+                           'ConvertTo-LabelFailureOutput', 'Protect-LabelFailureText', 'New-LabelChildFailure'], r'''
 $source=Join-Path $env:LM_ROLLBACK_ROOT 'packet'
 $install=Join-Path $env:LM_ROLLBACK_ROOT 'canonical\current'
-$script:arguments=''
-function Start-Process {
- param($FilePath,$ArgumentList,$WindowStyle,[switch]$PassThru,$RedirectStandardOutput,$RedirectStandardError)
- $script:arguments=$ArgumentList
- if($FilePath -cne (Join-Path $source 'runtime\pythonw.exe')){throw 'Execution source changed.'}
- [pscustomobject]@{ExitCode=0;HasExited=$true}
+New-Item -ItemType Directory -Path (Join-Path $source 'runtime') -Force | Out-Null
+$capture=Join-Path $env:LM_ROLLBACK_ROOT 'arguments.txt'
+$env:LM_CAPTURE_ARGS=$capture
+$compiler=Join-Path $env:LM_ROLLBACK_ROOT 'compile.ps1'
+$compilerText=@'
+param($OutputPath)
+Add-Type -OutputAssembly $OutputPath -OutputType ConsoleApplication -TypeDefinition @"
+using System;
+using System.IO;
+public static class ArgumentProbe {
+ public static void Main(string[] args) {File.WriteAllText(Environment.GetEnvironmentVariable("LM_CAPTURE_ARGS"),String.Join("\n",args));}
 }
-function Wait-Process {param($InputObject)}
+"@
+'@
+[IO.File]::WriteAllText($compiler,$compilerText,[Text.UTF8Encoding]::new($false))
+& powershell.exe -NoProfile -NonInteractive -File $compiler (Join-Path $source 'runtime\pythonw.exe')
+if($LASTEXITCODE -ne 0){throw 'Isolated child compilation failed'}
 Product $source '--remove-current-user-setup' -LogicalAppRoot $install
-$expected='-I -B {0} --remove-current-user-setup --app-root {1}' -f (Arg (Join-Path $source 'app\main.py')),(Arg $install)
-if($arguments -cne $expected){throw 'Packet source was used as logical install root.'}
+$actual=[IO.File]::ReadAllLines($capture)
+if($actual.Count -ne 6 -or $actual[2] -cne (Join-Path $source 'app\main.py') -or $actual[3] -cne '--remove-current-user-setup' -or $actual[5] -cne $install){throw 'Packet source was used as logical install root.'}
 'PASS'
 ''', engine=engine, values={'LM_ROLLBACK_ROOT': str(tmp_path)})
     assert result.returncode == 0, result.stdout + result.stderr
@@ -29,7 +39,8 @@ if($arguments -cne $expected){throw 'Packet source was used as logical install r
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
 @pytest.mark.parametrize('cut', ('remove', 'run', 'task', 'custody', 'generation_before', 'generation_after', 'uac_cancel'))
 def test_actual_install_rollback_attempts_later_restoration_and_records_failure(tmp_path, engine, cut):
-    names = ['Get-LabelLaunchFailure']
+    names = ['Get-LabelLaunchFailure', 'Protect-LabelFailureText', 'Save-LabelRollbackContext',
+             'Invoke-LabelCanonicalRollback', 'Invoke-LabelGenerationRefusalRecovery']
     if 'function Invoke-LabelRollbackStep' in INSTALLER.read_text(encoding='utf-8'):
         names.append('Invoke-LabelRollbackStep')
     names.extend(['ByteSha', 'InvokeFrozenPlacementHelper'])
@@ -37,6 +48,9 @@ def test_actual_install_rollback_attempts_later_restoration_and_records_failure(
         names.append('Assert-LabelRollbackGeneration')
     result = run_functions(tmp_path, INSTALLER, names, r'''
 $root=$env:LM_ROLLBACK_ROOT
+. (Join-Path (Split-Path -Parent $env:LM_CONTRACT_SOURCE) 'kmtech_shared/powershell/data_generation.ps1')
+$generationSubjectSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$generationMarkerPaths=@(Join-Path $root 'data-generation.json')
 $source=Join-Path $root 'packet';$install=Join-Path $root 'canonical\current'
 $stop=Join-Path $root 'stop.json';$removalPath=Join-Path $root 'removal.json'
 $auditPath=Join-Path $root 'audit.json';$EvidencePath='';$localAuditRoot=$root
@@ -65,6 +79,7 @@ function Set-LabelWriterFenceDelegation {param($ControlRoot,$Status,$SessionId,$
  if($env:LM_ROLLBACK_CUT -eq 'custody'){throw 'injected custody failure'}
 }
 function SetWriterDelegationEnvironment {param($a,$b,$c,$d)}
+function Stop-LabelRollbackCandidateRelay { }
 function Set-LabelWriterFenceInstalledTree {param($a,$b,$c,$d,$e)}
 function Enter-LabelWriterAdmission {param($ControlRoot,$TimeoutMilliseconds) return 1}
 function Exit-LabelWriterAdmission {param($Lease)}
@@ -78,6 +93,8 @@ function Stop-LabelWriterFence {param($ControlRoot,$SessionId,$AttemptId,$Replac
  $events.Add('fence-release');[pscustomobject]@{writer_inventory_sha256='fixture'}
 }
 function Snapshot {$events.Add('run-readback');return $before}
+function Assert-LabelRollbackTaskPreimage {if($env:LM_ROLLBACK_CUT -eq 'task'){throw 'Injected task preimage mismatch'}}
+function InvokeFrozenIntegrityProbe {throw 'Candidate consistency is unproven in this legacy failure fixture'}
 function Save {param($Path,$Value) [IO.File]::WriteAllText($Path,($Value|ConvertTo-Json -Depth 20))}
 function Full {param($Path,$Name) return $Path}
 $ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
@@ -116,11 +133,12 @@ if($env:LM_ROLLBACK_CUT -ceq 'uac_cancel'){
  'PASS';return
 }
 if($env:LM_ROLLBACK_CUT -eq 'custody'){
- if($events.Contains('run') -or $events.Contains('task')){throw 'Mutation passed unproven deployment custody.'}
+ if(-not $events.Contains('run') -or -not $events.Contains('task')){throw 'Independent preimage restoration was skipped after custody failure.'}
 }elseif(-not $events.Contains('run') -or -not $events.Contains('task')){throw 'Later independent rollback steps were skipped.'}
-if($audit.status -cne 'ROLLBACK_FAILED' -or $audit.rollback.runtime_restored -ne $false){throw 'Incomplete rollback reported success.'}
+if($audit.status -cne 'ROLLBACK_FAILED'){throw 'Incomplete rollback reported success.'}
 if(@($audit.rollback.step_failures).Count -eq 0){throw 'Original rollback step failures absent.'}
-if($events.Contains('fence-release')){throw 'Failed recovery released the protective fence.'}
+if($env:LM_ROLLBACK_CUT -in @('task','custody') -and $events.Contains('fence-release')){throw 'Unproven recovery released the protective fence.'}
+if($env:LM_ROLLBACK_CUT -in @('remove','run') -and -not $events.Contains('fence-release')){throw 'Proven recovery skipped fence release because an earlier phase failed.'}
 'PASS'
 ''', engine=engine, values={'LM_ROLLBACK_ROOT': str(tmp_path), 'LM_ROLLBACK_CUT': cut})
     assert result.returncode == 0, result.stdout + result.stderr

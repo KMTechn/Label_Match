@@ -4,6 +4,8 @@ param(
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
     [string]$EvidencePath = "",
     [string]$ServerBaseUrl = "",
+    [string]$ResumeRollbackAuditPath = "",
+    [string]$ExpectedRollbackAuditSha256 = "",
     [switch]$PlanOnly,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$SkipSignatureValidationForTest
@@ -431,14 +433,19 @@ function Invoke-LabelPinnedProbe([string]$Python, [byte[]]$ProbeBytes,
     $process = [Diagnostics.Process]::Start($startInfo)
     try {
         # Drain both pipes while writing the program and waiting for its exit.
+        Initialize-LabelChildOutputReader
         $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
+        $stderr = [LabelChildOutputReader]::Read($process.StandardError)
         try { $process.StandardInput.BaseStream.Write($ProbeBytes, 0, $ProbeBytes.Length) }
         finally { $process.StandardInput.Close() }
         $process.WaitForExit()
         $output = $stdout.GetAwaiter().GetResult()
-        $errorOutput = $stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) { throw ($FailureMessage + $errorOutput.Trim()) }
+        $errorOutput = ConvertTo-LabelFailureOutput ($stderr.GetAwaiter().GetResult())
+        if ($process.ExitCode -ne 0) {
+            $bytes = [Text.Encoding]::UTF8.GetBytes($output)
+            $out = [ordered]@{text=(Protect-LabelFailureText $output);byte_count=$bytes.Length;truncated=($bytes.Length -gt 65536);limit_bytes=65536}
+            throw (New-LabelChildFailure $FailureMessage $process.ExitCode $out $errorOutput)
+        }
         return $output
     }
     finally { $process.Dispose() }
@@ -513,7 +520,7 @@ shared_replacements = {
         'bf7ccf44e5abd14b3211bbea9b1e22d3b4a53525b4d4bc760c1893ca2da63a69'),
     'INSTALL_THIS_PC.ps1': (
         '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
-        '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'),
+        '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
         'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'),
@@ -527,8 +534,8 @@ def release_digest(path):
     return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
 
 # G-DECISIONS #2/#7: exact e89c188 preimage and three pinned leaves.
-data_generation_replacements = {'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/writer_session_fence.py': ('26d4d4900f55cafbfad24099065ecfdd6b275327e60b93ac63d67186a05e09e5', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('fbff47dd51d1d4503ef0dd0e9ec6796adaf943882f6771a19e85059d694de976', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31')}
-data_generation_additions = {'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}
+data_generation_replacements = {'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/writer_session_fence.py': ('26d4d4900f55cafbfad24099065ecfdd6b275327e60b93ac63d67186a05e09e5', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('fbff47dd51d1d4503ef0dd0e9ec6796adaf943882f6771a19e85059d694de976', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae')}
+data_generation_additions = {'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}
 data_generation_transition = all(
     (source / relative).is_file() and release_digest(source / relative) == after
     for relative, (_, after) in data_generation_replacements.items()
@@ -579,7 +586,7 @@ integrity_order_transition = (
     release_digest(installed / integrity_order_path) ==
         'bfd59326ad76a400c70a62d78622b518a549e844c4bf4725f59eb7525c20a57f' and
     release_digest(source / integrity_order_path) ==
-        '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'
+        '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'
 )
 
 shared_transition = all(
@@ -602,7 +609,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'),
+                                    '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
  'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
@@ -634,13 +641,13 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/ui/workflow_view_state.py': ('6959c71768296a68d88de2d46a76b80f177ab7c5e2bff0fde0cddb3fa9ada718',
                                    'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'),
  'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c',
-                                 '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'),
+                                 '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'),
  'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
                                                     'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
  'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5')}
+                                    '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb')}
 legacy_label_additions = {'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'}
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
@@ -755,10 +762,10 @@ scanner_transition = (
 # files, writer membership and contracts retain their ordinary checks.
 current_user_profile_replacements = {
     'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'),
-    'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'),
+    'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'),
     'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'),
     'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
-    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'),
+    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'),
     'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'),
 }
 # Exact writer bytes from the same accepted profile/scan preimages; their
@@ -799,7 +806,7 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/user_relay.py': ({'07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7'},
                        'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'),
  'app/writer_session_fence.py': ({'7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', 'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', 'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50'},
-                                 '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684')}
+                                 '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3')}
 remote_transport_transition = (
     legacy_label_transition or scan_input_transition or nextfix_label_transition
     or scanner_transition or current_user_profile_transition
@@ -818,9 +825,9 @@ roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3
  'app/label_admin_pin.py': ('159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8',
                             '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'),
  'app/writer_session_fence.py': ('8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6',
-                                 '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'),
+                                 '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'),
  'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a',
-                                  'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31')}
+                                  '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae')}
 # Exact additional runtime changes for the already accepted roster baseline.
 roster_baseline_companions = {'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55',
                              'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'),
@@ -965,8 +972,8 @@ def policy_from_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
 def canonical_startup_settings(settings: Mapping[str, Any]) -> bytes:
     return (json.dumps(policy_from_settings(settings), sort_keys=True, indent=2) + "\n").encode("utf-8")
 
-startup_release_replacements = {'3f4574a176f45253d746b397ad979896f266d062': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_context.py': ('95b57100a5bf2014a8dc7685455342233fb8bcd9f78e04a92332ae2fab320422', '32835bfbd588afd84fae494aabeab2add65f2ecb0b22aa0bb2478951107afe51'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_snapshot_adapter.py': ('f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411', '661d0167c8966d510dc85233e32b4ee5dda781ff3d9b4fca20a1f0c797a5a4d2'), 'app/ui/workflow_view_state.py': ('6959c71768296a68d88de2d46a76b80f177ab7c5e2bff0fde0cddb3fa9ada718', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('25f0f9f7b70d27e1b4e7f939720f694ae954670b94dc52c0a9c82d9f310a6794', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '6479eca6c2c03f17d5f0fcf8b662a83045f96039': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/Label_Match.py': ('b18a13700497a1064226271f2419b51acf34c008b3f82e69340ec2b64f8846f6', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_transition.py': ('a5927e064c0468257c54e408e3164c67512f225cb78dceb49c231ffd8df83c8b', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_logistics.py': ('85a71ef78d268fae7f7aad9e21ae68920a6b23d5437e598a5822512fa45a6d89', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/ui/workflow_view_state.py': ('39bfffcbd6819406ded9c62f8c298d53b5148c6448cd1143b8343363ca0d5136', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('2c78bd842bfcb8fe74793b84ea36cb06c2af3664faf2872ad0cbb888bb2361be', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('3f94563728cd665a55c134eb34c5b5de0be4fcb1c0a31ce5525d74017f71a959', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox.py': ('00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'app/sealed_transfer_exchange.py': ('a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '731ca29b14a5a9f98ec4f4935382548891557d95': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/Label_Match.py': ('cbb55194b55969017b22851b9645ed92d676071122f2fbac763161f05729fc45', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('1d55c96bff15a0ddba47fe65a39b033c67dd30c2ea95f19f41bd4fb4b0ecc253', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('f5e36a8d7142a0e130ef712b35178052d1d11140853ac98310b591f9eb8e7f20', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'app/sealed_transfer_exchange.py': ('a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '817d393b7316735921c2aa6ede271a04cbea20fd': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/Label_Match.py': ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('c89453e181b94b7b018b1be78b1fad76d73d0fecd4f728ee6cf395fed6afbf27', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '92abdaa377b2b3255c25ff0e5e331c3a4f1ddfa4': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/Label_Match.py': ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('6525f38c350d1d875a6943c3b858b417cbeaac8a7b03e1f984f8584f8445d42f', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'b00712c410770f1d023b09aa9a1de4743a81b1b6': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/Label_Match.py': ('c6a122c91e2f6437bb8857986884899d4336469bfb83ee7731b83a81376e9aec', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('f333164e0306008d17b8eddaabb0da44bead475f9008181b97231839698bbbcc', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('ed16a3a03ecdac3ae8c01ca41c124f6ddb4340d12834a8dd83ed8bad2f0049bd', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'app/sealed_transfer_exchange.py': ('a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'c5e051b4b126aaab259d57d451be14f98d18d87e': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/Label_Match.py': ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('503dae7aa0250925287745c61a82b9268da59b2855f87d9ba1bd638b724b9cfb', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('2406ca2a3c36016007f14a940ad5f432b7736c62e30d4414f8c1ead4de55d034', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'c83c72c26fd4352803500792abd27096b28c58de': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/Label_Match.py': ('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('18204c0518d4e72d1443062546a7a03d2df47a78fc2a7d3cbb929540d05a55f9', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'e88011c6fb6a773feb174ba29cad431edda54eeb': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/Label_Match.py': ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('d55c7eabc25a2260845893fe21da5df7d1075f2734db898632f9a46023a6a68e', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'e89c18879f5bf59ddcd550152bf26ffedc4d687a': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('26d4d4900f55cafbfad24099065ecfdd6b275327e60b93ac63d67186a05e09e5', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('fbff47dd51d1d4503ef0dd0e9ec6796adaf943882f6771a19e85059d694de976', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '0cf041446e6eb3cfecb64055c3affccb359c3685': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f58eaf3f9f5841d9de2fbfd5a74a63c969e38c92', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_worker_roster.py': ('17b35efc3fb9f9a4589590d1cc8b0accaf2eba1cb9a482ffeaf669e12dc6ce32', '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('e649873611c442930e8d635c5836752ea1203273676a3269443a9bf403755bca', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('e3256e6129ab819075d38cb582559a25d312683c57995e1cfde92dbae66feb89', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')}, '4b7630f2ca25a08933a9482d8fed6946e79df688': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('500955366215a113f3c0ffd284d86d6364aadb86e00b097a4cefedb3cbb1ff7e', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')}, '640d770e62d41236fa51cf0e38112c331b023fe8': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('75fdd2d1422825f52320d3373acd12366b244e8ca00aa531a052983c09694227', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('2929ffe042131ccc8cc905dbbad084be0fbab0585d70100252d3ee682c66346b', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('5dc1377d481970f75c6a6330a2c2ea9987b016de4cea7f86f5788299a23b0f73', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('89dd2e7e3ac09fb125905a00f49e6ce3b2c6f9d5420b0d47535124336f36ecf9', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')}, '134bab3c2059ce500f752a3ba09eb83a6d2c0b40': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('6f07e89f69d66bb979abaef58aa4ff514fb839756bc9f4b5b727b5c0cf4d2022', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('4585720051d266fa077005456b0da590b273ad8ab29bc5391cff2e6aa9f74224', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('0d44faf4128286d49fc4285d26b9901d563c86eba0fe62d669c53a4a382c7b7d', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')}}
-startup_release_additions = {'3f4574a176f45253d746b397ad979896f266d062': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, '6479eca6c2c03f17d5f0fcf8b662a83045f96039': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, '731ca29b14a5a9f98ec4f4935382548891557d95': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, '817d393b7316735921c2aa6ede271a04cbea20fd': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, '92abdaa377b2b3255c25ff0e5e331c3a4f1ddfa4': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, 'b00712c410770f1d023b09aa9a1de4743a81b1b6': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, 'c5e051b4b126aaab259d57d451be14f98d18d87e': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, 'c83c72c26fd4352803500792abd27096b28c58de': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, 'e88011c6fb6a773feb174ba29cad431edda54eeb': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, 'e89c18879f5bf59ddcd550152bf26ffedc4d687a': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'}, '0cf041446e6eb3cfecb64055c3affccb359c3685': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1'}, '4b7630f2ca25a08933a9482d8fed6946e79df688': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1'}, '640d770e62d41236fa51cf0e38112c331b023fe8': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1'}, '134bab3c2059ce500f752a3ba09eb83a6d2c0b40': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1'}}
+startup_release_replacements = {'3f4574a176f45253d746b397ad979896f266d062': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('52bd27f8c34dc4bbd343e3d695a8c8f2deabb19789989957eb9aaa0bbdc68d90', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_context.py': ('95b57100a5bf2014a8dc7685455342233fb8bcd9f78e04a92332ae2fab320422', '32835bfbd588afd84fae494aabeab2add65f2ecb0b22aa0bb2478951107afe51'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_snapshot_adapter.py': ('f325774fb1e6c61547c140a4611f5b52958dbe1ce1e89763ce3a534e0bb37411', '661d0167c8966d510dc85233e32b4ee5dda781ff3d9b4fca20a1f0c797a5a4d2'), 'app/ui/workflow_view_state.py': ('6959c71768296a68d88de2d46a76b80f177ab7c5e2bff0fde0cddb3fa9ada718', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('25f0f9f7b70d27e1b4e7f939720f694ae954670b94dc52c0a9c82d9f310a6794', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '6479eca6c2c03f17d5f0fcf8b662a83045f96039': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/Label_Match.py': ('b18a13700497a1064226271f2419b51acf34c008b3f82e69340ec2b64f8846f6', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_transition.py': ('a5927e064c0468257c54e408e3164c67512f225cb78dceb49c231ffd8df83c8b', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_logistics.py': ('85a71ef78d268fae7f7aad9e21ae68920a6b23d5437e598a5822512fa45a6d89', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/ui/workflow_view_state.py': ('39bfffcbd6819406ded9c62f8c298d53b5148c6448cd1143b8343363ca0d5136', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('2c78bd842bfcb8fe74793b84ea36cb06c2af3664faf2872ad0cbb888bb2361be', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('3f94563728cd665a55c134eb34c5b5de0be4fcb1c0a31ce5525d74017f71a959', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox.py': ('00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'app/sealed_transfer_exchange.py': ('a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '731ca29b14a5a9f98ec4f4935382548891557d95': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/Label_Match.py': ('cbb55194b55969017b22851b9645ed92d676071122f2fbac763161f05729fc45', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('1d55c96bff15a0ddba47fe65a39b033c67dd30c2ea95f19f41bd4fb4b0ecc253', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('f5e36a8d7142a0e130ef712b35178052d1d11140853ac98310b591f9eb8e7f20', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'app/sealed_transfer_exchange.py': ('a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '817d393b7316735921c2aa6ede271a04cbea20fd': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/Label_Match.py': ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('c89453e181b94b7b018b1be78b1fad76d73d0fecd4f728ee6cf395fed6afbf27', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '92abdaa377b2b3255c25ff0e5e331c3a4f1ddfa4': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/Label_Match.py': ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('6525f38c350d1d875a6943c3b858b417cbeaac8a7b03e1f984f8584f8445d42f', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'b00712c410770f1d023b09aa9a1de4743a81b1b6': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/Label_Match.py': ('c6a122c91e2f6437bb8857986884899d4336469bfb83ee7731b83a81376e9aec', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('f333164e0306008d17b8eddaabb0da44bead475f9008181b97231839698bbbcc', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('ed16a3a03ecdac3ae8c01ca41c124f6ddb4340d12834a8dd83ed8bad2f0049bd', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('409aa2f5ae88e571aa599d30dc7766e6563829e5bfe29ba2fd0d0989aeabd524', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('552dc215f1a6fd22a3eb98959a05cb21ae086ac772f9cac4a71b6bef49d875b2', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('00e9dbd0272b281dae2b38363a9683ff2de14f1abffed00c0b414a0fe5b7f786', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('bc57706c8edde0f5d2dd8e3d54a010979fc177e819d9aeb57662b52e3610075d', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'app/sealed_transfer_exchange.py': ('a84adc6dc1b2064d0e37b3e49090dd06348603368de7babf83351a99e3f47e1f', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'c5e051b4b126aaab259d57d451be14f98d18d87e': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/Label_Match.py': ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('503dae7aa0250925287745c61a82b9268da59b2855f87d9ba1bd638b724b9cfb', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('2406ca2a3c36016007f14a940ad5f432b7736c62e30d4414f8c1ead4de55d034', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'c83c72c26fd4352803500792abd27096b28c58de': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/Label_Match.py': ('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561', '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7', 'a1c5a01061c87b482f49707995f85672279efa190ebcc97bea3ff74f32f77bfa'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('18204c0518d4e72d1443062546a7a03d2df47a78fc2a7d3cbb929540d05a55f9', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'e88011c6fb6a773feb174ba29cad431edda54eeb': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/Label_Match.py': ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d', '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/enrollment_mutex.py': ('040294978e4341d9f06573f9117d99913f1dab8ef85de5f08a5296228fbb9787', 'ce77c0a1ab113326dffdb611a74c19308a48fc1b113626509960614fd3295981'), 'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_transition.py': ('001001427e7352c308b351263770b2649aa96898b712396d8ae3ae4530186cf9', '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'), 'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1d786cb74812b1b4588d122b333cc9b8724d28e7410f91c7c0f025d9fd1bd5ee'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437', 'dc36a36e1697d1d3a42c5f0b4bf147791fa6687444a80d912778c83bd049f683'), 'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', 'eb8650ace3df179a7c68f3247efe5eac86200543a43f4b2c80a47ccc95b336ef'), 'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a', 'b914aece96760c7e149876d56ccd24b8efae2f33e68a23a3a5a183e1cdfc5242'), 'app/user_relay.py': ('07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('d55c7eabc25a2260845893fe21da5df7d1075f2734db898632f9a46023a6a68e', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/direct_sync_push.py': ('86c182b049dfffb9bc2256d140b8dbaa95aea631abcdf5b4f3da244b696643bd', 'd9c21b3209dc35e380daeb045a51e84dd81fb99893b471e83711116ef9d06e6d'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/phs_label_workflow.py': ('c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/producer_runtime_client.py': ('c5c111e72d150395b825ac66e79208540560495703039d0ea4c4f215eb45b2f9', 'e47cd333cc3c743fe9cd30a6de4069929773e86bfbb23babdeaff287564e8f17'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, 'e89c18879f5bf59ddcd550152bf26ffedc4d687a': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('65ab1913f9720b59b49ef6e5799891cf02af1fd3a413d5308ca568fa9a899145', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('26d4d4900f55cafbfad24099065ecfdd6b275327e60b93ac63d67186a05e09e5', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('fbff47dd51d1d4503ef0dd0e9ec6796adaf943882f6771a19e85059d694de976', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521')}, '0cf041446e6eb3cfecb64055c3affccb359c3685': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f58eaf3f9f5841d9de2fbfd5a74a63c969e38c92', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_worker_roster.py': ('17b35efc3fb9f9a4589590d1cc8b0accaf2eba1cb9a482ffeaf669e12dc6ce32', '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('e649873611c442930e8d635c5836752ea1203273676a3269443a9bf403755bca', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('e3256e6129ab819075d38cb582559a25d312683c57995e1cfde92dbae66feb89', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')}, '4b7630f2ca25a08933a9482d8fed6946e79df688': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('500955366215a113f3c0ffd284d86d6364aadb86e00b097a4cefedb3cbb1ff7e', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')}, '640d770e62d41236fa51cf0e38112c331b023fe8': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('75fdd2d1422825f52320d3373acd12366b244e8ca00aa531a052983c09694227', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('2929ffe042131ccc8cc905dbbad084be0fbab0585d70100252d3ee682c66346b', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('5dc1377d481970f75c6a6330a2c2ea9987b016de4cea7f86f5788299a23b0f73', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('89dd2e7e3ac09fb125905a00f49e6ce3b2c6f9d5420b0d47535124336f36ecf9', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')}, '134bab3c2059ce500f752a3ba09eb83a6d2c0b40': {'INSTALL_THIS_PC.ps1': ('8efe37d3203c94c71dff93a0761a674f400154b7b2d5c7bef8a91e2d09e5b702', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/current_user_onboarding.py': ('84fde787fe1bca5d3138c3cd243d9b13ffaf834ffc69a5414b39d0c2b81f905d', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('5b339cae5a61c67bf3187f75ae254c38df4414bf7c0f5f3b8ed24f3cff52e870', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/kmtech_shared.lock.json': ('87cf641db77b8052ffbaeee86d0c2cbab84f07ce4c3748c796985be2eacc0cf9', '14ff6bbc353aab8fa9ce88297c79f2ca5504c554e0edb9671eb62d1766395e9f'), 'app/kmtech_shared.manifest.json': ('feaed459688e915eb5f52f264501a4287261d9dcbdbc50e0c6f4bde59d8e7117', 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'), 'app/label_admin_pin.py': ('159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8', '25ff059f390f88166e74518a8027633ab75d6954ceb8f8ee74593725bf828f75'), 'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55', 'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'), 'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'), 'app/Label_Match.py': ('6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062', '2474a5ec27d4b59902a13a4456cbf51436b6e8ba088a75b7a665d7b0a1048914'), 'app/label_match_product_host.py': ('bce7176d636a93c559340850d91894ffd02a4eef2a3f953d2ae05cd1cb0f9fbf', '599d12593d85ffa5a592fce3683cd58907be5d10b8a16af95456f661371af189'), 'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'), 'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7', '8717fe4428874933724f6b61dfb54c9fc82b49b7df1ef0cc130d7ddc7f1a3d3d'), 'app/label_workbench_history.py': ('6f07e89f69d66bb979abaef58aa4ff514fb839756bc9f4b5b727b5c0cf4d2022', '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'), 'app/main.py': ('520c2eaea01876f324288f01fee6f7600dd45d27829fb0e374969f6e2bf2bb6c', 'f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab'), 'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563', '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'), 'app/package_logistics.py': ('4585720051d266fa077005456b0da590b273ad8ab29bc5391cff2e6aa9f74224', '6899fd407c99066ba52ac698af0f01dbe762a56b300a6c28f1c6e56958dd5ef3'), 'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3', 'bc8cbc44c0b573df1a658fc09ec980e3965196680d8c7294daa52846b334ded1'), 'app/phs_label_workflow.py': ('0d44faf4128286d49fc4285d26b9901d563c86eba0fe62d669c53a4a382c7b7d', '72bb834611c5172e3cb9a0c517b49e4a664adcffef05006f90015a6384584ae0'), 'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c', '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'), 'app/user_relay.py': ('3b71cb47a1a4a3253ac0602804e5770e40e6b674004174838d3a00016c3e8487', 'b96a77cb6e5e8ddec423f554378f95d2f34559a41fbf1fb617da1d74feb84b2d'), 'app/writer_session_fence.py': ('8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'app/config/app_settings.json': ('081e0ab6e932035312c9bc225db26589e4c694cd2c40170ca459443e1a5460e8', 'e65540f3325c70866753cd0abfe01c21edb89f6fa05cd1ddc1666a89af14c34b'), 'app/kmtech_shared/__init__.py': ('32f34fccf9a00e5d27e852a95fc7b776f18a5eccda991f47dc33cd8111d50295', '7714a7a02cda3da34c4972101c0e01cc052435a00d8d520b5c274a05aa9850e8'), 'app/tools/direct_sync_relay_runner.py': ('c797ffeee38f5161621e526c4ef2f3844cbe848ea0124f875f3df05a1779af98', 'f7c2aa827bd6b829af0df5f0e7ec7809e4092187b0ad04404bd35a0856fdcdf5'), 'app/tools/register_label_match_worker_pc.py': ('469c2e2ebdc9ddb45973e1423336bd6619b485e1604732d4d7bec55c41f0931f', '5734a13bfae8cfa18cdb64b3a67c3b04549a2b3fa5faa13319c7471b0f027521'), 'tools/bootstrap_integrity.ps1': ('7cf77e9cc833093aed9ed7b3d79565f5396eed0288b1e7729e08959e82e12ff3', 'd5011d5a4d0809c3e61abb0a3c08d1b50bdea540f172d485b538854b1675406c'), 'tools/label_writer_fence.ps1': ('2795ccf12f76c7619fda186762303e02539714b7c33fbef49b65e89a1d06d67a', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'), 'tools/label_writer_fence_contract.json': ('bc95bd4ae6984f08120d7284f1ef73e7f1369e8fae078f6d60c66144a5cb24de', '8a07c41b748669e237fc7f35be75daede0fca9f86c2d1af07ff7a701a33126dd')}, '464830d78a305acb7aa01a7a7afc9e72a924a5c9': {'INSTALL_THIS_PC.ps1': ('7fa8fa3f6750b369f0dc3e21146b3d6fd0c4386a014ec389b90c92190db07744', '82e48ba9839c0539588cd1e16743bf8f51141abc8c472417307acd6894393ab9'), 'app/auto_update.py': ('f1d79a5d1fd65cda3e1e61f6626031354d2cba5c238c66efc113732798b2e047', 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080'), 'app/current_user_onboarding.py': ('3d3d99ee86594d648dbf0c0acc64a6ec10be718b49869bd7d8818e49f02095d5', '5ce7e92998ae7595c4b34d62ea112b3e26f5050548684b3a05bf66b79eb486eb'), 'app/current_user_scheduled_task.py': ('016e2e435a99a47ab401e6ece288a40694ed0166950a70e3d784327acb443065', '5f5eee387d6c137b57718f56228f585afd75c9c39973ac9018250713a4253cc2'), 'app/writer_session_fence.py': ('354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('d67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae')}}
+startup_release_additions = {'3f4574a176f45253d746b397ad979896f266d062': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '6479eca6c2c03f17d5f0fcf8b662a83045f96039': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '731ca29b14a5a9f98ec4f4935382548891557d95': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '817d393b7316735921c2aa6ede271a04cbea20fd': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '92abdaa377b2b3255c25ff0e5e331c3a4f1ddfa4': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'b00712c410770f1d023b09aa9a1de4743a81b1b6': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'c5e051b4b126aaab259d57d451be14f98d18d87e': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'c83c72c26fd4352803500792abd27096b28c58de': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'e88011c6fb6a773feb174ba29cad431edda54eeb': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, 'e89c18879f5bf59ddcd550152bf26ffedc4d687a': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '0cf041446e6eb3cfecb64055c3affccb359c3685': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '4b7630f2ca25a08933a9482d8fed6946e79df688': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '640d770e62d41236fa51cf0e38112c331b023fe8': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '134bab3c2059ce500f752a3ba09eb83a6d2c0b40': {'app/auto-update-settings.json': '7cf5b12cbea56e4f97707bf32f641c0e536ec42236c5d3c907f16facc2415bf9', 'app/auto_update.py': 'c78a37af0e237348bf90231cef2365409e5de534e44bc36af1a5cf12a31a6080', 'app/label_data_generation.py': 'd0e097579337cfbb27fbecc267eef4b58116876ab6bdc34a9e9caadb7cc8537c', 'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b7494339e0fd91692e94eea42e8cbbcbb81fe4b6bd', 'app/config/update-manifest-key-config.json': 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671', 'app/kmtech_shared/data_generation.py': '14ffe4277dc60a32a6074abf3d56ec0b0dcf3d5accd372f6dd41f36de0e348c6', 'app/kmtech_shared/powershell/data_generation.ps1': 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96', 'tools/apply_prepared_update.ps1': '5870315c17666ebec29cfda51a9f161c27a52a8894eb01e19bda36f00fa3bad1', 'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}, '464830d78a305acb7aa01a7a7afc9e72a924a5c9': {'app/failure_redaction.py': '7f0c6d26c5e7b0bad7e06032275ada8d1c976547d1d2ca46947a968d9323c8c2', 'app/tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'app/tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531', 'tools/failure_redaction.ps1': '960408b549bae6502b6cbcf3fc456900197ee183c3ad5c8db43675930702357a', 'tools/failure_redaction_rules.json': 'c788bab7c1a5713476925241b792a490ef9ef11f07e2ed7c7cb2dcd6ae243531'}}
 startup_public_key_pair = ('f570df63d4dd49f5ac5db2d414839fa0372a37605c7bdaddd385f684c948aae3', 'd76e3d4f62aecd83d07e1b9b37f8463e1bc170bae6cd9bae965a17e6ca4d2671')
 startup_candidate_membership = [('auto_update_copy_prepared_file', 'auto_update.py', 'copy_prepared_file', 'decorator'), ('auto_update_create_download_stage', 'auto_update.py', 'create_download_stage', 'decorator'), ('auto_update_create_protected_stage', 'auto_update.py', 'create_protected_stage', 'decorator'), ('auto_update_extract_prepared_code', 'auto_update.py', 'extract_prepared_code', 'decorator'), ('auto_update_fixed_helper', 'auto_update.py', 'fixed_helper', 'decorator'), ('auto_update_launch_version', 'auto_update.py', 'launch_version', 'decorator'), ('auto_update_persist_switch', 'auto_update.py', 'persist_switch', 'decorator'), ('auto_update_preserve_candidate_version', 'auto_update.py', 'preserve_candidate_version', 'decorator'), ('auto_update_publish_download', 'auto_update.py', 'publish_download', 'decorator'), ('auto_update_request_apply_task', 'auto_update.py', 'request_apply_task', 'decorator'), ('auto_update_request_bootstrap', 'auto_update.py', 'request_bootstrap', 'decorator'), ('auto_update_restore_preimage', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation'), ('auto_update_supported_lifecycle_transition', 'auto_update.py', 'supported_lifecycle_transition', 'decorator'), ('auto_update_task_mutation', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation'), ('auto_update_write_download_bytes', 'auto_update.py', 'write_download_bytes', 'decorator'), ('auto_update_write_download_chunk', 'auto_update.py', 'write_download_chunk', 'decorator'), ('auto_update_write_json_durable', 'auto_update.py', 'write_json_durable', 'decorator'), ('canonical_placement', 'INSTALL_THIS_PC.ps1', 'Enter-LabelWriterDelegatedOperation', 'powershell_delegated_operation'), ('current_user_onboarding', 'current_user_onboarding.py', 'onboard_current_user', 'decorator'), ('current_user_setup_removal', 'current_user_onboarding.py', 'remove_current_user_setup', 'decorator'), ('data_generation_record', 'label_data_generation.py', 'record_user_data_open', 'decorator'), ('direct_sync_enqueue', 'direct_sync_runtime.py', 'enqueue_completed_source_file', 'decorator'), ('direct_sync_relay_cycle', 'direct_sync_runtime.py', 'run_relay_once', 'decorator'), ('direct_sync_upload', 'direct_sync_push.py', 'upload_source_file', 'decorator'), ('gui_deferred_capture_cancel', 'Label_Match.py', 'Label_Match._cancel_deferred_capture_for_set', 'decorator'), ('gui_direct_sync', 'Label_Match.py', '_label_match_run_and_record_session_direct_sync', 'decorator'), ('gui_label_recovery_hold', 'Label_Match.py', 'Label_Match._hold_label_recovery', 'decorator'), ('gui_package_cancel_enqueue', 'Label_Match.py', 'Label_Match._queue_authoritative_package_cancellation', 'decorator'), ('gui_package_enqueue', 'Label_Match.py', 'Label_Match._queue_authoritative_package', 'decorator'), ('gui_package_pin_changed_hold_recovery', 'Label_Match.py', 'Label_Match._resume_changed_pin_hold', 'decorator'), ('gui_package_pin_changed_restore', 'Label_Match.py', 'Label_Match._restore_changed_pin_file', 'decorator'), ('gui_package_pin_file_move_recovery', 'Label_Match.py', 'Label_Match._recover_package_pin_moves', 'decorator'), ('gui_package_recovery_audit', 'Label_Match.py', 'Label_Match._audit_package_recovery_action', 'decorator'), ('gui_package_recovery_hold', 'Label_Match.py', 'Label_Match._hold_package_recovery_set', 'decorator'), ('gui_shutdown_stall_notice', 'label_match_single_instance.py', '_set_shutdown_stall_notice', 'decorator'), ('label_admin_pin_attempt_audit', 'package_outbox.py', 'PackageOutbox.audit_pin_attempt', 'decorator'), ('label_admin_pin_changed_hold_prepare', 'label_admin_pin.py', 'AdminPinIntentStore.stage_changed_hold', 'decorator'), ('label_admin_pin_changed_hold_state', 'label_admin_pin.py', 'AdminPinIntentStore.finish_changed_hold', 'decorator'), ('label_admin_pin_file_move', 'label_admin_pin.py', 'AdminPinIntentStore.stage_file_move', 'decorator'), ('label_admin_pin_file_move_state', 'label_admin_pin.py', 'AdminPinIntentStore.finish_file_move', 'decorator'), ('label_admin_pin_intent_prepare', 'label_admin_pin.py', 'AdminPinIntentStore.prepare', 'decorator'), ('label_admin_pin_intent_transition', 'label_admin_pin.py', 'AdminPinIntentStore.transition', 'decorator'), ('label_admin_pin_request', 'label_admin_pin.py', 'AdminPinClient._post_path', 'decorator'), ('package_cancel', 'package_logistics.py', 'PackageLogisticsClient.cancel_package', 'decorator'), ('package_cancellation_drain', 'package_logistics.py', 'PackageCancellationOutboxProcessor.drain', 'decorator'), ('package_create', 'package_logistics.py', 'PackageLogisticsClient.create_package', 'decorator'), ('package_operation_lease', 'package_logistics.py', 'PackageLogisticsClient.issue_operation_lease', 'decorator'), ('package_outbox_drain', 'package_logistics.py', 'PackageOutboxProcessor.drain', 'decorator'), ('package_transfer_reseal', 'package_logistics.py', 'PackageLogisticsClient.replace_and_reseal_transfer', 'decorator'), ('persistent_relay_cycle', 'user_relay.py', 'run_persistent_relay_loop', 'bounded_context'), ('persistent_relay_status', 'user_relay.py', 'run_persistent_relay_loop', 'bounded_context'), ('phs_current_recovery', 'phs_label_workflow.py', 'PHSLabelExchangeCoordinator._resume_current', 'decorator'), ('phs_exchange_activate', 'package_logistics.py', 'PackageLogisticsClient.activate_phs_label_exchange', 'decorator'), ('phs_exchange_prepare', 'package_logistics.py', 'PackageLogisticsClient.prepare_phs_label_exchange', 'decorator'), ('phs_label_adopt', 'package_logistics.py', 'PackageLogisticsClient.adopt_phs_label', 'decorator'), ('phs_print_complete', 'package_logistics.py', 'PackageLogisticsClient.complete_phs_label_print', 'decorator'), ('phs_print_request', 'package_logistics.py', 'PackageLogisticsClient.request_phs_label_print', 'decorator'), ('phs_reconciliation_prepare', 'package_logistics.py', 'PackageLogisticsClient.prepare_phs_reconciliation_label_exchange', 'decorator'), ('phs_reconciliation_recovery', 'phs_label_workflow.py', 'PHSLabelExchangeCoordinator.recover_reconciliation', 'decorator'), ('raw_relay_runner', 'tools/direct_sync_relay_runner.py', 'main', 'decorator'), ('registration_relay_recovery', 'registration_relay_recovery.py', 'commit_relay_handoff', 'decorator'), ('relay_batch_claim', 'direct_sync_push.py', 'claim_next_relay_batch', 'decorator'), ('relay_batch_drain', 'direct_sync_push.py', 'drain_one_relay_batch', 'decorator'), ('relay_child_launch', 'user_relay.py', 'run_session_direct_sync_once', 'decorator'), ('relay_queue_schema', 'direct_sync_push.py', 'init_relay_queue_schema', 'decorator'), ('relay_spool_enqueue', 'direct_sync_push.py', 'enqueue_source_file_for_relay', 'decorator'), ('relay_stale_lease_reset', 'direct_sync_push.py', 'reset_stale_relay_leases', 'decorator'), ('scheduled_task_remove', 'current_user_scheduled_task.py', 'remove_current_user_scheduled_task', 'decorator'), ('sealed_transfer_attempt', 'sealed_transfer_exchange.py', 'SealedTransferExchangeCoordinator.attempt', 'decorator'), ('sealed_transfer_drain', 'sealed_transfer_exchange.py', 'SealedTransferExchangeCoordinator.drain_pending', 'decorator'), ('sealed_transfer_prepare', 'sealed_transfer_exchange.py', 'SealedTransferExchangeCoordinator.prepare', 'decorator'), ('user_relay_autostart_install', 'user_relay.py', 'install_user_relay_autostart', 'decorator'), ('user_relay_autostart_remove', 'user_relay.py', 'remove_user_relay_autostart', 'decorator'), ('user_relay_process_start', 'user_relay.py', 'start_user_relay_process', 'decorator'), ('user_relay_stop_release', 'user_relay.py', 'release_user_relay_stop_marker', 'decorator'), ('user_relay_stop_request', 'user_relay.py', 'request_user_relay_stop', 'decorator')]
 installed_manifest = json.loads((installed / 'portable-manifest.json').read_text(encoding='utf-8-sig'))
@@ -980,7 +987,7 @@ if startup_changes is not None:
     if startup_scanner:
         startup_changes['app/Label_Match.py'] = scanner_label_pair
         # Exact e880 companions with the already accepted scanner preimage and recomputed pins.
-        startup_changes.update({'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'), 'tools/label_writer_fence.ps1': ('6ee3e545a1b3d9bf6e4722a2802e57bca8276d92593fe480c8990501a8db7b8a', 'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31')})
+        startup_changes.update({'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'), 'tools/label_writer_fence.ps1': ('6ee3e545a1b3d9bf6e4722a2802e57bca8276d92593fe480c8990501a8db7b8a', '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae')})
     allowed_additions = dict(startup_release_additions[startup_from])
     settings_path=source/'app/auto-update-settings.json'
     settings_raw=settings_path.read_bytes()
@@ -1121,9 +1128,9 @@ worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f5
  'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c',
                                      '1202d1fecf10ed6e6d6e7662ca9c87ff4aa2553d14e4f8fa67210f770b8ab755'),
  'app/writer_session_fence.py': ('e649873611c442930e8d635c5836752ea1203273676a3269443a9bf403755bca',
-                                 '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'),
+                                 '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'),
  'tools/label_writer_fence.ps1': ('e3256e6129ab819075d38cb582559a25d312683c57995e1cfde92dbae66feb89',
-                                  'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31'),
+                                  '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae'),
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee')}
 worker_record_transition = all(
@@ -1138,9 +1145,9 @@ mainloop_exit_replacements = {'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8',
-                                 '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'),
+                                 '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'),
  'tools/label_writer_fence.ps1': ('500955366215a113f3c0ffd284d86d6364aadb86e00b097a4cefedb3cbb1ff7e',
-                                  'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31')}
+                                  '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae')}
 mainloop_exit_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
@@ -1153,9 +1160,9 @@ mainloop_exit_notice_replacements = {'app/Label_Match.py': ('75fdd2d1422825f5232
  'app/label_match_single_instance.py': ('2929ffe042131ccc8cc905dbbad084be0fbab0585d70100252d3ee682c66346b',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('5dc1377d481970f75c6a6330a2c2ea9987b016de4cea7f86f5788299a23b0f73',
-                                 '354044c03c5ec7cdad9b39b97a4fda35c582519080fb6aa786e257527a2c5684'),
+                                 '4547417dc9ebbd02959163628662c15ecb8c5a1c073679b1d48bcc6bb3d41cd3'),
  'tools/label_writer_fence.ps1': ('89dd2e7e3ac09fb125905a00f49e6ce3b2c6f9d5420b0d47535124336f36ecf9',
-                                  'd67831f54723f7e0c566d6b435a6faeb47561bcbbaccc78c5f1b441831474c31')}
+                                  '0475fcfb618508799e193d7f9c3fb672d33804c04ec2d55f56fda69a89ca26ae')}
 mainloop_exit_notice_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
@@ -1298,7 +1305,7 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
     # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
     $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
     $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
-        -ProbeBytes $probeBytes -ExpectedSha256 '0ae601610aa731aa9b8c715951c0ffd954d329f04b21b561e3f59e37f0ee6ab4' `
+        -ProbeBytes $probeBytes -ExpectedSha256 'a4f70b92ec20bec3fd995882ba597e0e108eab687781ea40ab29985afbb7e9f0' `
         -ProbeArguments @($Source, $Installed, $generationReverse) -FailureMessage 'Installed writer transition is unsupported: '
     return $stdout | ConvertFrom-Json
 }
@@ -1376,8 +1383,27 @@ function TextSha([string]$Value) {
     return ByteSha ((New-Object Text.UTF8Encoding($false)).GetBytes($Value))
 }
 
+function Import-LabelOfficialLegacyTaskFunctions([string]$Path) {
+    $tokens=$null;$errors=$null
+    $tree=[Management.Automation.Language.Parser]::ParseFile($Path,[ref]$tokens,[ref]$errors)
+    if ($errors.Count) { throw 'LEGACY_RELAY_HELPER_PARSE_FAILED' }
+    foreach ($name in @('Get-LabelOfficialLegacyTaskExpectation','Get-LabelOfficialLegacyPrincipalModes','Get-LabelOfficialLegacyTaskExpectations','ConvertTo-LabelLegacyTaskPath','Get-LabelOfficialLegacyTaskFingerprint','Get-LabelOfficialLegacyTaskSnapshot','Assert-LabelOfficialLegacyTaskStopped','Invoke-LabelOfficialLegacyTaskTransition')) {
+        $definitions=@($tree.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
+        if ($definitions.Count -ne 1) { throw 'LEGACY_RELAY_HELPER_DEFINITION_FAILED' }
+        . ([scriptblock]::Create($definitions[0].Extent.Text))
+    }
+}
+
+function Get-LabelCurrentUserScheduledTasks {
+    $official=Get-LabelOfficialLegacyTaskSnapshot
+    return @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' -and
+        ($null -eq $official -or [string]$official.name -ine [string]$_.TaskName)
+    })
+}
+
 function ScheduledTaskSnapshot([string]$AuditRoot, [string]$RunId) {
-    $task = Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' }
+    $task = Get-LabelCurrentUserScheduledTasks
     if ($null -eq $task) {
         return [pscustomobject][ordered]@{
             exists = $false
@@ -1402,7 +1428,7 @@ function ScheduledTaskSnapshot([string]$AuditRoot, [string]$RunId) {
 }
 
 function RestoreScheduledTask($Before) {
-    $existing = Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' }
+    $existing = Get-LabelCurrentUserScheduledTasks
     if (-not [bool]$Before.exists) {
         if ($null -ne $existing) {
             Unregister-ScheduledTask `
@@ -1410,7 +1436,7 @@ function RestoreScheduledTask($Before) {
                 -TaskPath '\' `
                 -Confirm:$false
         }
-        if ($null -ne (Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' })) {
+        if ($null -ne (Get-LabelCurrentUserScheduledTasks)) {
             throw 'Scheduled task absence restore readback failed.'
         }
         return
@@ -1433,7 +1459,17 @@ function RestoreScheduledTask($Before) {
     else {
         Disable-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' | Out-Null
     }
-    $restored = Get-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\'
+    Assert-LabelRollbackTaskPreimage $Before
+}
+
+function Assert-LabelRollbackTaskPreimage($Before) {
+    $matches = @(Get-LabelCurrentUserScheduledTasks)
+    if (-not [bool]$Before.exists) {
+        if ($matches.Count -ne 0) { throw 'Scheduled task absence readback failed.' }
+        return
+    }
+    if ($matches.Count -ne 1) { throw 'Scheduled task preimage readback is ambiguous.' }
+    $restored = $matches[0]
     $restoredXml = [string](Export-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\')
     if (
         [bool]$restored.Settings.Enabled -ne [bool]$Before.enabled -or
@@ -1461,7 +1497,7 @@ function Save([string]$Path, $Value) {
     $temp = "$Path.tmp.$PID"
     [IO.File]::WriteAllText(
         $temp,
-        ($Value | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
+        ((ConvertTo-KmtechRedactedSinkObject $Value) | ConvertTo-Json -Depth 30) + [Environment]::NewLine,
         (New-Object Text.UTF8Encoding($false))
     )
     Move-Item $temp $Path -Force
@@ -1785,20 +1821,40 @@ trap {
         }
         $exception = $exception.InnerException
     }
-    $message = [string]$childError.Exception.Message
-    $privateValue = [string]$payload.parameters.WriterFenceDelegationToken
-    if ($privateValue) { $message = $message.Replace($privateValue, '[REDACTED]') }
-    $message = $message -replace '(?i)(token|password|secret|authorization|credential)\s*[=:]\s*\S+', '$1=[REDACTED]'
-    if ($message.Length -gt 2000) { $message = $message.Substring(0, 2000) }
+    $sinkEnvironment = Get-KmtechSinkEnvironment
+    $sinkEnvironment['KMTECH_LABEL_WRITER_DELEGATION_TOKEN'] = [string]$payload.parameters.WriterFenceDelegationToken
+    $message = ConvertTo-KmtechRedactedSinkText -Text ([string]$childError.Exception.Message) -Environment $sinkEnvironment
+    $trace = ConvertTo-KmtechRedactedSinkText -Text ($childError.Exception.ToString() + [Environment]::NewLine + [string]$childError.ScriptStackTrace) -Environment $sinkEnvironment
+    $message = @($message -split '\r?\n' | Where-Object { $_.Trim() })[-1]
+    if ($message.Length -gt 300) { $message = $message.Substring($message.Length-300) }
     $record = [ordered]@{
         schema = 'label-match-placement-child-failure-v1'; phase = $placementPhase
         exit_code = $childExit; exception_type = $childError.Exception.GetType().FullName
         hresult = $childError.Exception.HResult; message = $message
     }
     try {
+        $tracePath = [string]$payload.failure_path + '.trace.txt'
+        $traceBytes = [Text.Encoding]::UTF8.GetBytes($trace)
+        $truncated = $trace.Contains('[TRUNCATED:')
+        $traceStream = [IO.File]::Open($tracePath, 'CreateNew', 'Write', 'Read')
+        try {
+            $traceAcl = [Security.AccessControl.FileSecurity]::new()
+            $traceAcl.SetAccessRuleProtection($true,$false)
+            foreach ($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+                [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+                $traceAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','Allow'))
+            }
+            $traceAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.WindowsIdentity]::GetCurrent().User,'Read','Allow'))
+            [IO.File]::SetAccessControl($tracePath,$traceAcl)
+            $traceStream.Write($traceBytes,0,$traceBytes.Length);$traceStream.Flush($true)
+        } finally { $traceStream.Dispose() }
+        $record.full_exception_trace = [ordered]@{path=$tracePath;sha256=(Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash.ToLowerInvariant();limit_bytes=65536;truncated=$truncated}
+    } catch { $record.trace_failure_type = $_.Exception.GetType().Name }
+    try {
         $stream = [IO.File]::Open([string]$payload.failure_path, 'CreateNew', 'Write', 'Read')
         try {
-            $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress))
+            $bytes = [Text.Encoding]::UTF8.GetBytes(((ConvertTo-KmtechRedactedSinkObject $record -Environment $sinkEnvironment) | ConvertTo-Json -Compress))
             $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
         } finally { $stream.Dispose() }
     } catch { [Console]::Error.WriteLine('Placement child diagnostic could not be saved.') }
@@ -1890,7 +1946,7 @@ $parameterNames = @(
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
-    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit','InstallerRunId','InstallerOwnerProcessId','InstallerOwnerProcessStartedAtFileTime')) }).Count -ne 0
+    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit','InstallerRunId','InstallerOwnerProcessId','InstallerOwnerProcessStartedAtFileTime','LegacyRelayTransition','LegacyRelayPreimageSha256')) }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
 $expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
 $expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
@@ -1922,7 +1978,7 @@ $invokeParameters = @{
     ReplaceExistingVerifiedPortable = Get-RequiredExternalBoolean $payload.parameters 'ReplaceExistingVerifiedPortable'
     DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
 }
-foreach ($name in @('ExpectedActiveCommit','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256')) {
+foreach ($name in @('ExpectedActiveCommit','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','LegacyRelayTransition','LegacyRelayPreimageSha256')) {
     $property = $payload.parameters.PSObject.Properties[$name]
     $invokeParameters[$name] = if ($null -eq $property) { '' } else { [string]$property.Value }
 }
@@ -1948,6 +2004,11 @@ $placementPhase = 'HELPER_EXECUTION'
 if (-not $?) { exit 4 }
 exit 0
 '@
+    $redactionPrelude = '$Script:KmtechRedactionRules = ' + "'" + (($Script:KmtechRedactionRules | ConvertTo-Json -Compress).Replace("'","''")) + "' | ConvertFrom-Json" + [Environment]::NewLine
+    foreach ($name in @('Get-KmtechSinkEnvironment','ConvertTo-KmtechRedactedSinkText','ConvertTo-KmtechRedactedSinkObject')) {
+        $redactionPrelude += 'function ' + $name + ' {' + (Get-Command $name).Definition + '}' + [Environment]::NewLine
+    }
+    $launcher = $redactionPrelude + $launcher
     $launcher = $launcher -replace '(?m)^[\t ]+', ''
     [byte[]]$launcherBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($launcher)
     [byte[]]$payloadBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($payloadJson)
@@ -2038,6 +2099,15 @@ finally{foreach($s in $streams){$s.Dispose()}}
         if ([string]$record.schema -cne 'label-match-placement-child-failure-v1' -or
             [int]$record.exit_code -ne $childExit) { throw 'Placement child failure evidence differs.' }
         $Script:LabelPlacementChildFailure = $record
+        if ($null -ne $record.PSObject.Properties['full_exception_trace']) {
+            $tracePath = [string]$record.full_exception_trace.path
+            if ($tracePath -cne ($failurePath + '.trace.txt')) { throw 'Placement trace path differs.' }
+            $traceItem = Get-Item -LiteralPath $tracePath
+            if (($traceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $traceItem.Length -gt 65536) { throw 'Placement trace is not a bounded ordinary file.' }
+            $traceBytes = [IO.File]::ReadAllBytes($tracePath)
+            if ((ByteSha $traceBytes) -cne [string]$record.full_exception_trace.sha256) { throw 'Placement trace bytes differ.' }
+            $record | Add-Member -NotePropertyName full_exception_trace_text -NotePropertyValue ((New-Object Text.UTF8Encoding($false,$true)).GetString($traceBytes))
+        }
     }
     return $childExit
     }
@@ -2087,6 +2157,150 @@ function Assert-RollbackRelayPreimage([object[]]$ExpectedRelays) {
     return $actualRelays
 }
 
+function Protect-LabelFailureText([string]$Text) {
+    if ($Text.TrimStart().StartsWith('{') -or $Text.TrimStart().StartsWith('[')) {
+        try {
+            $value = $Text | ConvertFrom-Json -ErrorAction Stop
+            return ((ConvertTo-KmtechRedactedSinkObject $value) | ConvertTo-Json -Depth 30)
+        } catch { }
+    }
+    return ConvertTo-KmtechRedactedSinkText -Text $Text
+}
+
+function Initialize-LabelChildOutputReader {
+    # 64 KiB per stream covers a traceback/JSON report without unbounded audit growth.
+    # On overflow retain the tail, where Python puts its lowest exception and cause.
+    if ('LabelChildOutputReader' -as [type]) { [LabelChildOutputReader]::Configure((Get-KmtechSinkReplacements)); return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Linq;
+public sealed class LabelChildOutput {
+ public string Text; public long ByteCount; public bool Truncated;
+ public Task Completion;
+}
+public static class LabelChildOutputReader {
+ private static KeyValuePair<string,string>[] replacements = new KeyValuePair<string,string>[0];
+ public static void Configure(Dictionary<string,string> values) {
+  replacements = values.OrderByDescending(v => v.Key.Length).ThenBy(v => v.Key, StringComparer.Ordinal).ToArray();
+ }
+ public static LabelChildOutput Capture(StreamReader reader) {
+  var result = new LabelChildOutput {Text = ""};
+  result.Completion = Drain(reader, result, replacements); return result;
+ }
+ public static async Task<LabelChildOutput> Read(StreamReader reader) {
+  var result = Capture(reader); await result.Completion.ConfigureAwait(false); return Snapshot(result);
+ }
+ public static LabelChildOutput Snapshot(LabelChildOutput result) {
+  lock (result) {return new LabelChildOutput {Text=result.Text,ByteCount=result.ByteCount,Truncated=result.Truncated};}
+ }
+ private static string Clip(string value, int maximum, bool tail) {
+  byte[] raw = Encoding.UTF8.GetBytes(value);
+  if (raw.Length <= maximum) return value;
+  if (tail) {
+   int start=raw.Length-maximum; while ((raw[start]&0xC0)==0x80) start++;
+   return Encoding.UTF8.GetString(raw,start,raw.Length-start);
+  }
+  int end=maximum; while ((raw[end]&0xC0)==0x80) end--;
+  return Encoding.UTF8.GetString(raw,0,end);
+ }
+ private static async Task Drain(StreamReader reader, LabelChildOutput result, KeyValuePair<string,string>[] forms) {
+  var buffer = new char[4096]; string pending="", head="", tail="";
+  long rawCount=0, sanitizedCount=0; int count; bool headDone=false;
+  int overlap=forms.Length==0 ? 2 : forms.Max(v=>v.Key.Length)+2;
+  Action<string> emit = part => {
+   int headRoom = 8192-Encoding.UTF8.GetByteCount(head);
+   if (headRoom>0 && !headDone) {
+    string prefix=Clip(part,headRoom,false); head+=prefix;part=part.Substring(prefix.Length);
+    headDone=part.Length>0 || Encoding.UTF8.GetByteCount(head)==8192;
+   }
+   tail=Clip(tail+part,65536-Encoding.UTF8.GetByteCount(head),true);
+   string output=head+tail;
+   bool truncated=sanitizedCount>65536;
+   if (truncated) {
+    int tailBudget=65536-Encoding.UTF8.GetByteCount(head);
+    string clipped=tail, marker;
+    for(;;) {
+     clipped=Clip(tail,tailBudget,true);
+     long omitted=sanitizedCount-Encoding.UTF8.GetByteCount(head)-Encoding.UTF8.GetByteCount(clipped);
+     marker="\n[TRUNCATED: "+omitted+" bytes omitted]\n";
+     int next=65536-Encoding.UTF8.GetByteCount(head)-Encoding.UTF8.GetByteCount(marker);
+     if(next>=tailBudget) break;tailBudget=next;
+    }
+    output=head+marker+clipped;
+   }
+   lock(result) {result.Text=output;result.ByteCount=rawCount;result.Truncated=truncated;}
+  };
+  try {
+   while((count=await reader.ReadAsync(buffer,0,buffer.Length).ConfigureAwait(false))!=0) {
+    rawCount+=Encoding.UTF8.GetByteCount(buffer,0,count);
+    pending+=new string(buffer,0,count);
+    foreach(var entry in forms) pending=pending.Replace(entry.Key,entry.Value);
+    int split=Math.Max(0,pending.Length-overlap);
+    if(split>0 && Char.IsHighSurrogate(pending[split-1])) split--;
+    string part=pending.Substring(0,split);pending=pending.Substring(split);
+    sanitizedCount+=Encoding.UTF8.GetByteCount(part);emit(part);
+   }
+  } catch(ObjectDisposedException) {} catch(IOException) {}
+  foreach(var entry in forms) pending=pending.Replace(entry.Key,entry.Value);
+  sanitizedCount+=Encoding.UTF8.GetByteCount(pending);emit(pending);
+ }
+}
+'@
+    [LabelChildOutputReader]::Configure((Get-KmtechSinkReplacements))
+}
+
+function ConvertTo-LabelFailureOutput($Output) {
+    return [ordered]@{text=(Protect-LabelFailureText ([string]$Output.Text));byte_count=$Output.ByteCount;truncated=$Output.Truncated;limit_bytes=65536}
+}
+
+function New-LabelChildFailure([string]$Mode, [int]$ExitCode, $Stdout, $Stderr) {
+    $record = [ordered]@{schema='label-match-child-output-v1';mode=$Mode;exit_code=$ExitCode;stdout=$Stdout;stderr=$Stderr}
+    $text = [string]$Stderr.text
+    if ([string]::IsNullOrWhiteSpace($text)) { $text = [string]$Stdout.text }
+    $lines = @($text -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $last = if ($lines.Count) { [string]$lines[-1] } else { 'child returned no diagnostic output' }
+    # Summaries avoid disclosing user paths; full sanitized streams stay in the audit.
+    $last = [regex]::Replace($last, '(?i)[A-Z]:[\\/][^\r\n"'']*|\\\\[^\r\n"'']+', '[PATH]')
+    $types = [regex]::Matches($text, '(?m)^([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception))\s*:')
+    $type = if ($types.Count) { $types[$types.Count - 1].Groups[1].Value } else { 'ChildNonzeroExit' }
+    if ($last.Length -gt 300) { $last = $last.Substring($last.Length - 300) }
+    $record.lowest_exception_type = $type
+    $record.last_line = $last
+    foreach ($streamName in @('stdout','stderr')) {
+        $output = $record[$streamName]
+        if ([string]::IsNullOrEmpty([string]$output.text)) { continue }
+        try {
+        $directory = Join-Path ([IO.Path]::GetTempPath()) ('label-product-diagnostic-'+[Guid]::NewGuid().ToString('N'))
+        [void](New-Item -ItemType Directory -Path $directory -ErrorAction Stop)
+        $acl = [Security.AccessControl.DirectorySecurity]::new()
+        $acl.SetAccessRuleProtection($true,$false)
+        foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User,
+            [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+            [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+        }
+        Set-Acl -LiteralPath $directory -AclObject $acl
+        $path = Join-Path $directory ($streamName+'.txt')
+        $bytes = [Text.Encoding]::UTF8.GetBytes((Protect-LabelFailureText ([string]$output.text)))
+        $file = [IO.File]::Open($path,'CreateNew','Write','Read')
+        try { $file.Write($bytes,0,$bytes.Length);$file.Flush($true) } finally { $file.Dispose() }
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try { $digest=([BitConverter]::ToString($hash.ComputeHash([IO.File]::ReadAllBytes($path)))).Replace('-','').ToLowerInvariant() }
+        finally { $hash.Dispose() }
+        $output.full_output = [ordered]@{path=$path;sha256=$digest;limit_bytes=65536;truncated=$output.truncated}
+        } catch { $output.evidence_failure_type=$_.Exception.GetType().FullName }
+        # The audit remains valid JSON and carries a pinned reference to the full stream.
+        $output.text = if ($streamName -ceq 'stderr') { $last } else { '' }
+    }
+    $exception = [InvalidOperationException]::new("Product mode failed: $Mode/$ExitCode ${type}: $last")
+    $exception.Data['child_output'] = $record
+    return $exception
+}
+
 function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @(), [string]$LogicalAppRoot = '') {
     if ([string]::IsNullOrEmpty($LogicalAppRoot)) { $LogicalAppRoot = $Root }
     $args = '-I -B {0} {1} --app-root {2}' -f
@@ -2094,41 +2308,33 @@ function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @(), 
         $Mode,
         (Arg $LogicalAppRoot)
     foreach ($extraArgument in $ExtraArguments) { $args += ' ' + (Arg $extraArgument) }
-    $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) (
-        'label-product-' + $PID + '-' + [Guid]::NewGuid().ToString('N') + '.out'
-    )
-    $stderrPath = Join-Path ([IO.Path]::GetTempPath()) (
-        'label-product-' + $PID + '-' + [Guid]::NewGuid().ToString('N') + '.err'
-    )
+    Initialize-LabelChildOutputReader
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = Join-Path $Root 'runtime\pythonw.exe'
+    $startInfo.Arguments = $args
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
     try {
-        $process = Start-Process `
-            (Join-Path $Root 'runtime\pythonw.exe') `
-            -ArgumentList $args `
-            -WindowStyle Hidden `
-            -PassThru `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath
-        # Start-Process -Wait includes the persistent relay child; wait only for the product host.
-        Wait-Process -InputObject $process
-        $null = $process.HasExited
+        $stdoutCapture = [LabelChildOutputReader]::Capture($process.StandardOutput)
+        $stderrCapture = [LabelChildOutputReader]::Capture($process.StandardError)
+        # Wait only for this product host, never the persistent relay child.
+        $process.WaitForExit()
         $exitCode = [int]$process.ExitCode
-        $stdout = ''
-        $stderr = ''
-        if (Test-Path -LiteralPath $stdoutPath) {
-            $stdout = [IO.File]::ReadAllText($stdoutPath)
-        }
-        if (Test-Path -LiteralPath $stderrPath) {
-            $stderr = [IO.File]::ReadAllText($stderrPath)
-        }
+        # A persistent child can inherit these pipes. Capture its host's final
+        # buffered output without waiting for that child's lifetime or stopping it.
+        [void]$stdoutCapture.Completion.Wait(1000)
+        [void]$stderrCapture.Completion.Wait(1000)
+        $stdout = ConvertTo-LabelFailureOutput ([LabelChildOutputReader]::Snapshot($stdoutCapture))
+        $stderr = ConvertTo-LabelFailureOutput ([LabelChildOutputReader]::Snapshot($stderrCapture))
         if ($exitCode -ne 0) {
-            $detail = (($stderr + ' ' + $stdout) -replace '\s+', ' ').Trim()
-            if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) }
-            throw "Product mode failed: $Mode/$exitCode $detail"
+            throw (New-LabelChildFailure $Mode $exitCode $stdout $stderr)
         }
     }
     finally {
-        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        $process.Dispose()
     }
 }
 
@@ -2152,13 +2358,17 @@ function Get-LabelPortableDataVersion([string]$Root, $Manifest) {
 function Assert-LabelRollbackGeneration {
     # Before any rollback cleanup or old-code selection, retain the opened
     # generation. Code-only failures before data open still have no markers.
-    if ($existingVerified -and -not [string]::IsNullOrEmpty($replacementRollbackRoot)) {
-        $generationRollbackManifest = Manifest $replacementRollbackRoot $SkipSignatureValidationForTest
-        $generationRollbackVersion = Get-LabelPortableDataVersion $replacementRollbackRoot $generationRollbackManifest
+    if ($existingVerified) {
+        $generationRollbackRoot = if ($replacementRollbackRoot) { $replacementRollbackRoot } else { $install }
+        if ([string](PortableInventory $generationRollbackRoot).sha256 -cne [string]$installedPreimageInventory.sha256) {
+            throw 'Exact rollback generation target is unproven; current code and data are preserved.'
+        }
+        $generationRollbackManifest = Manifest $generationRollbackRoot $SkipSignatureValidationForTest
+        $generationRollbackVersion = Get-LabelPortableDataVersion $generationRollbackRoot $generationRollbackManifest
         [void](Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
             -TargetVersion $generationRollbackVersion -TargetBuildId ([string]$generationRollbackManifest.source_commit))
     }
-    elseif (-not $existingVerified -and (Test-Path -LiteralPath $install -PathType Container)) {
+    elseif (-not $existingVerified) {
         $generationAbsence = Get-KmtechDataDowngradeDecision -MarkerPaths $generationMarkerPaths `
             -TargetVersion 'v0.0.0' -TargetBuildId ('0' * 40) -AppId 'Label_Match' -SubjectSid $generationSubjectSid
         if ($generationAbsence.allowed -ne $true -or $null -ne $generationAbsence.version) {
@@ -2325,31 +2535,33 @@ function StartRaw([string]$Line) {
 function Invoke-LabelRollbackStep([string]$Phase, [scriptblock]$Action) {
     # Dot-source this helper so successful restoration assignments remain in
     # the transaction scope. Each independent phase records its own failure.
+    if ($null -eq $Script:LabelRollbackPhaseStack) { $Script:LabelRollbackPhaseStack = [Collections.Generic.Stack[string]]::new() }
+    $Script:LabelRollbackPhaseStack.Push($Phase)
     try {
         . $Action
-        $Script:LabelRollbackSteps.Add([ordered]@{phase=$Phase;status='PROVEN'})
+        $Script:LabelRollbackSteps.Add([ordered]@{phase=$Script:LabelRollbackPhaseStack.Peek();status='PROVEN'})
     }
     catch {
         $Script:LabelRollbackErrors.Add($_)
-        $failure = Get-LabelLaunchFailure $_ $Phase
-        $message = [string]$_.Exception.Message
-        if ($writerDelegationToken) { $message = $message.Replace($writerDelegationToken, '[REDACTED]') }
-        if ($message.Length -gt 2000) { $message = $message.Substring(0, 2000) }
-        $failure.message = $message
+        $failure = Get-LabelLaunchFailure $_ $Script:LabelRollbackPhaseStack.Peek()
         $Script:LabelRollbackFailures.Add($failure)
-        $Script:LabelRollbackSteps.Add([ordered]@{phase=$Phase;status='FAILED'})
+        $Script:LabelRollbackSteps.Add([ordered]@{phase=$Script:LabelRollbackPhaseStack.Peek();status='FAILED'})
     }
+    finally { [void]$Script:LabelRollbackPhaseStack.Pop() }
 }
 
 function Get-LabelLaunchFailure($Failure, [string]$Phase) {
     $chain = @(); $exception=$Failure.Exception
+    $childOutput = $null
     while ($null -ne $exception) {
         $call = if ($exception.Data.Contains('call')) { [string]$exception.Data['call'] } else { '' }
         $code = if ($exception -is [ComponentModel.Win32Exception]) { [int]$exception.NativeErrorCode } else { $null }
         $chain += [ordered]@{type=$exception.GetType().FullName;call=$call;win32_error=$code}
+        if ($exception.Data.Contains('child_output')) { $childOutput = $exception.Data['child_output'] }
         $exception=$exception.InnerException
     }
-    return [ordered]@{phase=$Phase;exception_chain=$chain}
+    $placement = if ($Failure.Exception.Data.Contains('placement_child_failure')) { $Failure.Exception.Data['placement_child_failure'] } else { $null }
+    return [ordered]@{phase=$Phase;exception_chain=$chain;message=(Protect-LabelFailureText ([string]$Failure.Exception.Message));child_output=$childOutput;placement_child_failure=$placement}
 }
 function Wait-LabelRelayPreimageExit([object[]]$Expected) {
     $deadline=(Get-Date).AddSeconds(15)
@@ -2436,6 +2648,11 @@ def inspect():
         _validated_node(marker)
         if raw != canonical_marker_bytes(marker):
             raise ValueError('healthy lifecycle stop marker is not canonical')
+        if mode in ('inspect_recovery', 'release_recovery') and expected:
+            if marker_hash != expected:
+                raise ValueError('recovery stop request differs')
+            result.update(marker_present=True, request_id=marker['request_id'], marker_sha256=marker_hash)
+            return paths, result
         removal = read_bounded_json(paths.removal_report_path, label='normal removal report')
         relay = removal.get('relay_process', {})
         if (removal.get('status') != 'PASS_DATA_PRESERVED' or removal.get('data_preserved') is not True or
@@ -2446,9 +2663,9 @@ def inspect():
         result.update(marker_present=True, request_id=marker['request_id'], marker_sha256=marker_hash)
     return paths, result
 
-if mode == 'inspect':
+if mode in ('inspect', 'inspect_recovery'):
     _, result = inspect()
-elif mode == 'release' and expected:
+elif mode in ('release', 'release_recovery') and expected:
     # The canonical transaction still holds its active writer fence. Admission
     # validates the candidate identity and exact session delegation before the
     # marker is inspected or removed; ordinary onboarding retains its own guard.
@@ -2467,7 +2684,7 @@ print(json.dumps(result, sort_keys=True))
     # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
     $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
     $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Root 'runtime\python.exe') `
-        -ProbeBytes $probeBytes -ExpectedSha256 '2a4c503491b126eb15adbd4918d60deb191ee983911897aa8d6a9d95fd38d120' `
+        -ProbeBytes $probeBytes -ExpectedSha256 '0b515260a4cf6dec9fdf8aaa935cfaaad2a0a5d92b0f4716c0e03c1ae96e8ff4' `
         -ProbeArguments @($Root, $Installed, $Mode, $ExpectedStateSha256) -FailureMessage 'Pinned conflict-resolution receipt source validation is required; healthy lifecycle validation failed: '
     return $stdout | ConvertFrom-Json
 }
@@ -2840,6 +3057,601 @@ function Save-FirstRegistrationAttempt($Record, [string]$Path) {
     if ($null -ne $Record) { Save $Path $Record }
 }
 
+function Save-LabelRollbackContext {
+    # Only restoration inputs are persisted; delegation is regenerated on resume.
+    $values = [ordered]@{}
+    foreach ($name in @('before','old','taskBefore','stopBefore','healthyRemovalReportBefore',
+        'removalReportExisted','existingVerified','installedPreimageInventory','replacementRollbackRoot',
+        'receiptSource','writerTransition','legacyFirstRegistration','healthyRemovedInstall',
+        'firstRegistrationStateVerified','firstRegistrationStarted','firstRegistrationAttempt',
+        'firstRegistrationAttemptPath','firstRegistrationStatePaths','firstRegistrationAbsentAncestors',
+        'rollbackSources','restoreSources')) {
+        $variable = Get-Variable -Name $name -Scope 1 -ErrorAction SilentlyContinue
+        $values[$name] = if ($null -ne $variable) { $variable.Value } else { $null }
+    }
+    $audit.recovery_context = [ordered]@{operator_sid=$generationSubjectSid;source_root=$source;
+        orchestrator_sha256=$writerOrchestratorSha256;writer_contract_sha256=$writerContractSha256;
+        generation_marker_paths=@($generationMarkerPaths);values=$values}
+}
+
+function Invoke-LabelGenerationRefusalRecovery {
+    $audit.rollback.generation_refused = $true
+    $audit.rollback.guidance = '새 판이 이 PC 자료를 열어 옛 판으로 되돌릴 수 없습니다. 새 판과 자료를 보존합니다. 같은 새 판을 다시 시작하거나 호환 수정판을 설치하세요. 관리자 지원 재개: INSTALL_CANONICAL_PORTABLE.ps1 -ResumeRollbackAuditPath <감사 파일> -ExpectedRollbackAuditSha256 <감사 SHA256>.'
+    $newVersionProven = $false
+    . Invoke-LabelRollbackStep 'retained_candidate_readback' {
+        if (-not $rollbackCustodyReady -or -not $rollbackProtectionReady) { throw 'Retained candidate protection is unproven.' }
+        if ($audit.Contains('legacy_relay_task_preimage')) {
+            $legacy=Get-LabelOfficialLegacyTaskSnapshot
+            if ($null -eq $legacy -or $legacy.enabled) { throw 'Legacy relay stop is unproven.' }
+        }
+        InvokeFrozenIntegrityProbe $frozenPlacement $install
+        if ([string](PortableInventory $install).sha256 -cne [string]$receiptSource.sha256) { throw 'Retained candidate code differs.' }
+        $manifest = Manifest $install $SkipSignatureValidationForTest
+        [void](Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
+            -TargetVersion (Get-LabelPortableDataVersion $install $manifest) -TargetBuildId ([string]$manifest.source_commit))
+        $stopProof = $audit.rollback.new_relay_stop
+        $mode = if ($null -ne $stopProof) { 'inspect_recovery' } else { 'inspect' }
+        $state = HealthyLifecycle $source $install $mode ([string]$stopProof.stop_request_sha256)
+        if ([string]$state.status -cne 'HEALTHY_CURRENT_USER' -or ($state.marker_present -and $null -eq $stopProof)) { throw 'Retained candidate identity/stop state is unproven.' }
+        $relay = Get-Content -LiteralPath $relayPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([string]$relay.status -cne 'READY' -or -not (Test-RelayPersistentRetry $relay)) { throw 'Retained candidate relay readiness is unproven.' }
+        $run = Snapshot
+        if (-not $run.exists -or [string]$run.data -cne $wanted) { throw 'Retained candidate autostart differs.' }
+        $newVersionProven = $true
+    }
+    if ($newVersionProven) {
+        . Invoke-LabelRollbackStep 'retained_candidate_fence_release' {
+            if ($null -ne $audit.rollback.new_relay_stop) {
+                [void](Set-LabelWriterFenceDelegation -ControlRoot $writerFenceControlRoot -Status 'RESTORING' -SessionId $writerSessionId -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId -DelegationToken $writerDelegationToken -DelegatedSources @('user_relay_stop_release') -LifetimeSeconds 600)
+                [void](HealthyLifecycle $source $install 'release_recovery' ([string]$audit.rollback.new_relay_stop.stop_request_sha256))
+            }
+            if ($writerFenceStarted) {
+                [void](Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId -TimeoutMilliseconds 90000)
+                $writerFenceStarted = $false
+                $audit.writer_fence.status = 'RELEASED_FOR_RETAINED_CANDIDATE'
+            }
+            $audit.rollback.retained_candidate_ready = $true
+        }
+    } else {
+        # Never reinstate an old launcher after G refuses. Remove only the exact
+        # candidate Run command; a foreign persistence entry is retained/reported.
+        . Invoke-LabelRollbackStep 'retained_candidate_autostart_stop' {
+            $run = Snapshot
+            if ($run.exists -and [string]$run.data -cne $wanted) { throw 'Autostart ownership is unproven; administrator recovery required.' }
+            if ($run.exists) { Restore ([pscustomobject]@{exists=$false;kind='';data=''}) }
+            if ((Snapshot).exists) { throw 'Candidate autostart absence is unproven.' }
+            $audit.rollback.retained_candidate_ready = $false
+        }
+    }
+}
+
+function Invoke-LabelResumeRollback {
+    if ($PlanOnly -or [string]::IsNullOrWhiteSpace($ExpectedRollbackAuditSha256)) { throw 'Supported rollback resume requires the exact audit SHA256.' }
+    if (-not $testMode -and -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw '지원 복구는 같은 작업 사용자의 관리자 PowerShell에서 실행하세요.'
+    }
+    $localAuditRoot = Join-Path $lad 'KMTech\Label_Match\install-audit'
+    $auditPath = Full $ResumeRollbackAuditPath 'rollback audit'
+    if (-not (Same (Split-Path -Parent $auditPath) $localAuditRoot)) { throw 'Rollback audit is outside the original operator audit root.' }
+    $item = Get-Item -LiteralPath $auditPath
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 1048576 -or
+        $ExpectedRollbackAuditSha256 -cnotmatch '^[0-9a-f]{64}$' -or (Sha $auditPath) -cne $ExpectedRollbackAuditSha256) { throw 'Rollback audit pin/ordinary-file check failed.' }
+    $saved = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$saved.schema -cne 'label-match-canonical-portable-install-v1' -or
+        [string]$saved.status -cnotin @('ROLLBACK_FAILED','FAILED_ROLLBACK_INCOMPLETE','FAILED_ROLLED_BACK') -or
+        -not (Same ([string]$saved.install_root) $install) -or [string]$saved.source_commit -cne [string]$sourceManifest.source_commit) { throw 'Rollback audit identity/status differs.' }
+    $context = $saved.recovery_context
+    if ($null -eq $context -or [string]$context.operator_sid -cne $generationSubjectSid -or
+        [string]$context.orchestrator_sha256 -cne (Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1'))) { throw 'Rollback context belongs to a different user or installer.' }
+    $audit = [ordered]@{}
+    foreach ($property in $saved.PSObject.Properties) { $audit[$property.Name] = $property.Value }
+    foreach ($name in @('rollback','writer_fence')) {
+        $map = [ordered]@{}
+        foreach ($property in $audit[$name].PSObject.Properties) { $map[$property.Name] = $property.Value }
+        $audit[$name] = $map
+    }
+    foreach ($name in @('before','old','taskBefore','stopBefore','healthyRemovalReportBefore',
+        'removalReportExisted','existingVerified','installedPreimageInventory','replacementRollbackRoot',
+        'writerTransition','legacyFirstRegistration','healthyRemovedInstall','firstRegistrationStateVerified',
+        'firstRegistrationStarted','firstRegistrationAttempt','firstRegistrationAttemptPath',
+        'firstRegistrationStatePaths','firstRegistrationAbsentAncestors','rollbackSources','restoreSources')) {
+        if ($null -eq $context.values.PSObject.Properties[$name]) { throw 'Rollback context input is absent.' }
+        Set-Variable -Name $name -Value $context.values.$name
+    }
+    $old = @($old)
+    $generationMarkerPaths = @(@($generationMarkerPaths) + @($context.generation_marker_paths) | Select-Object -Unique)
+    $receiptSource = ReceiptSource $source $sourceManifest
+    $runId = [string]$audit.run_id
+    $elevationLogPath = [string]$audit.elevation_log_path
+    $recoveryRunId = $runId + '-resume-' + [Guid]::NewGuid().ToString('N')
+    $frozenPlacement = FreezePlacementHelper $source $localAuditRoot $recoveryRunId $receiptSource.critical_file_sha256 $source
+    . ([string]$frozenPlacement.writer_fence_path)
+    $writerOrchestratorSha256 = [string]$context.orchestrator_sha256
+    $writerContractSha256 = [string]$context.writer_contract_sha256
+    if ($writerContractSha256 -cne [string]$frozenPlacement.writer_fence_sha256) { throw 'Recovery writer contract differs.' }
+    $writerSessionId = [string]$audit.writer_fence.session_id
+    $writerAttemptId = [string]$audit.writer_fence.attempt_id
+    $writerTransactionId = [string]$audit.writer_fence.replacement_transaction_id
+    $writerStartedAt = [string]$audit.writer_fence.session_started_at_utc
+    $writerDelegationToken = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
+    $Script:LabelWriterFenceInstalledIdentity = [pscustomobject]@{session_id=$writerSessionId;attempt_id=$writerAttemptId;
+        replacement_transaction_id=$writerTransactionId;orchestrator_sha256=$writerOrchestratorSha256;
+        writer_contract_sha256=$writerContractSha256;inventory_sha256=[string]$writerTransition.installed_inventory_sha256}
+    $writerEnvironmentBefore = @($WriterDelegationEnvironmentNames | ForEach-Object { [Environment]::GetEnvironmentVariable($_, 'Process') })
+    $writerAuthority = Enter-LabelWriterSessionAuthority -SessionId $writerSessionId -AttemptId $writerAttemptId `
+        -OrchestratorSha256 $writerOrchestratorSha256 -ReplacementTransactionId $writerTransactionId -WriterContractSha256 $writerContractSha256
+    try {
+        $active = Read-LabelWriterFence $writerFenceControlRoot -AllowAbsent
+        $writerFenceStarted = $null -ne $active
+        if ($writerFenceStarted -and ([string]$active.session_id -cne $writerSessionId -or [string]$active.attempt_id -cne $writerAttemptId -or
+            [string]$active.replacement_transaction_id -cne $writerTransactionId -or [string]$active.orchestrator_sha256 -cne $writerOrchestratorSha256 -or
+            [string]$active.writer_contract_sha256 -cne $writerContractSha256)) { throw 'Held fence is not this recorded transaction.' }
+        $helperParameters = @{InstallerRunId=$runId;InstallerOwnerProcessId=[int]$PID;
+            InstallerOwnerProcessStartedAtFileTime=[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString();
+            SourceRoot=$source;InstallRoot=$install;ElevationLogPath=$elevationLogPath;
+            ExpectedBootstrapScriptSha256=[string]$frozenPlacement.helper_sha256;VerifiedBootstrapScriptPath=[string]$frozenPlacement.helper_path;
+            BootstrapIntegrityPreloaded=$true;WriterFenceFunctionsPreloaded=$true;WriterFenceControlRoot=$writerFenceControlRoot;
+            DataGenerationSubjectSid=$generationSubjectSid;DataGenerationMarkerPaths=@($generationMarkerPaths);
+            WriterFenceSessionId=$writerSessionId;WriterFenceAttemptId=$writerAttemptId;WriterFenceReplacementTransactionId=$writerTransactionId;
+            WriterFenceDelegationToken=$writerDelegationToken;AllowNoncanonicalLayoutForTest=[bool]$testMode;DryRun=$false;
+            ExpectedSourceAggregateSha256=[string]$receiptSource.bootstrap_aggregate_sha256;
+            ExpectedSourceFileCount=[int]$receiptSource.file_count;ExpectedSourceByteCount=[uint64]$receiptSource.byte_count}
+        . Invoke-LabelCanonicalRollback
+        $audit.status = 'FAILED_ROLLED_BACK'
+        $audit.rollback.supported_resume = 'PROVEN'
+    } catch {
+        $audit.status = 'ROLLBACK_FAILED'
+        $audit.rollback.resume_failure = Get-LabelLaunchFailure $_ 'supported_resume'
+        throw
+    } finally {
+        try {
+            Save $auditPath $audit
+            if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+        } finally {
+            RestoreWriterDelegationEnvironment $writerEnvironmentBefore
+            if ($null -ne $writerAuthority) { Exit-LabelWriterSessionAuthority $writerAuthority }
+            $Script:LabelWriterFenceInstalledIdentity = $null
+        }
+    }
+}
+
+function Stop-LabelRollbackCandidateRelay {
+    $live = @(Relays)
+    if ($live.Count -eq 0) { return }
+    foreach ($row in $live) {
+        $security = Get-CanonicalRelaySecurity ([int]$row.ProcessId)
+        if ([string]$security.sid -cne $generationSubjectSid) { throw 'Candidate relay owner is unproven.' }
+    }
+    $probe = @'
+import json, pathlib, sys
+root, state = map(pathlib.Path, sys.argv[1:3])
+sys.path[:0] = [str(root / 'app'), str(root / 'app/site-packages')]
+from user_relay import request_user_relay_stop
+proof = request_user_relay_stop(state, timeout_seconds=15.0)
+if proof['status'] != 'ABSENT':
+    raise RuntimeError('candidate relay did not stop normally')
+print(json.dumps(proof, sort_keys=True))
+'@
+    $bytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n","`n"))
+    $output = Invoke-LabelPinnedProbe -Python (Join-Path $source 'runtime/python.exe') -ProbeBytes $bytes `
+        -ExpectedSha256 'b0944e7a09135c3079da4c115fea3609434841a94739fa5615ab88e6254d4529' -ProbeArguments @($source,$defaultDirectSyncRoot) -FailureMessage 'Candidate relay protection failed: '
+    $audit.rollback.new_relay_stop = $output | ConvertFrom-Json
+    if (@(Relays).Count -ne 0) { throw 'Candidate relay process absence is unproven.' }
+}
+
+function Invoke-LabelCanonicalRollback {
+        $Script:LabelRollbackErrors = [Collections.Generic.List[object]]::new()
+        $Script:LabelRollbackFailures = [Collections.Generic.List[object]]::new()
+        $Script:LabelRollbackSteps = [Collections.Generic.List[object]]::new()
+        $rollbackCustodyReady = $false
+        $rollbackQuiescent = $false
+        $rollbackAuthenticationReady = -not $legacyFirstRegistration
+        $rollbackUsesInstalled = $false
+        $rollbackGenerationReady = $false
+        $rollbackPreimageProven = $false
+        $rollbackStartupProven = $false
+        $rollbackRuntimeProven = $false
+        $rollbackProtectionReady = $false
+        . Invoke-LabelRollbackStep 'deployment_custody' {
+            if (-not $writerFenceStarted) {
+                # Final audit persistence can fail after the success path released
+                # its fence. Reacquire the same session before stopping/restoring
+                # any runtime or code; all existing phase checks still apply.
+                if ($null -eq $writerAuthority) {
+                    $writerAuthority = Enter-LabelWriterSessionAuthority `
+                        -SessionId $writerSessionId `
+                        -AttemptId $writerAttemptId `
+                        -OrchestratorSha256 $writerOrchestratorSha256 `
+                        -ReplacementTransactionId $writerTransactionId `
+                        -WriterContractSha256 $writerContractSha256
+                }
+                [void](Start-LabelWriterFence `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -SessionStartedAtUtc $writerStartedAt `
+                    -OrchestratorSha256 $writerOrchestratorSha256 `
+                    -WriterContractSha256 $writerContractSha256 `
+                    -AuthorityOwnedByCaller)
+                $writerFenceStarted = $true
+            }
+            if ($writerFenceStarted) {
+                [void](Set-LabelWriterFenceDelegation `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -DelegationToken $writerDelegationToken `
+                    -DelegatedSources $rollbackSources `
+                    -LifetimeSeconds 600)
+                SetWriterDelegationEnvironment `
+                    $writerDelegationToken `
+                    $writerSessionId `
+                    $writerAttemptId `
+                    $writerTransactionId
+            }
+            $rollbackCustodyReady = $true
+        }
+        if ($rollbackCustodyReady) {
+            . Invoke-LabelRollbackStep 'candidate_relay_stop' {
+                Stop-LabelRollbackCandidateRelay
+                $rollbackProtectionReady = $true
+            }
+        }
+        . Invoke-LabelRollbackStep 'generation_before' {
+            Assert-LabelRollbackGeneration
+            $rollbackGenerationReady = $true
+        }
+        if ($rollbackGenerationReady -and $rollbackCustodyReady) {
+            $rollbackGenerationReady = $false
+            . Invoke-LabelRollbackStep 'generation_after' {
+                Assert-LabelRollbackGeneration
+                $rollbackGenerationReady = $true
+            }
+        }
+        if ($rollbackGenerationReady -and $rollbackCustodyReady) {
+            . Invoke-LabelRollbackStep 'current_user_removal' {
+            $rollbackProductRoot = if (Test-Path (Join-Path $install 'runtime\pythonw.exe')) {
+                $install
+            }
+            else { $source }
+            $rollbackUsesInstalled = $false
+            if (Same $rollbackProductRoot $install) {
+                InvokeFrozenIntegrityProbe $frozenPlacement $install
+                $rollbackInventory = PortableInventory $install
+                if ($existingVerified -and [string]$rollbackInventory.sha256 -ceq [string]$installedPreimageInventory.sha256) {
+                    $rollbackUsesInstalled = $true
+                }
+                elseif ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
+                    throw 'Rollback tree differs from both validated identities.'
+                }
+            }
+            if ($writerFenceStarted) {
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $rollbackUsesInstalled)
+            }
+            if (-not ($healthyRemovedInstall -and -not (Test-Path -LiteralPath $install))) {
+                # No new setup has run while the exact legacy preimage remains
+                # installed. Do not ask that old code to create removal state.
+                if (-not ($legacyFirstRegistration -and $rollbackUsesInstalled)) {
+                    Product $rollbackProductRoot '--remove-current-user-setup' -LogicalAppRoot $install
+                }
+            }
+            }
+            . Invoke-LabelRollbackStep 'writer_absence' {
+                [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+                $rollbackQuiescent = $true
+            }
+            if ($rollbackQuiescent) {
+                . Invoke-LabelRollbackStep 'registration_preimage' {
+            if ($legacyFirstRegistration) {
+                # Detach authentication before restoring legacy code. Keep its
+                # own active fence until the guarded placement helper completes.
+                $firstRegistrationAttempt.status = 'FAILED_ROLLBACK_INCOMPLETE'
+                Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+                $stateMutationLease = Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
+                try {
+                    $authPaths = @($firstRegistrationStatePaths | Where-Object { -not (Same $_ $defaultDirectSyncRoot) })
+                    if (-not $firstRegistrationStateVerified -and
+                        @(FirstRegistrationAbsence $authPaths | Where-Object { $_.state -cne 'ABSENT' }).Count -ne 0) {
+                        throw 'Unowned state appeared before the first-registration recheck; preserved.'
+                    }
+                    $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
+                        $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
+                        $firstRegistrationStarted @($defaultDirectSyncRoot) $firstRegistrationAbsentAncestors $localAuditRoot
+                    if (-not $audit.rollback.first_registration_state.restored_absent) {
+                        throw 'First-registration authentication cleanup is incomplete; legacy code remains fenced.'
+                    }
+                }
+                finally { Exit-LabelWriterAdmission $stateMutationLease }
+            }
+                    $rollbackAuthenticationReady = $true
+                }
+                if ($rollbackAuthenticationReady) {
+                    . Invoke-LabelRollbackStep 'code_restore' {
+            if ($existingVerified -and -not $rollbackUsesInstalled) {
+                if ([string]::IsNullOrEmpty($replacementRollbackRoot)) {
+                    throw 'Exact installed code preimage is unavailable for rollback.'
+                }
+                # Reuse the same pinned placement helper and its verified-tree
+                # replacement contract, now with the already validated preimage.
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $false)
+                [void](Set-LabelWriterFenceDelegation `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -DelegationToken $writerDelegationToken `
+                    -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
+                    -LifetimeSeconds 600)
+                # INSTALL_THIS_PC consumes a release tree: its manifest metrics
+                # exclude the installed bootstrap record. Reconstruct that exact
+                # release view without changing or deleting the retained backup.
+                $rollbackSource = Join-Path (Split-Path -Parent $auditPath) ($writerTransactionId + '-rollback-source')
+                if ($legacyFirstRegistration) {
+                    # A failed placement keeps its source as recovery evidence.
+                    # A resumed rollback stages a new copy instead of colliding.
+                    $rollbackSource += '-' + [Guid]::NewGuid().ToString('N')
+                }
+                if (Test-Path -LiteralPath $rollbackSource) { throw 'Rollback source staging already exists.' }
+                [void](New-Item -ItemType Directory -Path $rollbackSource)
+                $robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'
+                & $robocopy $replacementRollbackRoot $rollbackSource /E /XJ /MT:16 /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $replacementRollbackRoot 'bootstrap-integrity.json') | Out-Null
+                if ($LASTEXITCODE -lt 0 -or $LASTEXITCODE -ge 8) { throw "Rollback source copy failed: $LASTEXITCODE" }
+                $restoreParameters = $helperParameters.Clone()
+                $restoreParameters.SourceRoot = $rollbackSource
+                $restoreParameters.ExpectedSourceAggregateSha256 = [string]$installedPreimageInventory.bootstrap_aggregate_sha256
+                $restoreParameters.ExpectedSourceFileCount = [int]$installedPreimageInventory.file_count
+                $restoreParameters.ExpectedSourceByteCount = [uint64]$installedPreimageInventory.byte_count
+                $restoreExitCode = InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters
+                if ($restoreExitCode -ne 0) { throw "Exact code rollback failed: $restoreExitCode" }
+                InvokeFrozenIntegrityProbe $frozenPlacement $install
+                $restoredInventory = PortableInventory $install
+                if ([string]$restoredInventory.sha256 -cne [string]$installedPreimageInventory.sha256) {
+                    throw 'Restored code differs from the validated installed preimage.'
+                }
+                $audit.rollback.code_placement = 'RESTORED_PREIMAGE'
+                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+            }
+            if (-not $existingVerified -and (Test-Path -LiteralPath $install)) {
+                InvokeFrozenIntegrityProbe $frozenPlacement $install
+                $rollbackInventory = PortableInventory $install
+                if ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
+                    throw 'Absent-code rollback tree differs from the validated candidate.'
+                }
+                [void](Set-LabelWriterFenceDelegation `
+                    -ControlRoot $writerFenceControlRoot `
+                    -Status 'RESTORING' `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -DelegationToken $writerDelegationToken `
+                    -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
+                    -LifetimeSeconds 600)
+                $removeParameters = $helperParameters.Clone()
+                $removeParameters.ReplaceExistingVerifiedPortable = $false
+                $removeParameters.Uninstall = $true
+                $removeExit = Invoke-LabelDelegatedPlacementHelper $frozenPlacement $removeParameters $writerAuthority
+                if ($removeExit -ne 0 -or (Test-Path -LiteralPath $install)) {
+                    throw 'Absent-code rollback failed to restore code absence.'
+                }
+            }
+            if (-not $existingVerified -and -not (Test-Path -LiteralPath $install)) {
+                $audit.rollback.code_placement = 'RESTORED_ABSENCE'
+            }
+            $audit.rollback.code_restored = $existingVerified -or -not (Test-Path -LiteralPath $install)
+            $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
+                    }
+                }
+            }
+        }
+        if ($rollbackGenerationReady) {
+            $rollbackGenerationReady = $false
+            . Invoke-LabelRollbackStep 'generation_preimage' {
+                Assert-LabelRollbackGeneration
+                $rollbackGenerationReady = $true
+            }
+        }
+        if ($rollbackGenerationReady) {
+            . Invoke-LabelRollbackStep 'user_preimage_admission' {
+        $ownerMutationLease = $null
+        try {
+            if ($writerFenceStarted) {
+                $ownerMutationLease = Enter-LabelWriterAdmission `
+                    -ControlRoot $writerFenceControlRoot `
+                    -TimeoutMilliseconds 90000
+            }
+            . Invoke-LabelRollbackStep 'run_restore' { Restore $before }
+            . Invoke-LabelRollbackStep 'task_restore' { RestoreScheduledTask $taskBefore }
+            . Invoke-LabelRollbackStep 'stop_marker_restore' {
+            if ([bool]$stopBefore.exists) {
+                Copy-Item -LiteralPath ([string]$stopBefore.backup_path) -Destination $stop -Force
+                if ((Sha $stop) -cne [string]$stopBefore.sha256) {
+                    throw 'stop marker restore failed'
+                }
+            }
+            elseif (Test-Path $stop) {
+                Remove-Item $stop -Force
+            }
+            }
+            . Invoke-LabelRollbackStep 'removal_report_restore' {
+            if (Test-Path -LiteralPath $removalPath) {
+                $removalProof=Join-Path $localAuditRoot ('canonical-portable-'+$runId+'-failed-removal-proof.json')
+                if (-not (Test-Path -LiteralPath $removalProof)) { Copy-Item -LiteralPath $removalPath -Destination $removalProof }
+                $audit.rollback.removal_failure_proof=[ordered]@{path=$removalProof;sha256=(Sha $removalProof)}
+            }
+            if ($null -ne $healthyRemovalReportBefore) {
+                Copy-Item -LiteralPath $healthyRemovalReportBefore.backup_path -Destination $removalPath -Force
+                if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) {
+                    throw 'Normal removal report preimage restoration failed.'
+                }
+                $audit.rollback.removal_report_restored = $true
+            }
+            elseif (-not $removalReportExisted -and (Test-Path -LiteralPath $removalPath)) {
+                Remove-Item -LiteralPath $removalPath -Force
+                if (Test-Path -LiteralPath $removalPath) { throw 'Removal report absence restoration failed.' }
+                $audit.rollback.removal_report_restored = $true
+            }
+            }
+        }
+        finally {
+            if ($null -ne $ownerMutationLease) {
+                Exit-LabelWriterAdmission $ownerMutationLease
+            }
+        }
+            }
+            . Invoke-LabelRollbackStep 'official_legacy_task_restore' {
+                if ($audit.Contains('legacy_relay_task_preimage')) {
+                    $parameters=$helperParameters.Clone()
+                    $parameters.LegacyRelayTransition='Restore'
+                    $parameters.LegacyRelayPreimageSha256=[string]$audit.legacy_relay_task_preimage.sha256
+                    $parameters.ReplaceExistingVerifiedPortable=$false
+                    if ((InvokeFrozenPlacementHelper $frozenPlacement $parameters) -ne 0) { throw 'LEGACY_RELAY_RESTORE_FAILED' }
+                    $readback=Get-LabelOfficialLegacyTaskSnapshot
+                    if ($null -eq $readback -or $readback.fingerprint.sha256 -cne [string]$audit.legacy_relay_task_preimage.fingerprint.sha256 -or
+                        $readback.enabled -ne [bool]$audit.legacy_relay_task_preimage.enabled) { throw 'LEGACY_RELAY_RESTORE_READBACK_FAILED' }
+                }
+            }
+            . Invoke-LabelRollbackStep 'protected_startup_restore' {
+        if ($audit.Contains('startup_update_preimage')) {
+            $restoreParameters=$helperParameters.Clone()
+            $restoreParameters.StartupUpdateRestorePreimage=[string]$audit.startup_update_preimage.path
+            $restoreParameters.StartupUpdateRestoreSha256=[string]$audit.startup_update_preimage.sha256
+            $restoreParameters.ReplaceExistingVerifiedPortable=$false
+            if ((InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters) -ne 0) { throw 'Startup update preimage restoration failed.' }
+        }
+        $rollbackStartupProven = $true
+            }
+            . Invoke-LabelRollbackStep 'preimage_readback' {
+        $check = Snapshot
+        if (
+            [bool]$check.exists -ne [bool]$before.exists -or
+            [string]$check.kind -cne [string]$before.kind -or
+            [string]$check.data -cne [string]$before.data
+        ) { throw 'registry restore failed' }
+                if ($existingVerified) {
+                    InvokeFrozenIntegrityProbe $frozenPlacement $install
+                    if ([string](PortableInventory $install).sha256 -cne [string]$installedPreimageInventory.sha256) {
+                        throw 'Rollback final code preimage differs.'
+                    }
+                } elseif (Test-Path -LiteralPath $install) { throw 'Rollback final code absence differs.' }
+                Assert-LabelRollbackTaskPreimage $taskBefore
+                if ($audit.Contains('legacy_relay_task_preimage')) {
+                    $legacy=Get-LabelOfficialLegacyTaskSnapshot
+                    if ($null -eq $legacy -or $legacy.fingerprint.sha256 -cne [string]$audit.legacy_relay_task_preimage.fingerprint.sha256 -or
+                        $legacy.enabled -ne [bool]$audit.legacy_relay_task_preimage.enabled) { throw 'Legacy task final preimage differs.' }
+                }
+                if ([bool]$stopBefore.exists) {
+                    if (-not (Test-Path -LiteralPath $stop -PathType Leaf) -or (Sha $stop) -cne [string]$stopBefore.sha256) { throw 'Rollback stop preimage differs.' }
+                } elseif (Test-Path -LiteralPath $stop) { throw 'Rollback stop absence differs.' }
+                if ($null -ne $healthyRemovalReportBefore) {
+                    if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) { throw 'Rollback removal preimage differs.' }
+                } elseif (-not $removalReportExisted -and (Test-Path -LiteralPath $removalPath)) { throw 'Rollback removal absence differs.' }
+                [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+                $rollbackPreimageProven = $true
+                $audit.rollback.code_restored = $true
+            }
+            # Keep protection when any prerequisite failed. Starting the old
+            # relay before exact restoration and fence release is forbidden.
+            $rollbackRuntimeProven = $rollbackCustodyReady -and $rollbackPreimageProven -and $rollbackStartupProven
+            if ($rollbackRuntimeProven) {
+                $rollbackRuntimeProven = $false
+                . Invoke-LabelRollbackStep 'generation_release' {
+                    Assert-LabelRollbackGeneration
+                    $rollbackRuntimeProven = $true
+                }
+            }
+            if ($rollbackRuntimeProven) {
+                . Invoke-LabelRollbackStep 'fence_release' {
+        $firstRegistrationRollbackLease = $null
+        try {
+            if ($legacyFirstRegistration) {
+                # Keep ordinary writers excluded while releasing the fence and
+                # moving its own root. Session authority alone is a different mutex.
+                $firstRegistrationRollbackLease = Enter-LabelWriterAdmission `
+                    -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
+            }
+            if ($writerFenceStarted) {
+                $releasedFence = Stop-LabelWriterFence `
+                    -ControlRoot $writerFenceControlRoot `
+                    -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId `
+                    -ReplacementTransactionId $writerTransactionId `
+                    -TimeoutMilliseconds 90000
+                $writerFenceStarted = $false
+                $audit.writer_fence.status = 'RELEASED_AFTER_ROLLBACK'
+                $audit.writer_fence.writer_inventory_sha256 = [string]$releasedFence.writer_inventory_sha256
+            }
+            if ($legacyFirstRegistration) {
+                $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
+                    $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
+                    $firstRegistrationStarted @() $firstRegistrationAbsentAncestors $localAuditRoot
+                $audit.rollback.first_registration_state.retry_conflict_action = 'USE_SUPPORTED_ADMIN_RECOVERY'
+                if (-not $audit.rollback.first_registration_state.restored_absent) {
+                    # Retain custody across a final directory/ancestor move
+                    # failure as well; a retry adopts only this exact session.
+                    [void](Start-LabelWriterFence -ControlRoot $writerFenceControlRoot -Status 'RESTORING' `
+                        -SessionId $writerSessionId -AttemptId $writerAttemptId `
+                        -ReplacementTransactionId $writerTransactionId -SessionStartedAtUtc $writerStartedAt `
+                        -OrchestratorSha256 $writerOrchestratorSha256 -WriterContractSha256 $writerContractSha256 `
+                        -AuthorityOwnedByCaller)
+                    $writerFenceStarted = $true
+                    [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
+                    throw 'First-registration final absence restoration is incomplete.'
+                }
+            }
+        }
+        finally {
+            if ($null -ne $firstRegistrationRollbackLease) {
+                Exit-LabelWriterAdmission $firstRegistrationRollbackLease
+            }
+        }
+                }
+                if (-not $writerFenceStarted) {
+        foreach ($item in $old) {
+            . Invoke-LabelRollbackStep 'relay_restart' {
+            $newPid = StartRaw ([string]$item.CommandLine)
+            Start-Sleep -Seconds 3
+            $restored = Get-CimInstance `
+                Win32_Process `
+                -Filter "ProcessId = $newPid" `
+                -ErrorAction SilentlyContinue
+            if (
+                $null -eq $restored -or
+                -not (Same ([string]$restored.ExecutablePath) ([string]$item.ExecutablePath))
+            ) { throw 'runtime restore failed' }
+            }
+        }
+                }
+            }
+        }
+        if (-not $rollbackGenerationReady) {
+            . Invoke-LabelGenerationRefusalRecovery
+        }
+        if ($rollbackGenerationReady) {
+        . Invoke-LabelRollbackStep 'final_readback' {
+        [void](Assert-RollbackRelayPreimage -ExpectedRelays $old)
+        $check = Snapshot
+        if (
+            [bool]$check.exists -ne [bool]$before.exists -or
+            [string]$check.kind -cne [string]$before.kind -or
+            [string]$check.data -cne [string]$before.data
+        ) { throw 'registry restore failed' }
+        }
+        }
+        $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted
+        if ($writerFenceStarted) {
+            $audit.rollback.guidance = '복원 정합을 확인하지 못해 전송을 멈췄습니다. 자료와 복구 기록을 보존하세요. 같은 새 판을 다시 시작하거나 호환 수정판을 설치하려면 관리자 PowerShell에서 INSTALL_CANONICAL_PORTABLE.ps1 -ResumeRollbackAuditPath <감사 파일> -ExpectedRollbackAuditSha256 <감사 SHA256> 를 실행하세요.'
+        }
+        $audit.rollback.steps = $Script:LabelRollbackSteps.ToArray()
+        $audit.rollback.step_failures = $Script:LabelRollbackFailures.ToArray()
+        if ($Script:LabelRollbackErrors.Count -gt 0) { throw $Script:LabelRollbackErrors[0] }
+}
+
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot)
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')
@@ -2866,7 +3678,9 @@ $serverBaseUrl = ServerBaseUrlOrigin $ServerBaseUrl
 $onboardingArguments = OnboardingArguments $serverBaseUrl
 $serverBaseUrlSource = if ($serverBaseUrl) { 'explicit' } else { 'product_default' }
 $sourceManifest = Manifest $source $SkipSignatureValidationForTest
-if (-not $testMode -and -not $PlanOnly) {
+. (Join-Path $source 'app/tools/failure_redaction.ps1')
+. Import-LabelOfficialLegacyTaskFunctions (Join-Path $source 'INSTALL_THIS_PC.ps1')
+if (-not $testMode -and -not $PlanOnly -and -not $ResumeRollbackAuditPath) {
     $startupLifecycle = Read-CanonicalStartupLifecycle $source $install
     if ($null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
         $lifecycleInstalled = [string]$startupLifecycle.active_code_root
@@ -2956,13 +3770,19 @@ $generationMarkerPaths = @(
 $onboardingPath = Join-Path $statusRoot 'current_user_onboarding.json'
 $removalPath = Join-Path $statusRoot 'current_user_removal.json'
 $relayPath = Join-Path $statusRoot 'label_match_user_relay.json'
+if ($ResumeRollbackAuditPath) {
+    . Invoke-LabelResumeRollback
+    'rollback_resume_status=PROVEN'
+    exit 0
+}
 $generationDowngradeDecision = Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `
     -TargetVersion (Get-LabelPortableDataVersion $source $sourceManifest) `
     -TargetBuildId ([string]$sourceManifest.source_commit)
+$legacyRelayBefore=Get-LabelOfficialLegacyTaskSnapshot
 $before = Snapshot
 $old = @(Relays)
 $scheduledTasksAtPreflight = @(
-    Get-ScheduledTask -ErrorAction Stop | Where-Object {
+    Get-LabelCurrentUserScheduledTasks | Where-Object {
         [StringComparer]::OrdinalIgnoreCase.Equals(
             [string]$_.TaskName,
             $CanonicalTaskName
@@ -3335,7 +4155,8 @@ $restoreSources = @(
     'user_relay_stop_release',
     'user_relay_stop_request',
     'auto_update_task_mutation',
-    'auto_update_restore_preimage'
+    'auto_update_restore_preimage',
+    'auto_update_fixed_helper'
 )
 $rollbackSources = @(
     'current_user_setup_removal',
@@ -3493,7 +4314,7 @@ try {
                 [string]$removal.status -cne 'PASS_DATA_PRESERVED' -or
                 [string]$removal.relay_process.status -cne 'ABSENT' -or
                 (Get-Item $removalPath).LastWriteTimeUtc -lt $removalStarted.AddSeconds(-1) -or
-                $null -ne (Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' })
+                $null -ne (Get-LabelCurrentUserScheduledTasks)
             ) { throw 'Removal readback failed.' }
         }
     }
@@ -3560,6 +4381,19 @@ try {
         if ($existingVerified) {
             $replacementBackupsBefore = @(Get-ChildItem -LiteralPath (Split-Path -Parent $install) -Directory -Force |
                 Where-Object { $_.Name -like '.current.rollback.*' } | ForEach-Object { $_.FullName })
+        }
+        if ($null -ne $legacyRelayBefore) {
+            $legacyDirectory=Join-Path (Split-Path -Parent $install) ('.legacy-relay.'+$writerAttemptId)
+            $audit.legacy_relay_task_preimage=[ordered]@{path=$legacyDirectory;sha256=$legacyRelayBefore.xml_sha256;enabled=$legacyRelayBefore.enabled;fingerprint=$legacyRelayBefore.fingerprint}
+            Save $auditPath $audit
+            $transitionParameters=$helperParameters.Clone()
+            $transitionParameters.LegacyRelayTransition='Disable'
+            $transitionParameters.LegacyRelayPreimageSha256=[string]$legacyRelayBefore.xml_sha256
+            $transitionParameters.ReplaceExistingVerifiedPortable=$false
+            if ((InvokeFrozenPlacementHelper $frozenPlacement $transitionParameters) -ne 0) { throw 'LEGACY_RELAY_TRANSITION_FAILED' }
+            $readback=Get-LabelOfficialLegacyTaskSnapshot
+            if ($null -eq $readback -or $readback.enabled -or $readback.fingerprint.sha256 -cne $legacyRelayBefore.fingerprint.sha256) { throw 'LEGACY_RELAY_DISABLED_READBACK_FAILED' }
+            $audit.legacy_relay_task_preimage.transition='DISABLED_RETAINED'
         }
         $placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters
         if ($existingVerified -and $null -eq $startupLifecycle) {
@@ -3658,7 +4492,7 @@ try {
         $onboarding.server_registration_verified -ceq $false -and
         (Get-Item -LiteralPath $onboardingPath).LastWriteTimeUtc -ge $started.AddSeconds(-1)) {
         if ($after.exists -or @(Relays).Count -ne 0 -or
-            @(Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -ieq $CanonicalTaskName -and [string]$_.TaskPath -ceq '\' }).Count -ne 0 -or
+            @(Get-LabelCurrentUserScheduledTasks).Count -ne 0 -or
             (Test-Path -LiteralPath $stop)) {
             throw 'Recovery-required registration must leave persistence absent.'
         }
@@ -3693,6 +4527,8 @@ try {
     ) { throw 'Onboarding Run readback failed.' }
     if (Test-Path -LiteralPath $stop) { throw 'Relay stop marker survived onboarding.' }
 
+    $officialBeforeRelease=Get-LabelOfficialLegacyTaskSnapshot
+    if($null -ne $officialBeforeRelease -and $officialBeforeRelease.enabled){throw 'LEGACY_RELAY_DISABLED_READBACK_FAILED'}
     [void](Stop-LabelWriterFence `
         -ControlRoot $writerFenceControlRoot `
         -SessionId $writerSessionId `
@@ -3735,6 +4571,8 @@ try {
         throw 'Fresh relay status proof failed.'
     }
 
+    $officialFinal=Get-LabelOfficialLegacyTaskSnapshot
+    if($null -ne $officialFinal -and $officialFinal.enabled){throw 'LEGACY_RELAY_DISABLED_READBACK_FAILED'}
     $audit.status = 'PASS'
     if ($legacyFirstRegistration) {
         $firstRegistrationAttempt.status = 'PASS'
@@ -3769,7 +4607,7 @@ try {
     "elevation_log_path=$elevationLogPath"
 }
 catch {
-    if ($null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
+    if (-not $mutated -and $null -ne $startupLifecycle -and [string]$startupLifecycle.lifecycle_state -ceq 'INSTALLED') {
         $audit.status = 'FAILED_SUPPORTED_REMOVAL_REQUIRED'
         $audit.failure = $_.Exception.GetType().Name
         $audit.recovery_guidance = '자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요.'
@@ -3777,344 +4615,15 @@ catch {
         throw
     }
     $original = $_
+    if ($null -ne $Script:LabelPlacementChildFailure) { $original.Exception.Data['placement_child_failure'] = $Script:LabelPlacementChildFailure }
+    $audit.failure_type = $original.Exception.GetType().Name
+    $audit.failure_details = Get-LabelLaunchFailure $original 'forward'
+    Save-LabelRollbackContext
+    try { Save $auditPath $audit }
+    catch { $audit.rollback.initial_audit_failure = Get-LabelLaunchFailure $_ 'initial_audit_save' }
     if (-not $mutated) { throw $original }
     try {
-        Assert-LabelRollbackGeneration
-        $Script:LabelRollbackErrors = [Collections.Generic.List[object]]::new()
-        $Script:LabelRollbackFailures = [Collections.Generic.List[object]]::new()
-        $Script:LabelRollbackSteps = [Collections.Generic.List[object]]::new()
-        $rollbackCustodyReady = $false
-        $rollbackQuiescent = $false
-        $rollbackAuthenticationReady = -not $legacyFirstRegistration
-        $rollbackUsesInstalled = $false
-        . Invoke-LabelRollbackStep 'deployment_custody' {
-            if (-not $writerFenceStarted) {
-                # Final audit persistence can fail after the success path released
-                # its fence. Reacquire the same session before stopping/restoring
-                # any runtime or code; all existing phase checks still apply.
-                if ($null -eq $writerAuthority) {
-                    $writerAuthority = Enter-LabelWriterSessionAuthority `
-                        -SessionId $writerSessionId `
-                        -AttemptId $writerAttemptId `
-                        -OrchestratorSha256 $writerOrchestratorSha256 `
-                        -ReplacementTransactionId $writerTransactionId `
-                        -WriterContractSha256 $writerContractSha256
-                }
-                [void](Start-LabelWriterFence `
-                    -ControlRoot $writerFenceControlRoot `
-                    -Status 'RESTORING' `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -SessionStartedAtUtc $writerStartedAt `
-                    -OrchestratorSha256 $writerOrchestratorSha256 `
-                    -WriterContractSha256 $writerContractSha256 `
-                    -AuthorityOwnedByCaller)
-                $writerFenceStarted = $true
-            }
-            if ($writerFenceStarted) {
-                [void](Set-LabelWriterFenceDelegation `
-                    -ControlRoot $writerFenceControlRoot `
-                    -Status 'RESTORING' `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -DelegationToken $writerDelegationToken `
-                    -DelegatedSources $rollbackSources `
-                    -LifetimeSeconds 600)
-                SetWriterDelegationEnvironment `
-                    $writerDelegationToken `
-                    $writerSessionId `
-                    $writerAttemptId `
-                    $writerTransactionId
-            }
-            $rollbackCustodyReady = $true
-        }
-        if ($rollbackCustodyReady) {
-            # A generation refusal aborts rollback before any phase can continue.
-            Assert-LabelRollbackGeneration
-            . Invoke-LabelRollbackStep 'current_user_removal' {
-            $rollbackProductRoot = if (Test-Path (Join-Path $install 'runtime\pythonw.exe')) {
-                $install
-            }
-            else { $source }
-            $rollbackUsesInstalled = $false
-            if (Same $rollbackProductRoot $install) {
-                InvokeFrozenIntegrityProbe $frozenPlacement $install
-                $rollbackInventory = PortableInventory $install
-                if ($existingVerified -and [string]$rollbackInventory.sha256 -ceq [string]$installedPreimageInventory.sha256) {
-                    $rollbackUsesInstalled = $true
-                }
-                elseif ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
-                    throw 'Rollback tree differs from both validated identities.'
-                }
-            }
-            if ($writerFenceStarted) {
-                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $rollbackUsesInstalled)
-            }
-            if (-not ($healthyRemovedInstall -and -not (Test-Path -LiteralPath $install))) {
-                # No new setup has run while the exact legacy preimage remains
-                # installed. Do not ask that old code to create removal state.
-                if (-not ($legacyFirstRegistration -and $rollbackUsesInstalled)) {
-                    Product $rollbackProductRoot '--remove-current-user-setup' -LogicalAppRoot $install
-                }
-            }
-            }
-            . Invoke-LabelRollbackStep 'writer_absence' {
-                [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
-                $rollbackQuiescent = $true
-            }
-            if ($rollbackQuiescent) {
-                . Invoke-LabelRollbackStep 'registration_preimage' {
-            if ($legacyFirstRegistration) {
-                # Detach authentication before restoring legacy code. Keep its
-                # own active fence until the guarded placement helper completes.
-                $firstRegistrationAttempt.status = 'FAILED_ROLLBACK_INCOMPLETE'
-                Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
-                $stateMutationLease = Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
-                try {
-                    $authPaths = @($firstRegistrationStatePaths | Where-Object { -not (Same $_ $defaultDirectSyncRoot) })
-                    if (-not $firstRegistrationStateVerified -and
-                        @(FirstRegistrationAbsence $authPaths | Where-Object { $_.state -cne 'ABSENT' }).Count -ne 0) {
-                        throw 'Unowned state appeared before the first-registration recheck; preserved.'
-                    }
-                    $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
-                        $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
-                        $firstRegistrationStarted @($defaultDirectSyncRoot) $firstRegistrationAbsentAncestors $localAuditRoot
-                    if (-not $audit.rollback.first_registration_state.restored_absent) {
-                        throw 'First-registration authentication cleanup is incomplete; legacy code remains fenced.'
-                    }
-                }
-                finally { Exit-LabelWriterAdmission $stateMutationLease }
-            }
-                    $rollbackAuthenticationReady = $true
-                }
-                if ($rollbackAuthenticationReady) {
-                    . Invoke-LabelRollbackStep 'code_restore' {
-            if ($existingVerified -and -not $rollbackUsesInstalled) {
-                if ([string]::IsNullOrEmpty($replacementRollbackRoot)) {
-                    throw 'Exact installed code preimage is unavailable for rollback.'
-                }
-                # Reuse the same pinned placement helper and its verified-tree
-                # replacement contract, now with the already validated preimage.
-                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $false)
-                [void](Set-LabelWriterFenceDelegation `
-                    -ControlRoot $writerFenceControlRoot `
-                    -Status 'RESTORING' `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -DelegationToken $writerDelegationToken `
-                    -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
-                    -LifetimeSeconds 600)
-                # INSTALL_THIS_PC consumes a release tree: its manifest metrics
-                # exclude the installed bootstrap record. Reconstruct that exact
-                # release view without changing or deleting the retained backup.
-                $rollbackSource = Join-Path (Split-Path -Parent $auditPath) ($writerTransactionId + '-rollback-source')
-                if ($legacyFirstRegistration) {
-                    # A failed placement keeps its source as recovery evidence.
-                    # A resumed rollback stages a new copy instead of colliding.
-                    $rollbackSource += '-' + [Guid]::NewGuid().ToString('N')
-                }
-                if (Test-Path -LiteralPath $rollbackSource) { throw 'Rollback source staging already exists.' }
-                [void](New-Item -ItemType Directory -Path $rollbackSource)
-                $robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'
-                & $robocopy $replacementRollbackRoot $rollbackSource /E /XJ /MT:16 /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $replacementRollbackRoot 'bootstrap-integrity.json') | Out-Null
-                if ($LASTEXITCODE -lt 0 -or $LASTEXITCODE -ge 8) { throw "Rollback source copy failed: $LASTEXITCODE" }
-                $restoreParameters = $helperParameters.Clone()
-                $restoreParameters.SourceRoot = $rollbackSource
-                $restoreParameters.ExpectedSourceAggregateSha256 = [string]$installedPreimageInventory.bootstrap_aggregate_sha256
-                $restoreParameters.ExpectedSourceFileCount = [int]$installedPreimageInventory.file_count
-                $restoreParameters.ExpectedSourceByteCount = [uint64]$installedPreimageInventory.byte_count
-                $restoreExitCode = InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters
-                if ($restoreExitCode -ne 0) { throw "Exact code rollback failed: $restoreExitCode" }
-                InvokeFrozenIntegrityProbe $frozenPlacement $install
-                $restoredInventory = PortableInventory $install
-                if ([string]$restoredInventory.sha256 -cne [string]$installedPreimageInventory.sha256) {
-                    throw 'Restored code differs from the validated installed preimage.'
-                }
-                $audit.rollback.code_placement = 'RESTORED_PREIMAGE'
-                [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
-            }
-            if (-not $existingVerified -and (Test-Path -LiteralPath $install)) {
-                InvokeFrozenIntegrityProbe $frozenPlacement $install
-                $rollbackInventory = PortableInventory $install
-                if ([string]$rollbackInventory.sha256 -cne [string]$receiptSource.sha256) {
-                    throw 'Absent-code rollback tree differs from the validated candidate.'
-                }
-                [void](Set-LabelWriterFenceDelegation `
-                    -ControlRoot $writerFenceControlRoot `
-                    -Status 'RESTORING' `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -DelegationToken $writerDelegationToken `
-                    -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage') `
-                    -LifetimeSeconds 600)
-                $removeParameters = $helperParameters.Clone()
-                $removeParameters.ReplaceExistingVerifiedPortable = $false
-                $removeParameters.Uninstall = $true
-                $removeExit = Invoke-LabelDelegatedPlacementHelper $frozenPlacement $removeParameters $writerAuthority
-                if ($removeExit -ne 0 -or (Test-Path -LiteralPath $install)) {
-                    throw 'Absent-code rollback failed to restore code absence.'
-                }
-            }
-            if (-not $existingVerified -and -not (Test-Path -LiteralPath $install)) {
-                $audit.rollback.code_placement = 'RESTORED_ABSENCE'
-            }
-            $audit.rollback.code_restored = $existingVerified -or -not (Test-Path -LiteralPath $install)
-            $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
-                    }
-                }
-            }
-            . Invoke-LabelRollbackStep 'user_preimage_admission' {
-        $ownerMutationLease = $null
-        try {
-            if ($writerFenceStarted) {
-                $ownerMutationLease = Enter-LabelWriterAdmission `
-                    -ControlRoot $writerFenceControlRoot `
-                    -TimeoutMilliseconds 90000
-            }
-            . Invoke-LabelRollbackStep 'run_restore' { Restore $before }
-            . Invoke-LabelRollbackStep 'task_restore' { RestoreScheduledTask $taskBefore }
-            . Invoke-LabelRollbackStep 'stop_marker_restore' {
-            if ([bool]$stopBefore.exists) {
-                Copy-Item -LiteralPath ([string]$stopBefore.backup_path) -Destination $stop -Force
-                if ((Sha $stop) -cne [string]$stopBefore.sha256) {
-                    throw 'stop marker restore failed'
-                }
-            }
-            elseif (Test-Path $stop) {
-                Remove-Item $stop -Force
-            }
-            }
-            . Invoke-LabelRollbackStep 'removal_report_restore' {
-            if (Test-Path -LiteralPath $removalPath) {
-                $removalProof=Join-Path $localAuditRoot ('canonical-portable-'+$runId+'-failed-removal-proof.json')
-                if (-not (Test-Path -LiteralPath $removalProof)) { Copy-Item -LiteralPath $removalPath -Destination $removalProof }
-                $audit.rollback.removal_failure_proof=[ordered]@{path=$removalProof;sha256=(Sha $removalProof)}
-            }
-            if ($null -ne $healthyRemovalReportBefore) {
-                Copy-Item -LiteralPath $healthyRemovalReportBefore.backup_path -Destination $removalPath -Force
-                if ((Sha $removalPath) -cne [string]$healthyRemovalReportBefore.sha256) {
-                    throw 'Normal removal report preimage restoration failed.'
-                }
-                $audit.rollback.removal_report_restored = $true
-            }
-            elseif (-not $removalReportExisted -and (Test-Path -LiteralPath $removalPath)) {
-                Remove-Item -LiteralPath $removalPath -Force
-                if (Test-Path -LiteralPath $removalPath) { throw 'Removal report absence restoration failed.' }
-                $audit.rollback.removal_report_restored = $true
-            }
-            }
-        }
-        finally {
-            if ($null -ne $ownerMutationLease) {
-                Exit-LabelWriterAdmission $ownerMutationLease
-            }
-        }
-            }
-            . Invoke-LabelRollbackStep 'protected_startup_restore' {
-        if ($audit.Contains('startup_update_preimage')) {
-            $restoreParameters=$helperParameters.Clone()
-            $restoreParameters.StartupUpdateRestorePreimage=[string]$audit.startup_update_preimage.path
-            $restoreParameters.StartupUpdateRestoreSha256=[string]$audit.startup_update_preimage.sha256
-            $restoreParameters.ReplaceExistingVerifiedPortable=$false
-            if ((InvokeFrozenPlacementHelper $frozenPlacement $restoreParameters) -ne 0) { throw 'Startup update preimage restoration failed.' }
-        }
-            }
-            . Invoke-LabelRollbackStep 'preimage_readback' {
-        $check = Snapshot
-        if (
-            [bool]$check.exists -ne [bool]$before.exists -or
-            [string]$check.kind -cne [string]$before.kind -or
-            [string]$check.data -cne [string]$before.data
-        ) { throw 'registry restore failed' }
-                if ($existingVerified) {
-                    InvokeFrozenIntegrityProbe $frozenPlacement $install
-                    if ([string](PortableInventory $install).sha256 -cne [string]$installedPreimageInventory.sha256) {
-                        throw 'Rollback final code preimage differs.'
-                    }
-                } elseif (Test-Path -LiteralPath $install) { throw 'Rollback final code absence differs.' }
-            }
-            # Keep protection when any prerequisite failed. Starting the old
-            # relay before exact restoration and fence release is forbidden.
-            if ($Script:LabelRollbackErrors.Count -eq 0) {
-                . Invoke-LabelRollbackStep 'fence_release' {
-        $firstRegistrationRollbackLease = $null
-        try {
-            if ($legacyFirstRegistration) {
-                # Keep ordinary writers excluded while releasing the fence and
-                # moving its own root. Session authority alone is a different mutex.
-                $firstRegistrationRollbackLease = Enter-LabelWriterAdmission `
-                    -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
-            }
-            if ($writerFenceStarted) {
-                $releasedFence = Stop-LabelWriterFence `
-                    -ControlRoot $writerFenceControlRoot `
-                    -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId `
-                    -ReplacementTransactionId $writerTransactionId `
-                    -TimeoutMilliseconds 90000
-                $writerFenceStarted = $false
-                $audit.writer_fence.status = 'RELEASED_AFTER_ROLLBACK'
-                $audit.writer_fence.writer_inventory_sha256 = [string]$releasedFence.writer_inventory_sha256
-            }
-            if ($legacyFirstRegistration) {
-                $audit.rollback.first_registration_state = Move-LegacyFirstRegistrationState `
-                    $firstRegistrationStatePaths ([string]$firstRegistrationAttempt.quarantine_root) `
-                    $firstRegistrationStarted @() $firstRegistrationAbsentAncestors $localAuditRoot
-                $audit.rollback.first_registration_state.retry_conflict_action = 'USE_SUPPORTED_ADMIN_RECOVERY'
-                if (-not $audit.rollback.first_registration_state.restored_absent) {
-                    # Retain custody across a final directory/ancestor move
-                    # failure as well; a retry adopts only this exact session.
-                    [void](Start-LabelWriterFence -ControlRoot $writerFenceControlRoot -Status 'RESTORING' `
-                        -SessionId $writerSessionId -AttemptId $writerAttemptId `
-                        -ReplacementTransactionId $writerTransactionId -SessionStartedAtUtc $writerStartedAt `
-                        -OrchestratorSha256 $writerOrchestratorSha256 -WriterContractSha256 $writerContractSha256 `
-                        -AuthorityOwnedByCaller)
-                    $writerFenceStarted = $true
-                    [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
-                    throw 'First-registration final absence restoration is incomplete.'
-                }
-            }
-        }
-        finally {
-            if ($null -ne $firstRegistrationRollbackLease) {
-                Exit-LabelWriterAdmission $firstRegistrationRollbackLease
-            }
-        }
-                }
-                if ($Script:LabelRollbackErrors.Count -eq 0) {
-        foreach ($item in $old) {
-            . Invoke-LabelRollbackStep 'relay_restart' {
-            $newPid = StartRaw ([string]$item.CommandLine)
-            Start-Sleep -Seconds 3
-            $restored = Get-CimInstance `
-                Win32_Process `
-                -Filter "ProcessId = $newPid" `
-                -ErrorAction SilentlyContinue
-            if (
-                $null -eq $restored -or
-                -not (Same ([string]$restored.ExecutablePath) ([string]$item.ExecutablePath))
-            ) { throw 'runtime restore failed' }
-            }
-        }
-                }
-            }
-        }
-        . Invoke-LabelRollbackStep 'final_readback' {
-        [void](Assert-RollbackRelayPreimage -ExpectedRelays $old)
-        $check = Snapshot
-        if (
-            [bool]$check.exists -ne [bool]$before.exists -or
-            [string]$check.kind -cne [string]$before.kind -or
-            [string]$check.data -cne [string]$before.data
-        ) { throw 'registry restore failed' }
-        }
-        $audit.rollback.steps = $Script:LabelRollbackSteps.ToArray()
-        $audit.rollback.step_failures = $Script:LabelRollbackFailures.ToArray()
-        if ($Script:LabelRollbackErrors.Count -gt 0) { throw $Script:LabelRollbackErrors[0] }
+        . Invoke-LabelCanonicalRollback
         $audit.status = 'FAILED_ROLLED_BACK'
         if ($legacyFirstRegistration) {
             $firstRegistrationAttempt.status = 'FAILED_ROLLED_BACK'
@@ -4135,11 +4644,11 @@ catch {
             $audit.status = if ($legacyFirstRegistration) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }
             $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
             $audit.rollback.applied = $mutated
-            $audit.rollback.runtime_restored = $false
+            $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted
             $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
             $audit.rollback.failure_details = Get-LabelLaunchFailure $rollbackFailure 'rollback'
             $runReadback=Snapshot
-            if ([bool]$runReadback.exists -eq [bool]$before.exists -and [string]$runReadback.kind -ceq [string]$before.kind -and [string]$runReadback.data -ceq [string]$before.data) {
+            if (-not $writerFenceStarted -and [bool]$runReadback.exists -eq [bool]$before.exists -and [string]$runReadback.kind -ceq [string]$before.kind -and [string]$runReadback.data -ceq [string]$before.data) {
                 $audit.rollback.relay_recovery_status='RUN_RESTORED_RELAY_NEXT_LOGON'
                 $audit.rollback.guidance='자동 시작 설정은 복원됐습니다. 다음 로그온 때 전송을 재개하며 설치 결과는 실패입니다.'
             }
@@ -4199,10 +4708,19 @@ catch {
     throw $original
 }
 finally {
-    RestoreWriterDelegationEnvironment $writerEnvironmentBefore
-    if ($null -ne $writerAuthority) {
-        Exit-LabelWriterSessionAuthority $writerAuthority
-        $writerAuthority = $null
+    # Keep the first cause and every attempted rollback phase in the same audit.
+    try {
+        if ($null -ne $original -and $null -ne $Script:LabelRollbackSteps) {
+            $audit.rollback.steps = $Script:LabelRollbackSteps.ToArray()
+            $audit.rollback.step_failures = $Script:LabelRollbackFailures.ToArray()
+            Save $auditPath $audit
+        }
+    } finally {
+        RestoreWriterDelegationEnvironment $writerEnvironmentBefore
+        if ($null -ne $writerAuthority) {
+            Exit-LabelWriterSessionAuthority $writerAuthority
+            $writerAuthority = $null
+        }
+        $Script:LabelWriterFenceInstalledIdentity = $null
     }
-    $Script:LabelWriterFenceInstalledIdentity = $null
 }

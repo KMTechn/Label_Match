@@ -59,6 +59,7 @@ LEGACY_INSTALLER_FILENAME = "INSTALL_THIS_PC.ps1"
 BOOTSTRAP_INTEGRITY_HELPER = Path("tools/bootstrap_integrity.ps1")
 WRITER_FENCE_HELPER = Path("tools/label_writer_fence.ps1")
 WRITER_FENCE_CONTRACT = Path("tools/label_writer_fence_contract.json")
+FAILURE_SINK_DATA = (Path("tools/failure_redaction.ps1"), Path("tools/failure_redaction_rules.json"))
 SHARED_POWERSHELL_LEAF = Path("kmtech_shared/powershell/portable.ps1")
 DATA_GENERATION_POWERSHELL_LEAF = Path("kmtech_shared/powershell/data_generation.ps1")
 THIRD_PARTY = {
@@ -302,6 +303,8 @@ def _copy_application(repo_root: Path, app_root: Path) -> list[Path]:
         shutil.copy2(source, app_root / name)
     tools_root = app_root / "tools"
     tools_root.mkdir()
+    for relative in FAILURE_SINK_DATA:
+        shutil.copy2(repo_root / relative, app_root / relative)
     tool_sources = _discover_portable_tool_sources(repo_root)
     for source in tool_sources:
         relative = source.relative_to(repo_root / "tools")
@@ -595,6 +598,8 @@ def build(
             )
         writer_fence_target = output / WRITER_FENCE_HELPER
         shutil.copy2(writer_fence_source, writer_fence_target)
+        for relative in FAILURE_SINK_DATA:
+            shutil.copy2(repo_root / relative, output / relative)
         writer_fence_contract_source = repo_root / WRITER_FENCE_CONTRACT
         if not writer_fence_contract_source.is_file():
             raise PortableBuildError(

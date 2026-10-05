@@ -32,6 +32,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $MutableAppRelativePaths = @("_internal/config/app_settings.json")
+. (Join-Path $PSScriptRoot "tools/failure_redaction.ps1")
+. (Join-Path $PSScriptRoot "tools/failure_redaction.ps1")
 
 if (-not $DryRun.IsPresent) {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -97,6 +99,14 @@ function Write-Utf8JsonFile([string]$Path, $Payload) {
     $parent = Split-Path -Parent $Path
     if (-not [string]::IsNullOrWhiteSpace($parent)) {
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    # Runtime settings are authoritative configuration; all other JSON is evidence.
+    if ((Split-Path -Leaf $Path) -cne "app_settings.json") {
+        $Payload = ConvertTo-KmtechRedactedSinkObject $Payload
+    }
+    # Runtime settings are authoritative configuration; all other JSON is evidence.
+    if ((Split-Path -Leaf $Path) -cne "app_settings.json") {
+        $Payload = ConvertTo-KmtechRedactedSinkObject $Payload
     }
     $json = $Payload | ConvertTo-Json -Depth 20
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)

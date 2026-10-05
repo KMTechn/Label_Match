@@ -468,6 +468,9 @@ def resolve_current_user_onboarding_paths(
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    if payload.get("report_version") in (ONBOARDING_REPORT_VERSION, REMOVAL_REPORT_VERSION):
+        from failure_redaction import redact_json_for_sink
+        payload = redact_json_for_sink(dict(payload))
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
@@ -1191,7 +1194,7 @@ def onboard_current_user(
                 report_path=paths.onboarding_report_path,
                 status="UNKNOWN",
             )
-        if migration_status != "ABSENT":
+        if migration_status not in {"ABSENT", "DISABLED_RETAINED_OFFICIAL"}:
             raise ValueError("historical current-user scheduled task retirement was not proven")
         # The marker is a safety fence.  It is released only after canonical
         # install ownership, HKCU, and historical task absence all read back.

@@ -1,0 +1,75 @@
+{
+  "schema": "kmtech-sink-redaction-vectors-v1",
+  "contract": "W\\w9setupprep\\REDACTION-CONTRACT.md",
+  "note": "All values are synthetic test strings, not real secrets.",
+  "vectors": [
+    {
+      "id": "env-plain",
+      "environ": {"CONTAINER_AUDIT_WRITER_DELEGATION_TOKEN": "synthDelegationValue0001"},
+      "text": "child failed: token=synthDelegationValue0001 end",
+      "expected": "child failed: token=[REDACTED:CONTAINER_AUDIT_WRITER_DELEGATION_TOKEN] end"
+    },
+    {
+      "id": "env-pattern-name",
+      "environ": {"LABEL_MATCH_SOMETHING_API_KEY": "synthApiKeyValue0002"},
+      "text": "x synthApiKeyValue0002 y synthApiKeyValue0002",
+      "expected": "x [REDACTED:LABEL_MATCH_SOMETHING_API_KEY] y [REDACTED:LABEL_MATCH_SOMETHING_API_KEY]"
+    },
+    {
+      "id": "env-path-excluded",
+      "environ": {"INSPECTION_WORKER_DIRECT_SYNC_ENROLLMENT_TOKEN_FILE": "C:\\synth\\token.json"},
+      "text": "reading C:\\synth\\token.json",
+      "expected": "reading C:\\synth\\token.json"
+    },
+    {
+      "id": "env-json-escaped",
+      "environ": {"REWORK_LOGISTICS_API_TOKEN": "synth\"Quote\\Value0003"},
+      "text": "{\"detail\": \"synth\\\"Quote\\\\Value0003\"}",
+      "expected": "{\"detail\": \"[REDACTED:REWORK_LOGISTICS_API_TOKEN]\"}"
+    },
+    {
+      "id": "env-longest-first",
+      "environ": {"DEFECT_LOGISTICS_API_TOKEN": "synthAbcd", "DEFECT_RETURN_MANIFEST_API_TOKEN": "synthAbcdEfgh0004"},
+      "text": "v=synthAbcdEfgh0004",
+      "expected": "v=[REDACTED:DEFECT_RETURN_MANIFEST_API_TOKEN]"
+    },
+    {
+      "id": "env-short-skipped",
+      "environ": {"SOME_TOKEN": "abc"},
+      "text": "abc is short",
+      "expected": "abc is short\n[REDACTION_NOTE:short_value_skipped:SOME_TOKEN]"
+    },
+    {
+      "id": "json-field",
+      "environ": {},
+      "json": {"status": "FAILED", "enrollment_token": "synthTok0005", "nested": {"Password": "synthPw0006", "pin": 123456}, "message": "ok"},
+      "expected_json": {"status": "FAILED", "enrollment_token": "[REDACTED:field]", "nested": {"Password": "[REDACTED:field]", "pin": "[REDACTED:field]"}, "message": "ok"}
+    },
+    {
+      "id": "json-field-typed-metadata-kept",
+      "environ": {},
+      "json": {"secret_values_recorded": false, "identity_or_credential_copied": false, "credential_present": null, "delegation_token_sha256": "0f3c9a1b2d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff", "enrollment_token_path": "C:\\synth\\token.json", "admin_pin_sha256": "aa11bb22cc33dd44ee55ff6677889900aa11bb22cc33dd44ee55ff6677889900", "api_token": "synthTok0008"},
+      "expected_json": {"secret_values_recorded": false, "identity_or_credential_copied": false, "credential_present": null, "delegation_token_sha256": "0f3c9a1b2d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff", "enrollment_token_path": "C:\\synth\\token.json", "admin_pin_sha256": "[REDACTED:field]", "api_token": "[REDACTED:field]"}
+    },
+    {
+      "id": "truncate-head-tail",
+      "environ": {},
+      "text_generator": {"head": "HEAD-", "fill_char": "a", "fill_bytes": 100000, "tail": "-TAIL Traceback last line: ValueError: synthetic"},
+      "expected_properties": {
+        "max_utf8_bytes": 65536,
+        "starts_with": "HEAD-",
+        "ends_with": "-TAIL Traceback last line: ValueError: synthetic",
+        "contains_regex": "\\n\\[TRUNCATED: [0-9]+ bytes omitted\\]\\n"
+      }
+    },
+    {
+      "id": "redact-before-truncate",
+      "environ": {"KMTECH_DEFECT_WRITER_DELEGATION_TOKEN": "synthLateSecret0007"},
+      "text_generator": {"head": "H", "fill_char": "b", "fill_bytes": 90000, "tail": " end synthLateSecret0007"},
+      "expected_properties": {
+        "not_contains": "synthLateSecret0007",
+        "ends_with": " end [REDACTED:KMTECH_DEFECT_WRITER_DELEGATION_TOKEN]"
+      }
+    }
+  ]
+}

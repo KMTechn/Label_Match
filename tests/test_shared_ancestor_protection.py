@@ -17,9 +17,19 @@ def run_functions(tmp_path, source, names, script, *, values=None, engine='power
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $tokens=$null;$errors=$null
+$redaction=Join-Path (Split-Path -Parent $env:LM_CONTRACT_SOURCE) 'tools/failure_redaction.ps1'
+if(Test-Path -LiteralPath $redaction){. $redaction}
+$placement=Join-Path (Split-Path -Parent $env:LM_CONTRACT_SOURCE) 'INSTALL_THIS_PC.ps1'
+if(Test-Path -LiteralPath $placement){
+ $helper=[Management.Automation.Language.Parser]::ParseFile($placement,[ref]$tokens,[ref]$errors)
+ foreach($dependency in @('Get-LabelOfficialLegacyTaskExpectation','Get-LabelOfficialLegacyPrincipalModes','Get-LabelOfficialLegacyTaskExpectations','ConvertTo-LabelLegacyTaskPath','Get-LabelOfficialLegacyTaskFingerprint','Get-LabelOfficialLegacyTaskSnapshot')){
+  $definitions=@($helper.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $dependency},$true))
+  if($definitions.Count -eq 1){. ([scriptblock]::Create($definitions[0].Extent.Text))}
+ }
+}
 $ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'Product PowerShell parse failed.'}
-foreach($dependency in @('ConvertTo-LabelTaskSid','Test-KmtechPrivilegedOwnerSid','Open-LabelRunKey')){
+foreach($dependency in @('ConvertTo-LabelTaskSid','Test-KmtechPrivilegedOwnerSid','Open-LabelRunKey','Get-LabelCurrentUserScheduledTasks')){
  $definitions=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $dependency},$true))
  if($definitions.Count -eq 1){. ([scriptblock]::Create($definitions[0].Extent.Text))}
 }

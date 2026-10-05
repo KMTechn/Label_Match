@@ -26,6 +26,8 @@ param(
     [string]$InstallerOwnerProcessStartedAtFileTime = "",
     [string]$StartupUpdateRestorePreimage = "",
     [string]$StartupUpdateRestoreSha256 = "",
+    [string]$LegacyRelayTransition = "",
+    [string]$LegacyRelayPreimageSha256 = "",
     [switch]$ReplaceExistingVerifiedPortable,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$ApplyHardenedAclForTest,
@@ -110,6 +112,10 @@ elseif (-not (Test-Path -LiteralPath $BootstrapIntegrityFunctions -PathType Leaf
 else {
     . $BootstrapIntegrityFunctions -SharedCodeRoot $PSScriptRoot
     . (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')
+}
+if (-not (Get-Command ConvertTo-KmtechRedactedSinkText -CommandType Function -ErrorAction SilentlyContinue) -and
+    -not (-not $DryRun.IsPresent -and $Uninstall.IsPresent -and -not $earlyTestOverride)) {
+    . (Join-Path $PSScriptRoot 'tools/failure_redaction.ps1')
 }
 if ($WriterFenceFunctionsPreloaded.IsPresent) {
     foreach ($functionName in @(
@@ -241,7 +247,7 @@ function Write-ElevationLog([string]$Status, [string]$Message) {
     }
     [IO.File]::AppendAllText(
         $path,
-        (($entry | ConvertTo-Json -Compress) + [Environment]::NewLine),
+        ((ConvertTo-KmtechRedactedSinkObject $entry | ConvertTo-Json -Compress) + [Environment]::NewLine),
         (New-Object Text.UTF8Encoding($false))
     )
 }
@@ -743,11 +749,15 @@ function Save-LabelStartupUpdatePreimage([string]$Root, [string]$Purpose) {
 
 
 function Restore-LabelStartupUpdatePreimage([string]$Root, [string]$Directory, [string]$ExpectedSha256) {
-    Assert-LabelStartupUpdateTrust $Root
+    # The current tree may already have been removed or restored. This operation
+    # executes only the pinned, preloaded helper and reads the hardened preimage.
+    # Keep ancestor and preimage ACL/reparse checks without depending on current.
+    Assert-ProtectedCodeAncestors (Split-Path -Parent $Root)
     $managed = Get-StrictFullPath (Split-Path -Parent $Root) 'startup update restore parent'
     $full = Get-StrictFullPath $Directory 'startup update preimage'
     if (-not (($full.StartsWith($managed+'\',[StringComparison]::OrdinalIgnoreCase))) -or (Split-Path -Leaf $full) -cnotmatch '^\.startup-update-(install|uninstall)\.[0-9a-f]{32}$') { throw 'STARTUP_UPDATE_RESTORE_PATH_INVALID' }
     Assert-NoReparsePoint $full 'startup update preimage'
+    Assert-HardenedCodeAcl $full -Recursive
     $path = Join-Path $full 'preimage.json'
     if ($ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$' -or (Get-FileSha256 $path) -cne $ExpectedSha256) { throw 'STARTUP_UPDATE_RESTORE_PREIMAGE_PIN_DIFFERS' }
     $saved = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -762,8 +772,10 @@ function Restore-LabelStartupUpdatePreimage([string]$Root, [string]$Directory, [
         if ([int]$service.GetFolder('\').GetTask([string]$saved.task.name).GetInstances(0).Count -ne 0) { throw 'STARTUP_UPDATE_TASK_IS_RUNNING' }
     }
 
+    $restoreErrors=[Collections.Generic.List[object]]::new()
     $control = Join-Path $managed 'update-control'
     foreach ($item in @($saved.files)) {
+        try {
         $target = Join-Path $control ([string]$item.name)
         Assert-NoReparsePoint $target 'startup update restore target'
         if (Test-Path -LiteralPath $target) {
@@ -776,7 +788,9 @@ function Restore-LabelStartupUpdatePreimage([string]$Root, [string]$Directory, [
             Copy-Item -LiteralPath $original -Destination $target
             if ((Get-FileSha256 $target) -cne [string]$item.sha256) { throw 'STARTUP_UPDATE_RESTORE_READBACK_FAILED' }
         }
+        } catch { $restoreErrors.Add($_) }
     }
+    try {
     Invoke-LabelStartupUpdateTaskMutation {
         $name = [string]$saved.task.name
         if ($name -cnotmatch '^KMTech\.LabelMatch\.StartupUpdate\.[0-9a-f]{24}$') { throw 'STARTUP_UPDATE_RESTORE_TASK_NAME_INVALID' }
@@ -794,6 +808,14 @@ function Restore-LabelStartupUpdatePreimage([string]$Root, [string]$Directory, [
             if ($null -ne (Get-LabelStartupUpdateTask $name)) { throw 'STARTUP_UPDATE_RESTORE_TASK_REMOVAL_FAILED' }
         }
     } | Out-Null
+    } catch { $restoreErrors.Add($_) }
+    if($restoreErrors.Count){
+        $errorRecord=$restoreErrors[0]
+        $errorRecord.Exception.Data['startup_restore_failures']=@($restoreErrors | ForEach-Object {
+            [ordered]@{type=$_.Exception.GetType().FullName;message=ConvertTo-KmtechRedactedSinkText $_.Exception.Message}
+        })
+        throw $errorRecord
+    }
 }
 
 
@@ -937,6 +959,189 @@ function Get-LegacyTaskByNameFailClosed([string]$Name) {
         throw "Legacy scheduled task observation is non-unique: $Name"
     }
     return $taskMatches
+}
+
+function Get-LabelOfficialLegacyTaskExpectation {
+    # Dynamic SYSTEM: public v2.0.61-63 wrapper:44-64 / pack:164-203,201-221.
+    # Fixed SYSTEM: public v2.0.64/66 wrapper:44-65 / pack:164-211.
+    # Earlier public releases have no SYSTEM default; same-operator modes are coordinator-approved.
+    $pc = [regex]::Replace(([string]$env:COMPUTERNAME).Trim(),'[^A-Za-z0-9._-]+','-').Trim('.','-','_')
+    if (-not $pc) { $pc = 'worker-pc' }
+    if ($pc.Length -gt 96) { $pc = $pc.Substring(0,96).Trim('.','-','_') }
+    try { $machine = [string](Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid }
+    catch { $machine = [string]$env:COMPUTERNAME + '|' + [string]$env:USERDOMAIN }
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { $suffix = ([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($machine)))).Replace('-','').Substring(0,12).ToLowerInvariant() }
+    finally { $hash.Dispose() }
+    $hostId = ('label-match-'+$pc+'-'+$suffix).ToLowerInvariant()
+    $name = 'direct-sync-relay-'+$hostId
+    $wrapper = 'C:\ProgramData\KMTech\DirectSync\'+$hostId+'\bin\run_'+$name+'.vbs'
+    return [ordered]@{
+        'task.path'='\';'task.name'=$name;'action.count'='1';'action.type'='Exec'
+        'action.command'=(Join-Path $env:SystemRoot 'System32\wscript.exe').ToLowerInvariant()
+        'action.arguments'=('//B //NoLogo '+$wrapper.ToLowerInvariant());'action.workdir'=''
+        'principal.user'='SYSTEM';'principal.logon_type'='ServiceAccount';'principal.run_level'='LeastPrivilege'
+        'trigger.count'='1';'trigger.type'='TimeTrigger';'trigger.repetition_interval'='PT1M'
+    }
+}
+
+function Get-LabelOfficialLegacyPrincipalModes {
+    # One switch point: remove a mode if the guest proves enabled-only mutation unsafe.
+    return @('SYSTEM','Password','InteractiveToken')
+}
+
+function Get-LabelOfficialLegacyTaskExpectations {
+    $dynamic=Get-LabelOfficialLegacyTaskExpectation
+    $fixed=[ordered]@{}
+    foreach($key in $dynamic.Keys){$fixed[$key]=$dynamic[$key]}
+    $fixed['task.name']='direct-sync-relay-label-match'
+    $fixed['action.arguments']='//B //NoLogo c:\programdata\kmtech\directsync\label_match\bin\run_direct-sync-relay-label-match.vbs'
+    $result=@()
+    foreach($base in @($dynamic,$fixed)){
+        foreach($mode in @(Get-LabelOfficialLegacyPrincipalModes)){
+            $item=[ordered]@{}
+            foreach($key in $base.Keys){$item[$key]=$base[$key]}
+            if($mode -cne 'SYSTEM'){
+                $item['principal.user']='CURRENT_USER'
+                $item['principal.logon_type']=$mode
+            }
+            $result+=,$item
+        }
+    }
+    return $result
+}
+
+function ConvertTo-LabelLegacyTaskPath([string]$Value) {
+    if (-not $Value) { return '' }
+    $text = [Environment]::ExpandEnvironmentVariables($Value.Trim().Trim('"')).Replace('/','\')
+    if ($text -ieq 'wscript.exe') { $text = Join-Path $env:SystemRoot 'System32\wscript.exe' }
+    return [IO.Path]::GetFullPath($text).TrimEnd('\').ToLowerInvariant()
+}
+
+function Get-LabelOfficialLegacyTaskFingerprint([string]$TaskName,[string]$TaskPath,[string]$Xml) {
+    try {
+    [xml]$node = $Xml
+    $root = $node.DocumentElement
+    $actions = @($root.SelectNodes("*[local-name()='Actions']/*"))
+    $principals = @($root.SelectNodes("*[local-name()='Principals']/*"))
+    $triggers = @($root.SelectNodes("*[local-name()='Triggers']/*"))
+    if ($actions.Count -ne 1 -or $principals.Count -ne 1 -or $triggers.Count -ne 1) { throw 'Healthy lifecycle task belongs to another principal/command.' }
+    $action = $actions[0];$principal=$principals[0];$trigger=$triggers[0]
+    $sid = ConvertTo-LabelTaskSid ([string]$principal.UserId)
+    $actor=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $user=if($sid -ceq 'S-1-5-18'){'SYSTEM'}elseif($sid -ceq $actor){'CURRENT_USER'}else{throw 'Healthy lifecycle task belongs to another principal/command.'}
+    $expectations=@(Get-LabelOfficialLegacyTaskExpectations | Where-Object {
+        [string]$_['task.name'] -ieq $TaskName -and [string]$_['principal.user'] -ceq $user -and
+        [string]$_['principal.logon_type'] -ceq [string]$principal.LogonType
+    })
+    if($expectations.Count -ne 1){throw 'Healthy lifecycle task belongs to another principal/command.'}
+    $expected=$expectations[0]
+    $arguments = [regex]::Replace(([string]$action.Arguments).Trim(),'\s+',' ')
+    if ($arguments -cnotmatch '^//B //NoLogo (.+)$') { throw 'Healthy lifecycle task belongs to another principal/command.' }
+    $arguments = '//B //NoLogo '+(ConvertTo-LabelLegacyTaskPath $Matches[1])
+    $actual = [ordered]@{
+        'task.path'=($TaskPath.TrimEnd('\')+'\').ToLowerInvariant();'task.name'=$TaskName.ToLowerInvariant()
+        'action.count'=[string]$actions.Count;'action.type'=$action.LocalName
+        'action.command'=(ConvertTo-LabelLegacyTaskPath ([string]$action.Command))
+        'action.arguments'=$arguments;'action.workdir'=(ConvertTo-LabelLegacyTaskPath ([string]$action.WorkingDirectory))
+        'principal.user'=$user;'principal.logon_type'=[string]$principal.LogonType;'principal.run_level'=[string]$principal.RunLevel
+        'trigger.count'=[string]$triggers.Count;'trigger.type'=$trigger.LocalName;'trigger.repetition_interval'=[string]$trigger.Repetition.Interval
+    }
+    $fields=[ordered]@{};$lines=@()
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        foreach ($key in @($expected.Keys | Sort-Object)) {
+            if ([string]$actual[$key] -cne [string]$expected[$key]) { throw 'Healthy lifecycle task belongs to another principal/command.' }
+            $line=$key+'='+[string]$actual[$key]+[string][char]10
+            $fields[$key]=([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($line)))).Replace('-','').ToLowerInvariant()
+            $lines+=$line
+        }
+        $aggregate=([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($lines -join ''))))).Replace('-','').ToLowerInvariant()
+    } finally { $hash.Dispose() }
+    return [pscustomobject]@{fields=$fields;sha256=$aggregate;matched=$true}
+    } catch { throw 'Healthy lifecycle task belongs to another principal/command.' }
+}
+
+function Get-LabelOfficialLegacyTaskSnapshot {
+    try {
+    $expected=Get-LabelOfficialLegacyTaskExpectation
+    $tasks=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        [string]$_.TaskName -like 'direct-sync-relay-label-match-*' -or
+        ([string]$_.TaskName -ieq 'direct-sync-relay-label-match' -and
+            @($_.Actions | Where-Object { [string]$_.Execute -match '(?i)wscript\.exe"?$' }).Count -gt 0)
+    })
+    if ($tasks.Count -gt 1) { throw 'Healthy lifecycle task belongs to another principal/command.' }
+    if ($tasks.Count -eq 0) { return $null }
+    $task=$tasks[0]
+    $xml=[string](Export-ScheduledTask -TaskName ([string]$task.TaskName) -TaskPath ([string]$task.TaskPath) -ErrorAction Stop)
+    $fingerprint=Get-LabelOfficialLegacyTaskFingerprint ([string]$task.TaskName) ([string]$task.TaskPath) $xml
+    $hash=[Security.Cryptography.SHA256]::Create()
+    try { $sha=([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($xml)))).Replace('-','').ToLowerInvariant() }
+    finally { $hash.Dispose() }
+    return [pscustomobject]@{name=[string]$task.TaskName;path=[string]$task.TaskPath;xml=$xml;xml_sha256=$sha;enabled=[bool]$task.Settings.Enabled;fingerprint=$fingerprint}
+    } catch { throw 'Healthy lifecycle task belongs to another principal/command.' }
+}
+
+function Assert-LabelOfficialLegacyTaskStopped([string]$Name) {
+    $service=New-Object -ComObject 'Schedule.Service';$service.Connect()
+    $task=$service.GetFolder('\').GetTask($Name)
+    if ([int]$task.GetInstances(0).Count -ne 0) { throw 'LEGACY_RELAY_STOP_UNPROVEN' }
+    $expectations=@(Get-LabelOfficialLegacyTaskExpectations | Where-Object { [string]$_['task.name'] -ieq $Name })
+    if($expectations.Count -lt 1){throw 'Healthy lifecycle task belongs to another principal/command.'}
+    $expected=$expectations[0]
+    $wrapper=([string]$expected['action.arguments']).Substring('//B //NoLogo '.Length)
+    $stateRoot=Split-Path -Parent (Split-Path -Parent $wrapper)
+    $writers=@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+        [string]$_.CommandLine -like ('*'+$stateRoot+'*') -and [string]$_.CommandLine -match 'direct[_-]sync[_-]relay'
+    })
+    if ($writers.Count) { throw 'LEGACY_RELAY_STOP_UNPROVEN' }
+}
+
+function Invoke-LabelOfficialLegacyTaskTransition([string]$Mode,[string]$Directory,[string]$ExpectedXmlSha256) {
+    if ($Mode -cnotin @('Disable','Restore') -or $ExpectedXmlSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'LEGACY_RELAY_TRANSITION_INVALID' }
+    $path=Join-Path $Directory 'preimage.xml'
+    $expected=Get-LabelOfficialLegacyTaskExpectation
+    if ($Mode -ceq 'Disable') {
+        $before=Get-LabelOfficialLegacyTaskSnapshot
+        if ($null -eq $before -or $before.xml_sha256 -cne $ExpectedXmlSha256) { throw 'LEGACY_RELAY_PREIMAGE_DIFFERS' }
+        if (-not (Test-Path -LiteralPath $Directory)) { New-Item -ItemType Directory -Path $Directory | Out-Null }
+        Set-HardenedCodeAcl $Directory -Recursive
+        if (-not (Test-Path -LiteralPath $path)) {
+            $stream=[IO.File]::Open($path,'CreateNew','Write','Read')
+            try {$bytes=[Text.Encoding]::UTF8.GetBytes($before.xml);$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+        }
+        if ((Get-FileSha256 $path) -cne $ExpectedXmlSha256) { throw 'LEGACY_RELAY_PREIMAGE_DIFFERS' }
+        $metadataPath=Join-Path $Directory 'preimage.json'
+        if(-not (Test-Path -LiteralPath $metadataPath)){
+            [IO.File]::WriteAllText($metadataPath,([ordered]@{task_name=$before.name;path=$before.path;enabled=$before.enabled;xml_sha256=$before.xml_sha256;fingerprint_sha256=$before.fingerprint.sha256}|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+        }
+        Assert-LabelOfficialLegacyTaskStopped $before.name
+        Disable-ScheduledTask -TaskName $before.name -TaskPath $before.path -ErrorAction Stop | Out-Null
+        Assert-LabelOfficialLegacyTaskStopped $before.name
+        $after=Get-LabelOfficialLegacyTaskSnapshot
+        if ($after.enabled -or $after.fingerprint.sha256 -cne $before.fingerprint.sha256) { throw 'LEGACY_RELAY_DISABLED_READBACK_FAILED' }
+    } else {
+        Assert-HardenedCodeAcl $Directory -Recursive
+        Assert-NoReparsePoint $Directory 'legacy relay preimage'
+        if ((Get-FileSha256 $path) -cne $ExpectedXmlSha256) { throw 'LEGACY_RELAY_PREIMAGE_DIFFERS' }
+        $xml=[IO.File]::ReadAllText($path,[Text.UTF8Encoding]::new($false,$true))
+        $metadata=Get-Content -LiteralPath (Join-Path $Directory 'preimage.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $name=[string]$metadata.task_name
+        $fingerprint=Get-LabelOfficialLegacyTaskFingerprint $name '\' $xml
+        if([string]$metadata.xml_sha256 -cne $ExpectedXmlSha256 -or $fingerprint.sha256 -cne [string]$metadata.fingerprint_sha256){throw 'LEGACY_RELAY_PREIMAGE_DIFFERS'}
+        [xml]$original=$xml
+        $enabled=[Convert]::ToBoolean([string]$original.Task.Settings.Enabled)
+        $current=Get-LabelOfficialLegacyTaskSnapshot
+        if($null -eq $current -or $current.fingerprint.sha256 -cne $fingerprint.sha256){throw 'LEGACY_RELAY_RESTORE_DEFINITION_UNPROVEN'}
+        Assert-LabelOfficialLegacyTaskStopped $current.name
+        # Enabled-only restoration preserves stored task credentials. No registration/deletion.
+        if($current.enabled -ne $enabled){
+            if($enabled){Enable-ScheduledTask -TaskName $name -TaskPath '\' -ErrorAction Stop | Out-Null}
+            else{Disable-ScheduledTask -TaskName $name -TaskPath '\' -ErrorAction Stop | Out-Null}
+        }
+        $after=Get-LabelOfficialLegacyTaskSnapshot
+        if ($after.enabled -ne $enabled -or $after.fingerprint.sha256 -cne $fingerprint.sha256) { throw 'LEGACY_RELAY_RESTORE_READBACK_FAILED' }
+    }
 }
 
 function Get-OwnedLegacyTaskRetirementSnapshot([string]$Name) {
@@ -1085,6 +1290,13 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
 }
 
 function Remove-LabelScheduledTasks($Folder, [string]$EvidenceRoot, [string]$Current) {
+    try { $official=Get-LabelOfficialLegacyTaskSnapshot }
+    catch { throw 'Refusing to remove a historical task with different ownership/command.' }
+    if($null -ne $official){
+        $directory=Join-Path $EvidenceRoot 'official-legacy-relay'
+        Invoke-LabelOfficialLegacyTaskTransition 'Disable' $directory $official.xml_sha256
+    }
+
     foreach ($task in @(Get-LabelSupportedStartupTasks $Current)) {
         $name = [string]$task.TaskName
         $native = $Folder.GetTask($name)
@@ -1418,7 +1630,7 @@ if (
 ) { throw "Trusted portable source inventory pins are required." }
 if (-not $DryRun.IsPresent -and -not $testOverride) {
     Assert-AlreadyElevated
-    if (-not $Uninstall.IsPresent -and -not $StartupUpdateRestorePreimage) {
+    if (-not $Uninstall.IsPresent -and -not $StartupUpdateRestorePreimage -and -not $LegacyRelayTransition) {
         try {
             Initialize-LabelProtectedInstallBase $installRootFull
             Write-LabelInstallerOwnerRecord $installRootFull
@@ -1440,12 +1652,25 @@ if (-not $DryRun.IsPresent -and -not $testOverride) {
     Write-ElevationLog 'STARTED' 'Elevated Label code placement started.'
 }
 
-if ($StartupUpdateRestorePreimage) {
-    if ($testOverride -or $DryRun -or $Uninstall) { throw 'Startup update restore mode differs.' }
-    $OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+if ($LegacyRelayTransition -or $StartupUpdateRestorePreimage) {
+    if ($LegacyRelayTransition) {
+        if ($DryRun -or $Uninstall -or $StartupUpdateRestorePreimage -or $WriterFenceAttemptId -cnotmatch '^[0-9a-f]{32}$') { throw 'LEGACY_RELAY_TRANSITION_INVALID' }
+        Assert-ProtectedCodeAncestors (Split-Path -Parent $installRootFull)
+        $directory=Join-Path (Split-Path -Parent $installRootFull) ('.legacy-relay.'+$WriterFenceAttemptId)
+    } else {
+        if ($testOverride -or $DryRun -or $Uninstall) { throw 'Startup update restore mode differs.' }
+        $OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    }
+    # Both preimages use the same existing admission source; inventory stays 59.
     $lease = Enter-LabelWriterDelegatedOperation -ControlRoot $WriterFenceControlRoot -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId -ReplacementTransactionId $WriterFenceReplacementTransactionId -DelegationToken $WriterFenceDelegationToken -Source 'auto_update_restore_preimage'
-    try { Restore-LabelStartupUpdatePreimage $installRootFull $StartupUpdateRestorePreimage $StartupUpdateRestoreSha256 }
-    finally { Exit-LabelWriterAdmission $lease }
+    try {
+        if ($LegacyRelayTransition) {
+            Invoke-LabelOfficialLegacyTaskTransition $LegacyRelayTransition $directory $LegacyRelayPreimageSha256
+            Write-ElevationLog 'LEGACY_RELAY_TRANSITION' ('mode='+$LegacyRelayTransition+';preimage_sha256='+$LegacyRelayPreimageSha256)
+        } else {
+            Restore-LabelStartupUpdatePreimage $installRootFull $StartupUpdateRestorePreimage $StartupUpdateRestoreSha256
+        }
+    } finally { Exit-LabelWriterAdmission $lease }
     return
 }
 if ($Uninstall.IsPresent) {

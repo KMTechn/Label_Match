@@ -67,18 +67,12 @@ BEARER_DIAGNOSTIC_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 def _bounded_diagnostic_text(
     value: object, *, redact_values: Sequence[object] = ()
 ) -> str:
-    text = str(value or "")[: DIAGNOSTIC_TEXT_LIMIT * 8]
-    for raw_value in sorted(
-        {str(item) for item in redact_values if str(item)}, key=len, reverse=True
-    ):
-        text = text.replace(raw_value, "[redacted]")
-    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
-    text = SENSITIVE_DIAGNOSTIC_RE.sub(
-        lambda match: f"{match.group(1)}{match.group(2)}[redacted]", text
-    )
-    text = BEARER_DIAGNOSTIC_RE.sub("Bearer [redacted]", text)
-    text = " ".join(text.split())
-    return text[:DIAGNOSTIC_TEXT_LIMIT]
+    from failure_redaction import redact_for_sink
+    text = str(value or "")
+    for raw_value in sorted({str(item) for item in redact_values if str(item)}, key=len, reverse=True):
+        text = text.replace(raw_value, "[REDACTED:field]")
+    lines = redact_for_sink(text).splitlines()
+    return next((line for line in reversed(lines) if line.strip()), "")[-300:]
 
 
 def _bounded_command_identity(command: Sequence[str] | str, fallback: str = "child_process") -> str:
@@ -107,6 +101,8 @@ def _child_failure_diagnostic(
         "failure_code": code,
     }
     if exception is not None:
+        from failure_redaction import try_write_failure_evidence as write_failure_evidence
+        diagnostic["full_exception_trace"] = write_failure_evidence("".join(traceback.TracebackException.from_exception(exception).format()), redact_values=redact_values)
         diagnostic["inner_exception_type"] = _bounded_diagnostic_text(
             exception.__class__.__name__
         )
@@ -139,6 +135,15 @@ def _normalize_failure_diagnostic(candidate: object) -> dict | None:
     exception_message = _bounded_diagnostic_text(candidate.get("inner_exception_message"))
     if exception_message:
         diagnostic["inner_exception_message"] = exception_message
+    for field in ("full_exception_trace", "stdout_evidence", "stderr_evidence", "last_line"):
+        if field in candidate:
+            if field != "last_line":
+                from failure_redaction import validate_failure_evidence
+                if "evidence_failure" in candidate[field]:
+                    diagnostic["evidence_failure"] = candidate[field]["evidence_failure"]
+                    continue
+                validate_failure_evidence(candidate[field])
+            diagnostic[field] = candidate[field]
     return diagnostic
 
 
@@ -414,25 +419,14 @@ def _scheduled_task_stop_command(
 def _scheduled_task_delete_command(
     task_name: str, expected_action_parts: Sequence[str]
 ) -> list[str]:
-    expected_execute = str(expected_action_parts[0])
-    expected_arguments = _quote_cmd([str(part) for part in expected_action_parts[1:]])
-    script = "\n".join(
-        [
-            "$ErrorActionPreference = 'Stop'",
-            f"$taskName = {_ps_single_quote(task_name)}",
-            f"$expectedExecute = {_ps_single_quote(expected_execute)}",
-            f"$expectedArguments = {_ps_single_quote(expected_arguments)}",
-            "$tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskPath -eq '\\' -and [string]$_.TaskName -eq $taskName })",
-            "if ($tasks.Count -eq 0) { [ordered]@{ operation = 'delete'; status = 'ABSENT'; task_name = $taskName } | ConvertTo-Json -Compress; exit 0 }",
-            "if ($tasks.Count -ne 1) { throw 'scheduled task name is ambiguous' }",
-            "$task = $tasks[0]",
-            "$actions = @($task.Actions)",
-            "if ($actions.Count -ne 1 -or [string]$actions[0].Execute -ine $expectedExecute -or [string]$actions[0].Arguments -cne $expectedArguments) { throw 'scheduled task action is foreign or ambiguous' }",
-            "Unregister-ScheduledTask -InputObject $task -Confirm:$false -ErrorAction Stop",
-            "[ordered]@{ operation = 'delete'; status = 'DELETED'; task_name = $taskName } | ConvertTo-Json -Compress",
-            "",
-        ]
-    )
+    # Retired from stock. Only canonical removal owns the writer fence proof.
+    script = "\n".join([
+        "$ErrorActionPreference = 'Stop'",
+        f"$taskName = {_ps_single_quote(task_name)}",
+        "$tasks=@(Get-ScheduledTask -ErrorAction Stop|Where-Object { [string]$_.TaskPath -eq '\\' -and [string]$_.TaskName -eq $taskName })",
+        "if($tasks.Count -eq 0){[ordered]@{operation='delete';status='ABSENT'}|ConvertTo-Json -Compress;exit 0}",
+        "throw 'Refusing to remove a historical task with different ownership/command. 기존 작업은 보존했습니다. canonical 설치기의 지원 제거를 실행하세요.'",
+    ])
     return _encoded_powershell_command(script)
 
 
@@ -533,7 +527,8 @@ def _write_json(path: Path, payload: dict) -> None:
         if diagnostic is not None:
             payload["failure_diagnostic"] = diagnostic
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    from failure_redaction import redact_json_for_sink
+    path.write_text(json.dumps(redact_json_for_sink(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _runtime_paths(program_data_root: str | os.PathLike[str]) -> dict[str, str]:
@@ -1329,31 +1324,11 @@ def build_install_plan(args: argparse.Namespace, run_preflight: bool = False) ->
     }
 
 
-def _bounded_output(value: str, *, limit: int = COMMAND_OUTPUT_LIMIT) -> tuple[str, bool, int]:
-    raw = str(value or "")
-    encoded = raw.encode("utf-8", errors="replace")
-    if len(encoded) <= limit:
-        return raw, False, len(encoded)
-    bounded = encoded[:limit].decode("utf-8", errors="ignore")
-    return bounded, True, len(encoded)
-
-
-def _read_bounded_command_stream(stream) -> tuple[str, bool, int]:
-    stream.flush()
-    stream.seek(0, os.SEEK_END)
-    total_bytes = stream.tell()
-    stream.seek(0)
-    bounded = stream.read(COMMAND_OUTPUT_LIMIT)
-    return bounded.decode("utf-8", errors="replace"), total_bytes > COMMAND_OUTPUT_LIMIT, total_bytes
-
-
 def _bounded_captured_text(value: str) -> tuple[str, bool, int]:
+    from failure_redaction import redact_for_sink
     encoded = value.encode("utf-8", errors="replace")
-    return (
-        encoded[:COMMAND_OUTPUT_LIMIT].decode("utf-8", errors="replace"),
-        len(encoded) > COMMAND_OUTPUT_LIMIT,
-        len(encoded),
-    )
+    protected = redact_for_sink(value)
+    return protected, "[TRUNCATED:" in protected, len(encoded)
 
 
 def _reportable_child_result(result: dict) -> dict:
@@ -1420,6 +1395,11 @@ def _run_in_process_main(entrypoint, arguments: Sequence[str]) -> dict:
             exception=inner_exception,
             redact_values=arguments,
         )
+        from failure_redaction import try_write_failure_evidence as write_failure_evidence
+        result["failure_diagnostic"]["stdout_evidence"] = write_failure_evidence(stdout)
+        result["failure_diagnostic"]["stderr_evidence"] = write_failure_evidence(stderr)
+        result["failure_diagnostic"]["last_line"] = _bounded_diagnostic_text(stderr or stdout)
+
     return result
 
 
@@ -1452,59 +1432,40 @@ def _run_imported_main(module_name: str, arguments: Sequence[str]) -> dict:
 
 
 def _run_command(command: Sequence[str]) -> dict:
+    from failure_redaction import try_write_failure_evidence as write_failure_evidence
     command_identity = _bounded_command_identity(command)
-    with tempfile.TemporaryFile(mode="w+b") as stdout_stream, tempfile.TemporaryFile(
-        mode="w+b"
-    ) as stderr_stream:
-        timed_out = False
-        failure_code = ""
-        inner_exception: BaseException | None = None
-        child_exit_code: int | None
-        try:
-            completed = subprocess.run(
-                command,
-                check=False,
-                stdout=stdout_stream,
-                stderr=stderr_stream,
-                text=False,
-                timeout=30,
-            )
-            returncode = completed.returncode
-            child_exit_code = returncode
-            if returncode != 0:
-                failure_code = "CHILD_NONZERO_EXIT"
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            returncode = 124
-            child_exit_code = None
-            failure_code = "CHILD_PROCESS_TIMEOUT"
-        except Exception as exc:
-            returncode = 1
-            child_exit_code = None
-            failure_code = "CHILD_PROCESS_START_FAILED"
-            inner_exception = exc
-        stdout, stdout_truncated, stdout_bytes = _read_bounded_command_stream(stdout_stream)
-        stderr, stderr_truncated, stderr_bytes = _read_bounded_command_stream(stderr_stream)
-        result = {
-            "returncode": returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_bytes": stdout_bytes,
-            "stderr_bytes": stderr_bytes,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
-            "timed_out": timed_out,
-            "command_identity": command_identity,
-        }
-        if returncode != 0:
-            result["failure_diagnostic"] = _child_failure_diagnostic(
-                command_identity=command_identity,
-                child_exit_code=child_exit_code,
-                failure_code=failure_code or "CHILD_NONZERO_EXIT",
-                exception=inner_exception,
-                redact_values=command[1:],
-            )
-        return result
+    timed_out = False
+    failure_code = ""
+    inner_exception = None
+    child_exit_code = None
+    stdout_raw = stderr_raw = ""
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+        returncode = child_exit_code = completed.returncode
+        stdout_raw, stderr_raw = completed.stdout, completed.stderr
+        if returncode:
+            failure_code = "CHILD_NONZERO_EXIT"
+    except subprocess.TimeoutExpired as exc:
+        timed_out, returncode, failure_code = True, 124, "CHILD_PROCESS_TIMEOUT"
+        stdout_raw = exc.stdout or ""
+        stderr_raw = exc.stderr or ""
+    except Exception as exc:
+        returncode, failure_code, inner_exception = 1, "CHILD_PROCESS_START_FAILED", exc
+    def decoded(value):
+        return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+    stdout, stdout_truncated, stdout_bytes = _bounded_captured_text(decoded(stdout_raw))
+    stderr, stderr_truncated, stderr_bytes = _bounded_captured_text(decoded(stderr_raw))
+    result = dict(returncode=returncode, stdout=stdout, stderr=stderr, stdout_bytes=stdout_bytes,
+                  stderr_bytes=stderr_bytes, stdout_truncated=stdout_truncated,
+                  stderr_truncated=stderr_truncated, timed_out=timed_out, command_identity=command_identity)
+    if returncode:
+        diagnostic = _child_failure_diagnostic(command_identity=command_identity, child_exit_code=child_exit_code,
+            failure_code=failure_code or "CHILD_NONZERO_EXIT", exception=inner_exception, redact_values=command[1:])
+        diagnostic["stdout_evidence"] = write_failure_evidence(stdout)
+        diagnostic["stderr_evidence"] = write_failure_evidence(stderr)
+        diagnostic["last_line"] = _bounded_diagnostic_text(stderr or stdout)
+        result["failure_diagnostic"] = diagnostic
+    return result
 
 
 def _typed_json_result(result: dict, *, operation: str) -> dict:
@@ -1566,42 +1527,8 @@ def _classify_task_probe(result: dict, expected_action_parts: Sequence[str]) -> 
 
 
 def _stop_scheduled_task_typed(task_name: str, expected_action_parts: Sequence[str]) -> dict:
-    lifecycle: dict[str, object] = {
-        "status": "FAILED",
-        "task_name": task_name,
-        "phase": "stop",
-        "operations": [],
-        "absence_proven": False,
-    }
-    probe = _classify_task_probe(
-        _run_command(_scheduled_task_probe_command(task_name)), expected_action_parts
-    )
-    lifecycle["initial_probe"] = probe
-    if probe["status"] == "ABSENT":
-        lifecycle.update({"status": "PASS", "absence_proven": True, "idempotent_absence": True})
-        return lifecycle
-    if probe["status"] != "PRESENT":
-        lifecycle["blocked_reason"] = "scheduled task ownership was not proven"
-        return lifecycle
-
-    stop = _typed_json_result(
-        _run_command(_scheduled_task_stop_command(task_name, expected_action_parts)),
-        operation="stop",
-    )
-    lifecycle["operations"].append(stop)
-    if stop.get("status") not in {"STOPPED", "ALREADY_STOPPED", "ABSENT"}:
-        lifecycle["blocked_reason"] = "scheduled task stop failed"
-        return lifecycle
-
-    lifecycle.update(
-        {
-            "status": "PASS",
-            "absence_proven": stop.get("status") == "ABSENT",
-            "idempotent_absence": stop.get("status") == "ABSENT",
-            "stopped_or_absent": True,
-        }
-    )
-    return lifecycle
+    # A retired pack cannot acquire canonical generation/runtime proof.
+    return _remove_scheduled_task_typed(task_name, expected_action_parts)
 
 
 def _delete_scheduled_task_typed(task_name: str, expected_action_parts: Sequence[str]) -> dict:
@@ -1647,30 +1574,15 @@ def _delete_scheduled_task_typed(task_name: str, expected_action_parts: Sequence
 
 
 def _remove_scheduled_task_typed(task_name: str, expected_action_parts: Sequence[str]) -> dict:
-    stop = _stop_scheduled_task_typed(task_name, expected_action_parts)
-    if stop.get("status") != "PASS" or stop.get("absence_proven") is True:
-        return {
-            **stop,
-            "phase": "full",
-            "stop": stop,
-            "delete": None,
-        }
-    delete = _delete_scheduled_task_typed(task_name, expected_action_parts)
-    return {
-        "status": delete.get("status"),
-        "task_name": task_name,
-        "phase": "full",
-        "stop": stop,
-        "delete": delete,
-        "operations": [*stop.get("operations", []), *delete.get("operations", [])],
-        "absence_proven": bool(delete.get("absence_proven")),
-        "idempotent_absence": False,
-        **(
-            {"blocked_reason": delete.get("blocked_reason", "scheduled task deletion failed")}
-            if delete.get("status") != "PASS"
-            else {}
-        ),
-    }
+    probe = _classify_task_probe(
+        _run_command(_scheduled_task_probe_command(task_name)), expected_action_parts
+    )
+    if probe["status"] == "ABSENT":
+        return {"status":"PASS", "absence_proven":True, "idempotent_absence":True,
+                "task_name":task_name, "initial_probe":probe, "operations":[]}
+    return {"status":"FAILED", "absence_proven":False, "task_name":task_name,
+            "initial_probe":probe, "operations":[],
+            "blocked_reason":"Refusing to remove a historical task with different ownership/command. 기존 작업은 보존했습니다. canonical 설치기의 지원 제거를 실행하세요."}
 
 
 def _self_enrollment_registration_command(args: argparse.Namespace) -> list[str]:
