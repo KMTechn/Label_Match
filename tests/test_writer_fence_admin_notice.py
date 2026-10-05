@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from current_user_onboarding import CurrentUserOnboardingError
+from current_user_onboarding import CurrentUserOnboardingError, ONBOARDING_EXIT_CODE
 from label_data_generation import DataGenerationError
 from writer_session_fence import WriterFenceError, WriterFencedError
 
@@ -27,11 +27,7 @@ def test_startup_fence_error_keeps_app_stopped_and_explains_recovery(
         if isinstance(n, ast.Assign)
         and any(isinstance(t, ast.Name) and t.id == "INSTALLATION_RECOVERY_REQUIRED_MESSAGE" for t in n.targets)
     )
-    exit_code = next(
-        ast.literal_eval(n.value) for n in tree.body
-        if isinstance(n, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "ONBOARDING_EXIT_CODE" for t in n.targets)
-    )
+    exit_code = ONBOARDING_EXIT_CODE
     reports, traces, calls = [], [], []
 
     def denied():
