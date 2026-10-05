@@ -23,7 +23,7 @@ from current_user_scheduled_task import (
 )
 from direct_sync_push import manifest_hash
 from enrollment_mutex import EnrollmentMutex, EnrollmentMutexError
-from direct_sync_runtime import load_credentials_from_json
+from direct_sync_runtime import load_credentials_from_json, prepare_credentials_from_json
 from label_exact_clone_resolution import read_pinned_json, validate_resolution_receipt
 from label_match_product_host import _default_product_root, requires_bootstrap_integrity
 from label_match_single_instance import SingleInstanceError, resolve_data_scope
@@ -914,6 +914,32 @@ def apply_current_user_runtime_environment(
     values[REQUIRED_ENV] = "1"
 
 
+def prepare_current_user_data_open(
+    app_root: str | os.PathLike[str],
+    *,
+    environ: Mapping[str, str] | None = None,
+):
+    """Admit existing onboarding inputs without recording or changing state."""
+    try:
+        check_user_data_open(Path(app_root), environ=environ)
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=Path(app_root),
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
+    paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
+    try:
+        check_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+            paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent), environ=environ)
+        tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
+        if tls_ca_source:
+            check_user_data_open(paths.app_root, (Path(tls_ca_source).parent,), environ=environ)
+        credential_input = (prepare_credentials_from_json(paths.credential_path,
+            app_root=paths.app_root, environ=environ) if paths.credential_path.is_file() else None)
+    except DataGenerationError as exc:
+        raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
+            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
+    return paths, tls_ca_source, credential_input
+
+
 @writer_sink("current_user_onboarding")
 def onboard_current_user(
     app_root: str | os.PathLike[str],
@@ -941,19 +967,8 @@ def onboard_current_user(
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = start_user_relay_process,
 ) -> dict[str, Any]:
+    paths, tls_ca_source, credential_input = prepare_current_user_data_open(app_root, environ=environ)
     try:
-        check_user_data_open(Path(app_root), environ=environ)
-    except DataGenerationError as exc:
-        raise CurrentUserOnboardingError(str(exc), report_path=Path(app_root),
-            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
-    paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
-    try:
-        tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
-        if tls_ca_source:
-            check_user_data_open(paths.app_root, (Path(tls_ca_source).parent,), environ=environ)
-        from direct_sync_runtime import prepare_credentials_from_json
-        credential_input = (prepare_credentials_from_json(paths.credential_path,
-            app_root=paths.app_root, environ=environ) if paths.credential_path.is_file() else None)
         record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
                                                paths.direct_sync_root, paths.queue_dir,
                                                paths.logistics_profile_path.parent))
@@ -1407,8 +1422,13 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--app-root", default=str(_default_app_root()))
     parser.add_argument("--server-base-url", default=DEFAULT_SERVER_BASE_URL)
+    parser.add_argument("--check-data-generation-only", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.check_data_generation_only:
+            prepare_current_user_data_open(args.app_root)
+            print("onboarding_data_generation_status=PASS")
+            return 0
         report = onboard_current_user(
             args.app_root,
             server_base_url=args.server_base_url,

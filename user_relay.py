@@ -796,7 +796,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, credential_input=None) -> int:
     args = build_parser().parse_args(argv)
     app_root = (
         Path(
@@ -826,7 +826,8 @@ def main(argv: list[str] | None = None) -> int:
     paths = resolve_current_user_onboarding_paths(app_root)
     from direct_sync_runtime import prepare_credentials_from_json
     selected_direct_sync_root = Path(args.direct_sync_root) if args.direct_sync_root else paths.direct_sync_root
-    prepare_credentials_from_json(selected_direct_sync_root / "credential.json", app_root=app_root)
+    if credential_input is None:
+        credential_input = prepare_credentials_from_json(selected_direct_sync_root / "credential.json", app_root=app_root)
     record_user_data_open(app_root, (paths.data_root, paths.ledger_path.parent,
                                     paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent,
                                     *selected_roots))

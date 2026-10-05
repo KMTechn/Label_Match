@@ -264,7 +264,7 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
                     from current_user_onboarding import resolve_current_user_onboarding_paths
                     paths = resolve_current_user_onboarding_paths(root)
                     selected_direct_sync_root = Path(selected.direct_sync_root) if selected.direct_sync_root else paths.direct_sync_root
-                    prepare_credentials_from_json(selected_direct_sync_root / "credential.json", app_root=root)
+                    credential_input = prepare_credentials_from_json(selected_direct_sync_root / "credential.json", app_root=root)
             except DataGenerationError as exc:
                 print(str(exc), file=sys.stderr)
                 return HOSTED_RELAY_FAILURE_EXIT_CODE
@@ -296,7 +296,7 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
             try:
                 from user_relay import main as user_relay_main
 
-                return int(user_relay_main(arguments))
+                return int(user_relay_main(arguments, credential_input=credential_input))
             except Exception as exc:
                 from label_data_generation import DataGenerationError
                 if isinstance(exc, DataGenerationError):

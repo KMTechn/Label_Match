@@ -421,5 +421,6 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 ## W9 슬림화 잔여 수용
 
 - credential locator의 명시/기본 DPAPI owner는 2단 G와 동일 입력 전달로 교정한다(sub-268). 실제 native 설치·현재 사용자 자격 저장소·GUI의 독립 수용은 미실행이며 후속 범위다.
+- canonical nested admission은 기존 제품의 읽기 전용 onboarding 판정을 audit/preimage·fence 앞에 호출하여 교정한다(sub-268 추가 P1). 실제 G를 켠 격리 child 회귀와 native 설치·UAC·옛 앱 복원 수용을 구분하며 rollback G는 유지한다.
 
 설정 저장 조건과 안내를 일치시키고 건별 복구의 원 기술 정보를 읽기 전용 상세에 보존했다. 소스·합성 headless 보장과 실제 화면 수용을 구별한다. 실제 랩에서 작업 중 설정 안내, 복구 항목 선택·스크롤·원 SHA/UNKNOWN 확인은 NOT TESTED다. 제품의 완전한 CSV/queue/identity/F5/receipt 동시점 백업·복원과 미전송분 재개의 공개 보장은 아직 없다; raw artifact 다운로드나 코드 rollback을 그 보장으로 승격하지 않는다.

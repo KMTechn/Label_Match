@@ -218,7 +218,7 @@ def test_user_relay_onboarding_and_removal_modes_dispatch_in_process(monkeypatch
     monkeypatch.setattr(
         user_relay,
         "main",
-        lambda arguments: observed.append(("relay", list(arguments))) or 0,
+        lambda arguments, **_prepared_inputs: observed.append(("relay", list(arguments))) or 0,
     )
     monkeypatch.setattr(
         current_user_onboarding,
