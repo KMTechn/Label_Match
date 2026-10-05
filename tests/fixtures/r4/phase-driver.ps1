@@ -1,6 +1,7 @@
 param([string]$Repo,[string]$Output,[ValidateSet('success','parent_failure','child_failure')][string]$Case)
 $ErrorActionPreference='Stop'
-$ExtractedFunctionNames=@('Invoke-LabelRollbackStep','Get-LabelLaunchFailure')
+$ExtractedFunctionNames=@('Invoke-LabelRollbackStep','Get-LabelLaunchFailure',
+    'Protect-LabelFailureText')
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $Repo 'INSTALL_CANONICAL_PORTABLE.ps1'),[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'R4 product parse failure'}

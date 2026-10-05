@@ -5,7 +5,11 @@
 $ErrorActionPreference='Stop'
 # Keep every extracted function name together for sub-274.
 $ExtractedFunctionNames=@('Invoke-LabelRollbackStep','Get-LabelLaunchFailure',
-    'Get-LabelPortableDataVersion','Assert-LabelDataDowngrade','Assert-LabelRollbackGeneration')
+    'Get-LabelPortableDataVersion','Assert-LabelDataDowngrade','Assert-LabelRollbackGeneration',
+    'Invoke-LabelCanonicalRollback','Save-LabelRollbackContext',
+    'Stop-LabelRollbackCandidateRelay','Invoke-LabelGenerationRefusalRecovery',
+    'Assert-LabelRollbackTaskPreimage','Get-LabelCurrentUserScheduledTasks',
+    'Protect-LabelFailureText')
 New-Item -ItemType Directory -Path $Root,(Join-Path $Root 'installed'),(Join-Path $Root 'control') | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $Root 'installed/runtime') | Out-Null
 # Membership placeholder only; Product is a native-free stand-in and never executes it.
