@@ -96,8 +96,19 @@ def test_actual_powershell_installer_decision(shell, state, tmp_path):
         assert result["status"] == "ALLOW" and result["allowed"] is True
     else:
         assert completed.returncode != 0
-        assert "자료" in completed.stderr
-        assert "복구" in completed.stderr
+        import hashlib
+        prefix = "LABEL_MATCH_INSTALLER_FAILURE="
+        line = next(line for line in completed.stderr.splitlines() if line.startswith(prefix))
+        record = json.loads(line[len(prefix):])
+        assert record["status"] == "FAILED" and record["reason_code"] == "INSTALLER_FAILED"
+        rules = json.loads((ROOT / "tools/failure_redaction_rules.json").read_text(encoding="utf-8-sig"))
+        assert record["guidance"] == rules["safe_messages"][0]
+        report = Path(record["report_path"])
+        assert report.is_file()
+        private = report.read_bytes()
+        assert hashlib.sha256(private).hexdigest() == record["report_sha256"]
+        assert "자료" in private.decode("utf-8")
+        assert "복구" in private.decode("utf-8")
     assert {p: p.read_bytes() if p.exists() else None for p in (control, data)} == before_markers
 
 
