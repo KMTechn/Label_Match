@@ -918,22 +918,29 @@ def prepare_current_user_data_open(
     app_root: str | os.PathLike[str],
     *,
     environ: Mapping[str, str] | None = None,
+    installer_admission: bool = False,
 ):
     """Admit existing onboarding inputs without recording or changing state."""
+    admit = check_user_data_open
+    if installer_admission:
+        from label_data_generation import check_installer_user_data_open
+        admit = check_installer_user_data_open
     try:
-        check_user_data_open(Path(app_root), environ=environ)
+        admit(Path(app_root), environ=environ)
     except DataGenerationError as exc:
         raise CurrentUserOnboardingError(str(exc), report_path=Path(app_root),
             status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
     try:
-        check_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+        admit(paths.app_root, (paths.data_root, paths.ledger_path.parent,
             paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent), environ=environ)
         tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
         if tls_ca_source:
-            check_user_data_open(paths.app_root, (Path(tls_ca_source).parent,), environ=environ)
+            admit(paths.app_root, (Path(tls_ca_source).parent,), environ=environ)
         credential_input = (prepare_credentials_from_json(paths.credential_path,
-            app_root=paths.app_root, environ=environ) if paths.credential_path.is_file() else None)
+            app_root=paths.app_root, environ=environ,
+            **({"installer_admission": True} if installer_admission else {}))
+            if paths.credential_path.is_file() else None)
     except DataGenerationError as exc:
         raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
             status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
@@ -1426,7 +1433,7 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.check_data_generation_only:
-            prepare_current_user_data_open(args.app_root)
+            prepare_current_user_data_open(args.app_root, installer_admission=True)
             print("onboarding_data_generation_status=PASS")
             return 0
         report = onboard_current_user(

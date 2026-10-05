@@ -374,13 +374,16 @@ class CredentialInput:
     error: Exception | None = None
 
 
-def prepare_credentials_from_json(path, *, app_root: Path, environ=None, reader=None) -> CredentialInput:
+def prepare_credentials_from_json(path, *, app_root: Path, environ=None, reader=None,
+                                  installer_admission=False) -> CredentialInput:
     """Admit the locator, read it once, then admit its protected-file owner.
 
     Credential validation errors remain with the existing consumer/report path.
     Admission errors escape before that consumer can record or mutate anything.
     """
     from label_data_generation import DataGenerationError, UNKNOWN_MESSAGE, check_user_data_open, resolve_data_path
+    if installer_admission:
+        from label_data_generation import check_installer_user_data_open as check_user_data_open
     selected = resolve_data_path(path)
     check_user_data_open(app_root, (selected.parent,), environ=environ)
     try:

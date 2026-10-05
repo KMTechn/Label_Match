@@ -662,8 +662,28 @@ function InvokeFrozenPlacementHelper($Frozen, $HelperParameters) {{
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {_quote(helper_script)} -RestoreSource $HelperParameters.SourceRoot -ExpectedAggregate $HelperParameters.ExpectedSourceAggregateSha256 -ExpectedCount $HelperParameters.ExpectedSourceFileCount -ExpectedBytes $HelperParameters.ExpectedSourceByteCount >> {_quote(tmp_path / 'placement.stdout.log')} 2>> {_quote(tmp_path / 'placement.stderr.log')}
     return $LASTEXITCODE
 }}
+if ({_quote(failure)} -ceq 'rollback-remove') {{
+$firstRegistrationResume = $null
+$legacyFirstRegistration = $false
+$generationSubjectSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$generationMarkerPaths = @({_quote(tmp_path / 'rollback-generation.json')})
+$rollbackFixtureManifest = Manifest {_quote(old)} $true
+[void](Write-KmtechDataGeneration -MarkerPath $generationMarkerPaths[0] `
+    -Version (Get-LabelPortableDataVersion {_quote(old)} $rollbackFixtureManifest) `
+    -AppId 'Label_Match' -SubjectSid $generationSubjectSid -BuildId ([string]$rollbackFixtureManifest.source_commit))
+}}
+$script:rollbackGenerationChecks = 0
+$script:realRollbackGeneration = ${{function:Assert-LabelRollbackGeneration}}
+function Assert-LabelRollbackGeneration {{
+    $script:rollbackGenerationChecks++
+    & $script:realRollbackGeneration
+}}
 $script:realProduct = ${{function:Product}}
 function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @()) {{
+    if ({_quote(failure)} -ceq 'rollback-remove' -and $Mode -ceq '--remove-current-user-setup' -and
+        ((Get-Content -LiteralPath (Get-LabelWriterFenceActivePath $writerFenceControlRoot) -Raw | ConvertFrom-Json).status -ceq 'RESTORING')) {{
+        throw 'injected rollback product removal failure'
+    }}
     if ($Mode -ceq '--onboard-current-user' -and {_quote(failure)} -cne 'after-release') {{ throw 'injected failure after successful placement before enrollment' }}
     & $script:realProduct $Root $Mode $ExtraArguments
 }}
@@ -685,12 +705,23 @@ function StartRaw([string]$Line) {{
     if ($LASTEXITCODE -ne 0) {{ throw 'raw fixture relay creation failed' }}
     return [int]$pidText
 }}
+try {{
 {transaction}
+}} finally {{
+    [IO.File]::WriteAllText({_quote(tmp_path / 'rollback-g-count.txt')}, [string]$script:rollbackGenerationChecks)
+}}
 """
         result = _ps(tmp_path, code, env, timeout=180)
         assert result.returncode != 0
         audit = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8-sig"))
-        assert audit["status"] == "FAILED_ROLLED_BACK", result.stderr[-3000:] + result.stdout[-1000:]
+        if failure == "rollback-remove":
+            assert audit["status"] == "ROLLBACK_FAILED"
+            assert [item["stage"] for item in audit["rollback"]["step_failures"]] == ["product_remove"]
+            assert audit["rollback"]["step_failures"][0]["message"] == "injected rollback product removal failure"
+            assert int((tmp_path / "rollback-g-count.txt").read_text()) >= 5
+            assert (tmp_path / "rollback-generation.json").is_file()
+        else:
+            assert audit["status"] == "FAILED_ROLLED_BACK", result.stderr[-3000:] + result.stdout[-1000:]
         assert audit["rollback"]["runtime_restored"] is True
         assert not (Path(env["KMTECH_LABEL_WRITER_CONTROL_ROOT"]) / "active.json").exists()
         assert not stop_path.exists()
@@ -716,3 +747,18 @@ function StartRaw([string]$Line) {{
             logs.close()
             # Only the exact fixture executable can be cleaned up here.
             _ps(tmp_path, f"$ErrorActionPreference='Stop'\nGet-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | Where-Object {{ $_.ExecutablePath -ceq {_quote(install / 'runtime/pythonw.exe')} }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }}", env)
+
+
+def test_rollback_product_failure_preserves_error_and_attempts_later_recovery_with_g(tmp_path, tmp_path_factory, monkeypatch):
+    original_manifest = _manifest
+
+    def versioned_manifest(tree, commit):
+        original_manifest(tree, commit)
+        path = tree / "portable-manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["version"] = "v2.0.95"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(sys.modules[__name__], "_manifest", versioned_manifest)
+    pair = portable_pair.__wrapped__(tmp_path_factory)[:2]
+    _exercise_failed_transition(tmp_path, pair, "rollback-remove")
