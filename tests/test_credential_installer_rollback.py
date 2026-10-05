@@ -59,6 +59,9 @@ if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {{
 }}
 $source={_quote(tree)}; $install=$source; $existingVerified=$true; $mutated=$true
 $activeCodeRoot=$source; $generationProductRoot=$source
+$startupLifecycle=$null; $Script:LabelPlacementChildFailure=$null
+$Script:LabelRollbackSteps=$null; $Script:LabelRollbackFailures=$null
+$Script:LabelRollbackPhaseStack=$null
 $replacementRollbackRoot=$source; $legacyFirstRegistration=$false; $healthyRemovedInstall=$false
 $healthyRemovalReportBefore=$null; $removalReportExisted=$false; $SkipSignatureValidationForTest=$true
 $stop={_quote(tmp_path / 'stop.json')}; $removalPath={_quote(tmp_path / 'removal.json')}
@@ -70,6 +73,7 @@ $script:attempts=@{{product=0;run=0;task=0;relay=0;g=0}}
 $script:relayLive=$false
 $old=@([pscustomobject]@{{CommandLine='native old relay command';ExecutablePath=(Join-Path $install 'runtime\\pythonw.exe')}})
 function Relays {{ if ($script:relayLive) {{ return $old }}; return @() }}
+function Stop-LabelRollbackCandidateRelay {{ if (@(Relays).Count) {{ throw 'Unexpected candidate relay fixture' }} }}
 function Snapshot {{ return $script:run }}
 function Restore($Before) {{ $script:attempts.run++; $script:run=$Before }}
 $script:realTaskRestore=${{function:RestoreScheduledTask}}
@@ -78,7 +82,8 @@ function RestoreScheduledTask($Before) {{
     if ({_quote(failure)} -ceq 'task') {{ throw 'injected native task restore failure' }}
     & $script:realTaskRestore $Before
 }}
-function Get-ScheduledTask {{ param($TaskName,$TaskPath,$ErrorAction) return $null }}
+function Get-ScheduledTask {{ param($TaskName,$TaskPath,$ErrorAction) return }}
+function Get-LabelOfficialLegacyTaskSnapshot {{ return $null }}
 function Product {{ param($Root,$Mode,$ExtraArguments) $script:attempts.product++; throw 'injected native product removal failure' }}
 function StartRaw($Line) {{ $script:attempts.relay++; $script:relayLive=$true; return 2147418112 }}
 $script:realCim=${{function:Get-CimInstance}}
@@ -123,7 +128,7 @@ $audit=[ordered]@{{rollback=[ordered]@{{}};writer_fence=[ordered]@{{status='REST
 try {{
 try {{ throw 'injected install failure' }}
 {tail}
-}} catch {{ [IO.File]::WriteAllText({_quote(tmp_path / 'caught.private.log')}, (@{{type=$_.Exception.GetType().Name;stack=$_.ScriptStackTrace;line=$_.InvocationInfo.ScriptLineNumber}} | ConvertTo-Json)) }}
+}} catch {{ [IO.File]::WriteAllText({_quote(tmp_path / 'caught.private.log')}, (@{{type=$_.Exception.GetType().Name;stack=$_.ScriptStackTrace;line=$_.InvocationInfo.ScriptLineNumber;error_id=$_.FullyQualifiedErrorId}} | ConvertTo-Json)) }}
 $result=@{{attempts=$script:attempts;fence_active=(Test-Path (Get-LabelWriterFenceActivePath $writerFenceControlRoot));audit=$audit;relay_live=$script:relayLive}}
 [IO.File]::WriteAllText({_quote(output)},($result | ConvertTo-Json -Depth 12))
 """
@@ -138,8 +143,9 @@ $result=@{{attempts=$script:attempts;fence_active=(Test-Path (Get-LabelWriterFen
     assert result["attempts"]["g"] >= 3
     assert result["audit"]["status"] == "ROLLBACK_FAILED"
     assert result["audit"]["rollback"]["step_failures"]
-    assert "관리자" in result["audit"]["user_message"]
     if failure == "product":
+        assert result["audit"]["rollback"]["relay_recovery_status"] == "RUN_RESTORED_RELAY_NEXT_LOGON"
+        assert "다음 로그온" in result["audit"]["rollback"]["guidance"]
         assert result["attempts"]["product"] == 1
         assert result["attempts"]["run"] == 1
         assert result["attempts"]["task"] == 1
@@ -147,6 +153,7 @@ $result=@{{attempts=$script:attempts;fence_active=(Test-Path (Get-LabelWriterFen
         assert result["audit"]["rollback"]["runtime_restored"] is True
         assert result["fence_active"] is False
     else:
+        assert "관리자" in result["audit"]["rollback"]["guidance"]
         assert result["fence_active"] is True
         assert result["attempts"]["relay"] == 0
         assert result["audit"]["rollback"]["runtime_restored"] is False
