@@ -11,7 +11,7 @@ from tests.test_data_generation_upgrade_pair import ROOT, _package_pair, probe
 @pytest.fixture(scope='module')
 def pin_preimage(tmp_path_factory):
     root = tmp_path_factory.mktemp('pin-preimage') / 'repo'
-    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', str(ROOT), str(root)],
+    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout', '-c', 'core.autocrlf=false', str(ROOT), str(root)],
                    check=True, capture_output=True)
     subprocess.run(['git', '-c', 'core.autocrlf=false', '-C', str(root), 'checkout',
                     '--quiet', '--detach', '2c46de16f2303117e88d4794bf3793f0d7de8c76'],
