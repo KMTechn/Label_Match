@@ -51,7 +51,7 @@ $steps | ConvertTo-Json -Compress | Set-Content -LiteralPath $Lifecycle -Encodin
 """, encoding="utf-8-sig")
     completed = subprocess.run([executable, "-NoProfile", "-File", str(script), sys.executable,
         str(probe), str(REPO), str(application), mode, state, str(output), str(lifecycle)],
-        capture_output=True, timeout=60)
+        capture_output=True, timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert completed.returncode == 0
     data = json.loads(output.read_text(encoding="utf-8-sig"))
     steps = json.loads(lifecycle.read_text(encoding="utf-8-sig"))
