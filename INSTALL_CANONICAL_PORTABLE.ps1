@@ -621,11 +621,11 @@ legacy_label_transition = all(
 # initialize. Everything else stays checked and downgrade is not admitted.
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-  '18941a0b3241e88ba90609f43de12332621a4ab7b400fc28df46373e11ba51b1'),
+  '0b8dc236a221c941b423568353238453e1b7a6229647fc7882afc227bdeee702'),
  ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-  '18941a0b3241e88ba90609f43de12332621a4ab7b400fc28df46373e11ba51b1'),
+  '0b8dc236a221c941b423568353238453e1b7a6229647fc7882afc227bdeee702'),
  ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
-  '18941a0b3241e88ba90609f43de12332621a4ab7b400fc28df46373e11ba51b1')}
+  '0b8dc236a221c941b423568353238453e1b7a6229647fc7882afc227bdeee702')}
 scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -670,7 +670,7 @@ scan_input_transition = (
 # through the existing recovery schema. Downgrade is not admitted.
 nextfix_label_path = 'app/Label_Match.py'
 nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
- '18941a0b3241e88ba90609f43de12332621a4ab7b400fc28df46373e11ba51b1')
+ '0b8dc236a221c941b423568353238453e1b7a6229647fc7882afc227bdeee702')
 nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -703,7 +703,7 @@ nextfix_label_transition = (
 
 # a20cd01 -> this scanner source: exact forward-only source pair, the same
 # pinned companion deltas, and unchanged writer membership/runtime/contracts.
-scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '18941a0b3241e88ba90609f43de12332621a4ab7b400fc28df46373e11ba51b1')
+scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '0b8dc236a221c941b423568353238453e1b7a6229647fc7882afc227bdeee702')
 scanner_transition = (
     (installed / nextfix_label_path).is_file() and
     (source / nextfix_label_path).is_file() and
