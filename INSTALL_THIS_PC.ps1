@@ -1152,8 +1152,20 @@ function Invoke-LabelOfficialLegacyTaskTransition([string]$Mode,[string]$Directo
         $name=[string]$metadata.task_name
         $fingerprint=Get-LabelOfficialLegacyTaskFingerprint $name '\' $xml
         if([string]$metadata.xml_sha256 -cne $ExpectedXmlSha256 -or $fingerprint.sha256 -cne [string]$metadata.fingerprint_sha256){throw 'LEGACY_RELAY_PREIMAGE_DIFFERS'}
-        [xml]$original=$xml
-        $enabled=[Convert]::ToBoolean([string]$original.Task.Settings.Enabled)
+        # The protected preimage captured the scheduler object's actual state.
+        # XML Enabled is optional and cannot supply a missing object's value.
+        if ($metadata.enabled -isnot [bool]) { throw 'LEGACY_RELAY_PREIMAGE_DIFFERS' }
+        $enabled=$metadata.enabled
+        $original=[xml]::new();$original.XmlResolver=$null;$original.LoadXml($xml)
+        $enabledNodes=@($original.SelectNodes('/*[local-name()="Task"]/*[local-name()="Settings"]/*[local-name()="Enabled"]'))
+        if ($enabledNodes.Count -gt 1) { throw 'LEGACY_RELAY_PREIMAGE_DIFFERS' }
+        if ($enabledNodes.Count -eq 1) {
+            $enabledText=[string]$enabledNodes[0].InnerText
+            if ($enabledText -ceq 'true' -or $enabledText -ceq '1') { $enabledXml=$true }
+            elseif ($enabledText -ceq 'false' -or $enabledText -ceq '0') { $enabledXml=$false }
+            else { throw 'LEGACY_RELAY_PREIMAGE_DIFFERS' }
+            if ($enabledXml -ne $enabled) { throw 'LEGACY_RELAY_PREIMAGE_DIFFERS' }
+        }
         $current=Get-LabelOfficialLegacyTaskSnapshot
         if($null -eq $current -or $current.fingerprint.sha256 -cne $fingerprint.sha256){throw 'LEGACY_RELAY_RESTORE_DEFINITION_UNPROVEN'}
         Assert-LabelOfficialLegacyTaskStopped $current.name
