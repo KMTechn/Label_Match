@@ -3096,6 +3096,7 @@ catch {
     if (-not $mutated) { throw $original }
     $rollbackFailures = New-Object 'System.Collections.Generic.List[object]'
     $rollbackRuntimeVerified = $false
+    $rollbackRuntimePreimageVerified = $false
     $audit.rollback.code_restored = $false
     try {
       try {
@@ -3331,8 +3332,27 @@ catch {
       }
       catch { $rollbackFailures.Add([ordered]@{ stage='setup_restore_admission'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
       try {
+        # Task restoration already checks its exact XML/enabled readback.
+        # Keep the fence if any required state cannot be demonstrated intact.
+        if (@($rollbackFailures | Where-Object { $_.stage -in @('task_restore','stop_restore','removal_report_restore','setup_restore_admission') }).Count -ne 0) {
+            throw '자동 시작 설정 복원을 확인하지 못했습니다. 앱을 멈춘 상태와 자료를 보존하고 관리자에게 지원 복구를 요청하세요.'
+        }
+        $rollbackRunReadback = Snapshot
+        if ([bool]$rollbackRunReadback.exists -ne [bool]$before.exists -or
+            [string]$rollbackRunReadback.kind -cne [string]$before.kind -or
+            [string]$rollbackRunReadback.data -cne [string]$before.data) { throw '자동 시작 설정이 설치 전 상태와 다릅니다. 관리자에게 지원 복구를 요청하세요.' }
+        if ([bool]$stopBefore.exists) {
+            if (-not (Test-Path -LiteralPath $stop -PathType Leaf) -or (Sha $stop) -cne [string]$stopBefore.sha256) { throw '앱 정지 상태 복원을 확인하지 못했습니다. 관리자에게 지원 복구를 요청하세요.' }
+        }
+        elseif (Test-Path -LiteralPath $stop) { throw '앱 정지 상태가 설치 전 상태와 다릅니다. 관리자에게 지원 복구를 요청하세요.' }
+        [void](Assert-RollbackRelayPreimage -ExpectedRelays @())
+        $rollbackRuntimePreimageVerified = $true
+      }
+      catch { $rollbackFailures.Add([ordered]@{ stage='runtime_preimage'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
+      try {
         Assert-LabelRollbackGeneration
         if (-not $audit.rollback.code_restored) { throw 'Rollback code preimage is not verified; fence release remains blocked.' }
+        if (-not $rollbackRuntimePreimageVerified) { throw '자동 시작 설정과 앱 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 관리자에게 지원 복구를 요청하세요.' }
         if ($legacyFirstRegistration -and -not $audit.rollback.first_registration_state.restored_absent) {
             throw 'First-registration authentication cleanup is not verified; fence release remains blocked.'
         }
@@ -3384,7 +3404,7 @@ catch {
         foreach ($item in $old) {
           try {
             Assert-LabelRollbackGeneration
-            if (-not $audit.rollback.code_restored -or $writerFenceStarted) { throw 'Rollback runtime admission remains blocked.' }
+            if (-not $audit.rollback.code_restored -or -not $rollbackRuntimePreimageVerified -or $writerFenceStarted) { throw '코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 다시 시작하지 않았습니다. 자료를 보존하고 관리자에게 지원 복구를 요청하세요.' }
             $newPid = StartRaw ([string]$item.CommandLine)
             Start-Sleep -Seconds 3
             $restored = Get-CimInstance `
@@ -3408,8 +3428,8 @@ catch {
         ) { throw 'registry restore failed' }
       }
       catch { $rollbackFailures.Add([ordered]@{ stage='runtime_readback'; failure_type=$_.Exception.GetType().Name; message=$_.Exception.Message }) }
-        $rollbackRuntimeVerified = $audit.rollback.code_restored -and -not $writerFenceStarted -and
-            @($rollbackFailures | Where-Object { $_.stage -cne 'product_remove' }).Count -eq 0
+        $rollbackRuntimeVerified = $audit.rollback.code_restored -and $rollbackRuntimePreimageVerified -and -not $writerFenceStarted -and
+            @($rollbackFailures | Where-Object { $_.stage -in @('relay_restart','runtime_readback','fence_release') }).Count -eq 0
         $audit.rollback.step_failures = @($rollbackFailures.ToArray())
         if ($rollbackFailures.Count -ne 0) { throw 'One or more rollback steps failed; all guarded recovery steps were attempted.' }
         $audit.status = 'FAILED_ROLLED_BACK'
@@ -3433,6 +3453,12 @@ catch {
             $audit.rollback.applied = $mutated
             $audit.rollback.runtime_restored = $rollbackRuntimeVerified
             $audit.rollback.step_failures = @($rollbackFailures.ToArray())
+            $audit.rollback.runtime_preimage_verified = $rollbackRuntimePreimageVerified
+            $audit.user_message = if ($rollbackRuntimeVerified) {
+                '설치 복구 중 일부 단계가 실패했지만 설치 전 앱 상태를 확인하고 앱을 다시 시작했습니다. 기록을 보존하고 관리자에게 설치 점검을 요청하세요.'
+            } else {
+                '설치 전 코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요.'
+            }
             $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
             $audit.failure_type = $original.Exception.GetType().Name
             if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) {
@@ -3483,7 +3509,7 @@ catch {
                 '; rollback=' + $rollbackFailure.Exception.GetType().Name
             )
         }
-        throw ("AUTOSTART_ROLLBACK_FAILED: " + $rollbackFailure.Exception.Message +
+        throw ([string]$audit.user_message + " AUTOSTART_ROLLBACK_FAILED: " + $rollbackFailure.Exception.Message +
             '; original=' + $original.Exception.Message)
     }
     throw $original

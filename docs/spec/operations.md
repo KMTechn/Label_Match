@@ -1077,4 +1077,13 @@ Main은 **2026-09-07 13:09:40Z**에 [실제 Main readback](E:/KMTech/coordinator
 소비자 없는 `tools/sandbox_label_sac/run.ps1`·`guest.ps1`은 내부 쌍으로 제거하고 standalone `tools/scan_portable_pe.ps1`을 제거한다. 원본은 Git 판 `ebbe812`에 남고 portable 빌더의 실제 PE 검사·현재 runtime 도구 선택은 그대로다. 설치/빌더/CI/.spec/manifest/문서, 형제 저장소 committed HEAD와 09-10 이후 절차 검색의 소비자0 근거는 w9slim2 RESULT와 logs에 있다.
 
 publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다. `label_old_fence_liveness_proof.py`는 runtime reconcile의 old-fence 증명 계약에 쓰이므로 보존한다. 일회 tag burner는 현재 계약 참조와 D: 원 evidence 완전성이 미확인이라 보류한다; 감사 CSV의 분류만으로 실제 보장을 지우지 않는다.
-\n\n### Canonical rollback 후속 시도 (sub-268 추가 P1)\n\nrollback setup 제거가 실패해도 실패 단계·예외를 audit.rollback.step_failures에 보존하고 코드 복원, Run/task/stop/report 복원, fence 해제, 각 옛 relay 재시작과 readback을 독립적으로 시도한다. 각 변경 전에 기존 old-target G와 검증된 코드 preimage를 요구한다. 인증 정리나 코드 복원이 미검증이면 fence 해제·재시작 시도는 보호 판단으로 거절하고 custody를 보존한다. 후속 복원이 성공해도 선행 실패는 ROLLBACK_FAILED로 남으며 runtime_restored readback을 별도로 기록한다. 설치 업데이트는 이 외부 canonical 경로를 쓰고 앱의 update poll은 안내만 한다. native 설치·실제 HKCU/작업·UAC 수용은 NOT TESTED다.\n
+
+### Canonical rollback 후속 시도와 지원 복구 (sub-268 추가 P1)
+
+rollback은 각 단계의 실패를 `audit.rollback.step_failures`에 보존하고, 다른 독립 복원 단계는 모두 시도한다. setup 제거 오류 하나가 Run/task/stop/report 복원과 코드 readback을 건너뛰지 않는다. 기존 old-target G는 각 보호 변경 전에 유지한다. 코드 preimage, old-target G, Run/task/stop 및 정지된 relay의 runtime preimage를 확인한 뒤에만 fence 해제와 각 옛 relay 재시작을 반드시 시도한다. 뒤 readback은 `runtime_restored`로 별도 기록하며 앞 단계 실패는 `ROLLBACK_FAILED`로 남는다.
+
+코드·자료 판·runtime 정합을 증명하지 못하면 fence와 정지를 유지한다. 콘솔과 audit의 `user_message`에 “설치 전 코드·자료 판·자동 시작 상태를 확인하지 못해 앱을 멈춘 상태로 유지합니다. 자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요.”를 남긴다. 관리자 앱의 기존 writer-fence 안내를 따른다. fence/marker를 삭제하거나 G를 끄고 앱을 시작하지 않는다.
+
+지원 복구는 원 audit, verified backup, 현재 marker와 setup preimage를 보존한 채 원 실패 단계·코드/자료 판/runtime readback을 확인하는 운영 소유 절차가 필요하다. 현재 legacy 최초등록 재개는 같은 canonical 입력의 `Read-FirstRegistrationAttempt`로 제공되지만 일반 `ROLLBACK_FAILED`의 지원 재개와 guest 1회 수용은 아직 UNPROVEN이다. 일반 실패를 legacy 최초등록으로 꾸미거나 단독 Stop/Abort fence helper로 해제하지 않는다. 코디네이터 guest 검증이 끝나기 전 native 복구를 PROVEN으로 올리지 않는다.
+
+앱 내부 updater는 안내만 제공하고 이 외부 canonical 설치 경로를 사용한다. 격리 G/fence 회귀와 실제 사용자 HKCU/작업·relay·UAC·guest 복구 수용은 구분한다.
