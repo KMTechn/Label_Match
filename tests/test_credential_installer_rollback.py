@@ -58,6 +58,7 @@ if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {{
     $PSDefaultParameterValues['ConvertFrom-Json:DateKind']='String'
 }}
 $source={_quote(tree)}; $install=$source; $existingVerified=$true; $mutated=$true
+$activeCodeRoot=$source; $generationProductRoot=$source
 $replacementRollbackRoot=$source; $legacyFirstRegistration=$false; $healthyRemovedInstall=$false
 $healthyRemovalReportBefore=$null; $removalReportExisted=$false; $SkipSignatureValidationForTest=$true
 $stop={_quote(tmp_path / 'stop.json')}; $removalPath={_quote(tmp_path / 'removal.json')}

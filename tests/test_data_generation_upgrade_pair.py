@@ -71,7 +71,7 @@ def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     # The merged audit-index companion pair is forward only, including when
     # an explicit signed marker permits the original ten-file G reversal.
     assert reverse.returncode != 0
-    assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/label_data_manager.py' in reverse.stderr
+    assert 'WRITER_TRANSITION_SOURCE_SET_DIFFERS' in reverse.stderr
     legacy = new.parent / 'original-g'
     shutil.copytree(new, legacy)
     for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py',
