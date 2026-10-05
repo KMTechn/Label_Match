@@ -224,7 +224,9 @@ function Read-LabelWriterFence {
     }
     $beforeLength = [int64]$item.Length
     $beforeMtime = $item.LastWriteTimeUtc.Ticks
-    $payload = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $jsonArguments = @{}
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArguments['DateKind'] = 'String' }
+    $payload = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json @jsonArguments
     $after = Get-Item -LiteralPath $path -Force -ErrorAction Stop
     if ([int64]$after.Length -ne $beforeLength -or $after.LastWriteTimeUtc.Ticks -ne $beforeMtime) {
         throw 'LABEL_WRITER_FENCE_CHANGED_DURING_READ'
