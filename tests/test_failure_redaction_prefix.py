@@ -12,6 +12,7 @@ from tests.test_label_match_product_host import (  # noqa: F401
     isolated_data_generation_release, raw_arguments,
 )
 from tests.test_shared_ancestor_protection import run_functions
+from tests.test_failure_redaction import VECTORS, check, generated
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIXES = ('RuntimeError', 'ValueError', 'OSError', 'ApplicationFault', 'traceback')
@@ -95,6 +96,120 @@ foreach($case in $inputRecord.cases) {
 ''', values={'LM_PREFIX_INPUT': str(inputs)}, engine=engine)
     assert result.returncode == 0, 'prefix matrix failed; inspect task-local log'
     assert result.stdout.strip() == 'PASS'
+
+
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+@pytest.mark.parametrize('prefix', ('', 'RuntimeError: '), ids=('plain', 'exception'))
+def test_capture_masks_exception_assignment_before_truncation(tmp_path, engine, prefix):
+    sentinel = uuid.uuid4().hex + uuid.uuid4().hex
+    inputs = tmp_path / 'overflow-input.json'
+    inputs.write_text(json.dumps(dict(synthetic=sentinel,
+        text=prefix + 'password=' + sentinel * 3000)), encoding='utf-8')
+    result = run_functions(tmp_path, ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1',
+        ['Initialize-LabelChildOutputReader', 'Protect-LabelFailureText', 'ConvertTo-LabelFailureOutput'], r'''
+function Get-KmtechSinkEnvironment { return @{} }
+Initialize-LabelChildOutputReader
+$inputRecord=Get-Content -LiteralPath $env:LM_PREFIX_INPUT -Raw -Encoding UTF8 | ConvertFrom-Json
+$memory=[IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes([string]$inputRecord.text),$false)
+$reader=[IO.StreamReader]::new($memory,[Text.Encoding]::UTF8)
+try {
+    $capture=[LabelChildOutputReader]::Capture($reader)
+    $capture.Completion.Wait()
+    $snapshot=[LabelChildOutputReader]::Snapshot($capture)
+    $converted=ConvertTo-LabelFailureOutput $snapshot
+    if($snapshot.Text.Contains([string]$inputRecord.synthetic)) { throw 'Capture exposure before truncation' }
+    if($converted.text.Contains([string]$inputRecord.synthetic)) { throw 'Converted exposure after truncation' }
+    if([Text.Encoding]::UTF8.GetByteCount($converted.text) -gt 65536) { throw 'Capture byte limit exceeded' }
+} finally { $reader.Dispose();$memory.Dispose() }
+'PASS'
+''', values={'LM_PREFIX_INPUT': str(inputs)}, engine=engine)
+    assert result.returncode == 0, 'bounded capture regression failed; inspect task-local log'
+    assert result.stdout.strip() == 'PASS'
+
+
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+def test_capture_obeys_the_same_contract_vectors(tmp_path, engine):
+    sentinel = uuid.uuid4().hex + uuid.uuid4().hex
+    vectors = [*VECTORS,
+        dict(id='exception-prefix-password-assignment', environ={},
+             text='RuntimeError: password=' + sentinel,
+             expected='RuntimeError: password=[REDACTED:field]'),
+        dict(id='exception-prefix-single-quoted-mapping', environ={},
+             text="RuntimeError: {'password': '" + sentinel + "'}",
+             expected="RuntimeError: {'password': '[REDACTED:field]'}"),
+    ]
+    fill = chr(65 + int(uuid.uuid4().hex[0], 16))
+    for prefix, label in (('', 'plain'), ('RuntimeError: ', 'exception-prefix')):
+        vectors.append(dict(id='long-password-assignment-' + label, environ={},
+            text_generator=dict(head=prefix + 'password=', fill_char=fill, fill_bytes=83200, tail=''),
+            expected=prefix + 'password=[REDACTED:field]'))
+    cases = [dict(name=vector['id'], environment=vector.get('environ', {}),
+                  json_value=vector.get('json'), is_json='json' in vector,
+                  text=json.dumps(vector['json'], ensure_ascii=False) if 'json' in vector
+                  else vector['text'] if 'text' in vector else generated(vector))
+             for vector in vectors]
+    inputs, outputs = tmp_path / 'vectors-input.json', tmp_path / 'vectors-output.json'
+    inputs.write_text(json.dumps(cases), encoding='utf-8')
+    result = run_functions(tmp_path, ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1',
+        ['Initialize-LabelChildOutputReader', 'Protect-LabelFailureText', 'ConvertTo-LabelFailureOutput'], r'''
+function Get-KmtechSinkEnvironment {
+    $result=@{}
+    foreach($entry in $script:SyntheticEnvironment.PSObject.Properties) {
+        if(Test-KmtechSecretEnvironmentValue -Name $entry.Name -Value ([string]$entry.Value)) {
+            $result[$entry.Name]=[string]$entry.Value
+        }
+    }
+    return $result
+}
+$rows=@()
+foreach($case in (Get-Content -LiteralPath $env:LM_PREFIX_INPUT -Raw -Encoding UTF8 | ConvertFrom-Json)) {
+    $script:SyntheticEnvironment=$case.environment
+    $environment=@{}
+    foreach($entry in $case.environment.PSObject.Properties) {
+        $environment[$entry.Name]=[string]$entry.Value
+    }
+    $direct=if($case.is_json) {
+        ConvertTo-KmtechRedactedSinkObject -Value $case.json_value -Environment $environment |
+            ConvertTo-Json -Depth 20 -Compress
+    } else {
+        ConvertTo-KmtechRedactedSinkText -Text ([string]$case.text) -Environment $environment
+    }
+    Initialize-LabelChildOutputReader
+    $memory=[IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes([string]$case.text),$false)
+    $reader=[IO.StreamReader]::new($memory,[Text.Encoding]::UTF8)
+    try {
+        $capture=[LabelChildOutputReader]::Capture($reader)
+        $capture.Completion.Wait()
+        $converted=ConvertTo-LabelFailureOutput ([LabelChildOutputReader]::Snapshot($capture))
+        $rows+=@{name=$case.name;text=$converted.text;direct_text=$direct}
+    } finally { $reader.Dispose();$memory.Dispose() }
+}
+[IO.File]::WriteAllText($env:LM_PREFIX_OUTPUT,($rows|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+'PASS'
+''', values={'LM_PREFIX_INPUT': str(inputs), 'LM_PREFIX_OUTPUT': str(outputs)}, engine=engine)
+    assert result.returncode == 0, 'capture vector driver failed; inspect task-local log'
+    rows = json.loads(outputs.read_text(encoding='utf-8'))
+    assert len(rows) == len(vectors)
+    for vector, row in zip(vectors, rows):
+        python_actual = (failure_redaction.redact_json_for_sink(vector['json'], vector['environ'])
+                         if 'json' in vector else failure_redaction.redact_for_sink(
+                             vector['text'] if 'text' in vector else generated(vector), vector['environ']))
+        check(vector, python_actual)
+        direct_actual = json.loads(row['direct_text']) if 'expected_json' in vector else row['direct_text']
+        check(vector, direct_actual)
+        actual = json.loads(row['text']) if 'expected_json' in vector else row['text']
+        # The product's final JSON sink formats valid JSON, while retaining
+        # exactly the same values; free text and all boundary properties stay exact.
+        if 'expected' in vector:
+            try:
+                expected_json = json.loads(vector['expected'])
+            except json.JSONDecodeError:
+                pass
+            else:
+                assert json.loads(row['text']) == expected_json
+                assert len(row['text'].encode('utf-8')) <= failure_redaction.RULES['limit']
+                continue
+        check(vector, actual)
 
 
 def test_metadata_keys_stay_literal_and_many_prefixes_do_not_recurse():
