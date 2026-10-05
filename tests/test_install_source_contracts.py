@@ -10,6 +10,34 @@ from tests.test_shared_ancestor_protection import run_functions
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_real_generated_launcher_keeps_payload_param_before_redaction(tmp_path):
+    result = run_functions(tmp_path, ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1',
+                           ['ByteSha', 'InvokeFrozenPlacementHelper'], r'''
+$root=$env:LM_PARAM_BINDING_ROOT
+$script:observed=$false
+$frozen=[pscustomobject]@{root=$root;helper_path=(Join-Path $root 'helper.ps1');helper_sha256=('a'*64);
+ integrity_sha256=('b'*64);writer_fence_path=(Join-Path $root 'writer.ps1');writer_fence_sha256=('c'*64);
+ data_generation_path=(Join-Path $root 'generation.ps1');data_generation_sha256=('d'*64)}
+function Start-Process {
+ param($FilePath,$Verb,$ArgumentList,$WindowStyle,[switch]$Wait,[switch]$PassThru)
+ $launcher=@(Get-ChildItem -LiteralPath $root -Filter 'placement-child-*.ps1')
+ if($launcher.Count -ne 1){throw 'Generated launcher is missing or ambiguous'}
+ $tokens=$null;$errors=$null
+ $ast=[Management.Automation.Language.Parser]::ParseFile($launcher[0].FullName,[ref]$tokens,[ref]$errors)
+ if($errors.Count -or $null -eq $ast.ParamBlock -or $ast.ParamBlock.Parameters.Count -ne 1){throw 'Redaction prelude broke the payload param block'}
+ $parameter=$ast.ParamBlock.Parameters[0]
+ if($parameter.Name.VariablePath.UserPath -cne 'PayloadBytes' -or $parameter.StaticType -ne [byte[]]){throw 'Payload binding contract changed'}
+ $script:observed=$true
+ throw [ComponentModel.Win32Exception]::new(1223)
+}
+try {[void](InvokeFrozenPlacementHelper $frozen @{ElevationLogPath=(Join-Path $root 'placement')})}catch{}
+if(-not $script:observed){throw 'Actual generated launcher did not retain its typed payload param'}
+'PASS'
+''', values={'LM_PARAM_BINDING_ROOT': str(tmp_path)})
+    assert result.returncode == 0, 'Generated launcher param regression failed in isolated root'
+    assert result.stdout.strip() == 'PASS'
+
+
 def test_official_release_entries_match_product_constants(tmp_path):
     entries = json.loads((ROOT / "tests/fixtures/official_legacy_relay_sources.json").read_text())
     output = tmp_path / "identity.json"
