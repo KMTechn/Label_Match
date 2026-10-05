@@ -82,7 +82,12 @@ function RestoreScheduledTask($Before) {{
     if ({_quote(failure)} -ceq 'task') {{ throw 'injected native task restore failure' }}
     & $script:realTaskRestore $Before
 }}
-function Get-ScheduledTask {{ param($TaskName,$TaskPath,$ErrorAction) return }}
+function Get-ScheduledTask {{
+ param($TaskName,$TaskPath,$ErrorAction)
+ if ({_quote(failure)} -ceq 'task') {{ return [pscustomobject]@{{TaskName=$CanonicalTaskName;TaskPath='\\';Settings=[pscustomobject]@{{Enabled=$true}}}} }}
+ return
+}}
+function Export-ScheduledTask {{ param($TaskName,$TaskPath) return '<Task />' }}
 function Get-LabelOfficialLegacyTaskSnapshot {{ return $null }}
 function Product {{ param($Root,$Mode,$ExtraArguments) $script:attempts.product++; throw 'injected native product removal failure' }}
 function StartRaw($Line) {{ $script:attempts.relay++; $script:relayLive=$true; return 2147418112 }}
@@ -140,7 +145,10 @@ $result=@{{attempts=$script:attempts;fence_active=(Test-Path (Get-LabelWriterFen
     (tmp_path / "stderr.log").write_text(completed.stderr, encoding="utf-8")
     assert completed.returncode == 0
     result = json.loads(output.read_text(encoding="utf-8-sig"))
-    assert result["attempts"]["g"] >= 3
+    if failure == 'generation':
+        assert result["attempts"]["g"] == 2
+    else:
+        assert result["attempts"]["g"] >= 3
     assert result["audit"]["status"] == "ROLLBACK_FAILED"
     assert result["audit"]["rollback"]["step_failures"]
     if failure == "product":

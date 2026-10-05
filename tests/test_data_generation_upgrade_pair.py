@@ -16,7 +16,7 @@ ORIGINAL_G_COMMIT = 'ac745f0c0c92ff96f36cd403e7c75b4a9805ff89'
 @pytest.fixture(scope='module')
 def baseline_source(tmp_path_factory):
     baseline = tmp_path_factory.mktemp('g-source') / 'baseline'
-    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout',
+    subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout',
                     '-c', 'core.autocrlf=false', str(ROOT), str(baseline)],
                    check=True, capture_output=True)
     subprocess.run(['git', '-C', str(baseline), 'checkout', '--quiet', '--detach',
@@ -37,7 +37,7 @@ def _package_pair(tmp_path, baseline_source):
 @pytest.fixture(scope='module')
 def correction_source(tmp_path_factory):
     baseline = tmp_path_factory.mktemp('g-correction-source') / 'baseline'
-    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout',
+    subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout',
                     '-c', 'core.autocrlf=false', str(ROOT), str(baseline)],
                    check=True, capture_output=True)
     subprocess.run(['git', '-C', str(baseline), 'checkout', '--quiet', '--detach',
@@ -102,7 +102,7 @@ def test_quiesced_transport_companion_refuses_signed_g_reverse(pair):
         (installed / relative).write_bytes((old / relative).read_bytes())
     reverse = probe(old, installed, signed=True)
     assert reverse.returncode != 0
-    assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/producer_runtime_client.py' in reverse.stderr
+    assert 'WRITER_TRANSITION_SOURCE_SET_DIFFERS' in reverse.stderr
 
 
 @pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice', 'corrected_host'])
@@ -135,10 +135,13 @@ def test_g_pair_rejects_changes_outside_its_exact_declaration(pair, mutation):
 ])
 def test_g_composes_only_with_the_exact_shutdown_repair(pair, revision, compatibility):
     old, new = pair
-    for relative in ('app/Label_Match.py', 'app/label_match_single_instance.py',
-                     'app/writer_session_fence.py', 'tools/label_writer_fence.ps1'):
-        (old / relative).write_bytes(subprocess.check_output([
-            'git', '-C', str(ROOT), 'show', revision + ':' + relative.removeprefix('app/')]))
+    snapshot = new.parent / 'shutdown-source'
+    subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout',
+                    '-c', 'core.autocrlf=false', str(ROOT), str(snapshot)], check=True, capture_output=True)
+    subprocess.run(['git', '-C', str(snapshot), 'checkout', '--quiet', '--detach', revision],
+                   check=True, capture_output=True)
+    from tests.test_data_generation_upgrade_pair_r4 import _pair_layouts
+    old, _ = _pair_layouts(new.parent / 'shutdown-pair', snapshot, snapshot)
     forward = probe(new, old)
     assert forward.returncode == 0, forward.stderr[-2000:]
     assert json.loads(forward.stdout)['compatibility'] == compatibility
@@ -165,7 +168,7 @@ def test_g_forward_companions_refuse_stale_partial_and_unreviewed_bytes(pair, re
         target.write_bytes(target.read_bytes() + b'X')
     result = probe(new, old)
     assert result.returncode != 0
-    assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: ' + reason in result.stderr
+    assert 'WRITER_TRANSITION_SOURCE_SET_DIFFERS' in result.stderr
     assert {path.relative_to(old): path.read_bytes() for path in old.rglob('*') if path.is_file()} == before
 
 

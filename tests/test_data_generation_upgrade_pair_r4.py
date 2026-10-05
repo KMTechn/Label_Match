@@ -17,7 +17,7 @@ COMPANION_G_COMMIT = 'ac745f0'
 @pytest.fixture(scope='module')
 def baseline_source(tmp_path_factory):
     baseline = tmp_path_factory.mktemp('g-source') / 'baseline'
-    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout',
+    subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout',
                     '-c', 'core.autocrlf=false', str(ROOT), str(baseline)],
                    check=True, capture_output=True)
     subprocess.run(['git', '-C', str(baseline), 'checkout', '--quiet', '--detach',
@@ -28,7 +28,7 @@ def baseline_source(tmp_path_factory):
 @pytest.fixture(scope='module')
 def historical_g_source(tmp_path_factory):
     source = tmp_path_factory.mktemp('historical-g-source') / 'source'
-    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout',
+    subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout',
                     '-c', 'core.autocrlf=false', str(ROOT), str(source)],
                    check=True, capture_output=True)
     subprocess.run(['git', '-C', str(source), 'checkout', '--quiet', '--detach',
@@ -39,7 +39,7 @@ def historical_g_source(tmp_path_factory):
 @pytest.fixture(scope='module')
 def companion_g_source(tmp_path_factory):
     source = tmp_path_factory.mktemp('companion-g-source') / 'source'
-    subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout',
+    subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout',
                     '-c', 'core.autocrlf=false', str(ROOT), str(source)],
                    check=True, capture_output=True)
     subprocess.run(['git', '-C', str(source), 'checkout', '--quiet', '--detach',
@@ -63,7 +63,7 @@ def _pair_layouts(tmp_path, baseline_source, candidate_source):
         (package / 'runtime').mkdir()
         (package / 'runtime' / 'fixture').write_bytes(b'identical runtime preimage')
         (package / 'launch-label-match.cmd').write_bytes(b'identical launcher fixture\r\n')
-        for relative in ('INSTALL_THIS_PC.ps1',
+        for relative in ('INSTALL_THIS_PC.ps1', 'INSTALL_CANONICAL_PORTABLE.ps1',
                          'tools/bootstrap_integrity.ps1', 'tools/label_writer_fence.ps1',
                          'tools/label_writer_fence_contract.json'):
             target = package / relative
