@@ -10,11 +10,10 @@ RULES = json.loads((Path(__file__).parent / "tools/failure_redaction_rules.json"
 
 
 def _secret_environment_entries(environ):
-    identifier_suffix = re.compile(r"_(?:TRANSACTION|SESSION|ATTEMPT)_ID$", re.I)
-    identifier_value = re.compile(r"(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}|[0-9a-f]{64})", re.I)
     for name, value in environ.items():
         explicit = name in RULES["explicit"]
-        identifier = identifier_suffix.search(name) and identifier_value.fullmatch(str(value))
+        identifier = any(re.search(suffix, name, re.I) and re.fullmatch(pattern, str(value))
+                         for suffix, pattern in RULES["identifier_patterns"].items())
         if explicit or (re.search(RULES["pattern"], name)
                         and not re.search(RULES["path_suffix"], name) and not identifier):
             yield name, value
@@ -57,17 +56,33 @@ def redact_for_sink(text, environ=None, *, redact_values=()):
                  value.replace("'", "''"), value.replace('"', '""'), value)
         for form in dict.fromkeys(forms):
             text = text.replace(form, f"[REDACTED:{name}]")
-    def assignment(match):
+    # Scan keys independently: an ordinary exception prefix must not consume
+    # the assignment or mapping that follows it as an opaque value.
+    key_pattern = r'''(?<![A-Za-z0-9_.-])(?P<key>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*)(?P<separator>\s*[:=]\s*)'''
+    value_pattern = r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+'''
+    value_regex = re.compile(value_pattern)
+    parts = []
+    copied = protected_until = 0
+    for match in re.finditer(key_pattern, text):
+        if match.start() < protected_until:
+            continue
         key = match['key'].strip("\"'")
-        value = match['value']
-        metadata = (value in ('true', 'false', 'null') or re.search(RULES['path_suffix'], key)
+        metadata_key = (re.search(RULES['path_suffix'], key)
                     or (re.search(RULES['digest_suffix'], key) and not re.search(RULES['short_secret_digest'], key)))
         sensitive = re.search(RULES['pattern'], key) or key.lower() in ('pin', 'otp', 'password')
-        if not sensitive or metadata or value.strip("\"'").startswith('[REDACTED:'):
-            return match[0]
+        if not sensitive and not metadata_key:
+            continue
+        value_match = value_regex.match(text, match.end())
+        if value_match is None:
+            continue
+        value = value_match[0]
+        protected_until = value_match.end()
+        if metadata_key or value in ('true', 'false', 'null') or value.strip("\"'").startswith('[REDACTED:'):
+            continue
         quote = value[0] if value.startswith(('"', "'")) else ''
-        return match['key'] + match['separator'] + quote + RULES['field'] + quote
-    text = re.sub(r"""(?<![A-Za-z0-9_.-])(?P<key>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*)(?P<separator>\s*[:=]\s*)(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)""", assignment, text)
+        parts.extend((text[copied:match.start()], match['key'] + match['separator'] + quote + RULES['field'] + quote))
+        copied = protected_until
+    text = ''.join(parts) + text[copied:]
     text = re.sub(r'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"\',;]+', lambda match: match[1] + RULES['field'], text)
     if notes:
         text += "\n" + "\n".join(notes)

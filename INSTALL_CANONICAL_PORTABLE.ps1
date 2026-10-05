@@ -2282,16 +2282,16 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 
-// Mask JSON secret values before bounded retention, including values spanning
+// Mask assignment and JSON secret values before bounded retention, including values spanning
 // chunks. A truncated JSON document can no longer be parsed by the sink writer.
 public sealed class LabelJsonFieldMasker {
  private readonly Regex secret, path, digest, shortSecret;
- private readonly string marker;
+ private readonly string marker, rawMarker;
  private readonly StringBuilder token = new StringBuilder();
- private int state, depth; private bool escaped, quoted; private char quote, nestedQuote;
+ private int state, depth; private bool escaped, quoted, bareKey; private char quote, nestedQuote;
  public LabelJsonFieldMasker(string pattern,string paths,string digests,string shorts,string replacement) {
   secret=new Regex(pattern+"|(?i)^(pin|otp|password)$");path=new Regex(paths);
-  digest=new Regex(digests);shortSecret=new Regex(shorts);marker="\""+replacement+"\"";
+  digest=new Regex(digests);shortSecret=new Regex(shorts);rawMarker=replacement;marker="\""+replacement+"\"";
  }
  private bool Sensitive(string key) {
   return secret.IsMatch(key) && !path.IsMatch(key) && !(digest.IsMatch(key) && !shortSecret.IsMatch(key));
@@ -2303,7 +2303,9 @@ public sealed class LabelJsonFieldMasker {
    while(again) {
     again=false;
     if(state==0) {
-     if(c=='"' || c=='\'') {quote=c;token.Append(c);state=1;escaped=false;} else output.Append(c);
+     if(c=='"' || c=='\'') {quote=c;token.Append(c);state=1;escaped=false;}
+     else if(c=='_' || (c>='A' && c<='Z') || (c>='a' && c<='z')) {token.Append(c);state=8;}
+     else output.Append(c);
     } else if(state==1) {
      token.Append(c);
      if(escaped) escaped=false;
@@ -2313,15 +2315,16 @@ public sealed class LabelJsonFieldMasker {
      if(token.Length>1024) {output.Append(token);token.Clear();state=7;}
     } else if(state==2) {
      if(Char.IsWhiteSpace(c)) {token.Append(c);}
-     else if(c==':') {
+     else if(c==':' || c=='=') {
       string raw=token.ToString().Trim();string key=raw.Substring(1,raw.Length-2);
       try {key=Regex.Unescape(key);} catch(ArgumentException) {}
-      output.Append(token);output.Append(c);token.Clear();state=Sensitive(key) ? 3 : 0;
+      output.Append(token);output.Append(c);token.Clear();bareKey=false;state=Sensitive(key) ? 3 : 0;
      } else {output.Append(token);token.Clear();state=0;again=true;}
     } else if(state==3) {
      if(Char.IsWhiteSpace(c)) output.Append(c);
-     else if(c=='"' || c=='\'') {quote=c;output.Append(marker);state=4;escaped=false;}
-     else if(c=='{' || c=='[') {output.Append(marker);state=5;depth=1;quoted=false;escaped=false;}
+     else if(c=='"' || c=='\'') {quote=c;output.Append(quote+rawMarker+quote);state=4;escaped=false;}
+     else if(c=='[') {token.Append(c);state=13;}
+     else if(c=='{') {output.Append(marker);state=5;depth=1;quoted=false;escaped=false;}
      else {token.Append(c);state=6;}
     } else if(state==4 || state==7) {
      if(state==7) output.Append(c);
@@ -2334,10 +2337,48 @@ public sealed class LabelJsonFieldMasker {
      else if(c=='{' || c=='[') depth++;
      else if(c=='}' || c==']') {if(--depth==0) state=0;}
     } else if(state==6) {
-     if(c==',' || c=='}' || c==']' || Char.IsWhiteSpace(c)) {
-      string value=token.ToString();output.Append(value=="true" || value=="false" || value=="null" ? value : marker);
+     if(c==',' || c==';' || c=='}' || c==']' || Char.IsWhiteSpace(c)) {
+      string value=token.ToString();output.Append(value=="true" || value=="false" || value=="null" ? value : (bareKey ? rawMarker : marker));
       token.Clear();state=0;again=true;
      } else if(token.Length<16) token.Append(c);
+    } else if(state==8 || state==10) {
+     bool keyChar=Char.IsLetterOrDigit(c) || c=='_' || c=='.' || c=='-';
+     if(state==8 && keyChar) {
+      token.Append(c);
+      if(token.Length>1024) {output.Append(token);token.Clear();state=9;}
+     } else if(Char.IsWhiteSpace(c)) {
+      if(state==8) output.Append(token);
+      output.Append(c);state=10;
+     }
+     else if(c==':' || c=='=') {
+      string key=token.ToString().Trim();
+      if(state==8) output.Append(token);
+      output.Append(c);token.Clear();bareKey=true;
+      bool metadata=path.IsMatch(key) || (digest.IsMatch(key) && !shortSecret.IsMatch(key));
+      state=Sensitive(key) ? 3 : (metadata ? 11 : 0);
+     } else {if(state==8) output.Append(token);token.Clear();state=0;again=true;}
+    } else if(state==9) {
+     if(Char.IsLetterOrDigit(c) || c=='_' || c=='.' || c=='-') output.Append(c);
+     else {state=0;again=true;}
+    } else if(state==11) {
+     if(Char.IsWhiteSpace(c)) output.Append(c);
+     else if(c=='"' || c=='\'') {quote=c;output.Append(c);state=7;escaped=false;}
+     else {state=12;again=true;}
+    } else if(state==12) {
+     if(c==',' || c==';' || c=='}' || c==']' || Char.IsWhiteSpace(c)) {state=0;again=true;}
+     else output.Append(c);
+    } else if(state==13) {
+     token.Append(c);string candidate=token.ToString();
+     if("[REDACTED:".StartsWith(candidate,StringComparison.Ordinal)) {
+      if(candidate=="[REDACTED:") {output.Append(token);token.Clear();state=14;}
+     } else {
+      output.Append(marker);token.Clear();state=5;depth=1;quoted=false;escaped=false;
+      if(c=='"' || c=='\'') {nestedQuote=c;quoted=true;}
+      else if(c=='{' || c=='[') depth++;
+      else if(c==']') {depth=0;state=0;}
+     }
+    } else if(state==14) {
+     output.Append(c);if(c==']') state=0;
     }
    }
   }
@@ -2345,8 +2386,9 @@ public sealed class LabelJsonFieldMasker {
  }
  public string Finish() {
   string value=token.ToString();token.Clear();
-  if(state==6) return value=="true" || value=="false" || value=="null" ? value : marker;
-  return state==1 || state==2 ? value : "";
+  if(state==6) return value=="true" || value=="false" || value=="null" ? value : (bareKey ? rawMarker : marker);
+  if(state==13) return marker;
+  return state==1 || state==2 || state==8 ? value : "";
  }
 }
 

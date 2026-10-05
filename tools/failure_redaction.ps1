@@ -5,8 +5,10 @@ function Test-KmtechSecretEnvironmentValue {
     $rules = $Script:KmtechRedactionRules
     if ($Name -cin $rules.explicit) { return $true }
     if ($Name -notmatch $rules.pattern -or $Name -match $rules.path_suffix) { return $false }
-    if ($Name -match '_(TRANSACTION|SESSION|ATTEMPT)_ID$' -and
-        $Value -imatch '\A([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}|[0-9a-f]{64})\z') { return $false }
+    foreach ($identifier in $rules.identifier_patterns.PSObject.Properties) {
+        if ($Name -match $identifier.Name -and
+            $Value -cmatch ('\A(?:' + $identifier.Value + ')\z')) { return $false }
+    }
     return $true
 }
 
@@ -42,16 +44,35 @@ function ConvertTo-KmtechRedactedSinkText {
             $Text = $Text.Replace($form,$replacement)
         }
     }
-    $Text = [regex]::Replace($Text, '(?<![A-Za-z0-9_.-])(?<key>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[A-Za-z_][\w.-]*)(?<separator>\s*[:=]\s*)(?<value>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[^\s,;}]+)', [Text.RegularExpressions.MatchEvaluator]{
-        param($match)
+    # Generated key/value grammar: ordinary prefixes leave their values searchable.
+    $keyPattern = '(?<![A-Za-z0-9_.-])(?<key>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[A-Za-z_][\w.-]*)(?<separator>\s*[:=]\s*)'
+    $valuePattern = '\G(?:"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[^\s,;}]+)'
+    $valueRegex = [regex]::new($valuePattern)
+    $parts = [Text.StringBuilder]::new()
+    $copied = 0; $protectedUntil = 0
+    foreach ($match in [regex]::Matches($Text, $keyPattern)) {
+        if ($match.Index -lt $protectedUntil) { continue }
         $quotes=[char[]]@('"',"'")
-        $key=$match.Groups['key'].Value.Trim($quotes);$value=$match.Groups['value'].Value
-        $metadata=($value -cin @('true','false','null') -or $key -match $rules.path_suffix -or
+        $key=$match.Groups['key'].Value.Trim($quotes)
+        $metadataKey=($key -match $rules.path_suffix -or
             ($key -match $rules.digest_suffix -and $key -notmatch $rules.short_secret_digest))
-        if ($metadata -or ($key -notmatch $rules.pattern -and $key -inotmatch '^(pin|otp|password)$') -or $value.Trim($quotes).StartsWith('[REDACTED:')) { return $match.Value }
-        $replacement=if($value.StartsWith('"') -or $value.StartsWith("'")){$value.Substring(0,1)+$rules.field+$value.Substring(0,1)}else{$rules.field}
-        return $match.Groups['key'].Value+$match.Groups['separator'].Value+$replacement
-    })
+        $sensitive=($key -match $rules.pattern -or $key -imatch '^(pin|otp|password)$')
+        if (-not $sensitive -and -not $metadataKey) { continue }
+        $valueMatch=$valueRegex.Match($Text,$match.Index+$match.Length)
+        if (-not $valueMatch.Success) { continue }
+        $value=$valueMatch.Value
+        $protectedUntil=$valueMatch.Index+$valueMatch.Length
+        if ($metadataKey -or $value -cin @('true','false','null') -or
+            $value.Trim($quotes).StartsWith('[REDACTED:')) { continue }
+        $replacement=if($value.StartsWith('"') -or $value.StartsWith("'")){
+            $value.Substring(0,1)+$rules.field+$value.Substring(0,1)
+        }else{$rules.field}
+        [void]$parts.Append($Text,$copied,$match.Index-$copied)
+        [void]$parts.Append($match.Groups['key'].Value+$match.Groups['separator'].Value+$replacement)
+        $copied=$protectedUntil
+    }
+    [void]$parts.Append($Text,$copied,$Text.Length-$copied)
+    $Text=$parts.ToString()
     $Text=[regex]::Replace($Text,'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"'',;]+',[Text.RegularExpressions.MatchEvaluator]{param($match) $match.Groups[1].Value+$rules.field})
     if ($notes.Count) { $Text += [string][char]10 + ($notes -join [string][char]10) }
     $utf8 = [Text.UTF8Encoding]::new($false,$true)

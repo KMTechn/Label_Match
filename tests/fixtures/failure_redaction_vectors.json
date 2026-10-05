@@ -144,6 +144,27 @@
       },
       "text": "session=synthNotAnIdentifier0012",
       "expected": "session=[REDACTED:CONTAINER_AUDIT_WRITER_DELEGATION_SESSION_ID]"
+    },
+    {
+      "id": "env-identifier-pid-start-mutex-kept",
+      "environ": {
+        "INSPECTION_WORKER_WRITER_DELEGATION_ROOT_PID": "4321",
+        "INSPECTION_WORKER_WRITER_DELEGATION_PARENT_START": "windows-filetime:133912345678901234",
+        "INSPECTION_WORKER_WRITER_DELEGATION_MUTEX": "Local\\kmtech.synth-mutex_13",
+        "INSPECTION_WORKER_WRITER_DELEGATION_TOKEN": "synthDelegationValue0013"
+      },
+      "text": "root_pid=4321 port=43210 start=windows-filetime:133912345678901234 mutex=Local\\kmtech.synth-mutex_13 token=synthDelegationValue0013",
+      "expected": "root_pid=4321 port=43210 start=windows-filetime:133912345678901234 mutex=Local\\kmtech.synth-mutex_13 token=[REDACTED:INSPECTION_WORKER_WRITER_DELEGATION_TOKEN]"
+    },
+    {
+      "id": "env-identifier-pid-start-mutex-badshape-redacted",
+      "environ": {
+        "INSPECTION_WORKER_WRITER_DELEGATION_PARENT_PID": "synthPid0014",
+        "INSPECTION_WORKER_WRITER_DELEGATION_ROOT_START": "synthStart0014",
+        "INSPECTION_WORKER_WRITER_DELEGATION_MUTEX": "Session\\synthMutex0014"
+      },
+      "text": "pid=synthPid0014 start=synthStart0014 mutex=Session\\synthMutex0014",
+      "expected": "pid=[REDACTED:INSPECTION_WORKER_WRITER_DELEGATION_PARENT_PID] start=[REDACTED:INSPECTION_WORKER_WRITER_DELEGATION_ROOT_START] mutex=[REDACTED:INSPECTION_WORKER_WRITER_DELEGATION_MUTEX]"
     }
   ]
 }

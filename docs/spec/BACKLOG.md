@@ -2,7 +2,7 @@
 
 옛 공식 task가 있으면 identity admission과 VBS→동명 PS1/CMD launcher binding을 첫 audit/evidence·보호 base·ACL 변경 전에 읽기 전용으로 검증한다. task가 없으면 launcher를 요구하지 않는다. 공개 LM v2.0.38의 실제 producer는 VBS→PS1이며 source-host bin 경로에 결속된다. 어긋나면 기존 healthy-lifecycle 안내로 거절한다.
 
-예외 args의 Python 단일 인용 mapping도 비밀 field 가림을 거친다. Python·PS 공용 text 가림과 bounded child C# reader 모두 인용 경계/escape를 인식해 원인 메시지·타입·trace는 보존하고 비밀 value를 사용자 sink에 다시 연결하지 않는다.
+예외 args의 Python 단일 인용 mapping도 비밀 field 가림을 거친다. 일반 예외 접두문 뒤의 assignment·mapping은 key/value를 분리한 공용 가림으로 계속 검사한다. Python·PS 공용 text 가림과 bounded child C# reader의 최종 변환은 인용 경계/escape를 인식해 원인 메시지·타입·trace를 보존하고 비밀 value를 사용자 sink에 다시 연결하지 않는다. 엄격한 PID·start·mutex 식별자 예외와 공통 14 벡터를 함께 유지한다.
 
 relay install pack의 상대 program-data root는 경로 정규화와 G 판독/기록 전에 인수 오류로 거절한다. 거절은 정적 stderr 안내와 exit 2만 남기고 report·자료·generation을 쓰지 않는다. 유효한 sealed app fixture에서 입력 바이트와 runtime 부재를 함께 검증한다.
 
