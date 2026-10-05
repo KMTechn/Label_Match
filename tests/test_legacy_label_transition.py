@@ -131,6 +131,8 @@ def _packaging_app(module, tmp_path, monkeypatch, *, registered, transition):
             app.notices.append(notice)
 
     app._render_operator_workbench = render
+    # This storage fixture chooses the pointer action; F6 tests cover key rejection.
+    app._request_pointer_confirmation = lambda _title, _message, _text, action: action()
     app._save_current_set_state = lambda: True
     app.after = lambda *a: None
     app.sounds = []

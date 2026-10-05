@@ -6157,7 +6157,8 @@ def test_history_delete_conflict_feedback_requires_operator_review(monkeypatch):
     app._update_summary_tree = lambda: None
     app._render_history_detail = lambda *args, **kwargs: None
     warnings = []
-    monkeypatch.setattr(module.messagebox, "askyesno", lambda *args, **kwargs: True)
+    # The storage assertion starts after an explicit inline pointer choice.
+    app._request_pointer_confirmation = lambda _title, _message, _text, action: action()
     monkeypatch.setattr(
         module.messagebox,
         "showwarning",
@@ -6449,7 +6450,8 @@ def test_delete_selected_row_keeps_row_when_delete_log_write_fails(monkeypatch, 
     app.status_label = _FakeLabel()
     app._update_summary_tree = lambda: (_ for _ in ()).throw(AssertionError("summary should not update"))
     app._render_history_detail = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("detail should not update"))
-    monkeypatch.setattr(module.messagebox, "askyesno", lambda *args, **kwargs: True)
+    # The storage assertion starts after an explicit inline pointer choice.
+    app._request_pointer_confirmation = lambda _title, _message, _text, action: action()
     errors = []
     monkeypatch.setattr(module.messagebox, "showerror", lambda *args, **kwargs: errors.append((args, kwargs)))
 

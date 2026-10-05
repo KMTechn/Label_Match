@@ -4419,40 +4419,38 @@ def resource_path(relative_path: str) -> str:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
 
-class CalendarWindow(tk.Toplevel):
+class CalendarWindow(ttk.Frame):
+    """Reuse the date picker inside history; it never grabs scanner focus."""
+
     def __init__(self, parent):
         from tkcalendar import Calendar
 
-        super().__init__(parent)
-        self.title("날짜 선택")
-        self.transient(parent)
-        self.grab_set()
-        self.result = None
-        self.resizable(False, False)
-
-        self.cal = Calendar(self, selectmode='day', year=datetime.now().year, month=datetime.now().month, day=datetime.now().day,
-                            locale='ko_KR', background="white", foreground="black", headersbackground="#EAEAEA")
-        self.cal.pack(pady=20, padx=20, fill="both", expand=True)
-
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(pady=(0, 10))
-
-        select_btn = ttk.Button(btn_frame, text="선택", command=self.on_select)
-        select_btn.pack(side="left", padx=5)
-        cancel_btn = ttk.Button(btn_frame, text="취소", command=self.destroy)
-        cancel_btn.pack(side="left", padx=5)
-
-        if hasattr(parent, "_center_child_window"):
-            width, height = parent._dialog_size("calendar")
-            parent._center_child_window(self, width, height)
-        self.bind("<Escape>", lambda event: self.destroy())
-        self.cal.focus_set()
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
-        self.wait_window(self)
+        super().__init__(parent.history_detail_frame)
+        self.parent = parent
+        self.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        self.cal = Calendar(self, selectmode='day', year=datetime.now().year,
+                            month=datetime.now().month, day=datetime.now().day,
+                            locale='ko_KR', background="white", foreground="black",
+                            headersbackground="#EAEAEA")
+        self.cal.pack(fill="both", expand=True)
+        buttons = ttk.Frame(self)
+        buttons.pack(pady=(0, 4))
+        ttk.Button(buttons, text="선택", command=self.on_select).pack(side="left", padx=5)
+        ttk.Button(buttons, text="취소", command=self.destroy).pack(side="left", padx=5)
+        # Widget bindings run before Tk class bindings (Return/Space included).
+        pending = [self]
+        while pending:
+            widget = pending.pop()
+            widget.bind("<KeyPress>", parent._refuse_dialog_scan)
+            widget.bind("<KeyRelease>", lambda event: "break")
+            pending.extend(widget.winfo_children())
+        parent._focus_scan_entry_if_available()
 
     def on_select(self):
-        self.result = self.cal.selection_get()
+        selected_date = self.cal.selection_get()
         self.destroy()
+        self.parent._prompt_for_date_and_reload(selected_date)
+        self.parent._focus_scan_entry_if_available()
 
 class DataManager(_DataManager):
     """Keep the application constructor and its live dependency bindings."""
@@ -8166,7 +8164,7 @@ class Label_Match(tk.Tk):
         except PHSLabelWorkflowError:
             return True
 
-    def on_closing(self, _confirmed=False):
+    def on_closing(self, _confirmed=False, _pointer_confirmed=False):
         if _confirmed:
             self._app_close_recovery_after_id = None
         if (
@@ -8185,10 +8183,24 @@ class Label_Match(tk.Tk):
                 if not self.run_tests:
                     messagebox.showwarning("작업 진행 중", "테스트 시뮬레이션 또는 테스트 로그 생성이 진행 중입니다.\n작업이 끝난 뒤 프로그램을 종료하세요.")
                 return
-            do_close = self.run_tests or not self._app_close_needs_confirmation() or messagebox.askokcancel(
-                "종료 확인",
-                "프로그램을 종료하시겠습니까?",
-            )
+            if (not self.run_tests and not _pointer_confirmed
+                    and self._app_close_needs_confirmation()):
+                close_snapshot = copy.deepcopy(self.current_set_info)
+
+                def confirm_close():
+                    if self.current_set_info != close_snapshot:
+                        self._show_scanner_notice(
+                            "종료 확인 다시 필요", "작업이 바뀌었습니다. 현재 작업을 다시 확인하세요.",
+                        )
+                        return
+                    self.on_closing(_pointer_confirmed=True)
+
+                self._request_pointer_confirmation(
+                    "종료 확인", "현재 작업을 저장하고 프로그램을 종료하시겠습니까?",
+                    "종료", confirm_close,
+                )
+                return
+            do_close = True
         else:
             do_close = True
 
@@ -16476,24 +16488,21 @@ class Label_Match(tk.Tk):
             kind = str(dict(payload or {}).get("kind") or "")
             if kind != "result":
                 if kind == "reprint_confirmation_required":
-                    confirmed = messagebox.askyesno(
+                    confirmation_snapshot = copy.deepcopy(self.current_set_info)
+
+                    def confirm_reprint():
+                        if self.current_set_info != confirmation_snapshot:
+                            self._show_scanner_notice(
+                                "실물 확인 다시 필요", "작업이 바뀌었습니다. 현재 현품표를 다시 확인하세요.",
+                            )
+                            return
+                        self._start_phs_label_recovery(confirm_ambiguous_reprint=True)
+
+                    self._request_pointer_confirmation(
                         "실물 출력 확인 필요",
-                        (
-                            "실물 출력 여부를 확인했습니다. "
-                            "확인이 필요한 현품표를 다시 출력하시겠습니까?"
-                        ),
-                        parent=self,
+                        "실물 출력 여부를 확인한 뒤에만 재출력을 선택하세요. 중복 출력은 되돌릴 수 없습니다.",
+                        "재출력", confirm_reprint,
                     )
-                    self._render_operator_workbench()
-                    if confirmed:
-                        self.after(
-                            0,
-                            lambda: self._start_phs_label_recovery(
-                                confirm_ambiguous_reprint=True,
-                            ),
-                        )
-                        return
-                    self._focus_scan_entry_if_available()
                     return
                 messagebox.showerror(
                     "현품표 날짜 교환 실패",
@@ -17654,7 +17663,7 @@ class Label_Match(tk.Tk):
         if not self.__dict__.get("run_tests", False):
             messagebox.showerror("삭제 실패", message, parent=self)
 
-    def _delete_selected_row(self):
+    def _delete_selected_row(self, _confirmed_selection=None):
         if self._app_close_blocks_local_action():
             return
         if self._block_active_history_load_action("기록 삭제"):
@@ -17670,9 +17679,19 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning("선택 필요", "삭제할 기록을 목록에서 선택하세요.")
             return
 
-        should_delete = self.run_tests or messagebox.askyesno("삭제 확인", f"선택된 {len(selected_iids)}개의 기록을 정말 삭제(무효화)하시겠습니까?\n이 작업은 되돌릴 수 없습니다.", icon="warning")
-
-        if not should_delete:
+        selection_snapshot = (
+            tuple(selected_iids),
+            copy.deepcopy([self._history_details_for_iid(iid) for iid in selected_iids]),
+        )
+        if not self.run_tests and _confirmed_selection is None:
+            self._request_pointer_confirmation(
+                "삭제 확인",
+                f"선택된 {len(selected_iids)}개 기록을 삭제(무효화)합니다. 이 작업은 되돌릴 수 없습니다.",
+                "삭제", lambda: self._delete_selected_row(selection_snapshot),
+            )
+            return
+        if _confirmed_selection is not None and _confirmed_selection != selection_snapshot:
+            self._show_scanner_notice("선택 다시 필요", "선택한 기록이 바뀌었습니다. 다시 선택하여 확인하세요.")
             return
 
         deleted_count = 0
@@ -18217,7 +18236,13 @@ class Label_Match(tk.Tk):
     
 
     # [수정됨] 버그가 수정되고 로직이 개선된 최종 버전
-    def _cancel_completed_tray_by_label(self, label_to_cancel):
+    def _cancel_completed_tray_by_label(self, label_to_cancel, _confirmed_target=None):
+        if _confirmed_target is not None and (
+            self._app_close_blocks_local_action()
+            or self._block_active_history_load_action("완료된 트레이 취소", parent=self)
+            or not self.history_view_updates_active_state
+        ):
+            return
         target_set_id = None
         target_details = None
 
@@ -18280,9 +18305,15 @@ class Label_Match(tk.Tk):
                        f"완료 시간: {end_time_display}\n\n"
                        f"취소 시 통계와 기록이 모두 변경됩니다.")
         
-        should_cancel = self.run_tests or messagebox.askyesno("취소 확인", confirm_msg, icon='warning', parent=self)
-
-        if not should_cancel:
+        target_snapshot = (target_set_id, copy.deepcopy(target_details))
+        if not self.run_tests and _confirmed_target is None:
+            self._request_pointer_confirmation(
+                "취소 확인", confirm_msg, "완료 취소",
+                lambda: self._cancel_completed_tray_by_label(label_to_cancel, target_snapshot),
+            )
+            return
+        if _confirmed_target is not None and _confirmed_target != target_snapshot:
+            self._show_scanner_notice("대상 다시 필요", "완료 기록이 바뀌었습니다. 현품표를 다시 확인하세요.")
             return
 
         try:
@@ -18925,56 +18956,15 @@ class Label_Match(tk.Tk):
         self._show_barcode_detail_window(details)
 
     def _show_barcode_detail_window(self, details):
-        detail_win = tk.Toplevel(self)
-        detail_win.title("바코드 원문")
-        detail_win.transient(self)
-        detail_win.grab_set()
-        detail_win.configure(bg=self.colors["background"])
-        width, height = self._dialog_size("barcode_detail")
-        self._center_child_window(detail_win, width, height)
-
-        main_frame = ttk.Frame(detail_win, padding=18, style="TFrame")
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        main_frame.grid_rowconfigure(1, weight=1)
-        main_frame.grid_columnconfigure(0, weight=1)
-
-        ttk.Label(main_frame, text="바코드 원문", style="Header.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 10))
-
-        text_frame = ttk.Frame(main_frame, style="Card.TFrame")
-        text_frame.grid(row=1, column=0, sticky="nsew")
-        text_frame.grid_rowconfigure(0, weight=1)
-        text_frame.grid_columnconfigure(0, weight=1)
-        scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL)
-        detail_text = tk.Text(
-            text_frame,
-            wrap="word",
-            font=("Consolas", max(10, self.tree_font_size)),
-            bg=self.colors["card_background"],
-            fg=self.colors["text"],
-            relief="flat",
-            padx=12,
-            pady=10,
-            height=12,
-        )
-        detail_text.insert("1.0", self._barcode_detail_text(details))
-        detail_text.configure(state="disabled", yscrollcommand=scroll.set)
-        scroll.config(command=detail_text.yview)
-        scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        detail_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        button_frame = ttk.Frame(main_frame, style="TFrame")
-        button_frame.grid(row=2, column=0, sticky="e", pady=(12, 0))
-        copy_button = ttk.Button(button_frame, text="복사", command=lambda: self._copy_text_to_clipboard(self._barcode_detail_text(details)))
-        copy_button.pack(side=tk.LEFT, padx=(0, 8))
-        close_button = ttk.Button(button_frame, text="닫기", command=lambda: self._destroy_modal_and_refocus(detail_win))
-        close_button.pack(side=tk.LEFT)
-        detail_win.bind("<Escape>", lambda event: self._destroy_modal_and_refocus(detail_win))
-        detail_win.bind("<Control-c>", lambda event: self._copy_text_to_clipboard(self._barcode_detail_text(details)))
-        close_button.focus_set()
-
-    def _copy_text_to_clipboard(self, text):
-        self.clipboard_clear()
-        self.clipboard_append(text)
+        text = self.__dict__.get("history_detail_text")
+        if text is None:
+            return
+        text.configure(state="normal", height=8, takefocus=False)
+        text.delete("1.0", tk.END)
+        text.insert("1.0", self._barcode_detail_text(details))
+        text.configure(state="disabled")
+        text.bind("<KeyPress>", self._refuse_dialog_scan)
+        self._focus_scan_entry_if_available()
 
     def _reload_today_history(self):
         if self._block_background_history_reload(parent=self):
@@ -20341,6 +20331,93 @@ class Label_Match(tk.Tk):
         except (TclError, AttributeError):
             pass
 
+    def _refuse_dialog_scan(self, event=None):
+        # Scanner keys focused on a read/confirmation control are never approval.
+        pending = self.__dict__.get("_pointer_confirmation")
+        if pending and self.__dict__.get("_workflow_notice_action") is pending[1]:
+            message = "확인 대기 중 스캔은 받지 않았습니다. 스캔 입력칸에서 다시 스캔하세요."
+            self._play_sound("fail")
+            self.update_big_display(message, "red")
+            return "break"
+        self._show_scanner_notice(
+            "스캔 안 받음",
+            "확인·조회 영역에서는 스캔을 받지 않았습니다. 스캔 입력칸에서 다시 스캔하세요.",
+        )
+        return "break"
+
+    def _request_pointer_confirmation(self, title, message, action_text, action):
+        if (self.__dict__.get("_workflow_blocking_notice")
+                or self.__dict__.get("_pending_workflow_error")
+                or self.__dict__.get("_workflow_pending_error")):
+            return False
+        notice = WorkflowNotice(
+            title=title,
+            message=message + "\n승인은 마우스로 단추를 누르세요. 스캔·Enter·Y/N은 승인하지 않습니다.",
+            kind="pointer_confirmation", tone="warning",
+        )
+        # The existing keyboard/command callback only reports rejected input.
+        reject = self._refuse_dialog_scan
+        self._pointer_confirmation_pressed = None
+        self._pointer_confirmation = (notice, reject, action)
+        self._phs_label_guidance_notice = notice
+        self._workflow_notice_action = reject
+        self._workflow_notice_action_text = action_text
+        button = self.__dict__.get("workflow_notice_action_button")
+        if button is not None:
+            button.bind("<ButtonPress-1>", self._press_pointer_confirmation)
+            button.bind("<ButtonRelease-1>", self._confirm_pointer_action)
+            button.bind("<KeyPress>", self._pointer_confirmation_key)
+            button.bind("<Return>", self._pointer_confirmation_key)
+            button.bind("<KP_Enter>", self._pointer_confirmation_key)
+        self._render_operator_workbench()
+        self._focus_scan_entry_if_available()
+        return True
+
+    def _pointer_confirmation_key(self, event=None):
+        pending = self.__dict__.get("_pointer_confirmation")
+        if pending and self.__dict__.get("_workflow_notice_action") is pending[1]:
+            return self._refuse_dialog_scan(event)
+        if getattr(event, "keysym", "") in {"Return", "KP_Enter"}:
+            return self._acknowledge_workflow_notice(event)
+        return None
+
+    def _press_pointer_confirmation(self, event):
+        pending = self.__dict__.get("_pointer_confirmation")
+        button = self.__dict__.get("workflow_notice_action_button")
+        self._pointer_confirmation_pressed = None
+        if (pending and self.__dict__.get("_workflow_notice_action") is pending[1]
+                and self.__dict__.get("_phs_label_guidance_notice") is pending[0]
+                and getattr(event, "widget", None) is button
+                and getattr(event, "num", None) == 1
+                and not button.instate(["disabled"])
+                and 0 <= event.x < button.winfo_width()
+                and 0 <= event.y < button.winfo_height()):
+            self._pointer_confirmation_pressed = pending
+        return None
+
+    def _confirm_pointer_action(self, event):
+        pending = self.__dict__.get("_pointer_confirmation")
+        if not pending or self.__dict__.get("_workflow_notice_action") is not pending[1]:
+            return None
+        button = self.__dict__.get("workflow_notice_action_button")
+        button.state(["!pressed"])
+        if (self.__dict__.pop("_pointer_confirmation_pressed", None) is not pending
+                or self.__dict__.get("_phs_label_guidance_notice") is not pending[0]
+                or getattr(event, "widget", None) is not button
+                or getattr(event, "num", None) != 1
+                or button.instate(["disabled"])
+                or not (0 <= event.x < button.winfo_width()
+                        and 0 <= event.y < button.winfo_height())):
+            return "break"
+        self._pointer_confirmation = None
+        self._workflow_notice_action = None
+        self._workflow_notice_action_text = "확인"
+        self._phs_label_guidance_notice = None
+        self._render_operator_workbench()
+        pending[2]()
+        self._focus_scan_entry_if_available()
+        return "break"
+
     def _set_workflow_notice_ui(self, notice, next_action):
         title_label = self.__dict__.get("workflow_notice_title_label")
         message_label = self.__dict__.get("workflow_notice_label")
@@ -20379,6 +20456,14 @@ class Label_Match(tk.Tk):
         action_button = self.__dict__.get("workflow_notice_action_button")
         if action_button is None:
             return
+        pointer = self.__dict__.get("_pointer_confirmation")
+        pointer_active = bool(pointer and self.__dict__.get("_workflow_notice_action") is pointer[1])
+        if pointer_active and (self.__dict__.get("_phs_label_guidance_notice") is not pointer[0]
+                               or notice is not pointer[0]):
+            self._pointer_confirmation = None
+            self._workflow_notice_action = None
+            self._workflow_notice_action_text = "확인"
+            pointer_active = False
         show_action = bool(
             self.__dict__.get("_pending_workflow_error")
             or self.__dict__.get("_workflow_pending_error")
@@ -20391,7 +20476,9 @@ class Label_Match(tk.Tk):
                 )
                 action_button.configure(
                     text=action_text,
-                    width=10 if action_text == "제출 재시도" else 4,
+                    width=(max(4, len(action_text)) if pointer_active
+                           else 10 if action_text == "제출 재시도" else 4),
+                    takefocus=not pointer_active,
                 )
                 compact = bool(
                     self.__dict__.get("_operator_compact_large_text", False)
@@ -20401,7 +20488,8 @@ class Label_Match(tk.Tk):
                     pady=4 if compact else 7,
                 )
                 action_button.grid()
-                action_button.focus_set()
+                if not pointer_active:
+                    action_button.focus_set()
             else:
                 action_button.grid_remove()
         except (TclError, AttributeError):
@@ -21556,17 +21644,19 @@ class Label_Match(tk.Tk):
         self._render_operator_workbench()
         self._apply_responsive_layout()
 
-    def _prompt_for_date_and_reload(self):
+    def _prompt_for_date_and_reload(self, selected_date=None):
         if not self.initialized_successfully: return
         if self._block_background_history_reload(parent=self):
             return
         if self._block_duplicate_history_load(parent=self):
             return
         
-        selected_date = None
-        if not self.run_tests:
-            cal_win = CalendarWindow(self)
-            selected_date = cal_win.result
+        if selected_date is None:
+            if not self.run_tests:
+                calendar = self.__dict__.get("_history_date_calendar")
+                if calendar is None or not calendar.winfo_exists():
+                    self._history_date_calendar = CalendarWindow(self)
+            return
 
         if selected_date:
             try:
