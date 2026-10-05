@@ -788,7 +788,7 @@ def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
         "$audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name",
         "ROLLBACK_AUDIT_PERSISTENCE_FAILED",
         "$audit.rollback.failure_details = Get-LabelLaunchFailure $rollbackFailure 'rollback'",
-        "throw ([string]$audit.rollback.failure_details.last_line)",
+        "throw ([string]$audit.rollback.failure_details.guidance)",
     ):
         assert token in rollback
 

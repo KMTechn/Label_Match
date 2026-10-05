@@ -78,11 +78,13 @@ def test_actual_powershell_installer_decision(shell, state, tmp_path):
     text = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
     prefix = text[:text.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
     script.write_text(prefix + "\n" +
+        f". '{ROOT.as_posix()}/tools/failure_redaction.ps1'\n" +
         f". '{ROOT.as_posix()}/kmtech_shared/powershell/data_generation.ps1'\n" +
         f"$result = Assert-LabelDataDowngrade -MarkerPaths @('{control.as_posix()}','{data.as_posix()}') " +
         f"-TargetVersion '{'v2.0.95' if state.startswith('same_') else 'v2.0.38'}' -SubjectSid '{SID}' " +
         f"-TargetBuildId '{BUILD if state == 'same_build' else OLD_BUILD}'\n" +
         "$result | ConvertTo-Json -Compress\n", encoding="utf-8-sig")
+    before_markers = {p: p.read_bytes() if p.exists() else None for p in (control, data)}
     completed = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(script)],
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -96,6 +98,7 @@ def test_actual_powershell_installer_decision(shell, state, tmp_path):
         assert completed.returncode != 0
         assert "자료" in completed.stderr
         assert "복구" in completed.stderr
+    assert {p: p.read_bytes() if p.exists() else None for p in (control, data)} == before_markers
 
 
 def test_data_generation_is_recorded_before_onboarding_ledger(monkeypatch, tmp_path):
@@ -263,13 +266,22 @@ def test_failed_launch_does_not_record_generation(shell, tmp_path):
     prefix = text[:text.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
     script = tmp_path / "launch-failure.ps1"
     script.write_text(prefix + f"\n. '{ROOT.as_posix()}/tools/failure_redaction.ps1'\n" +
-                     f"try {{ Product '{tmp_path.as_posix()}' '--onboard-current-user' }} catch {{ $_.Exception.Message }}\n",
+                     f"try {{ Product '{tmp_path.as_posix()}' '--onboard-current-user' }} catch {{ Get-LabelLaunchFailure $_ 'fixture_failed_launch' | ConvertTo-Json -Compress -Depth 10 }}\n",
                      encoding="utf-8-sig")
     completed = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(script)],
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert completed.returncode == 0
-    assert "fixture launch failure" in completed.stdout
+    import hashlib
+    record = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert record["status"] == "FAILED"
+    assert record["reason_code"] == "CHILD_NONZERO_EXIT" and record["exit_code"] == 1
+    report = Path(record["report_path"])
+    assert report.is_file()
+    private = report.read_bytes()
+    assert hashlib.sha256(private).hexdigest() == record["report_sha256"]
+    assert "fixture launch failure" in private.decode("utf-8")
+    assert "fixture launch failure" not in completed.stdout
     assert not list(tmp_path.rglob("data-generation.json"))
 
 
