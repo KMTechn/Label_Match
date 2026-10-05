@@ -103,3 +103,40 @@ function ConvertTo-KmtechRedactedSinkObject {
     }
     return $Value
 }
+
+function Write-KmtechProtectedFailureSidecar {
+    param([Parameter(Mandatory)][string]$Text)
+    $protected=ConvertTo-KmtechRedactedSinkText -Text $Text
+    $bytes=[Text.Encoding]::UTF8.GetBytes($protected)
+    $root=[IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $ancestor=$root
+    while($ancestor){
+        $item=Get-Item -LiteralPath $ancestor -ErrorAction Stop
+        if(-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){
+            throw 'Diagnostic parent is not an ordinary directory.'
+        }
+        $parent=Split-Path -Parent $ancestor
+        if($parent -eq $ancestor){break};$ancestor=$parent
+    }
+    $directory=Join-Path $root ('label-legacy-native-diagnostic-'+[Guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $directory -ErrorAction Stop)
+    $acl=[Security.AccessControl.DirectorySecurity]::new();$acl.SetAccessRuleProtection($true,$false)
+    foreach($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User,
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))){
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+    }
+    Set-Acl -LiteralPath $directory -AclObject $acl -ErrorAction Stop
+    $path=Join-Path $directory 'native-exception.txt'
+    $stream=[IO.File]::Open($path,'CreateNew','Write','Read')
+    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+    $readback=[IO.File]::ReadAllBytes($path)
+    if($readback.Length -ne $bytes.Length){throw 'Diagnostic readback differs.'}
+    $hash=[Security.Cryptography.SHA256]::Create()
+    try{
+        $sha=([BitConverter]::ToString($hash.ComputeHash($readback))).Replace('-','').ToLowerInvariant()
+        $expected=([BitConverter]::ToString($hash.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()
+    }finally{$hash.Dispose()}
+    if($sha -cne $expected){throw 'Diagnostic readback differs.'}
+    return [ordered]@{path=$path;sha256=$sha;bytes=$bytes.Length;limit_bytes=65536;truncated=$protected.Contains('[TRUNCATED:')}
+}

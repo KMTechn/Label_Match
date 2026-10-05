@@ -1072,17 +1072,22 @@ function Get-LabelOfficialLegacyTaskFingerprint([string]$TaskName,[string]$TaskP
 }
 
 function Get-LabelOfficialLegacyTaskSnapshot {
+    $nativeCall=''
     try {
     $expected=Get-LabelOfficialLegacyTaskExpectation
+    $nativeCall='Get-ScheduledTask'
     $tasks=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {
         [string]$_.TaskName -like 'direct-sync-relay-label-match-*' -or
         ([string]$_.TaskName -ieq 'direct-sync-relay-label-match' -and
             @($_.Actions | Where-Object { [string]$_.Execute -match '(?i)wscript\.exe"?$' }).Count -gt 0)
     })
+    $nativeCall=''
     if ($tasks.Count -gt 1) { throw 'Healthy lifecycle task belongs to another principal/command.' }
     if ($tasks.Count -eq 0) { return $null }
     $task=$tasks[0]
+    $nativeCall='Export-ScheduledTask'
     $xml=[string](Export-ScheduledTask -TaskName ([string]$task.TaskName) -TaskPath ([string]$task.TaskPath) -ErrorAction Stop)
+    $nativeCall=''
     $fingerprint=Get-LabelOfficialLegacyTaskFingerprint ([string]$task.TaskName) ([string]$task.TaskPath) $xml
     # Enabled is scheduler state, not identity. Exported XML can omit its
     # default; never coerce an unreadable/non-boolean object value to false.
@@ -1102,7 +1107,28 @@ function Get-LabelOfficialLegacyTaskSnapshot {
     try { $sha=([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($xml)))).Replace('-','').ToLowerInvariant() }
     finally { $hash.Dispose() }
     return [pscustomobject]@{name=[string]$task.TaskName;path=[string]$task.TaskPath;xml=$xml;xml_sha256=$sha;enabled=$enabledActual;fingerprint=$fingerprint}
-    } catch { throw 'Healthy lifecycle task belongs to another principal/command.' }
+    } catch {
+        $sourceFailure=$_
+        $refusal=[InvalidOperationException]::new('Healthy lifecycle task belongs to another principal/command.')
+        if ($nativeCall) {
+            # Native text stays exclusively in protected evidence, including
+            # task/author/SID values that must never enter public diagnostics.
+            $cause=$sourceFailure.Exception.GetBaseException()
+            $diagnostic=[ordered]@{exception_type=$cause.GetType().FullName;hresult=$cause.HResult}
+            try {
+                $diagnostic.sidecar=Write-KmtechProtectedFailureSidecar -Text $sourceFailure.Exception.ToString()
+                $metadata=ConvertTo-KmtechRedactedSinkObject $diagnostic
+                $metadataPath=Join-Path (Split-Path -Parent $diagnostic.sidecar.path) 'native-exception.json'
+                $bytes=[Text.Encoding]::UTF8.GetBytes(($metadata | ConvertTo-Json -Depth 6 -Compress))
+                $stream=[IO.File]::Open($metadataPath,'CreateNew','Write','Read')
+                try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+            } catch { $diagnostic.evidence_failure_type=$_.Exception.GetType().FullName }
+            $refusal.Data['label_legacy_native_failure']=$diagnostic
+            $digest=if($diagnostic.Contains('sidecar')){[string]$diagnostic.sidecar.sha256}else{'unavailable'}
+            Write-Warning (ConvertTo-KmtechRedactedSinkText -Text ('Legacy scheduler diagnostic: exception_type='+$diagnostic.exception_type+'; HResult='+$diagnostic.hresult+'; sidecar_sha256='+$digest))
+        }
+        throw $refusal
+    }
 }
 
 function Assert-LabelOfficialLegacyTaskStopped([string]$Name) {
