@@ -45,7 +45,7 @@ def test_rollback_attempts_guarded_tail_and_preserves_failures(tmp_path, shell, 
         "launcher_sha256": hashlib.sha256((tree / "launch-label-match.cmd").read_bytes()).hexdigest(),
     }), encoding="utf-8")
     source = (REPO / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
-    tail = source[source.index("catch {\n    $original = $_"):]
+    tail = source[source.rfind("\ncatch {") + 1:]
     rollback_sources = re.search(r"(?ms)^\$rollbackSources = @\(.*?^\)", source).group()
     output = tmp_path / "result.json"
     script = tmp_path / "catch.ps1"
