@@ -3,6 +3,8 @@ import ast
 import json
 import os
 from pathlib import Path
+import sys
+from unittest.mock import patch
 import uuid
 
 import pytest
@@ -58,8 +60,8 @@ def test_shipped_installers_keep_utf8_bom_for_windows_powershell_korean_errors()
         assert (ROOT / relative).read_bytes().startswith(b'\xef\xbb\xbf'), relative
 
 
-def _stock_powershell_members():
-    """Use the stock builder's script paths and copied directory members."""
+def _stock_powershell_members(scratch):
+    """Trace stock copy inputs, including its runtime and dependency members."""
     source = ast.parse(Path(portable_builder.__file__).read_text(encoding='utf-8'))
     suffixes = {'.ps1', '.psm1', '.psd1'}
     relative_paths = {
@@ -68,29 +70,51 @@ def _stock_powershell_members():
         and Path(node.value).suffix.lower() in suffixes
     }
     members = {ROOT / relative for relative in relative_paths}
-    for relative in (*portable_builder.APP_PACKAGE_DIRS, *portable_builder.APP_DATA_DIRS):
-        directory = ROOT / relative
-        assert directory.is_dir(), relative
-        members.update(path for path in directory.rglob('*')
-                       if path.is_file() and path.suffix.lower() in suffixes
-                       and '__pycache__' not in path.relative_to(directory).parts)
+    copy_file = portable_builder.shutil.copy2
+    def record_file(source, target, **_kwargs):
+        path = Path(source)
+        if path.suffix.lower() in suffixes:
+            members.add(path)
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            copy_file(source, target)
+        return str(target)
+
+    def record_tree(source, target, *, ignore=None, **_kwargs):
+        def visit(directory, destination):
+            entries = list(directory.iterdir())
+            excluded = set(ignore(str(directory), [path.name for path in entries])) if ignore else set()
+            for path in entries:
+                if path.name not in excluded:
+                    if path.is_dir():
+                        visit(path, destination / path.name)
+                    elif path.is_file():
+                        record_file(path, destination / path.name)
+        visit(Path(source), Path(target))
+        return str(target)
+
+    scratch.mkdir(parents=True)
+    with patch.object(portable_builder.shutil, 'copy2', record_file), \
+            patch.object(portable_builder.shutil, 'copytree', record_tree):
+        portable_builder._copy_application(ROOT, scratch / 'app')
+        portable_builder._runtime_source(Path(sys.base_prefix), scratch / 'runtime')
+        portable_builder._copy_third_party(scratch / 'site-packages')
     assert members and all(path.is_file() for path in members), 'stock script member missing'
     return sorted(members)
 
 
-def test_stock_powershell_nonascii_members_have_utf8_bom():
+def test_stock_powershell_nonascii_members_have_utf8_bom(tmp_path):
     missing = []
-    for path in _stock_powershell_members():
+    for path in _stock_powershell_members(tmp_path / 'stock-members'):
         raw = path.read_bytes()
         if any(byte >= 128 for byte in raw) and not raw.startswith(b'\xef\xbb\xbf'):
-            missing.append(path.relative_to(ROOT).as_posix())
+            missing.append(path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else str(path))
     assert not missing, {'nonascii_without_utf8_bom': missing}
 
 
 def test_stock_powershell_cp949_parser_preserves_korean_literals(tmp_path):
     executable = shutil.which('powershell.exe')
     assert executable, 'Windows PowerShell 5.1 is required'
-    members = _stock_powershell_members()
+    members = _stock_powershell_members(tmp_path / 'stock-members')
     inputs = tmp_path / 'stock-powershell-inputs.json'
     inputs.write_text(json.dumps([str(path) for path in members]), encoding='utf-8')
     driver = tmp_path / 'stock-powershell-cp949.ps1'
@@ -98,7 +122,7 @@ def test_stock_powershell_cp949_parser_preserves_korean_literals(tmp_path):
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 try {
-    if($PSVersionTable.PSVersion.Major -ne 5){throw 'Windows PowerShell 5.1 required'}
+    if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1){throw 'Windows PowerShell 5.1 required'}
     $utf8=[Text.UTF8Encoding]::new($false,$true)
     $legacy=[Text.Encoding]::GetEncoding(949)
     $parseErrors=0;$literalMismatches=0;$koreanLiterals=0;$checked=0
@@ -121,7 +145,7 @@ try {
         else {for($index=0;$index -lt $expectedValues.Count;$index++){if($expectedValues[$index] -cne $actualValues[$index]){$literalMismatches++}}}
         $checked++
     }
-    [ordered]@{checked=$checked;parse_errors=$parseErrors;literal_mismatches=$literalMismatches;korean_literals=$koreanLiterals;decode_codepage=$legacy.CodePage;host_codepage=[Text.Encoding]::Default.CodePage;ps_major=$PSVersionTable.PSVersion.Major} | ConvertTo-Json -Compress
+    [ordered]@{checked=$checked;parse_errors=$parseErrors;literal_mismatches=$literalMismatches;korean_literals=$koreanLiterals;decode_codepage=$legacy.CodePage;host_codepage=[Text.Encoding]::Default.CodePage;ps_major=$PSVersionTable.PSVersion.Major;ps_minor=$PSVersionTable.PSVersion.Minor} | ConvertTo-Json -Compress
 } catch {
     [ordered]@{error_type=$_.Exception.GetType().FullName;stage='stock_cp949_parser'} | ConvertTo-Json -Compress
     exit 1
@@ -137,7 +161,7 @@ try {
         json.dumps(observed, sort_keys=True), encoding='utf-8')
     assert result.returncode == 0, observed
     assert observed['checked'] == len(members)
-    assert observed['ps_major'] == 5 and observed['decode_codepage'] == 949
+    assert observed['ps_major'] == 5 and observed['ps_minor'] == 1 and observed['decode_codepage'] == 949
     assert observed['parse_errors'] == 0, observed
     assert observed['literal_mismatches'] == 0, observed
     assert observed['korean_literals'] > 0, observed

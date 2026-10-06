@@ -1,6 +1,6 @@
 # 조립 실패 기록 및 제품 상태 계약
 
-stock 빌더가 배포하는 .ps1/.psm1/.psd1의 비ASCII 내용은 UTF-8 BOM(EF BB BF)을 보존한다. 정적 경비는 빌더의 script 경로와 배포 디렉터리 집합을 사용한다. PS5.1 회귀는 BOM 유무에 따라 UTF-8/cp949로 디코드한 본문을 Parser.ParseInput에 넣어 구문 오류 0과 UTF-8 기준 한국어 리터럴 일치를 요구한다. 65001 호스트의 기본 파일 판독만으로 cp949 현장 호환을 증명하지 않는다. 임시 사본의 BOM 제거 RED와 실제 stock source GREEN은 sub-325 REPORT.md에 기록하며 원본을 바꾸지 않는다.
+stock 빌더가 배포하는 .ps1/.psm1/.psd1의 비ASCII 내용은 UTF-8 BOM(EF BB BF)을 보존한다. 정적 경비는 빌더의 script 경로와 실제 application/runtime/third-party 복사 입력을 추적하며 runtime Activate.ps1도 포함한다. PS5.1 회귀는 BOM 유무에 따라 UTF-8/cp949로 디코드한 본문을 Parser.ParseInput에 넣어 구문 오류 0과 UTF-8 기준 한국어 리터럴 일치를 요구한다. 65001 호스트의 기본 파일 판독만으로 cp949 현장 호환을 증명하지 않는다. 임시 사본의 BOM 제거 RED와 실제 stock source GREEN은 sub-325 REPORT.md에 기록하며 원본을 바꾸지 않는다.
 
 구조화 가림의 추가 범위는 REDACTION-CONTRACT 0f(SHA256 c82c9bdccd16bb0caa0e423fb7578278646ba0e40ac18bd58291c00e70946ccf)의 동결 4벡터를 따른다. 아래 0e 기록은 조립 v2의 역사적 범위로 보존하며 10/8 컷 전 통합은 독립 검토 P1·P2 0 후 코디가 수행한다.
 
