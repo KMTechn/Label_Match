@@ -62,9 +62,40 @@ function ConvertTo-KmtechRedactedSinkText {
         if (-not $valueMatch.Success) { continue }
         $value=$valueMatch.Value
         $protectedUntil=$valueMatch.Index+$valueMatch.Length
+        $structured=$false
+        $delimiters=[string]$rules.structured_delimiters
+        $start=$valueMatch.Index
+        $opening=$delimiters.IndexOf($Text[$start])
+        if ($sensitive -and -not $metadataKey -and $opening -ge 0 -and $opening % 2 -eq 0 -and
+            -not $Text.Substring($start).StartsWith('[REDACTED:')) {
+            $structured=$true
+            $lineEnd=$Text.IndexOf([char]10,$start)
+            if ($lineEnd -lt 0) {$lineEnd=$Text.Length}
+            $protectedUntil=$lineEnd
+            $closing=[Collections.Generic.Stack[char]]::new()
+            $quote=[char]0; $escaped=$false
+            for ($position=$start;$position -lt $Text.Length;$position++) {
+                $char=$Text[$position]
+                if ($quote -ne [char]0) {
+                    if ($escaped) {$escaped=$false}
+                    elseif ($char -eq [char]92) {$escaped=$true}
+                    elseif ($char -eq $quote) {$quote=[char]0}
+                } elseif ($char -eq [char]34 -or $char -eq [char]39) {$quote=$char}
+                else {
+                    $paired=$delimiters.IndexOf($char)
+                    if ($paired -ge 0 -and $paired % 2 -eq 0) {$closing.Push($delimiters[$paired+1])}
+                    elseif ($paired -ge 0) {
+                        if (-not $closing.Count -or $closing.Peek() -ne $char) {break}
+                        [void]$closing.Pop()
+                        if (-not $closing.Count) {$protectedUntil=$position+1;break}
+                    }
+                }
+            }
+            $value=$Text.Substring($start,$protectedUntil-$start)
+        }
         if ($metadataKey -or $value -cin @('true','false','null') -or
             $value.Trim($quotes).StartsWith('[REDACTED:')) { continue }
-        $replacement=if($value.StartsWith('"') -or $value.StartsWith("'")){
+        $replacement=if($structured){'"'+$rules.field+'"'}elseif($value.StartsWith('"') -or $value.StartsWith("'")){
             $value.Substring(0,1)+$rules.field+$value.Substring(0,1)
         }else{$rules.field}
         [void]$parts.Append($Text,$copied,$match.Index-$copied)

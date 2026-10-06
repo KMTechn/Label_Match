@@ -263,9 +263,45 @@ def redact_for_sink(text, environ=None, *, redact_values=()):
             continue
         value = value_match[0]
         protected_until = value_match.end()
+        structured = False
+        delimiters = RULES['structured_delimiters']
+        start = value_match.start()
+        opening = delimiters.find(text[start])
+        if sensitive and not metadata_key and opening >= 0 and opening % 2 == 0 and not text.startswith('[REDACTED:', start):
+            structured = True
+            line_end = text.find('\n', start)
+            if line_end < 0:
+                line_end = len(text)
+            protected_until = line_end
+            closing = []
+            quote = ''
+            escaped = False
+            for position in range(start, len(text)):
+                char = text[position]
+                if quote:
+                    if escaped:
+                        escaped = False
+                    elif char == '\\':
+                        escaped = True
+                    elif char == quote:
+                        quote = ''
+                elif char in ('"', "'"):
+                    quote = char
+                else:
+                    paired = delimiters.find(char)
+                    if paired >= 0 and paired % 2 == 0:
+                        closing.append(delimiters[paired + 1])
+                    elif paired >= 0:
+                        if not closing or closing[-1] != char:
+                            break
+                        closing.pop()
+                        if not closing:
+                            protected_until = position + 1
+                            break
+            value = text[start:protected_until]
         if metadata_key or value in ('true', 'false', 'null') or value.strip("\"'").startswith('[REDACTED:'):
             continue
-        quote = value[0] if value.startswith(('"', "'")) else ''
+        quote = '"' if structured else (value[0] if value.startswith(('"', "'")) else '')
         parts.extend((text[copied:match.start()], match['key'] + match['separator'] + quote + RULES['field'] + quote))
         copied = protected_until
     text = ''.join(parts) + text[copied:]

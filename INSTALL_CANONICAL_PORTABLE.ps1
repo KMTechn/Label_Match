@@ -2289,7 +2289,7 @@ function Protect-LabelFailureText([string]$Text) {
 function Initialize-LabelChildOutputReader {
     # 64 KiB per stream covers a traceback/JSON report without unbounded audit growth.
     # On overflow retain the tail, where Python puts its lowest exception and cause.
-    if ('LabelChildOutputReader' -as [type]) { [LabelChildOutputReader]::Configure((Get-KmtechSinkReplacements),$Script:KmtechRedactionRules.pattern,$Script:KmtechRedactionRules.path_suffix,$Script:KmtechRedactionRules.digest_suffix,$Script:KmtechRedactionRules.short_secret_digest,$Script:KmtechRedactionRules.field); return }
+    if ('LabelChildOutputReader' -as [type]) { [LabelChildOutputReader]::Configure((Get-KmtechSinkReplacements),$Script:KmtechRedactionRules.pattern,$Script:KmtechRedactionRules.path_suffix,$Script:KmtechRedactionRules.digest_suffix,$Script:KmtechRedactionRules.short_secret_digest,$Script:KmtechRedactionRules.field,$Script:KmtechRedactionRules.structured_delimiters); return }
     Add-Type -TypeDefinition @'
 using System;
 using System.IO;
@@ -2303,10 +2303,14 @@ using System.Text.RegularExpressions;
 // chunks. A truncated JSON document can no longer be parsed by the sink writer.
 public sealed class LabelJsonFieldMasker {
  private readonly Regex secret, path, digest, shortSecret;
- private readonly string marker, rawMarker;
+ public static string StructuredDelimiters;
+ private readonly string marker, rawMarker, delimiters;
  private readonly StringBuilder token = new StringBuilder();
- private int state, depth; private bool escaped, quoted, bareKey; private char quote, nestedQuote;
+ private int state; private bool escaped, quoted, bareKey, malformed; private char quote, nestedQuote;
+ private readonly Stack<char> closing = new Stack<char>();
  public LabelJsonFieldMasker(string pattern,string paths,string digests,string shorts,string replacement) {
+  delimiters=StructuredDelimiters;
+  if(String.IsNullOrEmpty(delimiters) || delimiters.Length%2!=0) throw new ArgumentException("Structured redaction grammar is invalid.");
   secret=new Regex(pattern+"|(?i)^(pin|otp|password)$");path=new Regex(paths);
   digest=new Regex(digests);shortSecret=new Regex(shorts);rawMarker=replacement;marker="\""+replacement+"\"";
  }
@@ -2341,7 +2345,7 @@ public sealed class LabelJsonFieldMasker {
      if(Char.IsWhiteSpace(c)) output.Append(c);
      else if(c=='"' || c=='\'') {quote=c;output.Append(quote+rawMarker+quote);state=4;escaped=false;}
      else if(c=='[') {token.Append(c);state=13;}
-     else if(c=='{') {output.Append(marker);state=5;depth=1;quoted=false;escaped=false;}
+     else if(delimiters.IndexOf(c)>=0 && delimiters.IndexOf(c)%2==0) {output.Append(marker);state=5;closing.Clear();closing.Push(delimiters[delimiters.IndexOf(c)+1]);malformed=false;quoted=false;escaped=false;}
      else {token.Append(c);state=6;}
     } else if(state==4 || state==7) {
      if(state==7) output.Append(c);
@@ -2349,10 +2353,14 @@ public sealed class LabelJsonFieldMasker {
      else if(c=='\\') escaped=true;
      else if(c==quote) state=0;
     } else if(state==5) {
-     if(quoted) {if(escaped) escaped=false;else if(c=='\\') escaped=true;else if(c==nestedQuote) quoted=false;}
+     if(malformed) {if(c=='\r' || c=='\n') {output.Append(c);state=0;}}
+     else if(quoted) {if(escaped) escaped=false;else if(c=='\\') escaped=true;else if(c==nestedQuote) quoted=false;}
      else if(c=='"' || c=='\'') {nestedQuote=c;quoted=true;}
-     else if(c=='{' || c=='[') depth++;
-     else if(c=='}' || c==']') {if(--depth==0) state=0;}
+     else if(delimiters.IndexOf(c)>=0 && delimiters.IndexOf(c)%2==0) closing.Push(delimiters[delimiters.IndexOf(c)+1]);
+     else if(delimiters.IndexOf(c)>=0) {
+      if(closing.Count==0 || closing.Peek()!=c) malformed=true;
+      else {closing.Pop();if(closing.Count==0) state=0;}
+     }
     } else if(state==6) {
      if(c==',' || c==';' || c=='}' || c==']' || Char.IsWhiteSpace(c)) {
       string value=token.ToString();output.Append(value=="true" || value=="false" || value=="null" ? value : (bareKey ? rawMarker : marker));
@@ -2389,10 +2397,7 @@ public sealed class LabelJsonFieldMasker {
      if("[REDACTED:".StartsWith(candidate,StringComparison.Ordinal)) {
       if(candidate=="[REDACTED:") {output.Append(token);token.Clear();state=14;}
      } else {
-      output.Append(marker);token.Clear();state=5;depth=1;quoted=false;escaped=false;
-      if(c=='"' || c=='\'') {nestedQuote=c;quoted=true;}
-      else if(c=='{' || c=='[') depth++;
-      else if(c==']') {depth=0;state=0;}
+      output.Append(marker);token.Clear();state=5;closing.Clear();closing.Push(delimiters[delimiters.IndexOf('[')+1]);malformed=false;quoted=false;escaped=false;again=true;
      }
     } else if(state==14) {
      output.Append(c);if(c==']') state=0;
@@ -2416,7 +2421,8 @@ public sealed class LabelChildOutput {
 public static class LabelChildOutputReader {
  private static KeyValuePair<string,string>[] replacements = new KeyValuePair<string,string>[0];
  private static string pattern, paths, digests, shorts, field;
- public static void Configure(Dictionary<string,string> values,string patternValue,string pathValue,string digestValue,string shortValue,string fieldValue) {
+ public static void Configure(Dictionary<string,string> values,string patternValue,string pathValue,string digestValue,string shortValue,string fieldValue,string structuredValue) {
+  LabelJsonFieldMasker.StructuredDelimiters=structuredValue;
   replacements = values.OrderByDescending(v => v.Key.Length).ThenBy(v => v.Key, StringComparer.Ordinal).ToArray();
   pattern=patternValue;paths=pathValue;digests=digestValue;shorts=shortValue;field=fieldValue;
  }
@@ -2485,7 +2491,7 @@ public static class LabelChildOutputReader {
  }
 }
 '@
-    [LabelChildOutputReader]::Configure((Get-KmtechSinkReplacements),$Script:KmtechRedactionRules.pattern,$Script:KmtechRedactionRules.path_suffix,$Script:KmtechRedactionRules.digest_suffix,$Script:KmtechRedactionRules.short_secret_digest,$Script:KmtechRedactionRules.field)
+    [LabelChildOutputReader]::Configure((Get-KmtechSinkReplacements),$Script:KmtechRedactionRules.pattern,$Script:KmtechRedactionRules.path_suffix,$Script:KmtechRedactionRules.digest_suffix,$Script:KmtechRedactionRules.short_secret_digest,$Script:KmtechRedactionRules.field,$Script:KmtechRedactionRules.structured_delimiters)
 }
 
 function ConvertTo-LabelFailureOutput($Output) {

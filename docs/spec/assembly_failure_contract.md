@@ -8,9 +8,11 @@
 
 지원 제거가 다시 읽는 audit의 중첩 거래·복구 필드는 1a machine metadata로 보존하며 전체 파일을 평탄화하지 않는다. 진단 하위 레코드와 안내만 공개 레코드로 바꾼다. 정확한 출력 자리 목록과 실제 검증 한계는 `work/program/w9setupprep/sub-310/INVENTORY.md` 및 `REPORT.md`에 기록한다. 호스트에서 실제 설치/ACL·GUI·VM·서버 수용은 수행하지 않는다.
 
-환경 이름이 `_TRANSACTION_ID`, `_SESSION_ID`, `_ATTEMPT_ID`로 끝나고 값이 엄격 UUID 또는 32/64자리 16진수일 때만 비밀 값 치환에서 제외한다. `_PID`, `_START`, `_MUTEX`도 계약의 엄격한 값 모양과 이름 끝이 함께 맞을 때만 제외한다. 명시 비밀 이름은 예외를 받지 않는다. Python과 PowerShell은 같은 18개 합성 벡터를 사용하며 식별자 값 규칙은 공통 rules JSON에서 읽는다. PowerShell child 출력 reader에도 같은 판정 함수를 전달한다.
+환경 이름이 `_TRANSACTION_ID`, `_SESSION_ID`, `_ATTEMPT_ID`로 끝나고 값이 엄격 UUID 또는 32/64자리 16진수일 때만 비밀 값 치환에서 제외한다. `_PID`, `_START`, `_MUTEX`도 계약의 엄격한 값 모양과 이름 끝이 함께 맞을 때만 제외한다. 명시 비밀 이름은 예외를 받지 않는다. Python과 PowerShell은 필수 18개와 컷 뒤 구조화 4개 합성 벡터를 사용하며 식별자 값 규칙은 공통 rules JSON에서 읽는다. PowerShell child 출력 reader에도 같은 판정 함수를 전달한다.
 
 텍스트 가림은 key와 value를 분리해 검사한다. `RuntimeError:` 같은 일반 접두문 뒤의 assignment·인용 mapping도 계속 검색하며, 비밀 value와 metadata value는 경계를 보존한다. status·JSONL 로그·보호 진단 및 PS5.1/PS7 child capture의 최종 변환에 같은 규칙을 적용한다. 길이 제한과 traceback 맥락은 유지한다.
+
+보호 보고서의 민감 key 뒤 mapping·list·중첩 값은 인용·escape를 구별해 괄호 짝까지 통째로 가리고, 짝이 없거나 어긋난 값은 줄 끝까지 가린다. 구조 문법은 공용 rules의 `structured_delimiters` 하나에서 Python·PowerShell·C#으로 전달한다. 정상 값 뒤 후속 field와 원인 접두는 유지한다. 공개 허용 레코드·65,536바이트 상한·가림 후 절단 순서와 동결 공개 6벡터는 유지한다. 구조화 4벡터와 sink 셀의 실제 검증 결과·한계는 sub-325 REPORT.md에 기록한다.
 
 C# bounded capture는 일반 접두문 뒤의 인용/비인용 assignment도 잘림 전에 가린다. chunk를 넘는 value와 이미 가린 환경 이름 표지를 보존하며, 비밀 배열·객체 및 metadata 예외는 기존 경계를 따른다. C# capture/최종 변환에 같은 14 벡터와 추가 4벡터(예외 접두문 2, 64 KiB 초과 plain/접두문 assignment 2)를 적용한다. 최종 sink가 정상 JSON을 다시 직렬화하는 경우에는 필드 값의 정확한 일치로, 일반 텍스트와 잘림 속성은 원 기대값으로 비교한다.
 

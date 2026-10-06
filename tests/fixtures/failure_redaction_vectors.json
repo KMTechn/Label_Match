@@ -199,6 +199,30 @@
         "tail": ""
       },
       "expected": "RuntimeError: password=[REDACTED:field]"
+    },
+    {
+      "id": "mapping-password",
+      "environ": {},
+      "text": "RuntimeError: \"password\": {\"left\": \"d884efb39c5944f28a0122208e16e6f0abc6ff39ea2b1f6df61263cb7f5246d0\", \"right\": \"1739a7d06c71b5c5c99428312398ec1d75134fe523c2e62c0b4abd0bf15272e6\"}; stage=FAILED",
+      "expected": "RuntimeError: \"password\": \"[REDACTED:field]\"; stage=FAILED"
+    },
+    {
+      "id": "list-password",
+      "environ": {},
+      "text": "RuntimeError: \"password\": [\"9520dbf65e0440fe0820c9e18eb20c361db53134b0ebf65d94a72d05065f87b8\", \"1a2209206ad104b6fdbdccafd429911c64810b4b5c648b5af06d1035bfe84ed1\"]; stage=FAILED",
+      "expected": "RuntimeError: \"password\": \"[REDACTED:field]\"; stage=FAILED"
+    },
+    {
+      "id": "nested-password",
+      "environ": {},
+      "text": "RuntimeError: \"password\": {\"left\": [\"3777173b63eaddfd434cb668eaae0a0099d3161aaf69c0b2017bfd9e2740376b\", {\"right\": \"486ceb4cec5d6f19326e310a42504cdd9e32fff399ababefec0d01000ce61e3b\"}]}; stage=FAILED",
+      "expected": "RuntimeError: \"password\": \"[REDACTED:field]\"; stage=FAILED"
+    },
+    {
+      "id": "unbalanced-password",
+      "environ": {},
+      "text": "RuntimeError: \"password\": {\"left\": \"c80011fe24142e041f492361dffa775dc57c4f32c6064a7f235a6ac7c32b14e2\", \"right\": \"16dce12de56ee0116c4875426d83c23140ea96d0635f49af5f6c6542a8a541a0\"",
+      "expected": "RuntimeError: \"password\": \"[REDACTED:field]\""
     }
   ]
 }
