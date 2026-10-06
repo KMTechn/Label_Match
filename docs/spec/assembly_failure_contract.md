@@ -1,5 +1,7 @@
 # 조립 실패 기록 및 제품 상태 계약
 
+구조화 가림의 추가 범위는 REDACTION-CONTRACT 0f(SHA256 c82c9bdccd16bb0caa0e423fb7578278646ba0e40ac18bd58291c00e70946ccf)의 동결 4벡터를 따른다. 아래 0e 기록은 조립 v2의 역사적 범위로 보존하며 10/8 컷 전 통합은 독립 검토 P1·P2 0 후 코디가 수행한다.
+
 | 조기 실패 reason_code | 뜻과 고정 안내 |
 | --- | --- |
 | `SERVER_BASE_URL_INVALID` | 서버 URL origin 문법 또는 port 범위 거절. 서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요. |

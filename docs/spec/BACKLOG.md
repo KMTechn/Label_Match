@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+표준 도구로 candidate-facing LF digest를 재생성했다. writer sink inventory 80과 기존 pin은 유지되며 역사 before 값은 바꾸지 않는다. --check와 같은 입력 재생성의 바이트 동일 확인을 통과했다. 재생성은 기능 수정과 별도 커밋이며 최종 142·stock builder·독립 검토는 sub-325 REPORT.md로 판정한다.
+
 10/8 컷 전 병합 대상의 URL 앞단 거절은 SERVER_BASE_URL_INVALID와 고정 한국어 안내를 공개한다. URL 원문·이전 보고서 참조·상태 변경 0을 유지하며 회귀와 실제 native 설치 한계는 sub-325 REPORT.md에 기록한다.
 
 10/8 컷 전 병합 대상의 보호 보고서 가림은 민감 key의 mapping·list·중첩 값을 인용·escape와 괄호 짝을 확인해 통째로 가린다. 짝이 없거나 어긋나면 해당 줄 끝까지 가리고 정상 후속 field·원인 접두는 보존한다. 공용 rules의 structured_delimiters가 Python·PS·C#의 구조 문법 입력이며 기존 18벡터에 동결 구조화 4벡터를 추가한다. 공개 허용 레코드 계약과 길이 상한·가림 후 절단 순서는 유지한다. 엔진·공개/보호 셀 실측과 남은 한계는 sub-325 REPORT.md에 기록한다.
