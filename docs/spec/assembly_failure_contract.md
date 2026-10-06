@@ -20,7 +20,7 @@ stock 빌더가 배포하는 .ps1/.psm1/.psd1의 비ASCII 내용은 UTF-8 BOM(EF
 
 지원 제거가 다시 읽는 audit의 중첩 거래·복구 필드는 1a machine metadata로 보존하며 전체 파일을 평탄화하지 않는다. 진단 하위 레코드와 안내만 공개 레코드로 바꾼다. 정확한 출력 자리 목록과 실제 검증 한계는 `work/program/w9setupprep/sub-310/INVENTORY.md` 및 `REPORT.md`에 기록한다. 호스트에서 실제 설치/ACL·GUI·VM·서버 수용은 수행하지 않는다.
 
-환경 이름이 `_TRANSACTION_ID`, `_SESSION_ID`, `_ATTEMPT_ID`로 끝나고 값이 엄격 UUID 또는 32/64자리 16진수일 때만 비밀 값 치환에서 제외한다. `_PID`, `_START`, `_MUTEX`도 계약의 엄격한 값 모양과 이름 끝이 함께 맞을 때만 제외한다. 명시 비밀 이름은 예외를 받지 않는다. Python과 PowerShell은 필수 18개와 컷 뒤 구조화 4개 합성 벡터를 사용하며 식별자 값 규칙은 공통 rules JSON에서 읽는다. PowerShell child 출력 reader에도 같은 판정 함수를 전달한다.
+환경 이름이 `_TRANSACTION_ID`, `_SESSION_ID`, `_ATTEMPT_ID`로 끝나고 값이 엄격 UUID 또는 32/64자리 16진수일 때만 비밀 값 치환에서 제외한다. `_PID`, `_START`, `_MUTEX`도 계약의 엄격한 값 모양과 이름 끝이 함께 맞을 때만 제외한다. 명시 비밀 이름은 예외를 받지 않는다. Python과 PowerShell은 필수 18개와 컷 전 병합 범위에 추가된 구조화 4개 합성 벡터를 사용하며 식별자 값 규칙은 공통 rules JSON에서 읽는다. PowerShell child 출력 reader에도 같은 판정 함수를 전달한다.
 
 텍스트 가림은 key와 value를 분리해 검사한다. `RuntimeError:` 같은 일반 접두문 뒤의 assignment·인용 mapping도 계속 검색하며, 비밀 value와 metadata value는 경계를 보존한다. status·JSONL 로그·보호 진단 및 PS5.1/PS7 child capture의 최종 변환에 같은 규칙을 적용한다. 길이 제한과 traceback 맥락은 유지한다.
 
