@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+소리 장치 실패가 업무 처리를 막지 않아야 한다. 9f960fa의 일반·반복 재생, 초기화, preload, siren, 종료 및 inline 확인은 예외를 처리했으나 이전 모달 창 생성 실패 뒤 stop 호출은 트레이 리셋을 중단시켰다. 이 호출만 보호하며 실제 PlaySound 대역 실패 RED 1F→GREEN 4P/0F/0S로 리셋, 완료 durable 저장·CSV 로그·서버 동기화 시작·다음 스캔 및 초기화/siren 실패를 headless 검증한다. 실제 오디오 장치·서버 전송은 NOT TESTED이며 근거는 sub-325 REPORT.md에 기록한다.
+
 stock 빌더의 경로 상수와 실제 application/runtime/third-party 복사 입력에서 PowerShell(.ps1/.psm1/.psd1) 집합을 도출해 비ASCII 바이트가 있으면 UTF-8 BOM을 요구한다. 실제 PS5.1은 BOM 파일을 UTF-8로, 나머지를 cp949로 디코드한 본문을 ParseInput으로 읽고 UTF-8 기준의 한국어 AST 리터럴과 비교한다. 기존 3개 경비 밖 data_generation.ps1의 임시 사본에서 BOM 3바이트만 제거하자 2F(리터럴 불일치 2), 실제 9개 배포 source/runtime member에서는 2P/0F/0S·구문 오류 0·한국어 리터럴 37개 일치였다. 호스트 65001과 cp949 판독 모의의 경계, stock 전체 확인 및 독립 검토는 sub-325 REPORT.md에 기록한다.
 
 표준 도구로 candidate-facing LF digest를 재생성했다. writer sink inventory 80과 기존 pin은 유지되며 역사 before 값은 바꾸지 않는다. --check와 같은 입력 재생성의 바이트 동일 확인을 통과했다. 재생성은 기능 수정과 별도 커밋이며 최종 142·stock builder·독립 검토는 sub-325 REPORT.md로 판정한다.

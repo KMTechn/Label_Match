@@ -18269,7 +18269,11 @@ class Label_Match(tk.Tk):
             print(f"오류 경고창 표시 기술 진단: {e}; original={message}")
             self._stop_error_siren()
             fail_sound = self.sound_objects.get("fail")
-            if fail_sound: fail_sound.stop()
+            if fail_sound:
+                try:
+                    fail_sound.stop()
+                except Exception:
+                    pass
             if not self.run_tests:
                 messagebox.showerror(
                     "시스템 오류",
