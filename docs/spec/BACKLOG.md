@@ -4,7 +4,7 @@
 
 stock 빌더의 경로 상수와 실제 application/runtime/third-party 복사 입력에서 PowerShell(.ps1/.psm1/.psd1) 집합을 도출해 비ASCII 바이트가 있으면 UTF-8 BOM을 요구한다. 실제 PS5.1은 BOM 파일을 UTF-8로, 나머지를 cp949로 디코드한 본문을 ParseInput으로 읽고 UTF-8 기준의 한국어 AST 리터럴과 비교한다. 기존 3개 경비 밖 data_generation.ps1의 임시 사본에서 BOM 3바이트만 제거하자 2F(리터럴 불일치 2), 실제 9개 배포 source/runtime member에서는 2P/0F/0S·구문 오류 0·한국어 리터럴 37개 일치였다. 호스트 65001과 cp949 판독 모의의 경계, stock 전체 확인 및 독립 검토는 sub-325 REPORT.md에 기록한다.
 
-표준 도구로 candidate-facing LF digest를 재생성했다. writer sink inventory 80과 기존 pin은 유지되며 역사 before 값은 바꾸지 않는다. --check와 같은 입력 재생성의 바이트 동일 확인을 통과했다. 재생성은 기능 수정과 별도 커밋이며 최종 142·stock builder·독립 검토는 sub-325 REPORT.md로 판정한다.
+표준 도구로 candidate-facing LF digest를 재생성했다. writer sink inventory 80은 유지되며 소리 stop 보호로 바뀐 source 위치의 inventory pin을 다시 도출했다. 역사 before 값은 바꾸지 않는다. --check와 같은 입력 재생성의 바이트 동일 확인을 통과했다. 재생성은 기능 수정과 별도 커밋이며 최종 142·stock builder·독립 검토는 sub-325 REPORT.md로 판정한다.
 
 10/8 컷 전 병합 대상의 URL 앞단 거절은 SERVER_BASE_URL_INVALID와 고정 한국어 안내를 공개한다. URL 원문·이전 보고서 참조·상태 변경 0을 유지하며 회귀와 실제 native 설치 한계는 sub-325 REPORT.md에 기록한다.
 
