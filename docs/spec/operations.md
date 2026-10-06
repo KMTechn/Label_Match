@@ -12,6 +12,8 @@ stock은 `core.autocrlf=false` 작업 트리 또는 `git archive`의 commit 바�
 
 canonical의 embedded probe 3개는 CRLF→LF/UTF-8 바이트 SHA를 PowerShell AST로 다시 계산하는 회귀로 고정 pin을 확인한다. source admission 뒤 전이·healthy lifecycle·preimage 준비 실패도 기존 FAILED/FAILED_PREPARATION_ADMISSION audit와 install_status=FAILED를 남긴다. 기존 FAILED_PRETRANSACTION archive는 보존하고 같은 공개 상태를 반환한다. 실제 설치·등록·복구 수용은 랩 별도이며 [sub-348 근거](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-348/REPORT.md)를 따른다.
 
+JSON escape 가림 helper 변경 후 canonical의 candidate digest와 writer probe의 `ExpectedSha256`를 함께 재생성한다. inventory 80 및 역사적 before 값은 보존하며, 표준 `--check`와 PS5.1·7의 세 probe hash·변조 거절 시험으로 확인한다. 실행 판·결과와 stock 미생성 경계는 [sub-357 근거](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-357/REPORT.md)에 기록한다.
+
 조립의 registrar 경로 선검사 거절은 읽기·등록·변경 전에 기존 오류와 공용 한국어 자료 보존/지원 복구 안내를 전달한다. 설치 상태를 보존하는 조기 catch도 최종 예외 가림과 audit 원인 보존을 적용한다. r4로 바뀐 catch/선검사 구조와 추가 readback에 맞춰 G fixture의 locator·namespace를 교정하며 실제 guard와 기존 단언을 유지한다.
 
 공식 legacy relay의 repetition_interval은 SCHEMA의 XmlConvert TimeSpan 왕복으로 정규화한다. 같은 기간의 다른 표기는 같은 13개 필드 지문을 유지하고 다른/무효 기간은 기존 소유권 오류로 상태 변경 전에 거절한다. 기존 정규 표기와 공유 기대값 지문은 불변이며 PS5.1·7 격리 회귀 10 PASS다.
