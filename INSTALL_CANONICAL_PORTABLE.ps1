@@ -2149,7 +2149,7 @@ if (-not $?) { throw 'Placement helper returned an unsuccessful pipeline.' }
 exit 0
 '@
     $redactionPrelude = '$Script:KmtechRedactionRules = ' + "'" + (($Script:KmtechRedactionRules | ConvertTo-Json -Compress).Replace("'","''")) + "' | ConvertFrom-Json" + [Environment]::NewLine
-    foreach ($name in @('Test-KmtechSecretEnvironmentValue','Get-KmtechSinkEnvironment','ConvertTo-KmtechRedactedSinkText','ConvertTo-KmtechRedactedSinkObject','ConvertTo-KmtechPublicRecord')) {
+    foreach ($name in @('Test-KmtechSecretEnvironmentValue','Get-KmtechSinkEnvironment','ConvertTo-KmtechRedactedSinkText','ConvertTo-KmtechRedactedSinkObject','ConvertTo-KmtechPublicRecord','Assert-KmtechMachineMetadataText')) {
         $redactionPrelude += 'function ' + $name + ' {' + (Get-Command $name).Definition + '}' + [Environment]::NewLine
     }
     # Keep the launcher's param block first; preceding statements turn param

@@ -2256,7 +2256,7 @@ if($env:LM_ARCHIVE_EXISTING -eq '1' -and [IO.File]::ReadAllText((Join-Path $audi
 
 
 @pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
-@pytest.mark.parametrize("phase", ("PIN_VALIDATION", "HELPER_EXECUTION", "HELPER_TRAP"))
+@pytest.mark.parametrize("phase", ("PIN_VALIDATION", "HELPER_EXECUTION", "HELPER_TRAP", "BOOTSTRAP_METADATA"))
 def test_placement_child_preserves_original_failure_without_delegation_secret(tmp_path, engine, phase):
     import shutil
 
@@ -2310,6 +2310,11 @@ $frozen=[pscustomobject]@{root=$root;helper_path='';helper_sha256='';integrity_s
     helper_trap = ""
     if phase == "HELPER_TRAP":
         helper_trap = re.search(r"\n(trap \{.*?\n\})\n\$ExpectedInstallRoot", HELPER.read_text(encoding="utf-8-sig"), re.DOTALL).group(1) + "\n"
+    if phase == "BOOTSTRAP_METADATA":
+        bootstrap = (ROOT / "tools/bootstrap_integrity.ps1").read_text(encoding="utf-8-sig")
+        helper_trap = re.search(r"^function Write-BootstrapUtf8Json \{.*?^\}", bootstrap, re.MULTILINE | re.DOTALL).group(0) + "\n"
+        metadata = str(tmp_path / "bootstrap-metadata.json").replace("'", "''")
+        helper_trap += f"Write-BootstrapUtf8Json -Path '{metadata}' -Payload @{{status='PASS';file_count=1}}\n"
     helper.write_text("param(" + ",".join(declarations) + ")\n" + helper_trap + "throw ('ORIGINAL_PLACEMENT_FAILURE ' + $WriterFenceDelegationToken)\n", encoding="utf-8-sig")
     payload = dict(helper_path=str(helper), helper_sha256=hashlib.sha256(helper.read_bytes()).hexdigest(),
         integrity_path=str(integrity), integrity_sha256=hashlib.sha256(integrity.read_bytes()).hexdigest(),
@@ -2325,7 +2330,7 @@ $frozen=[pscustomobject]@{root=$root;helper_path='';helper_sha256='';integrity_s
     assert child.returncode != 0
     assert failure.exists(), "Original elevated child failure was not preserved"
     record = json.loads(failure.read_text(encoding="utf-8"))
-    assert record["phase"] == ("HELPER_EXECUTION" if phase == "HELPER_TRAP" else phase)
+    assert record["phase"] == ("HELPER_EXECUTION" if phase in ("HELPER_TRAP", "BOOTSTRAP_METADATA") else phase)
     assert record["exit_code"] == child.returncode
     assert record["exception_type"] and record["hresult"] is not None
     expected = "Elevated helper byte pin differs" if phase == "PIN_VALIDATION" else "ORIGINAL_PLACEMENT_FAILURE"
@@ -2352,6 +2357,8 @@ $frozen=[pscustomobject]@{root=$root;helper_path='';helper_sha256='';integrity_s
 
     assert parameters["WriterFenceDelegationToken"] not in private_cause
     assert parameters["WriterFenceDelegationToken"] not in child.stdout
+    if phase == "BOOTSTRAP_METADATA":
+        assert json.loads((tmp_path / "bootstrap-metadata.json").read_text())["status"] == "PASS"
 
 
 
