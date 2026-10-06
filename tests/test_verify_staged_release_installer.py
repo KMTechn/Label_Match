@@ -73,6 +73,16 @@ def test_verifier_proves_code_only_current_user_topology(tmp_path):
     assert report["original_package_unchanged"] is True
 
 
+def test_verifier_refuses_inline_task_command_in_integrity_helper(tmp_path):
+    package = _package(tmp_path)
+    helper = package / 'tools/bootstrap_integrity.ps1'
+    with helper.open('a', encoding='utf-8') as stream:
+        stream.write("\nif ($false) { Register-ScheduledTask -TaskName 'unexpected' }\n")
+    with pytest.raises(verifier.StagedInstallerVerificationError) as caught:
+        verifier._assert_bootstrap_source(package / 'INSTALL_THIS_PC.ps1', helper)
+    assert caught.value.legacy_authority_contract['task_creation_tokens_absent'] is False
+
+
 def _archive_consumer():
     path = MODULE_PATH.with_name("build_release_archive.py")
     spec = importlib.util.spec_from_file_location("staged_archive_consumer_for_tests", path)

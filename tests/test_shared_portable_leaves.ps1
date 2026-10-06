@@ -5,10 +5,11 @@ $repo = Split-Path $PSScriptRoot -Parent
 $source = Join-Path $WorkRoot 'source'
 [void](New-Item -ItemType Directory -Path (Join-Path $source 'tools') -Force)
 Copy-Item -LiteralPath (Join-Path $repo 'kmtech_shared') -Destination $source -Recurse
-foreach ($name in @('kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'INSTALL_CANONICAL_PORTABLE.ps1', 'tools/bootstrap_integrity.ps1')) {
+foreach ($name in @('kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'INSTALL_CANONICAL_PORTABLE.ps1', 'tools/bootstrap_integrity.ps1', 'tools/failure_redaction.ps1', 'tools/failure_redaction_rules.json')) {
     Copy-Item -LiteralPath (Join-Path $repo $name) -Destination (Join-Path $source $name)
 }
 . (Join-Path $source 'tools/bootstrap_integrity.ps1') -SharedCodeRoot $source
+. (Join-Path $source 'tools/failure_redaction.ps1')
 $names = @('Full', 'Sha', 'Manifest', 'ByteSha', 'PinnedFileBytes', 'UInt64BE', 'HexBytes', 'PortableInventory')
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1'), [ref]$tokens, [ref]$errors)

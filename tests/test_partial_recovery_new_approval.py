@@ -26,6 +26,10 @@ def attempts(recovery, monkeypatch, isolated_dpapi):
     # Registration and subsequent onboarding model the same byte-verified
     # installed build; a source checkout is a different release identity.
     monkeypatch.setattr(r.m, 'ROOT', app_root)
+    import logistics_runtime_profile as profile
+    import package_logistics as logistics
+    for module in (profile, logistics):
+        monkeypatch.setattr(module, '__file__', str(app_root / Path(module.__file__).name))
     r.transactions = {}
     r.requests = []
     r.fault = ''

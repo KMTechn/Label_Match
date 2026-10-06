@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+컷 뒤 P2 검증 입력을 교정한다. zero-touch 검사는 PowerShell AST의 실제 작업 생성 명령과 helper의 설명 문자열을 구별하며 helper 안의 작업 생성 명령은 계속 거절한다. writer 순서 검사는 최상위 transaction 시작 뒤 호출을 비교한다. shared-leaf fixture는 실제 가림 helper·규칙을, G fixture는 공식 launcher 검사 정의를 제공한다. 부분 복구 fixture의 registrar·profile·package 모듈은 같은 byte-verified 설치 ROOT를 사용하며 제품 guard·단언·timeout은 유지한다. 검증 결과와 컷 뒤 병합 경계는 sub-325 REPORT.md에 기록한다.
+
 옛 공식 task가 있으면 identity admission과 VBS→동명 PS1/CMD launcher binding을 첫 audit/evidence·보호 base·ACL 변경 전에 읽기 전용으로 검증한다. task가 없으면 launcher를 요구하지 않는다. 공개 LM v2.0.38의 실제 producer는 VBS→PS1이며 source-host bin 경로에 결속된다. 어긋나면 기존 healthy-lifecycle 안내로 거절한다.
 
 예외 args의 Python 단일 인용 mapping도 비밀 field 가림을 거친다. 일반 예외 접두문 뒤의 assignment·mapping은 key/value를 분리한 공용 가림으로 계속 검사한다. Python·PS 공용 text 가림과 bounded child C# reader의 최종 변환은 인용 경계/escape를 인식해 원인 메시지·타입·trace를 보존하고 비밀 value를 사용자 sink에 다시 연결하지 않는다. 엄격한 PID·start·mutex 식별자 예외와 공통 14 벡터를 함께 유지한다.

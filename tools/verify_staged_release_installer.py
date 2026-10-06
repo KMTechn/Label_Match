@@ -22,6 +22,8 @@ REQUIRED_MEMBERS = {
     "contract.lock.json",
     "_internal/config/app_settings.json",
     "tools/bootstrap_integrity.ps1",
+    "tools/failure_redaction.ps1",
+    "tools/failure_redaction_rules.json",
     "kmtech_shared.lock.json",
     "kmtech_shared.manifest.json",
     "kmtech_shared/powershell/portable.ps1",
@@ -175,19 +177,23 @@ def _assert_bootstrap_source(installer: Path, integrity_helper: Path) -> None:
     )
     combined_lowered = lowered + "\n" + helper_lowered
     present = [token for token in forbidden if token in combined_lowered]
-    if "register-scheduledtask" in helper_lowered:
-        present.append("register-scheduledtask")
-    if re.search(r"(?im)^\s*Register-ScheduledTask\b", source):
+    if "register-scheduledtask" in combined_lowered:
         # Placement owns two authenticated current-user startup task mutations.
         # Parse their actual command/ancestor structure; a registration added
         # elsewhere (including one with the same spelling) remains forbidden.
         environment = dict(os.environ)
         environment["KMTECH_STAGED_INSTALLER_SOURCE"] = str(installer.resolve())
+        environment["KMTECH_STAGED_INTEGRITY_SOURCE"] = str(integrity_helper.resolve())
         parsed = subprocess.run(
             ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", r"""
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($env:KMTECH_STAGED_INSTALLER_SOURCE,[ref]$tokens,[ref]$errors)
 if($errors.Count){exit 1}
+$helper=[Management.Automation.Language.Parser]::ParseFile($env:KMTECH_STAGED_INTEGRITY_SOURCE,[ref]$tokens,[ref]$errors)
+if($errors.Count){exit 1}
+# Definition strings and comments carry no task-creation authority. A command
+# anywhere in the helper, including a function body, remains forbidden.
+if(@($helper.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ieq 'Register-ScheduledTask'},$true)).Count){exit 1}
 $rows=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ieq 'Register-ScheduledTask'},$true)|ForEach-Object {
  $owner='';$mutation=$false
  for($parent=$_.Parent;$null -ne $parent;$parent=$parent.Parent){
@@ -202,8 +208,8 @@ ConvertTo-Json -InputObject $rows -Compress
             timeout=TIMEOUT_SECONDS, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         allowed = {
-            ("Restore-LabelStartupUpdatePreimage", 787): "Register-ScheduledTask -TaskName $name -Xml ([string]$saved.task.xml) -Force",
-            ("Initialize-LabelStartupUpdate", 911): "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
+            ("Restore-LabelStartupUpdatePreimage", 815): "Register-ScheduledTask -TaskName $name -Xml ([string]$saved.task.xml) -Force",
+            ("Initialize-LabelStartupUpdate", 947): "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
         }
         try:
             registrations = json.loads(parsed.stdout)

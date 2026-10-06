@@ -556,11 +556,11 @@ def test_installer_fences_then_quiesces_before_placement_and_restores() -> None:
     source = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8")
 
     preimage = source.index("$taskBefore = ScheduledTaskSnapshot")
-    fence_start = source.index("Start-LabelWriterFence")
+    fence_start = source.index("Start-LabelWriterFence", preimage)
     quiesce_delegation = source.index("-DelegatedSources $rollbackSources", fence_start)
-    quiesce = source.index("Product $removalRoot '--remove-current-user-setup'")
-    placement = source.index("$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters")
-    restore = source.index("Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start')")
+    quiesce = source.index("Product $removalRoot '--remove-current-user-setup'", preimage)
+    placement = source.index("$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters", preimage)
+    restore = source.index("Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start')", placement)
     fence_stop = source.index("Stop-LabelWriterFence", restore)
     assert (
         preimage

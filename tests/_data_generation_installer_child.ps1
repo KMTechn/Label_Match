@@ -31,6 +31,12 @@ foreach ($name in @('Full','Arg','Get-LabelPortableDataVersion','Assert-LabelDat
     $definition = @($definitions | Where-Object Name -eq $name)
     if ($definition.Count) { . ([ScriptBlock]::Create($definition[0].Extent.Text)) }
 }
+$placementTokens=$null; $placementErrors=$null
+$placementTree=[Management.Automation.Language.Parser]::ParseFile((Join-Path $Repo 'INSTALL_THIS_PC.ps1'),[ref]$placementTokens,[ref]$placementErrors)
+if ($placementErrors.Count) { throw 'Placement helper syntax error' }
+$launcherDefinition=@($placementTree.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-LabelOfficialLegacyTaskLauncher'},$false))
+if ($launcherDefinition.Count -ne 1) { throw 'Official legacy task launcher definition missing' }
+. ([ScriptBlock]::Create($launcherDefinition[0].Extent.Text))
 . (Join-Path $Repo 'kmtech_shared\powershell\portable.ps1')
 . (Join-Path $Repo 'kmtech_shared\powershell\data_generation.ps1')
 $lad = Join-Path $Root 'local'
