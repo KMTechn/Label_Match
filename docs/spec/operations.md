@@ -1,5 +1,7 @@
 # Label_Match 운영·복구·검증
 
+등록이 실패하면 새 자료 세대를 확정하지 않아 설치 전 코드 복원 경로를 유지한다. 정상 등록 READY 뒤 실제 원장 열기 전에는 세대를 기록하며, 이미 기록된 새 세대 업무 자료는 기존 guard로 보호한다. relay가 없거나 시작 전에 실패한 복구는 stop proof 기본값을 null/빈 digest로 처리한다. TLS 등록 실패 뒤 남은 current-user CNG 소유 키는 다음 최초 등록에서 같은 이름으로 검증·재사용한다; 임의 삭제·교체·키 값 출력은 하지 않는다. 이 경계의 격리 회귀와 PS5.1/PS7 명령은 [sub-377](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-377/REPORT.md)에 기록하며 실제 설치·TLS·옛 폴더 복원 수용은 별도 랩 회차 결과와 구분한다.
+
 실패 복구의 legacy task/startup preimage 자식은 살아 있는 동일 부모 session authority와 session·attempt·transaction·token·source를 확인한 뒤 기존 delegation을 다시 발급한다. 긴 코드 제거/검사 뒤 만료된 자식 grant를 그대로 재사용하지 않으며, 다른 소유자와 일반 writer는 계속 거절한다. 자식 실패 참조는 원 rollback audit에 보존한다. `tests/test_round5_startup_rollback.py`는 StrictMode PS5.1/PS7의 실제 복구 호출과 native parent/child mutex를 검사하며, 실제 옛 앱 폴더·자동 시작 복원은 랩 수용과 구분한다.
 
 fixed update helper의 Verify는 TLS/등록보다 먼저 ACL·bootstrap integrity·manifest/pin·version을 확인한다. 9adc801 stock의 격리 VM 보호 배치에서 ACL·integrity는 통과했으나 standalone helper가 내보내지 않은 경로·hash·reparse 함수 5종을 호출해 PS5.1/PS7 Verify가 실패했다. 검증된 bootstrap export와 helper 자체의 경로/reparse 함수로 이 의존을 닫는다. early ACL 거절도 의존 코드를 불러오기 전에 typed 검사값·소유자/상속/ACE·보호 보고서 SHA를 남긴다. 이후 검사는 기존 가림을 적용한 보호 진단을 사용하며, Python 부모와 onboarding CLI가 원 child 참조를 보존하고 고정 공개 오류 레코드를 반환한다. Verify 실패를 TLS 실패로 재분류하지 않는다. 원 회차 5의 내부 예외는 미회수이므로 원 실행과 재현을 [sub-368 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-368/REPORT.md)에서 구분한다.

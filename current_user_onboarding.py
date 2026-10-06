@@ -1028,13 +1028,6 @@ def onboard_current_user(
         context = resolve_lifecycle_context(managed, operation="register")
         app_root = context["active_code_root"]
     paths, tls_ca_source, credential_input = prepare_current_user_data_open(app_root, environ=environ)
-    try:
-        record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
-                                               paths.direct_sync_root, paths.queue_dir,
-                                               paths.logistics_profile_path.parent))
-    except DataGenerationError as exc:
-        raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
-            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     assert_registration_storage(Path(app_root), (paths.data_root, paths.settings_path,
         paths.direct_sync_root, paths.logistics_profile_path, paths.ledger_path))
     for directory in (
@@ -1247,6 +1240,16 @@ def onboard_current_user(
                 "configured TLS CA bundle was not persisted in the logistics profile"
             )
 
+        # Registration preparation does not open business data. Keep its
+        # downgrade preflight above, and commit this generation only after
+        # registration READY readback, before opening the business ledger.
+        try:
+            record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+                                                   paths.direct_sync_root, paths.queue_dir,
+                                                   paths.logistics_profile_path.parent))
+        except DataGenerationError as exc:
+            raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
+                status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
         ledger_factory(paths.ledger_path)
         if not paths.ledger_path.is_file():
             raise ValueError("current-user business ledger readback failed")

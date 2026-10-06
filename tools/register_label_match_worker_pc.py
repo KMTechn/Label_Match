@@ -2322,7 +2322,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.apply:
             enrollment_guard = EnrollmentMutex(args.enrollment_mutex_timeout_seconds)
             report_context["enrollment_mutex"] = enrollment_guard.acquire()
-        record_user_data_open(ROOT, data_roots)
         manifest, credential, report = build_payloads(args)
         if "enrollment_mutex" in report_context:
             report["enrollment_mutex"] = dict(report_context["enrollment_mutex"])
@@ -2454,6 +2453,10 @@ def main(argv: list[str] | None = None) -> int:
         report["report_path"] = str(report_path.resolve())
         report = _write_registration_report(report_path, report)
         _verify_json_file(report_path, report, label="registration report")
+        if args.apply:
+            # Failed enrollment and dry-run preparation must not advance the
+            # data generation. All registration documents are now read back.
+            record_user_data_open(ROOT, data_roots)
         print(f"registration_report={report_path.resolve()}")
         if report.get("partial_recovery_message_ko"):
             print(report["partial_recovery_message_ko"])
