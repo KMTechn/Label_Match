@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+staged bootstrap source 검사의 문자열→코드 생성/실행 빈틈은 정상 stock의 정적 명령·메서드·생성자만 허용하는 기본 거절로 교정한다. 기존 비리터럴 호출 14개·대입 7개는 유지하며 두 고정 Win32 Add-Type 선언만 정확 owner·본문·개수 예외로 추가한다(허용 호출 16개). sub-337의 유효 RED 39셀과 sub-332의 28셀, 정상 설명/stock 및 선언 변조 회귀를 AST 판독만으로 확인한다. 실제 설치·예약 작업 생성·GUI·VM 수용은 이 source 검증 범위가 아니며 실행 결과·남은 독립 검토는 [sub-338 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-338/REPORT.md)를 따른다.
+
 컷 뒤 P2: 미종결 다중줄 구조화 값의 가림 범위는 C# reader(INSTALL_CANONICAL_PORTABLE.ps1:2366–2374, Finish:2424)가 뒤 진단 줄까지, Python(failure_redaction.py:272–300)·PS(tools/failure_redaction.ps1:72–94)는 첫 줄 끝 fallback으로 다르다. C#은 시작 때 marker만 출력하고 미종결 state5 값 문자를 내지 않아 이 갈래의 잔여 노출은 없다는 코드 근거가 있으나 새 다중줄 실측은 NOT TESTED다. 교차 동등 GREEN은 동결 구조화 4개 단일줄에 한정한다. 코디 2026-10-06 13:1x 답(msg_60f158e77301)은 계약 0f 멈춤 규칙에 따라 컷 전 범위를 확대하지 않고 기록하도록 결정했다.
 
 소리 장치 실패가 업무 처리를 막지 않아야 한다. 9f960fa의 일반·반복 재생, 초기화, preload, siren, 종료 및 inline 확인은 예외를 처리했으나 이전 모달 창 생성 실패 뒤 stop 호출은 트레이 리셋을 중단시켰다. 이 호출만 보호하며 실제 PlaySound 대역 실패 RED 1F→GREEN 4P/0F/0S로 리셋, 완료 durable 저장·CSV 로그·서버 동기화 시작·다음 스캔 및 초기화/siren 실패를 headless 검증한다. 실제 오디오 장치·서버 전송은 NOT TESTED이며 근거는 sub-325 REPORT.md에 기록한다.

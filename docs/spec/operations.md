@@ -1160,7 +1160,7 @@ staged qualification 도구는 retired SYSTEM enrollment/task 생성을 계속 �
 
 기존 legacy_authority_contract.task_creation_tokens_absent=True는 retired enrollment/task authority가 없다는 뜻이며 모든 startup 등록 token의 부재를 뜻하지 않는다. 지원하는 정확한 두 AST 자리 수는 current_user_startup_task_mutations=2로 별도 기록한다. 다른 생성 호출이나 두 자리의 인수/guard 변경은 task_creation_tokens_absent=False인 거절 근거로 남고 qualification을 통과하지 못한다.
 
-명령 이름의 모듈/경로 한정은 제거한 뒤 같은 등록 명령으로 판정한다. 새 비리터럴 호출, 별칭 정의·실행 문자열 평가·child PowerShell 호출은 같은 오류로 거절한다. 정상 bootstrap의 기존 비리터럴 호출 14개는 source 종류·소유 함수·정확한 명령 본문·등장 횟수를 한 상수에 고정하며 줄 번호로 묶지 않는다. 대상 변수의 기존 대입 7개와 scriptblock 위임의 형식·두 호출 소유자도 대조하여 허용 명령의 대상을 바꾸거나 복제하는 경우를 거절한다. 설명 문자열과 comment는 실행 명령으로 취급하지 않는다. 이는 source 판정이며 실제 설치·예약 작업 생성 수용과 구별한다.
+명령 이름의 모듈/경로 한정은 제거한 뒤 같은 등록 명령으로 판정한다. `BOOTSTRAP_STATIC_SOURCE`에 고정한 정상 bootstrap의 정적 명령·메서드·생성자만 허용하며 새 이름과 비리터럴 메서드 이름은 기본 거절한다. 문자열 코드 생성·평가, job/원격 실행, reflection/assembly loader, ScriptBlock/위임의 비리터럴 변환 및 pipeline의 비리터럴 callback·member 호출도 같은 오류로 거절한다. 기존 비리터럴 호출 14개와 Add-Type의 고정 Win32 선언 2개(MoveFileExW·RegOpenKeyExW)는 source 종류·소유 함수·정확한 명령 본문·등장 횟수로만 예외를 인정한다(합계 16개, 줄 번호 제외). 두 선언은 API 하나만 선언하며 소유자 변경·본문 한 글자 변경·다른 함수의 동일 원문 추가를 거절한다. 대상 변수의 기존 대입 7개와 scriptblock 위임의 형식·두 호출 소유자도 대조하여 허용 명령의 대상을 바꾸거나 복제하는 경우를 거절한다. 설명 문자열과 comment는 실행 명령으로 취급하지 않는다. 이는 source 판정이며 실제 설치·예약 작업 생성 수용과 구별한다.
 
 실제 staged producer의 elevation_authority와 integrity helper 바인딩을 archive consumer가 동일한 exact 키 집합으로 검증한다. authority는 고정 literal이고 helper 경로는 tools/bootstrap_integrity.ps1이며 SHA256은 패키지 실제 바이트에서 재계산한다. 누락·다른 값·추가 task 생성·변경 인수를 거절하고 inventory·서명 경계는 유지한다.
 

@@ -345,3 +345,173 @@ def test_cli_writes_exact_report(tmp_path):
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["status"] == "PASS"
     assert payload["runtime_host"]["path"] == "Label_Match.exe"
+
+
+# sub-337's 39 valid RED cells: string-to-code bodies are parsed, never executed.
+@pytest.mark.parametrize("location", ("helper", "installer"))
+@pytest.mark.parametrize("case,command", (
+    ('invoke_command_created_scriptblock', "Invoke-Command -ScriptBlock ([scriptblock]::Create('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml'))"),
+    ('start_job_created_scriptblock', "Start-Job -ScriptBlock ([scriptblock]::Create('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml'))"),
+    ('scriptblock_create_invoke', "[scriptblock]::Create('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml').Invoke()"),
+    ('alias_icm_created_scriptblock', "icm -ScriptBlock ([scriptblock]::Create('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml'))"),
+    ('variable_scriptblock_invoke', "$reviewBlock = [scriptblock]::Create('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml'); $reviewBlock.Invoke()"),
+    ('invoke_command_variable', "$reviewBlock = [scriptblock]::Create('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml'); Invoke-Command -ScriptBlock $reviewBlock"),
+    ('start_job_variable', "$reviewBlock = [scriptblock]::Create('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml'); Start-Job -ScriptBlock $reviewBlock"),
+    ('create_concat_invoke', "[scriptblock]::Create('Register-' + 'ScheduledTask -TaskName ReviewOnly -Xml $xml').Invoke()"),
+    ('create_format_invoke', "[scriptblock]::Create(('{0}-{1} -TaskName ReviewOnly -Xml $xml' -f 'Register','ScheduledTask')).Invoke()"),
+    ('invoke_command_concat_create', "Invoke-Command -ScriptBlock ([scriptblock]::Create('Register-' + 'ScheduledTask -TaskName ReviewOnly -Xml $xml'))"),
+    ('start_job_format_create', "Start-Job -ScriptBlock ([scriptblock]::Create(('{0}-{1} -TaskName ReviewOnly -Xml $xml' -f 'Register','ScheduledTask')))"),
+    ('execution_context_invoke_script', "$ExecutionContext.InvokeCommand.InvokeScript('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml')"),
+    ('execution_context_new_scriptblock', "$ExecutionContext.InvokeCommand.NewScriptBlock('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml').Invoke()"),
+    ('automation_add_script', "[System.Management.Automation.PowerShell]::Create().AddScript('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml').Invoke()"),
+    ('automation_add_command', "[System.Management.Automation.PowerShell]::Create().AddCommand('Register-ScheduledTask').AddParameter('TaskName','ReviewOnly').AddParameter('Xml',$xml).Invoke()"),
+    ('automation_add_command_concat', "[System.Management.Automation.PowerShell]::Create().AddCommand('Register-' + 'ScheduledTask').AddParameter('TaskName','ReviewOnly').Invoke()"),
+    ('add_type_literal', 'Add-Type -TypeDefinition \'using System.Management.Automation; public class ReviewCode { public static void Run() { using (var ps = PowerShell.Create()) { ps.AddScript("Register-ScheduledTask -TaskName ReviewOnly").Invoke(); } } }\' -ReferencedAssemblies ([System.Management.Automation.PowerShell].Assembly.Location); [ReviewCode]::Run()'),
+    ('add_type_variable', '$reviewCode = \'using System.Management.Automation; public class ReviewCode { public static void Run() { using (var ps = PowerShell.Create()) { ps.AddCommand("Register-ScheduledTask").AddParameter("TaskName", "ReviewOnly").Invoke(); } } }\'; Add-Type -TypeDefinition $reviewCode -ReferencedAssemblies ([System.Management.Automation.PowerShell].Assembly.Location); [ReviewCode]::Run()'),
+    ('method_type_case_escape', "[sCrIpTbLoCk]::CrEaTe('ReGiStEr-Schedu`ledTask -TaskName ReviewOnly -Xml $xml').Invoke()"),
+))
+def test_bootstrap_source_refuses_generated_code(tmp_path, location, case, command):
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    helper = package / "tools/bootstrap_integrity.ps1"
+    target = helper if location == "helper" else installer
+    with target.open("a", encoding="utf-8") as stream:
+        stream.write("\n" + command + "\n")
+    with pytest.raises(verifier.StagedInstallerVerificationError,
+                       match="retired enrollment/task authority") as caught:
+        verifier._assert_bootstrap_source(installer, helper)
+    assert caught.value.legacy_authority_contract["task_creation_tokens_absent"] is False
+
+
+def test_bootstrap_source_refuses_generated_code_in_allowed_action(tmp_path):
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    helper = package / "tools/bootstrap_integrity.ps1"
+    source = installer.read_text(encoding="utf-8")
+    changed = source.replace("try { & $Action }",
+        "try { [scriptblock]::Create('Register-ScheduledTask -TaskName ReviewOnly -Xml $xml').Invoke(); & $Action }", 1)
+    assert changed != source and changed.count("\n") == source.count("\n")
+    installer.write_text(changed, encoding="utf-8")
+    with pytest.raises(verifier.StagedInstallerVerificationError,
+                       match="retired enrollment/task authority") as caught:
+        verifier._assert_bootstrap_source(installer, helper)
+    assert caught.value.legacy_authority_contract["task_creation_tokens_absent"] is False
+
+
+@pytest.mark.parametrize("command", (
+    "[scriptblock]'Write-Output SAFE'",
+    "'Write-Output SAFE' -as [System.Management.Automation.ScriptBlock]",
+    "$block.$method()",
+    "[Reflection.Assembly]::Load($bytes)",
+    "$compiler.CompileAssemblyFromSource($code)",
+    "$delegate.DynamicInvoke()",
+    "[scriptblock]::Create('Write-Output SAFE')",
+    "[System.Management.Automation.PowerShell]::Create().AddScript('Write-Output SAFE')",
+    "Invoke-Command -ScriptBlock $block",
+    "Start-Job -ScriptBlock $block",
+    "ForEach-Object -MemberName Invoke",
+    "ForEach-Object $block",
+    "Where-Object -FilterScript $block",
+    "Sort-Object -Property $block",
+    "Measure-Object -Property $block",
+    "New-Object -TypeName $factory",
+    "New-Object System.Management.Automation.PowerShell",
+    "New-Item Function:Write-Output -Value 'iex $code'",
+    "[System.Collections.Generic.Comparer[object]]::Create([System.Comparison[object]]$block)",
+    "[Array]::Sort($items,$callback)",
+    "[System.Text.RegularExpressions.MatchEvaluator]$code",
+    "[regex]::Replace('text','.*',$callback)",
+    "$regex.Replace('text',$callback)",
+))
+def test_bootstrap_source_default_denies_other_code_factories(tmp_path, command):
+    package = _package(tmp_path)
+    helper = package / "tools/bootstrap_integrity.ps1"
+    with helper.open("a", encoding="utf-8") as stream:
+        stream.write("\n" + command + "\n")
+    with pytest.raises(verifier.StagedInstallerVerificationError,
+                       match="retired enrollment/task authority") as caught:
+        verifier._assert_bootstrap_source(package / "INSTALL_THIS_PC.ps1", helper)
+    assert caught.value.legacy_authority_contract["task_creation_tokens_absent"] is False
+
+
+@pytest.mark.parametrize("command", (
+    "Write-Output 'Create InvokeScript AddScript are examples, not calls'",
+    "$example = '[scriptblock]::Create(\"documentation\").Invoke()'",
+    "Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue",
+    "@('a','b') | ForEach-Object { $_.ToString() }",
+))
+def test_bootstrap_source_allows_static_operations_and_documentation(tmp_path, command):
+    package = _package(tmp_path)
+    helper = package / "tools/bootstrap_integrity.ps1"
+    with helper.open("a", encoding="utf-8") as stream:
+        stream.write("\n" + command + "\n")
+    verifier._assert_bootstrap_source(package / "INSTALL_THIS_PC.ps1", helper)
+
+
+@pytest.mark.parametrize("owner,api,dll", (
+    ("Write-LabelStartupUpdateRecord", "MoveFileExW", "kernel32.dll"),
+    ("Open-LabelRunKey", "RegOpenKeyExW", "advapi32.dll"),
+))
+def test_bootstrap_source_pins_only_fixed_native_declarations(owner, api, dll):
+    exceptions = [(location, body, count)
+                  for (location, function, body), count in verifier.BOOTSTRAP_INDIRECT_SOURCE["calls"].items()
+                  if function == owner and body.startswith("Add-Type ")]
+    assert len(exceptions) == 1
+    location, body, count = exceptions[0]
+    expected = {
+        "Write-LabelStartupUpdateRecord": '''Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class KMTechStartupUpdateAtomicFile {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ public static extern bool MoveFileExW(string source, string target, uint flags);
+}
+'@''',
+        "Open-LabelRunKey": '''Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class KmtechLabelRunRegistryNative {
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
+    public static extern int RegOpenKeyExW(IntPtr root, string subKey, uint options, uint access, out IntPtr key);
+}
+'@''',
+    }
+    assert body == expected[owner]
+    assert location == "installer" and count == 1
+    assert body.count("[DllImport(") == body.count("public static extern ") == 1
+    assert dll in body and api in body
+    assert body.count("public static class ") == 1
+    assert body.count("{") == body.count("}") == 1
+    assert "Register-ScheduledTask" not in body and "System.Management.Automation" not in body
+    assert sum(verifier.BOOTSTRAP_INDIRECT_SOURCE["calls"].values()) == 16
+
+
+@pytest.mark.parametrize("owner,api", (
+    ("Write-LabelStartupUpdateRecord", "MoveFileExW"),
+    ("Open-LabelRunKey", "RegOpenKeyExW"),
+))
+@pytest.mark.parametrize("damage", ("owner", "one-character", "other-owner", "body-code"))
+def test_bootstrap_source_refuses_changed_native_declarations(tmp_path, owner, api, damage):
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    source = installer.read_text(encoding="utf-8")
+    body = next(body for (location, function, body) in verifier.BOOTSTRAP_INDIRECT_SOURCE["calls"]
+                if location == "installer" and function == owner and body.startswith("Add-Type "))
+    assert source.count(body) == 1
+    if damage == "owner":
+        changed = source.replace("function " + owner + "(", "function " + owner + "Changed(", 1)
+    elif damage == "one-character":
+        changed = source.replace(body, body.replace(api, api[:-1] + "A"), 1)
+    elif damage == "other-owner":
+        changed = source + "\nfunction ReviewOtherOwner {\n" + body + "\n}\n"
+    else:
+        changed = source.replace(body, body.replace("}\n'@", " public static void Run() {}\n}\n'@"), 1)
+    assert changed != source
+    if damage != "other-owner":
+        # Keep the two existing registration line numbers fixed.
+        changed = changed.replace(" public static void Run() {}\n}", " public static void Run() {} }")
+        assert changed.count("\n") == source.count("\n")
+    installer.write_text(changed, encoding="utf-8")
+    with pytest.raises(verifier.StagedInstallerVerificationError,
+                       match="retired enrollment/task authority") as caught:
+        verifier._assert_bootstrap_source(installer, package / "tools/bootstrap_integrity.ps1")
+    assert caught.value.legacy_authority_contract["task_creation_tokens_absent"] is False

@@ -41,9 +41,106 @@ FORBIDDEN_ACTIVE_AUTHORITY_MEMBERS = {
 }
 
 
+# Supported statically named bootstrap operations. Everything else is rejected,
+# including code factories/evaluators, jobs, reflection/assembly loaders and
+# dynamic member names. These are fixed stock inputs, never candidate-derived.
+BOOTSTRAP_STATIC_SOURCE = {
+    'casts': """
+        bool byte[] char char[] int int64 object[] ordered pscustomobject ref
+        security.accesscontrol.aceflags security.accesscontrol.filesystemrights string
+        system.comparison[object] uint64 void xml
+    """.split(),
+    'commands': """
+        assert-alreadyelevated assert-bootstrapintegrityrecord assert-hardenedcodeacl
+        assert-kmtechmachinemetadatatext assert-labelofficiallegacytaskstopped
+        assert-labelprotectedinstallpath assert-labelremovalboundary
+        assert-labelremovalquiescent assert-labelstartupupdatesettings
+        assert-labelstartupupdatetaskdefinition assert-labelstartupupdatetrust
+        assert-noreparsepoint assert-ordinarylegacylauncher assert-placementdatadowngrade
+        assert-protectedcodeancestors assert-requiredrelease convertfrom-json convertto-json
+        convertto-kmtechpublicrecord convertto-kmtechredactedsinkobject
+        convertto-kmtechredactedsinktext convertto-labellegacytaskpath convertto-labeltasksid
+        convertto-normalizedaclrights copy-item disable-scheduledtask enable-scheduledtask
+        enter-labelcanonicalplacement enter-labelwriterdelegatedoperation
+        exit-labelwriteradmission export-scheduledtask foreach-object get-acl
+        get-authenticodesignature get-bootstrapcodeinventory get-bootstrapfilesha256
+        get-bootstrapinventoryaggregate get-bootstraprelativecodepath
+        get-bootstrapstrictfullpath get-childitem get-ciminstance get-codeinventory get-command
+        get-content get-date get-earlyfilesha256 get-filesha256
+        get-installationpreparationexitcode get-inventoryaggregate get-item get-itemproperty
+        get-kmtechancestoraclshapekey get-kmtechbootstrapinventoryaggregate
+        get-kmtechbootstraprelativecodepath get-kmtechbootstrapstrictfullpath
+        get-kmtechdatadowngradedecision get-kmtechsharedancestoraclstate
+        get-labelartifactfileplan get-labelofficiallegacyprincipalmodes
+        get-labelofficiallegacytaskexpectation get-labelofficiallegacytaskexpectations
+        get-labelofficiallegacytaskfingerprint get-labelofficiallegacytasksnapshot
+        get-labelremovalartifacts get-labelremovaliopath get-labelsharedportableleafpath
+        get-labelstartupupdatetask get-labelstartupupdatetaskpreimage
+        get-labelstartupupdatetaskspec get-labelsupportedstartuptasks
+        get-legacytaskbynamefailclosed get-ownedlegacytaskretirementsnapshot
+        get-placementdataversion get-requiredexternalinteger get-scheduledtask
+        get-strictfullpath initialize-labelprotectedinstallbase initialize-labelstartupupdate
+        install-currentusertlscabootstrap invoke-labelconvergentremoval
+        invoke-labelofficiallegacytasktransition invoke-labelstartupupdatetaskmutation join-path
+        measure-object move-item new-item new-object open-labelrunkey out-null
+        protect-kmtechcodeancestors protect-labelinstallerownerfile read-labelwriterfence
+        register-scheduledtask remove-item remove-labelemptiedparents remove-labelscheduledtasks
+        remove-ownedlegacytask restore-labelstartupupdatepreimage
+        save-labelstartupupdatepreimage set-acl set-hardenedcodeacl sort-bootstrapinventory
+        sort-object split-path start-sleep test-currentuserrelaypersistencepresent
+        test-kmtechprivilegedownersid test-labelremovalfile test-path test-samepath
+        unregister-scheduledtask where-object write-bootstrapintegrityrecord
+        write-bootstraputf8json write-elevationlog write-kmtechprotectedfailuresidecar
+        write-labelancestorpreparationevent write-labelinstallerownerrecord
+        write-labelstartupupdaterecord write-output write-warning
+    """.split(),
+    'instance_methods': """
+        add addaccessrule addnamespace addseconds clonenode compare computehash connect contains
+        containskey deletetask dispose endswith equals flush get_innertext get_innerxml
+        getaccessrules getbaseexception getbinaryform getbytes getfolder getgroup getinstances
+        getowner getsecuritydescriptor getsecuritydescriptorbinaryform
+        getsecuritydescriptorsddlform getstring gettask gettype getvalue getvaluenames indexof
+        isinrole loadxml readtoend remove removeaccessrulespecific removechild replace
+        selectnodes selectsinglenode set_innertext setaccessruleprotection setsecuritydescriptor
+        setsecuritydescriptorbinaryform split startswith stop substring toarray tofiletimeutc
+        tolowerinvariant tostring touniversaltime translate trim trimend trimstart write
+        writeline
+    """.split(),
+    'static_methods': """
+        [array]::sort [bitconverter]::tostring [byte[]]::new
+        [collections.generic.list[object]]::new [componentmodel.win32exception]::new
+        [diagnostics.process]::getprocessbyid [environment]::expandenvironmentvariables
+        [guid]::newguid [intptr]::new [invalidoperationexception]::new
+        [io.directory]::createdirectory [io.file]::appendalltext [io.file]::getattributes
+        [io.file]::open [io.file]::openread [io.file]::readallbytes [io.file]::readalltext
+        [io.file]::writealltext [io.path]::changeextension [io.path]::getdirectoryname
+        [io.path]::getextension [io.path]::getfullpath [io.path]::getpathroot
+        [io.path]::ispathrooted [io.streamreader]::new
+        [kmtechlabelrunregistrynative]::regopenkeyexw
+        [kmtechstartupupdateatomicfile]::movefileexw [microsoft.win32.registrykey]::fromhandle
+        [microsoft.win32.safehandles.saferegistryhandle]::new [regex]::match [regex]::matches
+        [regex]::replace [security.accesscontrol.filesystemaccessrule]::new
+        [security.accesscontrol.rawsecuritydescriptor]::new
+        [security.cryptography.sha256]::create [security.principal.ntaccount]::new
+        [security.principal.securityidentifier]::new
+        [security.principal.windowsidentity]::getcurrent [string]::isnullorempty
+        [string]::isnullorwhitespace [system.collections.generic.comparer[object]]::create
+        [text.utf8encoding]::new [uri]::trycreate [uri]::unescapedatastring
+        [xml.xmlconvert]::tostring [xml.xmlconvert]::totimespan [xml.xmlnamespacemanager]::new
+        [xml]::new
+    """.split(),
+    'object_types': """
+        io.filestream security.principal.windowsprincipal text.utf8encoding
+        xml.xmlnamespacemanager schedule.service
+    """.split(),
+}
+
+
 # Existing indirect calls and their variable bindings, keyed independently of lines.
 BOOTSTRAP_INDIRECT_SOURCE = {
     'calls': {
+        ('installer', 'Write-LabelStartupUpdateRecord', 'Add-Type -TypeDefinition @\'\nusing System.Runtime.InteropServices;\npublic static class KMTechStartupUpdateAtomicFile {\n [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]\n public static extern bool MoveFileExW(string source, string target, uint flags);\n}\n\'@'): 1,
+        ('installer', 'Open-LabelRunKey', 'Add-Type -TypeDefinition @\'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class KmtechLabelRunRegistryNative {\n    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]\n    public static extern int RegOpenKeyExW(IntPtr root, string subKey, uint options, uint access, out IntPtr key);\n}\n\'@'): 1,
         ('installer', '', '. $BootstrapIntegrityFunctions -SharedCodeRoot $PSScriptRoot'): 1,
         ('installer', '', ". (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')"): 1,
         ('installer', '', ". (Join-Path $PSScriptRoot 'tools/failure_redaction.ps1')"): 1,
@@ -214,6 +311,7 @@ def _assert_bootstrap_source(installer: Path, integrity_helper: Path) -> None:
         # elsewhere (including one with the same spelling) remains forbidden.
         environment = dict(os.environ)
         environment["KMTECH_STAGED_INSTALLER_SOURCE"] = str(installer.resolve())
+        environment["KMTECH_STAGED_SOURCE_POLICY"] = json.dumps(BOOTSTRAP_STATIC_SOURCE)
         environment["KMTECH_STAGED_INTEGRITY_SOURCE"] = str(integrity_helper.resolve())
         parsed = subprocess.run(
             ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", r"""
@@ -224,6 +322,7 @@ $helper=[Management.Automation.Language.Parser]::ParseFile($env:KMTECH_STAGED_IN
 if($errors.Count){exit 1}
 # Inspect commands, not definition strings or comments. Normalize module/path
 # qualification before classifying task registration and execution aliases.
+$policy=ConvertFrom-Json $env:KMTECH_STAGED_SOURCE_POLICY
 $calls=@();$bindings=@();$rows=@();$delegations=@()
 foreach($entry in @(@('installer',$ast),@('helper',$helper))){
  $location=$entry[0];$tree=$entry[1]
@@ -237,9 +336,49 @@ foreach($entry in @(@('installer',$ast),@('helper',$helper))){
   $name=$node.GetCommandName()
   if([string]::IsNullOrEmpty($name)){$calls+=$row;continue}
   $name=($name -split '[\\/]')[-1]
-  if($name -iin @('Set-Alias','New-Alias','sal','nal','Invoke-Expression','iex',
-                  'powershell','powershell.exe','pwsh','pwsh.exe',
-                  'Set-Variable','New-Variable','sv','set','nv')){exit 1}
+  # The only code-generation exceptions are the two pinned Win32 declarations.
+  if($name -ieq 'Add-Type'){$calls+=$row;continue}
+  if($name -notin $policy.commands){exit 1}
+  # These pipeline commands otherwise invoke nonliteral ScriptBlocks or
+  # a named member (ForEach-Object -MemberName Invoke / % Invoke).
+  if($name -iin @('ForEach-Object','Where-Object')){
+   foreach($argument in @($node.CommandElements | Select-Object -Skip 1)){
+    if($argument -is [Management.Automation.Language.ScriptBlockExpressionAst]){continue}
+    if($argument -is [Management.Automation.Language.CommandParameterAst] -and
+       $argument.ParameterName -iin @('Begin','Process','End','FilterScript') -and
+       ($null -eq $argument.Argument -or $argument.Argument -is [Management.Automation.Language.ScriptBlockExpressionAst])){continue}
+    exit 1
+   }
+  }
+  if($name -iin @('Sort-Object','Measure-Object')){
+   foreach($argument in @($node.CommandElements | Select-Object -Skip 1)){
+    if($argument -is [Management.Automation.Language.StringConstantExpressionAst] -or
+       $argument -is [Management.Automation.Language.ScriptBlockExpressionAst]){continue}
+    if($argument -is [Management.Automation.Language.CommandParameterAst] -and
+       ($null -eq $argument.Argument -or
+        $argument.Argument -is [Management.Automation.Language.StringConstantExpressionAst] -or
+        $argument.Argument -is [Management.Automation.Language.ScriptBlockExpressionAst])){continue}
+    exit 1
+   }
+  }
+  if($name -ieq 'New-Item'){
+   $itemTypes=@($node.CommandElements | Where-Object {
+     $_ -is [Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -ieq 'ItemType'})
+   if($itemTypes.Count -ne 1){exit 1}
+   $type=$itemTypes[0].Argument
+   if($null -eq $type){$type=$node.CommandElements[$node.CommandElements.IndexOf($itemTypes[0])+1]}
+   if($type -isnot [Management.Automation.Language.StringConstantExpressionAst] -or
+      $type.Value -notin @('File','Directory')){exit 1}
+  }
+  if($name -ieq 'New-Object'){
+   $type=$node.CommandElements[1]
+   if($type -is [Management.Automation.Language.CommandParameterAst]){
+    if($type.ParameterName -notin @('TypeName','ComObject')){exit 1}
+    if($null -ne $type.Argument){$type=$type.Argument}else{$type=$node.CommandElements[2]}
+   }
+   if($type -isnot [Management.Automation.Language.StringConstantExpressionAst] -or
+      $type.Value -notin $policy.object_types){exit 1}
+  }
   if($name -ieq 'Register-ScheduledTask'){
    if($location -eq 'helper'){exit 1}
    $rows+=[pscustomobject]@{owner=$owner;line=$node.Extent.StartLineNumber;mutation=$mutation;command=$row.command}
@@ -249,6 +388,47 @@ foreach($entry in @(@('installer',$ast),@('helper',$helper))){
       $node.CommandElements[1] -isnot [Management.Automation.Language.ScriptBlockExpressionAst]){exit 1}
    $delegations+=$owner
   }
+ }
+ # Default-deny member invocation, rather than a list of banned spellings.
+ # Constructors and factories also require their exact static receiver type.
+ foreach($node in $tree.FindAll({param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst]},$true)){
+  if($node.Member -isnot [Management.Automation.Language.StringConstantExpressionAst]){exit 1}
+  $member=$node.Member.Value
+  if($node.Static){
+   if($node.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
+      ($node.Expression.Extent.Text+'::'+$member) -notin $policy.static_methods){exit 1}
+   if($node.Expression.TypeName.FullName -ieq 'System.Collections.Generic.Comparer[object]' -and
+      $member -ieq 'Create'){
+    if($node.Arguments.Count -ne 1 -or
+       $node.Arguments[0] -isnot [Management.Automation.Language.ConvertExpressionAst] -or
+       $node.Arguments[0].Child -isnot [Management.Automation.Language.ScriptBlockExpressionAst]){exit 1}
+   }
+   if($node.Expression.TypeName.FullName -ieq 'Array' -and $member -ieq 'Sort'){
+    if($node.Arguments.Count -ne 2 -or
+       $node.Arguments[1] -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or
+       $node.Arguments[1].Expression.Extent.Text -ine '[System.Collections.Generic.Comparer[object]]' -or
+       $node.Arguments[1].Member.Value -ine 'Create'){exit 1}
+   }
+   if($node.Expression.TypeName.FullName -ieq 'regex' -and $member -ieq 'Replace'){
+    if($node.Arguments.Count -ne 3 -or
+       $node.Arguments[2] -isnot [Management.Automation.Language.StringConstantExpressionAst]){exit 1}
+   }
+  }elseif($member -notin $policy.instance_methods){exit 1}
+  elseif($member -ieq 'Replace'){
+   if($node.Arguments.Count -ne 2 -or @($node.Arguments | Where-Object {
+       $_ -isnot [Management.Automation.Language.StringConstantExpressionAst]}).Count){exit 1}
+  }
+ }
+ # A cast/-as to ScriptBlock can compile strings without calling Create().
+ foreach($node in $tree.FindAll({param($n) $n -is [Management.Automation.Language.ConvertExpressionAst]},$true)){
+  if($node.Type.TypeName.FullName -notin $policy.casts){exit 1}
+  if($node.Type.TypeName.FullName -ieq 'System.Comparison[object]' -and
+     $node.Child -isnot [Management.Automation.Language.ScriptBlockExpressionAst]){exit 1}
+ }
+ foreach($node in $tree.FindAll({param($n) $n -is [Management.Automation.Language.BinaryExpressionAst]},$true)){
+  if($node.Operator -eq 'As' -and
+     ($node.Right -isnot [Management.Automation.Language.TypeExpressionAst] -or
+      $node.Right.TypeName.FullName -ine 'type')){exit 1}
  }
  foreach($node in $tree.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst]},$true)){
   $variables=@($node.Left.FindAll({param($n) $n -is [Management.Automation.Language.VariableExpressionAst]},$true))
