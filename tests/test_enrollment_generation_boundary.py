@@ -135,12 +135,16 @@ def test_failed_enrollment_reuses_same_named_current_user_key(monkeypatch):
     """Run actual provisioning and policy checks with an in-memory NCrypt API."""
     import ctypes
     import struct
+    import base64
     from types import SimpleNamespace
     from kmtech_zero_pe import possession_key as cng
-    from tests._possession_fixture import TEST_POSSESSION_JWK
+    from kmtech_zero_pe.cng_p256 import generate_public_jwk
     from tools import register_label_match_worker_pc as registration
     import requests
 
+    # BCrypt's temporary in-memory key supplies a valid public curve point;
+    # the persistent NCrypt store below is entirely synthetic.
+    public_jwk = generate_public_jwk()
     metadata = {"exists": False, "created": 0, "deleted": 0, "names": []}
     properties = {
         cng.NCRYPT_ALGORITHM_PROPERTY: (cng.BCRYPT_ECDSA_P256_ALGORITHM + "\0").encode("utf-16-le"),
@@ -187,8 +191,8 @@ def test_failed_enrollment_reuses_same_named_current_user_key(monkeypatch):
     def export_key(_key, _export, kind, _parameters, buffer, length, written, _flags):
         assert kind == cng.BCRYPT_ECCPUBLIC_BLOB, "private key export is forbidden"
         raw = struct.pack("<II", cng.BCRYPT_ECDSA_PUBLIC_P256_MAGIC, cng.P256_BYTES)
-        raw += cng.b64url_decode(TEST_POSSESSION_JWK["x"], field="x")
-        raw += cng.b64url_decode(TEST_POSSESSION_JWK["y"], field="y")
+        raw += base64.urlsafe_b64decode(public_jwk["x"] + "=")
+        raw += base64.urlsafe_b64decode(public_jwk["y"] + "=")
         return output(raw, buffer, length, written)
 
     def delete_key(*_args):
@@ -215,6 +219,119 @@ def test_failed_enrollment_reuses_same_named_current_user_key(monkeypatch):
     assert first["fingerprint"] == second["fingerprint"]
     assert first["scope"] == second["scope"] == "current_user"
     assert first["machine_key"] is second["machine_key"] is False
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+def test_legacy_manifest_version_fallback_is_strict_safe(tmp_path, engine):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app/label_data_generation.py").write_text('CURRENT_VERSION = "v2.0.38"\n', encoding="utf-8")
+    result = run_functions(tmp_path, INSTALLER, ["Get-LabelPortableDataVersion"], r'''
+Set-StrictMode -Version Latest
+$version=Get-LabelPortableDataVersion $env:LM_B1_ROOT ([pscustomobject]@{source_commit=('a'*40)})
+if($version -cne 'v2.0.38'){throw 'Verified legacy static version fallback was lost'}
+'PASS'
+''', engine=engine, values={"LM_B1_ROOT": str(tmp_path)})
+    (tmp_path / "fallback.stdout").write_text(result.stdout, encoding="utf-8")
+    (tmp_path / "fallback.stderr").write_text(result.stderr, encoding="utf-8")
+    assert result.returncode == 0, f"legacy manifest optional version is not StrictMode safe; evidence: {tmp_path}"
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("business_opened", (False, True))
+def test_failed_registration_generation_gate_and_actual_legacy_folder_restore(tmp_path, engine, business_opened, monkeypatch):
+    wrapper = os.environ.get("LM_B1_WRAPPER")
+    if not wrapper:
+        pytest.skip("the independently pinned PC wrapper is required for legacy folder restoration")
+    monkeypatch.setenv("LM_B1_BUSINESS_OPENED", "1" if business_opened else "0")
+    run_python(tmp_path, r'''
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from current_user_onboarding import CurrentUserOnboardingError, onboard_current_user, resolve_current_user_onboarding_paths
+from tools import register_label_match_worker_pc
+from label_data_generation import marker_paths, record_user_data_open
+from protected_admin import current_process_sid
+root=Path(sys.argv[2]);calls=[]
+def registration(paths):
+    calls.append(True)
+    return register_label_match_worker_pc.main([
+        "--apply", "--data-dir", str(paths.direct_sync_root),
+        "--sync-dir", str(paths.data_root), "--producer-install-id", "invalid/install/id",
+        "--report-path", str(paths.registration_report_path)])
+try:
+    onboard_current_user(Path(sys.argv[1]), require_bootstrap_integrity=False,
+        registration_runner=registration, legacy_task_quiescence_reader=lambda: {
+            "schema": "label-match-legacy-task-quiescence-v1", "status": "PASS",
+            "required_state": "ABSENT_OR_DISABLED", "read_only": True,
+            "task_or_process_mutated": False})
+except CurrentUserOnboardingError as error:
+    assert error.cause_code == "SETUP_FAILED"
+else:
+    raise AssertionError("failed registration was reported as success")
+assert calls == [True], "actual registration failure was not reached"
+paths=resolve_current_user_onboarding_paths(Path(sys.argv[1]))
+import os
+if os.environ["LM_B1_BUSINESS_OPENED"] == "1":
+    record_user_data_open(Path(sys.argv[1]), (paths.data_root,))
+    (paths.data_root / "one-business-record.json").write_text('{"quantity":1}\n', encoding="utf-8")
+markers=marker_paths((paths.data_root, paths.ledger_path.parent, paths.direct_sync_root,
+                     paths.queue_dir, paths.logistics_profile_path.parent), current_process_sid())
+(root / "generation-input.json").write_text(json.dumps({"marker_paths":[str(p) for p in markers]}), encoding="utf-8")
+''')
+    result = run_functions(tmp_path, INSTALLER, ["Assert-LabelRollbackGeneration",
+                          "Invoke-LabelRollbackStep", "Get-LabelLaunchFailure", "Protect-LabelFailureText"], r'''
+Set-StrictMode -Version Latest
+$root=$env:LM_B1_ROOT;$existingVerified=$false
+. (Join-Path $env:LM_B1_REPO 'kmtech_shared/powershell/data_generation.ps1')
+$generationSubjectSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$generationMarkerPaths=@((Get-Content -LiteralPath (Join-Path $root 'generation-input.json') -Raw|ConvertFrom-Json).marker_paths)
+$markerHashes=@{};foreach($path in $generationMarkerPaths){if(Test-Path -LiteralPath $path){$markerHashes[$path]=(Get-FileHash -LiteralPath $path).Hash}}
+$Script:LabelRollbackSteps=[Collections.Generic.List[object]]::new()
+$Script:LabelRollbackErrors=[Collections.Generic.List[object]]::new()
+$Script:LabelRollbackFailures=[Collections.Generic.List[object]]::new()
+. Invoke-LabelRollbackStep 'generation_before' {Assert-LabelRollbackGeneration}
+$wrapperRoot=Split-Path -Parent $env:LM_B1_WRAPPER
+. (Join-Path $wrapperRoot 'Redaction.ps1')
+. (Join-Path $wrapperRoot 'Connection.ps1')
+. $env:LM_B1_WRAPPER
+$entryAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $wrapperRoot 'Install-KmtechPc.ps1'),[ref]$tokens,[ref]$errors)
+foreach($name in @('Assert-KmtechOrdinaryPath','Write-KmtechPcSink')){
+ $defs=@($entryAst.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
+ if($defs.Count -ne 1){throw 'Actual wrapper dependency is ambiguous'}
+ . ([scriptblock]::Create($defs[0].Extent.Text))
+}
+$old=Join-Path $root 'LegacyLM';$renamed=$old+'.retained';$backup=Join-Path $root 'backup'
+[void][IO.Directory]::CreateDirectory($renamed);[void][IO.Directory]::CreateDirectory($backup)
+$oldFile=Join-Path $old 'old-file.dat';$retained=Join-Path $renamed 'old-file.dat';$copy=Join-Path $backup 'old-file.dat'
+[IO.File]::WriteAllBytes($retained,[byte[]]@(0,255,13,10,128,17));Copy-Item -LiteralPath $retained -Destination $copy
+$manifest=Join-Path $backup 'manifest.jsonl'
+@{source_path=$oldFile;backup_path=$copy;bytes=(Get-Item -LiteralPath $copy).Length;sha256=(Get-FileHash -LiteralPath $copy).Hash}|ConvertTo-Json -Compress|Set-Content -LiteralPath $manifest -Encoding UTF8
+$state=@{app='LM';install_phase='UNINSTALLED';backup_root=$backup;log_root=$root;
+ entry=@{path=$old;app_dirs=@($old);never_touch=@();untouched_candidate_dirs=@();data_paths=@();config_files=@();backup_required=@();rename_targets=@($old);processes=@();autostart=@()};
+ renames=@(@{from_path=$old;to_path=$renamed;phase='RENAMED'});autostart=@();manifest_path=$manifest;
+ manifest_sha256=(Get-FileHash -LiteralPath $manifest).Hash;code_retained=$false;status='FAILED';steps=@()}
+if($env:LM_B1_BUSINESS_OPENED -ceq '1'){
+ if($Script:LabelRollbackErrors.Count -ne 1 -or $Script:LabelRollbackSteps[0].status -cne 'FAILED'){throw 'New generation was allowed to downgrade'}
+ $state.install_phase='RECOVERY_REQUIRED';$refused=$false
+ try{[void](Invoke-KmtechLegacyRollback $state @{})}catch{$refused=$true}
+ if(-not $refused -or (Test-Path -LiteralPath $old) -or -not (Test-Path -LiteralPath $retained)){throw 'Recovery refusal did not preserve old code'}
+ foreach($path in $markerHashes.Keys){if((Get-FileHash -LiteralPath $path).Hash -cne $markerHashes[$path]){throw 'Generation refusal changed a marker'}}
+}else{
+ if($Script:LabelRollbackErrors.Count -ne 0 -or $Script:LabelRollbackSteps[0].status -cne 'PROVEN'){throw 'Failed enrollment unexpectedly advanced generation'}
+ # Candidate removal is a separate native installation boundary. This fixture
+ # starts after its absence has been confirmed, then runs the real wrapper
+ # journal, name restoration and byte verification without product mocks.
+ $restored=Invoke-KmtechLegacyRollback $state @{}
+ if($restored.Status -cne 'ROLLED_BACK' -or (Test-Path -LiteralPath $renamed) -or -not (Test-Path -LiteralPath $oldFile)){throw 'Actual wrapper did not restore the old folder name'}
+ if((Get-FileHash -LiteralPath $oldFile).Hash -cne (Get-FileHash -LiteralPath $copy).Hash){throw 'Actual wrapper did not restore original bytes'}
+ if(-not (Test-Path -LiteralPath (Join-Path $backup 'recovery.json'))){throw 'Actual wrapper recovery journal is missing'}
+}
+'PASS'
+''', engine=engine, values={"LM_B1_ROOT": str(tmp_path), "LM_B1_REPO": str(ROOT),
+                            "LM_B1_WRAPPER": wrapper, "LM_B1_BUSINESS_OPENED": "1" if business_opened else "0"})
+    (tmp_path / "wrapper.stdout").write_text(result.stdout, encoding="utf-8")
+    (tmp_path / "wrapper.stderr").write_text(result.stderr, encoding="utf-8")
+    assert result.returncode == 0, f"actual generation/wrapper restoration failed; evidence: {tmp_path}"
 
 
 @pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))

@@ -2739,7 +2739,10 @@ function Invoke-LabelSourceDataAdmission([string]$ProductRoot, [string]$Source,
 }
 
 function Get-LabelPortableDataVersion([string]$Root, $Manifest) {
-    if (-not [string]::IsNullOrWhiteSpace([string]$Manifest.version)) { return [string]$Manifest.version }
+    $manifestVersion = if ($Manifest -is [Collections.IDictionary]) { [string]$Manifest['version'] }
+        elseif ($null -ne $Manifest -and $null -ne $Manifest.PSObject.Properties['version']) { [string]$Manifest.version }
+        else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($manifestVersion)) { return $manifestVersion }
     # Older stock portable manifests omitted version. Read the verified source
     # literal; do not execute the old application to determine its identity.
     foreach ($relative in @('app\label_data_generation.py', 'app\Label_Match.py')) {
