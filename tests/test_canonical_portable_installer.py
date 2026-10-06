@@ -2256,7 +2256,7 @@ if($env:LM_ARCHIVE_EXISTING -eq '1' -and [IO.File]::ReadAllText((Join-Path $audi
 
 
 @pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
-@pytest.mark.parametrize("phase", ("PIN_VALIDATION", "HELPER_EXECUTION"))
+@pytest.mark.parametrize("phase", ("PIN_VALIDATION", "HELPER_EXECUTION", "HELPER_TRAP"))
 def test_placement_child_preserves_original_failure_without_delegation_secret(tmp_path, engine, phase):
     import shutil
 
@@ -2264,12 +2264,23 @@ def test_placement_child_preserves_original_failure_without_delegation_secret(tm
     if not executable:
         pytest.skip(f"{engine} is required")
     body = re.search(r"\$launcher = @'\r?\n(.*?)\r?\n'@", _source(), re.DOTALL).group(1)
-    # Bind the same redactor prelude that InvokeFrozenPlacementHelper inserts after param.
+    # Execute exactly the definitions embedded by the production launcher,
+    # without loading extra functions from the whole redaction library.
     body = body.lstrip("\r\n")
     header, separator, tail = body.partition("\n")
     assert header == "param([byte[]]$PayloadBytes)" and separator
-    redactor = (ROOT / "tools/failure_redaction.ps1").as_posix().replace("'", "''")
-    body = header + separator + f". '{redactor}'\n" + tail
+    from tests.test_shared_ancestor_protection import run_functions
+    result = run_functions(tmp_path, INSTALLER, ["ByteSha", "InvokeFrozenPlacementHelper"], r'''
+$root=$env:LM_GENERATED_ROOT
+function Start-Process {param($FilePath,$Verb,$ArgumentList,$WindowStyle,[switch]$Wait,[switch]$PassThru)
+ [IO.File]::Copy($launcherPath,(Join-Path $root 'generated-launcher.ps1'))
+ [pscustomobject]@{ExitCode=0}
+}
+$frozen=[pscustomobject]@{root=$root;helper_path='';helper_sha256='';integrity_sha256='';writer_fence_path='';writer_fence_sha256='';data_generation_path='';data_generation_sha256=''}
+[void](InvokeFrozenPlacementHelper $frozen @{ElevationLogPath=(Join-Path $root 'placement')})
+''', values={"LM_GENERATED_ROOT": str(tmp_path)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    body = (tmp_path / "generated-launcher.ps1").read_text(encoding="utf-8")
     integrity = tmp_path / "integrity.ps1"
     writer = tmp_path / "writer.ps1"
     generation = tmp_path / "generation.ps1"
@@ -2296,7 +2307,10 @@ def test_placement_child_preserves_original_failure_without_delegation_secret(tm
     declarations = [f"[{'switch' if isinstance(value, bool) else 'long' if isinstance(value, int) else 'string[]' if isinstance(value, list) else 'string'}]${name}"
                     for name, value in parameters.items()]
     declarations.extend(("[string]$ExpectedActiveCommit", "[string]$StartupUpdateRestorePreimage", "[string]$StartupUpdateRestoreSha256"))
-    helper.write_text("param(" + ",".join(declarations) + ")\nthrow ('ORIGINAL_PLACEMENT_FAILURE ' + $WriterFenceDelegationToken)\n", encoding="utf-8-sig")
+    helper_trap = ""
+    if phase == "HELPER_TRAP":
+        helper_trap = re.search(r"\n(trap \{.*?\n\})\n\$ExpectedInstallRoot", HELPER.read_text(encoding="utf-8-sig"), re.DOTALL).group(1) + "\n"
+    helper.write_text("param(" + ",".join(declarations) + ")\n" + helper_trap + "throw ('ORIGINAL_PLACEMENT_FAILURE ' + $WriterFenceDelegationToken)\n", encoding="utf-8-sig")
     payload = dict(helper_path=str(helper), helper_sha256=hashlib.sha256(helper.read_bytes()).hexdigest(),
         integrity_path=str(integrity), integrity_sha256=hashlib.sha256(integrity.read_bytes()).hexdigest(),
         writer_fence_path=str(writer), writer_fence_sha256=hashlib.sha256(writer.read_bytes()).hexdigest(),
@@ -2311,7 +2325,7 @@ def test_placement_child_preserves_original_failure_without_delegation_secret(tm
     assert child.returncode != 0
     assert failure.exists(), "Original elevated child failure was not preserved"
     record = json.loads(failure.read_text(encoding="utf-8"))
-    assert record["phase"] == phase
+    assert record["phase"] == ("HELPER_EXECUTION" if phase == "HELPER_TRAP" else phase)
     assert record["exit_code"] == child.returncode
     assert record["exception_type"] and record["hresult"] is not None
     expected = "Elevated helper byte pin differs" if phase == "PIN_VALIDATION" else "ORIGINAL_PLACEMENT_FAILURE"

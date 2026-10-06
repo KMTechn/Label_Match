@@ -36,6 +36,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 trap {
+    # The attested canonical launcher owns delegated failure reporting. Let it
+    # preserve the original error before choosing the native child exit code.
+    if ($BootstrapIntegrityPreloaded.IsPresent -and $WriterFenceFunctionsPreloaded.IsPresent) {
+        throw $_
+    }
     $record=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE'}
     if (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue) {
         $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$_.Exception.GetType().FullName;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0];report_status='REPORT_UNAVAILABLE'}

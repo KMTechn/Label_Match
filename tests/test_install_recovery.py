@@ -18,10 +18,10 @@ NAMES = ['Protect-LabelFailureText', 'Get-LabelLaunchFailure', 'Invoke-LabelRoll
 @pytest.mark.parametrize('engine', ['powershell.exe', 'pwsh.exe'])
 @pytest.mark.parametrize('case', ['onboarding', 'early', 'unproven', 'code_failed', 'task_failed',
                                  'startup_failed', 'g_ready', 'g_unready', 'resume', 'resume_unproven',
-                                 'released_allow', 'released_refuse'])
+                                 'released_allow', 'released_refuse', 'fresh_strict', 'resume_strict', 'placement_strict', 'resume_placement_strict', 'catch_placement_strict'])
 def test_exact_preimages_and_safe_resume_with_real_generation(tmp_path, engine, case):
     result = run_functions(tmp_path, INSTALLER, NAMES, r'''
-$root=$env:LM_RECOVERY_ROOT;$case=$env:LM_RECOVERY_CASE
+$root=$env:LM_RECOVERY_ROOT;$case=$env:LM_RECOVERY_CASE;$SkipSignatureValidationForTest=$false
 . (Join-Path $env:LM_RECOVERY_REPO 'kmtech_shared/powershell/data_generation.ps1')
 $source=$env:LM_RECOVERY_REPO;$sourceCommit='a'*40;$inventorySha='b'*64
 $sourceManifest=[pscustomobject]@{version='v2.0.95';source_commit=$sourceCommit}
@@ -44,7 +44,7 @@ $WriterDelegationEnvironmentNames=@();$writerEnvironmentBefore=@();$rollbackSour
 $startupLifecycle=$null;$legacyFirstRegistration=$false;$existingVerified=$false;$healthyRemovedInstall=$false
 $firstRegistrationStateVerified=$false;$firstRegistrationStarted=$false;$firstRegistrationAttempt=$null
 $firstRegistrationAttemptPath='';$firstRegistrationStatePaths=@();$firstRegistrationAbsentAncestors=@()
-$replacementRollbackRoot='';$installedPreimageInventory=$null;$receiptSource=[pscustomobject]@{sha256=$inventorySha;critical_file_sha256=@{}}
+$replacementRollbackRoot='';$installedPreimageInventory=$null;$receiptSource=[pscustomobject]@{sha256=$inventorySha;critical_file_sha256=@{};bootstrap_aggregate_sha256=$inventorySha;file_count=1;byte_count=0}
 $writerTransition=[pscustomobject]@{installed_inventory_sha256=$inventorySha}
 $before=[pscustomobject]@{exists=$true;kind='ExpandString';data='legacy-relay-command %LOCALAPPDATA%'}
 $wanted='candidate-command';$script:runState=[pscustomobject]@{exists=$true;kind='String';data=$wanted}
@@ -61,6 +61,7 @@ $audit=[ordered]@{schema='label-match-canonical-portable-install-v1';status='ROL
  rollback=[ordered]@{};writer_fence=[ordered]@{status='RESTORING';session_id=$writerSessionId;
  attempt_id=$writerAttemptId;replacement_transaction_id=$writerTransactionId;session_started_at_utc=$writerStartedAt}}
 $script:events=[Collections.Generic.List[string]]::new();$script:liveRelays=@();$script:held=$true
+$script:rollbackCaught=$null
 function Full {param($Path,$Purpose) [IO.Path]::GetFullPath($Path)}
 function Same {param($A,$B) [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($A),[IO.Path]::GetFullPath($B))}
 function Sha {param($Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()}
@@ -112,6 +113,35 @@ function Get-CimInstance { [pscustomobject]@{ExecutablePath=$old[0].ExecutablePa
 function Start-Sleep { }
 function HealthyLifecycle {param($Source,$Install) if($case -cne 'g_ready'){throw 'Identity is unproven'};[pscustomobject]@{status='HEALTHY_CURRENT_USER';marker_present=$false}}
 Save $relayPath ([ordered]@{status='READY';persistent_retry=$true})
+if($case -like '*strict') {
+ $taskBefore=[pscustomobject]@{exists=$false}
+ function Get-LabelCurrentUserScheduledTasks { return @() }
+ if($case -like '*placement_strict') {
+  $existingVerified=$true;$oldCodeSha='9'*64
+  $replacementRollbackRoot=Join-Path $root '.current.rollback.legacy'
+  [IO.File]::WriteAllBytes((Join-Path $install 'legacy.bin'),[byte[]]@(0,255,13,10,128,17))
+  $legacyBytes=[IO.File]::ReadAllBytes((Join-Path $install 'legacy.bin'))
+  Move-Item -LiteralPath $install -Destination $replacementRollbackRoot
+  New-Item -ItemType Directory -Path (Join-Path $install 'runtime')|Out-Null
+  [IO.File]::WriteAllBytes((Join-Path $install 'runtime/pythonw.exe'),[byte[]]@())
+  $installedPreimageInventory=[pscustomobject]@{sha256=$oldCodeSha;bootstrap_aggregate_sha256=$oldCodeSha;file_count=2;byte_count=6}
+  function PortableInventory {param($Root)
+   $sha=if(Test-Path -LiteralPath (Join-Path $Root 'legacy.bin')){$oldCodeSha}else{$inventorySha}
+   [pscustomobject]@{sha256=$sha}
+  }
+  function InvokeFrozenPlacementHelper {param($Frozen,$Parameters)
+   if($Parameters.ContainsKey('StartupUpdateRestorePreimage')){$script:events.Add('startup');return 0}
+   $script:events.Add('code')
+   if($Parameters.ReplaceExistingVerifiedPortable -isnot [bool] -or -not $Parameters.ReplaceExistingVerifiedPortable){throw 'Recovery replacement contract is absent'}
+   if($Parameters.ExpectedSourceFileCount -ne 2 -or $Parameters.ExpectedSourceByteCount -ne 6){throw 'Recovery source metrics differ'}
+   Remove-Item -LiteralPath $install -Recurse
+   Copy-Item -LiteralPath $Parameters.SourceRoot -Destination $install -Recurse
+   return 0
+  }
+  $helperParameters=@{ReplaceExistingVerifiedPortable=$true}
+ }
+ Set-StrictMode -Version Latest
+}
 if($case -like 'resume*') {
  Save-LabelRollbackContext;Save $auditPath $audit
  $ResumeRollbackAuditPath=$auditPath;$ExpectedRollbackAuditSha256=Sha $auditPath;$testMode=$true;$PlanOnly=$false
@@ -120,9 +150,18 @@ if($case -like 'resume*') {
  function ReceiptSource {param($Source,$Manifest) return $receiptSource}
  function Read-LabelWriterFence {return [pscustomobject]@{session_id=$writerSessionId;attempt_id=$writerAttemptId;
   replacement_transaction_id=$writerTransactionId;orchestrator_sha256=$writerOrchestratorSha256;writer_contract_sha256=$writerContractSha256}}
- try{. Invoke-LabelResumeRollback}catch{if($case -ceq 'resume'){throw}}
+ try{. Invoke-LabelResumeRollback}catch{if($case -in @('resume','resume_strict','resume_placement_strict')){throw}}
 } else {
- if($case -like 'released_*'){
+ if($case -ceq 'catch_placement_strict'){
+  $ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
+  $catch=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.CatchClauseAst] -and $n.Body.Extent.Text.Contains('$original = $_')},$true))
+  if($catch.Count -ne 1){throw 'Actual placement failure catch is ambiguous'}
+  $body=$catch[0].Body.Extent.Text
+  try{throw 'Injected code placement failure'}catch{try{. ([scriptblock]::Create($body.Substring(1,$body.Length-2)))}catch{}}
+  if($audit.status -cne 'FAILED_ROLLED_BACK'){throw 'Failed placement reported the wrong install audit status'}
+  $savedAudit=Get-Content -LiteralPath $auditPath -Raw|ConvertFrom-Json
+  if($savedAudit.status -cne 'FAILED_ROLLED_BACK' -or -not $savedAudit.rollback.runtime_restored){throw 'Failed placement durable audit differs'}
+ }elseif($case -like 'released_*'){
   $writerFenceStarted=$false;$script:held=$false
   $audit.writer_fence.status='RELEASED_AFTER_RESTORE'
   $badPath=Join-Path $root 'final-audit-failed';New-Item -ItemType Directory -Path $badPath | Out-Null
@@ -132,11 +171,19 @@ if($case -like 'resume*') {
   $body=$catch[0].Body.Extent.Text
   try{[IO.File]::WriteAllText($badPath,'final audit')}catch{try{. ([scriptblock]::Create($body.Substring(1,$body.Length-2)))}catch{}}
   if(-not $script:events.Contains('acquire') -or -not $script:events.Contains('protect-stop')){throw 'Released fence protection was skipped'}
- }else{try{. Invoke-LabelCanonicalRollback}catch{}}
+ }else{try{. Invoke-LabelCanonicalRollback}catch{$script:rollbackCaught=$_}}
 }
-if($case -in @('onboarding','early','resume','released_allow')) {
+if($case -like '*strict' -and $null -ne $script:rollbackCaught){throw $script:rollbackCaught}
+if($case -like '*placement_strict') {
+ if($script:held -or -not $script:events.Contains('release') -or -not $script:events.Contains('code')){throw 'Exact legacy code recovery did not finish'}
+ if($audit.rollback.code_placement -cne 'RESTORED_PREIMAGE' -or -not $audit.rollback.runtime_restored){throw 'Legacy recovery audit differs'}
+ $restored=[IO.File]::ReadAllBytes((Join-Path $install 'legacy.bin'))
+ if((ByteSha $restored) -cne (ByteSha $legacyBytes) -or $restored.Length -ne 6){throw 'Old folder bytes differ'}
+ if(-not (Test-Path -LiteralPath (Join-Path $replacementRollbackRoot 'legacy.bin'))){throw 'Recovery preimage was discarded'}
+ if($case -like 'resume*' -and $audit.status -cne 'FAILED_ROLLED_BACK'){throw 'Supported resume status differs'}
+} elseif($case -in @('onboarding','early','resume','released_allow','fresh_strict','resume_strict')) {
  if($script:held -or -not $script:events.Contains('release') -or -not $script:events.Contains('relay')){throw 'Proven restoration did not resume old relay'}
- if($script:runState.data -cne $before.data -or $script:runState.kind -cne $before.kind -or $script:taskXml -cne $legacyXml){throw 'Autostart bytes differ'}
+ if($script:runState.data -cne $before.data -or $script:runState.kind -cne $before.kind -or ($taskBefore.exists -and $script:taskXml -cne $legacyXml)){throw 'Autostart bytes differ'}
  if(-not $script:events.Contains('startup') -or (Test-Path -LiteralPath $install)){throw 'Absent code/startup restoration failed'}
  if($case -ceq 'early' -and @($audit.rollback.step_failures).Count -eq 0){throw 'Earlier failure was discarded'}
 } elseif($case -like 'g_*' -or $case -ceq 'released_refuse') {
@@ -155,3 +202,5 @@ if(@($phases | Where-Object {$_ -ceq 'run_restore'}).Count -gt 1){throw 'Nested 
 ''', engine=engine, values={'LM_RECOVERY_ROOT': str(tmp_path), 'LM_RECOVERY_CASE': case,
                             'LM_RECOVERY_REPO': str(ROOT)})
     assert result.returncode == 0, result.stdout + result.stderr
+    if case == 'catch_placement_strict':
+        assert 'install_status=FAILED' in result.stdout

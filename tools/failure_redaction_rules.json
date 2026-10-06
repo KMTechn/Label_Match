@@ -410,7 +410,11 @@
     "enrollment_unauthorized",
     "producer_identity_conflict",
     "reattach_proof_required",
-    "SERVER_BASE_URL_INVALID"
+    "SERVER_BASE_URL_INVALID",
+    "PLACEMENT_CHILD_FAILED",
+    "PLACEMENT_TRANSPORT_REJECTED",
+    "PLACEMENT_LAUNCH_FAILED",
+    "PLACEMENT_DIAGNOSTIC_UNAVAILABLE"
   ],
   "safe_messages": [
     "설치 확인에 실패했습니다. 자료와 등록 및 전송 대기를 보존하고 보호 보고서를 확인하세요.",

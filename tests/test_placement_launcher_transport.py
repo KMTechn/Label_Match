@@ -22,7 +22,7 @@ def transport_command(tmp_path, launcher, payload):
     data = tmp_path / "transport-data.json"
     # Literal launcher extraction excludes the common definitions that the
     # real producer composes after its param block. Load that same dependency.
-    if "ConvertTo-KmtechRedactedSinkText" in launcher:
+    if "ConvertTo-KmtechRedactedSinkText" in launcher and "function ConvertTo-KmtechRedactedSinkText" not in launcher:
         boundary = launcher.index("\n") + 1
         redactor = str(ROOT / "tools/failure_redaction.ps1").replace("'", "''")
         launcher = launcher[:boundary] + ". '" + redactor + "'\n" + launcher[boundary:]
@@ -33,6 +33,9 @@ def transport_command(tmp_path, launcher, payload):
     for name, path in (("launcher", code), ("payload", data)):
         body = body.replace(f"@@{name}-path@@", str(path).replace("'", "''"))
         body = body.replace(f"@@{name}-sha@@", hashlib.sha256(path.read_bytes()).hexdigest())
+    body = body.replace("@@failure-path@@", str(tmp_path / 'transport-failure.json').replace("'", "''"))
+    message = json.loads((ROOT / 'tools/failure_redaction_rules.json').read_text())['safe_messages'][0]
+    body = body.replace("@@safe-message@@", message.replace("'", "''"))
     return base64.b64encode(body.encode("utf-16-le")).decode("ascii")
 
 
@@ -66,7 +69,12 @@ def test_transport_rejects_changed_missing_or_reparse_files_before_execution(tmp
         capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
     assert child.returncode == 1
     assert not marker.exists()
-    assert b"Placement launcher transport rejected." in child.stderr
+    public = json.loads(next(line.split('=', 1)[1] for line in child.stderr.decode('utf-8').splitlines() if line.startswith('LABEL_MATCH_INSTALLER_FAILURE=')))
+    assert public['placement_code'] == 'PLACEMENT_TRANSPORT_REJECTED'
+    assert public['reason_code'] == 'INSTALLER_FAILED'
+    report = Path(public['report_path']).read_bytes()
+    assert hashlib.sha256(report).hexdigest() == public['report_sha256']
+    assert 'report_status' not in public
 
 
 @pytest.mark.parametrize("target", ("launcher", "payload"))
@@ -218,3 +226,38 @@ $parameters=@{ElevationLogPath=(Join-Path $audit 'placement');SourceRoot=$long;I
     assert record["username_chars"] == 20
     assert record["longest_path_chars"] == 259
     assert record["argument_chars"] < SHELL_ARGUMENT_LIMIT // 2, record
+
+
+@pytest.mark.parametrize("exit_code", (1, 70))
+def test_parent_preserves_native_exit_when_child_cannot_publish_diagnostic(tmp_path, exit_code):
+    result = run_functions(tmp_path, INSTALLER, ["ByteSha", "InvokeFrozenPlacementHelper"], r'''
+$root=$env:LM_TRANSPORT_ROOT
+$frozen=[pscustomobject]@{root=$root;helper_path='';helper_sha256='';integrity_sha256='';writer_fence_path='';writer_fence_sha256='';data_generation_path='';data_generation_sha256=''}
+function Start-Process {param($FilePath,$Verb,$ArgumentList,$WindowStyle,[switch]$Wait,[switch]$PassThru)
+ [pscustomobject]@{ExitCode=[int]$env:LM_TRANSPORT_EXIT}
+}
+$exitCode=InvokeFrozenPlacementHelper $frozen @{ElevationLogPath=(Join-Path $root 'placement')}
+if($exitCode -ne [int]$env:LM_TRANSPORT_EXIT -or $Script:LabelPlacementChildFailure.exit_code -ne $exitCode){throw 'Native child exit changed'}
+if($Script:LabelPlacementChildFailure.placement_code -cne 'PLACEMENT_DIAGNOSTIC_UNAVAILABLE'){throw 'Missing child diagnosis was not classified'}
+$reference=$Script:LabelPlacementChildFailure.full_exception_trace
+if((Get-FileHash -LiteralPath $reference.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $reference.sha256){throw 'Parent diagnosis bytes differ'}
+'PRESERVED'
+''', values={"LM_TRANSPORT_ROOT": str(tmp_path), "LM_TRANSPORT_EXIT": str(exit_code)})
+    assert result.returncode == 0, result.stderr
+    assert "PRESERVED" in result.stdout
+
+@pytest.mark.parametrize('engine', ['powershell.exe', 'pwsh.exe'])
+def test_missing_trace_does_not_mask_child_failure(tmp_path, engine):
+    result = run_functions(tmp_path, INSTALLER, ['Get-LabelLaunchFailure'], r'''
+Set-StrictMode -Version Latest
+function Write-KmtechProtectedFailureSidecar {throw 'Synthetic protected-report storage is unavailable'}
+try {
+ $failure=[InvalidOperationException]::new('Synthetic placement failed')
+ $failure.Data['placement_child_failure']=[pscustomobject]@{placement_code='PLACEMENT_CHILD_FAILED';phase='HELPER_EXECUTION';exit_code=1;exception_type='System.InvalidOperationException'}
+ throw $failure
+} catch { $record=Get-LabelLaunchFailure $_ 'forward' }
+if($record.placement_code -cne 'PLACEMENT_CHILD_FAILED' -or $record.report_status -cne 'REPORT_UNAVAILABLE'){throw 'Original placement cause was lost'}
+'PRESERVED'
+''', engine=engine)
+    assert result.returncode == 0, result.stderr
+    assert 'PRESERVED' in result.stdout

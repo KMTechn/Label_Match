@@ -586,3 +586,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - 2026-10-06 sub-315 v2: 실제 5aa2c03 stock의 PS5/PS7 정상 PlanOnly 2 PASS와 pin 한 바이트 변조의 null-array 종료 2건으로 초기 trap의 helper 미로드 P2를 확인했다. 최상위 trap의 helper 존재 조건만 교정해 초기 고정 실패 코드와 REPORT_UNAVAILABLE을 유지하며 pin/G/거절 순서는 바꾸지 않는다. 공개 자유 문장에 의존하던 테스트 3함수는 같은 시도 보호 보고서 SHA와 기존 거절·rollback 순서·자료 무변경 단언으로 교정한다. 판정용 stock과 실패는 보존하고 승인된 최종 재생성·142/영향 focused·공개 셀·최종 stock 근거 및 native/독립 검토 한계는 sub-315 REPORT로 확인한다.
 
 - 2026-10-06 sub-315: PS7 placement child에서 `File.SetAccessControl` API 부재로 보호 trace가 0바이트이며 최초 원인 참조가 사라지는 P2를 실측했다. 같은 ACL의 Set-Acl 적용만 최소 교정하며 phase/exit·가림·CreateNew·flush·SHA·거절 및 G는 유지한다. 원 실패와 PS5.1/PS7 교정 검증·재생성·공개 셀·142·최종 stock의 실제 범위는 sub-315 REPORT에 남긴다. helper 전의 잘못된 서버 URL은 계약 0d의 정확한 FAILED/INSTALLER_FAILED/REPORT_UNAVAILABLE fallback을 유지하며 더 구체적인 reason code는 컷 뒤 P3이다.
+
+- 2026-10-06 sub-353: 코드 배치 실패 복구의 StrictMode 미초기화 phase stack과 지원 재개의 replacement 플래그 누락을 교정한다. 실제 생성 launcher·transport 거절·진단 없는 native 종료는 원인 코드와 보호 기록을 남긴다. RED/GREEN·정확142·관련538·새 stock·VM-02의 실제 판정과 한계는 sub-353 REPORT에 기록하며 독립 검토와 회차 A-포장은 1차가 맡는다.
