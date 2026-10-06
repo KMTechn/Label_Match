@@ -375,7 +375,7 @@ class CredentialInput:
 
 
 def prepare_credentials_from_json(path, *, app_root: Path, environ=None, reader=None,
-                                  installer_admission=False) -> CredentialInput:
+                                  installer_admission=False, source_inventory_sha256=None) -> CredentialInput:
     """Admit the locator, read it once, then admit its protected-file owner.
 
     Credential validation errors remain with the existing consumer/report path.
@@ -383,7 +383,9 @@ def prepare_credentials_from_json(path, *, app_root: Path, environ=None, reader=
     """
     from label_data_generation import DataGenerationError, UNKNOWN_MESSAGE, check_user_data_open, resolve_data_path
     if installer_admission:
-        from label_data_generation import check_installer_user_data_open as check_user_data_open
+        from label_data_generation import check_installer_user_data_open
+        check_user_data_open = lambda *args, **kwargs: check_installer_user_data_open(
+            *args, source_inventory_sha256=source_inventory_sha256, **kwargs)
     selected = resolve_data_path(path)
     check_user_data_open(app_root, (selected.parent,), environ=environ)
     try:

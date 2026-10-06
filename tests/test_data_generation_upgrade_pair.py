@@ -94,6 +94,22 @@ def test_canonical_installer_preserves_one_utf8_bom_for_windows_powershell():
     assert not raw[3:].startswith(b'\xef\xbb\xbf')
 
 
+@pytest.mark.parametrize('mutation', ['source', 'preimage', 'signed_reverse'])
+def test_source_admission_inventory_reader_pair_is_exact_and_forward_only(pair, mutation):
+    old, new = pair
+    assert probe(new, old).returncode == 0
+    if mutation == 'signed_reverse':
+        refused = probe(old, new, signed=True)
+    else:
+        changed = new if mutation == 'source' else old
+        path = changed / 'app/label_exact_clone_resolution.py'
+        with path.open('ab') as stream:
+            stream.write(b'\nUNREVIEWED_SOURCE_ADMISSION = True\n')
+        refused = probe(new, old)
+    assert refused.returncode != 0
+    assert 'WRITER_TRANSITION_' in refused.stderr
+
+
 def test_quiesced_transport_companion_refuses_signed_g_reverse(pair):
     old, new = pair
     installed = new.parent / 'quiesced-g'

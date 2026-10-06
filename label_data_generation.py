@@ -125,6 +125,10 @@ def _installed_identity(app_root: Path) -> dict[str, object]:
     if metadata_path.stat().st_size > 65536:
         raise DataGenerationError(UNKNOWN_MESSAGE)
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    return _verified_generation_compatibility(identity, metadata)
+
+
+def _verified_generation_compatibility(identity, metadata):
     proof = metadata.get("data_generation_signed_manifest")
     signature_hex = metadata.get("data_generation_signature_hex")
     if proof is not None or signature_hex is not None:
@@ -167,29 +171,53 @@ def marker_paths(data_roots, subject_sid: str, *, environ: Mapping[str, str] | N
             *(root / "data-generation.json" for root in dict.fromkeys(resolve_data_path(p) for p in data_roots))]
 
 
-def _installer_source_identity(app_root: Path) -> dict[str, object]:
+def _installer_source_identity(app_root: Path, *, source_inventory_sha256=None) -> dict[str, object]:
     """Bind read-only installer admission to the verified source's own bytes."""
     root = resolve_data_path(app_root)
     manifest_path = root / "portable-manifest.json"
     if not manifest_path.exists():
         return _installed_identity(root)
-    from current_user_onboarding import verify_bootstrap_integrity, BOOTSTRAP_INTEGRITY_MAX_BYTES
-    record_path = root / "bootstrap-integrity.json"
-    if record_path.stat().st_size > BOOTSTRAP_INTEGRITY_MAX_BYTES:
-        raise DataGenerationError(UNKNOWN_MESSAGE)
-    record_bytes = record_path.read_bytes()
-    integrity = verify_bootstrap_integrity(
-        SimpleNamespace(app_root=root, bootstrap_integrity_path=record_path), required=True)
-    if integrity.get("status") != "PASS" or record_path.read_bytes() != record_bytes:
-        raise DataGenerationError(UNKNOWN_MESSAGE)
-    record = json.loads(record_bytes.decode("utf-8-sig"))
-    files = {row["path"]: row for row in record.get("files", [])}
+    if source_inventory_sha256 is not None:
+        # Canonical supplies its already verified ReceiptSource inventory. This
+        # read-only entry accepts no version/build override and creates no record.
+        if not isinstance(source_inventory_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", source_inventory_sha256):
+            raise DataGenerationError(UNKNOWN_MESSAGE)
+        from label_exact_clone_resolution import portable_inventory_binding
+        bound = {}
+        for relative, maximum in (("portable-manifest.json", 65536),
+                ("app/label_data_generation.py" if (root / "app/label_data_generation.py").is_file()
+                 else "app/Label_Match.py", 10485760)):
+            path = root / relative
+            if path.stat().st_size > maximum:
+                raise DataGenerationError(UNKNOWN_MESSAGE)
+            bound[relative] = path.read_bytes()
+            if len(bound[relative]) > maximum:
+                raise DataGenerationError(UNKNOWN_MESSAGE)
+        if portable_inventory_binding(root, bound_files=bound)["sha256"] != source_inventory_sha256:
+            raise DataGenerationError(UNKNOWN_MESSAGE)
+        files = {relative: {"size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+                 for relative, raw in bound.items()}
+    else:
+        from current_user_onboarding import verify_bootstrap_integrity, BOOTSTRAP_INTEGRITY_MAX_BYTES
+        record_path = root / "bootstrap-integrity.json"
+        if record_path.stat().st_size > BOOTSTRAP_INTEGRITY_MAX_BYTES:
+            raise DataGenerationError(UNKNOWN_MESSAGE)
+        record_bytes = record_path.read_bytes()
+        integrity = verify_bootstrap_integrity(
+            SimpleNamespace(app_root=root, bootstrap_integrity_path=record_path), required=True)
+        if integrity.get("status") != "PASS" or record_path.read_bytes() != record_bytes:
+            raise DataGenerationError(UNKNOWN_MESSAGE)
+        record = json.loads(record_bytes.decode("utf-8-sig"))
+        files = {row["path"]: row for row in record.get("files", [])}
 
     def bound_bytes(relative: str, maximum: int) -> bytes:
-        path = root / relative
-        if path.stat().st_size > maximum:
-            raise DataGenerationError(UNKNOWN_MESSAGE)
-        raw = path.read_bytes()
+        if source_inventory_sha256 is not None:
+            raw = bound[relative]
+        else:
+            path = root / relative
+            if path.stat().st_size > maximum:
+                raise DataGenerationError(UNKNOWN_MESSAGE)
+            raw = path.read_bytes()
         row = files.get(relative)
         if (not isinstance(row, dict) or row.get("size") != len(raw)
                 or row.get("sha256") != hashlib.sha256(raw).hexdigest()):
@@ -211,6 +239,12 @@ def _installer_source_identity(app_root: Path) -> dict[str, object]:
     version = versions[0]
     if manifest.get("version") not in (None, "", version):
         raise DataGenerationError(UNKNOWN_MESSAGE)
+    identity = {"version": version, "build_id": commit,
+                "data_compatible_min_version": version, "compatibility_verified": False}
+    if source_inventory_sha256 is not None:
+        if portable_inventory_binding(root)["sha256"] != source_inventory_sha256:
+            raise DataGenerationError(UNKNOWN_MESSAGE)
+        return _verified_generation_compatibility(identity, manifest)
     if version == CURRENT_VERSION and manifest.get("version") == CURRENT_VERSION:
         # Keep the ordinary signed-compatibility checks for current packets.
         return _installed_identity(root)
@@ -223,10 +257,11 @@ def check_user_data_open(app_root: Path, data_roots=(), *, environ=None):
                                 identity_resolver=_installed_identity)
 
 
-def check_installer_user_data_open(app_root: Path, data_roots=(), *, environ=None):
+def check_installer_user_data_open(app_root: Path, data_roots=(), *, environ=None, source_inventory_sha256=None):
     """Read-only installation admission; no caller-supplied version or build."""
     return _check_user_data_open(app_root, data_roots, environ=environ,
-                                identity_resolver=_installer_source_identity)
+                                identity_resolver=lambda root: _installer_source_identity(
+                                    root, source_inventory_sha256=source_inventory_sha256))
 
 
 def _check_user_data_open(app_root: Path, data_roots=(), *, environ=None, identity_resolver):

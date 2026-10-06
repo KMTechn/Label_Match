@@ -607,6 +607,7 @@ def _is_reparse_point(path: Path) -> bool:
 
 def portable_inventory_binding(
     portable_root: str | os.PathLike[str],
+    *, bound_files: Mapping[str, bytes] | None = None,
 ) -> dict[str, Any]:
     """Return a complete, path-sensitive portable file inventory digest.
 
@@ -655,14 +656,19 @@ def portable_inventory_binding(
                     )
                 casefold_paths.add(folded)
                 size = child.stat().st_size
-                entries.append((relative, size, file_sha256(child)))
+                content_hash = file_sha256(child)
+                if bound_files is not None and relative in bound_files:
+                    raw = bound_files[relative]
+                    if len(raw) != size or hashlib.sha256(raw).hexdigest() != content_hash:
+                        raise ExactCloneResolutionError("portable identity input changed during verification")
+                entries.append((relative, size, content_hash))
             except OSError as exc:
                 raise ExactCloneResolutionError(
                     f"portable inventory file is unreadable: {child}"
                 ) from exc
     if not entries:
         raise ExactCloneResolutionError("portable inventory is empty")
-    entries.sort(key=lambda item: item[0])
+    entries.sort(key=lambda item: item[0].encode("utf-16-be"))
     digest = hashlib.sha256(b"label-match-portable-full-inventory-v1\x00")
     byte_count = 0
     for relative, size, sha256 in entries:

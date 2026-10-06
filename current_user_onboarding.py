@@ -963,12 +963,14 @@ def prepare_current_user_data_open(
     *,
     environ: Mapping[str, str] | None = None,
     installer_admission: bool = False,
+    source_inventory_sha256: str | None = None,
 ):
     """Admit existing onboarding inputs without recording or changing state."""
     admit = check_user_data_open
     if installer_admission:
         from label_data_generation import check_installer_user_data_open
-        admit = check_installer_user_data_open
+        admit = lambda *args, **kwargs: check_installer_user_data_open(
+            *args, source_inventory_sha256=source_inventory_sha256, **kwargs)
     try:
         admit(Path(app_root), environ=environ)
     except DataGenerationError as exc:
@@ -983,7 +985,8 @@ def prepare_current_user_data_open(
             admit(paths.app_root, (Path(tls_ca_source).parent,), environ=environ)
         credential_input = (prepare_credentials_from_json(paths.credential_path,
             app_root=paths.app_root, environ=environ,
-            **({"installer_admission": True} if installer_admission else {}))
+            **({"installer_admission": True, "source_inventory_sha256": source_inventory_sha256}
+               if installer_admission else {}))
             if paths.credential_path.is_file() else None)
     except DataGenerationError as exc:
         raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
@@ -1510,11 +1513,15 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--app-root", default=str(_default_app_root()))
     parser.add_argument("--server-base-url", default=DEFAULT_SERVER_BASE_URL)
     parser.add_argument("--check-data-generation-only", action="store_true")
+    parser.add_argument("--installer-source-inventory-sha256", default=None, help=__import__('argparse').SUPPRESS)
     parser.add_argument("--defer-canonical-relay-start", action="store_true")
     args = parser.parse_args(argv)
+    if args.installer_source_inventory_sha256 is not None and not args.check_data_generation_only:
+        parser.error("source inventory is only accepted for read-only installation admission")
     try:
         if args.check_data_generation_only:
-            prepare_current_user_data_open(args.app_root, installer_admission=True)
+            prepare_current_user_data_open(args.app_root, installer_admission=True,
+                source_inventory_sha256=args.installer_source_inventory_sha256)
             print("onboarding_data_generation_status=PASS")
             return 0
         report = onboard_current_user(

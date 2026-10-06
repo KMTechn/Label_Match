@@ -2071,9 +2071,11 @@ def test_plan_only_reports_explicit_or_product_default_server_base_url(
 def test_server_base_url_is_validated_first_and_reaches_only_onboarding() -> None:
     source = _source()
     # Verify admission separately; retain the original state-changing URL oracle.
-    read_only_admission = "Product $generationProductRoot '--onboard-current-user' `\n    (@('--app-root', $source, '--check-data-generation-only') + $onboardingArguments)\n"
+    read_only_admission = "Invoke-LabelSourceDataAdmission $generationProductRoot $source $receiptSource `\n    (Join-Path $lad 'KMTech\\Label_Match\\install-audit') $EvidencePath $onboardingArguments\n"
     assert source.count(read_only_admission) == 1
     assert source.index(read_only_admission) < source.index('$old = @(Relays)')
+    admission_product = "Product $ProductRoot '--onboard-current-user' `\n            (@('--app-root', $Source, '--check-data-generation-only',\n               '--installer-source-inventory-sha256', [string]$Inventory.sha256) + $OnboardingArgs)"
+    assert source.count(admission_product) == 1
     source = source.replace(read_only_admission, '')
     parameter_block = source[
         source.index("param(") : source.index(")", source.index("param("))
