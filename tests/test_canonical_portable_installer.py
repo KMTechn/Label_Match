@@ -2030,7 +2030,7 @@ def test_invalid_server_base_url_fails_closed_before_plan_or_side_effects(
         public_lines = [line for line in combined.splitlines() if line.strip()]
         assert len(public_lines) == 1 and public_lines[0].startswith("LABEL_MATCH_INSTALLER_FAILURE=")
         public = json.loads(public_lines[0].split("=", 1)[1])
-        assert public == {"status": "FAILED", "reason_code": "INSTALLER_FAILED", "report_status": "REPORT_UNAVAILABLE"}
+        assert public == {'status': 'FAILED', 'reason_code': 'SERVER_BASE_URL_INVALID', 'report_status': 'REPORT_UNAVAILABLE', 'guidance': '서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요.'}
         for argument in extra_arguments:
             if "://" in argument:
                 assert argument not in combined

@@ -1,5 +1,11 @@
 # 조립 실패 기록 및 제품 상태 계약
 
+| 조기 실패 reason_code | 뜻과 고정 안내 |
+| --- | --- |
+| `SERVER_BASE_URL_INVALID` | 서버 URL origin 문법 또는 port 범위 거절. 서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요. |
+
+잘못된 서버 URL은 첫 판독·PlanOnly·side effect 전에 거절한다. 가림 helper를 아직 읽지 못한 fallback에서도 이 코드와 위 고정 안내, FAILED/REPORT_UNAVAILABLE만 내며 URL 원문과 이전 보고서 참조는 공개하지 않는다. 코드와 안내는 공용 rules의 allowed_codes/safe_messages에 등록한다.
+
 2026-10-06 REDACTION-CONTRACT SHA256 `a8708fd307dd55ae309f5f18a0b3dac603302862a6d269a9c815862112f137e7`의 0e 컷 전 범위를 따른다. 04:0x 지시에 따라 설치기·업데이트 적용기·지원 도구에서 예외 문장·child/프로세스 출력·명령줄·외부 입력값을 포함할 수 있는 공개 자리만 허용 필드 공개 레코드로 바꾼다. 고정 문구와 자체 계산한 개수·ID·코드·시각·경로를 내는 줄은 80a93ab 바이트를 유지하고 `tools/failure_redaction_rules.json`의 `safe_messages`에 등록한다. 업무 앱 로그와 스캔 화면은 이 범위 밖이다.
 
 `public_record` / `ConvertTo-KmtechPublicRecord`는 코드·고정 문구·형식 이름·위치·정수·SHA·식별자·시각·절대 경로·bool/null만 받는다. 정확한 키가 suffix보다 먼저이며, 거절한 값은 내보내지 않고 유효한 키 이름과 `PUBLIC_FIELD_NONCONFORMING`만 남긴다. 상세 가림과 64 KiB 제한은 기존 보호 보고서/private evidence에서 유지한다.

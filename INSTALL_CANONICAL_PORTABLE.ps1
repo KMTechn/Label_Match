@@ -24,6 +24,11 @@ trap {
         # The pinned helper may not have loaded yet. No error text is emitted.
         $publicFailure = [ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE'}
     }
+    if ($publicError.Exception.Data.Contains('label_failure_code') -and
+        [string]$publicError.Exception.Data['label_failure_code'] -ceq 'SERVER_BASE_URL_INVALID') {
+        $publicFailure.reason_code = 'SERVER_BASE_URL_INVALID'
+        $publicFailure.guidance = '서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요.'
+    }
     [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($publicFailure | ConvertTo-Json -Compress -Depth 5))
     exit $publicExit
 }
@@ -397,9 +402,15 @@ function ServerBaseUrlOrigin([string]$Value) {
             '(?<host>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?' +
             '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)' +
             '(?::(?<port>[1-9][0-9]{0,4}))?/?$')
-    ) { throw 'ServerBaseUrl must be a credential-free https://host[:port] origin.' }
+    ) {
+        $originFailure = [ArgumentException]::new('ServerBaseUrl must be a credential-free https://host[:port] origin.')
+        $originFailure.Data['label_failure_code'] = 'SERVER_BASE_URL_INVALID'
+        throw $originFailure
+    }
     if ($Matches.ContainsKey('port') -and [int]$Matches['port'] -gt 65535) {
-        throw 'ServerBaseUrl port must be within 1-65535.'
+        $originFailure = [ArgumentException]::new('ServerBaseUrl port must be within 1-65535.')
+        $originFailure.Data['label_failure_code'] = 'SERVER_BASE_URL_INVALID'
+        throw $originFailure
     }
     return $origin.TrimEnd('/')
 }

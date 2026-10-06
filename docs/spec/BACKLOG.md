@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+10/8 컷 전 병합 대상의 URL 앞단 거절은 SERVER_BASE_URL_INVALID와 고정 한국어 안내를 공개한다. URL 원문·이전 보고서 참조·상태 변경 0을 유지하며 회귀와 실제 native 설치 한계는 sub-325 REPORT.md에 기록한다.
+
 10/8 컷 전 병합 대상의 보호 보고서 가림은 민감 key의 mapping·list·중첩 값을 인용·escape와 괄호 짝을 확인해 통째로 가린다. 짝이 없거나 어긋나면 해당 줄 끝까지 가리고 정상 후속 field·원인 접두는 보존한다. 공용 rules의 structured_delimiters가 Python·PS·C#의 구조 문법 입력이며 기존 18벡터에 동결 구조화 4벡터를 추가한다. 공개 허용 레코드 계약과 길이 상한·가림 후 절단 순서는 유지한다. 엔진·공개/보호 셀 실측과 남은 한계는 sub-325 REPORT.md에 기록한다.
 
 10/8 컷 전 병합 대상 P2 검증 입력을 교정한다. zero-touch 검사는 PowerShell AST의 실제 작업 생성 명령과 helper의 설명 문자열을 구별하며 helper 안의 작업 생성 명령은 계속 거절한다. writer 순서 검사는 최상위 transaction 시작 뒤 호출을 비교한다. shared-leaf fixture는 실제 가림 helper·규칙을, G fixture는 공식 launcher 검사 정의를 제공한다. 부분 복구 fixture의 registrar·profile·package 모듈은 같은 byte-verified 설치 ROOT를 사용하며 제품 guard·단언·timeout은 유지한다. 검증 결과와 독립 검토 P1·P2 0 후 병합 경계는 sub-325 REPORT.md에 기록한다.
