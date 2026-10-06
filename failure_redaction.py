@@ -221,15 +221,52 @@ def assert_machine_metadata_text(text, environ=None):
             raise ValueError("PRODUCT_METADATA_SECRET_VALUE_REFUSED")
 
 
-def redact_for_sink(text, environ=None, *, redact_values=()):
+def _replace_known_json_spellings(text, replacements, depth=0):
+    """Decode JSON string spellings before masking, including embedded JSON."""
+    if depth > 16:
+        raise ValueError("REPORT_UNAVAILABLE")
+    masked = False
+    def string_token(match):
+        nonlocal masked
+        try:
+            decoded = json.loads(match[0])
+        except ValueError:
+            return match[0]
+        normalized, changed = _replace_known_json_spellings(decoded, replacements, depth + 1)
+        masked |= changed
+        return json.dumps(normalized, ensure_ascii=False)
+    normalized = re.sub(r'"(?:\\.|[^"\\])*"', string_token, text)
+    for value, replacement in replacements:
+        forms = (json.dumps(value, ensure_ascii=True)[1:-1],
+                 json.dumps(value, ensure_ascii=False)[1:-1], value)
+        for form in dict.fromkeys(forms):
+            if form in normalized:
+                normalized = normalized.replace(form, replacement)
+                masked = True
+    return normalized, masked
+
+
+def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
     if environ is None:
         environ = os.environ
     text = text.decode('utf-8', errors='replace') if isinstance(text, bytes) else str(text)
+    entries = list(_secret_environment_entries(environ))
+    replacements = [(str(value), f"[REDACTED:{name}]") for name, value in
+                    sorted(entries, key=lambda row: (-len(row[1]), row[0])) if len(str(value or "")) >= 4]
+    replacements += [(value, RULES['field']) for value in
+                     sorted({str(item) for item in redact_values if len(str(item)) >= 4}, key=len, reverse=True)]
+    if replacements:
+        try:
+            is_json = not _json_leaf and isinstance(json.loads(text), (dict, list))
+        except ValueError:
+            is_json = False
+        normalized, masked = _replace_known_json_spellings(text, replacements)
+        if masked:
+            text = normalized
     for value in sorted({str(item) for item in redact_values if len(str(item)) >= 4}, key=len, reverse=True):
         for form in dict.fromkeys((json.dumps(value)[1:-1], value.replace("'", "''"), value.replace('"', '""'), value)):
             text = text.replace(form, RULES['field'])
     notes = []
-    entries = list(_secret_environment_entries(environ))
     for name, value in sorted(entries, key=lambda row: (-len(row[1]), row[0])):
         if not value:
             continue
@@ -253,6 +290,8 @@ def redact_for_sink(text, environ=None, *, redact_values=()):
         if match.start() < protected_until:
             continue
         key = match['key'].strip("\"'")
+        if key.startswith('[REDACTED:'):
+            continue
         metadata_key = (re.search(RULES['path_suffix'], key)
                     or (re.search(RULES['digest_suffix'], key) and not re.search(RULES['short_secret_digest'], key)))
         sensitive = re.search(RULES['pattern'], key) or key.lower() in ('pin', 'otp', 'password')
@@ -308,7 +347,16 @@ def redact_for_sink(text, environ=None, *, redact_values=()):
     text = re.sub(r'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"\',;]+', lambda match: match[1] + RULES['field'], text)
     if notes:
         text += "\n" + "\n".join(notes)
+    if replacements and _replace_known_json_spellings(text, replacements)[1]:
+        raise ValueError("REPORT_UNAVAILABLE")
     raw = text.encode("utf-8")
+    if replacements and is_json:
+        try:
+            json.loads(text)
+        except ValueError:
+            raise ValueError("REPORT_UNAVAILABLE") from None
+        if len(raw) > RULES["limit"]:
+            raise ValueError("REPORT_UNAVAILABLE")
     if len(raw) <= RULES["limit"]:
         return text
     head = raw[:RULES["head"]].decode("utf-8", errors="ignore").encode("utf-8")
@@ -322,22 +370,46 @@ def redact_for_sink(text, environ=None, *, redact_values=()):
         tail_length = available
     tail = raw[-tail_length:].decode("utf-8", errors="ignore").encode("utf-8")
     marker = f"\n[TRUNCATED: {len(raw)-len(head)-len(tail)} bytes omitted]\n".encode("utf-8")
-    return (head + marker + tail).decode("utf-8")
+    protected = (head + marker + tail).decode("utf-8")
+    if replacements and _replace_known_json_spellings(protected, replacements)[1]:
+        raise ValueError("REPORT_UNAVAILABLE")
+    return protected
 
 
 def redact_json_for_sink(value, environ=None):
-    if isinstance(value, dict):
-        result = {}
-        for key, item in value.items():
-            metadata = (item is None or type(item) is bool or re.search(RULES["path_suffix"], key)
-                        or (re.search(RULES["digest_suffix"], key)
-                            and not re.search(RULES["short_secret_digest"], key)))
-            sensitive = re.search(RULES["pattern"], key) or key.lower() in ("pin", "otp", "password")
-            result[key] = RULES["field"] if sensitive and not metadata else redact_json_for_sink(item, environ)
-        return result
-    if isinstance(value, (list, tuple)):
-        return [redact_json_for_sink(item, environ) for item in value]
-    return redact_for_sink(value, environ) if isinstance(value, str) else value
+    environ = os.environ if environ is None else environ
+    replacements = [(str(item), f"[REDACTED:{name}]") for name, item in
+                    sorted(_secret_environment_entries(environ), key=lambda row: (-len(row[1]), row[0]))
+                    if len(str(item or "")) >= 4]
+    def visit(value):
+        if isinstance(value, dict):
+            result = {}
+            for key, item in value.items():
+                safe_key, masked = _replace_known_json_spellings(key, replacements) if replacements else (key, False)
+                safe_key = safe_key if masked else key
+                if safe_key in result:
+                    raise ValueError("REPORT_UNAVAILABLE")
+                metadata = (item is None or type(item) is bool or re.search(RULES["path_suffix"], key)
+                            or (re.search(RULES["digest_suffix"], key)
+                                and not re.search(RULES["short_secret_digest"], key)))
+                sensitive = re.search(RULES["pattern"], key) or key.lower() in ("pin", "otp", "password")
+                result[safe_key] = RULES["field"] if sensitive and not metadata else visit(item)
+            return result
+        if isinstance(value, (list, tuple)):
+            return [visit(item) for item in value]
+        return redact_for_sink(value, environ, _json_leaf=True) if isinstance(value, str) else value
+    result = visit(value)
+    if replacements:
+        serialized = json.dumps(result, ensure_ascii=False)
+        protected, masked = _replace_known_json_spellings(serialized, replacements)
+        if masked:
+            try:
+                result = json.loads(protected)
+            except ValueError:
+                raise ValueError("REPORT_UNAVAILABLE") from None
+        if _replace_known_json_spellings(json.dumps(result, ensure_ascii=False), replacements)[1]:
+            raise ValueError("REPORT_UNAVAILABLE")
+    return result
 
 
 def write_failure_evidence(text, *, redact_values=()):

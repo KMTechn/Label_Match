@@ -1,5 +1,7 @@
 # 조립 실패 기록 및 제품 상태 계약
 
+보호 JSON의 알려진 비밀은 문자열 값과 키에서 JSON 문자열 escape를 풀어 확인한 뒤 가린다. 모두/일부 `\uXXXX`, 혼합 hex 대소문자, 비ASCII surrogate pair, escaped slash 및 JSON 문자열인 비밀도 같은 규칙을 쓴다. 재직렬화 뒤 최종 텍스트 치환·재검사를 유지하며, 비밀이 다시 남거나 키 충돌·JSON 구조 손상·상한 초과가 생기면 `REPORT_UNAVAILABLE`로 게시를 거절한다. PowerShell의 한 원소·빈 배열은 배열로 보존한다. 일반 출력의 허용 코드·고정 문구와 제품 상태/machine metadata는 그대로다. 실제 파일/SHA 및 회귀 근거는 sub-357 REPORT.md에 기록한다.
+
 오디오 재생·장치 초기화는 선택 피드백이다. 장치 실패 뒤에도 스캔 checkpoint, 트레이 durable 완료·로그, 동기화 시작, 오류 복구와 다음 스캔을 진행한다. 이전 모달 창 생성 실패 복구의 stop 예외도 현재 트레이 리셋을 막지 않는다. headless 가짜 PlaySound 회귀와 실제 장치/서버 미시험의 경계는 sub-325 REPORT.md에 기록한다.
 
 stock 빌더가 배포하는 .ps1/.psm1/.psd1의 비ASCII 내용은 UTF-8 BOM(EF BB BF)을 보존한다. 정적 경비는 빌더의 script 경로와 실제 application/runtime/third-party 복사 입력을 추적하며 runtime Activate.ps1도 포함한다. PS5.1 회귀는 BOM 유무에 따라 UTF-8/cp949로 디코드한 본문을 Parser.ParseInput에 넣어 구문 오류 0과 UTF-8 기준 한국어 리터럴 일치를 요구한다. 65001 호스트의 기본 파일 판독만으로 cp949 현장 호환을 증명하지 않는다. 임시 사본의 BOM 제거 RED와 실제 stock source GREEN은 sub-325 REPORT.md에 기록하며 원본을 바꾸지 않는다.

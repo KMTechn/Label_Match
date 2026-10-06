@@ -1,6 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
 회차 5의 실패 복구 delegation과 Verify 진단 참조는 `tests/test_round5_startup_rollback.py`, `tests/test_fixed_helper_failure_evidence.py`로 회귀를 고정한다. 원 감사의 code placement는 PASS였고 onboarding의 fixed helper Verify가 실패했으며, rollback의 protected startup restore 자식이 OWNER_DELEGATION_MISMATCH를 남겼다. 9adc801 stock의 실제 VM 보호 배치 뒤 standalone Verify에서 미export 함수 5종의 결함을 재현했고 첫 실패는 Enter-LabelStartupUpdateAuthority의 Get-StrictFullPath다. 새 자식에서 module만 가져온 전체 Verify·manifest 변조·진단 보존 회귀를 추가한다. 원 fence 만료값과 원 Verify 예외는 미회수이므로 역사적 실행의 세부 원인을 단정하지 않는다. 최종 stock의 성공 등록/의도한 TLS 실패·옛 앱 재시작은 별도 랩 회차 수용 대상이다. 결과·자식 전수 목록·남은 범위는 sub-368 REPORT.md를 따른다.
+컷 전 P1 JSON escape 가림: 공통 Python/PowerShell helper가 값·키의 escape를 풀어 알려진 비밀을 가리고 최종 직렬화 텍스트를 재검사한다. 키 충돌·복원된 비밀·구조 손상은 `REPORT_UNAVAILABLE`로 게시를 거절하며 한 원소 배열도 유지한다. 합성 변종·실제 보호 파일/SHA, 기준 대비 회귀 및 미시험 범위는 [sub-357 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-357/REPORT.md)를 따른다. 독립 대조·통합 stock/설치 수용은 코디네이터가 별도로 진행한다.
 
 canonical의 embedded probe 3개는 CRLF→LF/UTF-8 바이트 SHA를 PowerShell AST로 다시 계산하는 회귀로 고정 pin을 확인한다. source admission 뒤 전이·healthy lifecycle·preimage 준비 실패도 기존 FAILED/FAILED_PREPARATION_ADMISSION audit와 install_status=FAILED를 남긴다. 기존 FAILED_PRETRANSACTION archive는 보존하고 같은 공개 상태를 반환한다. 실제 설치·등록·복구 수용은 랩 별도이며 [sub-348 근거](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-348/REPORT.md)를 따른다.
 

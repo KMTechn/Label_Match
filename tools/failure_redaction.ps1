@@ -25,13 +25,45 @@ function Get-KmtechSinkEnvironment {
 }
 
 function ConvertTo-KmtechRedactedSinkText {
-    param([AllowEmptyString()][string]$Text, [Collections.IDictionary]$Environment = $null)
+    param([AllowEmptyString()][string]$Text, [Collections.IDictionary]$Environment = $null, [switch]$JsonLeaf)
     $rules = $Script:KmtechRedactionRules
     if ($null -eq $Environment) { $Environment = Get-KmtechSinkEnvironment }
     $notes = [Collections.Generic.List[string]]::new()
     $entries = @($Environment.Keys | Where-Object {
         Test-KmtechSecretEnvironmentValue -Name ([string]$_) -Value ([string]$Environment[$_])
     } | Sort-Object @{Expression={([string]$Environment[$_]).Length};Descending=$true}, @{Expression={[string]$_}})
+    function Replace-KmtechJsonSpellings([string]$Value, [int]$Depth=0) {
+        if($Depth -gt 16){throw 'REPORT_UNAVAILABLE'}
+        $state=@{masked=$false}
+        $normalized=[regex]::Replace($Value,'"(?:\\.|[^"\\])*"',[Text.RegularExpressions.MatchEvaluator]{param($match)
+            try {$decoded=ConvertFrom-Json -InputObject $match.Value -ErrorAction Stop} catch {return $match.Value}
+            $child=Replace-KmtechJsonSpellings -Value ([string]$decoded) -Depth ($Depth+1)
+            if($child.masked){$state.masked=$true}
+            return ConvertTo-Json -InputObject ([string]$child.text) -Compress
+        })
+        foreach($name in $entries){
+            $secret=[string]$Environment[$name]
+            if($secret.Length -lt 4){continue}
+            $escaped=ConvertTo-Json -InputObject $secret -Compress
+            $escaped=$escaped.Substring(1,$escaped.Length-2)
+            foreach($form in @($escaped,$secret)|Select-Object -Unique){
+                if($normalized.Contains($form)){
+                    $normalized=$normalized.Replace($form,"[REDACTED:$name]")
+                    $state.masked=$true
+                }
+            }
+        }
+        return [pscustomobject]@{text=$normalized;masked=$state.masked}
+    }
+    $hasKnown=@($entries|Where-Object {([string]$Environment[$_]).Length -ge 4}).Count -gt 0
+    $wasJson=$false
+    if($hasKnown){
+        if(-not $JsonLeaf -and ($Text.TrimStart().StartsWith('{') -or $Text.TrimStart().StartsWith('['))){
+            try {$null=ConvertFrom-Json -InputObject $Text -ErrorAction Stop;$wasJson=$true} catch {}
+        }
+        $normalized=Replace-KmtechJsonSpellings $Text
+        if($normalized.masked){$Text=$normalized.text}
+    }
     foreach ($name in $entries) {
         $value = [string]$Environment[$name]
         if (-not $value) { continue }
@@ -54,6 +86,7 @@ function ConvertTo-KmtechRedactedSinkText {
         if ($match.Index -lt $protectedUntil) { continue }
         $quotes=[char[]]@('"',"'")
         $key=$match.Groups['key'].Value.Trim($quotes)
+        if($key.StartsWith('[REDACTED:')){continue}
         $metadataKey=($key -match $rules.path_suffix -or
             ($key -match $rules.digest_suffix -and $key -notmatch $rules.short_secret_digest))
         $sensitive=($key -match $rules.pattern -or $key -imatch '^(pin|otp|password)$')
@@ -106,8 +139,13 @@ function ConvertTo-KmtechRedactedSinkText {
     $Text=$parts.ToString()
     $Text=[regex]::Replace($Text,'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"'',;]+',[Text.RegularExpressions.MatchEvaluator]{param($match) $match.Groups[1].Value+$rules.field})
     if ($notes.Count) { $Text += [string][char]10 + ($notes -join [string][char]10) }
+    if($hasKnown -and (Replace-KmtechJsonSpellings $Text).masked){throw 'REPORT_UNAVAILABLE'}
     $utf8 = [Text.UTF8Encoding]::new($false,$true)
     $bytes = $utf8.GetBytes($Text)
+    if($wasJson){
+        try {$null=ConvertFrom-Json -InputObject $Text -ErrorAction Stop} catch {throw 'REPORT_UNAVAILABLE'}
+        if($bytes.Length -gt $rules.limit){throw 'REPORT_UNAVAILABLE'}
+    }
     if ($bytes.Length -le $rules.limit) { return $Text }
     $headLength = [int]$rules.head
     while (($bytes[$headLength] -band 0xC0) -eq 0x80) { $headLength-- }
@@ -123,7 +161,9 @@ function ConvertTo-KmtechRedactedSinkText {
     while (($bytes[$start] -band 0xC0) -eq 0x80) { $start++ }
     $omitted = $start - $headLength
     $marker = [string][char]10 + "[TRUNCATED: $omitted bytes omitted]" + [string][char]10
-    return $utf8.GetString($bytes,0,$headLength) + $marker + $utf8.GetString($bytes,$start,$bytes.Length-$start)
+    $protected=$utf8.GetString($bytes,0,$headLength) + $marker + $utf8.GetString($bytes,$start,$bytes.Length-$start)
+    if($hasKnown -and (Replace-KmtechJsonSpellings $protected).masked){throw 'REPORT_UNAVAILABLE'}
+    return $protected
 }
 
 function Get-KmtechSinkReplacements {
@@ -159,26 +199,44 @@ function Assert-KmtechMachineMetadataText {
 
 function ConvertTo-KmtechRedactedSinkObject {
     param([AllowNull()]$Value, [Collections.IDictionary]$Environment = $null)
+    if($null -eq $Environment){$Environment=Get-KmtechSinkEnvironment}
+    $known=@{}
+    foreach($name in $Environment.Keys){
+        if(([string]$Environment[$name]).Length -ge 4 -and
+            (Test-KmtechSecretEnvironmentValue -Name ([string]$name) -Value ([string]$Environment[$name]))){
+            $known[$name]=$Environment[$name]
+        }
+    }
     if ($null -eq $Value) { return $null }
-    if ($Value -is [string]) { return ConvertTo-KmtechRedactedSinkText -Text $Value -Environment $Environment }
+    if ($Value -is [string]) { return ConvertTo-KmtechRedactedSinkText -Text $Value -Environment $Environment -JsonLeaf }
     if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
         $result = [ordered]@{}
         $names = if ($Value -is [Collections.IDictionary]) { @($Value.Keys) } else {
             @($Value.PSObject.Properties | ForEach-Object { $_.Name })
         }
         foreach ($name in $names) {
-            $entry = if ($Value -is [Collections.IDictionary]) { $Value[$name] } else { $Value.$name }
+            $safeName=ConvertTo-KmtechRedactedSinkText -Text ([string]$name) -Environment $known -JsonLeaf
+            if($result.Contains($safeName)){throw 'REPORT_UNAVAILABLE'}
+            if ($Value -is [Collections.IDictionary]) { $entry = $Value[$name] } else { $entry = $Value.$name }
             $rules=$Script:KmtechRedactionRules
             $metadata=($null -eq $entry -or $entry -is [bool] -or [string]$name -match $rules.path_suffix -or
                 ([string]$name -match $rules.digest_suffix -and [string]$name -notmatch $rules.short_secret_digest))
             if (-not $metadata -and ([string]$name -match $rules.pattern -or [string]$name -imatch '^(pin|otp|password)$')) {
-                $result[$name] = $Script:KmtechRedactionRules.field
-            } else { $result[$name] = ConvertTo-KmtechRedactedSinkObject -Value $entry -Environment $Environment }
+                $result[$safeName] = $Script:KmtechRedactionRules.field
+            } else { $result[$safeName] = ConvertTo-KmtechRedactedSinkObject -Value $entry -Environment $Environment }
+        }
+        if($known.Count){
+            $serialized=ConvertTo-Json -InputObject $result -Depth 100 -Compress
+            if((ConvertTo-KmtechRedactedSinkText -Text $serialized -Environment $known) -cne $serialized){throw 'REPORT_UNAVAILABLE'}
         }
         return $result
     }
     if ($Value -is [Collections.IEnumerable]) {
         $result = @($Value | ForEach-Object { ConvertTo-KmtechRedactedSinkObject -Value $_ -Environment $Environment })
+        if($known.Count){
+            $serialized=ConvertTo-Json -InputObject $result -Depth 100 -Compress
+            if((ConvertTo-KmtechRedactedSinkText -Text $serialized -Environment $known) -cne $serialized){throw 'REPORT_UNAVAILABLE'}
+        }
         return ,$result
     }
     return $Value
