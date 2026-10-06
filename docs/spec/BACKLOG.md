@@ -588,3 +588,5 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - 2026-10-06 sub-315: PS7 placement child에서 `File.SetAccessControl` API 부재로 보호 trace가 0바이트이며 최초 원인 참조가 사라지는 P2를 실측했다. 같은 ACL의 Set-Acl 적용만 최소 교정하며 phase/exit·가림·CreateNew·flush·SHA·거절 및 G는 유지한다. 원 실패와 PS5.1/PS7 교정 검증·재생성·공개 셀·142·최종 stock의 실제 범위는 sub-315 REPORT에 남긴다. helper 전의 잘못된 서버 URL은 계약 0d의 정확한 FAILED/INSTALLER_FAILED/REPORT_UNAVAILABLE fallback을 유지하며 더 구체적인 reason code는 컷 뒤 P3이다.
 
 - 2026-10-06 sub-353: 코드 배치 실패 복구의 StrictMode 미초기화 phase stack과 지원 재개의 replacement 플래그 누락을 교정한다. 실제 생성 launcher·transport 거절·진단 없는 native 종료는 원인 코드와 보호 기록을 남긴다. RED/GREEN·정확142·관련538·새 stock·VM-02의 실제 판정과 한계는 sub-353 REPORT에 기록하며 독립 검토와 회차 A-포장은 1차가 맡는다.
+
+- sub-353 stock 검사: delegated trap 5줄 추가로 이동한 기존 startup task 호출 두 곳의 고정 위치만 820/952로 갱신한다. 기존 함수·명령·mutation/delegation 허용 계약은 그대로 검사하며 최초 거절 stock과 검사 실패를 보존한다.

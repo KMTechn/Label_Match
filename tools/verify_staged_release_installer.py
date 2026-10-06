@@ -449,8 +449,8 @@ ConvertTo-Json -InputObject @{registrations=$rows;calls=$calls;bindings=$binding
             timeout=TIMEOUT_SECONDS, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         allowed = {
-            ("Restore-LabelStartupUpdatePreimage", 815): "Register-ScheduledTask -TaskName $name -Xml ([string]$saved.task.xml) -Force",
-            ("Initialize-LabelStartupUpdate", 947): "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
+            ("Restore-LabelStartupUpdatePreimage", 820): "Register-ScheduledTask -TaskName $name -Xml ([string]$saved.task.xml) -Force",
+            ("Initialize-LabelStartupUpdate", 952): "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
         }
         try:
             parsed_source = json.loads(parsed.stdout)
