@@ -162,3 +162,39 @@ try {
 } catch {if($_.Exception.Message -cne 'REPORT_UNAVAILABLE'){throw};'PASS'}
 ''', engine=engine)
     assert result.returncode == 0 and result.stdout.strip() == "PASS"
+
+
+@pytest.mark.parametrize("sink", ["text", "evidence", "nested"])
+def test_python_refuses_collision_after_text_serialization(tmp_path, monkeypatch, sink):
+    environment = {"SYNTHETIC_API_TOKEN": "synthetic-357"}
+    text = '{"synthetic-357":"one","[REDACTED:SYNTHETIC_API_TOKEN]":"two"}'
+    if sink == "nested":
+        text = json.dumps({"cause": "first cause", "message": text})
+    if sink == "evidence":
+        monkeypatch.setattr(redaction.os, "environ", environment)
+        monkeypatch.setattr(redaction.tempfile, "tempdir", str(tmp_path))
+        result = redaction.try_write_failure_evidence(text)
+        assert result["report_status"] == "REPORT_UNAVAILABLE"
+        assert "path" not in result and not list(tmp_path.glob("*/trace.txt"))
+    else:
+        with pytest.raises(ValueError, match="REPORT_UNAVAILABLE"):
+            redaction.redact_for_sink(text, environment)
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("sink", ["text", "canonical", "sidecar"])
+def test_powershell_refuses_collision_after_text_serialization(tmp_path, engine, sink):
+    result = run_functions(tmp_path, ROOT / "INSTALL_CANONICAL_PORTABLE.ps1", ["Protect-LabelFailureText"], r'''
+$script:syntheticValues=@{SYNTHETIC_API_TOKEN='synthetic-357'}
+function Get-KmtechSinkEnvironment {return $script:syntheticValues}
+$text='{"synthetic-357":"one","[REDACTED:SYNTHETIC_API_TOKEN]":"two"}'
+try {
+ switch($env:LM_ESCAPE_SINK){
+  'text' {ConvertTo-KmtechRedactedSinkText $text $script:syntheticValues | Out-Null}
+  'canonical' {Protect-LabelFailureText $text | Out-Null}
+  'sidecar' {Write-KmtechProtectedFailureSidecar -Text $text | Out-Null}
+ }
+ throw 'Collision was accepted'
+} catch {if($_.Exception.Message -cne 'REPORT_UNAVAILABLE'){throw};'PASS'}
+''', engine=engine, values={"LM_ESCAPE_SINK": sink})
+    assert result.returncode == 0 and result.stdout.strip() == "PASS"

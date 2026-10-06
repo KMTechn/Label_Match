@@ -243,6 +243,19 @@ def _replace_known_json_spellings(text, replacements, depth=0):
             if form in normalized:
                 normalized = normalized.replace(form, replacement)
                 masked = True
+    if masked and normalized.lstrip().startswith(('{', '[')):
+        def refuse_duplicate_keys(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError('REPORT_UNAVAILABLE')
+                result[key] = value
+            return result
+        try:
+            json.loads(normalized, object_pairs_hook=refuse_duplicate_keys)
+        except ValueError as error:
+            if str(error) == 'REPORT_UNAVAILABLE':
+                raise
     return normalized, masked
 
 

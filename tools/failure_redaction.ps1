@@ -53,6 +53,29 @@ function ConvertTo-KmtechRedactedSinkText {
                 }
             }
         }
+        if($state.masked -and ($normalized.TrimStart().StartsWith('{') -or $normalized.TrimStart().StartsWith('['))){
+            $validJson=$false
+            try{$null=ConvertFrom-Json -InputObject $normalized -ErrorAction Stop;$validJson=$true}catch{}
+            if($validJson){
+                $stack=[Collections.Generic.Stack[object]]::new()
+                $separator=[regex]::new('\G\s*:')
+                foreach($token in [regex]::Matches($normalized,'"(?:\\.|[^"\\])*"|[{}\[\]]')){
+                    switch($token.Value){
+                        '{' {$stack.Push([Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal));break}
+                        '[' {$stack.Push($null);break}
+                        '}' {$null=$stack.Pop();break}
+                        ']' {$null=$stack.Pop();break}
+                        default {
+                            if($stack.Count -and $null -ne $stack.Peek() -and
+                                $separator.IsMatch($normalized,$token.Index+$token.Length)){
+                                $key=ConvertFrom-Json -InputObject $token.Value -ErrorAction Stop
+                                if(-not $stack.Peek().Add([string]$key)){throw 'REPORT_UNAVAILABLE'}
+                            }
+                        }
+                    }
+                }
+            }
+        }
         return [pscustomobject]@{text=$normalized;masked=$state.masked}
     }
     $hasKnown=@($entries|Where-Object {([string]$Environment[$_]).Length -ge 4}).Count -gt 0
