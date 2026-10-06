@@ -1,5 +1,11 @@
 # Label_Match 운영·복구·검증
 
+실패 복구의 legacy task/startup preimage 자식은 살아 있는 동일 부모 session authority와 session·attempt·transaction·token·source를 확인한 뒤 기존 delegation을 다시 발급한다. 긴 코드 제거/검사 뒤 만료된 자식 grant를 그대로 재사용하지 않으며, 다른 소유자와 일반 writer는 계속 거절한다. 자식 실패 참조는 원 rollback audit에 보존한다. `tests/test_round5_startup_rollback.py`는 StrictMode PS5.1/PS7의 실제 복구 호출과 native parent/child mutex를 검사하며, 실제 옛 앱 폴더·자동 시작 복원은 랩 수용과 구분한다.
+
+fixed update helper의 Verify는 TLS/등록보다 먼저 ACL·bootstrap integrity·manifest/pin·version을 확인한다. 9adc801 stock의 격리 VM 보호 배치에서 ACL·integrity는 통과했으나 standalone helper가 내보내지 않은 경로·hash·reparse 함수 5종을 호출해 PS5.1/PS7 Verify가 실패했다. 검증된 bootstrap export와 helper 자체의 경로/reparse 함수로 이 의존을 닫는다. early ACL 거절도 의존 코드를 불러오기 전에 typed 검사값·소유자/상속/ACE·보호 보고서 SHA를 남긴다. 이후 검사는 기존 가림을 적용한 보호 진단을 사용하며, Python 부모와 onboarding CLI가 원 child 참조를 보존하고 고정 공개 오류 레코드를 반환한다. Verify 실패를 TLS 실패로 재분류하지 않는다. 원 회차 5의 내부 예외는 미회수이므로 원 실행과 재현을 [sub-368 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-368/REPORT.md)에서 구분한다.
+
+Verify 회귀는 installer 함수가 없는 새 native PowerShell 자식에서 dependency module만 불러오고 전체 helper 진입점을 실행한다. 호스트 격리 시험의 ACL·설치 receipt·서명 수용은 대역이며, 경로 결속·manifest 및 파일 SHA 검사·실패 값/참조 보존은 실제 함수로 검사한다. 기존 선택 함수 추출/OS 대역 시험이 전체 Verify 진입점을 실행하지 않았던 빈틈을 닫는다. 자식별 정적 호출 목록과 새 PS5.1/PS7 프로세스의 export 해석도 보고서에 남긴다; 모든 변경성 설치 출구의 랩 수용과 구분한다.
+
 stock은 `core.autocrlf=false` 작업 트리 또는 `git archive`의 commit 바이트로 빌드하고, canonical 바이트를 Git 객체와 정규화 없이 대조한다.
 
 현장 옛 앱이 모두 회수되고 되돌림 기간이 끝날 때까지 `KMTechn/Container_Audit`·`KMTechn/Label_Match`의 공개 릴리스·태그·latest를 동결한다. 새 판은 회사 서버 private feed·설치 패키지로만 전달한다.

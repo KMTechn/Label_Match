@@ -883,6 +883,13 @@ def fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> 
     if completed.returncode:
         error = RuntimeError("fixed update helper failed: " + mode + "; " + safe_update_text(completed.stderr))
         error.child_output = child_failure_output(completed)
+        from failure_redaction import try_write_failure_evidence
+        error.cause_code = "INSTALLER_FAILED"
+        reference = try_write_failure_evidence(json.dumps({
+            "stage": "FIXED_UPDATE_HELPER", "mode": mode, "child_output": error.child_output,
+        }, ensure_ascii=False))
+        error._failure_report_ref = ({key: reference[key] for key in ("path", "sha256")}
+                                     if "path" in reference and "sha256" in reference else None)
         raise error
     return completed.stdout.strip()
 

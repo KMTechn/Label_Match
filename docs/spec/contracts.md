@@ -1,5 +1,9 @@
 # Label_Match 데이터·통합 계약
 
+실패 복구의 protected preimage 자식 grant 갱신은 동일한 live 부모 authority와 session·attempt·transaction·token·source 결속을 요구한다. grant만 만료된 경우의 갱신은 새 소유자·새 source·일반 writer를 허용하지 않으며 generation REFUSE/UNKNOWN 및 원 backup 보존을 유지한다. fixed helper Verify는 TLS/등록 이전의 코드 신뢰 검사이고, 그 실패의 공개 레코드와 보호 child 진단 참조는 onboarding까지 유지한다.
+
+fixed helper는 installer 부모의 비공개 함수를 전제하지 않는다. 검증한 bootstrap/portable export와 자기 경로/reparse 함수만 사용하며, dependency module만 있는 새 자식의 전체 Verify 회귀로 이 계약을 검사한다. ACL·integrity·manifest/pin·version의 실패 검사값과 native trace는 보호 진단에만 남기고 공개 출력은 고정 사유·report 경로/SHA를 유지한다.
+
 옛 공식 relay task의 launcher admission은 첫 상태 변경보다 앞선다. task 0이면 launcher 0을 허용하고, task가 있으면 기존 identity 및 action VBS와 동명 wrapper의 존재·ordinary/no-reparse·공식 실행 template 일관성을 요구한다. 불일치는 기존 거절 안내를 사용한다.
 
 relay install pack의 `--program-data-root`는 절대 경로 인수다. 상대 경로는 정규화·보호 판독·generation 기록 전 exit 2로 거절하고 상태/report를 쓰지 않는다.

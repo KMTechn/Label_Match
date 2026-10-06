@@ -1535,6 +1535,11 @@ def onboarding_main(argv: list[str] | None = None) -> int:
         print(f"onboarding_report={exc.report_path}")
         _emit_installer_failure(exc, "CURRENT_USER_ONBOARDING")
         return ONBOARDING_EXIT_CODE
+    except (RuntimeError, ValueError, OSError) as exc:
+        # Lifecycle Verify precedes current-user path/TLS preparation. Preserve
+        # its child reference without claiming enrollment or exposing a traceback.
+        _emit_installer_failure(exc, "CURRENT_USER_ONBOARDING")
+        return ONBOARDING_EXIT_CODE
     print(f"onboarding_status={report['status']}")
     print(f"onboarding_action={report['action']}")
     print(
