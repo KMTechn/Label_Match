@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import os
@@ -37,6 +38,36 @@ FORBIDDEN_ACTIVE_AUTHORITY_MEMBERS = {
     "tools/direct_sync_relay_runner/direct_sync_relay_runner.exe",
     "tools/register_label_match_worker_pc.exe",
     "tools/invoke_embedded_python.ps1",
+}
+
+
+# Existing indirect calls and their variable bindings, keyed independently of lines.
+BOOTSTRAP_INDIRECT_SOURCE = {
+    'calls': {
+        ('installer', '', '. $BootstrapIntegrityFunctions -SharedCodeRoot $PSScriptRoot'): 1,
+        ('installer', '', ". (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')"): 1,
+        ('installer', '', ". (Join-Path $PSScriptRoot 'tools/failure_redaction.ps1')"): 1,
+        ('installer', 'Set-HardenedCodeAcl', '& $icacls @ownerArgs'): 1,
+        ('installer', 'Set-HardenedCodeAcl', '& $icacls @resetArgs'): 1,
+        ('installer', 'Set-HardenedCodeAcl', "& $icacls $Path `\n            '/inheritance:r' `\n            '/grant:r' `\n            '*S-1-5-18:(OI)(CI)F' `\n            '*S-1-5-32-544:(OI)(CI)F' `\n            '*S-1-5-32-545:(OI)(CI)RX' `\n            '/L'"): 1,
+        ('installer', 'Protect-LabelInstallerOwnerFile', "& (Join-Path ([Environment]::SystemDirectory) 'icacls.exe') $Path '/setowner' '*S-1-5-32-544' '/L'"): 1,
+        ('installer', 'Get-LabelStartupUpdateTaskSpec', '& $runtime -I -B $implementation --print-logon-task --install-root $Root --operator-sid $Sid'): 1,
+        ('installer', 'Invoke-LabelStartupUpdateTaskMutation', '& $Action'): 1,
+        ('installer', '', "& (Join-Path $sourceRootFull 'runtime\\python.exe') -I -B `\n        (Join-Path $sourceRootFull 'app\\main.py') --label-match-lifecycle-context `\n        --install-root $applicationParent --operation install"): 1,
+        ('installer', '', '& $robocopy $sourceRootFull $stagingRoot /E /XJ /MT:16 /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $sourceRootFull $IntegrityFileName)'): 1,
+        ('installer', '', "& (Join-Path $sourceRootFull 'runtime\\python.exe') -I -B `\n            (Join-Path $sourceRootFull 'app\\main.py') --label-match-lifecycle-context `\n            --install-root $applicationParent --expected-from-commit $ExpectedActiveCommit `\n            --activate-supported-commit $nextCommit"): 1,
+        ('helper', 'Write-BootstrapUtf8Json', ". (Join-Path $PSScriptRoot 'failure_redaction.ps1')"): 1,
+        ('helper', '', '. (Get-LabelSharedPortableLeafPath $SharedCodeRoot)'): 1,
+    },
+    'bindings': {
+        ('installer', '', "$BootstrapIntegrityFunctions = ''"): 1,
+        ('installer', '', '$BootstrapIntegrityFunctions = Join-Path $PSScriptRoot "tools\\bootstrap_integrity.ps1"'): 1,
+        ('installer', 'Set-HardenedCodeAcl', "$icacls = Join-Path ([Environment]::SystemDirectory) 'icacls.exe'"): 1,
+        ('installer', 'Get-LabelStartupUpdateTaskSpec', "$runtime = Join-Path $Root 'runtime\\python.exe'"): 1,
+        ('installer', 'Get-LabelStartupUpdateTaskSpec', "$implementation = Join-Path $Root 'app\\auto_update.py'"): 1,
+        ('installer', 'Get-LabelOfficialLegacyTaskFingerprint', '$action = $actions[0]'): 1,
+        ('installer', '', "$robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'"): 1,
+    },
 }
 
 
@@ -191,18 +222,48 @@ $ast=[Management.Automation.Language.Parser]::ParseFile($env:KMTECH_STAGED_INSTA
 if($errors.Count){exit 1}
 $helper=[Management.Automation.Language.Parser]::ParseFile($env:KMTECH_STAGED_INTEGRITY_SOURCE,[ref]$tokens,[ref]$errors)
 if($errors.Count){exit 1}
-# Definition strings and comments carry no task-creation authority. A command
-# anywhere in the helper, including a function body, remains forbidden.
-if(@($helper.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ieq 'Register-ScheduledTask'},$true)).Count){exit 1}
-$rows=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ieq 'Register-ScheduledTask'},$true)|ForEach-Object {
- $owner='';$mutation=$false
- for($parent=$_.Parent;$null -ne $parent;$parent=$parent.Parent){
-  if($parent -is [Management.Automation.Language.CommandAst] -and $parent.GetCommandName() -ceq 'Invoke-LabelStartupUpdateTaskMutation'){$mutation=$true}
-  if($parent -is [Management.Automation.Language.FunctionDefinitionAst]){$owner=$parent.Name;break}
+# Inspect commands, not definition strings or comments. Normalize module/path
+# qualification before classifying task registration and execution aliases.
+$calls=@();$bindings=@();$rows=@();$delegations=@()
+foreach($entry in @(@('installer',$ast),@('helper',$helper))){
+ $location=$entry[0];$tree=$entry[1]
+ foreach($node in $tree.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true)){
+  $owner='';$mutation=$false
+  for($parent=$node.Parent;$null -ne $parent;$parent=$parent.Parent){
+   if($parent -is [Management.Automation.Language.CommandAst] -and $parent.GetCommandName() -ceq 'Invoke-LabelStartupUpdateTaskMutation'){$mutation=$true}
+   if($parent -is [Management.Automation.Language.FunctionDefinitionAst]){$owner=$parent.Name;break}
+  }
+  $row=[pscustomobject]@{location=$location;owner=$owner;command=$node.Extent.Text.Replace("`r`n","`n")}
+  $name=$node.GetCommandName()
+  if([string]::IsNullOrEmpty($name)){$calls+=$row;continue}
+  $name=($name -split '[\\/]')[-1]
+  if($name -iin @('Set-Alias','New-Alias','sal','nal','Invoke-Expression','iex',
+                  'powershell','powershell.exe','pwsh','pwsh.exe',
+                  'Set-Variable','New-Variable','sv','set','nv')){exit 1}
+  if($name -ieq 'Register-ScheduledTask'){
+   if($location -eq 'helper'){exit 1}
+   $rows+=[pscustomobject]@{owner=$owner;line=$node.Extent.StartLineNumber;mutation=$mutation;command=$row.command}
+  }
+  if($name -ieq 'Invoke-LabelStartupUpdateTaskMutation'){
+   if($location -ne 'installer' -or $node.CommandElements.Count -ne 2 -or
+      $node.CommandElements[1] -isnot [Management.Automation.Language.ScriptBlockExpressionAst]){exit 1}
+   $delegations+=$owner
+  }
  }
- [pscustomobject]@{owner=$owner;line=$_.Extent.StartLineNumber;mutation=$mutation;command=$_.Extent.Text}
-})
-ConvertTo-Json -InputObject $rows -Compress
+ foreach($node in $tree.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst]},$true)){
+  $variables=@($node.Left.FindAll({param($n) $n -is [Management.Automation.Language.VariableExpressionAst]},$true))
+  if(-not @($variables | Where-Object {($_.VariablePath.UserPath -split ':')[-1] -iin @('BootstrapIntegrityFunctions','icacls','runtime','implementation','robocopy','Action')}).Count){continue}
+  $owner=''
+  for($parent=$node.Parent;$null -ne $parent;$parent=$parent.Parent){
+   if($parent -is [Management.Automation.Language.FunctionDefinitionAst]){$owner=$parent.Name;break}
+  }
+  $bindings+=[pscustomobject]@{location=$location;owner=$owner;command=$node.Extent.Text.Replace("`r`n","`n")}
+ }
+}
+$mutationFunctions=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Invoke-LabelStartupUpdateTaskMutation'},$true))
+if($mutationFunctions.Count -ne 1 -or $mutationFunctions[0].Parameters.Count -ne 1 -or
+   $mutationFunctions[0].Parameters[0].Extent.Text -cne '[scriptblock]$Action'){exit 1}
+ConvertTo-Json -InputObject @{registrations=$rows;calls=$calls;bindings=$bindings;delegations=$delegations} -Depth 5 -Compress
 """],
             env=environment, capture_output=True, text=True,
             timeout=TIMEOUT_SECONDS, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -212,8 +273,19 @@ ConvertTo-Json -InputObject $rows -Compress
             ("Initialize-LabelStartupUpdate", 947): "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
         }
         try:
-            registrations = json.loads(parsed.stdout)
+            parsed_source = json.loads(parsed.stdout)
+            registrations = parsed_source["registrations"]
+            indirect_valid = all(
+                Counter((row["location"], row["owner"], row["command"])
+                        for row in parsed_source[group]) == expected
+                for group, expected in BOOTSTRAP_INDIRECT_SOURCE.items()
+            )
             valid = (parsed.returncode == 0 and not parsed.stderr
+                     and indirect_valid
+                     and Counter(parsed_source["delegations"]) == {
+                         "Restore-LabelStartupUpdatePreimage": 1,
+                         "Initialize-LabelStartupUpdate": 1,
+                     }
                      and len(parsed.stdout.encode()) <= OUTPUT_BOUND_BYTES
                      and isinstance(registrations, list)
                      and len(registrations) == len(allowed)

@@ -83,6 +83,107 @@ def test_verifier_refuses_inline_task_command_in_integrity_helper(tmp_path):
     assert caught.value.legacy_authority_contract['task_creation_tokens_absent'] is False
 
 
+@pytest.mark.parametrize("location", ("helper", "installer"))
+@pytest.mark.parametrize("case,command", (
+    ("definition_only", "# Register-ScheduledTask is a prohibited operation\n"),
+    ("direct", "Register-ScheduledTask -TaskName ReviewOnly -Xml $xml\n"),
+    ("quoted_call", "& 'Register-ScheduledTask' -TaskName ReviewOnly -Xml $xml\n"),
+    ("module_qualified", "ScheduledTasks\\Register-ScheduledTask -TaskName ReviewOnly -Xml $xml\n"),
+    ("variable_call", "$reviewCommand = 'Register-ScheduledTask'; & $reviewCommand -TaskName ReviewOnly -Xml $xml\n"),
+    ("expression_call", "& ('Register-' + 'ScheduledTask') -TaskName ReviewOnly -Xml $xml\n"),
+    ("nested_direct", "function ReviewOnly { Register-ScheduledTask -TaskName ReviewOnly -Xml $xml }\n"),
+    ("module_qualified_quoted", "& 'ScheduledTasks\\Register-ScheduledTask' -TaskName ReviewOnly -Xml $xml\n"),
+    ("alias", "Set-Alias -Name ReviewRegistration -Value Register-ScheduledTask; ReviewRegistration -TaskName ReviewOnly -Xml $xml\n"),
+    ("direct_splat", '$reviewParameters=@{TaskName="ReviewOnly";Xml=$xml}; Register-ScheduledTask @reviewParameters\n'),
+    ("module_splat", '$reviewParameters=@{TaskName="ReviewOnly";Xml=$xml}; ScheduledTasks\\Register-ScheduledTask @reviewParameters\n'),
+    ("escaped_direct", "Register-Schedu`ledTask -TaskName ReviewOnly -Xml $xml\n"),
+    ("child_command_literal", 'powershell.exe -NoProfile -Command "Register-ScheduledTask -TaskName ReviewOnly -Xml $xml"\n'),
+    ("invoke_expression", 'Invoke-Expression "Register-ScheduledTask -TaskName ReviewOnly -Xml $xml"\n'),
+))
+def test_bootstrap_source_task_command_variants(tmp_path, location, case, command):
+    # Parse source only: none of these task-creation commands is executed.
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    helper = package / "tools/bootstrap_integrity.ps1"
+    target = helper if location == "helper" else installer
+    with target.open("a", encoding="utf-8") as stream:
+        stream.write("\n" + command)
+    if case == "definition_only":
+        verifier._assert_bootstrap_source(installer, helper)
+    else:
+        with pytest.raises(verifier.StagedInstallerVerificationError,
+                           match="retired enrollment/task authority") as caught:
+            verifier._assert_bootstrap_source(installer, helper)
+        assert caught.value.legacy_authority_contract["task_creation_tokens_absent"] is False
+
+
+@pytest.mark.parametrize("location", ("helper", "installer"))
+def test_bootstrap_source_allows_task_name_definition_strings(tmp_path, location):
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    helper = package / "tools/bootstrap_integrity.ps1"
+    target = helper if location == "helper" else installer
+    with target.open("a", encoding="utf-8") as stream:
+        stream.write("\n$documentation = 'Register-ScheduledTask'; $example = 'Invoke-Expression'\n")
+    verifier._assert_bootstrap_source(installer, helper)
+
+
+@pytest.mark.parametrize("command", (
+    "$reviewCommand = 'Register-ScheduledTask'; . $reviewCommand -TaskName ReviewOnly",
+    "New-Alias ReviewRegistration Register-ScheduledTask; ReviewRegistration -TaskName ReviewOnly",
+    "sal ReviewRegistration Register-ScheduledTask; ReviewRegistration -TaskName ReviewOnly",
+    "iex 'Register-ScheduledTask -TaskName ReviewOnly'",
+    "Microsoft.PowerShell.Utility\\Invoke-Expression 'Register-ScheduledTask -TaskName ReviewOnly'",
+    "pwsh -NoProfile -Command 'Register-ScheduledTask -TaskName ReviewOnly'",
+    "& 'ScheduledTasks\\REGISTER-SCHEDULEDTASK' -TaskName ReviewOnly",
+    "& { Register-ScheduledTask -TaskName ReviewOnly }",
+))
+def test_bootstrap_source_refuses_execution_alias_family(tmp_path, command):
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    helper = package / "tools/bootstrap_integrity.ps1"
+    with helper.open("a", encoding="utf-8") as stream:
+        stream.write("\n" + command + "\n")
+    with pytest.raises(verifier.StagedInstallerVerificationError,
+                       match="retired enrollment/task authority") as caught:
+        verifier._assert_bootstrap_source(installer, helper)
+    assert caught.value.legacy_authority_contract["task_creation_tokens_absent"] is False
+
+
+@pytest.mark.parametrize("before,after", (
+    ("$BootstrapIntegrityFunctions = Join-Path $PSScriptRoot \"tools\\bootstrap_integrity.ps1\"",
+     "$BootstrapIntegrityFunctions = 'Register-ScheduledTask'"),
+    ("$icacls = Join-Path ([Environment]::SystemDirectory) 'icacls.exe'",
+     "$icacls = 'Register-ScheduledTask'"),
+    ("$runtime = Join-Path $Root 'runtime\\python.exe'",
+     "$runtime = 'powershell.exe'"),
+    ("$implementation = Join-Path $Root 'app\\auto_update.py'",
+     "$implementation = '-Command Register-ScheduledTask'"),
+    ("$robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'",
+     "$robocopy = 'Register-ScheduledTask'"),
+    ("try { & $Action }", "try { $local:Action = { Register-ScheduledTask }; & $Action }"),
+    ("& $icacls @ownerArgs", "$local:icacls = 'Register-ScheduledTask'; & $icacls @ownerArgs"),
+    ("& $icacls @ownerArgs", "& $icacls @ownerArgs; & $icacls @ownerArgs"),
+    ("([scriptblock]$Action)", "([string]$Action)"),
+    ("Invoke-LabelStartupUpdateTaskMutation {", "Invoke-LabelStartupUpdateTaskMutation $unresolved; & {"),
+))
+def test_bootstrap_source_binds_existing_indirect_targets(tmp_path, before, after):
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    helper = package / "tools/bootstrap_integrity.ps1"
+    source = installer.read_text(encoding="utf-8")
+    assert source.count(before) >= 1
+    # Preserve line numbers, so the existing two-registration guard cannot
+    # account for rejection of an indirect binding/count/delegation change.
+    changed = source.replace(before, after, 1)
+    assert changed.count("\n") == source.count("\n")
+    installer.write_text(changed, encoding="utf-8")
+    with pytest.raises(verifier.StagedInstallerVerificationError,
+                       match="retired enrollment/task authority") as caught:
+        verifier._assert_bootstrap_source(installer, helper)
+    assert caught.value.legacy_authority_contract["task_creation_tokens_absent"] is False
+
+
 def _archive_consumer():
     path = MODULE_PATH.with_name("build_release_archive.py")
     spec = importlib.util.spec_from_file_location("staged_archive_consumer_for_tests", path)
