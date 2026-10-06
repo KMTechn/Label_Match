@@ -135,7 +135,7 @@ def test_nested_credential_owner_uses_the_same_source_inventory(packet, tmp_path
 def test_canonical_preparation_result_and_failure_audit(tmp_path, engine, refuse):
     from tests.test_shared_ancestor_protection import run_functions
     result = run_functions(tmp_path, ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1',
-        ['Invoke-LabelSourceDataAdmission', 'Save', 'Full'], r'''
+        ['Invoke-LabelSourceDataAdmission', 'Write-LabelPreparationFailure', 'Save', 'Full'], r'''
 . $env:LM_ADMISSION_SHARED
 function Get-LabelLaunchFailure { param($Failure,$Phase)
  if($Failure.Exception.Message -cne 'ISOLATED_SOURCE_REFUSED'){throw 'First cause changed.'}

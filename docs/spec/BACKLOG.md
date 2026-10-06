@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+canonical의 embedded probe 3개는 CRLF→LF/UTF-8 바이트 SHA를 PowerShell AST로 다시 계산하는 회귀로 고정 pin을 확인한다. source admission 뒤 전이·healthy lifecycle·preimage 준비 실패도 기존 FAILED/FAILED_PREPARATION_ADMISSION audit와 install_status=FAILED를 남긴다. 기존 FAILED_PRETRANSACTION archive는 보존하고 같은 공개 상태를 반환한다. 실제 설치·등록·복구 수용은 랩 별도이며 [sub-348 근거](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-348/REPORT.md)를 따른다.
+
 staged bootstrap source 검사의 문자열→코드 생성/실행 빈틈은 정상 stock의 정적 명령·메서드·생성자만 허용하는 기본 거절로 교정한다. 기존 비리터럴 호출 14개·대입 7개는 유지하며 두 고정 Win32 Add-Type 선언만 정확 owner·본문·개수 예외로 추가한다(허용 호출 16개). sub-337의 유효 RED 39셀과 sub-332의 28셀, 정상 설명/stock 및 선언 변조 회귀를 AST 판독만으로 확인한다. 실제 설치·예약 작업 생성·GUI·VM 수용은 이 source 검증 범위가 아니며 실행 결과·남은 독립 검토는 [sub-338 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-338/REPORT.md)를 따른다.
 
 새 설치 source admission은 설치 후 생성되는 bootstrap-integrity.json 대신 canonical이 검증한 기존 전체 source inventory와 manifest/정적 version 바이트를 결속한다. 중첩 credential owner G, 설치된 앱 bootstrap 및 ES256 호환 검사를 유지하고 사전 거절은 status=FAILED·preparation_status=FAILED_PREPARATION_ADMISSION·rollback.status=NOT_REQUIRED audit와 install_status=FAILED로 반환한다. 승인 ZIP의 bootstrap 없는 원본 RED 및 같은 바이트 admission GREEN, 변조/잘못된 metadata·중첩 G 거절과 PS5/PS7 실패 결과는 headless 검증 범위이며 실제 VM 설치/등록/복구는 NOT TESTED다. 정확 회귀·새 stock 및 최종 SHA는 [sub-339 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-339/REPORT.md)를 따른다.

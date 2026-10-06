@@ -1427,7 +1427,7 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
     # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
     $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
     $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
-        -ProbeBytes $probeBytes -ExpectedSha256 '7e7724ccebf7c44b7d0a35fc0ab9aa591dbb2f02e2ab9d5da89a96e001e49abd' `
+        -ProbeBytes $probeBytes -ExpectedSha256 '5950ba59185c7ffd09d204c5e078d0427b86cbd3084fc1114b8cac10954c405e' `
         -ProbeArguments @($Source, $Installed, $generationReverse) -FailureMessage 'Installed writer transition is unsupported: '
     return $stdout | ConvertFrom-Json
 }
@@ -2634,6 +2634,26 @@ function Product([string]$Root, [string]$Mode, [string[]]$ExtraArguments = @(), 
 }
 
 
+function Write-LabelPreparationFailure($Failure, [string]$Source,
+    $Inventory, [string]$AuditRoot, [string]$ExternalEvidencePath) {
+    $failureId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ') + '-' + [Guid]::NewGuid().ToString('N')
+    $failurePath = Join-Path $AuditRoot ('canonical-portable-' + $failureId + '.json')
+    $failureAudit = [ordered]@{
+        schema='label-match-canonical-portable-install-v1'
+        status='FAILED'; preparation_status='FAILED_PREPARATION_ADMISSION'; run_id=$failureId
+        code_placement='NOT_STARTED'; source_root=$Source
+        source_inventory_sha256=[string]$Inventory.sha256
+        preparation_failure=(Get-LabelLaunchFailure $Failure 'preparation')
+        rollback=[ordered]@{status='NOT_REQUIRED';available=$false;applied=$false;runtime_restored=$false}
+    }
+    try {
+        Save $failurePath $failureAudit
+        if ($ExternalEvidencePath) { Save (Full $ExternalEvidencePath 'EvidencePath') $failureAudit }
+    } catch { }
+    'install_status=FAILED'
+    if (Test-Path -LiteralPath $failurePath -PathType Leaf) { "audit_path=$failurePath" }
+}
+
 function Invoke-LabelSourceDataAdmission([string]$ProductRoot, [string]$Source,
     $Inventory, [string]$AuditRoot, [string]$ExternalEvidencePath,
     [string[]]$OnboardingArgs = @()) {
@@ -2644,22 +2664,7 @@ function Invoke-LabelSourceDataAdmission([string]$ProductRoot, [string]$Source,
     }
     catch {
         $admissionFailure = $_
-        $failureId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ') + '-' + [Guid]::NewGuid().ToString('N')
-        $failurePath = Join-Path $AuditRoot ('canonical-portable-' + $failureId + '.json')
-        $failureAudit = [ordered]@{
-            schema='label-match-canonical-portable-install-v1'
-            status='FAILED'; preparation_status='FAILED_PREPARATION_ADMISSION'; run_id=$failureId
-            code_placement='NOT_STARTED'; source_root=$Source
-            source_inventory_sha256=[string]$Inventory.sha256
-            preparation_failure=(Get-LabelLaunchFailure $admissionFailure 'preparation')
-            rollback=[ordered]@{status='NOT_REQUIRED';available=$false;applied=$false;runtime_restored=$false}
-        }
-        try {
-            Save $failurePath $failureAudit
-            if ($ExternalEvidencePath) { Save (Full $ExternalEvidencePath 'EvidencePath') $failureAudit }
-        } catch { }
-        'install_status=FAILED'
-        if (Test-Path -LiteralPath $failurePath -PathType Leaf) { "audit_path=$failurePath" }
+        Write-LabelPreparationFailure $admissionFailure $Source $Inventory $AuditRoot $ExternalEvidencePath
         throw $admissionFailure
     }
 }
@@ -4198,6 +4203,11 @@ if (-not (Same $generationProductRoot $source)) {
 if ($null -eq $receiptSource) { $receiptSource = PortableInventory $source }
 Invoke-LabelSourceDataAdmission $generationProductRoot $source $receiptSource `
     (Join-Path $lad 'KMTech\Label_Match\install-audit') $EvidencePath $onboardingArguments
+# Preparation must publish a known failure even before a preimage audit exists.
+$audit = $null
+$archiveRoot = ''
+$retainedAuditPath = ''
+try {
 $old = @(Relays)
 $scheduledTasksAtPreflight = @(
     Get-LabelCurrentUserScheduledTasks | Where-Object {
@@ -4614,6 +4624,28 @@ catch {
 $mutated = $false
 $replacementRollbackRoot = if ($null -ne $firstRegistrationResume) { [string]$firstRegistrationResume.code_backup_root } else { '' }
 $replacementBackupsBefore = @()
+}
+catch {
+    $preparationFailure = $_
+    if ($null -ne $audit -and [string]$audit.status -ceq 'FAILED_PRETRANSACTION') {
+        # The existing archive/recovery audit remains authoritative.
+        'install_status=FAILED_PRETRANSACTION'
+        $failureAuditPaths = @($retainedAuditPath)
+        if ($archiveRoot) { $failureAuditPaths += Join-Path $archiveRoot (Split-Path -Leaf $auditPath) }
+        $failureAuditPaths += $auditPath
+        foreach ($failureAuditPath in $failureAuditPaths) {
+            if ($failureAuditPath -and (Test-Path -LiteralPath $failureAuditPath -PathType Leaf)) {
+                "audit_path=$failureAuditPath"
+                break
+            }
+        }
+    }
+    else {
+        Write-LabelPreparationFailure $preparationFailure $source $receiptSource `
+            (Join-Path $lad 'KMTech\Label_Match\install-audit') $EvidencePath
+    }
+    throw $preparationFailure
+}
 try {
     $writerAuthority = Enter-LabelWriterSessionAuthority `
         -SessionId $writerSessionId `
