@@ -1,4 +1,6 @@
 """Exercise the two-folder operation with memory admission and native inheritance."""
+import ast
+import json
 import os
 from pathlib import Path
 import uuid
@@ -7,6 +9,8 @@ import pytest
 
 import shutil
 import subprocess
+
+from tools import build_portable_release_candidate as portable_builder
 
 def run_functions(tmp_path, source, names, script, *, values=None, engine='powershell.exe'):
     executable = shutil.which(engine)
@@ -52,6 +56,91 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_shipped_installers_keep_utf8_bom_for_windows_powershell_korean_errors():
     for relative in ('INSTALL_THIS_PC.ps1', 'INSTALL_CANONICAL_PORTABLE.ps1', 'tools/bootstrap_integrity.ps1'):
         assert (ROOT / relative).read_bytes().startswith(b'\xef\xbb\xbf'), relative
+
+
+def _stock_powershell_members():
+    """Use the stock builder's script paths and copied directory members."""
+    source = ast.parse(Path(portable_builder.__file__).read_text(encoding='utf-8'))
+    suffixes = {'.ps1', '.psm1', '.psd1'}
+    relative_paths = {
+        node.value for node in ast.walk(source)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and Path(node.value).suffix.lower() in suffixes
+    }
+    members = {ROOT / relative for relative in relative_paths}
+    for relative in (*portable_builder.APP_PACKAGE_DIRS, *portable_builder.APP_DATA_DIRS):
+        directory = ROOT / relative
+        assert directory.is_dir(), relative
+        members.update(path for path in directory.rglob('*')
+                       if path.is_file() and path.suffix.lower() in suffixes
+                       and '__pycache__' not in path.relative_to(directory).parts)
+    assert members and all(path.is_file() for path in members), 'stock script member missing'
+    return sorted(members)
+
+
+def test_stock_powershell_nonascii_members_have_utf8_bom():
+    missing = []
+    for path in _stock_powershell_members():
+        raw = path.read_bytes()
+        if any(byte >= 128 for byte in raw) and not raw.startswith(b'\xef\xbb\xbf'):
+            missing.append(path.relative_to(ROOT).as_posix())
+    assert not missing, {'nonascii_without_utf8_bom': missing}
+
+
+def test_stock_powershell_cp949_parser_preserves_korean_literals(tmp_path):
+    executable = shutil.which('powershell.exe')
+    assert executable, 'Windows PowerShell 5.1 is required'
+    members = _stock_powershell_members()
+    inputs = tmp_path / 'stock-powershell-inputs.json'
+    inputs.write_text(json.dumps([str(path) for path in members]), encoding='utf-8')
+    driver = tmp_path / 'stock-powershell-cp949.ps1'
+    driver.write_text(r"""
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+try {
+    if($PSVersionTable.PSVersion.Major -ne 5){throw 'Windows PowerShell 5.1 required'}
+    $utf8=[Text.UTF8Encoding]::new($false,$true)
+    $legacy=[Text.Encoding]::GetEncoding(949)
+    $parseErrors=0;$literalMismatches=0;$koreanLiterals=0;$checked=0
+    foreach($path in (Get-Content -LiteralPath $env:LM_STOCK_PS_INPUTS -Raw -Encoding UTF8 | ConvertFrom-Json)) {
+        $raw=[IO.File]::ReadAllBytes([string]$path)
+        $bom=$raw.Length -ge 3 -and $raw[0] -eq 0xef -and $raw[1] -eq 0xbb -and $raw[2] -eq 0xbf
+        $offset=0;if($bom){$offset=3}
+        $reference=$utf8.GetString($raw,$offset,$raw.Length-$offset)
+        $text=if($bom){$reference}else{$legacy.GetString($raw)}
+        $tokens=$null;$errors=$null
+        $expected=[Management.Automation.Language.Parser]::ParseInput($reference,[ref]$tokens,[ref]$errors)
+        if($errors.Count){throw 'UTF8 source has syntax errors'}
+        $tokens=$null;$errors=$null
+        $actual=[Management.Automation.Language.Parser]::ParseInput($text,[ref]$tokens,[ref]$errors)
+        $parseErrors+=$errors.Count
+        $expectedValues=@($expected.FindAll({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.Value -match '[가-힣]'},$true) | ForEach-Object {$_.Value})
+        $actualValues=@($actual.FindAll({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.Value -match '[가-힣]'},$true) | ForEach-Object {$_.Value})
+        $koreanLiterals+=$expectedValues.Count
+        if($expectedValues.Count -ne $actualValues.Count){$literalMismatches++}
+        else {for($index=0;$index -lt $expectedValues.Count;$index++){if($expectedValues[$index] -cne $actualValues[$index]){$literalMismatches++}}}
+        $checked++
+    }
+    [ordered]@{checked=$checked;parse_errors=$parseErrors;literal_mismatches=$literalMismatches;korean_literals=$koreanLiterals;decode_codepage=$legacy.CodePage;host_codepage=[Text.Encoding]::Default.CodePage;ps_major=$PSVersionTable.PSVersion.Major} | ConvertTo-Json -Compress
+} catch {
+    [ordered]@{error_type=$_.Exception.GetType().FullName;stage='stock_cp949_parser'} | ConvertTo-Json -Compress
+    exit 1
+}
+""", encoding='utf-8-sig')
+    environment = os.environ.copy()
+    environment['LM_STOCK_PS_INPUTS'] = str(inputs)
+    result = subprocess.run([executable, '-NoProfile', '-NonInteractive', '-File', str(driver)],
+                            cwd=tmp_path, env=environment, capture_output=True, encoding='utf-8',
+                            timeout=60, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    observed = json.loads(result.stdout)
+    (tmp_path / 'stock-powershell-cp949-result.json').write_text(
+        json.dumps(observed, sort_keys=True), encoding='utf-8')
+    assert result.returncode == 0, observed
+    assert observed['checked'] == len(members)
+    assert observed['ps_major'] == 5 and observed['decode_codepage'] == 949
+    assert observed['parse_errors'] == 0, observed
+    assert observed['literal_mismatches'] == 0, observed
+    assert observed['korean_literals'] > 0, observed
 
 
 def test_windows_powershell_decodes_actual_shared_rejection_literal(tmp_path):
