@@ -1,5 +1,7 @@
 # Label_Match 운영·복구·검증
 
+종료 증명 30초는 CIM 소유 조회·자손 열거·종료 직전 부모 사슬 재확인·종료 대기·survivor 조회를 모두 포함한다. 남은 시간 안의 관찰만 사용하며 조회가 멈추면 같은 프로세스 runspace의 취소만 요청하고 즉시 미증명으로 반환한다. 이때 자식 종료·코드 복원은 추가 실행하지 않는다. 양 엔진의 35초 관찰 지연 및 정상 종료 회귀, 142/538·stock 검증 근거는 [sub-404 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-404/REPORT.md)에 기록한다. 실제 보호 설치·등록·전체 복원은 별도 랩 수용 범위다.
+
 등록이 실패하면 새 자료 세대를 확정하지 않아 설치 전 코드 복원 경로를 유지한다. 정상 등록 READY 뒤 실제 원장 열기 전에는 세대를 기록하며, 이미 기록된 새 세대 업무 자료는 기존 guard로 보호한다. relay가 없거나 시작 전에 실패한 복구는 stop proof 기본값을 null/빈 digest로 처리한다. TLS 등록 실패 뒤 남은 current-user CNG 소유 키는 다음 최초 등록에서 같은 이름으로 검증·재사용한다; 임의 삭제·교체·키 값 출력은 하지 않는다. 이 경계의 격리 회귀와 PS5.1/PS7 명령은 [sub-377](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-377/REPORT.md)에 기록하며 실제 설치·TLS·옛 폴더 복원 수용은 별도 랩 회차 결과와 구분한다.
 
 실패 복구의 legacy task/startup preimage 자식은 살아 있는 동일 부모 session authority와 session·attempt·transaction·token·source를 확인한 뒤 기존 delegation을 다시 발급한다. 긴 코드 제거/검사 뒤 만료된 자식 grant를 그대로 재사용하지 않으며, 다른 소유자와 일반 writer는 계속 거절한다. 자식 실패 참조는 원 rollback audit에 보존한다. `tests/test_round5_startup_rollback.py`는 StrictMode PS5.1/PS7의 실제 복구 호출과 native parent/child mutex를 검사하며, 실제 옛 앱 폴더·자동 시작 복원은 랩 수용과 구분한다.

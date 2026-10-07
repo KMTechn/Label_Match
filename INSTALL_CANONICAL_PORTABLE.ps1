@@ -2274,55 +2274,99 @@ function Close-LabelPlacementSession($Session, [ValidateSet('CONFIRMED','REVERTE
 function Stop-LabelRegistrationChild([Diagnostics.Process]$Process, [long]$StartedAtFileTime) {
     # A PID is never ownership proof. Recheck the live chain and creation times
     # immediately before each stop, leaving unrelated/reused PIDs untouched.
-    $rootId=$Process.Id
     $deadline=[Diagnostics.Stopwatch]::StartNew()
-    $caller=[Diagnostics.Process]::GetCurrentProcess()
-    $callerBirth=$caller.StartTime.ToUniversalTime()
-    $root=Get-CimInstance Win32_Process -Filter "ProcessId = $rootId" -ErrorAction Stop
-    if($Process.HasExited){return}
-    if($null -eq $root -or $root.ParentProcessId -ne $PID -or
-       $Process.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $StartedAtFileTime -or
-       $root.CreationDate.ToUniversalTime() -lt $callerBirth){throw 'REGISTRATION_CHILD_OWNERSHIP_UNPROVEN'}
-    $owned=[Collections.Generic.List[object]]::new()
-    $owned.Add([pscustomobject]@{process=$Process;parent_id=$PID;birth=$Process.StartTime.ToUniversalTime();depth=0})
-    for($index=0;$index -lt $owned.Count;$index++) {
-        if($owned.Count -gt 128){throw 'REGISTRATION_CHILD_TREE_UNBOUNDED'}
-        $node=$owned[$index]
-        foreach($row in @(Get-CimInstance Win32_Process -Filter ("ParentProcessId = "+$node.process.Id) -ErrorAction Stop)) {
-            try {$child=[Diagnostics.Process]::GetProcessById([int]$row.ProcessId)}catch [ArgumentException]{continue}
-            $birth=$child.StartTime.ToUniversalTime()
-            if($birth -lt $node.birth -or $birth -lt $callerBirth -or $row.CreationDate.ToUniversalTime() -lt $node.birth){$child.Dispose();throw 'REGISTRATION_CHILD_OWNERSHIP_UNPROVEN'}
-            $owned.Add([pscustomobject]@{process=$child;parent_id=$node.process.Id;birth=$birth;depth=($node.depth+1)})
+    $rootId=$Process.Id
+    function Get-LabelChildStopRemainingMilliseconds {
+        $remaining=30000-$deadline.ElapsedMilliseconds
+        if($remaining -le 0){throw 'REGISTRATION_CHILD_EXIT_UNPROVEN'}
+        return [int]$remaining
+    }
+    function Get-LabelChildStopObservation([string]$Filter) {
+        $remaining=Get-LabelChildStopRemainingMilliseconds
+        $query=[PowerShell]::Create()
+        $pending=$null;$discarded=$false
+        try {
+            # Preserve the caller's command resolution (including native test
+            # observations) in this read-only, same-process runspace.
+            $override=Get-Command Get-CimInstance -CommandType Function -ErrorAction SilentlyContinue
+            if($null -ne $override){
+                [void]$query.AddScript(('function Get-CimInstance {'+$override.Definition+'}')).AddStatement()
+            }
+            [void]$query.AddScript({param($filter,$seconds)
+                Get-CimInstance Win32_Process -Filter $filter -OperationTimeoutSec $seconds -ErrorAction Stop
+            }).AddArgument($Filter).AddArgument([uint32][Math]::Ceiling($remaining/1000.0))
+            $pending=$query.BeginInvoke()
+            $remaining=30000-$deadline.ElapsedMilliseconds
+            if($remaining -le 0 -or -not $pending.AsyncWaitHandle.WaitOne([int]$remaining) -or
+               $deadline.ElapsedMilliseconds -ge 30000){
+                # Stop only the read-only query pipeline. Do not wait for CIM
+                # cancellation or dispose a running pipeline after the deadline.
+                $discarded=$true
+                [void]$query.BeginStop($null,$null)
+                throw 'REGISTRATION_CHILD_EXIT_UNPROVEN'
+            }
+            $rows=$query.EndInvoke($pending)
+            [void](Get-LabelChildStopRemainingMilliseconds)
+            if($query.HadErrors){throw $query.Streams.Error[0].Exception}
+            return $rows
+        } finally {
+            if(-not $discarded){$query.Dispose()}
         }
     }
+    $caller=[Diagnostics.Process]::GetCurrentProcess()
+    $callerBirth=$caller.StartTime.ToUniversalTime()
+    $owned=[Collections.Generic.List[object]]::new()
     try {
+        $root=Get-LabelChildStopObservation "ProcessId = $rootId"
+        if($Process.HasExited){return}
+        if($null -eq $root -or $root.ParentProcessId -ne $PID -or
+           $Process.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $StartedAtFileTime -or
+           $root.CreationDate.ToUniversalTime() -lt $callerBirth){throw 'REGISTRATION_CHILD_OWNERSHIP_UNPROVEN'}
+        $owned.Add([pscustomobject]@{process=$Process;parent_id=$PID;birth=$Process.StartTime.ToUniversalTime();depth=0})
+        for($index=0;$index -lt $owned.Count;$index++) {
+            [void](Get-LabelChildStopRemainingMilliseconds)
+            if($owned.Count -gt 128){throw 'REGISTRATION_CHILD_TREE_UNBOUNDED'}
+            $node=$owned[$index]
+            foreach($row in @(Get-LabelChildStopObservation ("ParentProcessId = "+$node.process.Id))) {
+                [void](Get-LabelChildStopRemainingMilliseconds)
+                try {$child=[Diagnostics.Process]::GetProcessById([int]$row.ProcessId)}catch [ArgumentException]{continue}
+                $birth=$child.StartTime.ToUniversalTime()
+                if($birth -lt $node.birth -or $birth -lt $callerBirth -or $row.CreationDate.ToUniversalTime() -lt $node.birth){$child.Dispose();throw 'REGISTRATION_CHILD_OWNERSHIP_UNPROVEN'}
+                $owned.Add([pscustomobject]@{process=$child;parent_id=$node.process.Id;birth=$birth;depth=($node.depth+1)})
+            }
+        }
         foreach($node in @($owned | Sort-Object depth -Descending)) {
-            if($deadline.ElapsedMilliseconds -ge 30000){throw 'REGISTRATION_CHILD_EXIT_UNPROVEN'}
+            [void](Get-LabelChildStopRemainingMilliseconds)
             if($node.process.HasExited){continue}
             $cursor=$node
             while($true) {
+                [void](Get-LabelChildStopRemainingMilliseconds)
                 if($cursor.process.HasExited -or $cursor.process.StartTime.ToUniversalTime() -ne $cursor.birth){throw 'REGISTRATION_CHILD_OWNERSHIP_UNPROVEN'}
-                $live=Get-CimInstance Win32_Process -Filter ("ProcessId = "+$cursor.process.Id) -ErrorAction Stop
+                $live=Get-LabelChildStopObservation ("ProcessId = "+$cursor.process.Id)
                 if($null -eq $live -or $live.ParentProcessId -ne $cursor.parent_id){throw 'REGISTRATION_CHILD_OWNERSHIP_UNPROVEN'}
                 if($cursor.process.Id -eq $rootId){break}
                 $parents=@($owned|Where-Object {$_.process.Id -eq $cursor.parent_id})
                 if($parents.Count -ne 1 -or $cursor.birth -lt $parents[0].birth){throw 'REGISTRATION_CHILD_OWNERSHIP_UNPROVEN'}
                 $cursor=$parents[0]
             }
+            [void](Get-LabelChildStopRemainingMilliseconds)
             [void]$node.process.CloseMainWindow()
-            if(-not $node.process.WaitForExit(250)){
+            $remaining=Get-LabelChildStopRemainingMilliseconds
+            if(-not $node.process.WaitForExit([Math]::Min(250,$remaining))){
                 # Kill through the already opened process handle, avoiding a
                 # PID reuse race between the ownership check and termination.
+                [void](Get-LabelChildStopRemainingMilliseconds)
                 $node.process.Kill()
             }
         }
         foreach($node in $owned) {
-            $remaining=[Math]::Max(1,30000-[int]$deadline.ElapsedMilliseconds)
+            $remaining=Get-LabelChildStopRemainingMilliseconds
             if(-not $node.process.WaitForExit($remaining)){throw 'REGISTRATION_CHILD_EXIT_UNPROVEN'}
         }
         foreach($node in $owned){
-            $survivors=@(Get-CimInstance Win32_Process -Filter ("ParentProcessId = "+$node.process.Id) -ErrorAction Stop |
+            $survivors=@(Get-LabelChildStopObservation ("ParentProcessId = "+$node.process.Id) |
                 Where-Object {$_.CreationDate.ToUniversalTime() -ge $node.birth})
+            [void](Get-LabelChildStopRemainingMilliseconds)
             if($survivors.Count -gt 0){throw 'REGISTRATION_CHILD_EXIT_UNPROVEN'}
         }
     } finally {

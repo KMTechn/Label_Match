@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+등록·배치 자식의 종료 증명은 시작 시각 기준 하나의 30초 벽시계 마감을 공유한다. 모든 CIM 소유 관찰은 같은 프로세스의 읽기 전용 runspace에서 남은 시간만 기다리고 OperationTimeoutSec도 남은 초로 제한한다. 만료하면 BeginStop만 요청하고 관찰 결과·취소 완료를 기다리지 않으며 이후 새 종료 동작은 없다. 등록은 REGISTRATION_CHILD_UNPROVEN, 배치는 HELPER_CHILD_UNPROVEN으로 복원을 거절한다. 정상 기한 안의 live 부모 사슬·생성 시각·열린 process handle 검증은 유지한다.
+
 정상 인증 frame 전 제어 Write/Read·parse·identity 오류는 helper 종료 미증명이다. HELPER_CHILD_UNPROVEN·코드 UNKNOWN·추가 복원 명령0으로 보존하고, RECOVERY_REQUIRED frame의 진단 파일 손상도 이 표지를 유지한다. 정상 인증 frame 뒤 결과 파일 오류는 같은 guardian 복원 경로를 유지한다. 이미 복원 중이면 기존 ROLLBACK_FAILED 계열 상태에 코드 UNKNOWN을 기록하며 파일 존재만으로 완료를 판단하지 않는다. 원 예외 형식·함수·줄을 교체하지 않는다(1차 msg_e36ee0956cca).
 
 확정 전 배치 결과 검증이 예외로 끝나도 실제 보호 startup preimage와 검증된 code backup을 복원 전에 수집한다. 소유·종료 미증명 자식은 기존 RECOVERY_REQUIRED 분기에서 복원을 거절한다. 복원 입력 수집 자체의 실패는 별도 진단으로 보존하며 최초 결과 검증 실패의 typed 원인·위치를 유지한다.
