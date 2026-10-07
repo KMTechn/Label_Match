@@ -16,6 +16,8 @@ canonical 설치 거래는 상승 guardian 하나를 배치와 확정 전 복원
 
 등록 준비는 기존 자료 세대의 읽기 전용 검사를 유지하며, 실패한 등록이나 dry-run으로 새 세대를 기록하지 않는다. 일반 등록 CLI는 서버 승인과 로컬 신원·manifest·credential·receipt·보고서 readback 뒤에, 정상 onboarding은 READY readback 뒤 업무 원장 열기 전에 세대를 기록한다. 정확한 canonical installer delegation의 확정 전 onboarding은 등록·Run·task만 준비하며 `ledger_status`와 `settings.status`를 `DEFERRED_CANONICAL_INSTALL`로 보고한다. 이때 READY는 등록 검증을 뜻한다. T1 뒤 정상 앱 시작이 세대·원장·설정을 멱등으로 처음 열며, 확정 뒤 실패는 새 코드 보존과 지원 복구다. 이미 있는 새 세대의 downgrade 거부는 유지한다. Run/task 변경은 기존 preimage·journal만으로 복원한다. 자동 시작·옛 작업 이전은 활성 `versions/<SHA>`가 아니라 고정 `current`를 사용하고 작업 정의의 canonical 경로 검사는 유지한다. canonical 복원 delegation은 정상 등록의 `worker_enrollment_network` source를 포함하며 관리자·partial 복구 source는 별도 권한을 유지한다. 등록 실패 뒤 같은 사용자 CNG 이름의 소유 키는 `provision_initial`이 정책 검증 후 재사용하며 교체·비공개 키 export를 하지 않는다.
 
+T1 뒤 installer의 relay PASS와 GUI의 업무 자료 첫 열기는 별도 관측이다. managed 정상 onboarding의 실제 ledger/settings 열기 실패는 `FAILED`·`BUSINESS_DATA_OPEN_FAILED`, 기존 onboarding 보고서 위치와 같은 사용자용 `recovery_command`를 게시하고 앱 시작을 중단한다. 원인을 해결한 뒤 고정 current의 기존 onboarding CLI로 재준비한다. 등록·Run/task 실패와 세대 UNKNOWN/REFUSE는 기존 분류를 유지한다.
+
 실패 복구의 protected preimage 자식 grant 갱신은 동일한 live 부모 authority와 session·attempt·transaction·token·source 결속을 요구한다. grant만 만료된 경우의 갱신은 새 소유자·새 source·일반 writer를 허용하지 않으며 generation REFUSE/UNKNOWN 및 원 backup 보존을 유지한다. fixed helper Verify는 TLS/등록 이전의 코드 신뢰 검사이고, 그 실패의 공개 레코드와 보호 child 진단 참조는 onboarding까지 유지한다.
 
 fixed helper는 installer 부모의 비공개 함수를 전제하지 않는다. 검증한 bootstrap/portable export와 자기 경로/reparse 함수만 사용하며, dependency module만 있는 새 자식의 전체 Verify 회귀로 이 계약을 검사한다. ACL·integrity·manifest/pin·version의 실패 검사값과 native trace는 보호 진단에만 남기고 공개 출력은 고정 사유·report 경로/SHA를 유지한다.

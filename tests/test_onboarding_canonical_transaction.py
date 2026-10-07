@@ -253,9 +253,33 @@ if($env:LM_412_OPEN_FAIL -ceq '1'){
             onboard_current_user(fixed, ledger_factory=fail_open, **kwargs)
         failure = json.loads(paths.onboarding_report_path.read_text(encoding="utf-8"))
         assert failure["status"] == "FAILED"
+        assert failure["cause_code"] == "BUSINESS_DATA_OPEN_FAILED"
+        assert failure["recovery_command"] == caught.value.recovery_command
+        assert "--onboard-current-user --app-root" in caught.value.recovery_command
         assert isinstance(caught.value.__cause__, OSError)
         assert failure["failure_traceback"]
         (tmp_path / "first-open-failure.json").write_text(json.dumps(failure, ensure_ascii=False), encoding="utf-8")
+        # This is the actual later GUI failure path, after the installer has
+        # already returned PASS. Replace only Tk/window APIs; create no window.
+        import Label_Match as app
+        dialogs = []
+        parent = SimpleNamespace(**{name: (lambda *a, **kw: None) for name in
+            ("withdraw", "title", "geometry", "attributes", "deiconify", "lift",
+             "update", "focus_force", "destroy")})
+        monkeypatch.setattr(app.tk, "Tk", lambda: parent)
+        monkeypatch.setattr(app.messagebox, "showerror", lambda title, message, **kw: dialogs.append(message))
+        monkeypatch.setattr(app, "dispatch_product_mode", lambda argv: None)
+        monkeypatch.setattr(app, "verify_factory_contract_startup", lambda: None)
+        monkeypatch.setattr(app, "_label_match_startup_trace", lambda *a, **kw: None)
+        monkeypatch.setattr(app, "_label_match_runtime_app_root", lambda: fixed)
+        monkeypatch.setattr(app, "_first_run_onboarding_enabled", lambda: True)
+        def failed_onboarding(*a, **kw):
+            raise caught.value
+        monkeypatch.setattr(app, "onboard_current_user", failed_onboarding)
+        assert app.main([]) == app.ONBOARDING_EXIT_CODE
+        assert len(dialogs) == 1 and "업무 자료를 열지 못해" in dialogs[0]
+        assert str(paths.onboarding_report_path) in dialogs[0]
+        assert caught.value.recovery_command in dialogs[0]
         # The published command uses this existing CLI mode. Exercise its real
         # parser and normal onboarding after the isolated disk failure is fixed.
         original_onboard = onboarding.onboard_current_user

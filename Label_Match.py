@@ -22358,6 +22358,11 @@ INSTALLATION_RECOVERY_REQUIRED_MESSAGE = (
     "자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
 )
 FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
+    "BUSINESS_DATA_OPEN_FAILED": (
+        "업무 자료를 열지 못해 프로그램 시작을 중단했습니다. 새 판과 자료는 보존됩니다.\n\n"
+        "아래 보고서의 원인을 해결한 뒤 같은 Windows 사용자의 PowerShell에서 "
+        "지원 명령을 실행하고 앱을 다시 시작하세요."
+    ),
     "INSTALLATION_RECOVERY_REQUIRED": INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
     "RELAY_RESUME_REQUIRED": (
         "중앙 전송 릴레이가 정지해 있습니다. 신원 복구만으로 전송이 다시 시작되지는 않습니다.\n\n"
@@ -22402,6 +22407,8 @@ def _show_first_run_onboarding_error(failure):
         )
         if failure.status == "RECOVERY_REQUIRED":
             message = str(failure)
+        if getattr(failure, "recovery_command", ""):
+            message += "\n\n지원 명령: " + failure.recovery_command
         parent = tk.Tk()
         parent.withdraw()
         parent.title(FIRST_RUN_ONBOARDING_ERROR_TITLE)

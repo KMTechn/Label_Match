@@ -74,11 +74,13 @@ class CurrentUserOnboardingError(RuntimeError):
         report_path: Path,
         status: str = "FAILED",
         cause_code: str = "SETUP_FAILED",
+        recovery_command: str = "",
     ) -> None:
         super().__init__(message)
         self.report_path = Path(report_path)
         self.status = status
         self.cause_code = cause_code
+        self.recovery_command = recovery_command
 
 
 def _verified_bootstrap_inventory_aggregate(
@@ -1079,6 +1081,7 @@ def onboard_current_user(
         "failure": "",
     }
     stop_marker_released = False
+    business_open_in_progress = False
 
     def require_registration_recovery(state: Mapping[str, Any]) -> None:
         if state.get("status") != "ADMIN_RECOVERY_REQUIRED":
@@ -1267,6 +1270,7 @@ def onboard_current_user(
             except DataGenerationError as exc:
                 raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
                     status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
+            business_open_in_progress = True
             ledger_factory(paths.ledger_path)
             if not paths.ledger_path.is_file():
                 raise ValueError("current-user business ledger readback failed")
@@ -1275,6 +1279,7 @@ def onboard_current_user(
             settings_status = str(report["settings"].get("status") or "")
             if settings_status not in {"CREATED", "REUSED"}:
                 raise ValueError("current-user settings placement was not proven")
+            business_open_in_progress = False
 
         stop_path = user_relay_stop_path(paths.direct_sync_root)
         report['relay_resume_required'] = stop_path.exists()
@@ -1383,17 +1388,30 @@ def onboard_current_user(
         report["launch_failure_details"] = launch_failure_details(exc)
         from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout
         cause_code = (
+            'BUSINESS_DATA_OPEN_FAILED' if business_open_in_progress and managed is not None else
             'RELAY_RESUME_REQUIRED' if report.get('relay_resume_required') else
             "NETWORK_OR_SERVER_UNAVAILABLE"
             if isinstance(exc, (ConnectionError, TimeoutError, RequestsConnectionError, Timeout))
             else "SETUP_FAILED"
         )
         report["cause_code"] = cause_code
+        recovery_command = ""
+        if cause_code == "BUSINESS_DATA_OPEN_FAILED":
+            def quoted(path):
+                return "'" + str(path).replace("'", "''") + "'"
+            recovery_command = ("& " + quoted(setup_root / "runtime" / "python.exe") +
+                " -I -B " + quoted(setup_root / "app" / "main.py") +
+                " --onboard-current-user --app-root " + quoted(setup_root))
+            report["recovery_command"] = recovery_command
+            report["recovery_guidance"] = (
+                "새 판과 자료를 보존했습니다. 원인을 해결한 뒤 같은 작업 사용자의 "
+                "PowerShell에서 recovery_command로 사용자 준비를 재시도하고 앱을 다시 시작하세요.")
         failure = CurrentUserOnboardingError(
             f"Label_Match first-run onboarding failed: {exc}",
             report_path=paths.onboarding_report_path,
             status="FAILED",
             cause_code=cause_code,
+            recovery_command=recovery_command,
         )
         failure.__cause__ = exc
         _publish_failure_report(paths.onboarding_report_path, report, failure)
