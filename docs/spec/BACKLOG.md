@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+sub-388 T6 회귀: 초기 서버 주소 거절의 기존 FAILED/SERVER_BASE_URL_INVALID/REPORT_UNAVAILABLE·고정 안내에 원 예외 형식·모듈·함수·양수 줄을 필수로 검사한다. URL 값 비노출과 plan/설치·경로 생성 부작용 0 단언은 유지한다. 예전 네 필드만 허용하여 생긴 68536dc의 538 회차 추가 실패는 원본 근거로 보존한다.
+
 sub-388: 부모 custody를 유지하는 단일 guardian, 거래/SHA 결과 검증, Confirm-LabelCanonicalPlacement 확정 경계, 확정 뒤 새 코드 유지와 등록 자식 600초/종료 확인 30초를 구현한다. 배치 자식 720초·소유/종료 미증명 복원 거부와 SSH 로컬 pipe의 NETWORK 그룹 수용도 같은 범위다. PS5.1/PS7 숨김 protocol 회귀와 기존 선택·pin·stock의 실제 판정은 sub-388 REPORT에 기록한다. 실제 상승 승인 횟수·보호 startup/task/ACL 복원·현재 사용자 SSH 신원 수용은 별도 랩 OPEN이며, 공개 GitHub latest/태그 동결은 유지한다.
 
 회차 B-1의 등록 delegation 누락과 no-relay 복구의 StrictMode 속성 접근을 수정한다. 등록 실패 전에 쓰던 자료 세대 기록을 등록 READY/readback 뒤로 옮기며, 기존 새 세대 업무 자료의 downgrade guard와 wrapper를 보존한다. 같은 이름 current-user CNG 키의 검증·재사용은 기존 설계를 유지한다. 격리 회귀·표준 선언·후보 stock 근거는 [sub-377 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-377/REPORT.md)에서 판정하고 B-1/B-2 랩 재실행과 독립 검토는 후속 수용 항목이다.
