@@ -413,6 +413,10 @@ def test_e1_busy_update_lock_reports_fixed_progress_guidance(endpoint, monkeypat
 @pytest.mark.parametrize("failure", ["task", "no_progress"])
 def test_applied_trial_exit_without_system_still_starts_active(endpoint, monkeypatch, failure):
     control, stage, _, state, _, _ = endpoint
+    # E1: native creation mismatch proves the previous apply owner absent.
+    from tests.test_auto_update_apply_claim import own_claim
+    dead_owner = {**own_claim(), 'creation_identity': '0'}
+    updates.write_json_durable(control / 'apply-claim.json', dead_owner)
     # A stale claim proves no live writer; the native snapshot is empty.
     updates.write_json_durable(stage / "trial.json", {"pid": 456, "nonce": state["nonce"],
                                                         "transition_id": state["transition_id"]})
@@ -486,6 +490,9 @@ def test_e1_pointer_switch_and_ordinary_launch_exclude_competing_versions(endpoi
     def crash_after_switch(path, value):
         written(path, value)
         if path == control / "active.json" and value.get("sha") == hot:
+            # E1(c): this thread models a dead SYSTEM process, not the live test PID.
+            from tests.test_auto_update_apply_claim import own_claim
+            written(control / "apply-claim.json", {**own_claim(), "creation_identity": "0"})
             raise SystemExit(0)  # Native SYSTEM loss immediately after durable switch.
     monkeypatch.setattr(updates, "write_json_durable", crash_after_switch)
     def system():

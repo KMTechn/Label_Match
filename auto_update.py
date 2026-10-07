@@ -1042,6 +1042,88 @@ def record_confirmed_transition(control: Path, state: Mapping[str, Any]) -> dict
     return settled
 
 
+def native_process_identity(pid: int) -> dict[str, Any]:
+    """Observe process lifetime without treating inaccessible owners as absent."""
+    import ctypes
+    from ctypes import wintypes
+
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return {"status": "UNKNOWN"}
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x1000 | 0x00100000, False, pid)
+    if not handle:
+        return {"status": "ABSENT" if ctypes.get_last_error() == 87 else "UNKNOWN"}
+    try:
+        wait = kernel.WaitForSingleObject(handle, 0)
+        if wait == 0:
+            return {"status": "ABSENT"}
+        if wait != 258:
+            return {"status": "UNKNOWN"}
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel.GetProcessTimes(handle, *[ctypes.byref(value) for value in times]):
+            return {"status": "UNKNOWN"}
+        identity = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        return {"status": "LIVE", "creation_identity": str(identity)}
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def new_apply_claim() -> dict[str, Any]:
+    owner = native_process_identity(os.getpid())
+    if owner["status"] != "LIVE":
+        raise ValueError("apply owner creation identity is unobservable")
+    return {"schema": "code-update-apply-claim-v1", "status": "RUNNING",
+            "pid": os.getpid(), "creation_identity": owner["creation_identity"],
+            "started_at": now_utc()}
+
+
+def apply_claim_status(control: Path) -> str:
+    """A protected claim is progress evidence, never pointer or READY authority."""
+    try:
+        claim = optional_record(control / "apply-claim.json")
+        if claim is None:
+            return "NONE"
+        if claim.get("schema") != "code-update-apply-claim-v1":
+            return "UNKNOWN"
+        if claim.get("status") == "SETTLED":
+            return "NONE"
+        if claim.get("status") != "RUNNING" or not isinstance(claim.get("creation_identity"), str):
+            return "UNKNOWN"
+        owner = native_process_identity(claim.get("pid"))
+        if owner["status"] != "LIVE":
+            return owner["status"]
+        return "LIVE" if owner["creation_identity"] == claim["creation_identity"] else "ABSENT"
+    except (OSError, ValueError, TypeError, KeyError):
+        return "UNKNOWN"
+
+
+def complete_apply_claim(control: Path) -> None:
+    """Durably retire only this process's claim through the existing writer sink."""
+    try:
+        claim = optional_record(control / "apply-claim.json")
+        if not claim or claim.get("pid") != os.getpid() or claim.get("status") != "RUNNING":
+            return
+        owner = native_process_identity(os.getpid())
+        if owner.get("creation_identity") != claim.get("creation_identity"):
+            return
+        write_json_durable(control / "apply-claim.json", {**claim, "status": "SETTLED", "completed_at": now_utc()})
+    except (OSError, ValueError, TypeError, KeyError):
+        emit_support_record({"reason_code": "REPORT_UNAVAILABLE"}, stage="update_apply")
+
+
+def emit_progress_guidance() -> None:
+    report = support_record({"reason_code": "UPDATE_IN_PROGRESS"}, stage="update_apply")
+    report["guidance"] = STARTUP_PROGRESS_MESSAGE
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+
+
 def apply_prepared(control: Path) -> int:
     """Preserve a failed preparation; never fall back after an uncertain switch."""
     from contextlib import nullcontext
@@ -1070,6 +1152,9 @@ def apply_prepared(control: Path) -> int:
             write_json_durable(control / ("failure-" + uuid.uuid4().hex + ".json"), failure)
             write_json_durable(control / "transition.json", failure)
         return 0 if not_applied else 20
+
+    finally:
+        complete_apply_claim(control)
 
 
 def settle_trial_failure(control: Path, state: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:
@@ -1126,6 +1211,7 @@ def _apply_prepared(control: Path) -> int:
     os.environ["LOCALAPPDATA"] = policy["operator_local_app_data"]
     stage = Path(policy["staging_root"])
     with update_lock(control, policy["operator_sid"]):
+        write_json_durable(control / "apply-claim.json", new_apply_claim())
         state = optional_record(control / "transition.json")
         if state and state["phase"] == "CONFIRMED":
             state = record_confirmed_transition(control, state)
@@ -2147,14 +2233,22 @@ def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str,
 
 
 
-def start_current(control: Path, policy: Mapping[str, Any], state, active, arguments, *, code: str) -> int:
+def start_current(control: Path, policy: Mapping[str, Any], state, active, arguments, *, code: str, report_once: bool = False) -> int:
     """Reuse ordinary launch and publish only the E9 allowlisted support fields."""
     report = support_record({"reason_code": code,
         "transition_code": (state or {}).get("failure_decision", {}).get("code", code),
         "retained_candidate": (state or {}).get("retained_candidate") is True}, stage="update_apply")
     try:
-        write_json_durable(Path(policy["staging_root"]) / "startup-support.json", report)
-    except OSError:
+        report_path = Path(policy["staging_root"]) / "startup-support.json"
+        previous = None
+        if report_once:
+            claim_hash = hashlib.sha256((control / "apply-claim.json").read_bytes()).hexdigest()
+            report = support_record({**report, "apply_claim_sha256": claim_hash}, stage="update_apply")
+            previous = optional_record(report_path)
+        if not (report_once and previous and previous.get("reason_code") == code
+                and previous.get("apply_claim_sha256") == report["apply_claim_sha256"]):
+            write_json_durable(report_path, report)
+    except (OSError, ValueError, TypeError):
         # A support sink failure cannot turn a safe ordinary launch into a stop.
         emit_support_record({"reason_code": "REPORT_UNAVAILABLE"}, stage="update_apply")
     started_at = now_utc()
@@ -2191,101 +2285,130 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
     requested_at = None
     progress_deadline = None
     saw_trial = False
+    apply_started = False
     deadline = time.monotonic() + 240
     while time.monotonic() < deadline:
-        with update_lock(control, policy["operator_sid"]):
-            state = optional_record(control / "transition.json")
-            if state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
-                saw_trial = True
-            prepared = prepared_pending(control, policy, state)
-            action = startup_action(state, prepared_present=prepared)
-            active = read_json(control / "active.json")
-            gui_arguments = arguments[1:] if role == "relay" and arguments[:1] == ["--label-match-user-relay"] else arguments
-            if state and state["phase"] == "DEFERRED" and state.get("retained_candidate") is True:
-                if active["sha"] != recovery_sha(state, pointer_sha=active["sha"]):
-                    action = "WAIT_FOR_RECOVERY"
-                else:
-                    return start_current(control, policy, state, active, gui_arguments, code="UPDATE_TERMINAL_RECOVERED")
-            if state and state["phase"] in {"CONFIRMED", "ROLLED_BACK"} and saw_trial:
-                if state["phase"] == "ROLLED_BACK":
-                    return start_current(control, policy, state, active, gui_arguments, code="UPDATE_PREVIOUS_CONFIRMED")
-                return 0  # The already-launched GUI owns input and its ordinary relay.
-            if state and state["phase"] == "DEFERRED" and requested_at and _utc(state["deferred_at"]) >= _utc(requested_at):
-                code = state.get("reason_code")
-                if code not in {"UPDATE_PREPARATION_FAILED", "UPDATE_EXISTING_WRITER"}:
-                    code = "UPDATE_TERMINAL_RECOVERED"
-                return start_current(control, policy, state, active, arguments, code=code)
-            if action == "START_CURRENT":
-                if state and state["phase"] in {"ROLLED_BACK", "DEFERRED"}:
-                    return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED")
-                launch_version(control, active["sha"], arguments)
-                return 0
-            if state and state["phase"] in {"UNKNOWN", "FAILED"}:
-                if writer_processes(process_snapshot(control), own_pid=os.getpid()):
-                    return 0  # The existing single application writer owns work.
-                if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared:
-                    return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED")
-            if action in {"REQUEST_APPLY", "REQUEST_TRIAL", "WAIT_FOR_RECOVERY", "WAIT_FOR_TRIAL"} and not requested:
-                requested_at = now_utc()
-                progress_deadline = time.monotonic() + APPLY_PROGRESS_TIMEOUT
-                try:
-                    request_apply_task(control, policy)
-                except Exception:
-                    if not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
+        try:
+            with update_lock(control, policy["operator_sid"]):
+                state = optional_record(control / "transition.json")
+                claim_status = apply_claim_status(control)
+                apply_started = apply_started or claim_status in {"LIVE", "UNKNOWN"} or bool(state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"})
+                if state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
+                    saw_trial = True
+                if claim_status in {"LIVE", "UNKNOWN"} and not (state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}):
+                    time.sleep(0.1)
+                    continue
+                prepared = prepared_pending(control, policy, state)
+                action = startup_action(state, prepared_present=prepared)
+                active = read_json(control / "active.json")
+                gui_arguments = arguments[1:] if role == "relay" and arguments[:1] == ["--label-match-user-relay"] else arguments
+                if state and state["phase"] == "DEFERRED" and state.get("retained_candidate") is True:
+                    if active["sha"] != recovery_sha(state, pointer_sha=active["sha"]):
+                        action = "WAIT_FOR_RECOVERY"
+                    else:
+                        return start_current(control, policy, state, active, gui_arguments, code="UPDATE_TERMINAL_RECOVERED")
+                if state and state["phase"] in {"CONFIRMED", "ROLLED_BACK"} and saw_trial:
+                    if state["phase"] == "ROLLED_BACK":
+                        return start_current(control, policy, state, active, gui_arguments, code="UPDATE_PREVIOUS_CONFIRMED")
+                    return 0  # The already-launched GUI owns input and its ordinary relay.
+                if state and state["phase"] == "DEFERRED" and requested_at and _utc(state["deferred_at"]) >= _utc(requested_at):
+                    code = state.get("reason_code")
+                    if code not in {"UPDATE_PREPARATION_FAILED", "UPDATE_EXISTING_WRITER"}:
+                        code = "UPDATE_TERMINAL_RECOVERED"
+                    return start_current(control, policy, state, active, arguments, code=code)
+                if claim_status == "ABSENT":
+                    if writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                        return 0
+                    if current_generation_status(control, policy, active["sha"]) != "ALLOW":
+                        emit_progress_guidance()
+                        return 20
+                    return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True)
+                if action == "START_CURRENT":
+                    if state and state["phase"] in {"ROLLED_BACK", "DEFERRED"}:
+                        return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED")
+                    launch_version(control, active["sha"], arguments)
+                    return 0
+                if state and state["phase"] in {"UNKNOWN", "FAILED"}:
+                    if saw_trial and claim_status != "ABSENT":
+                        emit_progress_guidance()
+                        return 20
+                    if claim_status not in {"LIVE", "UNKNOWN"}:
+                        if writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                            return 0  # The existing single application writer owns work.
+                        if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared:
+                            return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED")
+                if action in {"REQUEST_APPLY", "REQUEST_TRIAL", "WAIT_FOR_RECOVERY", "WAIT_FOR_TRIAL"} and not requested:
+                    requested_at = now_utc()
+                    progress_deadline = time.monotonic() + APPLY_PROGRESS_TIMEOUT
+                    try:
+                        request_apply_task(control, policy)
+                    except Exception:
+                        if apply_started or apply_claim_status(control) in {"LIVE", "UNKNOWN"}:
+                            requested = True
+                            continue
+                        if not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
+                            if state and state["phase"] == "APPLIED_PENDING_READY" and writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                                return 0
+                            code = "UPDATE_SUPERVISION_UNAVAILABLE" if state and state["phase"] == "APPLIED_PENDING_READY" else "UPDATE_APPLY_REQUEST_FAILED"
+                            return start_current(control, policy, state, active, arguments, code=code)
+                        raise
+                    requested = True
+                    # The task may already have settled or switched this journal.
+                    # Release ownership and reread it before creating a trial.
+                    continue
+                if action == "REQUEST_TRIAL":
+                    # Both the Run relay and a launcher request this same GUI trial.
+                    # The GUI's ordinary onboarding starts its single normal relay.
+                    with update_lock(control, policy["operator_sid"], trial=True):
+                        state = read_json(control / "transition.json")
+                        claim = optional_record(Path(policy["staging_root"]) / "trial.json")
+                        failure_path = Path(policy["staging_root"]) / "trial-failure.json"
+                        failure = optional_record(failure_path)
+                        if not (failure and failure.get("nonce") == state["nonce"]
+                                and failure.get("transition_id") == state["transition_id"]):
+                            failed_role = "gui"
+                            try:
+                                if claim and claim.get("nonce") == state["nonce"]:
+                                    row = next((row for row in process_snapshot(control) if row.get("pid") == claim.get("pid")), None)
+                                    if (not row or claim.get("transition_id") != state["transition_id"]
+                                            or not process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="gui")
+                                            or _utc(row.get("created_at")) > _utc(claim.get("claimed_at"))):
+                                        raise ValueError("existing trial process identity or creation time differs")
+                                    failed_role = "relay"
+                                    if not any(process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="relay") for row in process_snapshot(control)):
+                                        raise ValueError("existing trial relay is absent")
+                                else:
+                                    pid = launch_version(control, active["sha"], gui_arguments, nonce=state["nonce"])
+                                    write_json_durable(Path(policy["staging_root"]) / "trial.json", {"pid": pid, "nonce": state["nonce"], "transition_id": state["transition_id"], "claimed_at": now_utc()})
+                                    failed_role = "relay"
+                                    # LM's user settings select both children's data root.
+                                    launch_version(control, active["sha"], ["--label-match-user-relay"], nonce=state["nonce"])
+                                saw_trial = True
+                            except Exception as error:
+                                write_json_durable(failure_path, {
+                                    "nonce": state["nonce"], "transition_id": state["transition_id"],
+                                    "sha": active["sha"], "failed_role": failed_role,
+                                    "launch_failure_details": launch_failure_details(error, include_original=True),
+                                })
+                                # A failed start is not permission to change the pointer.
+                                # SYSTEM must prove normal stop and previous-code trust.
+                if requested and progress_deadline is not None:
+                    claim_status = apply_claim_status(control)
+                    if claim_status == "ABSENT":
                         if state and state["phase"] == "APPLIED_PENDING_READY" and writer_processes(process_snapshot(control), own_pid=os.getpid()):
                             return 0
-                        code = "UPDATE_SUPERVISION_UNAVAILABLE" if state and state["phase"] == "APPLIED_PENDING_READY" else "UPDATE_APPLY_REQUEST_FAILED"
-                        return start_current(control, policy, state, active, arguments, code=code)
-                    raise
-                requested = True
-                # The task may already have settled or switched this journal.
-                # Release ownership and reread it before creating a trial.
-                continue
-            if action == "REQUEST_TRIAL":
-                # Both the Run relay and a launcher request this same GUI trial.
-                # The GUI's ordinary onboarding starts its single normal relay.
-                with update_lock(control, policy["operator_sid"], trial=True):
-                    state = read_json(control / "transition.json")
-                    claim = optional_record(Path(policy["staging_root"]) / "trial.json")
-                    failure_path = Path(policy["staging_root"]) / "trial-failure.json"
-                    failure = optional_record(failure_path)
-                    if not (failure and failure.get("nonce") == state["nonce"]
-                            and failure.get("transition_id") == state["transition_id"]):
-                        failed_role = "gui"
-                        try:
-                            if claim and claim.get("nonce") == state["nonce"]:
-                                row = next((row for row in process_snapshot(control) if row.get("pid") == claim.get("pid")), None)
-                                if (not row or claim.get("transition_id") != state["transition_id"]
-                                        or not process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="gui")
-                                        or _utc(row.get("created_at")) > _utc(claim.get("claimed_at"))):
-                                    raise ValueError("existing trial process identity or creation time differs")
-                                failed_role = "relay"
-                                if not any(process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="relay") for row in process_snapshot(control)):
-                                    raise ValueError("existing trial relay is absent")
-                            else:
-                                pid = launch_version(control, active["sha"], gui_arguments, nonce=state["nonce"])
-                                write_json_durable(Path(policy["staging_root"]) / "trial.json", {"pid": pid, "nonce": state["nonce"], "transition_id": state["transition_id"], "claimed_at": now_utc()})
-                                failed_role = "relay"
-                                # LM's user settings select both children's data root.
-                                launch_version(control, active["sha"], ["--label-match-user-relay"], nonce=state["nonce"])
-                            saw_trial = True
-                        except Exception as error:
-                            write_json_durable(failure_path, {
-                                "nonce": state["nonce"], "transition_id": state["transition_id"],
-                                "sha": active["sha"], "failed_role": failed_role,
-                                "launch_failure_details": launch_failure_details(error, include_original=True),
-                            })
-                            # A failed start is not permission to change the pointer.
-                            # SYSTEM must prove normal stop and previous-code trust.
-            if requested and progress_deadline is not None and time.monotonic() >= progress_deadline:
-                if not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
-                    if state and state["phase"] == "APPLIED_PENDING_READY" and writer_processes(process_snapshot(control), own_pid=os.getpid()):
-                        progress_deadline = time.monotonic() + APPLY_PROGRESS_TIMEOUT
-                    else:
-                        code = "UPDATE_SUPERVISION_UNAVAILABLE" if state and state["phase"] == "APPLIED_PENDING_READY" else "UPDATE_APPLY_NO_PROGRESS"
-                        return start_current(control, policy, state, active, arguments, code=code)
+                        return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True)
+                    if claim_status in {"LIVE", "UNKNOWN"}:
+                        apply_started = True
+                    if not apply_started and time.monotonic() >= progress_deadline:
+                        return start_current(control, policy, state, active, arguments, code="UPDATE_APPLY_NO_PROGRESS")
+        except RuntimeError as error:
+            if str(error) not in {'update mutex ownership was abandoned', 'update mutex ownership is busy'}:
+                raise
+            if apply_claim_status(control) not in {"LIVE", "UNKNOWN"}:
+                raise
         time.sleep(0.1)
-    emit_support_record({"reason_code": "UPDATE_IN_PROGRESS"}, stage="update_apply")
+    emit_progress_guidance()
     return 20
 
 

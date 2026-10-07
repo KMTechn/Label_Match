@@ -1145,7 +1145,7 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 ## StartupUpdate1 · 자동 업데이트 준비·시작·복구
 
 D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
-SYSTEM 요청 실패·60초 무진전 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
+SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
 늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
 
 상위 폴더 바탕 준비는 일반 사전 검사에서 없는 앱 부모와 지원 기본 ACL을 상승 단계로 넘긴 뒤, 상승 placement 첫 단계에서 문자 그대로 `C:\KMTech`·`C:\KMTech\Apps` 두 폴더만 비재귀로 강화한다. 소유자가 SYSTEM·Administrators·TrustedInstaller의 SID 셋에 속하고 관측된 상속 5 ACE 집합일 때만 상속을 명시 복사하고 Authenticated Users 자신의 0x1301BF를 0x1200AF로 바꾼다. 하위 상속 권한은 유지하며 이미 목표 집합이면 변경하지 않는다. ACE 순서는 비교하지 않고 부모 변경 후 자식을 다시 읽는다. 다른 모양·재분석 지점·신뢰 밖 소유자는 한국어 폴더/이유로 거절하며 도중의 권한 집합 변경도 멈춘다. 신뢰 소유자는 SYSTEM·Administrators·TrustedInstaller SID로 판정한다. 그 뒤 없는 앱 부모를 기존 보호 ACL로 만들고 신뢰를 재검사한 다음 기존 설치 단계로 간다. 두 공유 폴더의 강화는 설치 실패·제거로 되돌리지 않는다.
@@ -1269,3 +1269,9 @@ F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join
 지원 제거의 새 PS5.1/PS7 프로세스에서도 공식 legacy task의 preimage SHA·선택 ElevationLogPath·native scheduler 실패 진단을 사용할 수 있다. 독립 제거는 bootstrap/helper 실행 없이 기존 hash 함수를 재사용하며, packet의 고정 SHA가 일치한 redaction 두 파일만 싣는다. pin 불일치 때는 파일을 고쳐 통과시키지 말고 해당 packet과 공개 소스 위치를 보존한다. 격리 adapter 회귀·142/538·stock의 실제 범위와 native 제거 한계는 `w9setupprep/sub-409/REPORT.md`에 기록한다.
 
 설치기·업데이트·지원 도구의 가변 오류 안내는 허용 코드와 고정 한국어 안내, 보호 보고서 경로로 표시한다. `LABEL_MATCH_INSTALLER_FAILURE=`의 `report_path`/`report_sha256`는 해당 실패 시도의 게시 결과이며 실제 UTF-8 바이트 SHA256과 대조한다. `REPORT_UNAVAILABLE`이면 이전 보고서를 새 실패 근거로 사용하지 않는다. 기준 stdout의 status/report 경로 안내는 유지하지만 게시 증명은 `LABEL_MATCH_INSTALLER_FAILURE=` 레코드의 참조로 확인한다. 작업 사용자/관리자의 기존 보호 보고서 또는 private evidence에서 가린 첫 원인 traceback을 확인한다. 거래·복구 상태는 기존 지원 경로로 처리하고 audit/상태 파일을 수동 편집하지 않는다. [가림·공개 기록 경계](assembly_failure_contract.md)를 따른다.
+
+### D-16 E1 · apply 시작 증거(23:0x 정정)
+
+60초는 SYSTEM apply 시작 claim이 없는 상한이다. Authority 뒤 보호 apply-claim에 PID·native creation identity를 기록한다. LIVE/UNKNOWN 소유자는 기존240초 창에서 기다리며 느린90초 apply 동안 일반 실행을 시작하지 않는다. 프로세스 부재·PID 생성 identity 불일치가 증명될 때만 복귀하고, UNKNOWN은 창 끝에 진행 안내·코드를 남긴다. 정상 종료는 기존 guarded sink로 claim을 SETTLED 기록해 증거를 보존한다. 같은 bootstrap에서 실패한 trial의 UNKNOWN 거부와 다음 fresh 시작의 E3/E4 회복은 구별한다.
+
+사망한 SYSTEM의 같은 claim은 같은 세션에서 재요청하지 않고 현재 G 허용 판을 일반 실행한다. 지원 코드는 같은 protected claim hash에 대해 한 번 게시하며 다음 로그온의 기존 SYSTEM 작업이 새 claim을 덮어써 재시도한다(1차 결정 msg_c93ef274762a).

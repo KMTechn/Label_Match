@@ -365,5 +365,11 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 
 자동 업데이트의 [서명 쌍 계약](PAIR-RULE-CONTRACT.md)과 [지원 수명주기/내용 증명 제거](LIFECYCLE-DESIGN.md)는 사용자 준비·SYSTEM·지원 설치/제거 및 등록 경로의 현재 구현 규칙을 정의한다. source 회귀와 실제 Windows 수용·출시 선언 동결을 구별하며 남은 수용은 LM-StartupUpdate1에 기록한다.
 D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
-SYSTEM 요청 실패·60초 무진전 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
+SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
 늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
+
+### D-16 E1 · apply 시작 증거(23:0x 정정)
+
+60초는 SYSTEM apply 시작 claim이 없는 상한이다. Authority 뒤 보호 apply-claim에 PID·native creation identity를 기록한다. LIVE/UNKNOWN 소유자는 기존240초 창에서 기다리며 느린90초 apply 동안 일반 실행을 시작하지 않는다. 프로세스 부재·PID 생성 identity 불일치가 증명될 때만 복귀하고, UNKNOWN은 창 끝에 진행 안내·코드를 남긴다. 정상 종료는 기존 guarded sink로 claim을 SETTLED 기록해 증거를 보존한다. 같은 bootstrap에서 실패한 trial의 UNKNOWN 거부와 다음 fresh 시작의 E3/E4 회복은 구별한다.
+
+사망한 SYSTEM의 같은 claim은 같은 세션에서 재요청하지 않고 현재 G 허용 판을 일반 실행한다. 지원 코드는 같은 protected claim hash에 대해 한 번 게시하며 다음 로그온의 기존 SYSTEM 작업이 새 claim을 덮어써 재시도한다(1차 결정 msg_c93ef274762a).

@@ -1,0 +1,154 @@
+"""E1: wait for a started apply; only proved owner absence permits recovery."""
+import contextlib
+import ctypes
+from ctypes import wintypes
+import json
+import os
+import subprocess
+import sys
+import time
+
+import pytest
+
+import auto_update as updates
+from tests.test_auto_update_endpoints import endpoint, assert_ordinary, OLD, NEW
+
+
+def own_claim():
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    times = [wintypes.FILETIME() for _ in range(4)]
+    assert kernel.GetProcessTimes(kernel.GetCurrentProcess(), *[ctypes.byref(value) for value in times])
+    identity = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    return dict(schema='code-update-apply-claim-v1', status='RUNNING',
+                pid=os.getpid(), creation_identity=str(identity), started_at=updates.now_utc())
+
+
+def prepared_start(endpoint):
+    control, stage, _, _, _, _ = endpoint
+    (control/'transition.json').unlink()
+    updates.write_json_durable(control/'active.json', {'sha': OLD})
+    updates.write_json_durable(stage/'prepared.json', {'source_commit': NEW})
+    return control
+
+
+def publish_completed_task(endpoint):
+    # The OS task adapter returns a valid completed protected state using the
+    # real transition functions; updater/READY/ES256 mechanics have separate
+    # endpoint coverage. This test measures supervision, not task scheduling.
+    control, _, _, state, _, _ = endpoint
+    applied = updates.apply_transition({**state, 'phase': 'PREPARED'},
+        writers_absent=True, packet_verified=True, durable_prepared=True, now=updates.now_utc())
+    trial = updates.bind_trial(applied, sha=NEW, pid=os.getpid(), ordinary_user=True, now=updates.now_utc())
+    receipt = {**{name: True for name in updates.READY_CHECKS}, 'nonce': trial['nonce'],
+               'transition_id': trial['transition_id'], 'sha': NEW, 'pid': os.getpid(),
+               'ready_at': updates.now_utc()}
+    confirmed = updates.confirm_transition(trial, receipt, process_matches=True,
+        relay_matches=True, now=updates.now_utc())
+    updates.write_json_durable(control/'transition.json', confirmed)
+    updates.write_json_durable(control/'active.json', {'sha': NEW})
+    updates.write_json_durable(control/'apply-claim.json', {**own_claim(), 'status': 'SETTLED'})
+
+
+@pytest.mark.parametrize('busy', [False, True])
+def test_e1_live_claim_waits_through_90_second_apply_then_starts_new(endpoint, monkeypatch, busy):
+    control = prepared_start(endpoint)
+    observation = endpoint[5]
+    clock = [0.0]
+    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
+    updates.write_json_durable(control/'apply-claim.json', own_claim())
+    monkeypatch.setattr(updates, 'request_apply_task', lambda *_: None)
+    def progress(_):
+        clock[0] += 30.0
+        assert not observation.exists(), 'current code started while the apply owner was live'
+        if clock[0] == 90.0:
+            publish_completed_task(endpoint)
+    monkeypatch.setattr(time, 'sleep', progress)
+    if busy:
+        @contextlib.contextmanager
+        def owner_lock(*_args, **_kwargs):
+            if clock[0] < 90.0:
+                raise RuntimeError('update mutex ownership is busy')
+            yield
+        monkeypatch.setattr(updates, 'update_lock', owner_lock)
+    assert_ordinary(endpoint, NEW)
+    assert clock[0] == 90.0
+    assert updates.read_json(control/'transition.json')['phase'] == 'CONFIRMED'
+
+
+@pytest.mark.parametrize('owner', ['exited', 'reused_pid'])
+def test_e1_absent_or_reused_apply_owner_starts_current(endpoint, monkeypatch, owner):
+    control = prepared_start(endpoint)
+    claim = own_claim()
+    if owner == 'exited':
+        native = subprocess.Popen.native
+        process = native([sys.executable, '-B', '-c', 'pass'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+        process.communicate(timeout=30)
+        assert process.returncode == 0
+        claim['pid'] = process.pid
+    else:
+        claim['creation_identity'] = '0'  # Same live PID, an earlier creation identity.
+    updates.write_json_durable(control/'apply-claim.json', claim)
+    requests, reports = [], []
+    written = updates.write_json_durable
+    def record_write(path, value):
+        if path == endpoint[1]/'startup-support.json':
+            reports.append(value)
+        written(path, value)
+    monkeypatch.setattr(updates, 'write_json_durable', record_write)
+    monkeypatch.setattr(updates, 'request_apply_task', lambda *_: requests.append(True))
+    assert_ordinary(endpoint, OLD)
+    first_pid = json.loads(endpoint[5].read_text())['pid']
+    endpoint[5].unlink()
+    assert_ordinary(endpoint, OLD)
+    assert json.loads(endpoint[5].read_text())['pid'] != first_pid
+    assert not requests, 'same-session recovery must not repeatedly restart the dead SYSTEM task'
+    assert len(reports) == 1, 'same dead claim must publish the support code once'
+    assert reports[0]['reason_code'] == 'UPDATE_SUPERVISION_UNAVAILABLE'
+    assert updates.apply_claim_status(control) == 'ABSENT'
+    assert updates.read_json(control/'active.json')['sha'] == OLD
+
+
+def test_e1_unknown_owner_waits_existing_window_and_reports_progress(endpoint, monkeypatch, capsys):
+    control = prepared_start(endpoint)
+    clock = [0.0]
+    updates.write_json_durable(control/'apply-claim.json', own_claim())
+    monkeypatch.setattr(updates, 'native_process_identity', lambda *_: {'status': 'UNKNOWN'}, raising=False)
+    monkeypatch.setattr(updates, 'request_apply_task', lambda *_: None)
+    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(time, 'sleep', lambda _: clock.__setitem__(0, clock[0]+30.0))
+    assert updates.bootstrap(control.parent/'current/app', [], role='gui') == 20
+    assert clock[0] == 240.0 and not endpoint[5].exists()
+    report = json.loads(capsys.readouterr().out)
+    assert report['reason_code'] == 'UPDATE_IN_PROGRESS'
+    assert report['guidance'] == updates.STARTUP_PROGRESS_MESSAGE
+
+
+def test_e1_normal_apply_exit_durably_retires_only_its_claim(endpoint, monkeypatch):
+    control = endpoint[0]
+    updates.write_json_durable(control/'apply-claim.json', own_claim())
+    monkeypatch.setattr(updates, '_apply_prepared', lambda _: 0)
+    assert updates.apply_prepared(control) == 0
+    assert updates.read_json(control/'apply-claim.json')['status'] == 'SETTLED'
+    assert updates.apply_claim_status(control) == 'NONE'
+
+
+def test_e1_next_logon_system_replaces_absent_claim_and_applies(endpoint, monkeypatch):
+    control = endpoint[0]
+    updates.write_json_durable(control/'apply-claim.json', {**own_claim(), 'creation_identity': '0'})
+    assert updates.apply_claim_status(control) == 'ABSENT'
+    written, started = updates.write_json_durable, []
+    def observe(path, value):
+        written(path, value)
+        if path == control/'apply-claim.json' and value['status'] == 'RUNNING':
+            started.append(value)
+            assert updates.apply_claim_status(control) == 'LIVE'
+    monkeypatch.setattr(updates, 'write_json_durable', observe)
+    # Existing logon-trigger task invokes the real SYSTEM apply entrypoint.
+    assert updates.apply_prepared(control) == 0
+    assert len(started) == 1 and started[0]['creation_identity'] == own_claim()['creation_identity']
+    assert updates.read_json(control/'transition.json')['phase'] == 'ROLLED_BACK'
+    assert updates.read_json(control/'apply-claim.json')['status'] == 'SETTLED'
+    assert_ordinary(endpoint, OLD)

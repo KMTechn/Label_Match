@@ -513,7 +513,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 - sub-458: 기존 설치기/진단 fixture 실패는 최종 동일 시험 본문의 clean 기준·후보에서 단언 AST·예외 형식·오류 코드가 일치한 경우만 상속으로 기록한다. fixture 정리는 컷 뒤이며 원 출력과 분류는 `D:/KMTech/program-improvement-20260912/work/program/w9scanonly/sub-458/INHERITED-FAILURES.md`에 보존한다.
 
 D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
-SYSTEM 요청 실패·60초 무진전 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
+SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
 늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
 
 - 예행 3회차의 tree 지표 오류는 루트 integrity record를 payload 지표에서만 제외하여 교정한다. 실제 교정 stock의 설치기 지표 함수와 추가 파일/하위 동명/1 B 변경 거절을 확인하고 예행 4회차 입력으로 전달한다. 공용 상위 ACL preimage 복원 지시는 철회됐으며 결정 B 일치와 실패 뒤 앱 부모 재설치 admission을 확인한다. LegacyCA·공용 Apps 및 모든 기존 하위의 guest 전후 ACL/옛 앱 재시작은 예행 4회차에서 확인해야 한다. frozen archive의 실제 staged producer→consumer 계약 연결도 같은 후보에서 검증한다.
@@ -619,3 +619,9 @@ SYSTEM 요청 실패·60초 무진전 및 FAILED/UNKNOWN 뒤에도 정확한 act
 - 2026-10-06 sub-353: 코드 배치 실패 복구의 StrictMode 미초기화 phase stack과 지원 재개의 replacement 플래그 누락을 교정한다. 실제 생성 launcher·transport 거절·진단 없는 native 종료는 원인 코드와 보호 기록을 남긴다. RED/GREEN·정확142·관련538·새 stock·VM-02의 실제 판정과 한계는 sub-353 REPORT에 기록하며 독립 검토와 회차 A-포장은 1차가 맡는다.
 
 - sub-353 stock 검사: delegated trap 5줄 추가로 이동한 기존 startup task 호출 두 곳의 고정 위치만 820/952로 갱신한다. 기존 함수·명령·mutation/delegation 허용 계약은 그대로 검사하며 최초 거절 stock과 검사 실패를 보존한다.
+
+### D-16 E1 · apply 시작 증거(23:0x 정정)
+
+60초는 SYSTEM apply 시작 claim이 없는 상한이다. Authority 뒤 보호 apply-claim에 PID·native creation identity를 기록한다. LIVE/UNKNOWN 소유자는 기존240초 창에서 기다리며 느린90초 apply 동안 일반 실행을 시작하지 않는다. 프로세스 부재·PID 생성 identity 불일치가 증명될 때만 복귀하고, UNKNOWN은 창 끝에 진행 안내·코드를 남긴다. 정상 종료는 기존 guarded sink로 claim을 SETTLED 기록해 증거를 보존한다. 같은 bootstrap에서 실패한 trial의 UNKNOWN 거부와 다음 fresh 시작의 E3/E4 회복은 구별한다.
+
+사망한 SYSTEM의 같은 claim은 같은 세션에서 재요청하지 않고 현재 G 허용 판을 일반 실행한다. 지원 코드는 같은 protected claim hash에 대해 한 번 게시하며 다음 로그온의 기존 SYSTEM 작업이 새 claim을 덮어써 재시도한다(1차 결정 msg_c93ef274762a).
