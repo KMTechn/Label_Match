@@ -498,7 +498,9 @@ def test_e1_pointer_switch_and_ordinary_launch_exclude_competing_versions(endpoi
     def system():
         try:
             if first == "admission":
-                assert admitted.wait(30)
+                # E1 allows 60 s without SYSTEM start evidence before ordinary
+                # admission. Give this OS barrier that window plus headroom.
+                assert admitted.wait(90)
             outcomes.append(updates.apply_prepared(control))
         except BaseException as error:
             outcomes.append(error)
