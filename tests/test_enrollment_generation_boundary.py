@@ -132,7 +132,7 @@ with pytest.MonkeyPatch.context() as patch:
                 "required_state": "ABSENT_OR_DISABLED", "read_only": True,
                 "task_or_process_mutated": False})
     except CurrentUserOnboardingError as error:
-        assert error.cause_code == "SETUP_FAILED", "onboarding did not reach registration"
+        assert error.cause_code == "NETWORK_OR_SERVER_UNAVAILABLE", "TLS failure classification was lost"
     else:
         raise AssertionError("failed registration was reported as success")
     assert calls == [True], "actual registration did not reach TLS failure"
@@ -285,7 +285,7 @@ with pytest.MonkeyPatch.context() as patch:
                 "required_state": "ABSENT_OR_DISABLED", "read_only": True,
                 "task_or_process_mutated": False})
     except CurrentUserOnboardingError as error:
-        assert error.cause_code == "SETUP_FAILED"
+        assert error.cause_code == "NETWORK_OR_SERVER_UNAVAILABLE"
     else:
         raise AssertionError("failed registration was reported as success")
     assert calls == [True], "actual registration did not reach TLS failure"
