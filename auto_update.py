@@ -181,6 +181,8 @@ def rollback_transition(
         return {**transition, "phase": "UNKNOWN", "reason": "writer absence is unproven"}
     if previous_verified is not True or durable_rollback is not True:
         raise ValueError("rollback requires verified previous code and a durable request")
+    if transition.get("failure_decision", {}).get("selected_sha") != transition.get("previous_sha"):
+        raise ValueError("rollback requires an observed unchanged data generation")
     _utc(now)
     return {**transition, "phase": "ROLLBACK_PENDING_READY", "nonce": _sha(nonce, length=32), "trial_pid": None, "trial_sha": None, "trial_started_at": None, "rollback_at": now}
 
@@ -200,11 +202,83 @@ def recovery_sha(transition: Mapping[str, Any], *, pointer_sha: str) -> str:
         return previous
     if phase in {"APPLIED_PENDING_READY", "CONFIRMED"}:
         return candidate
-    if phase in {"ROLLBACK_PENDING", "ROLLBACK_PENDING_READY", "ROLLED_BACK"}:
+    if phase == "ROLLBACK_PENDING":
+        selected = transition.get("failure_decision", {}).get("selected_sha", candidate)
+        if selected not in {previous, candidate}:
+            raise ValueError("failure decision names another version")
+        return selected
+    if phase == "DEFERRED" and transition.get("retained_candidate") is True:
+        if transition.get("failure_decision", {}).get("selected_sha") != candidate:
+            raise ValueError("retained trial decision differs from candidate")
+        return candidate
+    if phase in {"ROLLBACK_PENDING_READY", "ROLLED_BACK"}:
         return previous
     if phase in {"UNKNOWN", "FAILED"}:
         raise ValueError("unproven recovery must preserve the pointer and stop switching")
     raise ValueError("recovery phase is unsupported")
+
+
+def read_trial_generation(policy: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the ordinary operator's shared commit slot, never SYSTEM's profile."""
+    from kmtech_shared import data_generation as generation
+    from writer_session_fence import canonical_control_root
+
+    try:
+        sid = policy["operator_sid"]
+        generation._identity("Label_Match", sid)
+        local = Path(policy["operator_local_app_data"])
+        if not local.is_absolute():
+            raise ValueError("operator profile is not absolute")
+        path = canonical_control_root({"LOCALAPPDATA": str(local)}) / "data-generation" / (sid + ".json")
+        record = generation._read(path, "Label_Match", sid)
+        return {"status": "READ", "marker_path": str(path), "record": record}
+    except (OSError, ValueError, TypeError, KeyError, generation.DataGenerationError):
+        return {"status": "UNKNOWN"}
+
+
+def decide_trial_failure(transition: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:
+    """After normal writer stop, choose once from actual generation readback.
+
+    The caller durably publishes this decision before changing any pointer.
+    Both GUI and relay trials share this boundary; READY is never a G proxy.
+    """
+    from kmtech_shared import data_generation as generation
+
+    if transition.get("phase") != "ROLLBACK_PENDING":
+        raise ValueError("trial failure requires a normal-stop request")
+    if transition.get("failure_decision") is not None:
+        return dict(transition)
+    before = transition.get("generation_before", {"status": "UNKNOWN"})
+    after = read_trial_generation(policy)
+    previous = transition.get("generation_previous_release", {})
+    candidate = transition.get("generation_candidate_release", {})
+    statuses = {}
+    for name, release in (("previous", previous), ("candidate", candidate)):
+        statuses[name] = generation.probe_downgrade(
+            [after["marker_path"]] if after.get("status") == "READ" else [],
+            release.get("version"), app_id="Label_Match",
+            subject_sid=policy.get("operator_sid"), target_build_id=release.get("source_commit"),
+        )["status"]
+    # An I/O race is uncertainty, even if a separate guard probe succeeded.
+    stable = after == read_trial_generation(policy)
+    unchanged = (stable and before.get("status") == after.get("status") == "READ"
+                 and before == after and statuses["previous"] == "ALLOW")
+    code = "TRIAL_GENERATION_UNCHANGED" if unchanged else "TRIAL_GENERATION_UNKNOWN"
+    record = after.get("record") or {}
+    if (not unchanged and stable and before.get("status") == after.get("status") == "READ"
+            and record.get("build_id") == candidate.get("source_commit")
+            and record.get("version") == candidate.get("version")):
+        code = "TRIAL_GENERATION_ADVANCED"
+    selected = transition["previous_sha"] if unchanged else transition["candidate_sha"]
+    decision = {"before": before, "after": after, "previous_status": statuses["previous"],
+                "candidate_status": statuses["candidate"], "selected_sha": selected,
+                "code": code, "ready_result": "FAILED", "decided_at": now_utc()}
+    state = {**transition, "failure_decision": decision}
+    if not unchanged:
+        state = {**state, "phase": "DEFERRED", "retained_candidate": True,
+                 "deferred_at": now_utc(), "reason": code}
+    return state
+
 
 
 PIN_FIELDS = ("from_commit", "to_commit", "from_contract_sha256", "to_contract_sha256")
@@ -932,6 +1006,9 @@ def persist_switch(control: Path, state: Mapping[str, Any], sha: str) -> None:
     # An interrupted pointer write is repaired from this already-flushed record.
     write_json_durable(control / "transition.json", state)
     write_json_durable(control / "active.json", {"schema": SCHEMA, "sha": _sha(sha), "transition_id": state["transition_id"]})
+    pointer = read_json(control / "active.json")
+    if pointer.get("sha") != sha or pointer.get("transition_id") != state["transition_id"]:
+        raise ValueError("active pointer readback differs from durable decision")
 
 
 def record_confirmed_transition(control: Path, state: Mapping[str, Any]) -> dict[str, Any]:
@@ -1009,6 +1086,12 @@ def _apply_prepared(control: Path) -> int:
         state = optional_record(control / "transition.json")
         if state and state["phase"] == "CONFIRMED":
             state = record_confirmed_transition(control, state)
+        if state and state.get("retained_candidate") is True and state["phase"] == "DEFERRED":
+            selected = recovery_sha(state, pointer_sha=read_json(control / "active.json")["sha"])
+            if read_json(control / "active.json")["sha"] != selected:
+                fixed_helper(control, "Verify", code_root=version_bundle(control, selected))
+                persist_switch(control, state, selected)
+                return 20
         if state is None or state["phase"] in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
             if not prepared_pending(control, policy, state):
                 return 0
@@ -1047,7 +1130,7 @@ def _apply_prepared(control: Path) -> int:
                 fixed_helper(control, "Verify", code_root=target_bundle)
             preserve_candidate_version(target, target_bundle)
             state = prepare_transition(previous_sha=active["sha"], candidate_sha=sha, packet_sha256=candidate["sha256"], forward_pin=forward, rollback_pin=rollback, transition_id=uuid.uuid4().hex, nonce=uuid.uuid4().hex, now=now_utc(), failed_shas=(state or {}).get("failed_shas", []))
-            state = {**state, "rollback_pair": rollback_pair, "pin_authority": pin_authority, "policy_sha256": file_sha256(control / "policy.json"), "data_api_evidence": data_api_evidence, "prepared_packet_root": str(protected)}
+            state = {**state, "rollback_pair": rollback_pair, "pin_authority": pin_authority, "policy_sha256": file_sha256(control / "policy.json"), "data_api_evidence": data_api_evidence, "prepared_packet_root": str(protected), "generation_before": read_trial_generation(policy), "generation_previous_release": current, "generation_candidate_release": candidate_manifest}
             write_json_durable(control / "transition.json", state)
             state = apply_transition(state, writers_absent=not writer_processes(process_snapshot(control), own_pid=os.getpid()), packet_verified=True, durable_prepared=True, now=now_utc())
             persist_switch(control, state, sha)
@@ -1064,6 +1147,12 @@ def _apply_prepared(control: Path) -> int:
                 persist_switch(control, state, state["candidate_sha"])
             if state["phase"] == "ROLLBACK_PENDING":
                 if writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                    return 20
+                state = decide_trial_failure(state, policy)
+                write_json_durable(control / "transition.json", state)
+                if state.get("retained_candidate") is True:
+                    fixed_helper(control, "Verify", code_root=version_bundle(control, state["candidate_sha"]))
+                    persist_switch(control, state, state["candidate_sha"])
                     return 20
                 fixed_helper(control, "Verify", code_root=version_bundle(control, state["previous_sha"]))
                 state = rollback_transition(state, writers_absent=True, previous_verified=True, durable_rollback=True, nonce=uuid.uuid4().hex, now=now_utc())
@@ -1124,6 +1213,12 @@ def _apply_prepared(control: Path) -> int:
     while time.monotonic() < deadline:
         with update_lock(control, policy["operator_sid"]):
             if not writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                state = decide_trial_failure(state, policy)
+                write_json_durable(control / "transition.json", state)
+                if state.get("retained_candidate") is True:
+                    fixed_helper(control, "Verify", code_root=version_bundle(control, state["candidate_sha"]))
+                    persist_switch(control, state, state["candidate_sha"])
+                    return 20
                 old_bundle = version_bundle(control, state["previous_sha"])
                 fixed_helper(control, "Verify", code_root=old_bundle)
                 rollback = rollback_transition(state, writers_absent=True, previous_verified=True, durable_rollback=True, nonce=uuid.uuid4().hex, now=now_utc())
@@ -1978,6 +2073,11 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
             prepared = prepared_pending(control, policy, state)
             action = startup_action(state, prepared_present=prepared)
             active = read_json(control / "active.json")
+            if state and state.get("retained_candidate") is True:
+                if active["sha"] != recovery_sha(state, pointer_sha=active["sha"]):
+                    action = "WAIT_FOR_RECOVERY"
+                elif saw_trial:
+                    return 20  # Next fresh launch uses the retained candidate.
             if state and state["phase"] in {"CONFIRMED", "ROLLED_BACK"} and saw_trial:
                 return 0  # The already-launched GUI owns input and its ordinary relay.
             if state and state["phase"] == "DEFERRED" and requested_at and _utc(state["deferred_at"]) >= _utc(requested_at):

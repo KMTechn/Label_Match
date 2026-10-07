@@ -81,6 +81,8 @@ def test_live_pid_and_heartbeat_are_insufficient_and_trial_only_runs_once():
 
 def test_startup_failure_returns_to_previous_code_only_after_writer_absence():
     state = updates.request_rollback(trial(), reason="new application failed to initialize")
+    # U1: the pure rollback fixture models the observed unchanged-G branch.
+    state = {**state, "failure_decision": {"selected_sha": OLD}}
     unknown = updates.rollback_transition(state, writers_absent=None, previous_verified=True, durable_rollback=True, nonce="8" * 32, now=LATER)
     assert unknown["phase"] == "UNKNOWN"
     with pytest.raises(ValueError):
@@ -106,6 +108,8 @@ def test_power_loss_between_record_and_pointer_write_replays_recorded_code():
     applied = updates.apply_transition(before, writers_absent=True, packet_verified=True, durable_prepared=True, now=NOW)
     assert updates.recovery_sha(applied, pointer_sha=OLD) == NEW
     rollback = updates.request_rollback(applied, reason="startup failed")
+    # U1: the pure rollback fixture models the observed unchanged-G branch.
+    rollback = {**rollback, "failure_decision": {"selected_sha": OLD}}
     assert updates.recovery_sha(rollback, pointer_sha=NEW) == OLD
     assert updates.recovery_sha(rollback, pointer_sha=OLD) == OLD
     with pytest.raises(ValueError):
@@ -252,8 +256,14 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
     stage.mkdir(parents=True)
     key = {"manifest_public_key": "key-adapter"}
     (managed / "current/app/update-manifest-key-config.json").write_text(json.dumps(key))
-    policy = dict(feed_url="https://example.test/feed", channel="stable", operator_sid="operator", operator_local_app_data=str(tmp_path / "operator"), staging_root=str(stage))
+    policy = dict(feed_url="https://example.test/feed", channel="stable", operator_sid="S-1-5-21-455", operator_local_app_data=str(tmp_path / "operator"), staging_root=str(stage))
     bind_test_packet_settings(control, policy)
+    # U1: retain the actual apply loop and all prior proof/data assertions.
+    from kmtech_shared import data_generation as generation
+    from writer_session_fence import canonical_control_root
+    marker = canonical_control_root({"LOCALAPPDATA": policy["operator_local_app_data"]}) / "data-generation" / (policy["operator_sid"] + ".json")
+    marker.parent.mkdir(parents=True)
+    generation.record_generation(marker, "v2.0.98", app_id="Label_Match", subject_sid=policy["operator_sid"], build_id=OLD)
     updates.write_json_durable(control / "policy.json", policy)
     updates.write_json_durable(control / "active.json", {"schema": updates.SCHEMA, "sha": OLD})
     updates.write_json_durable(stage / "prepared.json", {"source_commit": NEW})
@@ -292,12 +302,12 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
                 })
                 return []
             updates.write_json_durable(stage / "trial.json", {"nonce": state["nonce"], "transition_id": state["transition_id"], "pid": 42})
-            return [dict(pid=42, observable=True, sha=NEW, sid="operator", role="gui", ordinary_user=True, created_at=LATER)]
+            return [dict(pid=42, observable=True, sha=NEW, sid="S-1-5-21-455", role="gui", ordinary_user=True, created_at=LATER)]
         if state["phase"] == "ROLLBACK_PENDING_READY":
             nonces.append(state["nonce"])
             updates.write_json_durable(stage / "trial.json", {"nonce": state["nonce"], "transition_id": state["transition_id"], "pid": 44})
             updates.write_json_durable(stage / "ready.json", {**{check: True for check in updates.READY_CHECKS}, "nonce": state["nonce"], "transition_id": state["transition_id"], "sha": OLD, "pid": 44, "ready_at": LATER})
-            return [dict(pid=pid, observable=True, sha=OLD, sid="operator", role=role, ordinary_user=True, created_at=LATER) for pid, role in ((44, "gui"), (45, "relay"))]
+            return [dict(pid=pid, observable=True, sha=OLD, sid="S-1-5-21-455", role=role, ordinary_user=True, created_at=LATER) for pid, role in ((44, "gui"), (45, "relay"))]
         return []  # Candidate writers are absent before rollback.
     monkeypatch.setattr(updates, "process_snapshot", snapshot)
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)

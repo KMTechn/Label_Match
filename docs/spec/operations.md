@@ -1144,6 +1144,8 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 
 ## StartupUpdate1 · 자동 업데이트 준비·시작·복구
 
+D-16: READY 실패 뒤 writer 정상 부재를 증명하고 실제 공통 SID G를 읽는다. G가 준비 전과 같고 이전 판 guard ALLOW일 때만 복귀한다. G 진전/판정 불가는 candidate를 유지하고 failure_decision을 포인터보다 먼저 내구 저장·되읽기한다. 중단 재개는 같은 결정을 쓰며 shared/owner marker·업무 데이터는 되돌리지 않는다. UNKNOWN은 기존 guard를 유지하고 지원 복구를 요구하며 기동을 보장하지 않는다. headless 실제 프로세스 검증과 GUI READY/SYSTEM/랩 실물 수용을 구별한다.
+
 상위 폴더 바탕 준비는 일반 사전 검사에서 없는 앱 부모와 지원 기본 ACL을 상승 단계로 넘긴 뒤, 상승 placement 첫 단계에서 문자 그대로 `C:\KMTech`·`C:\KMTech\Apps` 두 폴더만 비재귀로 강화한다. 소유자가 SYSTEM·Administrators·TrustedInstaller의 SID 셋에 속하고 관측된 상속 5 ACE 집합일 때만 상속을 명시 복사하고 Authenticated Users 자신의 0x1301BF를 0x1200AF로 바꾼다. 하위 상속 권한은 유지하며 이미 목표 집합이면 변경하지 않는다. ACE 순서는 비교하지 않고 부모 변경 후 자식을 다시 읽는다. 다른 모양·재분석 지점·신뢰 밖 소유자는 한국어 폴더/이유로 거절하며 도중의 권한 집합 변경도 멈춘다. 신뢰 소유자는 SYSTEM·Administrators·TrustedInstaller SID로 판정한다. 그 뒤 없는 앱 부모를 기존 보호 ACL로 만들고 신뢰를 재검사한 다음 기존 설치 단계로 간다. 두 공유 폴더의 강화는 설치 실패·제거로 되돌리지 않는다.
 
 전·후 SDDL은 기존 `canonical-portable-<run>-elevated.jsonl`의 PREPARATION에 보존한다. 바탕 준비의 원 예외는 유지하고 child 61–66을 부모의 한국어 INSTALLATION_PREPARATION 진단으로 전달한다(61 기본/목표 집합 밖, 62 재분석, 63 소유자, 64 앱 부모 생성, 65 control 생성 예약, 66 기타). 이 변경은 control/evidence 위치·실행 wrapper·배치 ACL 재설정·실패 복구를 이적 방식으로 옮기지 않는다. 격리 D: 실제 NTFS/PS5.1·PS7 함수 회귀는 source 범위이며 선언 재생성·새 packet·빈 guest 설치는 중앙 랩 수용 전 NOT TESTED다.

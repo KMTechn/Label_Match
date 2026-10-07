@@ -364,3 +364,4 @@ V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경
 이번 산출물은 핵심 업무·예외·계약·운영 공백과 수용 기준을 연결한 **소스 기반 기준선**이다. 메뉴 전체, 모든 호환 barcode/수정·관리자 분기, 업데이트 모든 장애 단계, 실제 provider/overlay·설치 플래그, 상류 PHS 발행부터 출고까지, 검토 사건의 실제 화면 소비·종결은 전수 확인하지 않았다. 테스트 파일의 존재를 실행 증거로 세지 않는다. 후속 작업은 [BACKLOG](BACKLOG.md)에서 관리하고 공통 관계·우선순위는 [중앙 통합](../../../Program_Spec_Hub/INTEGRATIONS.md)과 [중앙 백로그](../../../Program_Spec_Hub/BACKLOG.md)에 전달한다.
 
 자동 업데이트의 [서명 쌍 계약](PAIR-RULE-CONTRACT.md)과 [지원 수명주기/내용 증명 제거](LIFECYCLE-DESIGN.md)는 사용자 준비·SYSTEM·지원 설치/제거 및 등록 경로의 현재 구현 규칙을 정의한다. source 회귀와 실제 Windows 수용·출시 선언 동결을 구별하며 남은 수용은 LM-StartupUpdate1에 기록한다.
+D-16: READY 실패 뒤 writer 정상 부재를 증명하고 실제 공통 SID G를 읽는다. G가 준비 전과 같고 이전 판 guard ALLOW일 때만 복귀한다. G 진전/판정 불가는 candidate를 유지하고 failure_decision을 포인터보다 먼저 내구 저장·되읽기한다. 중단 재개는 같은 결정을 쓰며 shared/owner marker·업무 데이터는 되돌리지 않는다. UNKNOWN은 기존 guard를 유지하고 지원 복구를 요구하며 기동을 보장하지 않는다. headless 실제 프로세스 검증과 GUI READY/SYSTEM/랩 실물 수용을 구별한다.
