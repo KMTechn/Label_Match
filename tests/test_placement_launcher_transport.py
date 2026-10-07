@@ -211,7 +211,9 @@ $frozen=[pscustomobject]@{root=$root;helper_path=(Join-Path $root 'helper.ps1');
  integrity_sha256=('b'*64);writer_fence_path=(Join-Path $root 'writer.ps1');writer_fence_sha256=('c'*64);
  data_generation_path=(Join-Path $root 'generation.ps1');data_generation_sha256=('d'*64)}
 function Start-Process {param($FilePath,$Verb,$ArgumentList,$WindowStyle,[switch]$Wait,[switch]$PassThru)
- if($Verb -cne 'RunAs' -or $WindowStyle -cne 'Hidden'){throw 'Elevation dispatch shape differs.'}
+ $principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+ $expectedVerb=if($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){''}else{'RunAs'}
+ if([string]$Verb -cne $expectedVerb -or $WindowStyle -cne 'Hidden'){throw 'Elevation dispatch shape differs.'}
  $global:transportLength=($ArgumentList -join ' ').Length
  [pscustomobject]@{ExitCode=0}
 }

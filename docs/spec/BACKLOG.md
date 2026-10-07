@@ -384,6 +384,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 <a id="lm-b04"></a>
 ## LM-B04 · 실제 설치 구성·권한·장비 수용 연결
 
+- 상승 토큰의 배치 helper 직접 실행 갈래를 추가했다. 실제 SSH 관리자 토큰의 승인 창 0·성공 거래·등록 실패 복원 수용은 NOT TESTED이며 현재 호스트 비상승 토큰의 transport 회귀와 구분한다. SSH 계정과 작업자 등록 신원의 선택은 w9installarch·1차 설계의 열린 질문으로 남는다.
+
 - 등록 토큰 선택화: 정상 등록은 기존 빈 토큰 허용을 유지하고 관리자 복구의 HTTP 이전 필수 토큰 guard를 제거했다. 토큰 생략·서버 허용/거부·명시 토큰·일회용 복구 승인 보존은 headless 회귀로 검증하며 [IP 기준 절차](operations.md#enrollment-ip-policy)를 따른다. 실제 설치 PC의 허용/비허용 IP와 서버 연동·화면 확인은 별도 수용으로 남는다.
 
 - 2026-09-10 F4 실제 단일 Apply는 instruction-conflict/OPERATOR_REVIEW·attempt2로 보존 중이다. [기존 창의 명시적 같은 요청 재시도](operations.md#f4-explicit-retry-20260910)는 원 C에서142 PASS로 검증했으며, live source 적용·실제 retry/새 QR·F3와 Today 전체 GUI 전후 비교는 미실행이다. 별도 검토 CSV acknowledgment 뒤 자연 relay PASS/idle·13 ACKED는 transport에 한정하며 이 업무 잔여를 닫지 않는다.

@@ -1933,7 +1933,14 @@ function Invoke-LabelDelegatedPlacementHelper($Frozen, [hashtable]$HelperParamet
     return InvokeFrozenPlacementHelper $Frozen $HelperParameters
 }
 
-function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters) {
+function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters, [scriptblock]$TransportForTest = $null) {
+    if ($null -ne $TransportForTest -and
+        ($env:KMTECH_FACTORY_INSTALL_TEST_MODE -cne '1' -or
+         -not $HelperParameters.ContainsKey('AllowNoncanonicalLayoutForTest') -or
+         $HelperParameters.AllowNoncanonicalLayoutForTest -isnot [bool] -or
+         -not [bool]$HelperParameters.AllowNoncanonicalLayoutForTest)) {
+        throw 'Placement transport injection requires explicit factory test mode and layout.'
+    }
     $Script:LabelPlacementChildFailure = $null
     $failureBase = [string]$HelperParameters.ElevationLogPath
     if ([string]::IsNullOrEmpty($failureBase)) {
@@ -2206,7 +2213,11 @@ exit 0
             $stream = [IO.File]::Open([string]$entry[0], 'CreateNew', 'Write', 'None')
             $createdPaths += [string]$entry[0]
             try {
-                [IO.File]::SetAccessControl([string]$entry[0], $privateAcl)
+                if ($PSVersionTable.PSVersion.Major -ge 6) {
+                    [IO.FileSystemAclExtensions]::SetAccessControl([IO.FileInfo]::new([string]$entry[0]), $privateAcl)
+                } else {
+                    [IO.File]::SetAccessControl([string]$entry[0], $privateAcl)
+                }
                 $stream.Write([byte[]]$entry[1], 0, $entry[1].Length)
                 $stream.Flush($true)
             } finally { $stream.Dispose() }
@@ -2272,10 +2283,14 @@ finally{foreach($s in $streams){$s.Dispose()}}
         throw 'Placement launcher command is not bounded.'
     }
     $winps = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-    $process = Start-Process `
-        -FilePath $winps `
-        -Verb RunAs `
-        -ArgumentList @(
+    # Test the current access token, not the account's group membership. A
+    # filtered administrator token still needs consent; an elevated SSH or
+    # shell token can start the same pinned helper directly without a dialog.
+    $principal = [Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent())
+    $launchParameters = @{
+        FilePath = $winps
+        ArgumentList = @(
             '-NoLogo',
             '-NoProfile',
             '-NonInteractive',
@@ -2283,10 +2298,21 @@ finally{foreach($s in $streams){$s.Dispose()}}
             'Bypass',
             '-EncodedCommand',
             $encodedLauncher
-        ) `
-        -WindowStyle Hidden `
-        -Wait `
-        -PassThru
+        )
+        WindowStyle = 'Hidden'
+        Wait = $true
+        PassThru = $true
+    }
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        $launchParameters.Verb = 'RunAs'
+    }
+    # One test-only transport seam replaces ShellExecute with same-context
+    # execution. Production cannot activate it through an environment alone.
+    $process = if ($null -ne $TransportForTest) {
+        & $TransportForTest $launchParameters
+    } else {
+        Start-Process @launchParameters
+    }
     $childExit = [int]$process.ExitCode
     if (Test-Path -LiteralPath $failurePath -PathType Leaf) {
         $diagnosticItem = Get-Item -LiteralPath $failurePath
