@@ -110,7 +110,7 @@ def test_allow_preflight_is_read_only_and_normal_relay_still_persists(monkeypatc
     assert json.loads(status.read_text())["last_cycle"]["status"] == "PASS"
 
 
-def test_registration_records_generation_before_allowed_identity_read(monkeypatch, tmp_path):
+def test_registration_preflights_generation_without_committing_before_identity_read(monkeypatch, tmp_path):
     import label_data_generation as generation
     import protected_admin
     from tools import register_label_match_worker_pc as registrar
@@ -123,13 +123,16 @@ def test_registration_records_generation_before_allowed_identity_read(monkeypatc
     data = tmp_path / "data"
     relay = tmp_path / "relay"
     def payloads(_args):
-        assert json.loads((data / "data-generation.json").read_text())["build_id"] == "a" * 40
+        assert not (data / "data-generation.json").exists()
+        assert not (relay / "data-generation.json").exists()
         reached.append("identity-read")
         raise RuntimeError("isolated end of the allowed identity boundary")
     monkeypatch.setattr(registrar, "build_payloads", payloads)
     assert registrar.main(["--dry-run", "--sync-dir", str(data), "--data-dir", str(relay),
                            "--enrollment-token-env", ""]) == 2
     assert reached == ["identity-read"]
+    assert not (data / "data-generation.json").exists()
+    assert not (relay / "data-generation.json").exists()
 
 
 def test_installed_tool_uses_packet_identity_without_resolving_user_settings(monkeypatch, tmp_path):

@@ -11,12 +11,13 @@ from tests.test_shared_ancestor_protection import run_functions
 
 ROOT = Path(os.environ.get("LM_B1_REPO", Path(__file__).resolve().parents[1]))
 INSTALLER = ROOT / "INSTALL_CANONICAL_PORTABLE.ps1"
+pytestmark = pytest.mark.skipif(os.name != "nt", reason="native Windows enrollment and rollback boundaries")
 
 
 def run_python(tmp_path, script):
     child = tmp_path / "generation-child.py"
     child.write_text(script, encoding="utf-8")
-    result = subprocess.run([sys.executable, "-B", str(child), str(ROOT), str(tmp_path)],
+    result = subprocess.run([sys.executable, "-B", str(child), str(ROOT), str(tmp_path), str(Path(__file__))],
                             capture_output=True, text=True,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     (tmp_path / "generation.stdout").write_text(result.stdout, encoding="utf-8")
@@ -108,39 +109,46 @@ assert all(not path.exists() for path in paths), "failed enrollment committed ge
 
 def test_failed_onboarding_does_not_commit_generation(tmp_path):
     run_python(tmp_path, r'''
-import sys
+import importlib.util, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
+import pytest, requests
 from current_user_onboarding import CurrentUserOnboardingError, onboard_current_user
+from tools import register_label_match_worker_pc as registration
+spec=importlib.util.spec_from_file_location("native_fixture", sys.argv[3])
+fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixture)
 root=Path(sys.argv[2]);calls=[]
-def registration(paths):
+def transport(*args, **kwargs):
     calls.append(True)
-    return 2
-try:
-    onboard_current_user(Path(sys.argv[1]), require_bootstrap_integrity=False,
-        registration_runner=registration, legacy_task_quiescence_reader=lambda: {
-            "schema": "label-match-legacy-task-quiescence-v1", "status": "PASS",
-            "required_state": "ABSENT_OR_DISABLED", "read_only": True,
-            "task_or_process_mutated": False})
-except CurrentUserOnboardingError as error:
-    assert error.cause_code == "SETUP_FAILED", "onboarding did not reach registration"
-else:
-    raise AssertionError("failed registration was reported as success")
-assert calls == [True], "registration failure boundary was not reached"
+    raise requests.exceptions.SSLError("isolated TLS rejection")
+with pytest.MonkeyPatch.context() as patch:
+    metadata=fixture._synthetic_ncrypt(patch)
+    patch.setattr(registration.requests, "post", transport)
+    patch.delenv("PRODUCER_SELF_ENROLL_TOKEN", raising=False)
+    try:
+        onboard_current_user(Path(sys.argv[1]), require_bootstrap_integrity=False,
+            legacy_task_quiescence_reader=lambda: {
+                "schema": "label-match-legacy-task-quiescence-v1", "status": "PASS",
+                "required_state": "ABSENT_OR_DISABLED", "read_only": True,
+                "task_or_process_mutated": False})
+    except CurrentUserOnboardingError as error:
+        assert error.cause_code == "SETUP_FAILED", "onboarding did not reach registration"
+    else:
+        raise AssertionError("failed registration was reported as success")
+    assert calls == [True], "actual registration did not reach TLS failure"
+    assert metadata["exists"] and metadata["created"] == 1
 assert not list(root.rglob("data-generation.json")), "failed onboarding committed generation"
 ''')
 
 
-def test_failed_enrollment_reuses_same_named_current_user_key(monkeypatch):
-    """Run actual provisioning and policy checks with an in-memory NCrypt API."""
+def _synthetic_ncrypt(monkeypatch):
+    """Supply only the native keystore API; product provisioning stays real."""
     import ctypes
     import struct
     import base64
     from types import SimpleNamespace
     from kmtech_zero_pe import possession_key as cng
     from kmtech_zero_pe.cng_p256 import generate_public_jwk
-    from tools import register_label_match_worker_pc as registration
-    import requests
 
     # BCrypt's temporary in-memory key supplies a valid public curve point;
     # the persistent NCrypt store below is entirely synthetic.
@@ -206,6 +214,14 @@ def test_failed_enrollment_reuses_same_named_current_user_key(monkeypatch):
         NCryptGetProperty=get_property, NCryptExportKey=export_key,
         NCryptFinalizeKey=lambda *_args: cng.ERROR_SUCCESS,
         NCryptFreeObject=lambda *_args: cng.ERROR_SUCCESS, NCryptDeleteKey=delete_key))
+    return metadata
+
+
+def test_failed_enrollment_reuses_same_named_current_user_key(monkeypatch):
+    """Run actual provisioning and policy checks with an in-memory NCrypt API."""
+    from tools import register_label_match_worker_pc as registration
+    import requests
+    metadata = _synthetic_ncrypt(monkeypatch)
     first = registration._prepare_possession_key({"producer_identity_source": "generated"})
     monkeypatch.setattr(registration.requests, "post", lambda *_args, **_kwargs: (
         _ for _ in ()).throw(requests.exceptions.SSLError("isolated TLS rejection")))
@@ -244,31 +260,36 @@ def test_failed_registration_generation_gate_and_actual_legacy_folder_restore(tm
         pytest.skip("the independently pinned PC wrapper is required for legacy folder restoration")
     monkeypatch.setenv("LM_B1_BUSINESS_OPENED", "1" if business_opened else "0")
     run_python(tmp_path, r'''
-import json, sys
+import importlib.util, json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
+import pytest, requests
 from current_user_onboarding import CurrentUserOnboardingError, onboard_current_user, resolve_current_user_onboarding_paths
-from tools import register_label_match_worker_pc
+from tools import register_label_match_worker_pc as registration
 from label_data_generation import marker_paths, record_user_data_open
 from protected_admin import current_process_sid
+spec=importlib.util.spec_from_file_location("native_fixture", sys.argv[3])
+fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixture)
 root=Path(sys.argv[2]);calls=[]
-def registration(paths):
+def transport(*args, **kwargs):
     calls.append(True)
-    return register_label_match_worker_pc.main([
-        "--apply", "--data-dir", str(paths.direct_sync_root),
-        "--sync-dir", str(paths.data_root), "--producer-install-id", "invalid/install/id",
-        "--report-path", str(paths.registration_report_path)])
-try:
-    onboard_current_user(Path(sys.argv[1]), require_bootstrap_integrity=False,
-        registration_runner=registration, legacy_task_quiescence_reader=lambda: {
-            "schema": "label-match-legacy-task-quiescence-v1", "status": "PASS",
-            "required_state": "ABSENT_OR_DISABLED", "read_only": True,
-            "task_or_process_mutated": False})
-except CurrentUserOnboardingError as error:
-    assert error.cause_code == "SETUP_FAILED"
-else:
-    raise AssertionError("failed registration was reported as success")
-assert calls == [True], "actual registration failure was not reached"
+    raise requests.exceptions.SSLError("isolated TLS rejection")
+with pytest.MonkeyPatch.context() as patch:
+    metadata=fixture._synthetic_ncrypt(patch)
+    patch.setattr(registration.requests, "post", transport)
+    patch.delenv("PRODUCER_SELF_ENROLL_TOKEN", raising=False)
+    try:
+        onboard_current_user(Path(sys.argv[1]), require_bootstrap_integrity=False,
+            legacy_task_quiescence_reader=lambda: {
+                "schema": "label-match-legacy-task-quiescence-v1", "status": "PASS",
+                "required_state": "ABSENT_OR_DISABLED", "read_only": True,
+                "task_or_process_mutated": False})
+    except CurrentUserOnboardingError as error:
+        assert error.cause_code == "SETUP_FAILED"
+    else:
+        raise AssertionError("failed registration was reported as success")
+    assert calls == [True], "actual registration did not reach TLS failure"
+    assert metadata["exists"] and metadata["created"] == 1
 paths=resolve_current_user_onboarding_paths(Path(sys.argv[1]))
 import os
 if os.environ["LM_B1_BUSINESS_OPENED"] == "1":
