@@ -40,4 +40,7 @@ def test_security_input_parent_is_checked_before_the_existing_reader(tmp_path, k
         assert result['added_file_count'] == 0
     else:
         assert result['ca_reads'] == 1
-        assert result['generation_records_added'] > 0
+        # This fixture fails TLS/profile READY readback after admitting the CA.
+        # Preparation must not commit a generation before that success boundary.
+        assert result['exit'] != 0
+        assert result['generation_records_added'] == 0
