@@ -90,10 +90,9 @@ def test_startup_failure_returns_to_previous_code_only_after_writer_absence():
     rollback = updates.rollback_transition(state, writers_absent=True, previous_verified=True, durable_rollback=True, nonce="8" * 32, now=LATER)
     assert rollback["trial_sha"] is None
     assert rollback["trial_started_at"] is None
-    rollback = updates.bind_trial(rollback, sha=OLD, pid=43, ordinary_user=True, now=LATER)
+    # D-16/E6: the already-confirmed previous code needs no second READY.
     assert updates.recovery_sha(rollback, pointer_sha=NEW) == OLD
-    receipt = {**ready(rollback), "sha": OLD}
-    result = updates.confirm_transition(rollback, receipt, process_matches=True, relay_matches=True, now=LATER)
+    result = rollback
     assert result["phase"] == "ROLLED_BACK"
     assert result["failed_shas"] == [NEW]
     with pytest.raises(ValueError, match="failed version"):
@@ -304,21 +303,20 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
             updates.write_json_durable(stage / "trial.json", {"nonce": state["nonce"], "transition_id": state["transition_id"], "pid": 42})
             return [dict(pid=42, observable=True, sha=NEW, sid="S-1-5-21-455", role="gui", ordinary_user=True, created_at=LATER)]
         if state["phase"] == "ROLLBACK_PENDING_READY":
-            nonces.append(state["nonce"])
-            updates.write_json_durable(stage / "trial.json", {"nonce": state["nonce"], "transition_id": state["transition_id"], "pid": 44})
-            updates.write_json_durable(stage / "ready.json", {**{check: True for check in updates.READY_CHECKS}, "nonce": state["nonce"], "transition_id": state["transition_id"], "sha": OLD, "pid": 44, "ready_at": LATER})
-            return [dict(pid=pid, observable=True, sha=OLD, sid="S-1-5-21-455", role=role, ordinary_user=True, created_at=LATER) for pid, role in ((44, "gui"), (45, "relay"))]
+            raise AssertionError("E6 must not launch another previous-version trial")
         return []  # Candidate writers are absent before rollback.
     monkeypatch.setattr(updates, "process_snapshot", snapshot)
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     original_policy = (control / "policy.json").read_bytes()
+    original_marker = marker.read_bytes()
     assert updates.apply_prepared(control) == 0
     result = updates.read_json(control / "transition.json")
     assert result["phase"] == "ROLLED_BACK"
     assert result["failed_shas"] == [NEW]
     assert updates.read_json(control / "active.json")["sha"] == OLD
-    assert nonces[0] != nonces[-1]
-    assert result["trial_sha"] == OLD
+    assert len(nonces) == 1
+    assert result["trial_sha"] is None
+    assert marker.read_bytes() == original_marker
     assert result["data_api_evidence"] == {"previous_data_api_sha256":"c"*64,"candidate_data_api_sha256":"d"*64,"consumer_bytes_equal":False}
     assert business.read_bytes() == b"original business state must not be restored or deleted"
     assert (control / "policy.json").read_bytes() == original_policy
@@ -344,6 +342,8 @@ def test_relay_logon_launches_gui_and_trial_relay_with_existing_lm_user_roots(mo
     monkeypatch.setattr(updates, "ordinary_user_context", lambda _sid=None: True)
     monkeypatch.setattr(updates, "update_lock", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(updates, "prepared_pending", lambda *_args: False)
+    # E1 requests supervision before a resumed trial; this is the OS task boundary.
+    monkeypatch.setattr(updates, "request_apply_task", lambda *_args: None)
     launched = []
     monkeypatch.setattr(updates, "launch_version", lambda _control, sha, args, **kwargs: launched.append((sha, args, kwargs)) or 42)
     def complete(_seconds):
@@ -751,3 +751,19 @@ def test_installed_canonical_settings_are_bound_to_protected_policy(tmp_path,dam
 
 def policy_from_keys(policy):
     return {k:policy[k] for k in ('feed_url','channel','profile_auth','apply_during_work')}
+
+
+def test_legacy_previous_pending_ready_record_still_confirms():
+    """E6 removes new old-code trials while preserving durable legacy records."""
+    state = updates.request_rollback(trial(), reason="legacy startup failure")
+    state = {**state, "failure_decision": {"selected_sha": OLD}}
+    settled = updates.rollback_transition(state, writers_absent=True,
+        previous_verified=True, durable_rollback=True, nonce="8" * 32, now=LATER)
+    legacy = {**settled, "phase": "ROLLBACK_PENDING_READY", "nonce": "8" * 32,
+              "trial_sha": None, "trial_pid": None, "trial_started_at": None}
+    legacy = updates.bind_trial(legacy, sha=OLD, pid=43, ordinary_user=True, now=LATER)
+    receipt = {**ready(legacy), "sha": OLD}
+    result = updates.confirm_transition(legacy, receipt, process_matches=True,
+        relay_matches=True, now=LATER)
+    assert result["phase"] == "ROLLED_BACK"
+    assert result["failed_shas"] == [NEW]

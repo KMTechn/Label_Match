@@ -438,13 +438,15 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 ## StartupUpdate1 · 매일 시작 시 코드 전환 계약
 
-D-16: READY 실패 뒤 writer 정상 부재를 증명하고 실제 공통 SID G를 읽는다. G가 준비 전과 같고 이전 판 guard ALLOW일 때만 복귀한다. G 진전/판정 불가는 candidate를 유지하고 failure_decision을 포인터보다 먼저 내구 저장·되읽기한다. 중단 재개는 같은 결정을 쓰며 shared/owner marker·업무 데이터는 되돌리지 않는다. UNKNOWN은 기존 guard를 유지하고 지원 복구를 요구하며 기동을 보장하지 않는다. headless 실제 프로세스 검증과 GUI READY/SYSTEM/랩 실물 수용을 구별한다.
+D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
+SYSTEM 요청 실패·60초 무진전 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
+늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
 
 relay 시작의 bootstrap PID는 임시 launcher다. 정상 exit 0 또는 launcher 생존만으로 relay를 승인하지 않는다. lease·fresh status와 보호 active version의 실제 relay PID·SID·역할·SHA·code root·생성 시각을 대조하고 실제 relay PID를 반환한다. trial에서는 nonce도 결속하며 UNKNOWN/FAILED 전이를 성공으로 바꾸지 않는다. 설치 onboarding은 기존 defer를 유지하고 일반 사용자 bootstrap guard를 완화하지 않는다.
 
 feed 설정은 github.com·githubusercontent.com·github.io의 루트와 모든 하위 호스트(Pages/gist 포함)를 거절한다. 대소문자·DNS trailing dot을 정규화하고 닮은 회사 호스트는 이 거절 목록으로 차단하지 않는다. Python/PowerShell 설치기/embedded release gate가 같은 호스트 정책을 사용한다.
 
-GUI/relay trial 시작 예외는 nonce·transition·SHA에 묶인 trial-failure 증거로 먼저 내구 저장한다. bootstrap은 같은 실패 trial을 재시작하지 않고 SYSTEM의 writer 부재·실제 G 결정을 기다린다. G 불변과 이전 판 ALLOW가 증명되면 새 복귀 nonce로 이전 GUI/relay를 시작한다. G 진전은 candidate를 유지하고 다음 시작에서 사용하며, G 판정 불가는 지원 복구를 요구한다. UNKNOWN/FAILED는 포인터·증거를 보존하고 시작을 거절한다. 기존 claim은 nonce뿐 아니라 실제 PID·SID·역할·SHA·생성 시각을 대조한다.
+GUI/relay trial 시작 예외는 nonce·transition·SHA에 묶인 trial-failure 증거로 먼저 내구 저장한다. 같은 실패 trial은 재시작하지 않는다. SYSTEM의 writer 부재와 실제 G 결정으로 정착한 뒤 이전 판이나 유지한 후보를 같은 bootstrap에서 일반 실행한다. 이미 확인된 이전 판에 복귀 READY를 다시 요구하지 않는다. UNKNOWN/FAILED도 정확한 active 판의 현재 G ALLOW와 같은 ordinary cohort 조건을 만족하면 일반 시작하며 포인터·확정 상태는 사용자 쪽에서 바꾸지 않는다. 기존 trial claim은 nonce·실제 PID·SID·역할·SHA·생성 시각에 계속 결속한다.
 
 SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부여한 SYNCHRONIZE·MUTEX_MODIFY_STATE(0x00100001)만 요청해 다시 연다. busy·abandoned·native wait 오류는 각각 구분하고 전환을 허용하지 않는다. 경로별 새 native mutex의 일반 사용자 재열기는 호스트에서 PROVEN이며 실제 SYSTEM↔사용자 경합은 랩 NOT TESTED다.
 
@@ -456,7 +458,7 @@ SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부�
 
 쌍 승인은 출시 컷 `w9setupprep`의 독립 검토와 중앙 서명으로 표현한다. 독립 검토는 데이터 형식·API의 양방향 불변과 보존을 확인한다. 이는 GUI 핫픽스의 정확한 미래 쌍을 승인하는 방식이며 schema/API 변경의 일반 승인이 아니다. 별도 승인 의식·receipt 체계는 추가하지 않는다. policy는 설치기가 packet의 feed/channel/user/staging 설정으로 초기화하고 기존 preimage를 보존한다. SYSTEM apply는 policy를 읽고 SHA를 기록하며 확인된 역방향 권한은 transition에 남긴다. policy 승인 목록을 쓰지 않는다.
 
-적용/복귀 기록을 flush·write-through rename한 뒤 코드 포인터를 바꾼다. GUI READY는 nonce·SHA·PID/생성 시각·기동 시각, 읽기 전용 ledger/queue·미완료 확인과 일반 사용자 relay의 같은 버전/nonce에 묶는다. 입력은 보호된 CONFIRMED/ROLLED_BACK와 활성 SHA 확인까지 잠근다. READY 실패 뒤 검증된 writer 부재·정상 종료 및 실제 G 불변/이전 판 ALLOW를 증명할 때만 복귀하고 실패 SHA를 보존한다. CONFIRMED 뒤 사용자가 옛 feed로 임의 하향하는 경로는 없다.
+적용/복귀 기록을 flush·write-through rename한 뒤 코드 포인터를 바꾼다. GUI READY는 nonce·SHA·PID/생성 시각·기동 시각, 읽기 전용 ledger/queue·미완료 확인과 일반 사용자 relay의 같은 버전/nonce에 묶는다. trial 입력은 보호된 CONFIRMED/ROLLED_BACK와 활성 SHA 확인까지 잠근다. 일반 회복 실행은 위의 active·현재 G ALLOW·ordinary cohort 검증을 별도로 만족해야 한다. READY 실패 뒤 검증된 writer 부재·정상 종료 및 실제 G 불변/이전 판 ALLOW를 증명할 때만 복귀하고 실패 SHA를 보존한다. CONFIRMED 뒤 사용자가 옛 feed로 임의 하향하는 경로는 없다.
 
 설치기는 SYSTEM/SID-logon 작업과 policy/active/transition preimage를 보존하고 정확한 소유 작업만 다룬다. 옛 Run은 실제 옛 명령으로 대조한다. 상승 설치기의 정방향/복귀 relay는 같은 native shell-token 경계·DuplicateTokenEx 0x18B 및 자식 SID/세션/비상승/무결성 8192 readback을 사용한다. Python 시작도 같은 보안 조건을 검사한다. 추가 실패 진단은 호출 이름·Win32 번호·원 예외 사슬·권한 값을 가린 원 메시지를 보존한다. 유한 helper/task/relay-cycle 실패는 exit와 stdout/stderr를 각각 8KiB까지 보존하고 persistent-cycle 상태에는 별도 실패 증거 경로를 남긴다. 상주 일반 자식의 stream은 별도 logging/launcher 경계 교정이 OPEN이며 실제 native 자식 시작은 랩 NOT TESTED다.
 

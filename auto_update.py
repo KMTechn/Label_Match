@@ -32,6 +32,19 @@ READY_CHECKS = (
 )
 
 
+APPLY_PROGRESS_TIMEOUT = 60
+STARTUP_PROGRESS_MESSAGE = "업데이트가 진행 중입니다. 잠시 후 다시 실행하세요."
+
+
+def support_record(fields=None, *, stage):
+    from failure_redaction import public_record
+    return public_record({**dict(fields or {}), "stage": stage})
+
+
+def emit_support_record(fields, *, stage):
+    print(json.dumps(support_record(fields, stage=stage), ensure_ascii=False, sort_keys=True))
+
+
 def _sha(value: Any, *, length: int = 40) -> str:
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{%d}" % length, value) is None:
         raise ValueError("update identity is malformed")
@@ -59,6 +72,8 @@ def startup_action(
     if transition.get("schema") != SCHEMA:
         raise ValueError("startup update record is unsupported")
     phase = transition.get("phase")
+    if phase == "DEFERRED" and transition.get("recovery_pending") is True:
+        return "WAIT_FOR_RECOVERY"
     if phase == "PREPARED":
         return "REQUEST_APPLY"
     if phase in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
@@ -184,7 +199,8 @@ def rollback_transition(
     if transition.get("failure_decision", {}).get("selected_sha") != transition.get("previous_sha"):
         raise ValueError("rollback requires an observed unchanged data generation")
     _utc(now)
-    return {**transition, "phase": "ROLLBACK_PENDING_READY", "nonce": _sha(nonce, length=32), "trial_pid": None, "trial_sha": None, "trial_started_at": None, "rollback_at": now}
+    # E6: previous was already confirmed; a second READY is no recovery gate.
+    return {**transition, "phase": "ROLLED_BACK", "nonce": _sha(nonce, length=32), "trial_pid": None, "trial_sha": None, "trial_started_at": None, "rollback_at": now, "confirmed_at": now}
 
 
 def recovery_sha(transition: Mapping[str, Any], *, pointer_sha: str) -> str:
@@ -1028,23 +1044,50 @@ def record_confirmed_transition(control: Path, state: Mapping[str, Any]) -> dict
 
 def apply_prepared(control: Path) -> int:
     """Preserve a failed preparation; never fall back after an uncertain switch."""
-    fixed_helper(control, "Authority")
-    policy = load_policy(control)
-    before = read_json(control / "active.json")
+    from contextlib import nullcontext
+
+    policy, before = None, None
     try:
+        fixed_helper(control, "Authority")
+        policy = load_policy(control)
+        before = read_json(control / "active.json")
         return _apply_prepared(control)
     except Exception as error:
-        with update_lock(control, policy["operator_sid"]):
+        with update_lock(control, policy["operator_sid"]) if policy else nullcontext():
             state = optional_record(control / "transition.json")
-            pointer = read_json(control / "active.json")
-            not_applied = pointer == before and (not state or state.get("phase") in {"CONFIRMED", "ROLLED_BACK", "DEFERRED", "PREPARED"})
+            # Authority/policy/active failures are also preparation failures.
+            # An in-flight journal remains UNKNOWN until a later SYSTEM decide.
+            not_applied = (not state or state.get("phase") in {"CONFIRMED", "ROLLED_BACK", "DEFERRED", "PREPARED"})
+            if before is not None:
+                try:
+                    not_applied = not_applied and read_json(control / "active.json") == before
+                except (OSError, ValueError):
+                    not_applied = False
             failure = {**(state or {}), "schema": SCHEMA,
                        "phase": "DEFERRED" if not_applied else "UNKNOWN",
-                       "deferred_at": now_utc(), "reason": type(error).__name__,
-                       "launch_failure_details": launch_failure_details(error, include_original=True)}
+                       "deferred_at": now_utc(), "reason_code": "UPDATE_PREPARATION_FAILED",
+                       "reason": type(error).__name__, "launch_failure_details": launch_failure_details(error, include_original=True)}
             write_json_durable(control / ("failure-" + uuid.uuid4().hex + ".json"), failure)
             write_json_durable(control / "transition.json", failure)
-    return 0 if not_applied else 20
+        return 0 if not_applied else 20
+
+
+def settle_trial_failure(control: Path, state: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:
+    """SYSTEM only, with writer absence and the update lock already proved."""
+    failures = list(state.get("failed_shas", []))
+    if state["candidate_sha"] not in failures:
+        failures.append(state["candidate_sha"])
+    state = decide_trial_failure({**state, "phase": "ROLLBACK_PENDING", "failed_shas": failures,
+                                  "recovery_pending": False}, policy)
+    write_json_durable(control / "transition.json", state)
+    selected = state["failure_decision"]["selected_sha"]
+    fixed_helper(control, "Verify", code_root=version_bundle(control, selected))
+    if selected == state["previous_sha"]:
+        state = rollback_transition(state, writers_absent=True, previous_verified=True,
+                                    durable_rollback=True, nonce=uuid.uuid4().hex, now=now_utc())
+    persist_switch(control, state, selected)
+    return state
+
 
 
 def authorize_prepared_replay(control: Path, policy: Mapping[str, Any], state: Mapping[str, Any]) -> None:
@@ -1086,6 +1129,33 @@ def _apply_prepared(control: Path) -> int:
         state = optional_record(control / "transition.json")
         if state and state["phase"] == "CONFIRMED":
             state = record_confirmed_transition(control, state)
+        if state and state.get("recovery_pending") is True:
+            if writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                return 0  # Pending recovery never admits a new prepared packet.
+            state = settle_trial_failure(control, state, policy)
+        if state and state["phase"] in {"APPLIED_PENDING_READY", "UNKNOWN", "FAILED"}:
+            rows = process_snapshot(control)
+            writers = writer_processes(rows, own_pid=os.getpid())
+            claim = optional_record(stage / "trial.json")
+            bound = state.get("trial_pid")
+            if (not bound and claim and claim.get("nonce") == state.get("nonce")
+                    and claim.get("transition_id") == state.get("transition_id")):
+                bound = claim.get("pid")
+            trial_live = state["phase"] == "APPLIED_PENDING_READY" and any(
+                row.get("pid") == bound and process_matches_trial(row, state=state,
+                    sha=state["candidate_sha"], sid=policy["operator_sid"], role="gui") for row in writers)
+            if writers and not trial_live:
+                # A later SYSTEM invocation never stops an ordinary active writer
+                # or upgrades its unconfirmed trial to CONFIRMED.
+                write_json_durable(control / "transition.json", {**state, "phase": "DEFERRED",
+                    "retained_candidate": False, "deferred_at": now_utc(), "reason_code": "UPDATE_EXISTING_WRITER",
+                    "recovery_pending": True, "recovery_phase": state["phase"],
+                    "recovery_reason_code": state.get("reason_code")})
+                return 0
+        if state and state["phase"] in {"UNKNOWN", "FAILED", "ROLLBACK_PENDING_READY"}:
+            if writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                return 20
+            state = settle_trial_failure(control, state, policy)
         if state and state.get("retained_candidate") is True and state["phase"] == "DEFERRED":
             selected = recovery_sha(state, pointer_sha=read_json(control / "active.json")["sha"])
             if read_json(control / "active.json")["sha"] != selected:
@@ -1129,13 +1199,16 @@ def _apply_prepared(control: Path) -> int:
             if target_bundle.exists():
                 fixed_helper(control, "Verify", code_root=target_bundle)
             preserve_candidate_version(target, target_bundle)
+            generation_before = read_trial_generation(policy)
+            if generation_before.get("status") != "READ":
+                write_json_durable(control / "transition.json", {**(state or {}), "schema": SCHEMA,
+                    "phase": "DEFERRED", "deferred_at": now_utc(), "reason_code": "UPDATE_GENERATION_UNKNOWN"})
+                return 0
             state = prepare_transition(previous_sha=active["sha"], candidate_sha=sha, packet_sha256=candidate["sha256"], forward_pin=forward, rollback_pin=rollback, transition_id=uuid.uuid4().hex, nonce=uuid.uuid4().hex, now=now_utc(), failed_shas=(state or {}).get("failed_shas", []))
-            state = {**state, "rollback_pair": rollback_pair, "pin_authority": pin_authority, "policy_sha256": file_sha256(control / "policy.json"), "data_api_evidence": data_api_evidence, "prepared_packet_root": str(protected), "generation_before": read_trial_generation(policy), "generation_previous_release": current, "generation_candidate_release": candidate_manifest}
+            state = {**state, "rollback_pair": rollback_pair, "pin_authority": pin_authority, "policy_sha256": file_sha256(control / "policy.json"), "data_api_evidence": data_api_evidence, "prepared_packet_root": str(protected), "generation_before": generation_before, "generation_previous_release": current, "generation_candidate_release": candidate_manifest}
             write_json_durable(control / "transition.json", state)
             state = apply_transition(state, writers_absent=not writer_processes(process_snapshot(control), own_pid=os.getpid()), packet_verified=True, durable_prepared=True, now=now_utc())
             persist_switch(control, state, sha)
-        elif state["phase"] in {"UNKNOWN", "FAILED"}:
-            return 20
         else:
             pointer = read_json(control / "active.json")
             if state["phase"] == "PREPARED":
@@ -1148,22 +1221,14 @@ def _apply_prepared(control: Path) -> int:
             if state["phase"] == "ROLLBACK_PENDING":
                 if writer_processes(process_snapshot(control), own_pid=os.getpid()):
                     return 20
-                state = decide_trial_failure(state, policy)
-                write_json_durable(control / "transition.json", state)
-                if state.get("retained_candidate") is True:
-                    fixed_helper(control, "Verify", code_root=version_bundle(control, state["candidate_sha"]))
-                    persist_switch(control, state, state["candidate_sha"])
-                    return 20
-                fixed_helper(control, "Verify", code_root=version_bundle(control, state["previous_sha"]))
-                state = rollback_transition(state, writers_absent=True, previous_verified=True, durable_rollback=True, nonce=uuid.uuid4().hex, now=now_utc())
-                persist_switch(control, state, state["previous_sha"])
+                settled = settle_trial_failure(control, state, policy)
+                return 20 if settled.get("retained_candidate") else 0
             sha = recovery_sha(state, pointer_sha=pointer["sha"])
             if pointer["sha"] != sha:
                 if writer_processes(process_snapshot(control), own_pid=os.getpid()):
                     return 20
                 persist_switch(control, state, sha)
     deadline = time.monotonic() + 120
-    resumed_rollback = False
     while time.monotonic() < deadline:
         with update_lock(control, policy["operator_sid"]):
             state = read_json(control / "transition.json")
@@ -1213,22 +1278,9 @@ def _apply_prepared(control: Path) -> int:
     while time.monotonic() < deadline:
         with update_lock(control, policy["operator_sid"]):
             if not writer_processes(process_snapshot(control), own_pid=os.getpid()):
-                state = decide_trial_failure(state, policy)
-                write_json_durable(control / "transition.json", state)
-                if state.get("retained_candidate") is True:
-                    fixed_helper(control, "Verify", code_root=version_bundle(control, state["candidate_sha"]))
-                    persist_switch(control, state, state["candidate_sha"])
-                    return 20
-                old_bundle = version_bundle(control, state["previous_sha"])
-                fixed_helper(control, "Verify", code_root=old_bundle)
-                rollback = rollback_transition(state, writers_absent=True, previous_verified=True, durable_rollback=True, nonce=uuid.uuid4().hex, now=now_utc())
-                persist_switch(control, rollback, state["previous_sha"])
-                # Resume the same task state rather than recursively preparing.
-                resumed_rollback = True
-                break
+                settled = settle_trial_failure(control, state, policy)
+                return 20 if settled.get("retained_candidate") else 0
         time.sleep(0.25)
-    if resumed_rollback:
-        return apply_prepared(control)
     write_json_durable(control / "transition.json", {**state, "phase": "UNKNOWN", "reason": "candidate normal stop could not be proven"})
     return 20
 
@@ -1712,13 +1764,20 @@ def assert_version_writer(app_root: Path, *, source: str, environ: Mapping[str, 
         return
     if not runtime_matches(app_root):
         raise ValueError("writer must use its protected packet runtime")
-    if not ordinary_user_context(read_json(control / "policy.json")["operator_sid"]):
+    policy = load_policy(control)
+    if not ordinary_user_context(policy["operator_sid"]):
         raise ValueError("writer is not the installed ordinary operator")
     state = optional_record(control / "transition.json")
     active = read_json(control / "active.json")
     own_sha = _sha(read_json(app_root.parent / "portable-manifest.json").get("source_commit"))
     if own_sha != active["sha"]:
         raise ValueError("writer code is not the active version")
+    deferred_at = environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
+    if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"} and deferred_at:
+        # The caller already holds writer admission. Do not invert the lock order
+        # update_lock -> writer mutex: only read the same ordinary-start proof.
+        assert_ordinary_recovery(control, policy, own_sha, deferred_at)
+        return
     if state and state["phase"] not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
         cleanup_sources = {'gui_settings_save', 'persistent_relay_status', 'scanner_audit_outbox_save', 'scanner_audit_segment_write', 'gui_current_state_save'}
         if (state["phase"] in {"ROLLBACK_PENDING", "UNKNOWN", "FAILED"} and source in cleanup_sources
@@ -2008,10 +2067,16 @@ def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> 
                 claim = optional_record(Path(policy["staging_root"]) / "trial.json")
                 if claim and claim.get("nonce") == state["nonce"] and claim.get("transition_id") == state["transition_id"] and (role == "relay" or claim.get("pid") == os.getpid()):
                     return None
-        if sha == active["sha"] and state and state["phase"] == "DEFERRED" and os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT") == state.get("deferred_at"):
+        deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
+        if sha == active["sha"] and deferred_at and (not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}):
+            _utc(deferred_at)
+            if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
+                assert_ordinary_recovery(control, policy, sha, deferred_at)
+            # Ordinary active-code admission only. The unchanged G guard still
+            # runs before data access; this grants no pointer or trial authority.
             return None
         prepared = prepared_pending(control, policy, state)
-        if not prepared and (not state or state["phase"] in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}) and sha == active["sha"]:
+        if not prepared and not (state and state.get("recovery_pending") is True) and (not state or state["phase"] in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}) and sha == active["sha"]:
             return None
     request_bootstrap(control, arguments, role=role)
     return 0
@@ -2052,7 +2117,68 @@ def launch_version(control: Path, sha: str, arguments: list[str], *, nonce: str 
     return process.pid
 
 
+def current_generation_status(control: Path, policy: Mapping[str, Any], sha: str) -> str:
+    from kmtech_shared import data_generation as generation
+
+    try:
+        observed = read_trial_generation(policy)
+        if observed.get("status") != "READ":
+            return "UNKNOWN"
+        release = version_manifest(version_bundle(control, sha))
+        return generation.probe_downgrade([observed["marker_path"]], release["version"],
+            app_id="Label_Match", subject_sid=policy["operator_sid"], target_build_id=sha)["status"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return "UNKNOWN"
+
+
+
+def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str, started_at: str) -> None:
+    """Read-only proof under startup update ownership or existing writer admission."""
+    if read_json(control / "active.json")["sha"] != sha:
+        raise ValueError("ordinary recovery code is not the active version")
+    if current_generation_status(control, policy, sha) != "ALLOW":
+        raise ValueError("ordinary recovery requires current data generation allowance")
+    started = _utc(started_at)
+    for row in writer_processes(process_snapshot(control), own_pid=os.getpid()):
+        if (row.get("sha") != sha or row.get("sid") != policy["operator_sid"]
+                or row.get("ordinary_user") is not True or row.get("role") not in {"gui", "relay"}
+                or _utc(row.get("created_at")) < started):
+            raise ValueError("an earlier or unrelated writer prevents ordinary recovery")
+
+
+
+def start_current(control: Path, policy: Mapping[str, Any], state, active, arguments, *, code: str) -> int:
+    """Reuse ordinary launch and publish only the E9 allowlisted support fields."""
+    report = support_record({"reason_code": code,
+        "transition_code": (state or {}).get("failure_decision", {}).get("code", code),
+        "retained_candidate": (state or {}).get("retained_candidate") is True}, stage="update_apply")
+    try:
+        write_json_durable(Path(policy["staging_root"]) / "startup-support.json", report)
+    except OSError:
+        # A support sink failure cannot turn a safe ordinary launch into a stop.
+        emit_support_record({"reason_code": "REPORT_UNAVAILABLE"}, stage="update_apply")
+    started_at = now_utc()
+    if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
+        assert_ordinary_recovery(control, policy, active["sha"], started_at)
+    launch_version(control, active["sha"], arguments, deferred_at=started_at)
+    return 0
+
+
+
 def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
+    try:
+        return _bootstrap(app_root, arguments, role=role)
+    except RuntimeError as error:
+        if str(error) not in {"update mutex ownership is busy", "update mutex ownership was abandoned"}:
+            raise
+        record = support_record({"reason_code": "UPDATE_IN_PROGRESS"}, stage="update_apply")
+        record["guidance"] = STARTUP_PROGRESS_MESSAGE
+        print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+        return 20
+
+
+
+def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
     import time
 
     control = control_root(app_root)
@@ -2063,6 +2189,7 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
         raise ValueError("bootstrap requires the installed ordinary operator")
     requested = False
     requested_at = None
+    progress_deadline = None
     saw_trial = False
     deadline = time.monotonic() + 240
     while time.monotonic() < deadline:
@@ -2073,19 +2200,47 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
             prepared = prepared_pending(control, policy, state)
             action = startup_action(state, prepared_present=prepared)
             active = read_json(control / "active.json")
-            if state and state.get("retained_candidate") is True:
+            gui_arguments = arguments[1:] if role == "relay" and arguments[:1] == ["--label-match-user-relay"] else arguments
+            if state and state["phase"] == "DEFERRED" and state.get("retained_candidate") is True:
                 if active["sha"] != recovery_sha(state, pointer_sha=active["sha"]):
                     action = "WAIT_FOR_RECOVERY"
-                elif saw_trial:
-                    return 20  # Next fresh launch uses the retained candidate.
+                else:
+                    return start_current(control, policy, state, active, gui_arguments, code="UPDATE_TERMINAL_RECOVERED")
             if state and state["phase"] in {"CONFIRMED", "ROLLED_BACK"} and saw_trial:
+                if state["phase"] == "ROLLED_BACK":
+                    return start_current(control, policy, state, active, gui_arguments, code="UPDATE_PREVIOUS_CONFIRMED")
                 return 0  # The already-launched GUI owns input and its ordinary relay.
             if state and state["phase"] == "DEFERRED" and requested_at and _utc(state["deferred_at"]) >= _utc(requested_at):
-                launch_version(control, active["sha"], arguments, deferred_at=state["deferred_at"])
-                return 0
+                code = state.get("reason_code")
+                if code not in {"UPDATE_PREPARATION_FAILED", "UPDATE_EXISTING_WRITER"}:
+                    code = "UPDATE_TERMINAL_RECOVERED"
+                return start_current(control, policy, state, active, arguments, code=code)
             if action == "START_CURRENT":
+                if state and state["phase"] in {"ROLLED_BACK", "DEFERRED"}:
+                    return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED")
                 launch_version(control, active["sha"], arguments)
                 return 0
+            if state and state["phase"] in {"UNKNOWN", "FAILED"}:
+                if writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                    return 0  # The existing single application writer owns work.
+                if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared:
+                    return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED")
+            if action in {"REQUEST_APPLY", "REQUEST_TRIAL", "WAIT_FOR_RECOVERY", "WAIT_FOR_TRIAL"} and not requested:
+                requested_at = now_utc()
+                progress_deadline = time.monotonic() + APPLY_PROGRESS_TIMEOUT
+                try:
+                    request_apply_task(control, policy)
+                except Exception:
+                    if not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
+                        if state and state["phase"] == "APPLIED_PENDING_READY" and writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                            return 0
+                        code = "UPDATE_SUPERVISION_UNAVAILABLE" if state and state["phase"] == "APPLIED_PENDING_READY" else "UPDATE_APPLY_REQUEST_FAILED"
+                        return start_current(control, policy, state, active, arguments, code=code)
+                    raise
+                requested = True
+                # The task may already have settled or switched this journal.
+                # Release ownership and reread it before creating a trial.
+                continue
             if action == "REQUEST_TRIAL":
                 # Both the Run relay and a launcher request this same GUI trial.
                 # The GUI's ordinary onboarding starts its single normal relay.
@@ -2108,7 +2263,6 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                                 if not any(process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="relay") for row in process_snapshot(control)):
                                     raise ValueError("existing trial relay is absent")
                             else:
-                                gui_arguments = arguments[1:] if role == "relay" and arguments[:1] == ["--label-match-user-relay"] else arguments
                                 pid = launch_version(control, active["sha"], gui_arguments, nonce=state["nonce"])
                                 write_json_durable(Path(policy["staging_root"]) / "trial.json", {"pid": pid, "nonce": state["nonce"], "transition_id": state["transition_id"], "claimed_at": now_utc()})
                                 failed_role = "relay"
@@ -2123,15 +2277,15 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                             })
                             # A failed start is not permission to change the pointer.
                             # SYSTEM must prove normal stop and previous-code trust.
-            if action in {"REQUEST_APPLY", "WAIT_FOR_RECOVERY", "WAIT_FOR_TRIAL"} and not requested:
-                requested_at = now_utc()
-                request_apply_task(control, policy)
-                requested = True
-            if state and state["phase"] in {"UNKNOWN", "FAILED"}:
-                return 20
+            if requested and progress_deadline is not None and time.monotonic() >= progress_deadline:
+                if not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
+                    if state and state["phase"] == "APPLIED_PENDING_READY" and writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                        progress_deadline = time.monotonic() + APPLY_PROGRESS_TIMEOUT
+                    else:
+                        code = "UPDATE_SUPERVISION_UNAVAILABLE" if state and state["phase"] == "APPLIED_PENDING_READY" else "UPDATE_APPLY_NO_PROGRESS"
+                        return start_current(control, policy, state, active, arguments, code=code)
         time.sleep(0.1)
-    # The task may be delayed, but a timeout is never permission to launch code
-    # through an unresolved transition or to terminate another process.
+    emit_support_record({"reason_code": "UPDATE_IN_PROGRESS"}, stage="update_apply")
     return 20
 
 

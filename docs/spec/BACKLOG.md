@@ -510,7 +510,11 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 ## LM-StartupUpdate1 · 로그온 자동 코드 적용의 실기 수용
 
-D-16: READY 실패 뒤 writer 정상 부재를 증명하고 실제 공통 SID G를 읽는다. G가 준비 전과 같고 이전 판 guard ALLOW일 때만 복귀한다. G 진전/판정 불가는 candidate를 유지하고 failure_decision을 포인터보다 먼저 내구 저장·되읽기한다. 중단 재개는 같은 결정을 쓰며 shared/owner marker·업무 데이터는 되돌리지 않는다. UNKNOWN은 기존 guard를 유지하고 지원 복구를 요구하며 기동을 보장하지 않는다. headless 실제 프로세스 검증과 GUI READY/SYSTEM/랩 실물 수용을 구별한다.
+- sub-458: 기존 설치기/진단 fixture 실패는 최종 동일 시험 본문의 clean 기준·후보에서 단언 AST·예외 형식·오류 코드가 일치한 경우만 상속으로 기록한다. fixture 정리는 컷 뒤이며 원 출력과 분류는 `D:/KMTech/program-improvement-20260912/work/program/w9scanonly/sub-458/INHERITED-FAILURES.md`에 보존한다.
+
+D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
+SYSTEM 요청 실패·60초 무진전 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
+늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
 
 - 예행 3회차의 tree 지표 오류는 루트 integrity record를 payload 지표에서만 제외하여 교정한다. 실제 교정 stock의 설치기 지표 함수와 추가 파일/하위 동명/1 B 변경 거절을 확인하고 예행 4회차 입력으로 전달한다. 공용 상위 ACL preimage 복원 지시는 철회됐으며 결정 B 일치와 실패 뒤 앱 부모 재설치 admission을 확인한다. LegacyCA·공용 Apps 및 모든 기존 하위의 guest 전후 ACL/옛 앱 재시작은 예행 4회차에서 확인해야 한다. frozen archive의 실제 staged producer→consumer 계약 연결도 같은 후보에서 검증한다.
 

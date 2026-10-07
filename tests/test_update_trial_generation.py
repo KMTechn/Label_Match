@@ -26,7 +26,7 @@ def test_failed_trial_selects_code_from_actual_generation(tmp_path, role, scenar
     if scenario == "before":
         assert result["selected_sha"] == OLD
         assert result["previous_status"] == "ALLOW"
-        assert result["phase"] == "ROLLBACK_PENDING_READY"
+        assert result["phase"] == "ROLLED_BACK"  # D-16/E6: no second READY
     else:
         assert result["selected_sha"] == NEW
         assert result["phase"] == "DEFERRED"

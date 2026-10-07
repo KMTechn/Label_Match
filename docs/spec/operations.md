@@ -1144,7 +1144,9 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 
 ## StartupUpdate1 · 자동 업데이트 준비·시작·복구
 
-D-16: READY 실패 뒤 writer 정상 부재를 증명하고 실제 공통 SID G를 읽는다. G가 준비 전과 같고 이전 판 guard ALLOW일 때만 복귀한다. G 진전/판정 불가는 candidate를 유지하고 failure_decision을 포인터보다 먼저 내구 저장·되읽기한다. 중단 재개는 같은 결정을 쓰며 shared/owner marker·업무 데이터는 되돌리지 않는다. UNKNOWN은 기존 guard를 유지하고 지원 복구를 요구하며 기동을 보장하지 않는다. headless 실제 프로세스 검증과 GUI READY/SYSTEM/랩 실물 수용을 구별한다.
+D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
+SYSTEM 요청 실패·60초 무진전 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
+늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
 
 상위 폴더 바탕 준비는 일반 사전 검사에서 없는 앱 부모와 지원 기본 ACL을 상승 단계로 넘긴 뒤, 상승 placement 첫 단계에서 문자 그대로 `C:\KMTech`·`C:\KMTech\Apps` 두 폴더만 비재귀로 강화한다. 소유자가 SYSTEM·Administrators·TrustedInstaller의 SID 셋에 속하고 관측된 상속 5 ACE 집합일 때만 상속을 명시 복사하고 Authenticated Users 자신의 0x1301BF를 0x1200AF로 바꾼다. 하위 상속 권한은 유지하며 이미 목표 집합이면 변경하지 않는다. ACE 순서는 비교하지 않고 부모 변경 후 자식을 다시 읽는다. 다른 모양·재분석 지점·신뢰 밖 소유자는 한국어 폴더/이유로 거절하며 도중의 권한 집합 변경도 멈춘다. 신뢰 소유자는 SYSTEM·Administrators·TrustedInstaller SID로 판정한다. 그 뒤 없는 앱 부모를 기존 보호 ACL로 만들고 신뢰를 재검사한 다음 기존 설치 단계로 간다. 두 공유 폴더의 강화는 설치 실패·제거로 되돌리지 않는다.
 

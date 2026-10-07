@@ -184,6 +184,19 @@ def bootstrap_fixture(monkeypatch, tmp_path):
     return old, new, state, records
 
 
+def expire_after_failed_trial(monkeypatch, records):
+    # D-16 E1/E3 now recover terminal states during the same bootstrap.
+    # These claim/diagnostic tests end the supervision window after the failed
+    # trial, keeping their existing denial and original-failure assertions.
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    def supervision_ends(_):
+        assert "trial-failure.json" in records
+        records["transition.json"].update(phase="UNKNOWN")
+        clock[0] = 1000.0
+    monkeypatch.setattr(time, "sleep", supervision_ends)
+
+
 @pytest.mark.parametrize("failed_role", ["gui", "relay"])
 def test_trial_launch_failure_waits_and_starts_previous_code(monkeypatch, tmp_path, failed_role):
     old, new, original, records = bootstrap_fixture(monkeypatch, tmp_path)
@@ -223,7 +236,7 @@ def test_failed_trial_keeps_unknown_and_never_launches_previous_code(monkeypatch
         calls.append(sha)
         raise OSError(5, "injected child start failure")
     monkeypatch.setattr(updates, "launch_version", fail)
-    monkeypatch.setattr(time, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
+    expire_after_failed_trial(monkeypatch, records)
     assert updates.bootstrap(tmp_path / "app", [], role="gui") == 20
     assert calls == [new]
     assert records["active.json"]["sha"] == new
@@ -245,7 +258,7 @@ def test_existing_trial_claim_requires_live_bound_processes(monkeypatch, tmp_pat
     rows = [] if change == "missing" else [gui] if change == "missing_relay" else [gui, relay]
     monkeypatch.setattr(updates, "process_snapshot", lambda _: rows)
     monkeypatch.setattr(updates, "launch_version", lambda *a, **k: pytest.fail("stale claim launched code"))
-    monkeypatch.setattr(time, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
+    expire_after_failed_trial(monkeypatch, records)
     assert updates.bootstrap(tmp_path / "app", [], role="gui") == 20
     assert records["trial-failure.json"]["sha"] == new
 
