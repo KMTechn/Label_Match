@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+sub-388: 부모 custody를 유지하는 단일 guardian, 거래/SHA 결과 검증, Confirm-LabelCanonicalPlacement 확정 경계, 확정 뒤 새 코드 유지와 등록 자식 600초/종료 확인 30초를 구현한다. PS5.1/PS7 숨김 protocol 회귀와 기존 선택·pin·stock의 실제 판정은 sub-388 REPORT에 기록한다. 실제 상승 승인 횟수·보호 startup/task/ACL 복원·현재 사용자 SSH 신원 수용은 별도 랩 OPEN이며, 공개 GitHub latest/태그 동결은 유지한다.
+
 회차 B-1의 등록 delegation 누락과 no-relay 복구의 StrictMode 속성 접근을 수정한다. 등록 실패 전에 쓰던 자료 세대 기록을 등록 READY/readback 뒤로 옮기며, 기존 새 세대 업무 자료의 downgrade guard와 wrapper를 보존한다. 같은 이름 current-user CNG 키의 검증·재사용은 기존 설계를 유지한다. 격리 회귀·표준 선언·후보 stock 근거는 [sub-377 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-377/REPORT.md)에서 판정하고 B-1/B-2 랩 재실행과 독립 검토는 후속 수용 항목이다.
 
 회차 5의 실패 복구 delegation과 Verify 진단 참조는 `tests/test_round5_startup_rollback.py`, `tests/test_fixed_helper_failure_evidence.py`로 회귀를 고정한다. 원 감사의 code placement는 PASS였고 onboarding의 fixed helper Verify가 실패했으며, rollback의 protected startup restore 자식이 OWNER_DELEGATION_MISMATCH를 남겼다. 9adc801 stock의 실제 VM 보호 배치 뒤 standalone Verify에서 미export 함수 5종의 결함을 재현했고 첫 실패는 Enter-LabelStartupUpdateAuthority의 Get-StrictFullPath다. 새 자식에서 module만 가져온 전체 Verify·manifest 변조·진단 보존 회귀를 추가한다. 원 fence 만료값과 원 Verify 예외는 미회수이므로 역사적 실행의 세부 원인을 단정하지 않는다. 최종 stock의 성공 등록/의도한 TLS 실패·옛 앱 재시작은 별도 랩 회차 수용 대상이다. 결과·자식 전수 목록·남은 범위는 sub-368 REPORT.md를 따른다.

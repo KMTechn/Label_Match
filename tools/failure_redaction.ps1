@@ -307,6 +307,7 @@ function ConvertTo-KmtechPublicRecord {
           [string[]]$SafeMessages = $Script:KmtechRedactionRules.safe_messages)
     $patterns = @{
         key='\A[a-z][a-z0-9_]{0,63}\z'; identifier='\A[A-Za-z_][A-Za-z0-9_.]{0,127}\z'
+        function_identifier='\A[A-Za-z_][A-Za-z0-9_.-]{0,127}\z'
         sha256='\A[0-9a-f]{64}\z'; commit='\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z'
         version='\Av?[0-9]{1,5}(?:\.[0-9]{1,5}){1,3}\z'
         id='\A(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}|[0-9A-Fa-f]{64})\z'
@@ -320,7 +321,8 @@ function ConvertTo-KmtechPublicRecord {
         switch -CaseSensitive ($key) {
             {$_ -cin @('status','stage','code')} {$kind='code';break}
             'guidance' {$kind='message';break}
-            {$_ -cin @('exception_type','location_module','location_function')} {$kind='identifier';break}
+            {$_ -cin @('exception_type','location_module')} {$kind='identifier';break}
+            'location_function' {$kind='function_identifier';break}
             {$_ -cin @('exit_code','location_line')} {$kind='integer';break}
             'version' {$kind='version';break}
             'utc' {$kind='utc';break}

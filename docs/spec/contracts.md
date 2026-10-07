@@ -1,5 +1,9 @@
 # Label_Match 데이터·통합 계약
 
+canonical 설치 거래는 상승 guardian 하나를 배치와 확정 전 복원에 재사용한다. 일반 토큰의 승인 요청은 거래당 1회, 이미 상승된 토큰은 0회이며 등록은 기존 사용자 문맥이다. 결과는 native 자식 ExitCode와 같은 거래·순번·65,536바이트 상한·ordinary/reparse 거절·메모리 SHA에 결속한다. 부모가 사라지면 기존 authority/delegation을 넘겨받지 않고 RECOVERY_REQUIRED로 보존한다.
+
+확정 시점은 `Confirm-LabelCanonicalPlacement`의 active writer fence 1회 해제다. 직전 READY·서버 등록·설정한 TLS CA·Run readback을 다시 확인하며, 그 전 실패는 기록한 코드·Run·task·stop preimage만 복원한다. 확정 뒤 실패는 POST_CONFIRMATION_FAILED, 해제 불확실은 CONFIRMATION_UNCERTAIN으로 새 코드를 보존한다. 등록 관찰은 600초, 소유 부모 사슬·생성 시각으로 증명한 자식의 종료 확인은 30초, guardian 여유는 120초다. 종료 미증명은 REGISTRATION_CHILD_UNPROVEN이며 live writer와 복원이 경합하지 않는다. guardian은 720초 이후 복원만 받으며 추가 600초에도 명령이 없으면 판정 불가로 종료한다. journal의 terminal 줄 뒤 한 번 봉인하고 덧붙이지 않는다.
+
 등록 준비는 기존 자료 세대의 읽기 전용 검사를 유지하며, 실패한 등록이나 dry-run으로 새 세대를 기록하지 않는다. 등록 CLI는 서버 승인과 로컬 신원·manifest·credential·receipt·보고서 readback 뒤에, onboarding은 READY readback 뒤 업무 원장 열기 전에 세대를 기록한다. 이미 새 세대가 기록된 업무 자료의 downgrade 거부는 유지한다. canonical 복원 delegation은 정상 등록의 `worker_enrollment_network` source를 포함하며 관리자·partial 복구 source는 별도 권한을 유지한다. 등록 실패 뒤 같은 사용자 CNG 이름의 소유 키는 `provision_initial`이 정책 검증 후 재사용하며 교체·비공개 키 export를 하지 않는다.
 
 실패 복구의 protected preimage 자식 grant 갱신은 동일한 live 부모 authority와 session·attempt·transaction·token·source 결속을 요구한다. grant만 만료된 경우의 갱신은 새 소유자·새 source·일반 writer를 허용하지 않으며 generation REFUSE/UNKNOWN 및 원 backup 보존을 유지한다. fixed helper Verify는 TLS/등록 이전의 코드 신뢰 검사이고, 그 실패의 공개 레코드와 보호 child 진단 참조는 onboarding까지 유지한다.

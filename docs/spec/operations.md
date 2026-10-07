@@ -825,6 +825,10 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 
 이미 상승된 SSH 관리자/셸의 access token이면 helper는 직접 실행되어 승인 창이 없다. 비상승 토큰이면 기존 `RunAs` 경로를 사용한다. 같은 pinned bootstrap·숨김 창·native exit·진단 검증을 적용하며 등록은 기존 현재 프로세스 사용자 문맥을 유지한다.
 
+canonical 거래는 첫 호출의 guardian을 계속 사용하고 복원 때 새 RunAs를 띄우지 않는다. guardian과 부모는 제한된 local pipe의 native peer PID 및 부모 생성 시각을 확인한다. PS7에서 띄우는 PS5.1 자식에는 기본 PSModulePath를 전달한다. 확정 직전 readback이 모두 맞으면 Confirm-LabelCanonicalPlacement에서 active fence를 해제한다. 그 뒤 실패·해제 불확실·등록 자식 종료 미증명은 RECOVERY_REQUIRED와 reason_code를 보고하고 새 코드·자료를 보존한다. 확정 전에는 기존 guarded 복원과 preimage readback을 끝낸다. guardian 결과/실패/최종 journal·seal은 같은 감사 경로에 남고, 값·원문 없는 위치 metadata를 보존한다.
+
+PS5.1·PS7의 실제 숨김 guardian/자식·결과 거절·부모 소멸·등록 자식 종료 회귀와 전체 선택의 실제 범위는 [sub-388 보고](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-388/REPORT.md)에 기록한다. 비상승 호스트의 같은 문맥 transport seam 증거를 native RunAs·보호 task/ACL 복원 성공으로 승계하지 않는다. 실제 승인 1회/상승 0회와 privileged preimage 복원은 정확한 stock의 랩 관문이다.
+
 canonical 설치·기존 코드 교체·실패 복원의 배치 helper는 짧은 bootstrap만 상승 명령줄로 전달한다. 기존 감사 폴더에 새 무작위 이름으로 script와 JSON payload를 만들고 현재 사용자·SYSTEM·Administrators의 읽기/삭제 권한만 부여한 뒤 내용을 기록한다. 새 파일의 기존 소유자를 바꾸지 않으며 WRITE_OWNER 권한을 요구하지 않는다. 명령줄에는 두 경로와 원 메모리의 SHA256만 결속한다. 기존 진단 경로보다 긴 파일 이름을 만들지 않으며 인코딩된 명령과 고정 인수는 16,000자를 넘기면 실행 전에 거절한다.
 
 상승 쪽은 두 파일과 기존 integrity/writer/helper/자료 세대 leaf의 reparse 경로를 거절하고, 각 파일을 한 번 읽어 hash를 확인한 메모리 바이트만 실행한다. 실행이 끝날 때까지 읽기 handle이 쓰기·삭제·교체를 막는다. 기존 parameter·서명·inventory·writer delegation·G 판정은 유지한다. 정상 완료·실패·UAC 취소 모두 자기 transport 두 파일을 정리하며 원 실패와 기존 rollback이 상위 설치기에 전달된다.

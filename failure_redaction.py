@@ -44,6 +44,7 @@ def public_record(fields, allowed_codes=None, safe_messages=None):
     messages = set(RULES["safe_messages"] if safe_messages is None else safe_messages)
     patterns = {
         "key": r"[a-z][a-z0-9_]{0,63}", "identifier": r"[A-Za-z_][A-Za-z0-9_.]{0,127}",
+        "function_identifier": r"[A-Za-z_][A-Za-z0-9_.-]{0,127}",
         "sha256": r"[0-9a-f]{64}", "commit": r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
         "version": r"v?[0-9]{1,5}(?:\.[0-9]{1,5}){1,3}",
         "id": r"(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}|[0-9A-Fa-f]{64})",
@@ -60,7 +61,9 @@ def public_record(fields, allowed_codes=None, safe_messages=None):
             kind = "code"
         elif key == "guidance":
             kind = "message"
-        elif key in ("exception_type", "location_module", "location_function"):
+        elif key == "location_function":
+            kind = "function_identifier"
+        elif key in ("exception_type", "location_module"):
             kind = "identifier"
         elif key in ("exit_code", "location_line"):
             kind = "integer"
