@@ -1258,4 +1258,6 @@ F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join
 
 # 설치·지원 실패 보고서 확인 (2026-10-06)
 
+지원 제거의 새 PS5.1/PS7 프로세스에서도 공식 legacy task의 preimage SHA·선택 ElevationLogPath·native scheduler 실패 진단을 사용할 수 있다. 독립 제거는 bootstrap/helper 실행 없이 기존 hash 함수를 재사용하며, packet의 고정 SHA가 일치한 redaction 두 파일만 싣는다. pin 불일치 때는 파일을 고쳐 통과시키지 말고 해당 packet과 공개 소스 위치를 보존한다. 격리 adapter 회귀·142/538·stock의 실제 범위와 native 제거 한계는 `w9setupprep/sub-409/REPORT.md`에 기록한다.
+
 설치기·업데이트·지원 도구의 가변 오류 안내는 허용 코드와 고정 한국어 안내, 보호 보고서 경로로 표시한다. `LABEL_MATCH_INSTALLER_FAILURE=`의 `report_path`/`report_sha256`는 해당 실패 시도의 게시 결과이며 실제 UTF-8 바이트 SHA256과 대조한다. `REPORT_UNAVAILABLE`이면 이전 보고서를 새 실패 근거로 사용하지 않는다. 기준 stdout의 status/report 경로 안내는 유지하지만 게시 증명은 `LABEL_MATCH_INSTALLER_FAILURE=` 레코드의 참조로 확인한다. 작업 사용자/관리자의 기존 보호 보고서 또는 private evidence에서 가린 첫 원인 traceback을 확인한다. 거래·복구 상태는 기존 지원 경로로 처리하고 audit/상태 파일을 수동 편집하지 않는다. [가림·공개 기록 경계](assembly_failure_contract.md)를 따른다.

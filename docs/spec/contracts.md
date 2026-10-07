@@ -463,4 +463,6 @@ SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부�
 증거: 새 순수/주입 경계·독립 clone 집중 비교와 기존 source-derived inventory 핀 확인만 이 레인의 PROVEN 대상이다. 전체 suite·stock builder·실제 packet·작업 등록/ACL·CreateProcessWithTokenW·GUI·VM 수명주기·독립 검토는 NOT TESTED이며 중앙 랩 수용이 필요하다.
 # 설치·지원 공개 실패 기록 (2026-10-06)
 
+독립 production Uninstall은 bootstrap·설치본 코드 helper를 싣지 않는다. SHA는 이미 정의된 동일한 `Get-EarlyFileSha256`을 사용하며, 진단에는 스크립트 위치 기준 `tools/failure_redaction.ps1`·rules의 고정 SHA256을 먼저 확인한 뒤 기존 load 한 곳을 사용한다. 두 파일이 바뀌면 `INSTALL_THIS_PC.ps1`의 `UninstallRedactionPins`도 함께 갱신해야 하며 pin 일치 시험이 이를 검사한다. 불일치는 실행 전 기존 공개 실패 코드·REPORT_UNAVAILABLE·고정 소스 위치로 거절한다.
+
 등록/제거의 실패 원문은 같은 시도의 기존 보호 보고서에만 가린 traceback으로 보존한다(UTF-8 64 KiB 상한). 공개 stderr `LABEL_MATCH_INSTALLER_FAILURE=`는 코드·고정 안내·예외 형식·소스 위치만 받으며, 그 시도가 원자 게시한 보고서의 `report_path`/`report_sha256`만 첨부한다. 게시 실패·조기 거절은 `REPORT_UNAVAILABLE`이며 옛 보고서 경로를 재사용하지 않는다. 성공 출력과 exit, 지원 제거가 읽는 거래·복구 metadata는 보존한다. [현재 기록 계약](assembly_failure_contract.md)을 따른다.

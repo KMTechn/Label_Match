@@ -41,9 +41,9 @@ trap {
     if ($BootstrapIntegrityPreloaded.IsPresent -and $WriterFenceFunctionsPreloaded.IsPresent) {
         throw $_
     }
-    $record=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE'}
+    $record=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE';location_module='INSTALL_THIS_PC.ps1';location_function='ScriptBlock';location_line=[int]$_.InvocationInfo.ScriptLineNumber}
     if (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue) {
-        $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$_.Exception.GetType().FullName;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0];report_status='REPORT_UNAVAILABLE'}
+        $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$_.Exception.GetType().FullName;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0];report_status='REPORT_UNAVAILABLE';location_module='INSTALL_THIS_PC.ps1';location_function='ScriptBlock';location_line=[int]$_.InvocationInfo.ScriptLineNumber}
         try {
             $reference=Write-KmtechProtectedFailureSidecar -Text $_.Exception.ToString()
             $fields.Remove('report_status');$fields.report_path=$reference.path;$fields.report_sha256=$reference.sha256
@@ -131,8 +131,20 @@ else {
     . $BootstrapIntegrityFunctions -SharedCodeRoot $PSScriptRoot
     . (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')
 }
-if (-not (Get-Command ConvertTo-KmtechRedactedSinkText -CommandType Function -ErrorAction SilentlyContinue) -and
-    -not (-not $DryRun.IsPresent -and $Uninstall.IsPresent -and -not $earlyTestOverride)) {
+if (-not (Get-Command ConvertTo-KmtechRedactedSinkText -CommandType Function -ErrorAction SilentlyContinue)) {
+    if (-not $DryRun.IsPresent -and $Uninstall.IsPresent -and -not $earlyTestOverride) {
+        # Standalone removal still skips bootstrap/installed code helpers. Only
+        # these exact packet diagnostics may load in its fresh process.
+        $UninstallRedactionPins = [ordered]@{
+            'tools/failure_redaction.ps1' = 'c81ce889aef0d216985a9dbaf439c2bfa11640d929e836d2bc7b68966d6d073f'
+            'tools/failure_redaction_rules.json' = 'f34e82e1d206f21793188d12641891871553651f5dde1f5e856935b5cbcdbcb5'
+        }
+        foreach ($relative in $UninstallRedactionPins.Keys) {
+            if ((Get-EarlyFileSha256 (Join-Path $PSScriptRoot $relative)) -cne $UninstallRedactionPins[$relative]) {
+                throw 'Standalone removal diagnostic SHA-256 differs from its trusted packet pin.'
+            }
+        }
+    }
     . (Join-Path $PSScriptRoot 'tools/failure_redaction.ps1')
 }
 if ($WriterFenceFunctionsPreloaded.IsPresent) {
@@ -225,7 +237,7 @@ function Assert-NoReparsePoint([string]$Path, [string]$Purpose) {
 }
 
 function Get-FileSha256([string]$Path) {
-    return Get-BootstrapFileSha256 $Path
+    return Get-EarlyFileSha256 $Path
 }
 
 function Install-CurrentUserTlsCaBootstrap([string]$SourcePath, [string]$LocalAppDataRoot) {

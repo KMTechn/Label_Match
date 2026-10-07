@@ -594,6 +594,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 # 설치 공개 실패 기록 수렴 (sub-310, 2026-10-06)
 
+- 2026-10-07 sub-409: 독립 production 제거의 helper 미적재 P1 hash·P2 진단 네 호출을 기존 hash 정의 재사용과 packet SHA 확인 후 redaction load로 교정한다. 새 PS5.1/PS7 실제 진입점의 격리 adapter RED/GREEN·같은 부류 전수·정확142/관련538·stock 근거는 sub-409 REPORT에 남기며 실제 예약 작업·레지스트리·상승·VM 제거 수용은 별도다.
+
 컷 전 범위는 설치기·업데이트 적용기·지원 도구의 가변 진단 출력이며 업무 로그/스캔 화면은 제외한다. 허용 필드/고정 문구 표와 같은 시도 보호 보고서의 경로·UTF-8 SHA 결속, 게시 실패/옛 보고서 회귀를 추가한다. 고정 안내·성공 출력 및 지원 제거의 거래·복구 metadata를 유지한다. 전수 자리 분류·RED→GREEN·접두/긴 assignment 병합·선언 재생성·focused/조립142의 실제 판정과 남은 native/GUI 한계는 sub-310 REPORT에 기록하며 전체 준비 완료로 간주하지 않는다. 전면 공개 형식 통일은 컷 뒤 범위다.
 
 - 2026-10-06 sub-310: 계약 0e에 따라 공개 출력 가변 진단만 교정하고 고정 문구·typed 상태·복구 metadata 유지. sub-308 99c9298 merge 완료; 최종 재생성/회귀 기록은 sub-310 REPORT. stock 빌드와 독립 검토는 코디 msg_89d701df2105에 따라 306+308+310+311 통합 조립에서 한 번 수행.
