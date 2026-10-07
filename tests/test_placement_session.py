@@ -348,6 +348,129 @@ if($env:LM_PREIMAGE -ceq 'ambiguous-code'){
     assert 'REJECTED_RESULT_PREIMAGES_AND_ORIGINAL_CAUSE_RETAINED' in result.stdout
 
 
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+@pytest.mark.parametrize('fault', ('parse', 'identity', 'recovery-missing'))
+def test_control_faults_and_damaged_recovery_diagnostic_keep_exit_unproven(tmp_path, engine, fault):
+    result = run_functions(tmp_path, INSTALLER, SESSION_FUNCTIONS + ['Get-LabelLaunchFailure'], r"""
+$root=$env:LM_SESSION_ROOT
+$initialize=(Get-Command Initialize-LabelPlacementSessionProtocol).ScriptBlock.ToString()
+$winps=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$launch=@{FilePath=$winps;ArgumentList=@();WindowStyle='Hidden';Wait=$true;PassThru=$true}
+$transport={param($options)
+ # The sole existing launch seam supplies a native authenticated fault peer.
+ $boot=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([string]$options.ArgumentList[-1]))
+ $name=[regex]::Match($boot,"-PipeName '([^']+)'").Groups[1].Value
+ if(-not $name){throw 'FAULT_PEER_PIPE_NAME_MISSING'}
+ $peer=@'
+function Initialize-LabelPlacementSessionProtocol {
+@@initialize@@
+}
+Initialize-LabelPlacementSessionProtocol
+$channel=[IO.Pipes.NamedPipeClientStream]::new('.','@@pipe@@',[IO.Pipes.PipeDirection]::InOut,[IO.Pipes.PipeOptions]::Asynchronous)
+try {
+ $channel.Connect(60000)
+ [LabelPlacementChannel]::Write($channel,'{"status":"READY"}')
+ $request=[LabelPlacementChannel]::Read($channel,60000,$null)|ConvertFrom-Json
+ if('@@fault@@' -ceq 'parse'){[LabelPlacementChannel]::Write($channel,'{');exit 0}
+ $response=@{transaction_id=$request.transaction_id;sequence=$request.sequence;sha256=('a'*64)}
+ if('@@fault@@' -ceq 'identity'){$response.transaction_id='another-transaction'}
+ if('@@fault@@' -ceq 'recovery-missing'){$response.status='RECOVERY_REQUIRED'}
+ [LabelPlacementChannel]::Write($channel,($response|ConvertTo-Json -Compress))
+}finally{$channel.Dispose()}
+'@
+ $peer=$peer.Replace('@@initialize@@',$initialize).Replace('@@pipe@@',$name).Replace('@@fault@@',$env:LM_FRAME_FAULT)
+ $same=$options.Clone();$same.Remove('Verb')
+ $same.ArgumentList=@('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($peer)))
+ Start-Process @same
+}
+$session=Start-LabelPlacementSession $launch 'transaction-frame-fault' (Join-Path $root 'session') $transport
+try {
+ $received=$null
+ try{[void](Invoke-LabelPlacementSessionCommand $session ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('exit 0'))))}catch{$received=$_}
+ if($null -eq $received){throw 'INVALID_CONTROL_ADMITTED'}
+ $unproven=$false
+ for($cause=$received.Exception;$null -ne $cause;$cause=$cause.InnerException){if($cause.Data.Contains('helper_child_unproven')){$unproven=$true}}
+ if(-not $unproven){throw 'CONTROL_FAILURE_ALLOWED_ROLLBACK'}
+ if(-not $session.child_exit_unproven){throw 'CONTROL_FAILURE_NOT_RETAINED'}
+ $sequence=$session.sequence
+ try{[void](Invoke-LabelPlacementSessionCommand $session '')}catch{}
+ if($session.sequence -ne $sequence){throw 'CONTROL_FAILURE_DISPATCHED_ANOTHER_COMMAND'}
+ $typed=Get-LabelLaunchFailure $received 'control'
+ if(-not $typed.exception_type -or -not $typed.location_function -or $typed.location_line -le 0){throw 'CONTROL_FAILURE_LOCATION_LOST'}
+ 'CONTROL_FAILURE_REMAINS_UNPROVEN_WITH_LOCATION'
+}finally{
+ $session.pipe.Dispose()
+ if(-not $session.process.WaitForExit(15000)){throw 'FAULT_PEER_DID_NOT_EXIT'}
+ $session.process.Dispose()
+}
+""", values={'LM_SESSION_ROOT': str(tmp_path), 'LM_FRAME_FAULT': fault,
+             'KMTECH_FACTORY_INSTALL_TEST_MODE': '1'}, engine=engine)
+    assert result.returncode == 0, result.stderr
+    assert 'CONTROL_FAILURE_REMAINS_UNPROVEN_WITH_LOCATION' in result.stdout
+
+
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+def test_normal_authenticated_frame_then_missing_result_still_allows_same_guardian_rollback(tmp_path, engine):
+    result = run_functions(tmp_path, INSTALLER, SESSION_FUNCTIONS, SESSION_SETUP + r"""
+$actualBase=$session.result_base
+try {
+ $session.result_base=Join-Path $root 'missing-result'
+ $received=$null
+ try{[void](Invoke-LabelPlacementSessionCommand $session ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('exit 0'))))}catch{$received=$_}
+ if($null -eq $received){throw 'MISSING_RESULT_ADMITTED'}
+ for($cause=$received.Exception;$null -ne $cause;$cause=$cause.InnerException){if($cause.Data.Contains('helper_child_unproven')){throw 'PROVEN_EXIT_WRONGLY_UNPROVEN'}}
+ if($session.child_exit_unproven){throw 'NORMAL_FRAME_EXIT_WRONGLY_UNPROVEN'}
+ $session.result_base=$actualBase;$session.rollback=$true
+ if((Invoke-LabelPlacementSessionCommand $session ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('exit 0')))) -ne 0){throw 'SAME_GUARDIAN_ROLLBACK_FAILED'}
+ Close-LabelPlacementSession $session 'REVERTED'
+ if($script:dispatches -ne 1){throw 'SECOND_LAUNCH_AFTER_RESULT_FAILURE'}
+ 'NORMAL_FRAME_RESULT_FAILURE_REUSES_GUARDIAN'
+}finally{$session.result_base=$actualBase;if(-not $session.closed){Close-LabelPlacementSession $session 'ATTENTION'}}
+""", values={'LM_SESSION_ROOT': str(tmp_path), 'KMTECH_FACTORY_INSTALL_TEST_MODE': '1'}, engine=engine)
+    assert result.returncode == 0, result.stderr
+    assert 'NORMAL_FRAME_RESULT_FAILURE_REUSES_GUARDIAN' in result.stdout
+
+
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+def test_lost_control_while_actual_helper_is_alive_does_not_allow_rollback(tmp_path, engine):
+    result = run_functions(tmp_path, INSTALLER, SESSION_FUNCTIONS, SESSION_SETUP + r"""
+Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+public static class LabelPlacementTestDisconnect {
+ public static void AfterMarker(IDisposable channel,string marker) {
+  new Thread(()=>{for(int n=0;n<400;n++){if(File.Exists(marker)){channel.Dispose();return;}Thread.Sleep(25);}}){IsBackground=true}.Start();
+ }
+}
+'@
+$marker=Join-Path $root 'live-child.txt'
+$childCode='[IO.File]::WriteAllText('''+$marker.Replace("'","''")+''',([string]$PID+''|''+[string]([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc())));Start-Sleep -Seconds 5;exit 0'
+[LabelPlacementTestDisconnect]::AfterMarker($session.pipe,$marker)
+try {
+ $received=$null
+ try{[void](Invoke-LabelPlacementSessionCommand $session ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCode))))}catch{$received=$_}
+ if($null -eq $received -or -not $received.Exception.Data.Contains('helper_child_unproven')){throw 'LIVE_HELPER_CONTROL_LOSS_ALLOWED_ROLLBACK'}
+ if(-not $session.child_exit_unproven){throw 'LIVE_HELPER_UNPROVEN_STATE_NOT_RETAINED'}
+ $identity=[IO.File]::ReadAllText($marker).Split('|')
+ $child=[Diagnostics.Process]::GetProcessById([int]$identity[0])
+ try{if($child.HasExited -or $child.StartTime.ToUniversalTime().ToFileTimeUtc() -ne [long]$identity[1]){throw 'LIVE_HELPER_NOT_OBSERVED'}}finally{$child.Dispose()}
+ 'LIVE_HELPER_CONTROL_LOSS_PRESERVED'
+}finally{
+ $session.pipe.Dispose()
+ if(-not $session.process.WaitForExit(20000)){throw 'REAL_GUARDIAN_DID_NOT_SEAL_AFTER_DISCONNECT'}
+ $session.process.Dispose()
+}
+""", values={'LM_SESSION_ROOT': str(tmp_path), 'KMTECH_FACTORY_INSTALL_TEST_MODE': '1'}, engine=engine)
+    assert result.returncode == 0, result.stderr
+    assert 'LIVE_HELPER_CONTROL_LOSS_PRESERVED' in result.stdout
+    seals = list(tmp_path.glob('*.seal.json'))
+    assert len(seals) == 1
+    seal = json.loads(seals[0].read_text())
+    journal = Path(str(seals[0]).removesuffix('.seal.json') + '.journal.jsonl')
+    assert seal['sha256'] == hashlib.sha256(journal.read_bytes()).hexdigest()
+
+
 def test_guardian_pins_created_bytes_and_seals_the_still_open_journal_handle():
     source = INSTALLER.read_text(encoding='utf-8-sig')
     guardian = source.split("$guardian=@'", 1)[1].split("\n'@", 1)[0]

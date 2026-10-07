@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+정상 인증 frame 전 제어 Write/Read·parse·identity 오류는 helper 종료 미증명이다. HELPER_CHILD_UNPROVEN·코드 UNKNOWN·추가 복원 명령0으로 보존하고, RECOVERY_REQUIRED frame의 진단 파일 손상도 이 표지를 유지한다. 정상 인증 frame 뒤 결과 파일 오류는 같은 guardian 복원 경로를 유지한다. 이미 복원 중이면 기존 ROLLBACK_FAILED 계열 상태에 코드 UNKNOWN을 기록하며 파일 존재만으로 완료를 판단하지 않는다. 원 예외 형식·함수·줄을 교체하지 않는다(1차 msg_e36ee0956cca).
+
 확정 전 배치 결과 검증이 예외로 끝나도 실제 보호 startup preimage와 검증된 code backup을 복원 전에 수집한다. 소유·종료 미증명 자식은 기존 RECOVERY_REQUIRED 분기에서 복원을 거절한다. 복원 입력 수집 자체의 실패는 별도 진단으로 보존하며 최초 결과 검증 실패의 typed 원인·위치를 유지한다.
 
 guardian 결과·실패·seal의 선언 SHA는 생성한 메모리 바이트에서 계산한다. journal은 terminal을 flush한 뒤 같은 열린 handle에서 digest를 계산하고 닫으며, 봉인 뒤 append하지 않는다. HELPER_CHILD_UNPROVEN의 코드 상태는 UNKNOWN이다. pinned guardian 실패의 원 예외 형식·위치·보고서 참조는 기존 child_output 진단 채널로 부모에 전달한다.

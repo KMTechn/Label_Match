@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+sub-388 제어 응답 소실: 1차 msg_e36ee0956cca에 따라 정상 인증 frame 전 오류는 HELPER_CHILD_UNPROVEN·코드 UNKNOWN·복원0이다. 정상 frame 뒤 결과 파일 거절은 기존 같은 guardian 복원이며, 미증명 진단 파일 손상은 복원 허가로 바꾸지 않는다. 실제 native pipe fault·parse/identity·missing 진단·정상 frame 뒤 missing 결과를 양 엔진에서 회귀 고정한다. 앞 09d3df6의 142/538/stock은 그 판의 증거로 보존하고 마지막 SHA에 다시 검증한다.
+
 sub-388 결과 검증 예외: native 배치 뒤 결과 파일 검증이 throw해도 확정 전 catch에서 실제 startup preimage와 검증된 code backup을 수집한다. 모호한 backup은 거절하고 별도 capture 진단을 보존하며 원 실패의 형식·위치를 교체하지 않는다. PS5.1/7 실제 catch와 파일 SHA 회귀를 추가하고 마지막 커밋에 142/538/stock을 다시 결속한다.
 
 sub-388 T6 회귀: 초기 서버 주소 거절의 기존 FAILED/SERVER_BASE_URL_INVALID/REPORT_UNAVAILABLE·고정 안내에 원 예외 형식·모듈·함수·양수 줄을 필수로 검사한다. URL 값 비노출과 plan/설치·경로 생성 부작용 0 단언은 유지한다. 예전 네 필드만 허용하여 생긴 68536dc의 538 회차 추가 실패는 원본 근거로 보존한다.

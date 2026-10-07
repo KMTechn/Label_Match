@@ -2189,7 +2189,7 @@ try {
         if($process.HasExited -or [LabelPlacementChannel]::Peer($pipe.SafePipeHandle,$true) -ne $process.Id){throw 'PLACEMENT_GUARDIAN_IDENTITY'}
         $ready=[LabelPlacementChannel]::Read($pipe,60000,$null)|ConvertFrom-Json
         if([string]$ready.status -cne 'READY'){throw 'PLACEMENT_GUARDIAN_NOT_READY'}
-        return [pscustomobject]@{pipe=$pipe;process=$process;transaction_id=$TransactionId;sequence=0;guardian_path=$guardianPath;result_base=$resultBase;closed=$false;rollback=$false}
+        return [pscustomobject]@{pipe=$pipe;process=$process;transaction_id=$TransactionId;sequence=0;guardian_path=$guardianPath;result_base=$resultBase;closed=$false;rollback=$false;child_exit_unproven=$false}
     } catch {
         $pipe.Dispose();if($null -ne $process){$process.Dispose()}
         # A failed launch has no authority to start a second elevation.
@@ -2200,18 +2200,36 @@ try {
 }
 
 function Invoke-LabelPlacementSessionCommand($Session, [string]$EncodedCommand, [switch]$Verify) {
-    if($Session.closed -or $Session.process.HasExited){throw 'PLACEMENT_GUARDIAN_EXITED'}
-    $Session.sequence++
-    $operation=if($Verify){'VERIFY'}else{'EXECUTE'}
-    [LabelPlacementChannel]::Write($Session.pipe,(@{operation=$operation;transaction_id=$Session.transaction_id;sequence=$Session.sequence;command=$EncodedCommand;rollback=[bool]$Session.rollback}|ConvertTo-Json -Compress))
-    $response=[LabelPlacementChannel]::Read($Session.pipe,900000,$null)|ConvertFrom-Json
-    if([string]$response.transaction_id -cne [string]$Session.transaction_id -or
-        ($response.sequence -isnot [int] -and $response.sequence -isnot [long]) -or $response.sequence -ne $Session.sequence -or
-        [string]$response.sha256 -cnotmatch '^[0-9a-f]{64}$'){throw 'PLACEMENT_RESPONSE_IDENTITY'}
+    # Only an authenticated normal response proves the native child finished.
+    # A lost control channel must not let parent rollback race a live placement.
+    try {
+        if($Session.child_exit_unproven){throw 'HELPER_CHILD_UNPROVEN'}
+        if($Session.closed -or $Session.process.HasExited){throw 'PLACEMENT_GUARDIAN_EXITED'}
+        $Session.sequence++
+        $operation=if($Verify){'VERIFY'}else{'EXECUTE'}
+        [LabelPlacementChannel]::Write($Session.pipe,(@{operation=$operation;transaction_id=$Session.transaction_id;sequence=$Session.sequence;command=$EncodedCommand;rollback=[bool]$Session.rollback}|ConvertTo-Json -Compress))
+        $response=[LabelPlacementChannel]::Read($Session.pipe,900000,$null)|ConvertFrom-Json
+        if([string]$response.transaction_id -cne [string]$Session.transaction_id -or
+            ($response.sequence -isnot [int] -and $response.sequence -isnot [long]) -or $response.sequence -ne $Session.sequence -or
+            [string]$response.sha256 -cnotmatch '^[0-9a-f]{64}$'){throw 'PLACEMENT_RESPONSE_IDENTITY'}
+        if($response.PSObject.Properties['status'] -and $response.status -cne 'RECOVERY_REQUIRED'){throw 'PLACEMENT_RESPONSE_IDENTITY'}
+    } catch {
+        $Session.child_exit_unproven=$true
+        $_.Exception.Data['helper_child_unproven']=$true
+        throw
+    }
     if($response.PSObject.Properties['status'] -and $response.status -ceq 'RECOVERY_REQUIRED'){
-        $record=Read-LabelPlacementSessionRecord ($Session.result_base+'.failure.json') ([string]$response.sha256) $Session.transaction_id $Session.sequence -Failure
+        $Session.child_exit_unproven=$true
+        try {
+            $record=Read-LabelPlacementSessionRecord ($Session.result_base+'.failure.json') ([string]$response.sha256) $Session.transaction_id $Session.sequence -Failure
+        } catch {
+            # The authenticated recovery state survives a missing/forged
+            # diagnostic file and is sealed in the parent's recovery audit.
+            $_.Exception.Data['helper_child_unproven']=$true
+            throw
+        }
         $failure=[InvalidOperationException]::new([string]$record.reason_code)
-        if($record.reason_code -ceq 'HELPER_CHILD_UNPROVEN'){$failure.Data['helper_child_unproven']=$true}
+        $failure.Data['helper_child_unproven']=$true
         $failure.Data['child_output']=[ordered]@{exception_type=[string]$record.exception_type;location_module=[string]$record.location_module;location_function=[string]$record.location_function;location_line=[int]$record.location_line;report_path=($Session.result_base+'.failure.json');report_sha256=[string]$response.sha256}
         throw $failure
     }
@@ -5691,7 +5709,7 @@ catch {
         $rollbackFailure = $_
         try {
             $audit.status = if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }
-            $audit.code_state = if (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
+            $audit.code_state = if ($null -ne $Script:LabelPlacementSession -and $Script:LabelPlacementSession.child_exit_unproven) { 'UNKNOWN' } elseif (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
             $audit.rollback.applied = $mutated
             $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted
             $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
