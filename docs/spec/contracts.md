@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+확정 전 배치 결과 검증이 예외로 끝나도 실제 보호 startup preimage와 검증된 code backup을 복원 전에 수집한다. 소유·종료 미증명 자식은 기존 RECOVERY_REQUIRED 분기에서 복원을 거절한다. 복원 입력 수집 자체의 실패는 별도 진단으로 보존하며 최초 결과 검증 실패의 typed 원인·위치를 유지한다.
+
 guardian 결과·실패·seal의 선언 SHA는 생성한 메모리 바이트에서 계산한다. journal은 terminal을 flush한 뒤 같은 열린 handle에서 digest를 계산하고 닫으며, 봉인 뒤 append하지 않는다. HELPER_CHILD_UNPROVEN의 코드 상태는 UNKNOWN이다. pinned guardian 실패의 원 예외 형식·위치·보고서 참조는 기존 child_output 진단 채널로 부모에 전달한다.
 
 실행 중 배치 자식에도 720초 상한을 적용한다. 기존 부모 사슬·생성 시각·열린 handle로 자기 자식 트리의 종료를 30초 안에 확인하면 실제 native ExitCode와 HELPER_EXECUTION_EXPIRED를 보존하고 같은 guardian을 복원 전용으로 유지한다. 소유·종료 미증명은 HELPER_CHILD_UNPROVEN·RECOVERY_REQUIRED이며 코드 복원은 0이다. 실행 중 부모 소멸도 복원 없이 진단·봉인한다. 로컬 pipe는 NETWORK 그룹 deny 대신 PIPE_REJECT_REMOTE_CLIENTS와 기존 peer PID·생성 시각으로 경계를 지킨다.

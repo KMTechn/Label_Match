@@ -308,6 +308,46 @@ def test_local_pipe_rejects_remote_connections_without_denying_ssh_network_group
     assert '$parent.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $ParentBirth' in session
 
 
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+@pytest.mark.parametrize('preimage', ('startup', 'known-code', 'ambiguous-code'))
+def test_rejected_result_catch_captures_actual_preimages_without_losing_original_failure(tmp_path, engine, preimage):
+    result = run_functions(tmp_path, INSTALLER,
+                           ['Sha', 'ReplacementPreimage', 'Save-LabelPlacementRecoveryPreimages', 'Get-LabelLaunchFailure'], r"""
+. (Join-Path (Split-Path -Parent $env:LM_CONTRACT_SOURCE) 'kmtech_shared/powershell/portable.ps1')
+$install=Join-Path $env:LM_SESSION_ROOT 'current'
+$writerAttemptId='rejected-result-attempt'
+$startup=Join-Path $env:LM_SESSION_ROOT ('.startup-update-install.'+$writerAttemptId)
+[void][IO.Directory]::CreateDirectory($startup)
+[IO.File]::WriteAllText((Join-Path $startup 'preimage.json'),'{"status":"captured-before-mutation"}')
+$placementAttempted=$true;$existingVerified=$env:LM_PREIMAGE -cne 'startup'
+$startupLifecycle=$null;$legacyFirstRegistration=$false
+$replacementRollbackRoot='';$replacementBackupsBefore=@();$installedPreimageInventory=@{}
+if($env:LM_PREIMAGE -ceq 'known-code'){$replacementRollbackRoot=Join-Path $env:LM_SESSION_ROOT '.current.rollback.existing'}
+if($env:LM_PREIMAGE -ceq 'ambiguous-code'){
+ foreach($name in @('.current.rollback.a','.current.rollback.b')){[void][IO.Directory]::CreateDirectory((Join-Path $env:LM_SESSION_ROOT $name))}
+}
+$Script:LabelPlacementChildFailure=$null
+$audit=[ordered]@{rollback=[ordered]@{}}
+$source=[IO.File]::ReadAllText($env:LM_CONTRACT_SOURCE)
+$start=$source.IndexOf('    $original = $_',$source.IndexOf('    $forwardFailure = $_'))
+$end=$source.IndexOf('    Save-LabelRollbackContext',$start)
+if($start -lt 0 -or $end -le $start){throw 'REAL_PREIMAGE_CATCH_MISSING'}
+$catch=[scriptblock]::Create($source.Substring($start,$end-$start))
+try{throw [IO.InvalidDataException]::new('PLACEMENT_RESULT_REJECTED')}catch{. $catch}
+if($original.Exception.GetBaseException().Message -cne 'PLACEMENT_RESULT_REJECTED'){throw 'ORIGINAL_RESULT_FAILURE_LOST'}
+if($audit.startup_update_preimage.path -cne $startup -or
+   $audit.startup_update_preimage.sha256 -cne (Sha (Join-Path $startup 'preimage.json'))){throw 'ACTUAL_STARTUP_PREIMAGE_LOST'}
+if($env:LM_PREIMAGE -ceq 'known-code' -and
+   $replacementRollbackRoot -cne (Join-Path $env:LM_SESSION_ROOT '.current.rollback.existing')){throw 'RECORDED_CODE_PREIMAGE_REPLACED'}
+if($env:LM_PREIMAGE -ceq 'ambiguous-code'){
+ if(-not $audit.rollback.Contains('preimage_capture_failure') -or $replacementRollbackRoot){throw 'AMBIGUOUS_BACKUP_ADMITTED'}
+}elseif($audit.rollback.Contains('preimage_capture_failure')){throw 'VALID_PREIMAGE_CAPTURE_FAILED'}
+'REJECTED_RESULT_PREIMAGES_AND_ORIGINAL_CAUSE_RETAINED'
+""", values={'LM_SESSION_ROOT': str(tmp_path), 'LM_PREIMAGE': preimage}, engine=engine)
+    assert result.returncode == 0, result.stderr
+    assert 'REJECTED_RESULT_PREIMAGES_AND_ORIGINAL_CAUSE_RETAINED' in result.stdout
+
+
 def test_guardian_pins_created_bytes_and_seals_the_still_open_journal_handle():
     source = INSTALLER.read_text(encoding='utf-8-sig')
     guardian = source.split("$guardian=@'", 1)[1].split("\n'@", 1)[0]

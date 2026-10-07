@@ -4017,6 +4017,23 @@ function Save-FirstRegistrationAttempt($Record, [string]$Path) {
     if ($null -ne $Record) { Save-LabelMachineMetadata $Path $Record }
 }
 
+function Save-LabelPlacementRecoveryPreimages {
+    # Dot-source in the transaction scope. A rejected result can follow real
+    # protected mutations, so capture actual verified recovery inputs on errors
+    # as well as on a returned native exit code.
+    $startupPreimage = Join-Path (Split-Path -Parent $install) ('.startup-update-install.' + $writerAttemptId)
+    if (Test-Path -LiteralPath (Join-Path $startupPreimage 'preimage.json')) {
+        $audit.startup_update_preimage = [ordered]@{path=$startupPreimage;sha256=(Sha (Join-Path $startupPreimage 'preimage.json'))}
+    }
+    if ($existingVerified -and $null -eq $startupLifecycle -and [string]::IsNullOrEmpty($replacementRollbackRoot)) {
+        $replacementRollbackRoot = ReplacementPreimage $install $installedPreimageInventory $replacementBackupsBefore
+        if ($legacyFirstRegistration) {
+            $firstRegistrationAttempt.code_backup_root = $replacementRollbackRoot
+            Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
+        }
+    }
+}
+
 function Save-LabelRollbackContext {
     # Only restoration inputs are persisted; delegation is regenerated on resume.
     $values = [ordered]@{}
@@ -5218,6 +5235,7 @@ catch {
 $mutated = $false
 $replacementRollbackRoot = if ($null -ne $firstRegistrationResume) { [string]$firstRegistrationResume.code_backup_root } else { '' }
 $replacementBackupsBefore = @()
+$placementAttempted = $false
 }
 catch {
     $preparationFailure = $_
@@ -5437,20 +5455,9 @@ try {
             if ($null -eq $readback -or $readback.enabled -or $readback.fingerprint.sha256 -cne $legacyRelayBefore.fingerprint.sha256) { throw 'LEGACY_RELAY_DISABLED_READBACK_FAILED' }
             $audit.legacy_relay_task_preimage.transition='DISABLED_RETAINED'
         }
+        $placementAttempted = $true
         $placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters
-        # A failing placement may already have changed protected startup state.
-        # Record its actual preimage before inspecting its exit code.
-        $startupPreimage = Join-Path (Split-Path -Parent $install) ('.startup-update-install.' + $writerAttemptId)
-        if (Test-Path -LiteralPath (Join-Path $startupPreimage 'preimage.json')) {
-            $audit.startup_update_preimage = [ordered]@{path=$startupPreimage;sha256=(Sha (Join-Path $startupPreimage 'preimage.json'))}
-        }
-        if ($existingVerified -and $null -eq $startupLifecycle) {
-            $replacementRollbackRoot = ReplacementPreimage $install $installedPreimageInventory $replacementBackupsBefore
-            if ($legacyFirstRegistration) {
-                $firstRegistrationAttempt.code_backup_root = $replacementRollbackRoot
-                Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
-            }
-        }
+        . Save-LabelPlacementRecoveryPreimages
         if ($placementExitCode -ne 0) {
             $audit.placement_child_failure = $Script:LabelPlacementChildFailure
             Save $auditPath $audit
@@ -5648,6 +5655,10 @@ catch {
         throw ([string]$audit.failure_details.guidance)
     }
     $original = $_
+    if ($placementAttempted) {
+        try { . Save-LabelPlacementRecoveryPreimages }
+        catch { $audit.rollback.preimage_capture_failure = Get-LabelLaunchFailure $_ 'preimage_capture' }
+    }
     if ((Get-Variable -Name LabelPlacementChildFailure -Scope Script -ErrorAction SilentlyContinue) -and $null -ne $Script:LabelPlacementChildFailure) { $original.Exception.Data['placement_child_failure'] = $Script:LabelPlacementChildFailure }
     $audit.failure_type = $original.Exception.GetType().Name
     $audit.failure_details = Get-LabelLaunchFailure $original 'forward'
