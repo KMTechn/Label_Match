@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+sub-412 B-2: versions의 활성 코드 경로가 current 전용 옛 작업 이전에 전달되던 결함을 고정 current 입력으로 수정한다. 코디 msg_c2085909122c의 N2'/N3' 승인에 따라 canonical 확정 전 등록 READY에서는 세대·ledger·settings를 열지 않고 T1 뒤 정상 시작으로 연기한다. 기존 generation 거부와 Run/task preimage 복원은 유지한다. PS5.1/PS7 격리 실제 함수의 등록 성공·작업 이전 실패·옛 폴더 원위치·StartupUpdate 제거·확정 뒤 실패/멱등 재시작, 142/538·선언·stock 근거는 [sub-412 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-412/REPORT.md)에 기록한다. 독립 검토·1차 FF와 실제 포장 회차 B 재실행은 코디네이터 수용 항목이다.
+
 sub-399 P2: 등록·배치 자식의 동기 CIM 관찰이 30초 종료 예산 밖으로 늘어나는 경로를 공용 벽시계 마감으로 제한한다. 관찰 runspace의 남은 시간 대기·CIM 시간 제한을 함께 적용하고 만료 뒤 종료 동작0·미증명 복원0을 유지한다. PS5.1/PS7의 35초 지연 RED→GREEN, 정상 종료 및 최종 142/538·같은 SHA의 feed 유무 stock 근거는 sub-404 REPORT에 남긴다. GitHub 공개 release/tag/latest 동결과 랩 수용 OPEN은 유지한다.
 
 sub-388 제어 응답 소실: 1차 msg_e36ee0956cca에 따라 정상 인증 frame 전 오류는 HELPER_CHILD_UNPROVEN·코드 UNKNOWN·복원0이다. 정상 frame 뒤 결과 파일 거절은 기존 같은 guardian 복원이며, 미증명 진단 파일 손상은 복원 허가로 바꾸지 않는다. 실제 native pipe fault·parse/identity·missing 진단·정상 frame 뒤 missing 결과를 양 엔진에서 회귀 고정한다. 앞 09d3df6의 142/538/stock은 그 판의 증거로 보존하고 마지막 SHA에 다시 검증한다.

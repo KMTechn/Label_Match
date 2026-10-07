@@ -19,9 +19,12 @@ NAMES = ['Protect-LabelFailureText', 'Get-LabelLaunchFailure', 'Invoke-LabelRoll
 @pytest.mark.parametrize('case', ['onboarding', 'early', 'unproven', 'code_failed', 'task_failed',
                                  'startup_failed', 'g_ready', 'g_unready', 'resume', 'resume_unproven',
                                  'released_allow', 'released_refuse', 'fresh_strict', 'resume_strict', 'placement_strict', 'resume_placement_strict', 'catch_placement_strict'])
-def test_exact_preimages_and_safe_resume_with_real_generation(tmp_path, engine, case):
+def test_exact_preimages_and_safe_resume_with_real_generation(tmp_path, engine, case,
+        generation_marker_paths=None, version_root=None, rollback_target_version=None):
     result = run_functions(tmp_path, INSTALLER, NAMES, r'''
 $root=$env:LM_RECOVERY_ROOT;$case=$env:LM_RECOVERY_CASE;$SkipSignatureValidationForTest=$false
+$Script:LabelCanonicalConfirmation='UNATTEMPTED'
+$Script:LabelPlacementSession=$null;$placementAttempted=$false
 . (Join-Path $env:LM_RECOVERY_REPO 'kmtech_shared/powershell/data_generation.ps1')
 $source=$env:LM_RECOVERY_REPO;$sourceCommit='a'*40;$inventorySha='b'*64
 $sourceManifest=[pscustomobject]@{version='v2.0.95';source_commit=$sourceCommit}
@@ -33,6 +36,7 @@ $auditPath=Join-Path $localAuditRoot 'canonical-portable-isolated.json';$runId='
 $stop=Join-Path $root 'stop.json';$removalPath=Join-Path $root 'removal.json';$relayPath=Join-Path $root 'relay.json'
 $generationSubjectSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $generationMarkerPaths=@((Join-Path $root 'data-generation.json'))
+if($env:LM_RECOVERY_GENERATION_PATHS){$generationMarkerPaths=@((ConvertFrom-Json -InputObject $env:LM_RECOVERY_GENERATION_PATHS).paths)}
 if($case -like 'g_*' -or $case -ceq 'released_refuse') {
  [void](Write-KmtechDataGeneration -MarkerPath $generationMarkerPaths[0] -Version 'v2.0.95' -AppId 'Label_Match' -SubjectSid $generationSubjectSid -BuildId $sourceCommit)
 }
@@ -78,12 +82,23 @@ function Disable-ScheduledTask {param($TaskName,$TaskPath) $script:taskEnabled=$
 function Product {param($Root,$Mode,$ExtraArguments,$LogicalAppRoot)
  $script:events.Add('remove');if($case -ceq 'early'){throw 'Injected removal failure'}
 }
-function Manifest {param($Root,$Skip) return $sourceManifest}
+function Manifest {param($Root,$Skip)
+ if($env:LM_RECOVERY_OLD_VERSION){return [pscustomobject]@{version=$env:LM_RECOVERY_OLD_VERSION;source_commit=('b'*40)}}
+ return $sourceManifest
+}
 function PortableInventory {param($Root) [pscustomobject]@{sha256=$inventorySha}}
 function InvokeFrozenIntegrityProbe {param($Frozen,$Root) if(-not (Test-Path -LiteralPath $Root)){throw 'Tree absent'} }
-function Invoke-LabelDelegatedPlacementHelper {param($Frozen,$Parameters,$Authority)
+function Invoke-LabelDelegatedPlacementHelper {param($Frozen,$Parameters,$Authority,[switch]$RefreshDelegation)
+ if($Parameters.ContainsKey('StartupUpdateRestorePreimage')){return InvokeFrozenPlacementHelper $Frozen $Parameters}
  $script:events.Add('code');if($case -ceq 'code_failed'){throw 'Injected code failure'}
- Remove-Item -LiteralPath $install -Recurse;return 0
+ Remove-Item -LiteralPath $install -Recurse
+ if($env:LM_RECOVERY_VERSION_ROOT){
+  $versionRoot=[IO.Path]::GetFullPath($env:LM_RECOVERY_VERSION_ROOT)
+  if(-not (Same $versionRoot (Join-Path $root 'versions')) -or
+     @(Get-ChildItem -LiteralPath $versionRoot -Recurse -Attributes ReparsePoint).Count){throw 'Isolated code boundary differs'}
+  Remove-Item -LiteralPath $versionRoot -Recurse
+ }
+ return 0
 }
 function InvokeFrozenPlacementHelper {param($Frozen,$Parameters)
  $script:events.Add('startup');if(Test-Path -LiteralPath $install){throw 'Startup restore still requires current'}
@@ -200,7 +215,10 @@ if($case -notlike 'g_*' -and $case -cne 'released_refuse' -and @($phases | Where
 if(@($phases | Where-Object {$_ -ceq 'run_restore'}).Count -gt 1){throw 'Nested child phase was duplicated'}
 'PASS'
 ''', engine=engine, values={'LM_RECOVERY_ROOT': str(tmp_path), 'LM_RECOVERY_CASE': case,
-                            'LM_RECOVERY_REPO': str(ROOT)})
+                            'LM_RECOVERY_REPO': str(ROOT),
+                            'LM_RECOVERY_GENERATION_PATHS': __import__('json').dumps({'paths': generation_marker_paths}) if generation_marker_paths else '',
+                            'LM_RECOVERY_VERSION_ROOT': str(version_root) if version_root else '',
+                            'LM_RECOVERY_OLD_VERSION': rollback_target_version or ''})
     assert result.returncode == 0, result.stdout + result.stderr
     if case == 'catch_placement_strict':
         assert 'install_status=FAILED' in result.stdout

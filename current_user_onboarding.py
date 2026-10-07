@@ -884,6 +884,7 @@ def _registration_runner(
     server_base_url: str,
     environ: Mapping[str, str] | None = None,
     tls_ca_source: str | None = None,
+    defer_canonical_data_open: bool = False,
 ) -> int:
     from tools import register_label_match_worker_pc
 
@@ -915,6 +916,8 @@ def _registration_runner(
         tls_ca_source = _configured_tls_ca_bundle_source(paths, environ)
     if tls_ca_source:
         arguments.extend(["--tls-ca-bundle-path", tls_ca_source])
+    if defer_canonical_data_open:
+        return int(register_label_match_worker_pc.main(arguments, defer_canonical_data_open=True))
     return int(register_label_match_worker_pc.main(arguments))
 
 
@@ -1024,9 +1027,17 @@ def onboard_current_user(
 ) -> dict[str, Any]:
     from auto_update import installation_root, resolve_lifecycle_context, assert_registration_storage
     managed = installation_root(Path(app_root))
+    setup_root = Path(app_root)
     if managed is not None and (managed / "update-control").exists():
         context = resolve_lifecycle_context(managed, operation="register")
         app_root = context["active_code_root"]
+        setup_root = Path(context["fixed_root"])
+    if defer_canonical_relay_start:
+        from writer_session_fence import active_fence, canonical_control_root, _delegation_matches
+        values = os.environ if environ is None else environ
+        fence = active_fence(canonical_control_root(values), environ=values)
+        if fence is None or not _delegation_matches(fence, source="current_user_onboarding", environ=values):
+            raise ValueError("deferred data open and relay start require exact canonical installer ownership")
     paths, tls_ca_source, credential_input = prepare_current_user_data_open(app_root, environ=environ)
     assert_registration_storage(Path(app_root), (paths.data_root, paths.settings_path,
         paths.direct_sync_root, paths.logistics_profile_path, paths.ledger_path))
@@ -1180,6 +1191,7 @@ def onboard_current_user(
                             server_base_url=server_base_url,
                             environ=environ,
                             tls_ca_source=tls_ca_source,
+                            defer_canonical_data_open=defer_canonical_relay_start,
                         )
                     else:
                         return_code = registration_runner(paths)
@@ -1240,23 +1252,29 @@ def onboard_current_user(
                 "configured TLS CA bundle was not persisted in the logistics profile"
             )
 
-        # Registration preparation does not open business data. Keep its
-        # downgrade preflight above, and commit this generation only after
-        # registration READY readback, before opening the business ledger.
-        try:
-            record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
-                                                   paths.direct_sync_root, paths.queue_dir,
-                                                   paths.logistics_profile_path.parent))
-        except DataGenerationError as exc:
-            raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
-                status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
-        ledger_factory(paths.ledger_path)
-        if not paths.ledger_path.is_file():
-            raise ValueError("current-user business ledger readback failed")
-        report["settings"] = dict(settings_factory(paths))
-        settings_status = str(report["settings"].get("status") or "")
-        if settings_status not in {"CREATED", "REUSED"}:
-            raise ValueError("current-user settings placement was not proven")
+        # Keep the read-only downgrade preflight above. Canonical preparation
+        # waits until T1; normal startup records READY before business data open.
+        if defer_canonical_relay_start:
+            # Canonical preparation is still reversible. The normal startup
+            # after T1 performs these idempotent opens under its writer guard.
+            report["ledger_status"] = "DEFERRED_CANONICAL_INSTALL"
+            report["settings"] = {"status": "DEFERRED_CANONICAL_INSTALL"}
+        else:
+            try:
+                record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+                                                       paths.direct_sync_root, paths.queue_dir,
+                                                       paths.logistics_profile_path.parent))
+            except DataGenerationError as exc:
+                raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
+                    status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
+            ledger_factory(paths.ledger_path)
+            if not paths.ledger_path.is_file():
+                raise ValueError("current-user business ledger readback failed")
+            report["ledger_status"] = "READY"
+            report["settings"] = dict(settings_factory(paths))
+            settings_status = str(report["settings"].get("status") or "")
+            if settings_status not in {"CREATED", "REUSED"}:
+                raise ValueError("current-user settings placement was not proven")
 
         stop_path = user_relay_stop_path(paths.direct_sync_root)
         report['relay_resume_required'] = stop_path.exists()
@@ -1265,7 +1283,7 @@ def onboard_current_user(
             environ=environ,
             credential_input=credential_input,
         )
-        report["relay_autostart"] = dict(autostart_installer(paths.app_root))
+        report["relay_autostart"] = dict(autostart_installer(setup_root))
         autostart_status = str(report["relay_autostart"].get("status") or "")
         if autostart_status in {"", "UNKNOWN"}:
             raise CurrentUserOnboardingError(
@@ -1275,7 +1293,7 @@ def onboard_current_user(
             )
         if autostart_status != "PASS":
             raise ValueError("current-user relay autostart was not proven")
-        report["scheduled_task_migration"] = dict(scheduled_task_remover(paths.app_root))
+        report["scheduled_task_migration"] = dict(scheduled_task_remover(setup_root))
         migration_status = str(report["scheduled_task_migration"].get("status") or "")
         if migration_status in {"", "UNKNOWN"}:
             raise CurrentUserOnboardingError(
@@ -1304,11 +1322,6 @@ def onboard_current_user(
             release = {"status": "NOT_REQUIRED"}
         report["stop_marker_release"]["release"] = release
         if defer_canonical_relay_start:
-            from writer_session_fence import active_fence, canonical_control_root, _delegation_matches
-            values = os.environ if environ is None else environ
-            fence = active_fence(canonical_control_root(values), environ=values)
-            if fence is None or not _delegation_matches(fence, source="current_user_onboarding", environ=values):
-                raise ValueError("deferred relay start requires exact canonical installer ownership")
             report["relay_start"] = {"status": "DEFERRED_CANONICAL_INSTALL"}
         else:
             report["relay_start"] = dict(relay_launcher(paths.app_root))
@@ -1327,7 +1340,6 @@ def onboard_current_user(
                 "status": "READY",
                 "state_readback": state,
                 "server_registration_verified": True,
-                "ledger_status": "READY",
                 "operation_lease_store": "AUTHORITATIVE_SNAPSHOT_PRESERVED",
                 "persistent_relay_principal": "current_user",
                 "system_scheduled_task_required": False,

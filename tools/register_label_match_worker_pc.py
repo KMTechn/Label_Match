@@ -2232,7 +2232,7 @@ def _emit_registration_notice(message, error):
         redaction.emit_support_failure(error)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, defer_canonical_data_open: bool = False) -> int:
     parser = __import__("failure_redaction").InstallerArgumentParser(description="Register this Label_Match PC as an HTTPS producer")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true")
@@ -2289,6 +2289,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report-path", default="")
     args = parser.parse_args(argv)
     try:
+        if defer_canonical_data_open:
+            from writer_session_fence import active_fence, canonical_control_root, _delegation_matches
+            fence = active_fence(canonical_control_root())
+            if (not args.apply or fence is None or
+                    not _delegation_matches(fence, source="current_user_onboarding", environ=os.environ)):
+                raise ValueError("deferred data open requires exact canonical installer ownership")
         _registration_storage_preflight(args)
     except (ValueError, WriterFenceError) as exc:
         lines = redact_for_sink(str(exc)).rstrip().splitlines()
@@ -2453,9 +2459,9 @@ def main(argv: list[str] | None = None) -> int:
         report["report_path"] = str(report_path.resolve())
         report = _write_registration_report(report_path, report)
         _verify_json_file(report_path, report, label="registration report")
-        if args.apply:
+        if args.apply and not defer_canonical_data_open:
             # Failed enrollment and dry-run preparation must not advance the
-            # data generation. All registration documents are now read back.
+            # data generation. Canonical preparation waits until T1 as well.
             record_user_data_open(ROOT, data_roots)
         print(f"registration_report={report_path.resolve()}")
         if report.get("partial_recovery_message_ko"):

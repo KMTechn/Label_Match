@@ -117,7 +117,7 @@ try{
     $copy=Join-Path $backup 'old-file.dat';Copy-Item -LiteralPath $preimage -Destination $copy
     $manifest=Join-Path $backup 'manifest.jsonl'
     @{source_path=(Join-Path $original 'old-file.dat');backup_path=$copy;bytes=(Get-Item -LiteralPath $copy).Length;sha256=(Get-FileHash -LiteralPath $copy).Hash}|ConvertTo-Json -Compress|Set-Content -LiteralPath $manifest -Encoding UTF8
-    $state=@{app='LM';install_phase='FAILED';backup_root=$backup;log_root=$root;entry=@{path=$original};renames=@(@{from_path=$original;to_path=$renamed;phase='RENAMED'});autostart=@();manifest_path=$manifest;manifest_sha256=(Get-FileHash -LiteralPath $manifest).Hash;code_retained=($env:LM_ROUND5_CASE -ceq 'current_retained');status='';steps=@()}
+    $state=@{app='LM';install_phase='FAILED';backup_root=$backup;log_root=$root;entry=@{path=$original;app_dirs=@($original);never_touch=@();untouched_candidate_dirs=@();data_paths=@();config_files=@();backup_required=@();rename_targets=@($original);processes=@();autostart=@()};renames=@(@{from_path=$original;to_path=$renamed;phase='RENAMED'});autostart=@();manifest_path=$manifest;manifest_sha256=(Get-FileHash -LiteralPath $manifest).Hash;code_retained=($env:LM_ROUND5_CASE -ceq 'current_retained');status='';steps=@()}
     $restored=Invoke-KmtechLegacyRollback $state @{}
     if($restored.Status -cnotin @('ROLLED_BACK','ROLLED_BACK_CODE_RETAINED') -or (Test-Path -LiteralPath $renamed) -or -not (Test-Path -LiteralPath (Join-Path $original 'old-file.dat'))){throw 'Actual wrapper did not restore original legacy name'}
     if((Get-FileHash -LiteralPath (Join-Path $original 'old-file.dat')).Hash -cne (Get-FileHash -LiteralPath $copy).Hash){throw 'Actual wrapper restored different legacy bytes'}
