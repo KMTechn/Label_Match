@@ -2052,7 +2052,8 @@ function Publish([string]$Path,$Value) {
   [IO.File]::SetAccessControl($Path,$acl)
   $stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)
  } finally {$stream.Dispose()}
- return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+ # Pin the bytes we produced, never a reopened path that can be replaced.
+ return (ByteSha $bytes)
 }
 function Append($Value) {
  $bytes=[Text.Encoding]::UTF8.GetBytes(($Value|ConvertTo-Json -Compress)+[Environment]::NewLine)
@@ -2065,7 +2066,7 @@ try {
  $channel=[IO.Pipes.NamedPipeClientStream]::new('.',$PipeName,'InOut','Asynchronous');$channel.Connect(60000)
  if([LabelPlacementChannel]::Peer($channel.SafePipeHandle,$false) -ne $ParentId){throw 'PLACEMENT_PARENT_IDENTITY'}
  $journalPath=$ResultBase+'.journal.jsonl'
- $journal=[IO.File]::Open($journalPath,'CreateNew','Write','Read')
+ $journal=[IO.File]::Open($journalPath,'CreateNew','ReadWrite','Read')
  $acl=[Security.AccessControl.FileSecurity]::new();$acl.SetAccessRuleProtection($true,$false)
  foreach($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))){$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','Allow'))}
  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($ParentSid),'Read','Allow'))
@@ -2130,9 +2131,10 @@ try {
 } finally {
  if($null -ne $journal){
   Append ([ordered]@{phase='TERMINAL';status=$terminal;sequence=$sequence})
-  $journal.Dispose();$journal=$null
   # This is the last journal operation: no append after its digest is sealed.
-  $digest=(Get-FileHash -LiteralPath ($ResultBase+'.journal.jsonl') -Algorithm SHA256).Hash.ToLowerInvariant()
+  $journal.Position=0;$hash=[Security.Cryptography.SHA256]::Create()
+  try {$digest=([BitConverter]::ToString($hash.ComputeHash($journal))).Replace('-','').ToLowerInvariant()}
+  finally {$hash.Dispose();$journal.Dispose();$journal=$null}
   try {
    $sealExit=if($terminal -ceq 'RECOVERY_REQUIRED'){70}else{0}
    $sealSha=Publish ($ResultBase+'.seal.json') ([ordered]@{schema='label-placement-session-seal-v1';transaction_id=$TransactionId;sha256=$digest;status=$terminal;sequence=$sequence;exit_code=$sealExit})
@@ -2144,7 +2146,7 @@ try {
 if($terminal -ceq 'RECOVERY_REQUIRED'){exit 70};exit 0
 '@
     $dependencies=''
-    foreach($name in @('Initialize-LabelPlacementSessionProtocol','Stop-LabelRegistrationChild','Wait-LabelPlacementChild')){
+    foreach($name in @('ByteSha','Initialize-LabelPlacementSessionProtocol','Stop-LabelRegistrationChild','Wait-LabelPlacementChild')){
         $dependencies+='function '+$name+' {'+(Get-Command $name).Definition+"}`n"
     }
     $guardian=$guardian.Replace("`n`$ErrorActionPreference='Stop'", "`n"+$dependencies+"`$ErrorActionPreference='Stop'")
@@ -2210,6 +2212,7 @@ function Invoke-LabelPlacementSessionCommand($Session, [string]$EncodedCommand, 
         $record=Read-LabelPlacementSessionRecord ($Session.result_base+'.failure.json') ([string]$response.sha256) $Session.transaction_id $Session.sequence -Failure
         $failure=[InvalidOperationException]::new([string]$record.reason_code)
         if($record.reason_code -ceq 'HELPER_CHILD_UNPROVEN'){$failure.Data['helper_child_unproven']=$true}
+        $failure.Data['child_output']=[ordered]@{exception_type=[string]$record.exception_type;location_module=[string]$record.location_module;location_function=[string]$record.location_function;location_line=[int]$record.location_line;report_path=($Session.result_base+'.failure.json');report_sha256=[string]$response.sha256}
         throw $failure
     }
     $record=Read-LabelPlacementSessionRecord ($Session.result_base+'.'+$Session.sequence+'.json') ([string]$response.sha256) $Session.transaction_id $Session.sequence
@@ -2217,6 +2220,7 @@ function Invoke-LabelPlacementSessionCommand($Session, [string]$EncodedCommand, 
         $failure=[TimeoutException]::new('HELPER_EXECUTION_EXPIRED')
         $failure.Data['helper_child_exit_verified']=$true
         $failure.Data['helper_child_exit_code']=[int]$record.exit_code
+        $failure.Data['child_output']=[ordered]@{exception_type=[string]$record.exception_type;location_module=[string]$record.location_module;location_function=[string]$record.location_function;location_line=[int]$record.location_line;report_path=($Session.result_base+'.'+$Session.sequence+'.json');report_sha256=[string]$response.sha256}
         throw $failure
     }
     return [int]$record.exit_code
@@ -5625,7 +5629,7 @@ catch {
         $audit.status='RECOVERY_REQUIRED'
         $audit.reason_code=if($unprovenHelper){'HELPER_CHILD_UNPROVEN'}elseif($unprovenRegistration){'REGISTRATION_CHILD_UNPROVEN'}elseif($Script:LabelCanonicalConfirmation -ceq 'CONFIRMED'){'POST_CONFIRMATION_FAILED'}else{'CONFIRMATION_UNCERTAIN'}
         $audit.failure_details=Get-LabelLaunchFailure $forwardFailure 'post_confirmation'
-        $audit.code_state='PRESENT';$audit.rollback.applied=$false
+        $audit.code_state=if($unprovenHelper){'UNKNOWN'}else{'PRESENT'};$audit.rollback.applied=$false
         $audit.recovery_guidance='새 판과 자료를 보존했습니다. 보호 보고서를 확인하고 같은 판의 지원 복구를 실행하세요.'
         Save $auditPath $audit
         if($EvidencePath){Save (Full $EvidencePath 'EvidencePath') $audit}

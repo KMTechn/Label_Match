@@ -208,6 +208,17 @@ try{Invoke-ActualLocationFailure}catch{
     $record.location_module -cne 'INSTALL_CANONICAL_PORTABLE.ps1' -or $record.location_line -le 0){throw 'FAILURE_LOCATION_LOST'}
  if(($record|ConvertTo-Json -Compress).Contains('synthetic-private-value')){throw 'FAILURE_VALUE_PUBLIC'}
 }
+$report=Join-Path (Get-Location).Path 'guardian-failure.json'
+[IO.File]::WriteAllText($report,'{"status":"RECOVERY_REQUIRED"}',[Text.UTF8Encoding]::new($false))
+$sha=(Get-FileHash -LiteralPath $report -Algorithm SHA256).Hash.ToLowerInvariant()
+$forwarded=[InvalidOperationException]::new('synthetic-private-forwarder')
+$forwarded.Data['child_output']=[ordered]@{exception_type='System.TimeoutException';location_module='INSTALL_CANONICAL_PORTABLE.ps1';location_function='Wait-LabelPlacementChild';location_line=7;report_path=$report;report_sha256=$sha}
+try{throw $forwarded}catch{
+ $record=Get-LabelLaunchFailure $_ 'forward'
+ if($record.exception_type -cne 'System.TimeoutException' -or $record.location_function -cne 'Wait-LabelPlacementChild' -or
+    $record.location_line -ne 7 -or $record.report_path -cne $report -or $record.report_sha256 -cne $sha){throw 'PINNED_ORIGINAL_HELPER_LOCATION_LOST'}
+ if(($record|ConvertTo-Json -Compress).Contains('synthetic-private-forwarder')){throw 'FORWARDED_FAILURE_VALUE_PUBLIC'}
+}
 'TYPED_LOCATION_PRESERVED'
 """, engine=engine)
     assert result.returncode == 0, result.stderr
@@ -295,3 +306,18 @@ def test_local_pipe_rejects_remote_connections_without_denying_ssh_network_group
     assert '[LabelPlacementChannel]::Server($pipeName,$security.GetSecurityDescriptorBinaryForm())' in session
     assert 'GetNamedPipeClientProcessId' in source and 'GetNamedPipeServerProcessId' in source
     assert '$parent.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $ParentBirth' in session
+
+
+def test_guardian_pins_created_bytes_and_seals_the_still_open_journal_handle():
+    source = INSTALLER.read_text(encoding='utf-8-sig')
+    guardian = source.split("$guardian=@'", 1)[1].split("\n'@", 1)[0]
+    publish = guardian.split('function Publish(', 1)[1].split('function Append(', 1)[0]
+    assert 'return (ByteSha $bytes)' in publish
+    assert 'Get-FileHash' not in publish
+    assert "Open($journalPath,'CreateNew','ReadWrite','Read')" in guardian
+    terminal = guardian.index("phase='TERMINAL'")
+    sealed = guardian.index('$hash.ComputeHash($journal)', terminal)
+    closed = guardian.index('$journal.Dispose()', terminal)
+    assert terminal < sealed < closed
+    assert 'Append ' not in guardian[sealed:]
+    assert 'Get-FileHash' not in guardian[terminal:]
