@@ -16,7 +16,8 @@ from tests.test_shared_ancestor_protection import run_functions
 INSTALLER = Path(__file__).resolve().parents[1] / 'INSTALL_CANONICAL_PORTABLE.ps1'
 SESSION_FUNCTIONS = ['ByteSha', 'Sha', 'Initialize-LabelPlacementSessionProtocol',
                      'Read-LabelPlacementSessionRecord', 'Start-LabelPlacementSession',
-                     'Invoke-LabelPlacementSessionCommand', 'Close-LabelPlacementSession']
+                     'Invoke-LabelPlacementSessionCommand', 'Close-LabelPlacementSession',
+                     'Stop-LabelRegistrationChild', 'Wait-LabelPlacementChild']
 SESSION_SETUP = r"""
 $root=$env:LM_SESSION_ROOT
 $winps=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
@@ -63,7 +64,7 @@ try {
 
 
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
-@pytest.mark.parametrize('fault', ('hash', 'transaction', 'sequence', 'oversize', 'reparse'))
+@pytest.mark.parametrize('fault', ('hash', 'transaction', 'sequence', 'oversize', 'reparse', 'missing'))
 def test_result_record_requires_pinned_bounded_ordinary_same_transaction(tmp_path, engine, fault):
     result = run_functions(tmp_path, INSTALLER, ['ByteSha', 'Read-LabelPlacementSessionRecord'], r"""
 $path=Join-Path $env:LM_SESSION_ROOT 'result.json'
@@ -75,6 +76,7 @@ $expected=ByteSha $bytes
 if($env:LM_RESULT_FAULT -ceq 'hash'){$bytes[0]=[byte][char]' '}
 if($env:LM_RESULT_FAULT -ceq 'oversize'){$bytes=[byte[]]::new(65537);$expected=ByteSha $bytes}
 [IO.File]::WriteAllBytes($path,$bytes)
+if($env:LM_RESULT_FAULT -ceq 'missing'){[IO.File]::Delete($path)}
 if($env:LM_RESULT_FAULT -ceq 'reparse'){
  $target=Join-Path $env:LM_SESSION_ROOT 'ordinary';[void][IO.Directory]::CreateDirectory($target)
  [IO.File]::Move($path,(Join-Path $target 'result.json'))
@@ -218,3 +220,78 @@ def test_python_location_function_accepts_powershell_identifier_without_free_tex
         'location_function': 'Confirm-LabelCanonicalPlacement'}
     invalid = public_record({'location_function': 'Invoke-Function arbitrary value'})
     assert 'location_function' not in invalid
+
+
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+@pytest.mark.parametrize('owned', (True, False))
+def test_running_helper_deadline_requires_owned_exit_and_records_actual_native_code(tmp_path, engine, owned):
+    result = run_functions(tmp_path, INSTALLER,
+        ['Stop-LabelRegistrationChild', 'Wait-LabelPlacementChild'], r"""
+$parent=[Diagnostics.Process]::GetCurrentProcess()
+$child=$parent
+if($env:LM_OWNED_CHILD -ceq '1'){
+ $start=[Diagnostics.ProcessStartInfo]::new()
+ $start.FileName=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+ $start.Arguments='-NoLogo -NoProfile -NonInteractive -Command Start-Sleep -Seconds 60'
+ $start.UseShellExecute=$false;$start.CreateNoWindow=$true
+ $child=[Diagnostics.Process]::Start($start)
+}
+try {
+ $caught=$false
+ try{[void](Wait-LabelPlacementChild $child $parent 250)}catch{
+  $failure=$_.Exception.GetBaseException()
+  if($failure -isnot [TimeoutException] -or $failure.Message -cne 'HELPER_EXECUTION_EXPIRED'){throw}
+  if($env:LM_OWNED_CHILD -ceq '1'){
+   if(-not $child.HasExited -or -not $failure.Data.Contains('helper_child_exit_verified') -or
+      $failure.Data.Contains('helper_child_unproven') -or
+      [int]$failure.Data['helper_child_exit_code'] -ne [int]$child.ExitCode){throw 'NATIVE_EXIT_NOT_PROVEN'}
+  }elseif(-not $failure.Data.Contains('helper_child_unproven') -or
+           $failure.Data.Contains('helper_child_exit_verified') -or $parent.HasExited){throw 'UNOWNED_CHILD_STOPPED'}
+  $caught=$true
+ }
+ if(-not $caught){throw 'HELPER_DEADLINE_NOT_ENFORCED'}
+ 'ACTUAL_HELPER_DEADLINE_EXIT_PROOF'
+} finally {if($child -ne $parent){$child.Dispose()};$parent.Dispose()}
+""", values={'LM_OWNED_CHILD': '1' if owned else '0'}, engine=engine)
+    assert result.returncode == 0, result.stderr
+    assert 'ACTUAL_HELPER_DEADLINE_EXIT_PROOF' in result.stdout
+
+
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+def test_parent_exit_during_running_helper_seals_before_the_child_finishes(tmp_path, engine):
+    result = run_functions(tmp_path, INSTALLER, SESSION_FUNCTIONS, SESSION_SETUP + r"""
+[IO.File]::WriteAllText((Join-Path $root 'guardian-base.txt'),$session.result_base)
+$marker=Join-Path $root 'running-helper.txt'
+$body='[IO.File]::WriteAllText('''+$marker.Replace("'","''")+''',[string]$PID);Start-Sleep -Seconds 12;exit 0'
+$command=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
+$session.sequence=1
+[LabelPlacementChannel]::Write($session.pipe,(@{operation='EXECUTE';transaction_id=$session.transaction_id;sequence=1;command=$command;rollback=$false}|ConvertTo-Json -Compress))
+$clock=[Diagnostics.Stopwatch]::StartNew()
+while(-not [IO.File]::Exists($marker)){
+ if($clock.ElapsedMilliseconds -ge 15000){throw 'HELPER_DID_NOT_START'}
+ Start-Sleep -Milliseconds 50
+}
+exit 0
+""", values={'LM_SESSION_ROOT': str(tmp_path), 'KMTECH_FACTORY_INSTALL_TEST_MODE': '1'}, engine=engine)
+    assert result.returncode == 0, result.stderr
+    result_base = (tmp_path / 'guardian-base.txt').read_text()
+    seal = Path(result_base + '.seal.json')
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not seal.exists():
+        time.sleep(.05)
+    assert seal.exists(), 'guardian waited for a child after losing its owner'
+    record = json.loads(Path(result_base + '.failure.json').read_text())
+    assert record['status'] == 'RECOVERY_REQUIRED' and record['reason_code'] == 'PARENT_EXITED'
+    assert record['exception_type'] and record['location_function'] and record['location_line'] > 0
+    assert json.loads(seal.read_text())['status'] == 'RECOVERY_REQUIRED'
+    assert not list(tmp_path.glob('*.1.json'))
+
+
+def test_local_pipe_rejects_remote_connections_without_denying_ssh_network_groups():
+    source = INSTALLER.read_text(encoding='utf-8-sig')
+    session = source.split('function Start-LabelPlacementSession(', 1)[1].split('function Invoke-LabelPlacementSessionCommand(', 1)[0]
+    assert "SecurityIdentifier]::new('S-1-5-2')" not in session
+    assert 'CreateNamedPipe(@"\\\\.\\pipe\\"+name,0x40080003,0x00000008,' in source
+    assert '[LabelPlacementChannel]::Server($pipeName,$security.GetSecurityDescriptorBinaryForm())' in session
+    assert 'GetNamedPipeClientProcessId' in source and 'GetNamedPipeServerProcessId' in source
+    assert '$parent.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $ParentBirth' in session

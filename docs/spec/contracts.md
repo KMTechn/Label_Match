@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+실행 중 배치 자식에도 720초 상한을 적용한다. 기존 부모 사슬·생성 시각·열린 handle로 자기 자식 트리의 종료를 30초 안에 확인하면 실제 native ExitCode와 HELPER_EXECUTION_EXPIRED를 보존하고 같은 guardian을 복원 전용으로 유지한다. 소유·종료 미증명은 HELPER_CHILD_UNPROVEN·RECOVERY_REQUIRED이며 코드 복원은 0이다. 실행 중 부모 소멸도 복원 없이 진단·봉인한다. 로컬 pipe는 NETWORK 그룹 deny 대신 PIPE_REJECT_REMOTE_CLIENTS와 기존 peer PID·생성 시각으로 경계를 지킨다.
+
 canonical 설치 거래는 상승 guardian 하나를 배치와 확정 전 복원에 재사용한다. 일반 토큰의 승인 요청은 거래당 1회, 이미 상승된 토큰은 0회이며 등록은 기존 사용자 문맥이다. 결과는 native 자식 ExitCode와 같은 거래·순번·65,536바이트 상한·ordinary/reparse 거절·메모리 SHA에 결속한다. 부모가 사라지면 기존 authority/delegation을 넘겨받지 않고 RECOVERY_REQUIRED로 보존한다.
 
 확정 시점은 `Confirm-LabelCanonicalPlacement`의 active writer fence 1회 해제다. 직전 READY·서버 등록·설정한 TLS CA·Run readback을 다시 확인하며, 그 전 실패는 기록한 코드·Run·task·stop preimage만 복원한다. 확정 뒤 실패는 POST_CONFIRMATION_FAILED, 해제 불확실은 CONFIRMATION_UNCERTAIN으로 새 코드를 보존한다. 등록 관찰은 600초, 소유 부모 사슬·생성 시각으로 증명한 자식의 종료 확인은 30초, guardian 여유는 120초다. 종료 미증명은 REGISTRATION_CHILD_UNPROVEN이며 live writer와 복원이 경합하지 않는다. guardian은 720초 이후 복원만 받으며 추가 600초에도 명령이 없으면 판정 불가로 종료한다. journal의 terminal 줄 뒤 한 번 봉인하고 덧붙이지 않는다.

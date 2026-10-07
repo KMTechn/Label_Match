@@ -823,6 +823,8 @@ LM-W1 실패 처리의 격리 host 검증은 감사 clock32/package156/producer4
 <a id="placement-launcher-transport"></a>
 ### 상승 배치 실행의 길이·바이트 결속
 
+배치 자식의 720초 상한 뒤에는 소유·종료를 증명한 경우만 같은 guardian으로 복원한다. HELPER_CHILD_UNPROVEN이면 새 코드·backup·fence를 보존하고 지원 복구로 넘긴다. 부모가 실행 중 사라져도 기다림을 계속하지 않고 RECOVERY_REQUIRED 진단과 journal을 봉인한다. SSH 로그온의 NETWORK 그룹을 로컬 pipe ACL에서 거절하지 않으며, PIPE_REJECT_REMOTE_CLIENTS가 원격 pipe 연결을 막는다. 실제 SSH token의 수용은 랩에서 별도 확인한다.
+
 이미 상승된 SSH 관리자/셸의 access token이면 helper는 직접 실행되어 승인 창이 없다. 비상승 토큰이면 기존 `RunAs` 경로를 사용한다. 같은 pinned bootstrap·숨김 창·native exit·진단 검증을 적용하며 등록은 기존 현재 프로세스 사용자 문맥을 유지한다.
 
 canonical 거래는 첫 호출의 guardian을 계속 사용하고 복원 때 새 RunAs를 띄우지 않는다. guardian과 부모는 제한된 local pipe의 native peer PID 및 부모 생성 시각을 확인한다. PS7에서 띄우는 PS5.1 자식에는 기본 PSModulePath를 전달한다. 확정 직전 readback이 모두 맞으면 Confirm-LabelCanonicalPlacement에서 active fence를 해제한다. 그 뒤 실패·해제 불확실·등록 자식 종료 미증명은 RECOVERY_REQUIRED와 reason_code를 보고하고 새 코드·자료를 보존한다. 확정 전에는 기존 guarded 복원과 preimage readback을 끝낸다. guardian 결과/실패/최종 journal·seal은 같은 감사 경로에 남고, 값·원문 없는 위치 metadata를 보존한다.

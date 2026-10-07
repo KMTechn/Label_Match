@@ -1938,12 +1938,30 @@ function Initialize-LabelPlacementSessionProtocol {
     Add-Type -TypeDefinition @'
 using System;
 using System.IO;
+using System.IO.Pipes;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 public static class LabelPlacementChannel {
  public static bool IdleExpired;
+ [StructLayout(LayoutKind.Sequential)]
+ struct SecurityAttributes { public int length; public IntPtr descriptor; public int inherit; }
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ static extern SafePipeHandle CreateNamedPipe(string name, uint openMode, uint pipeMode,
+  uint instances, uint outSize, uint inSize, uint timeout, ref SecurityAttributes attributes);
+ public static NamedPipeServerStream Server(string name, byte[] descriptor) {
+  var pinned=GCHandle.Alloc(descriptor,GCHandleType.Pinned);
+  try {
+   var attributes=new SecurityAttributes {length=Marshal.SizeOf(typeof(SecurityAttributes)),descriptor=pinned.AddrOfPinnedObject(),inherit=0};
+   // Reject remote connections at the pipe boundary. NETWORK is also present
+   // in valid SSH logon tokens, so it must not be denied in the local ACL.
+   var handle=CreateNamedPipe(@"\\.\pipe\"+name,0x40080003,0x00000008,1,65536,65536,0,ref attributes);
+   if(handle.IsInvalid) {int error=Marshal.GetLastWin32Error();handle.Dispose();throw new System.ComponentModel.Win32Exception(error);}
+   try {return new NamedPipeServerStream(PipeDirection.InOut,true,false,handle);}
+   catch {handle.Dispose();throw;}
+  } finally {pinned.Free();}
+ }
  [DllImport("kernel32.dll", SetLastError=true)]
  static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint pid);
  [DllImport("kernel32.dll", SetLastError=true)]
@@ -1982,7 +2000,7 @@ public static class LabelPlacementChannel {
 '@
 }
 
-function Read-LabelPlacementSessionRecord([string]$Path, [string]$ExpectedSha256, [string]$TransactionId, [int]$Sequence, [switch]$Seal) {
+function Read-LabelPlacementSessionRecord([string]$Path, [string]$ExpectedSha256, [string]$TransactionId, [int]$Sequence, [switch]$Seal, [switch]$Failure) {
     for ($ancestor=[IO.Path]::GetFullPath($Path); $ancestor; $ancestor=[IO.Path]::GetDirectoryName($ancestor)) {
         if ([IO.File]::GetAttributes($ancestor) -band [IO.FileAttributes]::ReparsePoint) { throw 'PLACEMENT_RESULT_REPARSE' }
     }
@@ -1992,12 +2010,18 @@ function Read-LabelPlacementSessionRecord([string]$Path, [string]$ExpectedSha256
         [byte[]]$bytes=([IO.BinaryReader]::new($stream)).ReadBytes([int]$stream.Length)
         if ((ByteSha $bytes) -cne $ExpectedSha256) { throw 'PLACEMENT_RESULT_HASH' }
         $record=([Text.UTF8Encoding]::new($false,$true)).GetString($bytes) | ConvertFrom-Json
-        $schema=if($Seal){'label-placement-session-seal-v1'}else{'label-placement-session-result-v1'}
+        $schema=if($Failure){'label-placement-session-failure-v1'}elseif($Seal){'label-placement-session-seal-v1'}else{'label-placement-session-result-v1'}
         if ([string]$record.schema -cne $schema -or
             [string]$record.transaction_id -cne $TransactionId -or
-            ($record.sequence -isnot [int] -and $record.sequence -isnot [long]) -or $record.sequence -ne $Sequence -or
-            ($record.exit_code -isnot [int] -and $record.exit_code -isnot [long]) -or
-            $record.exit_code -lt [int]::MinValue -or $record.exit_code -gt [int]::MaxValue) { throw 'PLACEMENT_RESULT_IDENTITY' }
+            ($record.sequence -isnot [int] -and $record.sequence -isnot [long]) -or $record.sequence -ne $Sequence) { throw 'PLACEMENT_RESULT_IDENTITY' }
+        if($Failure){
+            if($record.status -cne 'RECOVERY_REQUIRED' -or $record.reason_code -cnotin @('PARENT_EXITED','HELPER_WAIT_EXPIRED','HELPER_CHILD_UNPROVEN','GUARDIAN_FAILED') -or
+               [string]$record.exception_type -cnotmatch '^[A-Za-z_][A-Za-z0-9_.]{0,127}$' -or
+               [string]$record.location_module -cne 'INSTALL_CANONICAL_PORTABLE.ps1' -or
+               [string]$record.location_function -cnotmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,127}$' -or
+               ($record.location_line -isnot [int] -and $record.location_line -isnot [long]) -or $record.location_line -le 0){throw 'PLACEMENT_FAILURE_IDENTITY'}
+        }elseif(($record.exit_code -isnot [int] -and $record.exit_code -isnot [long]) -or
+                $record.exit_code -lt [int]::MinValue -or $record.exit_code -gt [int]::MaxValue){throw 'PLACEMENT_RESULT_IDENTITY'}
         return $record
     } finally { $stream.Dispose() }
 }
@@ -2008,14 +2032,11 @@ function Start-LabelPlacementSession([hashtable]$LaunchParameters, [string]$Tran
     $pipeName='KMTech.LabelPlacement.'+[Guid]::NewGuid().ToString('N')
     $security=[IO.Pipes.PipeSecurity]::new()
     $security.SetAccessRuleProtection($true,$false)
-    $security.AddAccessRule([IO.Pipes.PipeAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-2'),'FullControl','Deny'))
     foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User,
         [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
         $security.AddAccessRule([IO.Pipes.PipeAccessRule]::new($sid,'FullControl','Allow'))
     }
-    $pipe=if ($PSVersionTable.PSVersion.Major -ge 6) {
-        [IO.Pipes.NamedPipeServerStreamAcl]::Create($pipeName,'InOut',1,'Byte','Asynchronous',65536,65536,$security)
-    } else { [IO.Pipes.NamedPipeServerStream]::new($pipeName,'InOut',1,'Byte','Asynchronous',65536,65536,$security) }
+    $pipe=[LabelPlacementChannel]::Server($pipeName,$security.GetSecurityDescriptorBinaryForm())
     $guardianPath=$DiagnosticBase+'-guardian-'+[Guid]::NewGuid().ToString('N')+'.ps1'
     $guardian=@'
 param([string]$PipeName,[int]$ParentId,[long]$ParentBirth,[string]$ParentSid,[string]$TransactionId,[string]$ResultBase)
@@ -2065,6 +2086,7 @@ try {
   if([string]$request.operation -cnotin @('EXECUTE','VERIFY') -or
      (-not $verify -and [string]$request.command -cnotmatch '^[A-Za-z0-9+/]{1,16000}={0,2}$')){throw 'PLACEMENT_COMMAND_CONTRACT'}
   $expired=[LabelPlacementChannel]::IdleExpired -and ($request.rollback -isnot [bool] -or -not $request.rollback)
+  $executionExpired=$false
   if($verify -or $expired){$exitCode=if($expired){70}else{0}}else{
   $start=[Diagnostics.ProcessStartInfo]::new()
   $start.FileName=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
@@ -2073,19 +2095,38 @@ try {
   $child=[Diagnostics.Process]::Start($start)
   try {
    # ExitCode belongs to the actual child. Runspace Completed is not success.
-   $child.WaitForExit();$exitCode=[int]$child.ExitCode
+   try {$exitCode=Wait-LabelPlacementChild $child $parent}
+   catch {
+    $cause=$_.Exception.GetBaseException()
+    if(-not $cause.Data.Contains('helper_child_exit_verified')){throw}
+    $exitCode=[int]$cause.Data['helper_child_exit_code'];$executionExpired=$true
+    [LabelPlacementChannel]::IdleExpired=$true
+   }
   } finally {$child.Dispose()}
   }
   if($parent.HasExited){throw 'PLACEMENT_PARENT_EXITED'}
   $record=[ordered]@{schema='label-placement-session-result-v1';transaction_id=$TransactionId;sequence=$sequence;exit_code=$exitCode}
+  if($executionExpired){
+   $record.status='HELPER_EXECUTION_EXPIRED';$record.exception_type='System.TimeoutException'
+   $record.location_module='INSTALL_CANONICAL_PORTABLE.ps1';$record.location_function='Wait-LabelPlacementChild'
+   $record.location_line=$cause.Data['helper_failure_line']
+  }
   $path=$ResultBase+'.'+$sequence+'.json';$sha=Publish $path $record
-  Append ([ordered]@{phase='CHILD_EXIT';sequence=$sequence;exit_code=$exitCode;result_sha256=$sha})
+  $observed=[ordered]@{phase= $(if($verify -or $expired){'CONTROL_RESULT'}else{'CHILD_EXIT'});sequence=$sequence;exit_code=$exitCode;result_sha256=$sha}
+  if($executionExpired){$observed.status='HELPER_EXECUTION_EXPIRED'}
+  Append $observed
   [LabelPlacementChannel]::Write($channel,(@{transaction_id=$TransactionId;sequence=$sequence;sha256=$sha}|ConvertTo-Json -Compress))
  }
 } catch {
- $reason=if($null -ne $parent -and $parent.HasExited){'PARENT_EXITED'}elseif($_.Exception.GetBaseException() -is [TimeoutException]){'HELPER_WAIT_EXPIRED'}else{'GUARDIAN_FAILED'}
- $failure=[ordered]@{schema='label-placement-session-failure-v1';status='RECOVERY_REQUIRED';reason_code=$reason;exception_type=$_.Exception.GetBaseException().GetType().FullName;location_module='INSTALL_CANONICAL_PORTABLE.ps1';location_function='Start-LabelPlacementSession';location_line=$_.InvocationInfo.ScriptLineNumber}
- try {[void](Publish ($ResultBase+'.failure.json') $failure);if($null -ne $journal){Append $failure}}catch{}
+ $cause=$_.Exception.GetBaseException()
+ $reason=if($cause.Data.Contains('helper_child_unproven')){'HELPER_CHILD_UNPROVEN'}elseif($null -ne $parent -and $parent.HasExited){'PARENT_EXITED'}elseif($cause -is [TimeoutException]){'HELPER_WAIT_EXPIRED'}else{'GUARDIAN_FAILED'}
+ $failure=[ordered]@{schema='label-placement-session-failure-v1';transaction_id=$TransactionId;sequence=$sequence;status='RECOVERY_REQUIRED';reason_code=$reason;exception_type=$cause.GetType().FullName;location_module='INSTALL_CANONICAL_PORTABLE.ps1';location_function='Start-LabelPlacementSession';location_line=$_.InvocationInfo.ScriptLineNumber}
+ if($cause.Data.Contains('helper_failure_line')){$failure.location_function='Wait-LabelPlacementChild';$failure.location_line=$cause.Data['helper_failure_line']}
+ try {
+  $failureSha=Publish ($ResultBase+'.failure.json') $failure
+  if($null -ne $journal){Append $failure}
+  if($null -ne $channel){[LabelPlacementChannel]::Write($channel,(@{transaction_id=$TransactionId;sequence=$sequence;sha256=$failureSha;status='RECOVERY_REQUIRED'}|ConvertTo-Json -Compress))}
+ }catch{}
 } finally {
  if($null -ne $journal){
   Append ([ordered]@{phase='TERMINAL';status=$terminal;sequence=$sequence})
@@ -2102,7 +2143,11 @@ try {
 }
 if($terminal -ceq 'RECOVERY_REQUIRED'){exit 70};exit 0
 '@
-    $guardian=$guardian.Replace("`n`$ErrorActionPreference='Stop'", "`n"+'function Initialize-LabelPlacementSessionProtocol {'+(Get-Command Initialize-LabelPlacementSessionProtocol).Definition+"}`n"+"`$ErrorActionPreference='Stop'")
+    $dependencies=''
+    foreach($name in @('Initialize-LabelPlacementSessionProtocol','Stop-LabelRegistrationChild','Wait-LabelPlacementChild')){
+        $dependencies+='function '+$name+' {'+(Get-Command $name).Definition+"}`n"
+    }
+    $guardian=$guardian.Replace("`n`$ErrorActionPreference='Stop'", "`n"+$dependencies+"`$ErrorActionPreference='Stop'")
     [byte[]]$bytes=[Text.UTF8Encoding]::new($false).GetBytes($guardian)
     $created=$false;$process=$null
     try {
@@ -2161,7 +2206,19 @@ function Invoke-LabelPlacementSessionCommand($Session, [string]$EncodedCommand, 
     if([string]$response.transaction_id -cne [string]$Session.transaction_id -or
         ($response.sequence -isnot [int] -and $response.sequence -isnot [long]) -or $response.sequence -ne $Session.sequence -or
         [string]$response.sha256 -cnotmatch '^[0-9a-f]{64}$'){throw 'PLACEMENT_RESPONSE_IDENTITY'}
+    if($response.PSObject.Properties['status'] -and $response.status -ceq 'RECOVERY_REQUIRED'){
+        $record=Read-LabelPlacementSessionRecord ($Session.result_base+'.failure.json') ([string]$response.sha256) $Session.transaction_id $Session.sequence -Failure
+        $failure=[InvalidOperationException]::new([string]$record.reason_code)
+        if($record.reason_code -ceq 'HELPER_CHILD_UNPROVEN'){$failure.Data['helper_child_unproven']=$true}
+        throw $failure
+    }
     $record=Read-LabelPlacementSessionRecord ($Session.result_base+'.'+$Session.sequence+'.json') ([string]$response.sha256) $Session.transaction_id $Session.sequence
+    if($record.PSObject.Properties['status'] -and $record.status -ceq 'HELPER_EXECUTION_EXPIRED'){
+        $failure=[TimeoutException]::new('HELPER_EXECUTION_EXPIRED')
+        $failure.Data['helper_child_exit_verified']=$true
+        $failure.Data['helper_child_exit_code']=[int]$record.exit_code
+        throw $failure
+    }
     return [int]$record.exit_code
 }
 
@@ -2250,6 +2307,35 @@ function Stop-LabelRegistrationChild([Diagnostics.Process]$Process, [long]$Start
         foreach($node in $owned){if($node.process.Id -ne $rootId){$node.process.Dispose()}}
         $caller.Dispose()
     }
+}
+
+function Wait-LabelPlacementChild([Diagnostics.Process]$Process, [Diagnostics.Process]$Parent, [int]$TimeoutMilliseconds=720000) {
+    $birth=$Process.StartTime.ToUniversalTime().ToFileTimeUtc()
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    while(-not $Process.WaitForExit(250)) {
+        if($Parent.HasExited){
+            $lost=[InvalidOperationException]::new('PLACEMENT_PARENT_EXITED')
+            $lost.Data['helper_failure_line']=$MyInvocation.ScriptLineNumber
+            throw $lost
+        }
+        if($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds){
+            $failure=[TimeoutException]::new('HELPER_EXECUTION_EXPIRED')
+            $failure.Data['helper_failure_line']=$MyInvocation.ScriptLineNumber
+            try {
+                Stop-LabelRegistrationChild $Process $birth
+                if(-not $Process.HasExited){throw 'HELPER_CHILD_EXIT_UNPROVEN'}
+                $failure.Data['helper_child_exit_verified']=$true
+                $failure.Data['helper_child_exit_code']=[int]$Process.ExitCode
+            } catch {$failure.Data['helper_child_unproven']=$true}
+            throw $failure
+        }
+    }
+    if($Parent.HasExited){
+        $lost=[InvalidOperationException]::new('PLACEMENT_PARENT_EXITED')
+        $lost.Data['helper_failure_line']=$MyInvocation.ScriptLineNumber
+        throw $lost
+    }
+    return [int]$Process.ExitCode
 }
 
 function Wait-LabelRegistrationChild([Diagnostics.Process]$Process, [int]$TimeoutMilliseconds=600000) {
@@ -5530,12 +5616,14 @@ try {
 catch {
     $forwardFailure = $_
     $unprovenRegistration = $false
+    $unprovenHelper = $false
     for ($cause=$forwardFailure.Exception; $null -ne $cause; $cause=$cause.InnerException) {
         if ($cause.Data.Contains('registration_child_unproven')) { $unprovenRegistration=$true }
+        if ($cause.Data.Contains('helper_child_unproven')) { $unprovenHelper=$true }
     }
-    if ($Script:LabelCanonicalConfirmation -cin @('CONFIRMED','UNCERTAIN') -or $unprovenRegistration) {
+    if ($Script:LabelCanonicalConfirmation -cin @('CONFIRMED','UNCERTAIN') -or $unprovenRegistration -or $unprovenHelper) {
         $audit.status='RECOVERY_REQUIRED'
-        $audit.reason_code=if($unprovenRegistration){'REGISTRATION_CHILD_UNPROVEN'}elseif($Script:LabelCanonicalConfirmation -ceq 'CONFIRMED'){'POST_CONFIRMATION_FAILED'}else{'CONFIRMATION_UNCERTAIN'}
+        $audit.reason_code=if($unprovenHelper){'HELPER_CHILD_UNPROVEN'}elseif($unprovenRegistration){'REGISTRATION_CHILD_UNPROVEN'}elseif($Script:LabelCanonicalConfirmation -ceq 'CONFIRMED'){'POST_CONFIRMATION_FAILED'}else{'CONFIRMATION_UNCERTAIN'}
         $audit.failure_details=Get-LabelLaunchFailure $forwardFailure 'post_confirmation'
         $audit.code_state='PRESENT';$audit.rollback.applied=$false
         $audit.recovery_guidance='새 판과 자료를 보존했습니다. 보호 보고서를 확인하고 같은 판의 지원 복구를 실행하세요.'
