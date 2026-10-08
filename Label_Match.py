@@ -11083,7 +11083,7 @@ class Label_Match(tk.Tk):
                 if not item:
                     return
                 value = simpledialog.askstring(
-                    "실물 현품표 확인", "해당 실물 현품표의 현품표 코드를 스캔하세요.", parent=window
+                    "실물 현품표 확인", "해당 실물 현품표를 스캔하세요.", parent=window
                 )
                 if value:
                     result = self._run_package_pin_action(

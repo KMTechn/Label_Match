@@ -574,7 +574,7 @@ def test_state_fixtures_preserve_qa_exact_and_last_normal_contracts():
     assert fixtures["history_readonly"].history_readonly is True
     assert fixtures["submission_blocked"].central_inherit_all is True
     assert fixtures["submission_blocked"].notice_title == (
-        "1/5 유지 · 로컬 기록 저장 필요"
+        "1/5 유지 · 이 PC에 저장 필요"
     )
     assert fixtures["submission_blocked"].qa_scans == fixtures["qa_master"].qa_scans
     assert "HTTP" not in fixtures["submission_blocked"].notice_message
