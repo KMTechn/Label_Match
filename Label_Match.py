@@ -3615,7 +3615,7 @@ def _enrich_label_match_event(event_type, details, pc_id):
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
 from label_data_generation import CURRENT_VERSION, DataGenerationError, check_user_data_open, record_user_data_open
-APP_VERSION = "v2.0.95"
+APP_VERSION = "v2.0.96"
 if APP_VERSION != CURRENT_VERSION:
     raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
 

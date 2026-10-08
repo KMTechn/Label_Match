@@ -14,7 +14,7 @@ from typing import Mapping
 from kmtech_shared.data_generation import probe_downgrade, record_generation, version_key
 from writer_session_fence import canonical_control_root, writer_sink
 
-CURRENT_VERSION = "v2.0.95"
+CURRENT_VERSION = "v2.0.96"
 APP_ID = "Label_Match"
 UNKNOWN_MESSAGE = (
     "이 PC의 자료 판을 확인할 수 없어 자료를 열거나 옛 판으로 되돌릴 수 없습니다. "
