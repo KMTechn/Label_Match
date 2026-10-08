@@ -202,7 +202,8 @@ def test_gui_startup_hashes_before_guarded_data_open(
               if caller == "onboard_current_user"]
     assert derived == [False]
     # User decision: the existing onboarding check is a separate startup cost.
-    assert direct == ([True] if with_onboarding else [])
+    # Integrated sub-474 keeps this direct check outside its short admissions.
+    assert direct == ([False] if with_onboarding else [])
     assert len(verification_calls) == len(derived) + len(direct)
 
 
