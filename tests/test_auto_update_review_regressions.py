@@ -246,8 +246,16 @@ def test_existing_trial_claim_requires_live_bound_processes(monkeypatch, tmp_pat
     monkeypatch.setattr(updates, "process_snapshot", lambda _: rows)
     monkeypatch.setattr(updates, "launch_version", lambda *a, **k: pytest.fail("stale claim launched code"))
     monkeypatch.setattr(time, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
-    assert updates.bootstrap(tmp_path / "app", [], role="gui") == 20
+    # B1 keeps a rejected trial rejected, but an existing ordinary writer owns
+    # work after supervision settles. With no writer and unknown G, keep 20.
+    expected = 20 if change == "missing" else 0
+    assert updates.bootstrap(tmp_path / "app", [], role="gui") == expected
     assert records["trial-failure.json"]["sha"] == new
+    assert records["trial-failure.json"]["nonce"] == state["nonce"]
+    assert records["trial-failure.json"]["transition_id"] == state["transition_id"]
+    assert records["trial-failure.json"]["failed_role"] == ("relay" if change == "missing_relay" else "gui")
+    assert records["active.json"]["sha"] == new
+    assert records["transition.json"]["phase"] == "UNKNOWN"
 
 
 @pytest.mark.parametrize("caller", ["helper", "task", "relay_cycle"])
