@@ -2,7 +2,7 @@
 
 <a id="onboarding-writer-admission"></a>
 
-portable GUI는 매 시작에 onboarding을 실행한다. relay가 아직 없거나 오래된 상태를 갱신하는 동안 onboarding이 writer admission을 쥔 채 생존 증명을 기다리지 않는다. lifecycle Verify/Observe helper의 호출도 lease를 내려놓고 수행하며, 재획득 뒤 policy·active·transition 바이트나 fence가 바뀌면 그 쓰기를 거절한다. READY·실패 보고와 stop 표지는 보호된 쓰기로 유지한다. 옛 예약 작업 은퇴의 PowerShell·자연 종료 대기는 기존 경계를 유지한다. 실제 Windows mutex/relay 자식의 지연 회귀는 headless 범위이며 새 PC 설치·첫 GUI·로그온 직후 GUI·실제 전송 수용은 랩에서 따로 확인한다.
+portable GUI는 매 시작에 onboarding을 실행한다. relay가 아직 없거나 오래된 상태를 갱신하는 동안 onboarding이 writer admission을 쥔 채 생존 증명을 기다리지 않는다. lifecycle Verify/Observe 검증은 onboarding 호출당 한 번 onboarding·부모 lease를 내려놓고 수행한다. 그 호출의 thread-local 검증 결과를 각 짧은 admission에서 digest·delegation만으로 재확인하며, policy·active·transition 바이트나 delegation이 바뀌면 `WRITER_LIFECYCLE_CHANGED`로 그 쓰기를 거절한다. READY·실패 보고와 stop 표지는 보호된 쓰기로 유지한다. 옛 예약 작업 은퇴·G 기록 묶음·fixed helper 자신의 admission은 코디 승인에 따라 기존 경계를 유지하고 측정 P2로 남긴다. 실제 Windows mutex/relay 자식의 지연 회귀는 headless 범위이며 새 PC 설치·첫 GUI·로그온 직후 GUI·실제 전송 수용은 랩에서 따로 확인한다.
 
 종료 증명 30초는 CIM 소유 조회·자손 열거·종료 직전 부모 사슬 재확인·종료 대기·survivor 조회를 모두 포함한다. 남은 시간 안의 관찰만 사용하며 조회가 멈추면 같은 프로세스 runspace의 취소만 요청하고 즉시 미증명으로 반환한다. 이때 자식 종료·코드 복원은 추가 실행하지 않는다. 양 엔진의 35초 관찰 지연 및 정상 종료 회귀, 142/538·stock 검증 근거는 [sub-404 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-404/REPORT.md)에 기록한다. 실제 보호 설치·등록·전체 복원은 별도 랩 수용 범위다.
 

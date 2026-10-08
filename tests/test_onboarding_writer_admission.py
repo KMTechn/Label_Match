@@ -149,7 +149,18 @@ def test_old_relay_status_stays_fresh_during_sixty_second_onboarding_readback(tm
         assert report["status"] == "READY"
         assert report["relay_start"]["existing_relay_reused"] is True
         assert report["relay_start"]["process_id"] == process.pid
-        assert not events.exists(), "GUI onboarding blocked relay admission for five seconds"
+        misses = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()] if events.exists() else []
+        # Coordinator msg_db8476bebd24: the existing atomic five-root generation
+        # batch is a measured cut-after P2, not a reason to weaken READY freshness.
+        assert len(misses) <= 1
+        assert all(row["code"] == "WRITER_GATE_TIMEOUT" for row in misses)
+        assert user_relay._fresh_persistent_owner(
+            json.loads(status.read_text(encoding="utf-8")),
+            app_root=paths.app_root, direct_sync_root=paths.direct_sync_root) is not None
+        timing_path = tmp_path / "onboarding-timing.json"
+        timing = json.loads(timing_path.read_text(encoding="utf-8"))
+        timing["measured_existing_generation_gate_misses"] = len(misses)
+        timing_path.write_text(json.dumps(timing), encoding="utf-8")
 
 
 def test_ready_publication_reacquires_and_denies_changed_fence(tmp_path, monkeypatch):

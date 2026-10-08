@@ -125,7 +125,10 @@ def _portable_stop_marker_release_preflight(
     owner_root = paths.app_root
     managed = installation_root(paths.app_root)
     if managed is not None and (managed / "update-control").exists():
-        context = resolve_lifecycle_context(managed, operation="register")
+        from writer_session_fence import onboarding_lifecycle_context
+        context = onboarding_lifecycle_context(paths.app_root)
+        if context is None:
+            context = resolve_lifecycle_context(managed, operation="register")
         if _resolved(context["active_code_root"]) != paths.app_root:
             raise ValueError("relay resume active code changed during registration")
         owner_root = _resolved(context["fixed_root"])
@@ -1030,11 +1033,14 @@ def onboard_current_user(
     ] = start_user_relay_process,
     defer_canonical_relay_start: bool = False,
 ) -> dict[str, Any]:
-    from auto_update import installation_root, resolve_lifecycle_context, assert_registration_storage
+    from auto_update import installation_root, assert_registration_storage
+    from writer_session_fence import onboarding_lifecycle_context
     managed = installation_root(Path(app_root))
     setup_root = Path(app_root)
     if managed is not None and (managed / "update-control").exists():
-        context = resolve_lifecycle_context(managed, operation="register")
+        context = onboarding_lifecycle_context(app_root)
+        if context is None:
+            raise ValueError("onboarding lifecycle observation is absent")
         app_root = context["active_code_root"]
         setup_root = Path(context["fixed_root"])
     if defer_canonical_relay_start:

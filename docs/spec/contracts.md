@@ -1,6 +1,6 @@
 # Label_Match 데이터·통합 계약
 
-onboarding과 `start_user_relay_process`는 정확히 승인된 probe sink이며 부모 writer lease도 시작·생존 확인 전에 해제한다. onboarding lifecycle helper는 admission 밖에서 실행하고 재획득 뒤 policy·active·transition 원 바이트와 active fence를 재확인한다. 디렉터리·TLS·등록·세대·원장·설정·Run·옛 작업·stop 표지·환경·보고서 쓰기는 각각 기존 source admission을 얻는다. READY는 relay 확인 뒤 새 admission에서 fence 재확인과 환경 적용을 마친 뒤 게시한다. canonical의 연기와 기존 실패 코드·stop 복원·지원 복구는 유지한다.
+onboarding과 `start_user_relay_process`는 정확히 승인된 probe sink이며 부모 writer lease도 시작·생존 확인 전에 해제한다. onboarding lifecycle 검증은 호출당 한 번 onboarding·부모 admission 밖에서 실행하며 그 호출의 thread-local 범위에만 결과를 보관한다. 각 쓰기 admission은 helper를 반복하지 않고 policy·active·transition 원 바이트의 digest와 delegation을 재확인하며 변경 시 `WRITER_LIFECYCLE_CHANGED`로 거절한다. 다른 source·스레드·다음 호출은 기존 검증을 유지한다. 디렉터리·TLS·등록·세대·원장·설정·Run·옛 작업·stop 표지·환경·보고서 쓰기는 각각 기존 source admission을 얻는다. READY는 relay 확인 뒤 새 admission에서 fence 재확인과 환경 적용을 마친 뒤 게시한다. canonical의 연기와 기존 실패 코드·stop 복원·지원 복구는 유지한다. 기존 G 기록 묶음·옛 작업 은퇴·fixed helper 자기 admission은 측정 P2로 컷 뒤에 남긴다(코디 승인; BACKLOG).
 
 등록·배치 자식의 종료 증명은 시작 시각 기준 하나의 30초 벽시계 마감을 공유한다. 모든 CIM 소유 관찰은 같은 프로세스의 읽기 전용 runspace에서 남은 시간만 기다리고 OperationTimeoutSec도 남은 초로 제한한다. 만료하면 BeginStop만 요청하고 관찰 결과·취소 완료를 기다리지 않으며 이후 새 종료 동작은 없다. 등록은 REGISTRATION_CHILD_UNPROVEN, 배치는 HELPER_CHILD_UNPROVEN으로 복원을 거절한다. 정상 기한 안의 live 부모 사슬·생성 시각·열린 process handle 검증은 유지한다.
 

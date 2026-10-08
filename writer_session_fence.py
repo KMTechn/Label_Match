@@ -676,6 +676,86 @@ def _admitted_writer_sources(
     )
 
 
+def _lifecycle_digests(control: Path | None) -> dict[Path, bytes | None]:
+    observed = {}
+    if control is not None:
+        for name in ("policy.json", "active.json", "transition.json"):
+            path = control / name
+            if path.is_file():
+                with path.open("rb") as handle:
+                    observed[path] = hashlib.file_digest(handle, "sha256").digest()
+            else:
+                observed[path] = None
+    return observed
+
+
+@contextmanager
+def _onboarding_lifecycle_scope(app_root: Any) -> Iterator[None]:
+    """Validate once outside admission, only for this thread's current call."""
+    from auto_update import assert_version_writer, control_root, installation_root, resolve_lifecycle_context
+
+    previous = getattr(_WRITER_LOCAL, "onboarding_lifecycle", None)
+    _WRITER_LOCAL.onboarding_lifecycle = None
+    try:
+        values = os.environ
+        root = canonical_control_root(values)
+        source_root = Path(__file__).resolve().parent
+        selected_root = Path(app_root).absolute()
+        managed = installation_root(selected_root)
+        source_control = control_root(source_root)
+        control = managed / "update-control" if managed is not None and (managed / "update-control").exists() else None
+        if source_control is not None and control is not None and source_control != control:
+            raise WriterFencedError("WRITER_LIFECYCLE_CHANGED", "onboarding and writer installation roots differ")
+        source_managed = installation_root(source_root)
+        observed_control = control if control is not None else source_control
+        if observed_control is None:
+            prospective_root = managed if managed is not None else source_managed
+            if prospective_root is not None:
+                observed_control = prospective_root / "update-control"
+        delegation = active_fence(root, environ=values)
+        _admitted_writer_sources(root, source="current_user_onboarding", environ=values)
+        observed = _lifecycle_digests(observed_control)
+        context = None
+        if control is not None:
+            context = resolve_lifecycle_context(managed, operation="register")
+        else:
+            assert_version_writer(source_root, source="current_user_onboarding", environ=values)
+        _WRITER_LOCAL.onboarding_lifecycle = {
+            "input_root": selected_root, "source_root": source_root,
+            "writer_root": root, "control": observed_control,
+            "digests": observed, "delegation": delegation, "context": context,
+        }
+        yield
+    finally:
+        _WRITER_LOCAL.onboarding_lifecycle = previous
+
+
+def onboarding_lifecycle_context(app_root: str | os.PathLike[str]) -> dict[str, Any] | None:
+    """Return the protected sink's single observation without another helper."""
+    scope = getattr(_WRITER_LOCAL, "onboarding_lifecycle", None)
+    if scope is None:
+        return None
+    context = scope["context"]
+    selected_root = Path(app_root).absolute()
+    active_root = Path(context["active_code_root"]).absolute() if context is not None else None
+    if selected_root not in {scope["input_root"], active_root}:
+        raise WriterFencedError("WRITER_LIFECYCLE_CHANGED", "onboarding lifecycle scope is inexact")
+    return dict(context) if context is not None else None
+
+
+def _check_onboarding_lifecycle(root: Path, values: Mapping[str, str]) -> bool:
+    scope = getattr(_WRITER_LOCAL, "onboarding_lifecycle", None)
+    if scope is None:
+        return False
+    delegation = active_fence(root, environ=values)
+    if (root != scope["writer_root"] or Path(__file__).resolve().parent != scope["source_root"]
+            or delegation != scope["delegation"]
+            or (delegation is not None and not _delegation_matches(delegation, source="current_user_onboarding", environ=values))
+            or _lifecycle_digests(scope["control"]) != scope["digests"]):
+        raise WriterFencedError("WRITER_LIFECYCLE_CHANGED", "lifecycle or delegation changed during onboarding")
+    return True
+
+
 @contextmanager
 def writer_admission(
     source: str,
@@ -703,6 +783,8 @@ def writer_admission(
             "writer admission depth accounting underflowed",
         )
     if depth:
+        if selected_source == "current_user_onboarding":
+            _check_onboarding_lifecycle(_WRITER_LOCAL.control_root, _WRITER_LOCAL.environ)
         allowed = getattr(_WRITER_LOCAL, "allowed_sources", None)
         if allowed is not None and selected_source not in allowed:
             raise WriterFencedError(
@@ -738,12 +820,13 @@ def writer_admission(
                 "WRITER_GATE_ABANDONED",
                 "writer admission mutex ownership was abandoned",
             )
+        onboarding_observed = selected_source == "current_user_onboarding" and _check_onboarding_lifecycle(root, values)
         allowed_sources = _admitted_writer_sources(
             root,
             source=selected_source,
             environ=values,
         )
-        if allowed_sources is None:
+        if allowed_sources is None and not onboarding_observed:
             from auto_update import assert_version_writer
             if selected_source == "current_user_onboarding":
                 # Lifecycle Verify/Observe launches helpers. A relay cannot
@@ -879,10 +962,23 @@ def _probe_then_call(
     """Probe admission, release any parent lease, then call the child launcher."""
 
     outer_depth = int(getattr(_WRITER_LOCAL, "depth", 0))
-    with writer_admission(source):
-        pass
-    if not outer_depth:
+    blocked = getattr(_WRITER_LOCAL, "remote_apply_error", None)
+    if blocked is not None:
+        raise blocked
+    def call() -> R:
+        if source == "current_user_onboarding":
+            app_root = args[0] if args else kwargs["app_root"]
+            with _onboarding_lifecycle_scope(app_root):
+                with writer_admission(source):
+                    pass
+                return function(*args, **kwargs)
         return function(*args, **kwargs)
+
+    if source != "current_user_onboarding" or outer_depth:
+        with writer_admission(source):
+            pass
+    if not outer_depth:
+        return call()
 
     lease = getattr(_WRITER_LOCAL, "lease", None)
     outer_source = str(getattr(_WRITER_LOCAL, "source", "") or "")
@@ -913,7 +1009,7 @@ def _probe_then_call(
     resumed_sources = allowed_sources
     resume_error = None
     try:
-        return function(*args, **kwargs)
+        return call()
     finally:
         try:
             lease.resume(float(timeout_seconds))
