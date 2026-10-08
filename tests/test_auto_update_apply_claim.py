@@ -4,6 +4,7 @@ import ctypes
 from ctypes import wintypes
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -12,6 +13,7 @@ import pytest
 
 import auto_update as updates
 from tests.test_auto_update_endpoints import endpoint, assert_ordinary, OLD, NEW
+from kmtech_shared import data_generation as generation
 
 
 def own_claim():
@@ -152,3 +154,103 @@ def test_e1_next_logon_system_replaces_absent_claim_and_applies(endpoint, monkey
     assert updates.read_json(control/'transition.json')['phase'] == 'ROLLED_BACK'
     assert updates.read_json(control/'apply-claim.json')['status'] == 'SETTLED'
     assert_ordinary(endpoint, OLD)
+
+
+@pytest.mark.parametrize('phase', ['FAILED', 'UNKNOWN'])
+@pytest.mark.parametrize('guard', ['allow', 'writer', 'generation_unknown', 'generation_denied', 'prepared'])
+def test_b1_settled_trial_recovers_in_same_bootstrap(endpoint, monkeypatch, phase, guard):
+    control, stage, policy, state, marker, observation = endpoint
+    clock = [0.0]
+    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(time, 'sleep', lambda _: clock.__setitem__(0, clock[0] + 30.0))
+    protected = {}
+    requests = []
+
+    def settle(*_):
+        requests.append(True)
+        updates.write_json_durable(control / 'transition.json', {**state, 'phase': phase})
+        updates.write_json_durable(control / 'apply-claim.json', {**own_claim(), 'status': 'SETTLED'})
+        if guard == 'writer':
+            monkeypatch.setattr(updates, 'process_snapshot', lambda *_: [{'pid': 456, 'observable': True}])
+        elif guard == 'generation_unknown':
+            marker.write_bytes(b'{unreadable-generation')
+        elif guard == 'generation_denied':
+            generation.record_generation(marker, 'v2.0.100', app_id='Label_Match',
+                subject_sid=policy['operator_sid'], build_id=NEW)
+        elif guard == 'prepared':
+            updates.write_json_durable(stage / 'prepared.json', {'source_commit': OLD})
+        protected.update({path: path.read_bytes() for path in control.glob('*.json')})
+
+    monkeypatch.setattr(updates, 'request_apply_task', settle)
+    if guard == 'allow':
+        assert_ordinary(endpoint, NEW)
+        assert clock[0] == 0.0
+        assert updates.read_json(stage / 'startup-support.json')['reason_code'] == 'UPDATE_TERMINAL_RECOVERED'
+    else:
+        assert updates.bootstrap(control.parent / 'current/app', [], role='gui') == (0 if guard == 'writer' else 20)
+        assert not observation.exists()
+    assert requests == [True]
+    assert updates.apply_claim_status(control) == 'NONE'
+    assert all(path.read_bytes() == value for path, value in protected.items())
+    assert not (stage / 'trial.json').exists()
+
+
+@pytest.mark.parametrize('guard', [
+    'allow', 'fresh', 'boundary', 'future', 'live', 'stat_error', 'writer',
+    'generation_unknown', 'generation_denied', 'prepared', 'claim_renewed', 'lock_busy',
+])
+def test_b3_stale_unknown_claim_recovers_only_after_window_and_recheck(endpoint, monkeypatch, guard):
+    control, stage, policy, state, marker, observation = endpoint
+    updates.write_json_durable(control / 'transition.json', {**state, 'phase': 'FAILED'})
+    claim_path = control / 'apply-claim.json'
+    updates.write_json_durable(claim_path, own_claim() if guard == 'live' else {'schema': 'unsupported'})
+    clock = [0.0]
+    wall = int(time.time())
+    monkeypatch.setattr(time, 'time', lambda: wall)
+    age = {'fresh': 60, 'boundary': 900, 'future': -60}.get(guard, 960)
+    os.utime(claim_path, (wall - age, wall - age))
+    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(time, 'sleep', lambda _: clock.__setitem__(0, clock[0] + 30.0))
+    requests = []
+    monkeypatch.setattr(updates, 'request_apply_task', lambda *_: requests.append(True))
+    if guard == 'writer':
+        monkeypatch.setattr(updates, 'process_snapshot', lambda *_: [{'pid': 456, 'observable': True}])
+    elif guard == 'generation_unknown':
+        marker.write_bytes(b'{unreadable-generation')
+    elif guard == 'generation_denied':
+        generation.record_generation(marker, 'v2.0.100', app_id='Label_Match',
+            subject_sid=policy['operator_sid'], build_id=NEW)
+    elif guard == 'prepared':
+        updates.write_json_durable(stage / 'prepared.json', {'source_commit': OLD})
+    elif guard == 'stat_error':
+        native_stat = Path.stat
+        def unreadable(path, *args, **kwargs):
+            if path == claim_path:
+                raise OSError('synthetic claim metadata unavailable')
+            return native_stat(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'stat', unreadable)
+    locked = []
+    @contextlib.contextmanager
+    def lock(*_args, **_kwargs):
+        if clock[0] >= 240.0:
+            if guard == 'claim_renewed':
+                updates.write_json_durable(claim_path, own_claim())
+            if guard == 'lock_busy':
+                raise RuntimeError('update mutex ownership is busy')
+            locked.append(clock[0])
+        yield
+    monkeypatch.setattr(updates, 'update_lock', lock)
+    protected = {path: path.read_bytes() for path in control.glob('*.json')}
+    if guard == 'allow':
+        assert_ordinary(endpoint, NEW)
+        assert locked and locked[0] == 240.0
+        report = updates.read_json(stage / 'startup-support.json')
+        assert report['reason_code'] == 'UPDATE_SUPERVISION_UNAVAILABLE'
+        assert report['apply_claim_sha256'] == updates.hashlib.sha256(claim_path.read_bytes()).hexdigest()
+    else:
+        assert updates.bootstrap(control.parent / 'current/app', [], role='gui') == (0 if guard == 'writer' else 20)
+        assert not observation.exists()
+    assert clock[0] == 240.0
+    assert not requests
+    assert all(path.read_bytes() == value for path, value in protected.items() if not (guard == 'claim_renewed' and path == claim_path))
+    assert not (stage / 'trial.json').exists()

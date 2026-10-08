@@ -2329,9 +2329,6 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                     launch_version(control, active["sha"], arguments)
                     return 0
                 if state and state["phase"] in {"UNKNOWN", "FAILED"}:
-                    if saw_trial and claim_status != "ABSENT":
-                        emit_progress_guidance()
-                        return 20
                     if claim_status not in {"LIVE", "UNKNOWN"}:
                         if writer_processes(process_snapshot(control), own_pid=os.getpid()):
                             return 0  # The existing single application writer owns work.
@@ -2408,6 +2405,23 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
             if apply_claim_status(control) not in {"LIVE", "UNKNOWN"}:
                 raise
         time.sleep(0.1)
+    if apply_claim_status(control) == "UNKNOWN":
+        try:
+            with update_lock(control, policy["operator_sid"]):
+                try:
+                    stale_claim = time.time() - (control / "apply-claim.json").stat().st_mtime > 15 * 60
+                except OSError:
+                    stale_claim = False
+                if stale_claim and apply_claim_status(control) == "UNKNOWN":
+                    state = optional_record(control / "transition.json")
+                    active = read_json(control / "active.json")
+                    if writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                        return 0
+                    if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared_pending(control, policy, state):
+                        return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True)
+        except RuntimeError as error:
+            if str(error) not in {'update mutex ownership was abandoned', 'update mutex ownership is busy'}:
+                raise
     emit_progress_guidance()
     return 20
 
