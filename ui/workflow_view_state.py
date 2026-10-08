@@ -525,7 +525,7 @@ def _completion_view(
         )
     notice = WorkflowNotice(
         "오류 처리 완료",
-        "실패 세트를 기록했습니다. 실물을 확인하세요.",
+        "실패 트레이를 기록했습니다. 실물을 확인하세요.",
         kind="completion_failed",
         tone="danger",
     )

@@ -391,7 +391,7 @@ CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
 
 
 def _label_match_window_title():
-    return f"바코드 세트 검증기 ({APP_VERSION})"
+    return f"바코드 트레이 검증기 ({APP_VERSION})"
 
 
 def _label_match_operator_context(worker_name):
@@ -5662,7 +5662,7 @@ class Label_Match(tk.Tk):
             return Admission(False, reason="scan_in_progress")
         return self._submit_ui_lane_task(
             name=task.name,
-            busy_text="저장된 현품표 · 중앙 확인 중",
+            busy_text="저장된 현품표 · 회사 서버 확인 중",
             work=task.work,
             finish=task.finish,
             fail=task.fail,
@@ -6216,7 +6216,7 @@ class Label_Match(tk.Tk):
             if rows is None:
                 if not self.__dict__.get(stale_name):
                     self.__dict__[notice_name] = WorkflowNotice(
-                        title=previous_notice.title if previous_notice else f"중앙 {label} 상태 조회 실패",
+                        title=previous_notice.title if previous_notice else f"회사 서버 {label} 상태 조회 실패",
                         message=(
                             previous_notice.message + " 조회 실패 · 오래됨: 마지막 확인 결과입니다. "
                             if previous_notice else "조회 실패: 현재 상태를 확인하지 못했습니다. "
@@ -8768,7 +8768,7 @@ class Label_Match(tk.Tk):
             target_id, "RECHECK", self._package_recovery_manager(),
             "RESTORE_CHANGED_FILE:" + digest,
         )
-        return "변경 파일을 활성 위치에 복원했습니다. 원래 세트 보류와 감사는 유지됩니다."
+        return "변경 파일을 활성 위치에 복원했습니다. 원래 트레이 보류와 감사는 유지됩니다."
 
     @writer_sink("gui_package_pin_file_move_recovery")
     def _recover_package_pin_moves(self, intent):
@@ -10939,7 +10939,7 @@ class Label_Match(tk.Tk):
         window.title("포장 건별 복구")
         frame = ttk.Frame(window, padding=12)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="문제 세트를 선택하세요. 다른 세트는 보류 기록 확인 후 계속할 수 있습니다.").pack(anchor="w")
+        ttk.Label(frame, text="문제 트레이를 선택하세요. 다른 트레이는 보류 기록 확인 후 계속할 수 있습니다.").pack(anchor="w")
         listing = tk.Listbox(frame, width=85, height=8)
         listing.pack(fill="both", expand=True, pady=8)
         detail_rows = []
@@ -11042,7 +11042,7 @@ class Label_Match(tk.Tk):
                               else "LABEL.SET_HOLD")
                     held = self._run_package_pin_action(action, item["set_id"])
                     if held is True:
-                        status.set("해당 세트의 원본·요청 키를 보류하고 다른 세트 작업을 계속할 수 있습니다.")
+                        status.set("해당 트레이의 원본·요청 키를 보류하고 다른 트레이 작업을 계속할 수 있습니다.")
                         refresh()
                     else:
                         status.set(self.__dict__.get("_admin_pin_last_message") or
@@ -11083,7 +11083,7 @@ class Label_Match(tk.Tk):
                 if not item:
                     return
                 value = simpledialog.askstring(
-                    "실물 현품표 확인", "해당 실물 현품표의 PHS2 코드를 스캔하세요.", parent=window
+                    "실물 현품표 확인", "해당 실물 현품표의 현품표 코드를 스캔하세요.", parent=window
                 )
                 if value:
                     result = self._run_package_pin_action(
@@ -11102,7 +11102,7 @@ class Label_Match(tk.Tk):
         ttk.Button(buttons, text="같은 요청 다시 확인", command=recheck).pack(side="left", padx=4)
         ttk.Button(buttons, text="보류 후 계속", command=hold).pack(side="left", padx=4)
         ttk.Button(buttons, text="지원 인계", command=handoff).pack(side="left", padx=4)
-        ttk.Button(buttons, text="실물 현품표 스캔·중앙 조회", command=scan_physical).pack(side="left", padx=4)
+        ttk.Button(buttons, text="실물 현품표 스캔·회사 서버 조회", command=scan_physical).pack(side="left", padx=4)
         ttk.Button(
             frame, text="미완료 현품표 교환 복구",
             command=self._recover_phs_label_exchange,
@@ -11247,7 +11247,7 @@ class Label_Match(tk.Tk):
                             restored=self._package_pin_changed_restored_active(current_path))
                         return
                     self._show_package_recovery_block(
-                        "보류한 세트와 현재 저장 기록이 다릅니다. 원본을 유지하고 지원 담당자에게 알리세요."
+                        "보류한 트레이와 현재 저장 기록이 다릅니다. 원본을 유지하고 지원 담당자에게 알리세요."
                     )
                     return
                 try:
@@ -11356,7 +11356,7 @@ class Label_Match(tk.Tk):
                 }
                 if not self.data_manager.save_current_state(state_data):
                     notice = WorkflowNotice(
-                        title="중앙 포장 복구 잠금",
+                        title="회사 서버 포장 복구 잠금",
                         message=(
                             "복구할 현재 포장 상태를 안전하게 저장하지 못했습니다. "
                             "새 포장을 시작하지 말고 관리자에게 저장 상태 확인을 요청하세요."
@@ -11378,7 +11378,7 @@ class Label_Match(tk.Tk):
                     else "중앙 포장 명령의 PHS2/봉인 증거가 손상되었습니다."
                 )
                 notice = WorkflowNotice(
-                    title="중앙 포장 복구 잠금",
+                    title="회사 서버 포장 복구 잠금",
                     message=(
                         f"{detail} 새 포장을 시작하지 말고 관리자에게 저장 상태 확인을 요청하세요."
                     ),
@@ -11413,7 +11413,7 @@ class Label_Match(tk.Tk):
                 self.current_set_info["start_time"] = datetime.fromisoformat(start_time)
             if self._resume_scanner_failure():
                 self._show_scanner_notice("이전 오류 기록 복구",
-                    "이전 세트의 오류 기록을 저장했습니다. 새 현품표부터 스캔하세요.")
+                    "이전 트레이의 오류 기록을 저장했습니다. 새 현품표부터 스캔하세요.")
             return
         detached_capture = False
         try:
@@ -11500,7 +11500,7 @@ class Label_Match(tk.Tk):
                 print(f"중앙 작업 타임스탬프 오류: {type(e).__name__}. 원본 복구 상태를 보존합니다.")
                 self._package_recovery_state_data = state_data
                 notice = WorkflowNotice(
-                    title="중앙 포장 복구 잠금",
+                    title="회사 서버 포장 복구 잠금",
                     message=(
                         "저장된 작업 시각을 읽지 못했습니다. 원본 복구 기록은 유지됩니다. "
                         "새 포장을 시작하지 말고 관리자에게 저장 상태 확인·수리를 요청하세요."
@@ -13196,7 +13196,7 @@ class Label_Match(tk.Tk):
         self._deferred_validation_worker_in_progress = True
         self._set_ui_lane_busy(
             "deferred-validation",
-            "저장된 현품표 · 중앙 확인 중",
+            "저장된 현품표 · 회사 서버 확인 중",
         )
 
     def _build_deferred_validation_lane_task(self):
@@ -13668,8 +13668,8 @@ class Label_Match(tk.Tk):
                         "관리자는 작업대 건별 복구에서 이 건만 확인·보류합니다."
                     ),
                     "결과확인중": "처리 결과를 확인 중입니다. 같은 작업을 다시 제출하지 마세요.",
-                    "검증완료-전송대기": "검증을 마쳤습니다. 중앙 전송을 기다리며 자동으로 다시 확인합니다.",
-                    "서버확정-로컬반영대기": "중앙 처리는 확정됐습니다. 이 장비의 기록 반영을 기다리세요.",
+                    "검증완료-전송대기": "검증을 마쳤습니다. 회사 서버 전송을 기다리며 자동으로 다시 확인합니다.",
+                    "서버확정-로컬반영대기": "회사 서버 처리는 확정됐습니다. 이 장비의 기록 반영을 기다리세요.",
                     "완료": "작업을 완료했습니다. 다음 현품표를 스캔하세요.",
                     "종결-미완료": "이 작업은 완료되지 않았습니다. 관리자와 처리 방법을 확인하세요.",
                 }[state["status"]],
@@ -14589,7 +14589,7 @@ class Label_Match(tk.Tk):
                     consume_input()
                     self._handle_input_error(
                         raw_input,
-                        title="[PHS2 현품표 오류]",
+                        title="[현품표 오류]",
                         reason=str(exc),
                     )
                     return
@@ -14646,7 +14646,7 @@ class Label_Match(tk.Tk):
             if transfer_label_data:
                 self._handle_input_error(
                     raw_input,
-                    title="[PHS2 현품표 필요]",
+                    title="[현품표 필요]",
                     reason=(
                         "이 QR은 제품 교체 뒤 붙이는 이적 봉인 QR이라 포장 시작 라벨로 쓸 수 없습니다. "
                         "같은 상자의 원본 PHS2 현품표를 스캔하세요. 원본 현품표가 없거나 읽히지 않으면 "
@@ -14799,7 +14799,7 @@ class Label_Match(tk.Tk):
                 or (key == "SRC" and str(value or "").upper() == "KMTECH_INPUT_TAG")
                 for key, value in label_pairs
             ):
-                self._ignore_product_scan(raw_input, "현품표입니다. 현재 세트의 제품을 스캔하세요.")
+                self._ignore_product_scan(raw_input, "현품표입니다. 현재 트레이의 제품을 스캔하세요.")
                 return
             if scan_pos < final_label_position and len(raw_input) <= len(master_code):
                 self._handle_input_error(
@@ -14819,10 +14819,10 @@ class Label_Match(tk.Tk):
                 self._handle_mismatch(raw_input, master_code)
                 return
             if raw_input in self.current_set_info['raw']:
-                self._ignore_product_scan(raw_input, "세트 내 중복 스캔입니다. 다른 제품을 스캔하세요.")
+                self._ignore_product_scan(raw_input, "트레이 내 중복 스캔입니다. 다른 제품을 스캔하세요.")
                 return
             if raw_input in self.global_scanned_set:
-                self._ignore_product_scan(raw_input, "이미 다른 세트에서 처리된 제품입니다. 새 제품을 스캔하세요.")
+                self._ignore_product_scan(raw_input, "이미 다른 트레이에서 처리된 제품입니다. 새 제품을 스캔하세요.")
                 return
             known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"),
                                                self.current_set_info.get("scanner_exchanges", []))
@@ -14846,7 +14846,7 @@ class Label_Match(tk.Tk):
                 # at its next accepted product. Preserve submitted commands.
                 outbox = self.__dict__.get("package_outbox")
                 if outbox is not None and outbox.get_by_set_id(str(self.current_set_info.get("id") or "")) is not None:
-                    self._ignore_product_scan(raw_input, "이 세트는 이미 전송함에 저장되었습니다. 저장된 처리 상태를 확인하세요.")
+                    self._ignore_product_scan(raw_input, "이 트레이는 이미 전송함에 저장되었습니다. 저장된 처리 상태를 확인하세요.")
                     return
                 def prepare(state):
                     state["scanner_only"] = True
@@ -14952,7 +14952,7 @@ class Label_Match(tk.Tk):
         source_members = self._known_sample_members(current.get("package_source_snapshot"))
         if current["scanner_exchange_phase"] == "target":
             if normalized not in samples and (known is None or normalized not in known):
-                return self._ignore_product_scan(value, "이 세트의 표본 또는 현품표 구성원을 스캔하세요.")
+                return self._ignore_product_scan(value, "이 트레이의 표본 또는 현품표 구성원을 스캔하세요.")
             previous = copy.deepcopy(current)
             current.update(scanner_exchange_phase="replacement", scanner_exchange_target=value)
             if not self._save_current_set_state():
@@ -15254,7 +15254,7 @@ class Label_Match(tk.Tk):
             self.current_set_info = restored
             self._replay_scanner_audits()
         else:
-            return self._ignore_product_scan("KMCMD:UNDO", "지금 세트에 되돌릴 스캔이 없습니다.")
+            return self._ignore_product_scan("KMCMD:UNDO", "지금 트레이에 되돌릴 스캔이 없습니다.")
         self._clear_workflow_completion()
         self._update_history_tree_in_progress()
         self._render_operator_workbench()
@@ -15299,7 +15299,7 @@ class Label_Match(tk.Tk):
         get_hold = getattr(outbox, "get_workbench_hold", None)
         if current_set_id and callable(get_hold) and get_hold(current_set_id):
             self._show_package_recovery_block(
-                "이 세트는 관리자 보류 중입니다. 같은 요청을 다시 처리하지 말고 건별 복구에서 확인하세요.",
+                "이 트레이는 관리자 보류 중입니다. 같은 요청을 다시 처리하지 말고 건별 복구에서 확인하세요.",
                 retry_action=self._show_package_recovery_workbench,
             )
             return True
@@ -15346,7 +15346,7 @@ class Label_Match(tk.Tk):
         ):
             self._show_scanner_notice(
                     "복구 상태 관리자 확인 필요",
-                    f"{action} 작업을 진행할 수 없습니다. PHS2 저장 상태를 관리자와 확인하세요.",
+                    f"{action} 작업을 진행할 수 없습니다. 현품표 저장 상태를 관리자와 확인하세요.",
                 )
             return True
         if (
@@ -15354,8 +15354,8 @@ class Label_Match(tk.Tk):
             or self.__dict__.get("_central_package_preflight_in_progress", False)
         ):
             self._show_scanner_notice(
-                    "중앙 이적 정보 확인 중",
-                    f"PHS2의 현재 이적·봉인 정보를 확인 중입니다.\n{action} 작업은 조회가 끝난 뒤 진행하세요.",
+                    "회사 서버 이적 정보 확인 중",
+                    f"현품표의 현재 이적·봉인 정보를 확인 중입니다.\n{action} 작업은 조회가 끝난 뒤 진행하세요.",
                 )
             return True
         if str(action or "") != "프로그램 종료":
@@ -17010,7 +17010,7 @@ class Label_Match(tk.Tk):
             return "해당 작업이 정상적으로 취소되었습니다."
         status = str(cancellation.get("status") or "").strip().upper()
         if bool(cancellation.get("central_cancellation_acked")) or status == "ACKED":
-            return "로컬 기록과 중앙 포장이 모두 취소되었습니다."
+            return "로컬 기록과 회사 서버 포장이 모두 취소되었습니다."
         if status == "CONFLICT":
             return (
                 "로컬 취소 기록은 저장되었지만 중앙 취소 확인이 필요합니다. "
@@ -17548,7 +17548,7 @@ class Label_Match(tk.Tk):
         if package_logistics and package_logistics.get("idempotency_key"):
             central_text = {
                 "ACKED": "중앙 확정",
-                "CONFLICT": "중앙 충돌 · 관리자 확인",
+                "CONFLICT": "회사 서버 충돌 · 관리자 확인",
             }.get(str(package_logistics.get("status") or "").upper(), "중앙 전송 대기")
             saved_text = f"로컬 완료 저장됨 · {central_text}"
         transition_name = LABEL_TRANSITION_CLASS_NAMES.get(details.get("transition_class"))
@@ -17889,7 +17889,7 @@ class Label_Match(tk.Tk):
             elif central_acked_count:
                 messagebox.showinfo(
                     "삭제 완료",
-                    f"{deleted_count}개의 로컬 기록과 중앙 포장을 취소했습니다.",
+                    f"{deleted_count}개의 로컬 기록과 회사 서버 포장을 취소했습니다.",
                     parent=self,
                 )
             else:
@@ -18057,7 +18057,7 @@ class Label_Match(tk.Tk):
                 print(f"현재 세트 취소 보류: {getattr(exc, 'code', type(exc).__name__)}")
                 self._show_scanner_notice(
                         "현재 세트 취소 보류",
-                        "저장된 작업의 처리 결과를 확인할 수 없어 현재 세트를 유지합니다. 관리자와 확인하세요.",
+                        "저장된 작업의 처리 결과를 확인할 수 없어 현재 트레이를 유지합니다. 관리자와 확인하세요.",
                     )
                 return False
         if full_reset and self.current_set_info.get('id'):
@@ -19368,7 +19368,7 @@ class Label_Match(tk.Tk):
 
     def _idle_instruction_text(self):
         if self._standard_phs2_workflow_expected():
-            return "PHS2 현품표 1장 스캔"
+            return "현품표 1장 스캔"
         return f"1/{self.TOTAL_SCAN_COUNT} 현품표 스캔 (레거시)"
 
     def _history_values_for_display(self, values):
@@ -20012,7 +20012,7 @@ class Label_Match(tk.Tk):
             center_inner_width = max(320, panes.center_width - card_padding * 2)
             scan_heading_font = self.style.lookup("Operator.Treeview.Heading", "font") or operator_tree_font
             stage_width = max(
-                132, self._text_pixel_width("1. PHS2 현품표", operator_tree_font) + 20,
+                132, self._text_pixel_width("1. 현품표", operator_tree_font) + 20,
                 self._text_pixel_width("단계", scan_heading_font) + 20,
             )
             state_width = max(
@@ -20355,9 +20355,9 @@ class Label_Match(tk.Tk):
             "submission_blocked": "제출 대기",
             "blocked": "작업 확인 필요",
             "error": "스캔 확인 필요",
-            "completion_full": "다음 세트 준비",
-            "completion_partial": "다음 세트 준비",
-            "completion_failed": "새 세트 준비",
+            "completion_full": "다음 트레이 준비",
+            "completion_partial": "다음 트레이 준비",
+            "completion_failed": "새 트레이 준비",
             "legacy_label_blocked": "옛 방식 현품표",
         }.get(view.current_stage, "상태 확인")
 
@@ -20981,7 +20981,7 @@ class Label_Match(tk.Tk):
         notebook = self.__dict__.get("live_scan_notebook")
         if notebook is not None:
             try:
-                notebook.tab(self.qa_scan_frame, text=f"현재 세트 {view.qa_progress_text}")
+                notebook.tab(self.qa_scan_frame, text=f"현재 트레이 {view.qa_progress_text}")
             except (TclError, AttributeError):
                 pass
 
@@ -22519,7 +22519,7 @@ def _offer_item_catalog_startup_retry(error):
     context = get_catalog_attempt_context_from_error(error)
     try:
         retry = messagebox.askretrycancel(
-            "중앙 품목 목록 확인 필요",
+            "회사 서버 품목 목록 확인 필요",
             (
                 "검증된 중앙 품목 목록을 아직 사용할 수 없습니다.\n\n"
                 f"{_item_catalog_profile_details_for_display(context)}\n"

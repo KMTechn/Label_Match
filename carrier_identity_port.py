@@ -121,7 +121,7 @@ def parse_raw_compact_carrier(raw_value: Any, *, error_type) -> dict[str, str]:
     if len(parts) != len(expected_keys):
         raise error_type(
             "PHS2_FORMAT_INVALID",
-            "PHS2는 여섯 개의 표준 필드여야 합니다.",
+            "현품표는 여섯 개의 표준 필드여야 합니다.",
         )
     fields: dict[str, str] = {}
     ordered: list[str] = []
@@ -129,7 +129,7 @@ def parse_raw_compact_carrier(raw_value: Any, *, error_type) -> dict[str, str]:
         if part.count("=") != 1:
             raise error_type(
                 "PHS2_FORMAT_INVALID",
-                "PHS2 필드 형식이 올바르지 않습니다.",
+                "현품표 필드 형식이 올바르지 않습니다.",
             )
         key, field_value = part.split("=", 1)
         key = key.strip().upper()
@@ -137,14 +137,14 @@ def parse_raw_compact_carrier(raw_value: Any, *, error_type) -> dict[str, str]:
         if not key or not field_value or key in fields:
             raise error_type(
                 "PHS2_FORMAT_INVALID",
-                "PHS2 필드는 비어 있거나 중복될 수 없습니다.",
+                "현품표 필드는 비어 있거나 중복될 수 없습니다.",
             )
         ordered.append(key)
         fields[key] = field_value
     if tuple(ordered) != expected_keys:
         raise error_type(
             "PHS2_FORMAT_INVALID",
-            "PHS2 필드 순서가 표준과 다릅니다.",
+            "현품표 필드 순서가 표준과 다릅니다.",
         )
     if (
         fields["PHS"] != "2"
@@ -153,7 +153,7 @@ def parse_raw_compact_carrier(raw_value: Any, *, error_type) -> dict[str, str]:
     ):
         raise error_type(
             "PHS2_FORMAT_INVALID",
-            "중앙 KMTECH_INPUT_TAG PHS2 형식이 아닙니다.",
+            "회사 서버 KMTECH_INPUT_TAG 현품표 형식이 아닙니다.",
         )
     fields["SRC"] = "KMTECH_INPUT_TAG"
     fields["HSH"] = fields["HSH"].lower()

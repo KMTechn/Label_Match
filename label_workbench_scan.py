@@ -57,7 +57,7 @@ def create_scan_status(
         step_label.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
         if initial_standard_phs2:
             if index == 0:
-                step_label.configure(text="1. PHS2 현품표")
+                step_label.configure(text="1. 현품표")
             else:
                 step_label.grid_remove()
         self.step_labels.append(step_label)
@@ -163,7 +163,7 @@ def create_scan_details(
     self.qa_scan_frame = ttk.Frame(self.live_scan_notebook, style="Card.TFrame")
     self.qa_scan_frame.grid_rowconfigure(0, weight=1)
     self.qa_scan_frame.grid_columnconfigure(0, weight=1)
-    self.live_scan_notebook.add(self.qa_scan_frame, text="현재 세트 0/5")
+    self.live_scan_notebook.add(self.qa_scan_frame, text="현재 트레이 0/5")
     self.qa_scan_tree = ttk.Treeview(
         self.qa_scan_frame,
         columns=("Stage", "Value", "State"),
@@ -253,7 +253,7 @@ def create_scan_details(
     )
     self.qa_scan_detail_text.insert(
         "1.0",
-        "현재 세트 행을 선택하면 수락된 스캔 원문을 확인할 수 있습니다.",
+        "현재 트레이 행을 선택하면 수락된 스캔 원문을 확인할 수 있습니다.",
     )
     self.qa_scan_detail_text.configure(state="disabled")
 
