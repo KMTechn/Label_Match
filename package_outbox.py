@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import base64
 import hashlib
 import json
+import logging
 from pathlib import Path
 import sqlite3
 import threading
@@ -795,6 +796,37 @@ class PackageOutbox:
                         "operation lease issue attempt review state changed concurrently"
                     )
             conn.commit()
+            return True
+
+    def pending_refused_operation_leases(self) -> list[dict[str, Any]]:
+        """Use the conflict transaction's existing lease rows as the queue."""
+        with self._connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='package_operation_leases'"
+            ).fetchone() is None:
+                return []
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM package_operation_leases "
+                "WHERE status='OPERATOR_REVIEW' ORDER BY updated_at,lease_id"
+            ).fetchall()]
+
+    def record_refused_operation_lease_result(self, expected, result: str) -> bool:
+        # The drain sink has reacquired admission after remote_request. Never
+        # apply its result to a lease that changed while HTTP was in flight.
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM package_operation_leases "
+                "WHERE lease_id=? AND status='OPERATOR_REVIEW'",
+                (expected["lease_id"],),
+            ).fetchone()
+            if row is None or dict(row) != dict(expected):
+                return False
+            # Reporting is supplementary: business rows and evidence stay
+            # byte-identical. Only a result code goes to the existing log.
+            logging.getLogger(__name__).warning(
+                "package_operation_lease_refusal result=%s", result
+            )
             return True
 
     def get_by_set_id(self, set_id: str) -> dict[str, Any] | None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import threading
 from typing import Any, Callable, Mapping, TYPE_CHECKING
@@ -24,8 +25,11 @@ from package_command_draft import (
     canonical_sha256,
     membership_hash,
 )
-from package_errors import PackageApiError, PackageLogisticsError, PackageTransportError
-from terminal_operation_lease import OperationLeaseError
+from package_errors import (
+    PackageApiError, PackageLogisticsError, PackageTransportError,
+    _bounded_retry_after_seconds,
+)
+from terminal_operation_lease import OperationLeaseError, parse_utc
 
 if TYPE_CHECKING:
     from package_logistics import PackageLogisticsClient, PackageOutbox
@@ -42,6 +46,8 @@ class PackageOutboxProcessor:
         self._drain_lock = threading.Lock()
         self._draining = False
         self.prepare_scanner_delivery = prepare_scanner_delivery
+        self._settled_refused_leases: set[str] = set()
+        self._refused_lease_retry_after: dict[str, str] = {}
 
     def drain(self, *, limit: int = 20) -> dict[str, int]:
         counts = {"acked": 0, "retry": 0, "conflict": 0}
@@ -51,6 +57,7 @@ class PackageOutboxProcessor:
             self._draining = True
         try:
             counts["acked"] += self._reconcile_receipts()
+            self._report_refused_operation_leases()
             attempted_keys: set[str] = set()
             for _ in range(max(0, int(limit))):
                 row = self.outbox.claim_next(exclude_keys=attempted_keys)
@@ -164,6 +171,52 @@ class PackageOutboxProcessor:
             with self._drain_lock:
                 self._draining = False
         return counts
+
+    def _report_refused_operation_leases(self) -> None:
+        for row in self.outbox.pending_refused_operation_leases():
+            lease_id = row["lease_id"]
+            if lease_id in self._settled_refused_leases:
+                continue
+            now = self.outbox._utc_now()
+            try:
+                artifact = json.loads(row["artifact_json"])
+                expires_at = parse_utc(artifact["expires_at"], field="expires_at")
+                if parse_utc(now, field="now") >= expires_at:
+                    result = "EXPIRED_NOT_SENT"
+                else:
+                    if self._refused_lease_retry_after.get(lease_id, "") > now:
+                        continue
+                    binding = json.loads(row["binding_json"])
+                    self.client.report_refused_operation_lease(
+                        authority_scope_id=binding["authority_scope_id"],
+                        token=row["token"],
+                        lease_id=lease_id,
+                        fence=row["fence"],
+                        idempotency_key="label-operation-lease-refused:"
+                        + hashlib.sha256(lease_id.encode("utf-8")).hexdigest(),
+                    )
+                    result = "REPORTED"
+            except PackageApiError as exc:
+                if exc.status_code not in {400, 404, 409}:
+                    delay = _bounded_retry_after_seconds(exc.retry_after_seconds)
+                    if delay is not None:
+                        self._refused_lease_retry_after[lease_id] = self.outbox._utc_after(delay)
+                    continue
+                # Do not put arbitrary server messages/evidence in the log.
+                result = exc.code if exc.code in {
+                    "OPERATION_LEASE_ALREADY_CONSUMED",
+                    "OPERATION_LEASE_ALREADY_RELEASED",
+                    "OPERATION_LEASE_EVIDENCE_MISMATCH",
+                    "OPERATION_LEASE_DEVICE_MISMATCH",
+                    "OPERATION_LEASE_FIELD_INVALID",
+                } else f"HTTP_{exc.status_code}"
+            except (PackageLogisticsError, OperationLeaseError, ValueError, KeyError, TypeError):
+                # Transport/invalid responses keep the durable source for the
+                # next cycle. No token or response body is logged here.
+                continue
+            if self.outbox.record_refused_operation_lease_result(row, result):
+                self._settled_refused_leases.add(lease_id)
+                self._refused_lease_retry_after.pop(lease_id, None)
 
     def _reconcile_receipts(self) -> int:
         acked = 0

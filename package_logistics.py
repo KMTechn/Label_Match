@@ -1439,6 +1439,38 @@ class PackageLogisticsClient:
             )
         )
 
+    def report_refused_operation_lease(
+        self, *, authority_scope_id: str, token: str, lease_id: str,
+        fence: int, idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Report a completed package refusal; the admin still owns release."""
+        scope = str(authority_scope_id or "").strip()
+        if not scope or not token or not lease_id or not idempotency_key:
+            raise PackageLogisticsError("operation lease refusal identity is incomplete")
+        self._assert_authority(scope)
+        body = canonical_json({
+            "authority_scope_id": scope, "operation": "CREATE_PACKAGE",
+            "token": token, "reason": "COMMAND_REFUSED",
+        }).encode("utf-8")
+        result = self._data(self._request(
+            "POST", "/logistics/api/v1/operation-leases/release",
+            body=body, key=idempotency_key,
+        ))
+        if (
+            result.get("contract_version") != "terminal-operation-lease-release-v1"
+            or result.get("lease_id") != lease_id
+            or type(result.get("fence")) is not int
+            or result["fence"] != fence
+            or result.get("status") != "RECONCILIATION_REQUIRED"
+            or result.get("resolution") != "DEVICE_REPORTED_COMMAND_REFUSED"
+            or result.get("reason") != "COMMAND_REFUSED"
+            or not isinstance(result.get("replayed"), bool)
+            or not isinstance(result.get("reported_at"), str)
+            or not result["reported_at"]
+        ):
+            raise PackageTransportError("operation lease refusal response is invalid")
+        return result
+
     def resolve_good_source(
         self, *, authority_scope_id: str, barcode: str
     ) -> dict[str, Any]:

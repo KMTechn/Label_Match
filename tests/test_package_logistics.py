@@ -1729,6 +1729,29 @@ def test_non_finite_retry_after_cannot_leave_cancellation_sending(tmp_path):
     assert row["retry_after_at"] > package_module.utc_now()
 
 
+@pytest.mark.parametrize("field,value", [
+    ("contract_version", "unknown"), ("lease_id", "OTHER"),
+    ("status", "RELEASED"), ("resolution", "DEVICE_RELEASED_UNUSED"),
+    ("reason", "LOCAL_RESET"), ("fence", 12), ("fence", True),
+    ("replayed", "true"), ("reported_at", ""),
+])
+def test_refused_operation_lease_requires_bound_reconciliation_response(field, value):
+    response = {"ok": True, "data": {
+        "contract_version": "terminal-operation-lease-release-v1",
+        "lease_id": "LEASE-001", "status": "RECONCILIATION_REQUIRED", "fence": 11,
+        "resolution": "DEVICE_REPORTED_COMMAND_REFUSED", "reason": "COMMAND_REFUSED",
+        "reported_at": "2026-08-01T01:30:00Z", "replayed": False,
+    }}
+    response["data"][field] = value
+    client = PackageLogisticsClient(
+        PackageClientConfig("https://logistics.test", "test-credential", SCOPE, "host", "device"),
+        transport=lambda *_args: response,
+    )
+    with pytest.raises(PackageTransportError, match="refusal response is invalid"):
+        client.report_refused_operation_lease(authority_scope_id=SCOPE, token="test.signed.lease",
+            lease_id="LEASE-001", fence=11, idempotency_key="refusal-key")
+
+
 def test_committed_api_error_is_operator_conflict_and_never_reposted(tmp_path):
     draft = _draft()
     db_path = tmp_path / "cancel-committed-error.sqlite3"

@@ -1,6 +1,8 @@
 import base64
 import copy
 import json
+import hashlib
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -17,6 +19,7 @@ from package_logistics import (
     PackageLogisticsError,
     PackageOutbox,
     PackageOutboxProcessor,
+    PackageTransportError,
 )
 from terminal_operation_lease import (
     ARTIFACT_CONTRACT_VERSION,
@@ -723,6 +726,253 @@ def test_post_completion_conflict_atomically_preserves_local_work_for_review(tmp
     )
     assert attempt["status"] == "RETIRED"
     assert attempt["retire_reason"] == "OPERATOR_REVIEW"
+
+
+def _refused_lease_fixture(tmp_path, monkeypatch, *, status="OPERATOR_REVIEW"):
+    import package_logistics as module
+
+    clock = [datetime(2026, 8, 1, 1, 30, tzinfo=timezone.utc)]
+    monkeypatch.setattr(module, "utc_now", lambda: clock[0].strftime("%Y-%m-%dT%H:%M:%SZ"))
+    monkeypatch.setattr(module, "_utc_after", lambda seconds:
+        (clock[0] + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    database = tmp_path / "refused.sqlite3"
+    outbox = PackageOutbox(database)
+    store = OperationLeaseStore(database)
+    snapshot = {"source": "TRANSFER-1"}
+    claims = payload(snapshot)
+    signed = Signer().sign(claims)
+    draft = lease_draft(operation_lease_token=signed,
+                        operation_lease_snapshot_hash=claims["snapshot_hash"])
+    queued = outbox.enqueue(draft)
+    store.save_prefetched(
+        artifact={"token": signed, "operation_snapshot": snapshot,
+                  "claims": claims, "expires_at": claims["expires_at"]},
+        binding=binding(), issue_idempotency_key="lease-issue-refused",
+    )
+    store.attach_set(draft.operation_lease_id, draft.set_id)
+    if status != "PREFETCHED":
+        outbox.mark_local_completion_committed(queued["idempotency_key"],
+            operation_lease_id=draft.operation_lease_id,
+            operation_completed_at=draft.operation_lease_completed_at)
+        claim = outbox.claim_next()
+        if status == "OPERATOR_REVIEW":
+            outbox.mark_conflict(queued["idempotency_key"],
+                PackageApiError(409, "OPERATION_LEASE_FENCE_CONFLICT", "stale fence"),
+                operation_lease_id=draft.operation_lease_id, expected_claim=claim)
+        elif status == "ACKED":
+            outbox.mark_acked(queued["idempotency_key"], {},
+                operation_lease_id=draft.operation_lease_id, expected_claim=claim)
+    return outbox, store, draft, clock
+
+
+def _refusal_response(draft, *, replayed=False):
+    # Exact eight-field data body from Web 374ddb77 service.py:955.
+    return {"ok": True, "data": {
+        "contract_version": "terminal-operation-lease-release-v1",
+        "lease_id": draft.operation_lease_id, "status": "RECONCILIATION_REQUIRED",
+        "fence": draft.operation_lease_fence, "resolution": "DEVICE_REPORTED_COMMAND_REFUSED",
+        "reason": "COMMAND_REFUSED", "reported_at": "2026-08-01T01:30:00Z",
+        "replayed": replayed,
+    }}
+
+
+def _refusal_client(transport):
+    return PackageLogisticsClient(PackageClientConfig(
+        "https://logistics.example.test", "test-machine-credential", "scope-main",
+        "HOST-PACK-01", "PACK-01"), transport=transport)
+
+
+def _business_bytes(database):
+    # Return hashes only, so a failing assertion cannot dump signed evidence.
+    with sqlite3.connect(database) as conn:
+        schema = conn.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").fetchall()
+        tables = [row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        rows = {table: conn.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall()
+                for table in tables}
+    return (hashlib.sha256(canonical_json_bytes(schema)).hexdigest(),
+            hashlib.sha256(canonical_json_bytes(rows)).hexdigest())
+
+
+def test_refused_lease_report_next_cycle_restart_replay_and_business_bytes(
+    tmp_path, monkeypatch, caplog, lock_remote,
+):
+    caplog.set_level(logging.INFO, logger="package_outbox")
+    outbox, store, draft, _clock = _refused_lease_fixture(tmp_path, monkeypatch)
+    before = _business_bytes(tmp_path / "refused.sqlite3")
+    calls = []
+
+    def transport(method, url, headers, body, _timeout):
+        import writer_session_fence as fence
+        assert getattr(fence._WRITER_LOCAL, "depth", 0) == 0
+        lock_remote.transport("refused lease report")
+        request = json.loads(body)
+        assert (method, url.split(".test")[-1]) == (
+            "POST", "/logistics/api/v1/operation-leases/release")
+        assert set(request) == {"authority_scope_id", "operation", "token", "reason"}
+        assert request["authority_scope_id"] == "scope-main"
+        assert request["operation"] == "CREATE_PACKAGE"
+        assert request["reason"] == "COMMAND_REFUSED"
+        assert hashlib.sha256(request["token"].encode()).digest() == hashlib.sha256(
+            store.get(lease_id=draft.operation_lease_id)["token"].encode()).digest()
+        expected_key = "label-operation-lease-refused:" + hashlib.sha256(
+            draft.operation_lease_id.encode()).hexdigest()
+        assert headers["Idempotency-Key"] == expected_key
+        calls.append((body, headers["Idempotency-Key"]))
+        return _refusal_response(draft, replayed=len(calls) > 1)
+
+    client = _refusal_client(transport)
+    processor = PackageOutboxProcessor(outbox, client)
+    assert processor.drain(limit=0) == {"acked": 0, "retry": 0, "conflict": 0}
+    processor.drain(limit=0)
+    assert len(calls) == 1
+    restarted = PackageOutboxProcessor(PackageOutbox(outbox.db_path), client)
+    restarted.drain(limit=0)
+    restarted.drain(limit=0)
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert _business_bytes(tmp_path / "refused.sqlite3") == before
+    assert [record.getMessage() for record in caplog.records
+            if record.name == "package_outbox"] == [
+        "package_operation_lease_refusal result=REPORTED"] * 2
+
+
+@pytest.mark.parametrize("status", ["PREFETCHED", "LOCAL_COMPLETED", "ACKED"])
+def test_refused_lease_reporting_ignores_non_review_status(tmp_path, monkeypatch, status):
+    outbox, _store, _draft, _clock = _refused_lease_fixture(tmp_path, monkeypatch, status=status)
+    client = _refusal_client(lambda *_args: pytest.fail("unexpected refusal HTTP"))
+    PackageOutboxProcessor(outbox, client).drain(limit=0)
+
+
+def test_refused_lease_created_by_drain_reports_only_on_next_cycle(tmp_path, monkeypatch):
+    outbox, store, draft, _clock = _refused_lease_fixture(tmp_path, monkeypatch, status="LOCAL_COMPLETED")
+    key = outbox.get_by_set_id(draft.set_id)["idempotency_key"]
+    outbox.mark_retry(key, PackageTransportError("ready for background delivery"))
+    calls = []
+
+    def transport(_method, url, _headers, _body, _timeout):
+        calls.append(url.rsplit("/", 1)[-1])
+        if url.endswith("/packages"):
+            raise PackageApiError(409, "OPERATION_LEASE_FENCE_CONFLICT", "stale fence")
+        return _refusal_response(draft)
+
+    client = _refusal_client(transport)
+    monkeypatch.setattr(client, "build_create_package_command", lambda _draft, *, idempotency_key:
+        ("TRANSFER-1", {"authority_scope_id": "scope-main", "idempotency_key": idempotency_key}))
+    processor = PackageOutboxProcessor(outbox, client)
+    assert processor.drain(limit=1)["conflict"] == 1
+    assert store.get(lease_id=draft.operation_lease_id)["status"] == "OPERATOR_REVIEW"
+    assert calls == ["packages"]
+    before = _business_bytes(tmp_path / "refused.sqlite3")
+    processor.drain(limit=0)
+    processor.drain(limit=0)
+    assert calls == ["packages", "release"]
+    assert _business_bytes(tmp_path / "refused.sqlite3") == before
+
+
+def test_conflict_without_lease_and_conflict_rollback_do_not_report(tmp_path, monkeypatch):
+    outbox, store, draft, _clock = _refused_lease_fixture(tmp_path, monkeypatch, status="LOCAL_COMPLETED")
+    before = _business_bytes(tmp_path / "refused.sqlite3")
+    with sqlite3.connect(outbox.db_path) as conn:
+        conn.execute("CREATE TRIGGER refuse_retirement BEFORE UPDATE ON package_operation_lease_issue_attempts "
+                     "BEGIN SELECT RAISE(ABORT,'retirement failed'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="retirement failed"):
+        outbox.mark_conflict(outbox.get_by_set_id(draft.set_id)["idempotency_key"],
+            PackageApiError(409, "CONFLICT", "test conflict"), operation_lease_id=draft.operation_lease_id)
+    with sqlite3.connect(outbox.db_path) as conn:
+        conn.execute("DROP TRIGGER refuse_retirement")
+    # SQL/rows are restored; SQLite page bookkeeping can differ after trigger DDL.
+    assert _business_bytes(tmp_path / "refused.sqlite3")[:2] == before[:2]
+    assert store.get(lease_id=draft.operation_lease_id)["status"] == "LOCAL_COMPLETED"
+    client = _refusal_client(lambda *_args: pytest.fail("unexpected refusal HTTP"))
+    processor = PackageOutboxProcessor(outbox, client)
+    processor.drain(limit=0)
+    outbox.mark_conflict(outbox.get_by_set_id(draft.set_id)["idempotency_key"],
+                        PackageApiError(409, "CONFLICT", "no lease ID"))
+    processor.drain(limit=0)
+
+
+@pytest.mark.parametrize("status,code", [
+    (409, "OPERATION_LEASE_ALREADY_CONSUMED"), (409, "OPERATION_LEASE_ALREADY_RELEASED"),
+    (409, "OPERATION_LEASE_EVIDENCE_MISMATCH"), (409, "OPERATION_LEASE_DEVICE_MISMATCH"),
+    (400, "OPERATION_LEASE_FIELD_INVALID"), (404, "HTTP_404"),
+])
+def test_refused_lease_terminal_rejection_is_code_only_and_not_retried(
+    tmp_path, monkeypatch, caplog, status, code,
+):
+    caplog.set_level(logging.INFO, logger="package_outbox")
+    outbox, _store, _draft, _clock = _refused_lease_fixture(tmp_path, monkeypatch)
+    before = _business_bytes(tmp_path / "refused.sqlite3")
+    calls = []
+    def transport(*_args):
+        calls.append(1)
+        raise PackageApiError(status, code, "sensitive evidence must never be logged", retryable=True)
+    processor = PackageOutboxProcessor(outbox, _refusal_client(transport))
+    processor.drain(limit=0)
+    processor.drain(limit=0)
+    assert len(calls) == 1
+    assert _business_bytes(tmp_path / "refused.sqlite3") == before
+    assert caplog.records[-1].getMessage() == "package_operation_lease_refusal result=" + code
+    assert "sensitive evidence" not in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["connection", "timeout", 503, 429])
+def test_refused_lease_transient_failure_retries_with_existing_backoff(
+    tmp_path, monkeypatch, failure,
+):
+    outbox, _store, draft, clock = _refused_lease_fixture(tmp_path, monkeypatch)
+    before = _business_bytes(tmp_path / "refused.sqlite3")
+    calls = []
+    def transport(*_args):
+        calls.append(1)
+        if len(calls) == 1:
+            if isinstance(failure, str):
+                raise PackageTransportError(failure)
+            raise PackageApiError(failure, "RETRY", "wait", retry_after_seconds=10)
+        return _refusal_response(draft)
+    processor = PackageOutboxProcessor(outbox, _refusal_client(transport))
+    processor.drain(limit=0)
+    assert _business_bytes(tmp_path / "refused.sqlite3") == before
+    if isinstance(failure, int):
+        processor.drain(limit=0)
+        assert len(calls) == 1
+        clock[0] += timedelta(seconds=10)
+    processor.drain(limit=0)
+    processor.drain(limit=0)
+    assert len(calls) == 2
+    assert _business_bytes(tmp_path / "refused.sqlite3") == before
+
+
+def test_expired_refused_lease_is_recorded_without_http(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="package_outbox")
+    outbox, _store, _draft, clock = _refused_lease_fixture(tmp_path, monkeypatch)
+    clock[0] = datetime(2026, 8, 1, 3, 0, tzinfo=timezone.utc)
+    before = _business_bytes(tmp_path / "refused.sqlite3")
+    processor = PackageOutboxProcessor(outbox, _refusal_client(
+        lambda *_args: pytest.fail("expired lease was sent")))
+    processor.drain(limit=0)
+    processor.drain(limit=0)
+    assert caplog.records[-1].getMessage() == "package_operation_lease_refusal result=EXPIRED_NOT_SENT"
+    assert _business_bytes(tmp_path / "refused.sqlite3") == before
+
+
+@pytest.mark.parametrize("change", ["status", "evidence"])
+def test_refused_lease_result_rechecks_exact_row_after_http(
+    tmp_path, monkeypatch, caplog, change,
+):
+    caplog.set_level(logging.INFO, logger="package_outbox")
+    outbox, _store, draft, _clock = _refused_lease_fixture(tmp_path, monkeypatch)
+    def transport(*_args):
+        with sqlite3.connect(outbox.db_path) as conn:
+            if change == "status":
+                conn.execute("UPDATE package_operation_leases SET status='ACKED'")
+            else:
+                conn.execute("UPDATE package_operation_leases SET updated_at='2026-08-01T01:31:00Z'")
+        return _refusal_response(draft)
+    processor = PackageOutboxProcessor(outbox, _refusal_client(transport))
+    processor.drain(limit=0)
+    assert draft.operation_lease_id not in processor._settled_refused_leases
+    assert not [record for record in caplog.records if record.name == "package_outbox"]
 
 
 def test_receipt_requires_exact_atomic_lease_consumption():
