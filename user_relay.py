@@ -905,6 +905,11 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
         .expanduser()
         .resolve()
     )
+    try:
+        from label_data_generation import release_identity
+        release_identity(app_root)
+    except Exception:
+        pass  # Existing G checks retry and deny failures in the normal flow.
     from auto_update import startup_gate, trial_stop_requested, relay_ready_metadata
     code = app_root / "app" if (app_root / "app").is_dir() else app_root
     update_result = startup_gate(code, [USER_RELAY_MODE, *(argv or [])], role="relay")

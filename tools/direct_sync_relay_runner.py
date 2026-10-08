@@ -767,4 +767,10 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
 
 
 if __name__ == "__main__":
+    try:
+        from label_data_generation import release_identity
+        from label_match_product_host import _default_product_root
+        release_identity(_default_product_root())
+    except Exception:
+        pass  # Existing G checks retry and deny failures in the normal flow.
     raise SystemExit(main())

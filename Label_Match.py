@@ -95,6 +95,11 @@ from label_safe_path import (describe_entry, quarantine_entry, read_checked_byte
 
 
 if __name__ == "__main__":
+    try:
+        from label_data_generation import release_identity
+        release_identity(_default_product_root())
+    except Exception:
+        pass  # Existing G checks retry and deny failures in the normal flow.
     from auto_update import startup_gate
     _early_update_result = startup_gate(Path(__file__).resolve().parent, list(sys.argv[1:]))
     if _early_update_result is not None:
@@ -3614,7 +3619,10 @@ def _enrich_label_match_event(event_type, details, pc_id):
 # #####################################################################
 REPO_OWNER = "KMTechn"
 REPO_NAME = "Label_Match"
-from label_data_generation import CURRENT_VERSION, DataGenerationError, check_user_data_open, record_user_data_open
+from label_data_generation import (
+    CURRENT_VERSION, DataGenerationError, check_user_data_open,
+    record_user_data_open, release_identity,
+)
 APP_VERSION = "v2.0.96"
 if APP_VERSION != CURRENT_VERSION:
     raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
@@ -22684,6 +22692,10 @@ def _run_label_match_application():
 
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
+    try:
+        release_identity(_label_match_runtime_app_root())
+    except Exception:
+        pass  # Existing G checks retry and deny failures in the normal flow.
     from auto_update import startup_gate
     update_result = startup_gate(Path(__file__).resolve().parent, arguments)
     if update_result is not None:

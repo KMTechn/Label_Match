@@ -53,6 +53,8 @@ F3 준비·내구 완료의 본문은 [label_completion.py](../../label_completi
 
 `DataManager`의 이벤트 writer·현재 세트 저장은 [label_data_manager.py](../../label_data_manager.py)에 있고 기존 `Label_Match.DataManager` 생성·save/load API를 유지한다. [label_history.py](../../label_history.py)는 이력 CSV 읽기·집계 계산을 담당하고 generation·활성 입력 gate·화면 chunk 적용은 앱에 남긴다. 저장 루트 선택과 중단·자정 복구는 앱이 소유하며 [LM-1 경계](operations.md#module-boundaries-lm1)를 따른다.
 
+설치 packet의 release identity는 해석된 제품 루트·진입점별 PASS를 프로세스 안에서 기억한다. relay·GUI는 첫 writer admission 전에 확인하며 자료 세대 G는 자료 열기마다 유지한다([확인 시점과 별도 시작 비용](operations.md#release-identity-admission)).
+
 설치기는 고정 `kmtech_shared` 0.3.1 PowerShell leaf를 manifest/leaf pin 확인 뒤 호출한다. LM ordinal inventory·task migration·conflict receipt·복원 경계는 [X13-B](operations.md#shared-powershell-x13b)를 따른다.
 
 `d0e504e` 이하의 canonical 재시작 무결성 순서 오탐은 `w9labelintegrityorder` 수정본에서 교정한다. 기존 v1 기록은 재작성 없이 파일 집합·크기·SHA와 원래 순서의 aggregate를 검증한다([설치·재시작](operations.md#bootstrap-integrity-order)).

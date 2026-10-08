@@ -92,6 +92,8 @@ KMCMD:EXCHANGE/교환 단추는 불량 대상 → 대체품을 받아 연결된 
 
 ## 고정 PowerShell leaf와 bootstrap 신뢰
 
+설치 packet의 `release_identity`는 기존 전체 verifier와 판·build 검증을 통과한 PASS만 해석된 제품 루트·진입점별로 기억하고 사본을 반환한다. 실패·예외와 개발 source의 clean-Git 확인은 기억하지 않는다. 각 입구는 첫 writer admission 전에 미리 확인하고 실패는 기존 G 흐름에서 다시 판정한다. G 판단·마커 기록·sink·허가 구조와 onboarding의 별도 직접 무결성 확인은 유지한다.
+
 canonical 배치 launcher는 현재 access token의 관리자 역할을 확인한다. 이미 상승된 SSH 관리자/셸에서는 같은 pinned helper를 `RunAs` 없이 직접 실행하여 승인 창을 요구하지 않고, 필터링된 관리자/일반 토큰에서는 기존 `RunAs` 경로를 사용한다. 계정의 그룹 소속만으로 상승을 가정하지 않으며 payload·helper pin·delegation·자료 세대 검증은 유지한다.
 
 bootstrap v1 writer와 Python의 현재 파일 열거는 상대 POSIX 경로의 case-sensitive ordinal UTF-16 순서를 사용한다. Python onboarding·canonical stop-marker preflight는 기록 행을 같은 순서로 정렬해 경로·크기·SHA 전체 목록과 대조하므로 과거 기록 순서도 수용한다. aggregate는 기록에 저장된 원래 행 순서로 검증하며 중복·추가·누락·변조·대소문자 경로 변경을 허용하지 않는다. 순서만 다르면 `bootstrap_integrity_inventory_order_differs` 한 줄을 기록하고 파일을 재작성하지 않는다. installer의 canonical 출력·검증과 receipt/stop-marker 권한 검사는 유지한다.

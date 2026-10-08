@@ -6,6 +6,8 @@ sub-474 측정 P2(컷 뒤): 기존 자료 세대 5-root 기록 묶음의 실제 
 
 sub-474 fixed helper P2(컷 뒤): 코디 msg_eb0b977f005f에 따라 Verify helper 자신의 auto_update_fixed_helper admission도 기존대로 둔다. 실제 stock 데코레이터·native PowerShell 계수기의 두 보유 시간은 최대 0.422초·합 0.704초, 호출 3회·READY 12.547초다. 계수기 payload만 실행했으므로 설치된 stock Verify 업무 시간은 미측정이며 실제 랩에서 확인한다. 다른 helper mode·source·호출에 probe를 추가하지 않는다.
 
+설치 packet의 release identity PASS 기억과 첫 admission 전 확인을 적용한다. 생성 선언·정확한 G 전환 쌍과 최종 stock gate는 통합 sub-480에서 갱신·검증한다. GUI onboarding 직접 확인의 시작 1회 비용은 별도 계수하며, sub-474의 짧은 admission이 합쳐진 머리에서 I5 위치를 재확인한다. 실제 HDD 첫 시작·GUI·Defender 수용은 headless 계수·stock 표본과 별도다.
+
 sub-412 B-2: versions의 활성 코드 경로가 current 전용 옛 작업 이전에 전달되던 결함을 고정 current 입력으로 수정한다. 코디 msg_c2085909122c의 N2'/N3' 승인에 따라 canonical 확정 전 등록 READY에서는 세대·ledger·settings를 열지 않고 T1 뒤 정상 시작으로 연기한다. 기존 generation 거부와 Run/task preimage 복원은 유지한다. PS5.1/PS7 격리 실제 함수의 등록 성공·작업 이전 실패·옛 폴더 원위치·StartupUpdate 제거·확정 뒤 실패/멱등 재시작, 142/538·선언·stock 근거는 [sub-412 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-412/REPORT.md)에 기록한다. 독립 검토·1차 FF와 실제 포장 회차 B 재실행은 코디네이터 수용 항목이다.
 
 sub-412 N8: relay PASS 뒤 GUI의 실제 첫 ledger/settings 열기 실패도 `FAILED/BUSINESS_DATA_OPEN_FAILED`·기존 보고서·같은 사용자 지원 명령을 표시하고 종료한다. 실제 app.main 경로의 창 API만 대역으로 검사하고 같은 onboarding CLI 재시도를 증명한다. 재부착 미지원은 서버 등록 정리 후 재설치가 필요한 별도 P1 후속이다.

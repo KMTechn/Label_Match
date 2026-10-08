@@ -16,6 +16,7 @@ from writer_session_fence import canonical_control_root, writer_sink
 
 CURRENT_VERSION = "v2.0.96"
 APP_ID = "Label_Match"
+_RELEASE_IDENTITY_PASS: dict[tuple[Path, Path], dict[str, object]] = {}
 UNKNOWN_MESSAGE = (
     "이 PC의 자료 판을 확인할 수 없어 자료를 열거나 옛 판으로 되돌릴 수 없습니다. "
     "현재 코드와 자료·확인 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
@@ -30,7 +31,16 @@ def release_identity(app_root: Path) -> dict[str, object]:
     """Use the existing code-root verifier, never a user-supplied build string."""
     root = Path(app_root).expanduser().resolve()
     manifest_path = root / "portable-manifest.json"
+    cache_key = None
     if manifest_path.exists() or getattr(sys, "frozen", False):
+        entrypoint = Path(
+            sys.executable if getattr(sys, "frozen", False)
+            else (sys.argv[0] if sys.argv else __file__)
+        ).expanduser().resolve()
+        cache_key = (root, entrypoint)
+        cached = _RELEASE_IDENTITY_PASS.get(cache_key)
+        if cached is not None:
+            return cached.copy()
         from current_user_onboarding import (
             verify_bootstrap_integrity,
         )
@@ -84,9 +94,14 @@ def release_identity(app_root: Path) -> dict[str, object]:
             raise DataGenerationError(UNKNOWN_MESSAGE) from exc
         if not unchanged or untracked or not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise DataGenerationError(UNKNOWN_MESSAGE)
-    return {"version": CURRENT_VERSION, "build_id": commit,
-            "data_compatible_min_version": CURRENT_VERSION,
-            "compatibility_verified": False}
+    identity = {"version": CURRENT_VERSION, "build_id": commit,
+                "data_compatible_min_version": CURRENT_VERSION,
+                "compatibility_verified": False}
+    if cache_key is not None:
+        # Remember only the fully validated installed identity, never failures
+        # or developer clean-Git checks. Callers cannot mutate the stored PASS.
+        _RELEASE_IDENTITY_PASS[cache_key] = identity.copy()
+    return identity.copy()
 
 
 def verified_private_compatibility(
