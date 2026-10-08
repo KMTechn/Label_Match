@@ -4443,7 +4443,7 @@ def test_pending_central_cancellation_feedback_never_claims_full_success():
     assert "전송·확인 중" in pending_message
     assert "반출하지 마세요" in pending_message
     assert "정상적으로 취소" not in pending_message
-    assert "중앙 포장이 모두 취소" in acked_message
+    assert "회사 서버 포장이 모두 취소" in acked_message
     assert "중앙 취소 확인이 필요" in conflict_message
     assert "관리자" in conflict_message
     assert "전송·확인 중" not in conflict_message

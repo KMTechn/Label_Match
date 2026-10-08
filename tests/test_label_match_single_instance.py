@@ -596,7 +596,7 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
 
     assert result == app_module.ITEM_CATALOG_STARTUP_EXIT_CODE == 3
     assert len(dialogs) == 1
-    assert "중앙 품목 목록" in dialogs[0][0]
+    assert "회사 서버 품목 목록" in dialogs[0][0]
     assert "IT 담당자" in dialogs[0][1]
     assert r"C:\ProgramData\KMTech\Logistics" in dialogs[0][1]
     assert "TEST1-STALE-SCOPE" in dialogs[0][1]
