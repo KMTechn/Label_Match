@@ -301,7 +301,13 @@ def test_prepare_failure_reaches_relay_status_with_original_cause(monkeypatch, t
     monkeypatch.setattr(updates, "prepare_feed_packet", fail)
     monkeypatch.setattr(user_relay, "run_session_direct_sync_once", lambda **k: {"status": "PASS", "returncode": 0})
     monkeypatch.setattr(user_relay, "_read_json", lambda _: {"status": "RUNNING"})
-    result = user_relay._runtime_cycle(app_root=tmp_path, direct_sync_root=tmp_path, scan_source_dir=tmp_path)
+    try:
+        updates.prepare_feed_packet(tmp_path)
+    except Exception as error:
+        result = user_relay._runtime_cycle(app_root=tmp_path, direct_sync_root=tmp_path, scan_source_dir=tmp_path,
+                                          update_preparation=error)
+    else:
+        pytest.fail("the preparation fixture must preserve its original failure")
     chain = result["auto_update"].get("launch_failure_details", [])
     assert chain[0]["win32_error"] == 5
     path = Path(result["auto_update"]["failure_evidence_path"])

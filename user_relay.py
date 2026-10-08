@@ -506,7 +506,7 @@ def _wait_with_stop_checks(
 
 
 def run_persistent_relay_loop(
-    run_cycle: Callable[[], Mapping[str, Any]],
+    run_cycle: Callable[..., Mapping[str, Any]],
     *,
     status_path: str | os.PathLike[str],
     interval_seconds: int = DEFAULT_RETRY_INTERVAL_SECONDS,
@@ -514,6 +514,7 @@ def run_persistent_relay_loop(
     wait: Callable[[float], None] = time.sleep,
     max_cycles: int | None = None,
     metadata: Mapping[str, Any] | None = None,
+    prepare_cycle: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     interval = int(interval_seconds)
     if interval < 0 or interval > MAX_RETRY_INTERVAL_SECONDS:
@@ -527,10 +528,16 @@ def run_persistent_relay_loop(
     fixed_metadata = dict(metadata or {})
     while not should_stop():
         try:
+            update_preparation = None
+            if prepare_cycle is not None:
+                try:
+                    update_preparation = prepare_cycle()
+                except Exception as error:
+                    update_preparation = error
             with writer_admission("persistent_relay_cycle"):
                 cycle_count += 1
                 try:
-                    raw_cycle = run_cycle()
+                    raw_cycle = run_cycle(update_preparation) if prepare_cycle is not None else run_cycle()
                     cycle = dict(raw_cycle) if isinstance(raw_cycle, Mapping) else {}
                     if not str(cycle.get("status") or "").strip():
                         cycle = {
@@ -633,17 +640,18 @@ def _runtime_cycle(
     log_path: Path | None = None,
     worker_id: str = LABEL_MATCH_WORKER_ID,
     reason: str = "PERSISTENT_USER_RELAY",
+    update_preparation: Mapping[str, Any] | Exception | None = None,
 ) -> dict[str, Any]:
-    from auto_update import prepare_feed_packet, launch_failure_details
-    code = app_root / "app" if (app_root / "app").is_dir() else app_root
-    try:
-        update_preparation = prepare_feed_packet(code)
-    except Exception as error:
+    from auto_update import launch_failure_details
+    if isinstance(update_preparation, Exception):
+        error = update_preparation
         failure_path = direct_sync_root / "logs" / ("update-preparation-failure-" + uuid.uuid4().hex + ".json")
         failure_evidence = _preserve_failure_evidence(failure_path, error)
         update_preparation = {"status": "DEFERRED", "error_type": type(error).__name__,
                               "launch_failure_details": launch_failure_details(error),
                               **failure_evidence}
+    elif update_preparation is None:
+        update_preparation = {"status": "OFF"}
     selected_status = runtime_status_path or (
         direct_sync_root / "status" / "direct_sync_relay_status.json"
     )
@@ -971,13 +979,17 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
     if lease is None:
         return 0
     try:
+        from auto_update import prepare_feed_packet
+
         result = run_persistent_relay_loop(
-            lambda: _runtime_cycle(
+            lambda update_preparation: _runtime_cycle(
                 app_root=app_root,
                 direct_sync_root=direct_sync_root,
                 scan_source_dir=scan_source_dir,
                 tls_ca_bundle_path=profile.tls_ca_bundle_path,
+                update_preparation=update_preparation,
             ),
+            prepare_cycle=lambda: prepare_feed_packet(code),
             status_path=user_relay_status_path(direct_sync_root),
             interval_seconds=args.interval_seconds,
             stop_requested=lambda: stop_path.exists() or trial_stop_requested(code),
