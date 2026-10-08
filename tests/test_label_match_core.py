@@ -2184,7 +2184,7 @@ def test_durable_commit_block_hides_raw_error_and_disables_next_work():
     notice = app._workflow_blocking_notice
     assert notice.kind == "submission_blocked"
     assert notice.tone == "danger"
-    assert notice.title == "1/5 유지 · 로컬 기록 저장 필요"
+    assert notice.title == "1/5 유지 · 이 PC에 저장 필요"
     assert "로컬 완료 기록" in notice.message
     assert "관리자" in notice.message
     assert rendered == [True]
@@ -2264,7 +2264,7 @@ def test_durable_commit_block_uses_actual_legacy_partial_progress():
     ) is False
 
     assert app._workflow_blocking_notice.title == (
-        "3/5 유지 · 로컬 기록 저장 필요"
+        "3/5 유지 · 이 PC에 저장 필요"
     )
 
 

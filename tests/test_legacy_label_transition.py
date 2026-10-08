@@ -291,7 +291,7 @@ def test_on_registered_five_scan_set_completes_locally_without_outbox(tmp_path, 
     assert _outbox_rows(tmp_path) == []
     assert syncs == ["TRAY_COMPLETE"]
     assert app.current_set_info["raw"] == []
-    assert app.save_status_label.kwargs["text"].startswith("✓ 기록됨 · 과도기 옛 방식(원장 제외)")
+    assert app.save_status_label.kwargs["text"].startswith("✓ 기록됨 · 과도기 옛 방식(포장 기록 제외)")
 
 
 def test_on_registered_partial_f3_completes_locally_without_outbox(tmp_path, monkeypatch):
@@ -375,7 +375,7 @@ def test_on_completion_classes_survive_restart_and_banner_counts_them(tmp_path, 
     restarted._legacy_label_transition_enabled = True
     restarted._render_legacy_transition_banner()
     assert restarted.legacy_transition_label.options["text"] == (
-        "과도기 모드 — 옛 방식 포장 받음 · 오늘 옛 방식 1 · 중앙 0 · 로컬 0 · 형식 오류 1 · 중복 0"
+        "과도기 모드 — 옛 방식 포장 받음 · 오늘 옛 방식 1 · 회사 서버 0 · 이 PC에 저장됨 0 · 형식 오류 1 · 중복 0"
     )
     assert restarted.legacy_transition_label.mapped is True
 
@@ -391,7 +391,7 @@ def test_on_completion_classes_survive_restart_and_banner_counts_them(tmp_path, 
     restarted.after = lambda *a: None
     restarted._update_clock()  # the per-second clock starts "오늘" again at midnight
     assert restarted.legacy_transition_label.options["text"].endswith(
-        "오늘 옛 방식 0 · 중앙 0 · 로컬 0 · 형식 오류 0 · 중복 0"
+        "오늘 옛 방식 0 · 회사 서버 0 · 이 PC에 저장됨 0 · 형식 오류 0 · 중복 0"
     )
     restarted._legacy_label_transition_enabled = False
     restarted._render_legacy_transition_banner()
@@ -1480,7 +1480,7 @@ def test_failed_completion_stays_out_of_the_banner_after_restart(tmp_path, monke
         _load_history(module, app)
         app._render_legacy_transition_banner()
         assert app.legacy_transition_label.options["text"] == before
-        assert before.endswith("오늘 옛 방식 0 · 중앙 0 · 로컬 0 · 형식 오류 0 · 중복 0")
+        assert before.endswith("오늘 옛 방식 0 · 회사 서버 0 · 이 PC에 저장됨 0 · 형식 오류 0 · 중복 0")
     finally:
         _close(app)
 

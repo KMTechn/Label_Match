@@ -1105,7 +1105,7 @@ def build_state_fixtures() -> tuple[StateFixture, ...]:
             "submission_blocked",
             "로컬 저장 차단",
             qa_scans=(master,),
-            notice_title="1/5 유지 · 로컬 기록 저장 필요",
+            notice_title="1/5 유지 · 이 PC에 저장 필요",
             notice_message=(
                 "로컬 완료 기록을 안전하게 저장하지 못했습니다. "
                 "디스크 공간·저장 폴더 권한·파일 잠금을 확인한 뒤 저장 재시도를 누르세요. "

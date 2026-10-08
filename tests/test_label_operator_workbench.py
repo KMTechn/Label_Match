@@ -2680,7 +2680,7 @@ def test_phs2_details_round_trip_preserves_scan_quantity_and_action_gates(operat
     assert app.live_scan_notebook.winfo_ismapped()
     assert app.qa_scan_detail_frame.winfo_ismapped()
     assert app.qa_scan_detail_text.options["inserted"] == raw
-    assert app.operator_task_detail_text.options["inserted"].startswith("세트 isolated-quantity-fixture\n")
+    assert app.operator_task_detail_text.options["inserted"].startswith("트레이 isolated-quantity-fixture\n")
     assert app._render_operator_workbench() == view
 
     app.operator_details_button.cget("command")()
