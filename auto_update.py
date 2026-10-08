@@ -1390,6 +1390,10 @@ def extract_prepared_code(packet: Path, target: Path, archive_policy: Mapping[st
 
 @writer_sink("auto_update_copy_prepared_file")
 def copy_prepared_file(source: Path, target: Path, *, expected_owner_sid: str | None = None) -> None:
+    _copy_prepared_file(source, target, expected_owner_sid=expected_owner_sid)
+
+
+def _copy_prepared_file(source: Path, target: Path, *, expected_owner_sid: str | None = None) -> None:
     import shutil
 
     _assert_no_reparse_components(source)
@@ -1977,31 +1981,31 @@ def prepare_feed_packet(app_root: Path) -> dict[str, Any]:
         existing = optional_record(stage / "prepared.json")
         if existing and existing.get("source_commit") == sha and existing.get("packet_sha256") == candidate["sha256"]:
             return {"status": "PREPARED", "source_commit": sha}
-        create_download_stage(stage)
-        attempt = stage / ("download-" + uuid.uuid4().hex)
-        create_protected_stage(attempt)
-        write_download_bytes(attempt / "manifest.json", manifest_bytes)
-        write_download_bytes(attempt / "manifest.sig", signature)
-        write_download_bytes(attempt / "packet.zip", b"")
-        count = 0
-        with fetch(session, candidate["url"]) as response:
-            for chunk in response.iter_content(256 * 1024):
-                count += len(chunk)
-                if count > min(manifest["artifact"]["size_bytes"], 512 * 1024 * 1024):
-                    raise ValueError("update packet is oversized")
-                write_download_chunk(attempt / "packet.zip", chunk)
-        if count != manifest["artifact"]["size_bytes"] or file_sha256(attempt / "packet.zip") != candidate["sha256"]:
-            raise ValueError("downloaded packet size or SHA256 differs")
-        from Label_Match import _validate_update_archive_contract
-        import zipfile
-        with zipfile.ZipFile(attempt / "packet.zip") as archive:
-            _validate_update_archive_contract(archive, archive_policy=candidate["archive"])
-        authorize_feed_transition(manifest, current=current,
-                                  candidate=packet_version_identity(attempt / "packet.zip"))
-        # Final fixed-name copies are replaced only after every byte is verified.
-        publish_download(attempt, stage)
-        write_json_durable(stage / "prepared.json", {"source_commit": sha, "packet_sha256": candidate["sha256"], "prepared_at": now_utc()})
-        return {"status": "PREPARED", "source_commit": sha}
+        def download(attempt, temps):
+            write_download_bytes(attempt / "manifest.json", manifest_bytes)
+            write_download_bytes(attempt / "manifest.sig", signature)
+            write_download_bytes(attempt / "packet.zip", b"")
+            count = 0
+            with fetch(session, candidate["url"]) as response:
+                for chunk in response.iter_content(256 * 1024):
+                    count += len(chunk)
+                    if count > min(manifest["artifact"]["size_bytes"], 512 * 1024 * 1024):
+                        raise ValueError("update packet is oversized")
+                    write_download_chunk(attempt / "packet.zip", chunk)
+            if count != manifest["artifact"]["size_bytes"] or file_sha256(attempt / "packet.zip") != candidate["sha256"]:
+                raise ValueError("downloaded packet size or SHA256 differs")
+            from Label_Match import _validate_update_archive_contract
+            import zipfile
+            with zipfile.ZipFile(attempt / "packet.zip") as archive:
+                _validate_update_archive_contract(archive, archive_policy=candidate["archive"])
+            authorize_feed_transition(manifest, current=current,
+                                      candidate=packet_version_identity(attempt / "packet.zip"))
+            # Final fixed-name copies are replaced only after every byte is verified.
+            temps.update(stage_prepared_copies(attempt, stage))
+            publish_download(stage, temps)
+            write_json_durable(stage / "prepared.json", {"source_commit": sha, "packet_sha256": candidate["sha256"], "prepared_at": now_utc()})
+            return {"status": "PREPARED", "source_commit": sha}
+        return _run_download_attempt(stage, download)
 
 
 @writer_sink("auto_update_create_download_stage")
@@ -2010,7 +2014,7 @@ def create_download_stage(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-@writer_sink("auto_update_write_download_bytes")
+@writer_sink("auto_update_write_download_bytes", probe_only=True)
 def write_download_bytes(path: Path, data: bytes) -> None:
     _assert_no_reparse_components(path)
     with path.open("xb") as output:
@@ -2019,7 +2023,7 @@ def write_download_bytes(path: Path, data: bytes) -> None:
         os.fsync(output.fileno())
 
 
-@writer_sink("auto_update_write_download_chunk")
+@writer_sink("auto_update_write_download_chunk", probe_only=True)
 def write_download_chunk(path: Path, data: bytes) -> None:
     _assert_no_reparse_components(path)
     with path.open("ab") as output:
@@ -2028,14 +2032,90 @@ def write_download_chunk(path: Path, data: bytes) -> None:
         os.fsync(output.fileno())
 
 
-@writer_sink("auto_update_publish_download")
-def publish_download(attempt: Path, stage: Path) -> None:
-    import shutil
+@writer_sink("auto_update_stage_prepared_copies", probe_only=True)
+def stage_prepared_copies(attempt: Path, stage: Path) -> dict[str, Path]:
+    temps = {name: stage / (name + "." + uuid.uuid4().hex + ".tmp")
+             for name in ("manifest.json", "manifest.sig", "packet.zip")}
+    for temporary in temps.values():
+        _assert_no_reparse_components(temporary)
+        if temporary.exists():
+            raise FileExistsError("prepared temporary already exists")
+    owned: dict[str, Path] = {}
+    try:
+        for name, temporary in temps.items():
+            owned[name] = temporary
+            try:
+                _copy_prepared_file(attempt / name, temporary)
+            except FileExistsError:
+                # An exclusive-create collision is not owned by this attempt.
+                owned.pop(name)
+                raise
+    except BaseException as failure:
+        try:
+            _discard_prepared_copies(stage, owned)
+        except Exception as cleanup_error:
+            failure.add_note("UPDATE_ATTEMPT_CLEANUP_FAILED: " + type(cleanup_error).__name__)
+        raise
+    return temps
 
+
+@writer_sink("auto_update_publish_download")
+def publish_download(stage: Path, temps: dict[str, Path]) -> None:
     for name in ("manifest.json", "manifest.sig", "packet.zip"):
-        temporary = stage / (name + "." + uuid.uuid4().hex + ".tmp")
-        copy_prepared_file(attempt / name, temporary)
-        os.replace(temporary, stage / name)
+        os.replace(temps[name], stage / name)
+
+
+def _discard_prepared_copies(stage: Path, temps: Mapping[str, Path]) -> None:
+    _assert_no_reparse_components(stage)
+    for name, temporary in temps.items():
+        if (name not in ("manifest.json", "manifest.sig", "packet.zip")
+                or temporary.parent.absolute() != stage.absolute()
+                or re.fullmatch(re.escape(name) + r"\.[0-9a-f]{32}\.tmp", temporary.name) is None):
+            raise ValueError("prepared temporary path differs from this attempt")
+        _assert_no_reparse_components(temporary)
+    for temporary in temps.values():
+        temporary.unlink(missing_ok=True)
+
+
+@writer_sink("auto_update_run_download_attempt", probe_only=True)
+def _run_download_attempt(stage: Path, run) -> dict[str, Any]:
+    # Own the attempt and its finally under this initial probe. A fresh cleanup
+    # probe would reject a fence raised during the off-admission body and leave
+    # the downloaded packet behind. Only these owned temporary names are removed.
+    create_download_stage(stage)
+    attempt = stage / ("download-" + uuid.uuid4().hex)
+    temps: dict[str, Path] = {}
+    created = False
+    failure = None
+    try:
+        create_protected_stage(attempt)
+        created = True
+        return run(attempt, temps)
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        try:
+            if (attempt.parent.absolute() != stage.absolute()
+                    or re.fullmatch(r"download-[0-9a-f]{32}", attempt.name) is None):
+                raise ValueError("download attempt path differs")
+            _assert_no_reparse_components(attempt)
+            entries = list(attempt.iterdir()) if created else []
+            for entry in entries:
+                if entry.name not in ("manifest.json", "manifest.sig", "packet.zip"):
+                    raise ValueError("download attempt contains an unexpected entry")
+                _assert_no_reparse_components(entry)
+                if not entry.is_file():
+                    raise ValueError("download attempt entry is not a file")
+            _discard_prepared_copies(stage, temps)
+            for entry in entries:
+                entry.unlink()
+            if created:
+                attempt.rmdir()
+        except Exception as cleanup_error:
+            if failure is None:
+                raise
+            failure.add_note("UPDATE_ATTEMPT_CLEANUP_FAILED: " + type(cleanup_error).__name__)
 
 
 def trial_stop_requested(app_root: Path) -> bool:

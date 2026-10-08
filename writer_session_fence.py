@@ -950,6 +950,20 @@ _PROBE_ONLY_WRITER_SINKS = frozenset({
     ("relay_child_launch", "user_relay.run_session_direct_sync_once"),
     ("user_relay_process_start", "user_relay.start_user_relay_process"),
     ("current_user_onboarding", "current_user_onboarding.onboard_current_user"),
+    ("auto_update_write_download_bytes", "auto_update.write_download_bytes"),
+    ("auto_update_write_download_chunk", "auto_update.write_download_chunk"),
+    ("auto_update_stage_prepared_copies", "auto_update.stage_prepared_copies"),
+    ("auto_update_run_download_attempt", "auto_update._run_download_attempt"),
+})
+
+# These probes write only owned staging names. Fence actors do not consume
+# them, and SYSTEM defers consumption while an application writer is live.
+# Unlike the existing relay launcher, staging must reject inherited leases.
+_STAGING_PROBE_ONLY_WRITER_SINKS = frozenset({
+    ("auto_update_write_download_bytes", "auto_update.write_download_bytes"),
+    ("auto_update_write_download_chunk", "auto_update.write_download_chunk"),
+    ("auto_update_stage_prepared_copies", "auto_update.stage_prepared_copies"),
+    ("auto_update_run_download_attempt", "auto_update._run_download_attempt"),
 })
 
 
@@ -1064,6 +1078,13 @@ def writer_sink(
             # This exact sink is selected here instead of changing its deployed,
             # code-derived inventory source bytes and rotating the inventory pin.
             if approved_probe:
+                if (selected_source, sink_id) in _STAGING_PROBE_ONLY_WRITER_SINKS and int(
+                    getattr(_WRITER_LOCAL, "depth", 0)
+                ) > 0:
+                    raise WriterFencedError(
+                        "STAGING_WRITER_ADMISSION_HELD",
+                        "feed staging cannot run inside a local writer admission",
+                    )
                 return _probe_then_call(
                     selected_source,
                     function,
