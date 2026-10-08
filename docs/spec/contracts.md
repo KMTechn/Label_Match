@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+onboarding과 `start_user_relay_process`는 정확히 승인된 probe sink이며 부모 writer lease도 시작·생존 확인 전에 해제한다. onboarding lifecycle helper는 admission 밖에서 실행하고 재획득 뒤 policy·active·transition 원 바이트와 active fence를 재확인한다. 디렉터리·TLS·등록·세대·원장·설정·Run·옛 작업·stop 표지·환경·보고서 쓰기는 각각 기존 source admission을 얻는다. READY는 relay 확인 뒤 새 admission에서 fence 재확인과 환경 적용을 마친 뒤 게시한다. canonical의 연기와 기존 실패 코드·stop 복원·지원 복구는 유지한다.
+
 등록·배치 자식의 종료 증명은 시작 시각 기준 하나의 30초 벽시계 마감을 공유한다. 모든 CIM 소유 관찰은 같은 프로세스의 읽기 전용 runspace에서 남은 시간만 기다리고 OperationTimeoutSec도 남은 초로 제한한다. 만료하면 BeginStop만 요청하고 관찰 결과·취소 완료를 기다리지 않으며 이후 새 종료 동작은 없다. 등록은 REGISTRATION_CHILD_UNPROVEN, 배치는 HELPER_CHILD_UNPROVEN으로 복원을 거절한다. 정상 기한 안의 live 부모 사슬·생성 시각·열린 process handle 검증은 유지한다.
 
 정상 인증 frame 전 제어 Write/Read·parse·identity 오류는 helper 종료 미증명이다. HELPER_CHILD_UNPROVEN·코드 UNKNOWN·추가 복원 명령0으로 보존하고, RECOVERY_REQUIRED frame의 진단 파일 손상도 이 표지를 유지한다. 정상 인증 frame 뒤 결과 파일 오류는 같은 guardian 복원 경로를 유지한다. 이미 복원 중이면 기존 ROLLBACK_FAILED 계열 상태에 코드 UNKNOWN을 기록하며 파일 존재만으로 완료를 판단하지 않는다. 원 예외 형식·함수·줄을 교체하지 않는다(1차 msg_e36ee0956cca).

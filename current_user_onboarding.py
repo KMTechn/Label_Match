@@ -43,11 +43,13 @@ from user_relay import (
     start_user_relay_process,
     user_relay_stop_path,
 )
-from writer_session_fence import writer_sink
+from writer_session_fence import writer_admission, writer_sink
 from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
 
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
+# The inventory declares this sink once; each bounded phase uses its source.
+ONBOARDING_WRITER_SOURCE = "current_user_onboarding"
 REMOVAL_REPORT_VERSION = "label-match-current-user-removal-v1"
 BOOTSTRAP_INTEGRITY_VERSION = "label-match-bootstrap-integrity-v2"
 BOOTSTRAP_INVENTORY_ALGORITHM = "sha256-file-hash-size-utf8-path-v1"
@@ -505,9 +507,10 @@ def _publish_failure_report(path: Path, report: Mapping[str, Any], error: BaseEx
     from failure_redaction import protected_failure_details
     error._failure_report_ref = None
     try:
-        error._failure_report_ref = _write_json_atomic(path, {
-            **report, **protected_failure_details(error),
-        })
+        with writer_admission(ONBOARDING_WRITER_SOURCE):
+            error._failure_report_ref = _write_json_atomic(path, {
+                **report, **protected_failure_details(error),
+            })
     except Exception:
         # A secondary publication failure must not replace the original cause.
         error._failure_report_ref = None
@@ -999,7 +1002,7 @@ def prepare_current_user_data_open(
     return paths, tls_ca_source, credential_input
 
 
-@writer_sink("current_user_onboarding")
+@writer_sink("current_user_onboarding", probe_only=True)
 def onboard_current_user(
     app_root: str | os.PathLike[str],
     *,
@@ -1043,19 +1046,20 @@ def onboard_current_user(
     paths, tls_ca_source, credential_input = prepare_current_user_data_open(app_root, environ=environ)
     assert_registration_storage(Path(app_root), (paths.data_root, paths.settings_path,
         paths.direct_sync_root, paths.logistics_profile_path, paths.ledger_path))
-    for directory in (
-        paths.data_root,
-        paths.settings_path.parent,
-        paths.direct_sync_root,
-        paths.queue_dir,
-        paths.spool_dir,
-        paths.upload_status_dir,
-        paths.status_dir,
-        paths.logs_dir,
-        paths.control_dir,
-        paths.logistics_profile_path.parent,
-    ):
-        directory.mkdir(parents=True, exist_ok=True)
+    with writer_admission(ONBOARDING_WRITER_SOURCE):
+        for directory in (
+            paths.data_root,
+            paths.settings_path.parent,
+            paths.direct_sync_root,
+            paths.queue_dir,
+            paths.spool_dir,
+            paths.upload_status_dir,
+            paths.status_dir,
+            paths.logs_dir,
+            paths.control_dir,
+            paths.logistics_profile_path.parent,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
     require_integrity = (
         requires_bootstrap_integrity(paths.app_root)
         if require_bootstrap_integrity is None
@@ -1157,13 +1161,14 @@ def onboard_current_user(
                 install_tls_ca_bundle_for_existing_profile,
             )
 
-            report["tls_ca_bundle_upgrade"] = (
-                install_tls_ca_bundle_for_existing_profile(
-                    profile_path=paths.logistics_profile_path,
-                    tls_ca_bundle_path=tls_ca_source,
-                    credential_scope="current_user",
+            with writer_admission(ONBOARDING_WRITER_SOURCE):
+                report["tls_ca_bundle_upgrade"] = (
+                    install_tls_ca_bundle_for_existing_profile(
+                        profile_path=paths.logistics_profile_path,
+                        tls_ca_bundle_path=tls_ca_source,
+                        credential_scope="current_user",
+                    )
                 )
-            )
             state = inspect_current_user_state(
                 paths,
                 profile_loader=profile_loader,
@@ -1188,16 +1193,17 @@ def onboard_current_user(
                         str(state.get("reason") or "partial current-user state")
                     )
                 if state["status"] in {"ABSENT", "ABSENT_RETRYABLE"}:
-                    if registration_runner is None:
-                        return_code = _registration_runner(
-                            paths,
-                            server_base_url=server_base_url,
-                            environ=environ,
-                            tls_ca_source=tls_ca_source,
-                            defer_canonical_data_open=defer_canonical_relay_start,
-                        )
-                    else:
-                        return_code = registration_runner(paths)
+                    with writer_admission(ONBOARDING_WRITER_SOURCE):
+                        if registration_runner is None:
+                            return_code = _registration_runner(
+                                paths,
+                                server_base_url=server_base_url,
+                                environ=environ,
+                                tls_ca_source=tls_ca_source,
+                                defer_canonical_data_open=defer_canonical_relay_start,
+                            )
+                        else:
+                            return_code = registration_runner(paths)
                     # Registration can create/replace this locator; admit that new
                     # input once before its readback and keep it for later loaders.
                     credential_input = (prepare_credentials_from_json(paths.credential_path,
@@ -1264,18 +1270,21 @@ def onboard_current_user(
             report["settings"] = {"status": "DEFERRED_CANONICAL_INSTALL"}
         else:
             try:
-                record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
-                                                       paths.direct_sync_root, paths.queue_dir,
-                                                       paths.logistics_profile_path.parent))
+                with writer_admission(ONBOARDING_WRITER_SOURCE):
+                    record_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+                                                           paths.direct_sync_root, paths.queue_dir,
+                                                           paths.logistics_profile_path.parent))
             except DataGenerationError as exc:
                 raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
                     status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
             business_open_in_progress = True
-            ledger_factory(paths.ledger_path)
+            with writer_admission(ONBOARDING_WRITER_SOURCE):
+                ledger_factory(paths.ledger_path)
             if not paths.ledger_path.is_file():
                 raise ValueError("current-user business ledger readback failed")
             report["ledger_status"] = "READY"
-            report["settings"] = dict(settings_factory(paths))
+            with writer_admission(ONBOARDING_WRITER_SOURCE):
+                report["settings"] = dict(settings_factory(paths))
             settings_status = str(report["settings"].get("status") or "")
             if settings_status not in {"CREATED", "REUSED"}:
                 raise ValueError("current-user settings placement was not proven")
@@ -1288,7 +1297,8 @@ def onboard_current_user(
             environ=environ,
             credential_input=credential_input,
         )
-        report["relay_autostart"] = dict(autostart_installer(setup_root))
+        with writer_admission(ONBOARDING_WRITER_SOURCE):
+            report["relay_autostart"] = dict(autostart_installer(setup_root))
         autostart_status = str(report["relay_autostart"].get("status") or "")
         if autostart_status in {"", "UNKNOWN"}:
             raise CurrentUserOnboardingError(
@@ -1298,7 +1308,8 @@ def onboard_current_user(
             )
         if autostart_status != "PASS":
             raise ValueError("current-user relay autostart was not proven")
-        report["scheduled_task_migration"] = dict(scheduled_task_remover(setup_root))
+        with writer_admission(remove_current_user_scheduled_task.__label_writer_sink__):
+            report["scheduled_task_migration"] = dict(scheduled_task_remover(setup_root))
         migration_status = str(report["scheduled_task_migration"].get("status") or "")
         if migration_status in {"", "UNKNOWN"}:
             raise CurrentUserOnboardingError(
@@ -1339,20 +1350,23 @@ def onboard_current_user(
             )
         if relay_start_status != ("DEFERRED_CANONICAL_INSTALL" if defer_canonical_relay_start else "ALIVE"):
             raise ValueError("current-user relay survival was not proven")
-        apply_current_user_runtime_environment(paths, environ=environ)
-        report.update(
-            {
-                "status": "READY",
-                "state_readback": state,
-                "server_registration_verified": True,
-                "operation_lease_store": "AUTHORITATIVE_SNAPSHOT_PRESERVED",
-                "persistent_relay_principal": "current_user",
-                "system_scheduled_task_required": False,
-                "current_user_scheduled_task_required": False,
-                "completed_at": _now(),
-            }
-        )
-        _write_json_atomic(paths.onboarding_report_path, report)
+        # Helpers, child launch and survival ran without admission. Reacquire
+        # and recheck the fence before applying the environment or READY.
+        with writer_admission(ONBOARDING_WRITER_SOURCE):
+            apply_current_user_runtime_environment(paths, environ=environ)
+            report.update(
+                {
+                    "status": "READY",
+                    "state_readback": state,
+                    "server_registration_verified": True,
+                    "operation_lease_store": "AUTHORITATIVE_SNAPSHOT_PRESERVED",
+                    "persistent_relay_principal": "current_user",
+                    "system_scheduled_task_required": False,
+                    "current_user_scheduled_task_required": False,
+                    "completed_at": _now(),
+                }
+            )
+            _write_json_atomic(paths.onboarding_report_path, report)
         return report
     except EnrollmentMutexError as exc:
         restore_stop_marker_fence()

@@ -1,5 +1,7 @@
 # Label_Match 기술 명세
 
+portable의 매 시작에 실행하는 onboarding과 relay 시작은 admission을 확인한 뒤 부모 lease도 내려놓는다. lifecycle helper·relay 시작/생존 확인 동안 relay가 상태를 갱신할 수 있고, 로컬 쓰기와 READY 게시 직전에 다시 admission과 fence를 확인한다. [쓰기 경계와 검증 범위](operations.md#onboarding-writer-admission)를 따른다.
+
 PIN·relay 반복 회차·profile/TLS의 첫 보호 판독은 startup 허용 뒤에도 현재 G를 재확인한다. [현재 reader 경계와 검증 한계](operations.md#first-field-data-generation)를 따른다.
 
 명단에서 고른 사람의 번호·당시 이름을 묶음 시작 때 내구 저장하고 이름 정정은 다음 묶음부터 반영한다. CSV·물류의 새 신원 metadata는 서버 켜짐 신호가 true일 때만 추가하며 완료 저장 실패·재시도·재시작은 처음 내구 저장한 신원과 신호 결정을 유지한다. 미완료 세트의 UNDO는 가능하며 CSV 내구 완료 뒤에는 취소·교환·편집을 거절한다. 신원 archive·후속 저장 실패는 완료된 원 snapshot으로 재시도하고 재시작도 같은 CSV 완료를 확인한다([C-00](contracts.md#c-00), [설정·업그레이드](operations.md#configuration)).

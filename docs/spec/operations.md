@@ -1,5 +1,9 @@
 # Label_Match 운영·복구·검증
 
+<a id="onboarding-writer-admission"></a>
+
+portable GUI는 매 시작에 onboarding을 실행한다. relay가 아직 없거나 오래된 상태를 갱신하는 동안 onboarding이 writer admission을 쥔 채 생존 증명을 기다리지 않는다. lifecycle Verify/Observe helper의 호출도 lease를 내려놓고 수행하며, 재획득 뒤 policy·active·transition 바이트나 fence가 바뀌면 그 쓰기를 거절한다. READY·실패 보고와 stop 표지는 보호된 쓰기로 유지한다. 옛 예약 작업 은퇴의 PowerShell·자연 종료 대기는 기존 경계를 유지한다. 실제 Windows mutex/relay 자식의 지연 회귀는 headless 범위이며 새 PC 설치·첫 GUI·로그온 직후 GUI·실제 전송 수용은 랩에서 따로 확인한다.
+
 종료 증명 30초는 CIM 소유 조회·자손 열거·종료 직전 부모 사슬 재확인·종료 대기·survivor 조회를 모두 포함한다. 남은 시간 안의 관찰만 사용하며 조회가 멈추면 같은 프로세스 runspace의 취소만 요청하고 즉시 미증명으로 반환한다. 이때 자식 종료·코드 복원은 추가 실행하지 않는다. 양 엔진의 35초 관찰 지연 및 정상 종료 회귀, 142/538·stock 검증 근거는 [sub-404 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-404/REPORT.md)에 기록한다. 실제 보호 설치·등록·전체 복원은 별도 랩 수용 범위다.
 
 등록이 실패하면 새 자료 세대를 확정하지 않아 설치 전 코드 복원 경로를 유지한다. canonical 확정 전에는 등록 READY와 업무 ledger READY를 구별한다. 정확한 installer ownership으로 실행한 준비는 세대·ledger·settings·relay 시작을 연기하며 보고서에 `DEFERRED_CANONICAL_INSTALL`을 남긴다. T1 fence 해제 뒤 정상 시작에서 세대·ledger·settings를 처음 열고 재시작 때 같은 자료를 재사용한다. 확정 전 작업 이전 실패는 기존 코드·Run·task·stop preimage 복원으로 처리하며 새 StartupUpdate도 absent preimage에 따라 제거한다. 확정 뒤 첫 열기 실패는 POST_CONFIRMATION_FAILED·새 코드 보존·지원 복구이며 자동 되돌림하지 않는다. 이전 시도에서 이미 기록된 새 세대 업무 자료는 기존 guard로 보호한다. 자동 시작·옛 작업 이전의 입력은 활성 versions가 아닌 고정 current다. 이 격리 회귀·소비자 전수 대조·최종 pack/stock 근거는 [sub-412 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-412/REPORT.md)에 기록하고 실제 보호 설치·TLS·작업 ACL·옛 앱 재시작 수용은 별도 랩 회차다. relay가 없거나 시작 전에 실패한 복구는 stop proof 기본값을 null/빈 digest로 처리한다. TLS 등록 실패 뒤 남은 current-user CNG 소유 키는 다음 최초 등록에서 같은 이름으로 검증·재사용한다; 임의 삭제·교체·키 값 출력은 하지 않는다.

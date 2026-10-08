@@ -1,5 +1,7 @@
 # Label_Match 진행·공백·추가 제안
 
+onboarding admission 분리 후 랩 수용: 새 MachineGuid의 처음 설치·첫 GUI와 로그온 Run relay가 뜨기 전 GUI 시작, 기존 relay의 상태 갱신·실제 전송 지속을 확인한다. headless 두 프로세스의 실제 named mutex 검증과 실제 GUI/전송 수용은 구분하며, 기존 옛 예약 작업 은퇴의 admission 보유 시간은 별도 측정한다.
+
 sub-412 B-2: versions의 활성 코드 경로가 current 전용 옛 작업 이전에 전달되던 결함을 고정 current 입력으로 수정한다. 코디 msg_c2085909122c의 N2'/N3' 승인에 따라 canonical 확정 전 등록 READY에서는 세대·ledger·settings를 열지 않고 T1 뒤 정상 시작으로 연기한다. 기존 generation 거부와 Run/task preimage 복원은 유지한다. PS5.1/PS7 격리 실제 함수의 등록 성공·작업 이전 실패·옛 폴더 원위치·StartupUpdate 제거·확정 뒤 실패/멱등 재시작, 142/538·선언·stock 근거는 [sub-412 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-412/REPORT.md)에 기록한다. 독립 검토·1차 FF와 실제 포장 회차 B 재실행은 코디네이터 수용 항목이다.
 
 sub-412 N8: relay PASS 뒤 GUI의 실제 첫 ledger/settings 열기 실패도 `FAILED/BUSINESS_DATA_OPEN_FAILED`·기존 보고서·같은 사용자 지원 명령을 표시하고 종료한다. 실제 app.main 경로의 창 API만 대역으로 검사하고 같은 onboarding CLI 재시도를 증명한다. 재부착 미지원은 서버 등록 정리 후 재설치가 필요한 별도 P1 후속이다.

@@ -745,7 +745,37 @@ def writer_admission(
         )
         if allowed_sources is None:
             from auto_update import assert_version_writer
-            assert_version_writer(Path(__file__).resolve().parent, source=selected_source, environ=values)
+            if selected_source == "current_user_onboarding":
+                # Lifecycle Verify/Observe launches helpers. A relay cannot
+                # refresh its status if those helpers retain our writer lease.
+                from auto_update import control_root
+                lease.suspend()
+                control = control_root(Path(__file__).resolve().parent)
+                observed = {}
+                if control is not None:
+                    for name in ("policy.json", "active.json", "transition.json"):
+                        path = control / name
+                        if path.is_file():
+                            with path.open("rb") as handle:
+                                observed[path] = hashlib.file_digest(handle, "sha256").digest()
+                        else:
+                            observed[path] = None
+                assert_version_writer(Path(__file__).resolve().parent, source=selected_source, environ=values)
+                lease.resume(timeout_seconds)
+                if lease.abandoned:
+                    raise WriterFencedError("WRITER_GATE_ABANDONED", "writer admission ownership was abandoned")
+                if _admitted_writer_sources(root, source=selected_source, environ=values) is not None:
+                    raise WriterFencedError("ACTIVE_WRITER_FENCE", "writer delegation changed during lifecycle observation")
+                for path, expected in observed.items():
+                    if path.is_file():
+                        with path.open("rb") as handle:
+                            actual = hashlib.file_digest(handle, "sha256").digest()
+                    else:
+                        actual = None
+                    if actual != expected:
+                        raise WriterFencedError("WRITER_LIFECYCLE_CHANGED", "lifecycle changed during writer observation")
+            else:
+                assert_version_writer(Path(__file__).resolve().parent, source=selected_source, environ=values)
     except BaseException:
         if lease is not None:
             lease.release()
@@ -833,10 +863,11 @@ def remote_request() -> Iterator[None]:
 
 P = ParamSpec("P")
 R = TypeVar("R")
-_PROBE_ONLY_WRITER_SINK = (
-    "relay_child_launch",
-    "user_relay.run_session_direct_sync_once",
-)
+_PROBE_ONLY_WRITER_SINKS = frozenset({
+    ("relay_child_launch", "user_relay.run_session_direct_sync_once"),
+    ("user_relay_process_start", "user_relay.start_user_relay_process"),
+    ("current_user_onboarding", "current_user_onboarding.onboard_current_user"),
+})
 
 
 def _probe_then_call(
@@ -880,6 +911,7 @@ def _probe_then_call(
     _WRITER_LOCAL.environ = None
     _WRITER_LOCAL.timeout_seconds = None
     resumed_sources = allowed_sources
+    resume_error = None
     try:
         return function(*args, **kwargs)
     finally:
@@ -895,9 +927,15 @@ def _probe_then_call(
                 source=outer_source,
                 environ=values,
             )
+        except BaseException as exc:
+            resume_error = exc
+            raise
         finally:
             _WRITER_LOCAL.depth = outer_depth
-            _WRITER_LOCAL.allowed_sources = resumed_sources
+            _WRITER_LOCAL.allowed_sources = resumed_sources if resume_error is None else frozenset()
+            # A caller catching the resume error must not mutate through the
+            # restored parent depth with stale delegation.
+            _WRITER_LOCAL.remote_apply_error = resume_error
             _WRITER_LOCAL.lease = lease
             _WRITER_LOCAL.source = outer_source
             _WRITER_LOCAL.control_root = root
@@ -918,7 +956,7 @@ def writer_sink(
 
     def decorate(function: Callable[P, R]) -> Callable[P, R]:
         sink_id = f"{function.__module__}.{function.__qualname__}"
-        approved_probe = (selected_source, sink_id) == _PROBE_ONLY_WRITER_SINK
+        approved_probe = (selected_source, sink_id) in _PROBE_ONLY_WRITER_SINKS
         if probe_only and not approved_probe:
             raise WriterFencedError(
                 "WRITER_PROBE_ONLY_SINK_NOT_ALLOWED",
