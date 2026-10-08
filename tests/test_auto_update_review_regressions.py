@@ -223,6 +223,8 @@ def test_failed_trial_keeps_unknown_and_never_launches_previous_code(monkeypatch
         calls.append(sha)
         raise OSError(5, "injected child start failure")
     monkeypatch.setattr(updates, "launch_version", fail)
+    # B1 consults the writer census after supervision settles; this fixture has none.
+    monkeypatch.setattr(updates, "process_snapshot", lambda _: [])
     monkeypatch.setattr(time, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
     assert updates.bootstrap(tmp_path / "app", [], role="gui") == 20
     assert calls == [new]
