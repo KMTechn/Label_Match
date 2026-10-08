@@ -460,7 +460,7 @@ def test_standard_operator_copy_describes_one_phs2_and_atomic_replacement():
     app._logistics_authoritative_required = True
     app.package_logistics_client = None
 
-    assert app._idle_instruction_text() == "PHS2 현품표 1장 스캔"
+    assert app._idle_instruction_text() == "현품표 1장 스캔"
     assert app._standard_phs2_workflow_expected() is True
     hint = app._operator_workflow_hint_text()
     # DESIGN §2 LM: label + four products and cards replace F3/F4 prompts.

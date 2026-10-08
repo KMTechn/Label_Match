@@ -201,7 +201,7 @@ def test_f3_durable_completion_precedes_pending_ack_or_conflict(
     assert marked == [row["idempotency_key"]]
     assert (row["status"], row["local_completion_committed"]) == ("PENDING", 1)
     assert "sound:pass" in case.actions
-    assert "로컬 완료 저장됨 · 중앙 전송 대기" in case.app.save_status_label.kwargs["text"]
+    assert "이 PC에 저장됨 · 포장 완료 · 중앙 전송 대기" in case.app.save_status_label.kwargs["text"]
     assert case.app.current_set_info["raw"] == []
     original_events = completion_events(case)
     details = original_events[0][1]

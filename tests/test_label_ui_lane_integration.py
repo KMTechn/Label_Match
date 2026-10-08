@@ -808,7 +808,7 @@ def test_f3_lease_outbox_and_flush_run_off_tk_before_ui_apply(tmp_path, monkeypa
             assert all(thread == worker for label, thread in trace if label == name)
         assert trace[-2:] == [("ui-apply", owner), ("drain", owner)]
         assert successes == ["pass"]
-        assert any("로컬 완료 저장됨 · 중앙 전송 대기" in mutation.get("text", "") for mutation in ui_mutations)
+        assert any("이 PC에 저장됨 · 포장 완료 · 중앙 전송 대기" in mutation.get("text", "") for mutation in ui_mutations)
         assert app.current_set_info["operation_lease_id"] == "lease-f3"
         assert app.current_set_info["operation_lease_completed_at"] == "2026-08-29T01:00:00Z"
         assert app._ui_lane_busy_label == ""

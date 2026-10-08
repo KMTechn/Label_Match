@@ -20,7 +20,7 @@ SLOT_DEFINITIONS = (
     ("final_label", "제품4"),
 )
 CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS = (
-    ("master_label", "PHS2 현품표"),
+    ("master_label", "현품표"),
     ("product_1", "제품1"),
     ("product_2", "제품2"),
     ("product_3", "제품3"),
@@ -638,7 +638,7 @@ def _normalized_notice(notice: WorkflowNotice) -> WorkflowNotice:
         raise ValueError("blocking_notice requires a title and message")
     kind = str(notice.kind or "blocking").strip().lower() or "blocking"
     title_fallback = (
-        "중앙 제출 확인 필요"
+        "회사 서버 제출 확인 필요"
         if kind == "submission_blocked"
         else "작업 확인 필요"
     )

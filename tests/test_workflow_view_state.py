@@ -594,7 +594,7 @@ def test_central_inherit_all_presents_one_phs2_stage_with_explicit_actions():
 
     assert view.qa_total == 5
     assert view.qa_progress_text == "1/5"
-    assert [slot.label for slot in view.slots] == ["PHS2 현품표", "제품1", "제품2", "제품3", "제품4"]
+    assert [slot.label for slot in view.slots] == ["현품표", "제품1", "제품2", "제품3", "제품4"]
     assert view.next_action == "2/5 제품 1 스캔"
     assert view.current_stage == "product_1"
     assert view.scan_input_enabled is True

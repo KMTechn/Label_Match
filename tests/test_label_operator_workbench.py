@@ -487,7 +487,7 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
         progress_tab,
     ]
     tab_text = [options.get("text", "") for _, options in notebook.notebook_pages]
-    assert tab_text == ["이번 세션", "대기 현황", "스캔 기록", "통과 요약", "진행 현황"]
+    assert tab_text == ["이번 작업", "대기 현황", "스캔 기록", "통과 요약", "진행 현황"]
     assert _is_descendant(app.logistics_progress_text, progress_tab)
     assert app.logistics_progress_text.cget("state") == "disabled"
     assert ("<<NotebookTabChanged>>", app._on_logistics_progress_tab_changed, "+") in notebook.bindings
@@ -513,7 +513,7 @@ def test_right_notebook_preserves_session_history_and_summary_on_same_screen(ope
         for iid in app.session_tree.get_children()
     ) == results
     heading = app.operator_session_heading_label.cget("text")
-    assert "로컬" in heading
+    assert "이 PC의" in heading
     assert "기록" in heading
 
 
@@ -718,8 +718,8 @@ def test_relay_durable_state_without_or_with_unreadable_database(tmp_path):
 def test_relay_screen_texts_promise_no_automatic_resume():
     texts = label_match_module.LABEL_MATCH_RELAY_SCREEN_TEXT
     assert texts == {
-        "normal": "서버 반영 정상",
-        "retrying": "서버 반영 재시도 중",
+        "normal": "회사 서버 전송 정상",
+        "retrying": "회사 서버로 다시 보내는 중",
         "stopped": RELAY_STOPPED_TEXT,
     }
     assert not any("자동" in text for text in texts.values())
@@ -785,17 +785,17 @@ def test_relay_screen_status_follows_relay_files_and_keeps_state_on_torn_read(
     set_lease(status="ACTIVE", expires_at="2999-01-01T00:00:00Z")
     write_status('{"status": "acked"}', 3_000_000_000)
     app._refresh_relay_screen_status()
-    assert label.cget("text") == "서버 반영 정상"
+    assert label.cget("text") == "회사 서버 전송 정상"
     assert label.cget("style") == "Status.TLabel"
 
     # A read that lands mid-replace keeps the last record and retries.
     write_status('{"status": "runtime_error"', 4_000_000_000)
     app._refresh_relay_screen_status()
-    assert label.cget("text") == "서버 반영 정상"
+    assert label.cget("text") == "회사 서버 전송 정상"
     # The database is read on every tick: a lapsed lease shows with no status write.
     set_lease(expires_at="2000-01-01T00:00:00Z")
     app._refresh_relay_screen_status()
-    assert label.cget("text") == "서버 반영 재시도 중"
+    assert label.cget("text") == "회사 서버로 다시 보내는 중"
     assert label.cget("style") == "Status.TLabel"
 
     status_path.unlink()

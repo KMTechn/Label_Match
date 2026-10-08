@@ -496,7 +496,7 @@ def test_malformed_phs2_label_is_classified_on_and_refused_off(tmp_path, monkeyp
         _close(app)
 
     if not transition:
-        assert app.errors[0][0] == "[PHS2 현품표 오류]"  # base first-scan refusal
+        assert app.errors[0][0] == "[현품표 오류]"  # base first-scan refusal
         assert _events(tmp_path, "TRAY_COMPLETE") == []
         return
     assert app.errors == [] and app.blocks == []
@@ -744,7 +744,7 @@ def test_offline_phs2_lookup_is_kept_as_a_local_five_scan_set(tmp_path, monkeypa
     [cancel] = store.cancelled
     assert cancel["intent_id"] == "INTENT-OFFLINE-1" and cancel["physical_qr_payload"] == PHS2_LABEL
     assert app.warnings == []
-    assert [notice.title for notice in app.notices] == ["중앙 확인 불가 · 과도기 로컬 기록"]
+    assert [notice.title for notice in app.notices] == ["회사 서버 확인 불가 · 과도기 이 PC 기록"]
     [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
     assert _transition(details) == {
         "transition_class": "PHS2_LOCAL", "transition_reasons": ["PACKAGE_TRANSPORT_UNAVAILABLE"],
@@ -801,7 +801,7 @@ def test_on_real_capture_store_cancels_the_offline_phs2_before_the_local_set(clo
     }
     assert app._central_inherit_all_active() is False  # five scans follow
     assert warnings == []
-    assert app._phs_label_guidance_notice.title == "중앙 확인 불가 · 과도기 로컬 기록"
+    assert app._phs_label_guidance_notice.title == "회사 서버 확인 불가 · 과도기 이 PC 기록"
     with closing(sqlite3.connect(case.database)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM package_command_outbox").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM package_operation_leases").fetchone()[0] == 0
@@ -1246,7 +1246,7 @@ def test_valid_sealed_start_label_names_the_cause_and_next_step(tmp_path, monkey
         _close(app)
 
     [(title, message)] = app.errors  # approved: not a start label in either mode
-    assert title == "[PHS2 현품표 필요]" and app.current_set_info["raw"] == []
+    assert title == "[현품표 필요]" and app.current_set_info["raw"] == []
     assert "이적 봉인 QR" in message and "원본 PHS2 현품표를 스캔" in message
     assert "관리자" in message and "디스크" not in message
 

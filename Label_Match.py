@@ -391,7 +391,7 @@ CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
 
 
 def _label_match_window_title():
-    return f"바코드 트레이 검증기 ({APP_VERSION})"
+    return f"바코드 세트 검증기 ({APP_VERSION})"
 
 
 def _label_match_operator_context(worker_name):
@@ -1150,8 +1150,8 @@ def _label_match_recent_runtime_status(context, max_age_seconds=7 * 24 * 60 * 60
 
 
 LABEL_MATCH_RELAY_SCREEN_TEXT = {
-    "normal": "서버 반영 정상",
-    "retrying": "서버 반영 재시도 중",
+    "normal": "회사 서버 전송 정상",
+    "retrying": "회사 서버로 다시 보내는 중",
     "stopped": "작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요",
 }
 _LABEL_MATCH_RELAY_NORMAL_STATUSES = frozenset({"idle", "acked"})
@@ -1869,8 +1869,8 @@ _LABEL_TRANSITION_START_KEYS = (
 )
 LABEL_TRANSITION_CLASS_NAMES = {
     label_transition.LEGACY: "옛 방식",
-    label_transition.PHS2_CENTRAL: "중앙",
-    label_transition.PHS2_LOCAL: "로컬",
+    label_transition.PHS2_CENTRAL: "회사 서버",
+    label_transition.PHS2_LOCAL: "이 PC에 저장됨",
     label_transition.PHS2_MALFORMED: "형식 오류",
 }
 LABEL_TRANSITION_LOCAL_NOTICES = {
@@ -1881,7 +1881,7 @@ LABEL_TRANSITION_LOCAL_NOTICES = {
         "포장 원장에는 들어가지 않습니다.",
     ),
     label_transition.PHS2_LOCAL: (
-        "중앙 확인 불가 · 과도기 로컬 기록",
+        "회사 서버 확인 불가 · 과도기 이 PC 기록",
         "중앙 확인이 막혀 이 세트는 '로컬'로 따로 기록합니다. 제품 4개를 "
         "스캔하세요. 포장 원장에는 들어가지 않습니다.",
     ),
@@ -1920,7 +1920,7 @@ LABEL_MATCH_PACKAGE_POLICY_NOTICES = {
         "현재 세트와 실물을 그대로 두고 관리자에게 알리세요.",
     ),
     "PACKAGE_CENTRAL_PROFILE_UNAVAILABLE": (
-        "중앙 포장 연결 설정 확인 필요",
+        "회사 서버 포장 연결 설정 확인 필요",
         "이 PC의 중앙 포장 연결 설정을 불러오지 못해 완료할 수 없습니다. "
         "현재 세트와 실물을 그대로 두고 관리자에게 알리세요.",
     ),
@@ -5895,7 +5895,7 @@ class Label_Match(tk.Tk):
             self._workflow_notice_action_text = "건별 복구"
         else:
             notice = WorkflowNotice(
-                title="로컬 포장 완료 복구 중",
+                title="이 PC에 저장된 포장 완료 기록 복구 중",
                 message=(
                     "저장된 포장 완료 기록을 복구하고 있습니다. "
                     "복구가 끝날 때까지 PHS2를 이동하거나 다음 포장을 시작하지 마세요."
@@ -6239,7 +6239,7 @@ class Label_Match(tk.Tk):
 
             count_text = "20건 이상" if len(conflicts) > 20 else f"{len(conflicts)}건"
             if prefix == "package_create":
-                title = "중앙 포장 충돌 확인 필요"
+                title = "회사 서버 포장 충돌 확인 필요"
                 message = (
                     f"관리자 확인이 필요한 포장이 {count_text} 있습니다. "
                     + (
@@ -6247,7 +6247,7 @@ class Label_Match(tk.Tk):
                         if int(conflicts[0].get("local_completion_committed") or 0)
                         else "현재 포장 기록은 자동 확정되지 않았습니다. "
                     )
-                    + "해당 PHS2 실물을 구분 보관하고 관리자에게 확인을 요청하세요."
+                    + "해당 현품표 실물을 구분 보관하고 관리자에게 확인을 요청하세요."
                 )
             else:
                 title = "중앙 취소 확인 필요"
@@ -10692,7 +10692,7 @@ class Label_Match(tk.Tk):
                 print(f"현품표 교환 보류 재확인 기술 진단: {exc}")
                 state = {}
             observed = "UNRESOLVED"
-            result = "같은 교환 요청의 중앙 결과를 확인할 수 없습니다. 보류를 유지하세요."
+            result = "같은 교환 요청의 회사 서버 결과를 확인할 수 없습니다. 보류를 유지하세요."
             try:
                 exchange_id = str(state.get("exchange_id") or "")
                 scope = str(state.get("authority_scope_id") or "")
@@ -10704,7 +10704,7 @@ class Label_Match(tk.Tk):
                     if (isinstance(projection, dict)
                             and str(projection.get("exchange_id") or "") == exchange_id):
                         observed = str(projection.get("state") or "UNKNOWN").upper()
-                        result = f"같은 교환 요청의 중앙 상태: {observed}. 원본 보류와 실물 확인을 유지하세요."
+                        result = f"같은 교환 요청의 회사 서버 상태: {observed}. 원본 보류와 실물 확인을 유지하세요."
             except Exception as exc:
                 print(f"현품표 교환 결과 확인 기술 진단: {exc}")
                 observed = "UNKNOWN"
@@ -10713,7 +10713,7 @@ class Label_Match(tk.Tk):
             except Exception:
                 return "결과 확인 기록을 저장하지 못했습니다. 보류를 유지하세요."
             return result
-        result = "저장된 요청의 중앙 확정 결과를 확인하지 못했습니다. 보류를 유지하세요."
+        result = "저장된 요청의 회사 서버 확정 결과를 확인하지 못했습니다. 보류를 유지하세요."
         observed = "UNRESOLVED"
         try:
             outbox = self.package_outbox
@@ -10731,7 +10731,7 @@ class Label_Match(tk.Tk):
                         draft, str(package.get("resolved_source_bundle_id") or ""),
                         receipt, command=command,
                     )
-                    result = "같은 요청의 중앙 완료 증거를 확인했습니다. 원본 보류와 실물 확인은 유지하세요."
+                    result = "같은 요청의 회사 서버 완료 증거를 확인했습니다. 원본 보류와 실물 확인은 유지하세요."
                     observed = "CENTRAL_RECEIPT_VALID"
             elif exchange_rows:
                 exchange = exchange_rows[-1]
@@ -10749,7 +10749,7 @@ class Label_Match(tk.Tk):
                         observed = "CENTRAL_RECEIPT_VALID"
         except Exception as exc:
             print(f"포장 결과 다시 확인 기술 진단: {exc}")
-            result = "중앙 결과를 확인하지 못했습니다. 같은 요청은 보류 상태로 유지됩니다."
+            result = "회사 서버 결과를 확인하지 못했습니다. 같은 요청은 보류 상태로 유지됩니다."
             observed = "UNKNOWN"
         try:
             self._audit_package_recovery_action(
@@ -10771,7 +10771,7 @@ class Label_Match(tk.Tk):
             return "현품표 형식을 확인할 수 없습니다. 실물 현품표를 다시 스캔하세요."
         observed = "UNKNOWN"
         audit_recorded = False
-        result = "원래 요청과 현품표를 연결할 근거가 없습니다. 보류는 유지하고 다른 세트를 진행하세요."
+        result = "원래 요청과 현품표를 연결할 근거가 없습니다. 보류는 유지하고 다른 트레이를 진행하세요."
         try:
             if str(set_id).startswith("F5:"):
                 hold_id = str(set_id)[3:]
@@ -10854,7 +10854,7 @@ class Label_Match(tk.Tk):
                         or (prepare_key and exchange.get("operation_key")
                             != expected_operation_key)):
                     observed = "CENTRAL_NO_LINK"
-                    result = "중앙 요청·원본·실물 현품표가 일치하지 않습니다. 이 현품표 교환 잠금을 유지하세요."
+                    result = "회사 서버 요청·원본·실물 현품표가 일치하지 않습니다. 이 현품표 교환 잠금을 유지하세요."
                 else:
                     self._audit_package_recovery_action(
                         set_id, "SCAN_PHYSICAL", manager_id, "CENTRAL_MATCH_ATTEMPT"
@@ -10906,16 +10906,16 @@ class Label_Match(tk.Tk):
                             source_input_tag_id=fields["ITG"], manager_id=manager_id,
                         )
                         observed = "CENTRAL_MATCH"
-                        result = "원래 요청과 중앙 현품표가 일치합니다. 이 현품표는 보류되어 재접수할 수 없습니다."
+                        result = "원래 요청과 회사 서버 현품표가 일치합니다. 이 현품표는 보류되어 재접수할 수 없습니다."
                     else:
                         observed = "CENTRAL_NO_LINK"
-                        result = "중앙 상태를 조회했지만 원래 요청과 연결되지 않았습니다. 신원 미확인 보류를 유지하세요."
+                        result = "회사 서버 상태를 조회했지만 원래 요청과 연결되지 않았습니다. 신원 미확인 보류를 유지하세요."
         except StopIteration:
             pass
         except Exception as exc:
             print(f"포장 실물 현품표 재조회 기술 진단: {exc}")
             observed = "UNKNOWN"
-            result = "교환 일지·중앙 현품표 상태를 확인하지 못했습니다. 신원 미확인 보류를 유지하세요."
+            result = "교환 일지·회사 서버 현품표 상태를 확인하지 못했습니다. 신원 미확인 보류를 유지하세요."
         try:
             if not audit_recorded:
                 self._audit_package_recovery_action(set_id, "SCAN_PHYSICAL", manager_id, observed)
@@ -11375,7 +11375,7 @@ class Label_Match(tk.Tk):
                 detail = (
                     "복구 가능한 미완료 명령이 여러 건입니다."
                     if len(recoverable) > 1
-                    else "중앙 포장 명령의 PHS2/봉인 증거가 손상되었습니다."
+                    else "회사 서버 포장 명령의 현품표/봉인 증거가 손상되었습니다."
                 )
                 notice = WorkflowNotice(
                     title="회사 서버 포장 복구 잠금",
@@ -13687,9 +13687,9 @@ class Label_Match(tk.Tk):
         pending_count = int(state.get("pending_count") or 0)
         oldest_age = int(state.get("oldest_age_seconds") or 0)
         next_step = (
-            "중앙 연결을 확인하고 있습니다."
+            "회사 서버 연결을 확인하고 있습니다."
             if state.get("central_check_pending")
-            else "중앙 연결 복구 후 검증됩니다."
+            else "회사 서버 연결 복구 후 검증됩니다."
         )
         return WorkflowNotice(
             title="저장됨-검증대기",
@@ -14799,7 +14799,7 @@ class Label_Match(tk.Tk):
                 or (key == "SRC" and str(value or "").upper() == "KMTECH_INPUT_TAG")
                 for key, value in label_pairs
             ):
-                self._ignore_product_scan(raw_input, "현품표입니다. 현재 트레이의 제품을 스캔하세요.")
+                self._ignore_product_scan(raw_input, "현품표입니다. 현재 세트의 제품을 스캔하세요.")
                 return
             if scan_pos < final_label_position and len(raw_input) <= len(master_code):
                 self._handle_input_error(
@@ -14819,10 +14819,10 @@ class Label_Match(tk.Tk):
                 self._handle_mismatch(raw_input, master_code)
                 return
             if raw_input in self.current_set_info['raw']:
-                self._ignore_product_scan(raw_input, "트레이 내 중복 스캔입니다. 다른 제품을 스캔하세요.")
+                self._ignore_product_scan(raw_input, "세트 내 중복 스캔입니다. 다른 제품을 스캔하세요.")
                 return
             if raw_input in self.global_scanned_set:
-                self._ignore_product_scan(raw_input, "이미 다른 트레이에서 처리된 제품입니다. 새 제품을 스캔하세요.")
+                self._ignore_product_scan(raw_input, "이미 다른 세트에서 처리된 제품입니다. 새 제품을 스캔하세요.")
                 return
             known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"),
                                                self.current_set_info.get("scanner_exchanges", []))
@@ -14846,7 +14846,7 @@ class Label_Match(tk.Tk):
                 # at its next accepted product. Preserve submitted commands.
                 outbox = self.__dict__.get("package_outbox")
                 if outbox is not None and outbox.get_by_set_id(str(self.current_set_info.get("id") or "")) is not None:
-                    self._ignore_product_scan(raw_input, "이 트레이는 이미 전송함에 저장되었습니다. 저장된 처리 상태를 확인하세요.")
+                    self._ignore_product_scan(raw_input, "이 세트는 이미 전송함에 저장되었습니다. 저장된 처리 상태를 확인하세요.")
                     return
                 def prepare(state):
                     state["scanner_only"] = True
@@ -14952,7 +14952,7 @@ class Label_Match(tk.Tk):
         source_members = self._known_sample_members(current.get("package_source_snapshot"))
         if current["scanner_exchange_phase"] == "target":
             if normalized not in samples and (known is None or normalized not in known):
-                return self._ignore_product_scan(value, "이 트레이의 표본 또는 현품표 구성원을 스캔하세요.")
+                return self._ignore_product_scan(value, "이 세트의 표본 또는 현품표 구성원을 스캔하세요.")
             previous = copy.deepcopy(current)
             current.update(scanner_exchange_phase="replacement", scanner_exchange_target=value)
             if not self._save_current_set_state():
@@ -15254,7 +15254,7 @@ class Label_Match(tk.Tk):
             self.current_set_info = restored
             self._replay_scanner_audits()
         else:
-            return self._ignore_product_scan("KMCMD:UNDO", "지금 트레이에 되돌릴 스캔이 없습니다.")
+            return self._ignore_product_scan("KMCMD:UNDO", "지금 세트에 되돌릴 스캔이 없습니다.")
         self._clear_workflow_completion()
         self._update_history_tree_in_progress()
         self._render_operator_workbench()
@@ -16312,7 +16312,7 @@ class Label_Match(tk.Tk):
 
         def show_local_conflict():
             self._phs_label_guidance_notice = WorkflowNotice(
-                title="현품표 교체 로컬 충돌",
+                title="현품표 교체 · 이 PC 기록 충돌",
                 message=(
                     "교체 중 현재 포장 상태가 바뀌었습니다. "
                     "중앙 처리 결과는 건별 복구에서 미완료 현품표 교환 복구로 확인하세요."
@@ -16532,7 +16532,7 @@ class Label_Match(tk.Tk):
         def show_local_conflict():
             self._render_operator_workbench()
             messagebox.showerror(
-                "현품표 교환 로컬 상태 충돌",
+                "현품표 교환 · 이 PC 기록 충돌",
                 (
                     "교환 중 현재 포장 상태가 변경됐습니다. "
                     "추가 교체를 중지하고 관리자에게 문의하세요."
@@ -17547,13 +17547,13 @@ class Label_Match(tk.Tk):
         saved_text = "기록됨"
         if package_logistics and package_logistics.get("idempotency_key"):
             central_text = {
-                "ACKED": "중앙 확정",
+                "ACKED": "회사 서버 확인됨",
                 "CONFLICT": "회사 서버 충돌 · 관리자 확인",
             }.get(str(package_logistics.get("status") or "").upper(), "중앙 전송 대기")
-            saved_text = f"로컬 완료 저장됨 · {central_text}"
+            saved_text = f"이 PC에 저장됨 · 포장 완료 · {central_text}"
         transition_name = LABEL_TRANSITION_CLASS_NAMES.get(details.get("transition_class"))
         if transition_name and details["transition_class"] != label_transition.PHS2_CENTRAL:
-            saved_text = f"기록됨 · 과도기 {transition_name}(원장 제외)"
+            saved_text = f"기록됨 · 과도기 {transition_name}(포장 기록 제외)"
         self.save_status_label.config(text=f"✓ {saved_text} ({datetime.now().strftime('%H:%M:%S')})")
         self.after(3000, lambda: self.save_status_label.config(text=""))
         self._update_summary_tree()
@@ -17878,7 +17878,7 @@ class Label_Match(tk.Tk):
                 )
             elif central_pending_count:
                 messagebox.showwarning(
-                    "중앙 취소 확인 중",
+                    "회사 서버 취소 확인 중",
                     (
                         f"{deleted_count}개의 로컬 기록을 삭제했습니다.\n"
                         f"중앙 취소 {central_pending_count}건은 전송·확인 중입니다.\n"
@@ -18446,7 +18446,7 @@ class Label_Match(tk.Tk):
                         "중앙 취소 확인 필요"
                         if str(cancellation.get("status") or "").strip().upper()
                         == "CONFLICT"
-                        else "중앙 취소 확인 중"
+                        else "회사 서버 취소 확인 중"
                     )
                     messagebox.showwarning(
                         warning_title, completion_message, parent=self
@@ -19461,7 +19461,7 @@ class Label_Match(tk.Tk):
         parsed_scans = list(details.get("parsed_product_barcodes") or [])
         lines = [
             f"결과: {_label_match_tray_complete_result(details)}",
-            f"세트 ID: {details.get('set_id') or '-'}",
+            f"트레이 ID: {details.get('set_id') or '-'}",
         ]
         production_date = details.get("production_date")
         phase = details.get("phase") or "-"
@@ -19498,7 +19498,7 @@ class Label_Match(tk.Tk):
                 lines.append(f"{role}: {self._middle_ellipsis(value, 72)}")
         if not lines:
             lines.append(f"결과: {_label_match_tray_complete_result(details)}")
-            lines.append(f"세트 ID: {details.get('set_id') or '-'}")
+            lines.append(f"트레이 ID: {details.get('set_id') or '-'}")
         return "\n".join(lines)
 
     def _apply_operator_responsive_layout(self, *, settle=False):
@@ -20218,7 +20218,7 @@ class Label_Match(tk.Tk):
                 "Operator.Action.TButton",
             ),
             "reset_button": (
-                "현재 세트\n취소 (F1)",
+                "현재 트레이\n취소 (F1)",
                 "Operator.Danger.Action.TButton",
             ),
             "cancel_tray_button": (
@@ -20264,7 +20264,7 @@ class Label_Match(tk.Tk):
         detail = rows.get(str(selected_iid)) if selected_iid else None
         if detail is None:
             metadata = "단계: -  |  상태: -"
-            raw_text = "현재 세트 행을 선택하면 수락된 스캔 원문을 확인할 수 있습니다."
+            raw_text = "현재 트레이 행을 선택하면 수락된 스캔 원문을 확인할 수 있습니다."
         else:
             metadata = (
                 f"단계: {detail['stage']}  |  상태: {detail['state']}"
@@ -20690,7 +20690,7 @@ class Label_Match(tk.Tk):
         stage_text = self._workflow_left_stage_text(view)
         if self.__dict__.get("_operator_hide_left_badges") and "복구됨" in view.badges:
             stage_text = f"{stage_text} · 복구됨"
-        detail_lines = [f"세트 {set_id}"]
+        detail_lines = [f"트레이 {set_id}"]
         deferred = self.__dict__.get("_deferred_capture_ui") or {}
         for field, label in (("intent_id", "접수"), ("reason_code", "상태 코드"),
                              ("error_code", "오류 코드"), ("dependency_identity", "대기 항목"),
@@ -20839,10 +20839,10 @@ class Label_Match(tk.Tk):
                 exchange_attempt.seal_verification_status,
             ):
                 title = "제품 교체 관리자 확인 필요"
-                message = "현재 제품과 목록을 유지하고 관리자와 중앙 처리 결과를 확인하세요."
+                message = "현재 제품과 목록을 유지하고 관리자와 회사 서버 처리 결과를 확인하세요."
             else:
                 title = "제품 교체 결과 확인 중"
-                message = "현재 제품과 목록을 그대로 두고 중앙 처리 결과를 기다리세요."
+                message = "현재 제품과 목록을 그대로 두고 회사 서버 처리 결과를 기다리세요."
             blocking_notice = WorkflowNotice(
                 title, message, kind="exchange_recovery", tone="warning",
                 allow_exchange_recovery=saved_review or seal_pending,
@@ -21491,7 +21491,7 @@ class Label_Match(tk.Tk):
                 if lease_failure
                 else f"{completed}/{total} 유지 · {policy_notice[0]}"
                 if policy_notice
-                else f"{completed}/{total} 유지 · 로컬 기록 저장 필요"
+                else f"{completed}/{total} 유지 · 이 PC에 저장 필요"
             ),
             message=message,
             kind="submission_blocked",
@@ -22136,7 +22136,7 @@ class Label_Match(tk.Tk):
                 or self._standard_phs2_workflow_expected(current)
             )
         step_names = (
-            ("PHS2 현품표", "제품1", "제품2", "제품3", "제품4")
+            ("현품표", "제품1", "제품2", "제품3", "제품4")
             if central_inherit_all
             else self.STEP_NAMES
         )
@@ -22319,13 +22319,13 @@ def prepare_startup_item_catalog():
 
 
 ITEM_CATALOG_STARTUP_EXIT_CODE = 3
-ITEM_CATALOG_STARTUP_ERROR_TITLE = "중앙 품목 목록 확인 실패"
+ITEM_CATALOG_STARTUP_ERROR_TITLE = "회사 서버 품목 목록 확인 실패"
 ITEM_CATALOG_STARTUP_ERROR_MESSAGE = (
     "중앙 품목 목록을 확인할 수 없어 프로그램 시작을 중단했습니다.\n\n"
     "네트워크 연결과 이 PC의 중앙 물류 설정을 확인한 뒤 다시 실행하세요. "
     "계속 실패하면 IT 담당자에게 문의하세요."
 )
-ITEM_CATALOG_CACHE_WARNING_TITLE = "검증된 품목 캐시 사용"
+ITEM_CATALOG_CACHE_WARNING_TITLE = "저장해 둔 검증된 품목 목록 사용"
 ITEM_CATALOG_CACHE_WARNING_MESSAGE = (
     "중앙 품목 목록을 새로 받지 못해 무결성이 검증된 로컬 캐시로 시작합니다.\n\n"
     "캐시 기준 시각: {cache_time}\n"
@@ -22339,7 +22339,7 @@ ITEM_CATALOG_TRANSITION_WARNING_MESSAGE = (
     "오류 코드: {cause_code}"
 )
 ITEM_CATALOG_DIAGNOSTIC_FILENAME = "item_catalog_startup_diagnostic.json"
-LOGISTICS_PROFILE_WARNING_TITLE = "중앙 물류 프로파일 확인 필요"
+LOGISTICS_PROFILE_WARNING_TITLE = "회사 서버 물류 프로파일 확인 필요"
 LOGISTICS_PROFILE_WARNING_MESSAGES = {
     PROFILE_WARNING_CURRENT_USER_MISMATCH: (
         "선택된 중앙 물류 프로파일의 비밀이 아닌 binding이 현재 사용자 설치 "

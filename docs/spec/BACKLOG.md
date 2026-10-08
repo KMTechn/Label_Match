@@ -191,7 +191,7 @@ w9scanflow 비교(옛 앱 대비 스캐너만으로 일하기)의 포장 항목�
 
 ## W5-B2 · carrier 경계 이후
 
-U13 문구 대조에서 activity 제목을 `최근 로컬 기록`으로 명확히 했다. 진행·통과·오류를 포함한 로컬 이력이며 중앙 포장 ACK 목록이 아니다. 행·상태·F3/F4 절차는 보존하고 기존 workbench 시험에서 의미와 원 결과를 확인한다. 실제 글자 가독성은 화면 검증 대상으로 남는다([확정 경계](contracts.md#states)).
+U13 문구 대조에서 activity 제목을 `이 PC의 최근 기록`으로 명확히 했다. 진행·통과·오류를 포함한 로컬 이력이며 중앙 포장 ACK 목록이 아니다. 행·상태·F3/F4 절차는 보존하고 기존 workbench 시험에서 의미와 원 결과를 확인한다. 실제 글자 가독성은 화면 검증 대상으로 남는다([확정 경계](contracts.md#states)).
 
 LM-3 파생 capture 시험 helper는 F3 busy 문구를 소유한 `label_completion.py`까지 AST 검색 범위를 확장했다. 기존 단일 main 검색의 admitted-busy 3 FAIL은 원 로그로 보존하며 기대 문구·상태·제품 경계는 바꾸지 않는다.
 

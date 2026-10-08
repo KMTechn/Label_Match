@@ -1629,7 +1629,7 @@ def test_label_closed_port_flow_captures_before_remote_and_shows_pending(tmp_pat
     assert notice.title == "저장됨-검증대기"
     assert app._deferred_capture_ui["intent_id"] not in notice.message
     assert "대기 1건" in notice.message
-    assert "중앙 연결 복구 후 검증됩니다." in notice.message
+    assert "회사 서버 연결 복구 후 검증됩니다." in notice.message
     assert app.current_set_info["raw"] == []
     assert app.current_set_info["parsed"] == []
     durable = _row(db_path, app.current_set_info["deferred_intent_id"])
