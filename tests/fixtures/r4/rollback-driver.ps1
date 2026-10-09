@@ -1,7 +1,9 @@
 ﻿param([string]$Repo='C:/KMTech/w9setupprepsub260/candidate',
       [Parameter(Mandatory)][string]$Root,
       [Parameter(Mandatory)][string]$Output,
-      [ValidateSet('success','early_failure','runtime_unproven','g_refusal')][string]$Case='early_failure')
+      [ValidateSet('success','early_failure','runtime_unproven','g_refusal','fresh_cancel','installed_cancel')][string]$Case='early_failure',
+      [ValidateSet('complete','preimage_present','install_present','placement_committed','setup_started',
+          'missing_preimage','missing_placement','missing_setup','string_setup','absence_unproven')][string]$Proof='complete')
 $ErrorActionPreference='Stop'
 # Keep every extracted function name together for sub-274.
 $ExtractedFunctionNames=@('Invoke-LabelRollbackStep','Get-LabelLaunchFailure',
@@ -9,12 +11,14 @@ $ExtractedFunctionNames=@('Invoke-LabelRollbackStep','Get-LabelLaunchFailure',
     'Invoke-LabelCanonicalRollback','Save-LabelRollbackContext',
     'Stop-LabelRollbackCandidateRelay','Invoke-LabelGenerationRefusalRecovery',
     'Assert-LabelRollbackTaskPreimage','Get-LabelCurrentUserScheduledTasks',
-    'Protect-LabelFailureText')
+    'Protect-LabelFailureText','ByteSha','InvokeFrozenPlacementHelper')
 . (Join-Path $Repo 'tools/failure_redaction.ps1')
-New-Item -ItemType Directory -Path $Root,(Join-Path $Root 'installed'),(Join-Path $Root 'control') | Out-Null
+New-Item -ItemType Directory -Path $Root,(Join-Path $Root 'control') | Out-Null
+if($Case -cne 'fresh_cancel'){
 New-Item -ItemType Directory -Path (Join-Path $Root 'installed/runtime') | Out-Null
 # Membership placeholder only; Product is a native-free stand-in and never executes it.
 [IO.File]::WriteAllBytes((Join-Path $Root 'installed/runtime/pythonw.exe'),[byte[]]@())
+}
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $Repo 'INSTALL_CANONICAL_PORTABLE.ps1'),[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'Source parse failed'}
@@ -34,7 +38,7 @@ function Assert-LabelRollbackGeneration {
     $script:GCalls++
     Invoke-ActualLabelRollbackGeneration
 }
-$script:NativeCalls=[ordered]@{product=0;run_restore=0;task_restore=0;fence_release=0;relay_restart=0;authority_release=0;inventory=0}
+$script:NativeCalls=[ordered]@{product=0;setup=0;placement=0;run_restore=0;task_restore=0;fence_release=0;relay_restart=0;authority_release=0;inventory=0}
 # Only native installation, process, task, Run, and mutex effects are stand-ins.
 # Generation policy, rollback step collection, and the complete catch/finally are real source.
 function Manifest { param($Path,$Skip) return [pscustomobject]@{version='v2.0.95';source_commit=$sourceCommit} }
@@ -47,20 +51,33 @@ function Set-LabelWriterFenceInstalledTree { }
 function Relays { return @() }
 function Get-LabelCurrentUserScheduledTasks { return @() }
 function Assert-RollbackRelayPreimage { param([object[]]$ExpectedRelays) return $true }
-function Product { $script:NativeCalls.product++;if($Case -ceq 'early_failure'){throw 'Injected isolated current-user removal failure'} }
+function Product {
+    param($Root,$Mode,$ExtraArguments,$LogicalAppRoot)
+    if($Mode -ceq '--onboard-current-user'){$script:NativeCalls.setup++;throw 'Injected setup child launch failure'}
+    $script:NativeCalls.product++
+    $script:RemovalArguments=[ordered]@{root=$Root;mode=$Mode;logical_root=$LogicalAppRoot}
+    if($Case -cin @('early_failure','fresh_cancel','installed_cancel')){throw 'Injected isolated current-user removal failure'}
+}
 function Enter-LabelWriterAdmission { return [pscustomobject]@{isolated=$true} }
 function Exit-LabelWriterAdmission { }
-function Restore { param($Before) $script:NativeCalls.run_restore++ }
-function RestoreScheduledTask { param($Before) $script:NativeCalls.task_restore++ }
+function Restore { param($Before) $script:NativeCalls.run_restore++;$script:RunState=$Before }
+function RestoreScheduledTask { param($Before) $script:NativeCalls.task_restore++;$script:TaskState=$Before }
 function Snapshot {
     if($Case -ceq 'runtime_unproven'){return [pscustomobject]@{exists=$true;kind='String';data='unproven-run-command'}}
-    return $before
+    return $script:RunState
 }
 function Stop-LabelWriterFence { $script:NativeCalls.fence_release++;return [pscustomobject]@{writer_inventory_sha256=$inventorySha} }
 function StartRaw { $script:NativeCalls.relay_restart++;return 1 }
 function Get-CimInstance { return [pscustomobject]@{ExecutablePath=(Join-Path $Root 'prior-runtime.exe')} }
 function Start-Sleep { }
 function Start-Process { throw 'R4 native process execution prohibited' }
+function Start-LabelPlacementSession { $script:NativeCalls.placement++;throw [ComponentModel.Win32Exception]::new(1223) }
+function Save-LabelPlacementRecoveryPreimages { }
+function Invoke-LabelDelegatedPlacementHelper {
+    if(-not $install.StartsWith($Root+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw 'Fixture cleanup escaped isolated root'}
+    Remove-Item -LiteralPath $install -Recurse
+    return 0
+}
 function Get-ScheduledTask { throw 'R4 real scheduler access prohibited' }
 function Export-ScheduledTask { throw 'R4 real scheduler access prohibited' }
 function Register-ScheduledTask { throw 'R4 real scheduler access prohibited' }
@@ -96,14 +113,65 @@ $healthyRemovalReportBefore=$null;$localAuditRoot=$Root
 $old=@([pscustomobject]@{CommandLine='isolated-prior-command';ExecutablePath=(Join-Path $Root 'prior-runtime.exe')})
 $audit=[ordered]@{status='RUNNING';rollback=[ordered]@{};writer_fence=[ordered]@{status='RESTORING'}}
 $auditPath=Join-Path $Root 'audit.json';$EvidencePath=$null;$writerEnvironmentBefore=$null
+$script:RemovalArguments=$null
 $transaction=@($ast.FindAll({param($n)
     $n -is [Management.Automation.Language.TryStatementAst] -and
     @($n.CatchClauses | Where-Object {$_.Body.Extent.Text.Contains('. Invoke-LabelCanonicalRollback')}).Count -gt 0
 },$true))
 if($transaction.Count -ne 1){throw 'Unique product transaction not found'}
+if($Case -cin @('fresh_cancel','installed_cancel')){
+    if($Case -ceq 'fresh_cancel'){$existingVerified=$false;$old=@();$replacementRollbackRoot=''}
+    $audit.code_preimage=if($existingVerified){'PRESENT'}else{'ABSENT'};$audit.code_placement='PENDING';$audit.current_user_setup_started=$false
+    $helperParameters=@{}
+    $frozenPlacement=[pscustomobject]@{root=$Root;helper_path=(Join-Path $Root 'helper.ps1');helper_sha256=('a'*64);
+        integrity_sha256=('b'*64);writer_fence_path=(Join-Path $Root 'writer.ps1');writer_fence_sha256=('c'*64);
+        data_generation_path=(Join-Path $Root 'generation.ps1');data_generation_sha256=('d'*64)}
+    if($Proof -ceq 'preimage_present'){$audit.code_preimage='PRESENT'}
+    if($Proof -ceq 'install_present'){New-Item -ItemType Directory -Path $install | Out-Null}
+    if($Proof -ceq 'placement_committed'){$audit.code_placement='PASS'}
+    if($Proof -ceq 'missing_preimage'){$audit.Remove('code_preimage')}
+    if($Proof -ceq 'missing_placement'){$audit.Remove('code_placement')}
+    if($Proof -ceq 'missing_setup'){$audit.Remove('current_user_setup_started')}
+    if($Proof -ceq 'string_setup'){$audit.current_user_setup_started='false'}
+    if($Proof -ceq 'setup_started'){
+        # Execute the real forward call and its adjacent attempt record even
+        # though this synthetic installed tree has subsequently disappeared.
+        $statements=@($transaction[0].Body.Statements)
+        $onboarding=@($statements | Where-Object {$_.Extent.Text.Contains("'--onboard-current-user'") -and $_ -is [Management.Automation.Language.TryStatementAst]})
+        if($onboarding.Count -ne 1){throw 'Forward onboarding call is ambiguous'}
+        $index=[array]::IndexOf($statements,$onboarding[0])
+        $productInstall=$install
+        if($statements[$index-1].Extent.Text.StartsWith('$audit.current_user_setup_started')){
+            . ([scriptblock]::Create($statements[$index-1].Extent.Text))
+        }
+        . ([scriptblock]::Create($onboarding[0].Extent.Text))
+    }
+    $script:AbsenceQueryRefused=$false
+    if($Proof -ceq 'absence_unproven'){
+        function Test-Path {
+            param($LiteralPath,$Path,[string]$PathType,[string]$ErrorAction)
+            $phaseStack=Get-Variable -Name LabelRollbackPhaseStack -Scope Script -ErrorAction SilentlyContinue
+            if($LiteralPath -ceq $install -and $null -ne $phaseStack -and $phaseStack.Value.Count -eq 0 -and -not $script:AbsenceQueryRefused){$script:AbsenceQueryRefused=$true;throw 'Injected absence observation failure'}
+            $arguments=@{}
+            if($LiteralPath){$arguments.LiteralPath=$LiteralPath}else{$arguments.Path=$Path}
+            if($PathType){$arguments.PathType=$PathType}
+            Microsoft.PowerShell.Management\Test-Path @arguments
+        }
+    }
+    $Script:LabelPlacementSessionRequested=$true;$Script:LabelPlacementSession=$null;$Script:LabelPlacementSessionLaunchAttempted=$false
+    $placementAttempted=$true
+}
 $catchBody=$transaction[0].CatchClauses[0].Body.Extent.Text
 $finallyBody=$transaction[0].Finally.Extent.Text
-$execute=[scriptblock]::Create("try {throw 'Injected isolated forward failure'} catch $catchBody finally $finallyBody")
+$script:RunState=$before;$script:TaskState=$taskBefore
+if($Case -cin @('fresh_cancel','installed_cancel')){
+    $script:RunState=[pscustomobject]@{exists=$true;kind='String';data='isolated-mutated-command'}
+    $script:TaskState=[pscustomobject]@{exists=$true}
+}
+$shortcutPath=Join-Path $Root 'shortcut-stand-in.txt'
+[IO.File]::WriteAllText($shortcutPath,'isolated prior shortcut')
+$forward=if($Case -cin @('fresh_cancel','installed_cancel')){'[void](InvokeFrozenPlacementHelper $frozenPlacement @{ElevationLogPath=(Join-Path $Root ''placement'')})'}else{'throw ''Injected isolated forward failure'''}
+$execute=[scriptblock]::Create("try {$forward} catch $catchBody finally $finallyBody")
 $failed=$false
 try{. $execute}catch{$failed=$true;$failureMessage=[string]$_.Exception.Message}
 $steps=@($audit.rollback.steps)
@@ -116,4 +184,15 @@ $record=[ordered]@{source_commit=$sourceCommit;case=$Case;g_calls=$script:GCalls
     guidance_present=(([string]$audit.rollback.guidance+' '+[string]$failureMessage) -match '[가-힣]');
     errors=@($Script:LabelRollbackFailures | ForEach-Object phase);
     real_generation_helper=$true;real_product_catch_and_finally=$true}
+if($Case -cin @('fresh_cancel','installed_cancel')){
+    $record.run_preimage_restored=($script:RunState.exists -eq $before.exists -and $script:RunState.data -ceq $before.data)
+    $record.task_preimage_restored=($script:TaskState.exists -eq $taskBefore.exists)
+    $record.shortcut_preimage_restored=([IO.File]::ReadAllText($shortcutPath) -ceq 'isolated prior shortcut')
+    $record.absence_query_refused=$script:AbsenceQueryRefused
+    $record.proof=$Proof;$record.steps=$steps;$record.runtime_restored=$audit.rollback.runtime_restored
+    $record.code_placement=$audit.rollback.code_placement;$record.setup_started=$audit.current_user_setup_started
+    $record.removal_arguments=$script:RemovalArguments
+    $record.original_failure_preserved=([string]$audit.failure_details.placement_code -ceq 'PLACEMENT_LAUNCH_FAILED')
+    $record.original_native_error=$original.Exception.GetBaseException().NativeErrorCode
+}
 $record | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Output -Encoding UTF8

@@ -312,6 +312,26 @@ $public=Get-LabelLaunchFailure ([pscustomobject]@{Exception=$typedChildFailure})
 
 
 
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+def test_not_required_rollback_step_survives_actual_audit_publication(tmp_path, engine):
+    from tests.test_shared_ancestor_protection import run_functions
+    output = tmp_path / 'audit.json'
+    result = run_functions(tmp_path, ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1', ['Save'], r'''
+function Get-KmtechSinkEnvironment { return @{} }
+$record=[ordered]@{status='FAILED_ROLLED_BACK';current_user_setup_started=$false;
+    rollback=[ordered]@{steps=@([ordered]@{phase='current_user_removal';status='NOT_REQUIRED';
+        reason_code='NO_CURRENT_USER_SETUP_CREATED'});step_failures=@()}}
+Save $env:LM_TYPED_OUTPUT $record
+''', engine=engine, values={'LM_TYPED_OUTPUT': str(output)})
+    assert result.returncode == 0, 'Isolated audit publication failed'
+    record = json.loads(output.read_text(encoding='utf-8'))
+    assert record['status'] == 'FAILED_ROLLED_BACK'
+    assert record['current_user_setup_started'] is False
+    assert record['rollback']['steps'] == [{'phase': 'current_user_removal', 'status': 'NOT_REQUIRED',
+                                           'reason_code': 'NO_CURRENT_USER_SETUP_CREATED'}]
+    assert record['rollback']['step_failures'] == []
+
+
 def test_fixed_diagnostic_messages_keep_their_existing_schema():
     from failure_redaction import RULES, public_diagnostic_tree
     original={"status":"PASS", "message":RULES["safe_messages"][0],

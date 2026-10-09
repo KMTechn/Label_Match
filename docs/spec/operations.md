@@ -1301,6 +1301,8 @@ Archive-PretransactionFailure는 판정한 목록에서 이번 run의 정확한 
 
 되돌리기 독립 단계와 정확한 끝 상태
 
+거래 기록의 code_preimage가 ABSENT이고 현재 설치 폴더도 없으며, code_placement가 NOT_STARTED/PENDING이고 현재 사용자 설정 생성 호출을 한 번도 시도하지 않았다는 boolean 기록이 모두 증명되면 current_user_removal을 NOT_REQUIRED, reason_code=NO_CURRENT_USER_SETUP_CREATED로 기록하고 제품 제거를 호출하지 않는다. 어느 조건이든 거짓이거나 관측/기록이 불명이면 기존 제품 제거를 수행한다. 기존 설치와 설정 생성 호출을 시도한 거래도 기존 경로를 유지한다. NOT_REQUIRED는 실패 목록에 넣지 않으며 다른 단계가 모두 PROVEN이면 원래 배치 실패 원인을 보존한 끝 상태는 FAILED_ROLLED_BACK이다.
+
 배치 실패 때 packet runtime을 실행하더라도 Product의 logical app-root는 정식 설치 root로 결속한다. 되돌리기는 fence 재획득과 새 relay 정상 정지부터 시도하고 그 뒤 기존 G로 옛 코드 복원을 판정한다. 사용자 제거·writer 부재·코드/등록 preimage·Run/task/stop/receipt·보호 startup·최종 readback을 단계별로 기록하고 독립 후속 단계를 계속한다. custody 미확인이면 mutation하지 않고 writer 부재·등록 정리가 미확인이면 코드 복원을 건너뛴다. 코드 복원·G·runtime 정합이 증명되면 앞 단계 오류 수와 관계없이 fence 해제와 옛 relay 재시작을 반드시 시도한다. 증명되지 않으면 fence와 정지를 유지하고 관리자 지원 재개를 안내한다. 남은 오류는 ROLLBACK_FAILED/FAILED_ROLLBACK_INCOMPLETE와 step_failures에 보존한다. 보호 startup 파일은 보호된 preimage에서 current 없이 복원하고 원 바이트를 대조한다. PS5.1/PS7 실제 공유 rollback·G·native 실패 I/O catch 회귀는 격리 대역이며 실제 guest 복구 수용을 대신하지 않는다.
 
 배치 자식의 pin·전송·실행 실패는 고정 placement_code, 단계, native 종료 코드와 보호 진단 경로/SHA256을 남긴다. 전송의 신뢰 코드가 로드되기 전에는 예외 종류/HResult만 보존하고 원문·payload·환경 값을 진단으로 복사하지 않는다. 자식이 진단 없이 종료해도 부모가 같은 시도 종료 코드의 보호 기록을 남긴다. pin으로 검증된 canonical 배치에서 helper의 자체 trap은 원 예외를 바깥 reporter로 전달하며 단독 설치기 실패 안내는 유지한다. 복구 단계 stack은 거래마다 초기화하며 StrictMode 아래에서도 첫 단계와 중첩 단계가 이어진다. 지원 재개는 기존 replacement 여부를 같은 배치 매개변수 계약으로 전달한다.

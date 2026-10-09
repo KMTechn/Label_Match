@@ -4426,6 +4426,20 @@ function Invoke-LabelCanonicalRollback {
             }
         }
         if ($rollbackGenerationReady -and $rollbackCustodyReady) {
+            $noCurrentUserSetupCreated = $false
+            if ([string]$audit.code_preimage -ceq 'ABSENT' -and
+                [string]$audit.code_placement -cin @('NOT_STARTED', 'PENDING') -and
+                $audit.current_user_setup_started -is [bool] -and
+                -not $audit.current_user_setup_started) {
+                try { $noCurrentUserSetupCreated = -not (Test-Path -LiteralPath $install -ErrorAction Stop) }
+                catch { $noCurrentUserSetupCreated = $false }
+            }
+            if ($noCurrentUserSetupCreated) {
+                $Script:LabelRollbackSteps.Add([ordered]@{
+                    phase='current_user_removal'; status='NOT_REQUIRED'; reason_code='NO_CURRENT_USER_SETUP_CREATED'
+                })
+            }
+            else {
             . Invoke-LabelRollbackStep 'current_user_removal' {
             $rollbackProductRoot = if (Test-Path (Join-Path $install 'runtime\pythonw.exe')) {
                 $install
@@ -4451,6 +4465,7 @@ function Invoke-LabelCanonicalRollback {
                 if (-not ($legacyFirstRegistration -and $rollbackUsesInstalled)) {
                     Product $rollbackProductRoot '--remove-current-user-setup' -LogicalAppRoot $install
                 }
+            }
             }
             }
             . Invoke-LabelRollbackStep 'writer_absence' {
@@ -5563,6 +5578,7 @@ $audit = [ordered]@{
     install_root = $install
     code_placement = 'PENDING'
     code_preimage = if ($existingVerified) { 'PRESENT' } else { 'ABSENT' }
+    current_user_setup_started = $false
     current_user_registration_mode = if ($legacyFirstRegistration) { 'FIRST_REGISTRATION_OVER_PINNED_PREIMAGE' }
         elseif ($pristineInstall) { 'FIRST_INSTALL' } else { 'EXISTING_STATE' }
     first_registration_preimage = if ($legacyFirstRegistration) {
@@ -6108,6 +6124,7 @@ try {
         $firstRegistrationAttempt.registration_started = $true
         Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
     }
+    $audit.current_user_setup_started = $true
     try { Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start') }
     catch { $onboardingFailure = $_ }
     if ($null -ne $onboardingFailure -and -not (Test-Path -LiteralPath $onboardingPath)) {
