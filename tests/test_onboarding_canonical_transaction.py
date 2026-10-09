@@ -397,8 +397,8 @@ def test_failed_candidate_preserves_generation_and_old_start(tmp_path, monkeypat
             subject_sid=current_process_sid(), build_id="b" * 40)
     before = {p: p.read_bytes() for p in markers}
     monkeypatch.setattr(generation, "_installed_identity", lambda root: {
-        "version": "v2.0.97", "build_id": "a" * 40,
-        "data_compatible_min_version": "v2.0.97", "compatibility_verified": False})
+        "version": "v2.0.98", "build_id": "a" * 40,
+        "data_compatible_min_version": "v2.0.98", "compatibility_verified": False})
     kwargs = dict(require_bootstrap_integrity=False,
         registration_runner=lambda selected: (_ready_state(selected), 0)[1],
         profile_loader=_profile_loader, credential_loader=_credential_loader,
