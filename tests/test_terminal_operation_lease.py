@@ -776,6 +776,126 @@ def _refusal_response(draft, *, replayed=False):
     }}
 
 
+def _default_clock_refused_lease(tmp_path, *, expired=False):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    completed = now - timedelta(minutes=2)
+    snapshot = {"source": "TRANSFER-1"}
+    claims = payload(snapshot,
+        issued_at=(now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        expires_at=(now + timedelta(minutes=-1 if expired else 30)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    signed = Signer().sign(claims)
+    draft = lease_draft(operation_lease_token=signed,
+        operation_lease_snapshot_hash=claims["snapshot_hash"],
+        operation_lease_completed_at=completed.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    outbox = PackageOutbox(tmp_path / "default-clock.sqlite3")
+    store = OperationLeaseStore(outbox.db_path)
+    row = outbox.enqueue(draft)
+    store.save_prefetched(artifact={"token": signed, "operation_snapshot": snapshot,
+        "claims": claims, "expires_at": claims["expires_at"]},
+        binding=binding(), issue_idempotency_key="default-clock-issue")
+    store.attach_set(draft.operation_lease_id, draft.set_id)
+    outbox.mark_local_completion_committed(row["idempotency_key"],
+        operation_lease_id=draft.operation_lease_id,
+        operation_completed_at=draft.operation_lease_completed_at)
+    claim = outbox.claim_next()
+    outbox.mark_conflict(row["idempotency_key"],
+        PackageApiError(409, "OPERATION_LEASE_FENCE_CONFLICT", "refused"),
+        operation_lease_id=draft.operation_lease_id, expected_claim=claim)
+    return outbox, draft
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_refusal_default_clock_reports_or_expires_without_business_mutation(tmp_path, caplog, expired):
+    caplog.set_level(logging.INFO, logger="package_outbox")
+    outbox, draft = _default_clock_refused_lease(tmp_path, expired=expired)
+    before = _business_bytes(outbox.db_path)
+    calls = []
+    def transport(*_args):
+        calls.append(1)
+        return _refusal_response(draft)
+    processor = PackageOutboxProcessor(outbox, _refusal_client(transport))
+    processor.drain(limit=1)
+    processor.drain(limit=1)
+    assert len(calls) == (0 if expired else 1)
+    code = "EXPIRED_NOT_SENT" if expired else "REPORTED"
+    assert [record.getMessage() for record in caplog.records if record.name == "package_outbox"] == [
+        "package_operation_lease_refusal result=" + code]
+    assert _business_bytes(outbox.db_path) == before
+
+
+@pytest.mark.parametrize("invalid", ["clock", "lease"])
+def test_refusal_invalid_local_clock_is_code_only_and_preserves_source(tmp_path, monkeypatch, caplog, invalid):
+    import package_logistics as module
+    caplog.set_level(logging.INFO, logger="package_outbox")
+    outbox, draft = _default_clock_refused_lease(tmp_path)
+    if invalid == "clock":
+        monkeypatch.setattr(module, "utc_now", lambda: "invalid local clock")
+    else:
+        with sqlite3.connect(outbox.db_path) as conn:
+            artifact = json.loads(conn.execute("SELECT artifact_json FROM package_operation_leases").fetchone()[0])
+            artifact["expires_at"] = "2099-01-01T00:00:00.001Z"
+            conn.execute("UPDATE package_operation_leases SET artifact_json=?", (json.dumps(artifact),))
+    before = _business_bytes(outbox.db_path)
+    processor = PackageOutboxProcessor(outbox, _refusal_client(
+        lambda *_args: pytest.fail("invalid clock reached HTTP")))
+    processor.drain(limit=1)
+    assert caplog.records[-1].getMessage() == "package_operation_lease_refusal result=CLOCK_OR_LEASE_INVALID"
+    assert draft.operation_lease_id not in processor._settled_refused_leases
+    assert _business_bytes(outbox.db_path) == before
+
+
+@pytest.mark.parametrize("limit,create_pending,timeout,receipt_pending", [(0, True, False, False), (1, True, False, False),
+    (2, True, False, False), (2, True, True, False), (1, False, True, False),
+    (1, False, False, True), (2, False, False, True)])
+def test_refusal_drain_budget_prioritizes_create_and_bounds_followup_latency(monkeypatch, limit, create_pending, timeout, receipt_pending):
+    from types import SimpleNamespace
+    now = datetime.now(timezone.utc)
+    draft = lease_draft()
+    queue = [{"idempotency_key": "delivery-first", "draft_json": json.dumps(draft.to_dict())}] if create_pending else []
+    events, result_codes = [], []
+    elapsed = [0.0]
+    default_timeout = _refusal_client(lambda *_args: None).config.timeout_seconds
+    assert default_timeout == 8.0
+    rows = [{"lease_id": "review-" + str(index), "fence": 1, "token": str(index),
+        "artifact_json": json.dumps({"expires_at": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}),
+        "binding_json": json.dumps({"authority_scope_id": "scope-main"})} for index in range(3)]
+    outbox = SimpleNamespace(
+        _utc_now=lambda: now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        pending_receipt_rechecks=lambda: [{"idempotency_key": "receipt-first", "draft_json": json.dumps(draft.to_dict()),
+            "command_json": json.dumps({"authority_scope_id": "scope-main"}), "resolved_source_bundle_id": "TRANSFER-1"}] if receipt_pending else [],
+        pending_refused_operation_leases=lambda: rows,
+        claim_next=lambda **_kwargs: queue.pop(0) if queue else None,
+        save_command=lambda *_args, **_kwargs: True,
+        mark_acked=lambda *_args, **_kwargs: True,
+        record_refused_operation_lease_result=lambda _row, code: result_codes.append(code) or True)
+    class Client:
+        def get_receipt_if_exists(self, *_args, **_kwargs):
+            events.append("RECEIPT")
+            return {}
+        def build_create_package_command(self, _draft, *, idempotency_key):
+            return "TRANSFER-1", {"authority_scope_id": "scope-main", "idempotency_key": idempotency_key}
+        def create_package(self, _command):
+            events.append("CREATE")
+            return {}
+        def report_refused_operation_lease(self, **_kwargs):
+            events.append("REPORT")
+            if timeout:
+                elapsed[0] += default_timeout
+                raise PackageTransportError("timeout")
+            return {}
+    processor = PackageOutboxProcessor(outbox, Client())
+    monkeypatch.setattr(processor, "_validate_receipt", lambda *_args, **_kwargs: None)
+    counts = processor.drain(limit=limit)
+    created = int(create_pending and limit > 0)
+    reports = int(limit > created + int(receipt_pending))
+    assert counts == {"acked": created + int(receipt_pending), "retry": 0, "conflict": 0}
+    assert events == (["RECEIPT"] if receipt_pending else []) + (["CREATE"] if created else []) + (["REPORT"] if reports else [])
+    events.extend(["CANCEL", "REPLACE"])
+    assert elapsed[0] == (default_timeout if reports and timeout else 0.0)
+    assert elapsed[0] <= 8.0
+    assert len(result_codes) == (reports if not timeout else 0)
+
+
 def _refusal_client(transport):
     return PackageLogisticsClient(PackageClientConfig(
         "https://logistics.example.test", "test-machine-credential", "scope-main",
@@ -823,12 +943,12 @@ def test_refused_lease_report_next_cycle_restart_replay_and_business_bytes(
 
     client = _refusal_client(transport)
     processor = PackageOutboxProcessor(outbox, client)
-    assert processor.drain(limit=0) == {"acked": 0, "retry": 0, "conflict": 0}
-    processor.drain(limit=0)
+    assert processor.drain(limit=1) == {"acked": 0, "retry": 0, "conflict": 0}
+    processor.drain(limit=1)
     assert len(calls) == 1
     restarted = PackageOutboxProcessor(PackageOutbox(outbox.db_path), client)
-    restarted.drain(limit=0)
-    restarted.drain(limit=0)
+    restarted.drain(limit=1)
+    restarted.drain(limit=1)
     assert len(calls) == 2
     assert calls[0] == calls[1]
     assert _business_bytes(tmp_path / "refused.sqlite3") == before
@@ -841,7 +961,7 @@ def test_refused_lease_report_next_cycle_restart_replay_and_business_bytes(
 def test_refused_lease_reporting_ignores_non_review_status(tmp_path, monkeypatch, status):
     outbox, _store, _draft, _clock = _refused_lease_fixture(tmp_path, monkeypatch, status=status)
     client = _refusal_client(lambda *_args: pytest.fail("unexpected refusal HTTP"))
-    PackageOutboxProcessor(outbox, client).drain(limit=0)
+    PackageOutboxProcessor(outbox, client).drain(limit=1)
 
 
 def test_refused_lease_created_by_drain_reports_only_on_next_cycle(tmp_path, monkeypatch):
@@ -864,8 +984,8 @@ def test_refused_lease_created_by_drain_reports_only_on_next_cycle(tmp_path, mon
     assert store.get(lease_id=draft.operation_lease_id)["status"] == "OPERATOR_REVIEW"
     assert calls == ["packages"]
     before = _business_bytes(tmp_path / "refused.sqlite3")
-    processor.drain(limit=0)
-    processor.drain(limit=0)
+    processor.drain(limit=1)
+    processor.drain(limit=1)
     assert calls == ["packages", "release"]
     assert _business_bytes(tmp_path / "refused.sqlite3") == before
 
@@ -886,10 +1006,10 @@ def test_conflict_without_lease_and_conflict_rollback_do_not_report(tmp_path, mo
     assert store.get(lease_id=draft.operation_lease_id)["status"] == "LOCAL_COMPLETED"
     client = _refusal_client(lambda *_args: pytest.fail("unexpected refusal HTTP"))
     processor = PackageOutboxProcessor(outbox, client)
-    processor.drain(limit=0)
+    processor.drain(limit=1)
     outbox.mark_conflict(outbox.get_by_set_id(draft.set_id)["idempotency_key"],
                         PackageApiError(409, "CONFLICT", "no lease ID"))
-    processor.drain(limit=0)
+    processor.drain(limit=1)
 
 
 @pytest.mark.parametrize("status,code", [
@@ -908,8 +1028,8 @@ def test_refused_lease_terminal_rejection_is_code_only_and_not_retried(
         calls.append(1)
         raise PackageApiError(status, code, "sensitive evidence must never be logged", retryable=True)
     processor = PackageOutboxProcessor(outbox, _refusal_client(transport))
-    processor.drain(limit=0)
-    processor.drain(limit=0)
+    processor.drain(limit=1)
+    processor.drain(limit=1)
     assert len(calls) == 1
     assert _business_bytes(tmp_path / "refused.sqlite3") == before
     assert caplog.records[-1].getMessage() == "package_operation_lease_refusal result=" + code
@@ -931,14 +1051,14 @@ def test_refused_lease_transient_failure_retries_with_existing_backoff(
             raise PackageApiError(failure, "RETRY", "wait", retry_after_seconds=10)
         return _refusal_response(draft)
     processor = PackageOutboxProcessor(outbox, _refusal_client(transport))
-    processor.drain(limit=0)
+    processor.drain(limit=1)
     assert _business_bytes(tmp_path / "refused.sqlite3") == before
     if isinstance(failure, int):
-        processor.drain(limit=0)
+        processor.drain(limit=1)
         assert len(calls) == 1
         clock[0] += timedelta(seconds=10)
-    processor.drain(limit=0)
-    processor.drain(limit=0)
+    processor.drain(limit=1)
+    processor.drain(limit=1)
     assert len(calls) == 2
     assert _business_bytes(tmp_path / "refused.sqlite3") == before
 
@@ -950,8 +1070,8 @@ def test_expired_refused_lease_is_recorded_without_http(tmp_path, monkeypatch, c
     before = _business_bytes(tmp_path / "refused.sqlite3")
     processor = PackageOutboxProcessor(outbox, _refusal_client(
         lambda *_args: pytest.fail("expired lease was sent")))
-    processor.drain(limit=0)
-    processor.drain(limit=0)
+    processor.drain(limit=1)
+    processor.drain(limit=1)
     assert caplog.records[-1].getMessage() == "package_operation_lease_refusal result=EXPIRED_NOT_SENT"
     assert _business_bytes(tmp_path / "refused.sqlite3") == before
 
@@ -970,7 +1090,7 @@ def test_refused_lease_result_rechecks_exact_row_after_http(
                 conn.execute("UPDATE package_operation_leases SET updated_at='2026-08-01T01:31:00Z'")
         return _refusal_response(draft)
     processor = PackageOutboxProcessor(outbox, _refusal_client(transport))
-    processor.drain(limit=0)
+    processor.drain(limit=1)
     assert draft.operation_lease_id not in processor._settled_refused_leases
     assert not [record for record in caplog.records if record.name == "package_outbox"]
 

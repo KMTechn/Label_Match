@@ -6,6 +6,7 @@ import json
 import hashlib
 import re
 import threading
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, TYPE_CHECKING
 
 from package_command_draft import (
@@ -48,6 +49,7 @@ class PackageOutboxProcessor:
         self.prepare_scanner_delivery = prepare_scanner_delivery
         self._settled_refused_leases: set[str] = set()
         self._refused_lease_retry_after: dict[str, str] = {}
+        self._receipt_recheck_attempts = 0
 
     def drain(self, *, limit: int = 20) -> dict[str, int]:
         counts = {"acked": 0, "retry": 0, "conflict": 0}
@@ -56,10 +58,14 @@ class PackageOutboxProcessor:
                 return counts
             self._draining = True
         try:
+            budget = max(0, int(limit))
+            self._receipt_recheck_attempts = 0
             counts["acked"] += self._reconcile_receipts()
-            self._report_refused_operation_leases()
+            # Snapshot the existing review queue so a refusal created by this
+            # delivery cycle is reported in the next cycle.
+            refused_rows = self.outbox.pending_refused_operation_leases() if budget else []
             attempted_keys: set[str] = set()
-            for _ in range(max(0, int(limit))):
+            for _ in range(budget):
                 row = self.outbox.claim_next(exclude_keys=attempted_keys)
                 if row is None:
                     break
@@ -167,26 +173,39 @@ class PackageOutboxProcessor:
                         expected_claim=row,
                     )
                     counts["conflict"] += int(applied)
+            if self._receipt_recheck_attempts + len(attempted_keys) < budget:
+                self._report_refused_operation_leases(refused_rows)
         finally:
             with self._drain_lock:
                 self._draining = False
         return counts
 
-    def _report_refused_operation_leases(self) -> None:
-        for row in self.outbox.pending_refused_operation_leases():
+    def _report_refused_operation_leases(self, rows) -> None:
+        http_attempted = False
+        for row in rows:
             lease_id = row["lease_id"]
             if lease_id in self._settled_refused_leases:
                 continue
-            now = self.outbox._utc_now()
             try:
+                # Local clocks include fractional seconds. Normalize only
+                # that clock; signed lease timestamps stay strictly validated.
+                raw_now = self.outbox._utc_now()
+                if not isinstance(raw_now, str):
+                    raise ValueError("local clock must be text")
+                local_now = datetime.fromisoformat(raw_now.replace("Z", "+00:00"))
+                if local_now.tzinfo is None:
+                    raise ValueError("local clock must include a UTC offset")
+                now = local_now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 artifact = json.loads(row["artifact_json"])
                 expires_at = parse_utc(artifact["expires_at"], field="expires_at")
                 if parse_utc(now, field="now") >= expires_at:
                     result = "EXPIRED_NOT_SENT"
                 else:
-                    if self._refused_lease_retry_after.get(lease_id, "") > now:
+                    retry_after = self._refused_lease_retry_after.get(lease_id)
+                    if retry_after and datetime.fromisoformat(retry_after.replace("Z", "+00:00")) > local_now:
                         continue
                     binding = json.loads(row["binding_json"])
+                    http_attempted = True
                     self.client.report_refused_operation_lease(
                         authority_scope_id=binding["authority_scope_id"],
                         token=row["token"],
@@ -201,7 +220,7 @@ class PackageOutboxProcessor:
                     delay = _bounded_retry_after_seconds(exc.retry_after_seconds)
                     if delay is not None:
                         self._refused_lease_retry_after[lease_id] = self.outbox._utc_after(delay)
-                    continue
+                    return
                 # Do not put arbitrary server messages/evidence in the log.
                 result = exc.code if exc.code in {
                     "OPERATION_LEASE_ALREADY_CONSUMED",
@@ -210,17 +229,26 @@ class PackageOutboxProcessor:
                     "OPERATION_LEASE_DEVICE_MISMATCH",
                     "OPERATION_LEASE_FIELD_INVALID",
                 } else f"HTTP_{exc.status_code}"
-            except (PackageLogisticsError, OperationLeaseError, ValueError, KeyError, TypeError):
-                # Transport/invalid responses keep the durable source for the
-                # next cycle. No token or response body is logged here.
+            except PackageTransportError:
+                # One HTTP attempt consumes this cycle's supplementary budget.
+                return
+            except PackageLogisticsError:
+                return
+            except (OperationLeaseError, ValueError, KeyError, TypeError):
+                self.outbox.record_refused_operation_lease_result(row, "CLOCK_OR_LEASE_INVALID")
+                if http_attempted:
+                    return
                 continue
             if self.outbox.record_refused_operation_lease_result(row, result):
                 self._settled_refused_leases.add(lease_id)
                 self._refused_lease_retry_after.pop(lease_id, None)
+            if http_attempted:
+                return
 
     def _reconcile_receipts(self) -> int:
         acked = 0
         for row in self.outbox.pending_receipt_rechecks():
+            self._receipt_recheck_attempts += 1
             try:
                 draft = PackageCommandDraft.from_dict(json.loads(row["draft_json"]))
                 command = json.loads(row["command_json"])

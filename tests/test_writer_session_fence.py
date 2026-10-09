@@ -495,6 +495,29 @@ def test_every_literal_package_post_is_guarded_by_derived_inventory() -> None:
     assert post_methods <= guarded
 
 
+def test_refused_lease_direct_post_is_denied_by_active_fence(tmp_path, monkeypatch):
+    from package_logistics import PackageClientConfig, PackageLogisticsClient
+    control_root = tmp_path / "refusal-control"
+    monkeypatch.setenv(fence.TEST_MODE_ENV, "1")
+    monkeypatch.setenv(fence.CONTROL_ROOT_OVERRIDE_ENV, str(control_root))
+    payload = _payload(delegated_sources=[])
+    authority = fence._acquire_named_mutex(str(payload["session_authority_mutex_name"]), 0)
+    assert authority is not None
+    calls = []
+    client = PackageLogisticsClient(PackageClientConfig("https://logistics.example.test",
+        uuid.uuid4().hex, "scope-main", "HOST-PACK-01", "PACK-01"),
+        transport=lambda *_args: calls.append(1) or {"ok": True, "data": {}})
+    try:
+        _write_active(control_root, payload)
+        with pytest.raises(fence.WriterFencedError):
+            client.report_refused_operation_lease(authority_scope_id="scope-main",
+                token=uuid.uuid4().hex, lease_id="review-direct", fence=1,
+                idempotency_key="review-direct-key")
+        assert calls == []
+    finally:
+        authority.release()
+
+
 @pytest.mark.parametrize("mode", ["persistent", "placement"])
 def test_active_fence_denies_real_separate_process_sink_without_mutation(
     tmp_path: Path, mode: str

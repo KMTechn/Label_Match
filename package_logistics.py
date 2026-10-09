@@ -1439,6 +1439,7 @@ class PackageLogisticsClient:
             )
         )
 
+    @writer_sink("package_operation_lease_refusal")
     def report_refused_operation_lease(
         self, *, authority_scope_id: str, token: str, lease_id: str,
         fence: int, idempotency_key: str,
