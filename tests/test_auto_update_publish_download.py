@@ -444,9 +444,17 @@ def test_system_copy_keeps_spanning_admission_and_owner_argument(tmp_path):
 
 
 def test_only_exact_approved_probe_pairs_are_allowed():
-    assert isinstance(fence._PROBE_ONLY_WRITER_SINK, frozenset)
-    assert fence._PROBE_ONLY_WRITER_SINK == frozenset({
+    assert isinstance(fence._PROBE_ONLY_WRITER_SINKS, frozenset)
+    assert fence._PROBE_ONLY_WRITER_SINKS == frozenset({
         ("relay_child_launch", "user_relay.run_session_direct_sync_once"),
+        ("user_relay_process_start", "user_relay.start_user_relay_process"),
+        ("current_user_onboarding", "current_user_onboarding.onboard_current_user"),
+        ("auto_update_write_download_bytes", "auto_update.write_download_bytes"),
+        ("auto_update_write_download_chunk", "auto_update.write_download_chunk"),
+        ("auto_update_stage_prepared_copies", "auto_update.stage_prepared_copies"),
+        ("auto_update_run_download_attempt", "auto_update._run_download_attempt"),
+    })
+    assert fence._STAGING_PROBE_ONLY_WRITER_SINKS == frozenset({
         ("auto_update_write_download_bytes", "auto_update.write_download_bytes"),
         ("auto_update_write_download_chunk", "auto_update.write_download_chunk"),
         ("auto_update_stage_prepared_copies", "auto_update.stage_prepared_copies"),
