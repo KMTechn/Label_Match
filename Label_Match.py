@@ -13454,7 +13454,7 @@ class Label_Match(tk.Tk):
         if clock_wait:
             headline += " · 시간 확인 대기"
         elif central_check_pending:
-            headline += " · 중앙 확인 중"
+            headline += " · 회사 서버 확인 중"
         if "big_display_label" in self.__dict__:
             self.update_big_display(headline, "primary")
         status_label = self.__dict__.get("status_label")
