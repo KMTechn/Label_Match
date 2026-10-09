@@ -6182,7 +6182,7 @@ def test_history_delete_conflict_feedback_requires_operator_review(monkeypatch):
 def test_danger_action_button_contract_keeps_cancel_actions_separate():
     module = load_label_match_module()
 
-    assert module.Label_Match.CURRENT_SET_CANCEL_BUTTON_TEXT == "현재 세트 취소 (F1)"
+    assert module.Label_Match.CURRENT_SET_CANCEL_BUTTON_TEXT == "현재 트레이 취소 (F1)"
     assert module.Label_Match.COMPLETED_TRAY_CANCEL_BUTTON_TEXT == "완료된 트레이 취소 (F2)"
     assert module.Label_Match.MANUAL_COMPLETE_BUTTON_TEXT == "현재 세트 완료 (F3)"
     assert module.Label_Match.HISTORY_DELETE_ACTION_TEXT == "선택 항목 삭제"
