@@ -409,7 +409,7 @@ def test_f4_central_lookup_runs_off_tk_and_applies_on_tk():
     )
 
     assert app._start_central_phs2_exchange_on_lane() is True
-    assert app._ui_lane_busy_label == "제품 교체 · 중앙 확인 중"
+    assert app._ui_lane_busy_label == "제품 교체 · 회사 서버 확인 중"
     root.run_until(lambda: not app.ui_lane.is_busy())
 
     assert trace == [

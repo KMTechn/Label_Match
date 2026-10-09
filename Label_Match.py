@@ -15782,7 +15782,7 @@ class Label_Match(tk.Tk):
 
         admission = self._submit_ui_lane_task(
             name="f4-central-source-lookup",
-            busy_text="제품 교체 · 중앙 확인 중",
+            busy_text="제품 교체 · 회사 서버 확인 중",
             work=work,
             finish=finish,
             fail=fail,

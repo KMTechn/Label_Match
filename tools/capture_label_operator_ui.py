@@ -154,8 +154,8 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
     "f4_admitted_busy": {
         "production_call_path": ("_set_ui_lane_busy",),
         "task_name": "f4-central-source-lookup",
-        "busy_text": "제품 교체 · 중앙 확인 중",
-        "expected_headline": "제품 교체 · 중앙 확인 중",
+        "busy_text": "제품 교체 · 회사 서버 확인 중",
+        "expected_headline": "제품 교체 · 회사 서버 확인 중",
         "expected_status_source": "production_busy_seam",
     },
     "f4_rejected_input_preserved": {
@@ -164,7 +164,7 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
             "_show_ui_lane_rejection",
         ),
         "task_name": "f4-central-source-lookup",
-        "busy_text": "제품 교체 · 중앙 확인 중",
+        "busy_text": "제품 교체 · 회사 서버 확인 중",
         "preserved_input_profile": "f4-next",
         "expected_headline": "이전 작업 처리 중 · 입력 보존",
         "expected_status": (

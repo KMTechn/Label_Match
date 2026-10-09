@@ -351,7 +351,7 @@ def test_other_lane_work_and_screen_gates_still_lock_the_entry():
     gate = threading.Event()
     try:
         admission = app._submit_ui_lane_task(
-            name="f4-central-source-lookup", busy_text="제품 교체 · 중앙 확인 중",
+            name="f4-central-source-lookup", busy_text="제품 교체 · 회사 서버 확인 중",
             work=lambda: gate.wait(timeout=2.0), finish=lambda _value: None, fail=pytest.fail,
         )
         assert admission.accepted and app.entry.cget("state") == "disabled"
