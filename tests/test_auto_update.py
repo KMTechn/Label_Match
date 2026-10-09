@@ -4,6 +4,32 @@ import pytest
 import auto_update as updates
 
 
+def test_installer_logon_task_child_runs_as_an_isolated_script(tmp_path):
+    from pathlib import Path
+    import re
+    import subprocess
+    import sys
+    import xml.etree.ElementTree as ET
+
+    sid = "S-1-5-21-101-202-303-1001"
+    install_root = tmp_path / "installed"
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", str(Path(updates.__file__).resolve()),
+         "--print-logon-task", "--install-root", str(install_root), "--operator-sid", sid],
+        capture_output=True, text=True, check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode == 0, result.stderr
+    spec = json.loads(result.stdout)
+    assert re.fullmatch(r"KMTech\.LabelMatch\.StartupUpdate\.[0-9a-f]{24}", spec["name"])
+    task = ET.fromstring(spec["xml"])
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    assert task.find("t:Triggers/t:LogonTrigger/t:UserId", ns).text == sid
+    assert task.find("t:Actions/t:Exec/t:Command", ns).text.lower().endswith("powershell.exe")
+    assert "apply_prepared_update.ps1" in task.find("t:Actions/t:Exec/t:Arguments", ns).text
+    assert not install_root.exists()
+
+
 NOW = "2026-10-01T04:00:00+00:00"
 LATER = "2026-10-01T04:00:01+00:00"
 OLD = "1" * 40

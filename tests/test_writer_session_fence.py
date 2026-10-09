@@ -28,6 +28,55 @@ HELPER = ROOT / "tools" / "label_writer_fence.ps1"
 CONTRACT = ROOT / "tools" / "label_writer_fence_contract.json"
 
 
+@pytest.mark.parametrize("source,name", [
+    ("auto_update_write_download_bytes", "write_download_bytes"),
+    ("auto_update_write_download_chunk", "write_download_chunk"),
+    ("auto_update_stage_prepared_copies", "stage_prepared_copies"),
+    ("auto_update_run_download_attempt", "_run_download_attempt"),
+])
+def test_script_staging_probe_uses_runtime_definition_file(source, name, monkeypatch, tmp_path):
+    namespace = {"__name__": "__main__", "__file__": str(ROOT / "auto_update.py"),
+                 "writer_sink": fence.writer_sink}
+    code = (f'@writer_sink({source!r}, probe_only=True)\ndef {name}():\n'
+            '    raise AssertionError("body must remain fenced")\n')
+    exec(compile(code, "build-time/entry.py", "exec"), namespace)
+    monkeypatch.setattr(fence._WRITER_LOCAL, "depth", 1, raising=False)
+    with pytest.raises(fence.WriterFencedError) as error:
+        namespace[name]()
+    assert error.value.code == "STAGING_WRITER_ADMISSION_HELD"
+    namespace["__file__"] = str(tmp_path / "auto_update.py")
+    with pytest.raises(fence.WriterFencedError) as error:
+        exec(compile(code, str(ROOT / "auto_update.py"), "exec"), namespace)
+    assert error.value.code == "WRITER_PROBE_ONLY_SINK_NOT_ALLOWED"
+
+
+@pytest.mark.parametrize("module,path,expected", [
+    ("__main__", "auto_update.py", "auto_update.outer.<locals>.write"),
+    ("__main__", "tools/new_writer.py", "tools.new_writer.outer.<locals>.write"),
+    ("imported_alias", "auto_update.py", "imported_alias.outer.<locals>.write"),
+    ("__main__", "../repo-sibling/auto_update.py", "__main__.outer.<locals>.write"),
+])
+def test_script_sink_identity_preserves_imports_and_app_boundary(module, path, expected):
+    import inspect
+
+    namespace = {"__name__": module, "writer_sink": fence.writer_sink}
+    code = ('def outer():\n    @writer_sink("auto_update_write_download_bytes")\n'
+            '    def write():\n        pass\n    return write\n')
+    exec(compile(code, str(ROOT / path), "exec"), namespace)
+    guarded = namespace["outer"]()
+    assert inspect.getclosurevars(guarded).nonlocals["sink_id"] == expected
+
+
+def test_script_probe_inside_app_cannot_borrow_another_source():
+    namespace = {"__name__": "__main__", "__file__": str(ROOT / "auto_update.py"),
+                 "writer_sink": fence.writer_sink}
+    code = ('@writer_sink("auto_update_write_download_chunk", probe_only=True)\n'
+            'def write_download_bytes():\n    pass\n')
+    with pytest.raises(fence.WriterFencedError) as error:
+        exec(compile(code, str(ROOT / "auto_update.py"), "exec"), namespace)
+    assert error.value.code == "WRITER_PROBE_ONLY_SINK_NOT_ALLOWED"
+
+
 def _environment(control_root: Path) -> dict[str, str]:
     values = os.environ.copy()
     values[fence.TEST_MODE_ENV] = "1"

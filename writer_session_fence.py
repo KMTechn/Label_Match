@@ -1065,7 +1065,18 @@ def writer_sink(
         raise ValueError("writer sink source is required")
 
     def decorate(function: Callable[P, R]) -> Callable[P, R]:
-        sink_id = f"{function.__module__}.{function.__qualname__}"
+        module_name = function.__module__
+        if module_name == "__main__":
+            definition_path = Path(
+                function.__globals__.get("__file__", function.__code__.co_filename)
+            ).resolve()
+            try:
+                app_path = definition_path.relative_to(Path(__file__).resolve().parent)
+            except ValueError:
+                pass
+            else:
+                module_name = ".".join(app_path.with_suffix("").parts)
+        sink_id = f"{module_name}.{function.__qualname__}"
         approved_probe = (selected_source, sink_id) in _PROBE_ONLY_WRITER_SINKS
         if probe_only and not approved_probe:
             raise WriterFencedError(
