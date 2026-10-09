@@ -428,6 +428,7 @@ def operator_workbench(monkeypatch):
     app._idle_callbacks = []
     app.after_idle = lambda callback: app._idle_callbacks.append(callback) or "idle-fixture"
     app.grab_current = lambda: None
+    app.focus_get = lambda: None
     app.winfo_width = lambda: 1440
     app.winfo_height = lambda: 900
     app.winfo_screenwidth = lambda: 1440

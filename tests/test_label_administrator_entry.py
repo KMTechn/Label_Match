@@ -1,5 +1,8 @@
 """Recovery remains reachable without occupying the scanner's work controls."""
 from dataclasses import replace
+import ast
+import inspect
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -67,6 +70,7 @@ def test_recovery_window_close_preserves_partial_scan_and_returns_focus_once(ope
     app.entry.focus_set = lambda: focused.append("scan")
     app.grab_current = lambda: object() if modal else None
     window = app.package_recovery_menu.options["menu_commands"][0]["command"]()
+    assert window.options["title"] == "멈춘 작업 확인 (관리자)"
     assert window.options["transient"] is app
     assert app.entry.get() == "PHS=2|HALF-" and not focused
     window.destroy()
@@ -86,3 +90,42 @@ def test_administrator_footer_is_only_present_for_review(operator_workbench, tmp
     app._render_deferred_observability(readback)
     assert app.operator_footer_label.cget("text") == (f"관리자 확인 필요 {count}건" if count else "회사 서버 확인 중")
     assert app.entry.focused == before
+
+
+def test_all_four_saved_recovery_notice_actions_use_the_same_menu_target():
+    tree = ast.parse(textwrap.dedent(inspect.getsource(lm.Label_Match._load_current_set_state_checked)))
+    labels, callbacks = [], []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Attribute) and target.attr == "_workflow_notice_action_text":
+                labels.append(node.value)
+            if isinstance(target, ast.Attribute) and target.attr == "_workflow_notice_action" and isinstance(node.value, ast.Call):
+                callbacks.append(node.value)
+    assert not any(isinstance(value, ast.Constant) and value.value == "건별 복구" for value in labels)
+    assert len(labels) == 5
+    assert sum(isinstance(value, ast.Name) and value.id == "LABEL_MATCH_PACKAGE_RECOVERY_TEXT" for value in labels) == 4
+    assert [value.value for value in labels if isinstance(value, ast.Constant)] == ["저장 재시도"]
+    expected = ast.parse("self.__dict__.setdefault('_package_recovery_callback', self._show_package_recovery_workbench)", mode="eval").body
+    assert len(callbacks) == 4
+    assert all(ast.dump(value, include_attributes=False) == ast.dump(expected, include_attributes=False) for value in callbacks)
+
+
+def test_idle_focus_return_defers_to_another_toplevel_without_erasing_scan(operator_workbench):
+    app = operator_workbench
+    app.entry.options["input"] = "PHS=2|HALF-"
+    app.entry.get = lambda: app.entry.options["input"]
+    app.entry.delete = lambda *args: pytest.fail("focus return erased a scan")
+    app.entry.selection_range = lambda *args: pytest.fail("focus return selected a scan")
+    focused = []
+    app.entry.focus_set = lambda: focused.append("scan")
+    other = object()
+    app.focus_get = lambda: SimpleNamespace(winfo_toplevel=lambda: other)
+    app.grab_current = lambda: None
+    first = app._schedule_scan_entry_focus_return()
+    assert app._schedule_scan_entry_focus_return() == first
+    assert len(app._idle_callbacks) == 1
+    app._idle_callbacks.pop(0)()
+    assert not focused and not app._idle_callbacks
+    assert app.entry.get() == "PHS=2|HALF-"

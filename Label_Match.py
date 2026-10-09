@@ -1149,6 +1149,8 @@ def _label_match_recent_runtime_status(context, max_age_seconds=7 * 24 * 60 * 60
         return False
 
 
+LABEL_MATCH_PACKAGE_RECOVERY_TEXT = "멈춘 작업 확인 (관리자)"
+
 LABEL_MATCH_STATUS_LINE_TEXT = {
     "review": ("관리자 확인 필요 {review}건", "관리자 확인 {review}건"),
     "offline": ("회사 서버 연결 안 됨 · 이 PC에 저장 중", "연결 안 됨"),
@@ -5902,10 +5904,10 @@ class Label_Match(tk.Tk):
                 tone="danger",
                 allow_current_set_cancel=recoverable_prewrite_conflict,
             )
-            self._workflow_notice_action = self.__dict__.get(
+            self._workflow_notice_action = self.__dict__.setdefault(
                 "_package_recovery_callback", self._show_package_recovery_workbench,
             )
-            self._workflow_notice_action_text = "멈춘 작업 확인 (관리자)"
+            self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
         else:
             notice = WorkflowNotice(
                 title="이 PC에 저장된 포장 완료 기록 복구 중",
@@ -5916,10 +5918,10 @@ class Label_Match(tk.Tk):
                 kind="submission_blocked",
                 tone="warning",
             )
-            self._workflow_notice_action = self.__dict__.get(
+            self._workflow_notice_action = self.__dict__.setdefault(
                 "_package_recovery_callback", self._show_package_recovery_workbench,
             )
-            self._workflow_notice_action_text = "멈춘 작업 확인 (관리자)"
+            self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
         self._workflow_blocking_notice = notice
         self._workflow_notice = notice
         self._render_operator_workbench()
@@ -11012,7 +11014,7 @@ class Label_Match(tk.Tk):
         if self.run_tests:
             return candidates
         window = tk.Toplevel(self)
-        window.title("포장 건별 복구")
+        window.title(LABEL_MATCH_PACKAGE_RECOVERY_TEXT)
         window.transient(self)
         self._package_recovery_window = window
 
@@ -11452,8 +11454,10 @@ class Label_Match(tk.Tk):
                     self._workflow_blocking_notice = notice
                     self._workflow_notice = notice
                     self._workflow_notice_action = None
-                    self._workflow_notice_action = self._show_package_recovery_workbench
-                    self._workflow_notice_action_text = "건별 복구"
+                    self._workflow_notice_action = self.__dict__.setdefault(
+                        "_package_recovery_callback", self._show_package_recovery_workbench,
+                    )
+                    self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
                     self._render_operator_workbench()
                     return
             elif recoverable or invalid:
@@ -11472,8 +11476,10 @@ class Label_Match(tk.Tk):
                 )
                 self._workflow_blocking_notice = notice
                 self._workflow_notice = notice
-                self._workflow_notice_action = self._show_package_recovery_workbench
-                self._workflow_notice_action_text = "건별 복구"
+                self._workflow_notice_action = self.__dict__.setdefault(
+                    "_package_recovery_callback", self._show_package_recovery_workbench,
+                )
+                self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
                 self._render_operator_workbench()
                 return
             else:
@@ -11595,8 +11601,10 @@ class Label_Match(tk.Tk):
                 )
                 self._workflow_blocking_notice = notice
                 self._workflow_notice = notice
-                self._workflow_notice_action = self._show_package_recovery_workbench
-                self._workflow_notice_action_text = "건별 복구"
+                self._workflow_notice_action = self.__dict__.setdefault(
+                    "_package_recovery_callback", self._show_package_recovery_workbench,
+                )
+                self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
                 self._render_operator_workbench()
                 return
             print(f"저장된 타임스탬프 파싱 오류: {e}. 이전 작업을 무시합니다.")
@@ -11636,8 +11644,10 @@ class Label_Match(tk.Tk):
                 )
                 self._workflow_blocking_notice = notice
                 self._workflow_notice = notice
-                self._workflow_notice_action = self._show_package_recovery_workbench
-                self._workflow_notice_action_text = "건별 복구"
+                self._workflow_notice_action = self.__dict__.setdefault(
+                    "_package_recovery_callback", self._show_package_recovery_workbench,
+                )
+                self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
 
             if self.current_set_info.get('start_time') and isinstance(self.current_set_info['start_time'], str):
                 self.current_set_info['start_time'] = datetime.fromisoformat(self.current_set_info['start_time'])
@@ -20649,7 +20659,7 @@ class Label_Match(tk.Tk):
                     text=action_text,
                     width=(max(4, len(action_text)) if pointer_active
                            else 10 if action_text == "제출 재시도"
-                           else len(action_text) if action_text == "멈춘 작업 확인 (관리자)" else 4),
+                           else len(action_text) if action_text == LABEL_MATCH_PACKAGE_RECOVERY_TEXT else 4),
                     takefocus=not pointer_active,
                 )
                 compact = bool(
@@ -20887,6 +20897,9 @@ class Label_Match(tk.Tk):
             self._scan_focus_return_after_id = None
             try:
                 if self.grab_current() is not None:
+                    return
+                focused = self.focus_get()
+                if focused is not None and focused.winfo_toplevel() is not self:
                     return
                 recovery = self.__dict__.get("_package_recovery_window")
                 if recovery is not None and recovery.winfo_exists():
@@ -21789,7 +21802,7 @@ class Label_Match(tk.Tk):
         )
         self.package_recovery_menu = tk.Menu(self.administrator_menu_button, tearoff=False)
         self.package_recovery_menu.add_command(
-            label="멈춘 작업 확인 (관리자)", command=self._package_recovery_callback,
+            label=LABEL_MATCH_PACKAGE_RECOVERY_TEXT, command=self._package_recovery_callback,
         )
         self.package_recovery_menu.bind(
             "<Unmap>", lambda _event: self._schedule_scan_entry_focus_return(),
