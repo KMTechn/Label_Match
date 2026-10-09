@@ -2790,7 +2790,7 @@ def test_scan_summary_stays_below_input_with_progress_next_scan_and_result(opera
     assert summary.grid_options["row"] < app.live_scan_notebook.grid_options["row"]
     assert app.operator_tray_progress_label.cget("text") == f"현재 트레이 {accepted}/5"
     assert app.operator_next_scan_label.cget("text") == (
-        "현품표를 스캔하세요" if accepted == 0 else f"제품 {accepted}번째를 스캔하세요"
+        "현품표를 스캔하세요" if accepted == 0 else f"상단 제품 {accepted}번째를 스캔하세요"
     )
     assert app.operator_scan_result_label.cget("text") == ("맞음" if accepted else "방금 결과: -")
     if accepted:

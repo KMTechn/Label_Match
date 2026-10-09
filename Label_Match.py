@@ -9003,10 +9003,10 @@ class Label_Match(tk.Tk):
         self._workflow_notice = WorkflowNotice(
             title="변경 파일 건별 보류", message=(
                 "관리자가 변경 파일을 원위치에 복원했습니다. 원래 세트 보류는 유지됩니다. "
-                "건별 복구에서 이 항목을 다시 확인하세요."
+                "관리자 메뉴 「멈춘 작업 확인」에서 이 항목을 다시 확인하세요."
                 if restored else
                 "보류 중 바뀐 파일을 안전한 위치로 옮기지 못했습니다. 이 파일은 원위치에 "
-                "보존했습니다. 건별 복구에서 이 항목을 다시 확인하거나 보류하세요."
+                "보존했습니다. 관리자 메뉴 「멈춘 작업 확인」에서 이 항목을 다시 확인하거나 보류하세요."
             ), kind="submission_blocked", tone="danger",
         )
         self._render_operator_workbench()
@@ -11259,7 +11259,7 @@ class Label_Match(tk.Tk):
             print(f"포장 시작 복구 기술 진단: {type(exc).__name__}: {exc}")
             try:
                 self._show_package_recovery_block(
-                    "복구 항목 한 건을 확인하지 못했습니다. 건별 복구에서 원본을 보류하고 다른 작업을 계속하세요.",
+                    "복구 항목 한 건을 확인하지 못했습니다. 관리자 메뉴 「멈춘 작업 확인」에서 원본을 보류하고 다른 작업을 계속하세요.",
                     retry_action=self._show_package_recovery_workbench,
                 )
             except Exception as notice_exc:
@@ -11284,7 +11284,7 @@ class Label_Match(tk.Tk):
                         restored=self._package_pin_changed_restored_active(current_path))
                     return
                 self._show_package_recovery_block(
-                    "현재 작업 파일을 확인할 수 없습니다. 건별 복구에서 신원 미확인 보류 후 다른 작업을 계속하세요.",
+                    "현재 작업 파일을 확인할 수 없습니다. 관리자 메뉴 「멈춘 작업 확인」에서 신원 미확인 보류 후 다른 작업을 계속하세요.",
                     retry_action=self._show_package_recovery_workbench,
                 )
                 return
@@ -11491,7 +11491,7 @@ class Label_Match(tk.Tk):
                 ]
                 if unheld_exchange:
                     self._show_package_recovery_block(
-                        "미완료 제품 교체 요청이 남아 있습니다. 건별 복구에서 결과를 확인하고 보류하세요.",
+                        "미완료 제품 교체 요청이 남아 있습니다. 관리자 메뉴 「멈춘 작업 확인」에서 결과를 확인하고 보류하세요.",
                         retry_action=self._show_package_recovery_workbench,
                     )
                 return
@@ -11538,7 +11538,7 @@ class Label_Match(tk.Tk):
                 self._package_recovery_state_data = state_data
                 self._show_package_recovery_block(
                     "저장된 현재 세트를 그 현품표 저장본과 맞춰 보지 못했습니다. "
-                    "건별 복구에서 이 세트를 보류하면 다른 작업을 계속할 수 있습니다.",
+                    "관리자 메뉴 「멈춘 작업 확인」에서 이 세트를 보류하면 다른 작업을 계속할 수 있습니다.",
                     retry_action=self._show_package_recovery_workbench,
                 )
                 return
@@ -11690,7 +11690,7 @@ class Label_Match(tk.Tk):
                         + (
                             " 이 세트에 붙어 있던 다른 현품표 저장본은 세트에서 떼고 "
                             "기록은 그대로 두었습니다. 관리자 확인이 필요한 저장본이면 "
-                            "작업대의 건별 복구에 뜨고, 관리자가 그 건만 확인·보류합니다."
+                            "관리자 메뉴 「멈춘 작업 확인」에 뜨고, 관리자가 그 건만 확인·보류합니다."
                             if detached_capture else ""
                         )
                     ),
@@ -13749,12 +13749,12 @@ class Label_Match(tk.Tk):
                         "중앙 확인이 이 현품표를 받지 않았습니다. F1로 비우고 다음 현품표를 "
                         "진행하세요(다음 현품표를 바로 스캔해도 새 세트가 됩니다). "
                         "CA 봉인 뒤 다시 하려면 F1 후 같은 현품표를 다시 스캔하세요. "
-                        "관리자는 작업대 건별 복구에서 이 건만 확인합니다."
+                        "관리자는 「멈춘 작업 확인」에서 이 건만 확인합니다."
                         # F1 closes only a refused read on the set's own capture.
                         if self._refused_capture_cancel_enabled(view)
                         else "이 현품표 저장본은 관리자 확인이 필요합니다. 실물은 따로 두고 "
                         "다음 현품표를 스캔하면 새 세트로 진행됩니다. "
-                        "관리자는 작업대 건별 복구에서 이 건만 확인·보류합니다."
+                        "관리자는 「멈춘 작업 확인」에서 이 건만 확인·보류합니다."
                     ),
                     "결과확인중": "처리 결과를 확인 중입니다. 같은 작업을 다시 제출하지 마세요.",
                     "검증완료-전송대기": "검증을 마쳤습니다. 회사 서버 전송을 기다리며 자동으로 다시 확인합니다.",
@@ -15388,7 +15388,7 @@ class Label_Match(tk.Tk):
         get_hold = getattr(outbox, "get_workbench_hold", None)
         if current_set_id and callable(get_hold) and get_hold(current_set_id):
             self._show_package_recovery_block(
-                "이 트레이는 관리자 보류 중입니다. 같은 요청을 다시 처리하지 말고 건별 복구에서 확인하세요.",
+                "이 트레이는 관리자 보류 중입니다. 같은 요청을 다시 처리하지 말고 관리자 메뉴 「멈춘 작업 확인」에서 확인하세요.",
                 retry_action=self._show_package_recovery_workbench,
             )
             return True
@@ -15426,7 +15426,7 @@ class Label_Match(tk.Tk):
         ):
             self._show_scanner_notice(
                     "현품표 날짜 교환 복구 필요",
-                    f"{action} 작업 전에 건별 복구에서 미완료 현품표 교환을 복구하세요.",
+                    f"{action} 작업 전에 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요.",
                 )
             return True
         if (
@@ -16404,7 +16404,7 @@ class Label_Match(tk.Tk):
                 title="현품표 교체 · 이 PC 기록 충돌",
                 message=(
                     "교체 중 현재 포장 상태가 바뀌었습니다. "
-                    "중앙 처리 결과는 건별 복구에서 미완료 현품표 교환 복구로 확인하세요."
+                    "중앙 처리 결과는 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환 복구로 확인하세요."
                 ),
                 kind="phs_label_exchange",
                 tone="danger",
@@ -16433,7 +16433,7 @@ class Label_Match(tk.Tk):
                         }
                     title = "실물 출력 확인 필요"
                     message = (
-                        "실물 출력 여부를 확인한 뒤 건별 복구에서 같은 교환을 복구하면 "
+                        "실물 출력 여부를 확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 같은 교환을 복구하면 "
                         "확인이 필요한 현품표만 재출력합니다."
                     )
                     tone = "warning"
@@ -16441,7 +16441,7 @@ class Label_Match(tk.Tk):
                     title = "현품표 교체 실패"
                     message = (
                         "현품표 교체를 완료하지 못했습니다. "
-                        "건별 복구에서 미완료 현품표 교환을 복구하거나 관리자에게 문의하세요."
+                        "관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하거나 관리자에게 문의하세요."
                     )
                     tone = "danger"
                 self._phs_label_guidance_notice = WorkflowNotice(
@@ -16471,7 +16471,7 @@ class Label_Match(tk.Tk):
                         if result.success
                         else (
                             "현품표 출력에 실패했습니다. 출력 상태를 "
-                            "확인한 뒤 건별 복구에서 미완료 현품표 교환을 복구하세요."
+                            "확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요."
                         )
                     )
                 ),
@@ -16514,7 +16514,7 @@ class Label_Match(tk.Tk):
                 title="현품표 교체 실패",
                 message=(
                     "현품표 교체를 완료하지 못했습니다. "
-                    "건별 복구에서 미완료 현품표 교환을 복구하거나 관리자에게 문의하세요."
+                    "관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하거나 관리자에게 문의하세요."
                 ),
                 kind="phs_label_exchange",
                 tone="danger",
@@ -16685,7 +16685,7 @@ class Label_Match(tk.Tk):
                 message=(
                     "현품표 날짜 교환을 완료했습니다. 포장 수량과 진행 상태는 유지됩니다."
                     if result.success
-                    else "현품표 출력에 실패했습니다. 출력 상태를 확인한 뒤 건별 복구에서 미완료 현품표 교환을 복구하세요."
+                    else "현품표 출력에 실패했습니다. 출력 상태를 확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요."
                 ),
                 kind="phs_label_exchange",
                 tone="success" if result.success else "danger",
@@ -20313,7 +20313,7 @@ class Label_Match(tk.Tk):
                 "Operator.Action.TButton",
             ),
             "exact_rescan_button": (
-                "교환\n(제품)",
+                "제품\n교환",
                 "Operator.Action.TButton",
             ),
             "reset_button": (
@@ -21203,7 +21203,7 @@ class Label_Match(tk.Tk):
             self.operator_tray_progress_label.configure(text=f"현재 트레이 {completed}/{view.qa_total}")
             next_scan = (
                 "현품표를 스캔하세요" if not source.get("raw") else
-                f"제품 {view.qa_completed}번째를 스캔하세요"
+                f"상단 제품 {view.qa_completed}번째를 스캔하세요"
                 if view.notice is None and 0 < view.qa_completed < view.qa_total
                 and view.exact_rescan.status != "active" else view.next_action
             )

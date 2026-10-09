@@ -420,9 +420,9 @@ def test_review_capture_set_is_listed_for_hold_and_continue(tmp_path, state):
 
 
 @pytest.mark.parametrize(("status", "state", "own", "says", "never"), [
-    ("관리자확인", "BLOCKED_INVALID", True, ("F1", "CA 봉인 뒤", "같은 현품표를 다시 스캔", "건별 복구"), ()),
-    ("관리자확인", "OPERATOR_REVIEW", True, ("건별 복구", "다음 현품표"), ("F1",)),
-    ("관리자확인", "BLOCKED_INVALID", False, ("건별 복구", "다음 현품표"), ("F1",)),
+    ("관리자확인", "BLOCKED_INVALID", True, ("F1", "CA 봉인 뒤", "같은 현품표를 다시 스캔", "멈춘 작업 확인"), ()),
+    ("관리자확인", "OPERATOR_REVIEW", True, ("멈춘 작업 확인", "다음 현품표"), ("F1",)),
+    ("관리자확인", "BLOCKED_INVALID", False, ("멈춘 작업 확인", "다음 현품표"), ("F1",)),
     ("저장됨-검증대기", "RETRY_WAIT_VALIDATION", True, ("다시 스캔하면 이어",), ()),
     ("저장됨-검증대기", "RETRY_WAIT_VALIDATION", False, (), ("이어",)),
 ])
@@ -633,7 +633,7 @@ def test_full_old_label_set_holding_another_labels_capture_loads_and_completes(t
         app._load_current_set_state()
         notice = app.__dict__.get("_workflow_blocking_notice")
         assert notice is not None and app._workflow_notice_action_text == "저장 재시도", notice
-        assert notice.title.startswith("5/5 유지") and "건별 복구" in notice.message
+        assert notice.title.startswith("5/5 유지") and "멈춘 작업 확인" in notice.message
         assert app.current_set_info["id"] == LAB_SET and app.current_set_info["raw"] == _legacy_set(41)
         assert not app.current_set_info.get("deferred_intent_id")
         on_disk = app.data_manager.load_current_state()["current_set_info"]
@@ -738,7 +738,7 @@ def test_central_set_whose_capture_differs_is_listed_for_hold_and_the_pc_continu
     try:
         app._load_current_set_state()
         assert app._workflow_blocking_notice.title == "포장 기록 저장 확인 필요"
-        assert "건별 복구에서 이 세트를 보류" in app._workflow_blocking_notice.message
+        assert "관리자 메뉴 「멈춘 작업 확인」에서 이 세트를 보류" in app._workflow_blocking_notice.message
         [row] = [row for row in app._package_recovery_candidates() if row["set_id"] == LAB_SET]
         assert row["current"] == saved
         app._package_pin_target("LABEL.SET_HOLD", LAB_SET)
