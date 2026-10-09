@@ -72,6 +72,21 @@ def create_context_pane(
         style="Control.TButton",
     )
     self.settings_button.pack(side=tk.LEFT, padx=(0, 6))
+    self._package_recovery_callback = self.__dict__.setdefault(
+        "_package_recovery_callback", self._show_package_recovery_workbench,
+    )
+    self.administrator_menu_button = ttk.Menubutton(
+        self.top_right_frame, text="관리자", style="Control.TButton", takefocus=False,
+    )
+    self.package_recovery_menu = tk.Menu(self.administrator_menu_button, tearoff=False)
+    self.package_recovery_menu.add_command(
+        label="멈춘 작업 확인 (관리자)", command=self._package_recovery_callback,
+    )
+    self.package_recovery_menu.bind(
+        "<Unmap>", lambda _event: self._schedule_scan_entry_focus_return(),
+    )
+    self.administrator_menu_button.configure(menu=self.package_recovery_menu)
+    self.administrator_menu_button.pack(side=tk.LEFT, padx=(0, 6))
     self.about_button = ttk.Button(
         self.top_right_frame,
         text="정보",
@@ -120,13 +135,6 @@ def create_context_pane(
         style="Header.TLabel",
     )
     self.operator_left_heading_label.grid(row=0, column=0, sticky="w")
-    self.package_recovery_button = ttk.Button(
-        self.operator_left_heading_frame,
-        text="건별 복구",
-        command=self._show_package_recovery_workbench,
-        style="Control.TButton",
-    )
-    self.package_recovery_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
     self.operator_item_stage_label = ttk.Label(
         self.operator_left_pane,
         text="현품표 대기",

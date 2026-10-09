@@ -5891,8 +5891,10 @@ class Label_Match(tk.Tk):
                 tone="danger",
                 allow_current_set_cancel=recoverable_prewrite_conflict,
             )
-            self._workflow_notice_action = self._show_package_recovery_workbench
-            self._workflow_notice_action_text = "건별 복구"
+            self._workflow_notice_action = self.__dict__.get(
+                "_package_recovery_callback", self._show_package_recovery_workbench,
+            )
+            self._workflow_notice_action_text = "멈춘 작업 확인 (관리자)"
         else:
             notice = WorkflowNotice(
                 title="이 PC에 저장된 포장 완료 기록 복구 중",
@@ -5903,8 +5905,10 @@ class Label_Match(tk.Tk):
                 kind="submission_blocked",
                 tone="warning",
             )
-            self._workflow_notice_action = self._show_package_recovery_workbench
-            self._workflow_notice_action_text = "건별 복구"
+            self._workflow_notice_action = self.__dict__.get(
+                "_package_recovery_callback", self._show_package_recovery_workbench,
+            )
+            self._workflow_notice_action_text = "멈춘 작업 확인 (관리자)"
         self._workflow_blocking_notice = notice
         self._workflow_notice = notice
         self._render_operator_workbench()
@@ -10937,6 +10941,15 @@ class Label_Match(tk.Tk):
             return candidates
         window = tk.Toplevel(self)
         window.title("포장 건별 복구")
+        window.transient(self)
+        self._package_recovery_window = window
+
+        def restore_scan_focus(event):
+            if event.widget is window:
+                self._package_recovery_window = None
+                self._schedule_scan_entry_focus_return()
+
+        window.bind("<Destroy>", restore_scan_focus)
         frame = ttk.Frame(window, padding=12)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="문제 트레이를 선택하세요. 다른 트레이는 보류 기록 확인 후 계속할 수 있습니다.").pack(anchor="w")
@@ -13028,7 +13041,7 @@ class Label_Match(tk.Tk):
                 group.count for group in readback.operator_groups if group.key == "admin_review"
             )
             pending_text = (
-                f"미완료 {readback.nonterminal_count}건 · 관리자 확인 {review_count}건"
+                f"관리자 확인 필요 {review_count}건"
                 if review_count else
                 f"처리 대기 {readback.nonterminal_count}건 · 대기 현황에서 확인"
                 if readback.nonterminal_count else ""
@@ -20569,7 +20582,8 @@ class Label_Match(tk.Tk):
                 action_button.configure(
                     text=action_text,
                     width=(max(4, len(action_text)) if pointer_active
-                           else 10 if action_text == "제출 재시도" else 4),
+                           else 10 if action_text == "제출 재시도"
+                           else len(action_text) if action_text == "멈춘 작업 확인 (관리자)" else 4),
                     takefocus=not pointer_active,
                 )
                 compact = bool(

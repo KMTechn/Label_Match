@@ -375,6 +375,7 @@ def operator_workbench(monkeypatch):
         "Frame",
         "Label",
         "Button",
+        "Menubutton",
         "Entry",
         "Progressbar",
         "PanedWindow",
@@ -587,8 +588,8 @@ def test_deferred_tab_bounds_scrollable_detail_below_all_six_summary_rows(
     assert "2099-01-01T12:00:00Z" not in rendered
     assert secret_shaped_state not in rendered
     assert detail_text.cget("state") == "disabled"
-    assert "미완료 13건" in app.operator_footer_label.cget("text")
-    assert "관리자 확인 2건" in app.operator_footer_label.cget("text")
+    # LM-03: the operator footer names the administrator action; full counts stay above.
+    assert app.operator_footer_label.cget("text") == "관리자 확인 필요 2건"
 
 
 RELAY_STOPPED_TEXT = "작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요"
