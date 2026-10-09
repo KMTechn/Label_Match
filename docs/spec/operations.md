@@ -1159,6 +1159,8 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 
 내려받기 생성·조각과 검증된 임시 사본 복사는 시작 probe 후 허가 밖에서 쓰고 fsync한다. 세 사본이 완성된 뒤 일반 게시 sink가 고정 이름 세 개를 교체하고 `prepared.json`은 기존 내구 sink로 저장한다. staging probe는 바깥 허가를 물려받으면 거절한다. 시도 전체의 probe 본문은 성공·실패 끝에 자기 UUID 시도 폴더와 임시 사본만 정리하며 reparse·이름 충돌은 보존한다. 본문 도중 시작된 fence는 현재 조각/복사를 취소하지 못하지만 다음 조각·게시를 거절한다. 정지 주체는 feed packet staging을 소비하지 않고 SYSTEM은 앱 writer가 살아 있으면 새 prepared packet 소비를 보류한다.
 
+허가 보유 시간은 해당 writer가 허가를 잡고 있던 시간이고, 스캔 대기 시간은 경쟁 writer가 허가를 얻거나 거절될 때까지 기다린 시간이다. sub-492의 64 MiB 측정에서 복사 경로 허가 보유 합은 5.4 ms(게시 교체 4.1 ms)였지만, 별도 `prepared.json` 내구 쓰기는 HDD 경합에서 8.9 s 보유했다. 기존 5 s 스캔 허가 한도를 넘을 수 있으므로 K6에서는 표지 쓰기까지 스캐너를 켜 두고 표지 보유·스캔 대기·거절을 따로 기록한다. 후속 K6(stock·256 MiB 각 3회)의 표지 보유 최대는 569.67 ms, 스캔 대기 최대는 547.24 ms, 거절은 0이었다. 후속 기준(표지 보유 > 2 s 또는 거절 ≥ 1)을 넘지 않아 표지 쓰기 분리는 POSTCUT으로 남긴다. 이전 8.9 s 관측은 유지한다.
+
 D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
 SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
 늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
