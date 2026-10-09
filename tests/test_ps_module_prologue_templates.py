@@ -49,7 +49,7 @@ def test_literal_prologue_precedes_first_os_module_command(kind):
         script = _relay_script("_stored_password_task_register_command" if kind == "register" else f"_scheduled_task_{kind}_command")
     assert script.encode("utf-8").count(prologue) == 1
     before, after = script.split(prologue.decode("utf-8"))
-    assert not re.search(r"\b(?:Convert(?:To|From)-Json|Get-ScheduledTask|Get-Date|New-TimeSpan|New-Object|Out-Null|Write-Output|Join-Path)\b", before)
+    assert not re.search(r"\b(?:Convert(?:To|From)-Json|Get-ScheduledTask|Get-Date|New-TimeSpan|New-Object|Out-Null|Write-Output|Join-Path|Get-FileHash|Get-Acl|Set-Acl|Get-AuthenticodeSignature)\b", before)
     assert re.search(r"\b(?:Convert(?:To|From)-Json|Get-ScheduledTask|Get-Date|Join-Path)\b", after)
 
 
