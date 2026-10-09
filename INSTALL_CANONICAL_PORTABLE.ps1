@@ -12,6 +12,8 @@ param(
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$SkipSignatureValidationForTest
 )
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 
 trap {
     $publicError = $_
@@ -2544,6 +2546,8 @@ function InvokeFrozenPlacementHelper($Frozen, [hashtable]$HelperParameters, [scr
     $payloadJson = $payload | ConvertTo-Json -Depth 5 -Compress
     $launcher = @'
 param([byte[]]$PayloadBytes)
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $ErrorActionPreference = 'Stop'
 $payloadText = (New-Object Text.UTF8Encoding($false, $true)).GetString($PayloadBytes)
 $payload = $payloadText | ConvertFrom-Json
@@ -2799,6 +2803,8 @@ exit 0
             } finally { $stream.Dispose() }
         }
     $bootstrap = @'
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $ErrorActionPreference='Stop'
 $streams=[Collections.Generic.List[IO.Stream]]::new()
 function ReadPinned([string]$p,[string]$expected){

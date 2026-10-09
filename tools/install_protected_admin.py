@@ -49,6 +49,8 @@ _UPN_RE = re.compile(
 _SID_RE = re.compile(r"^S-1-[0-9]+(?:-[0-9]+)+$")
 _READ_AND_EXECUTE_WITH_SYNCHRONIZE = 1_179_817
 _WINDOWS_POWERSHELL_SECURITY_BOOTSTRAP = r"""
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $trustedModuleRoot = [System.IO.Path]::GetFullPath(
     $env:KMTECH_PROTECTED_POWERSHELL_MODULE_ROOT
 ).TrimEnd('\')
@@ -192,6 +194,8 @@ $readerSidValue
 """
 
 _READ_EXACT_ACL_SCRIPT = r"""
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $ErrorActionPreference = 'Stop'
 $target = [System.IO.Path]::GetFullPath($env:KMTECH_PROTECTED_ACL_TARGET)
 $acl = Get-Acl -LiteralPath $target

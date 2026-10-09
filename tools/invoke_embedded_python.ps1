@@ -1,3 +1,5 @@
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 . (Join-Path $PSScriptRoot 'failure_redaction.ps1')
 if (-not ("KMTech.LabelMatchEmbeddedPythonHost" -as [type])) {
     Add-Type -TypeDefinition @'
