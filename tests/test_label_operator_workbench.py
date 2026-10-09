@@ -10,6 +10,7 @@ import subprocess
 import sys
 import textwrap
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -65,6 +66,11 @@ class FakeWidget:
         self._mapped = False
 
     grid_forget = grid_remove
+
+    def destroy(self):
+        self._mapped = False
+        if isinstance(self.master, FakeWidget) and self in self.master.children:
+            self.master.children.remove(self)
 
     def pack(self, **kwargs):
         self.pack_options.update(kwargs)
@@ -818,28 +824,67 @@ def test_relay_screen_status_follows_relay_files_and_keeps_state_on_torn_read(
 
 @pytest.mark.parametrize("scale", [1.0, 1.2, 3.0])
 @pytest.mark.parametrize("base_font_size", [14, 18], ids=["default-text", "large-text"])
-def test_relay_screen_status_fits_1024_footer_row_without_new_row(
+def test_common_status_fits_1024_footer_row_without_wrapping(
     operator_workbench, monkeypatch, scale, base_font_size,
 ):
     app = operator_workbench
     _configure_narrow_workbench(app, monkeypatch, 1024, scale, base_font_size)
     app._render_relay_screen_status("stopped")
-    app.operator_footer_label.configure(text="미완료 13건 · 관리자 확인 2건")
+    app._logistics_admin_review_count = 2
+    app._render_logistics_connection("stopped", 13, None)
     relay = app.relay_screen_status_label
     footer = app.operator_footer_label
 
-    # Same single footer row as the existing labels: the fixed 32 px status
-    # budget and every action button above it keep their place.
-    assert relay.master is app.operator_status_frame
-    assert relay.grid_options["row"] == footer.grid_options["row"] == 0
-    assert relay.grid_options["column"] == 2
-    assert not relay.cget("wraplength")
-    assert relay.cget("font") == footer.cget("font")
-    available = 1024 - 2 * int(app.main_frame.cget("padding"))
-    relay_width = _LayoutFont(font=relay.cget("font")).measure(relay.cget("text"))
+    # The coordinator keeps sub-510's dedicated row; common wording stays on one line.
+    assert footer is app.logistics_connection_label
+    assert footer.master is app.operator_right_pane
+    assert footer.grid_options["row"] == 2
+    assert not relay.winfo_ismapped()
+    assert footer.cget("text") == "관리자 확인 2건"
+    assert not footer.cget("wraplength")
+    available = app._logistics_footer_available_width
     footer_width = _LayoutFont(font=footer.cget("font")).measure(footer.cget("text"))
-    assert footer_width + relay.grid_options["padx"][0] + relay_width <= available
-    assert _LayoutFont(font=relay.cget("font")).metrics("linespace") <= 32
+    assert footer_width <= available
+    assert _LayoutFont(font=footer.cget("font")).metrics("linespace") <= 32
+
+
+@pytest.mark.parametrize("connected,count,review,age,expected", [
+    (True, 0, 0, 0, "연결됨 · 0건"),
+    (False, 3, 0, 0, "연결 안 됨 · 보낼 것 3건"),
+    (True, 3, 0, 601, "못 보낸 것 3건"),
+    (None, 0, 0, 0, "확인 중"),
+    (False, 3, 2, 601, "관리자 확인 2건"),
+])
+def test_common_status_uses_510_bottom_row_with_one_line_and_no_forbidden_words(
+    operator_workbench, monkeypatch, connected, count, review, age, expected,
+):
+    app = operator_workbench
+    _configure_narrow_workbench(app, monkeypatch, 1024, 1.0, 14)
+    app._logistics_admin_review_count = review
+    app._logistics_oldest_pending_at = datetime.now(timezone.utc) - timedelta(seconds=age) if age else None
+    stamp = datetime.now(timezone.utc)
+    app._render_logistics_connection("normal", count, None,
+                                     progress_observation=(stamp, connected) if connected is not None else None)
+    footer = app.logistics_connection_label
+    assert footer.master is app.operator_right_pane
+    assert footer.grid_options["row"] == 2
+    assert footer.grid_options["row"] > app.operator_action_frame.grid_options["row"]
+    assert footer.winfo_ismapped() and not app.relay_screen_status_label.winfo_ismapped()
+    assert footer.cget("text") == expected
+    assert footer.cget("wraplength") == 0 and footer.cget("width") == 1
+    assert not any(word in footer.cget("text") for word in ("\n", "…", "없음", "대기", "동기화", "반영"))
+    assert _LayoutFont(font=footer.cget("font")).measure(expected) <= app._logistics_footer_available_width
+    cells = set()
+    for widget in app.operator_right_pane.children:
+        if not widget.winfo_ismapped() or not widget.grid_options:
+            continue
+        grid = widget.grid_options
+        for row in range(grid["row"], grid["row"] + grid.get("rowspan", 1)):
+            for column in range(grid["column"], grid["column"] + grid.get("columnspan", 1)):
+                assert (row, column) not in cells
+                cells.add((row, column))
+    assert not any(child.winfo_ismapped() and child.kind in {"Button", "Menubutton"}
+                   for child in app.operator_status_frame.children)
 
 
 def test_deferred_validator_waits_for_active_observability_readback():
@@ -2957,7 +3002,9 @@ def test_waiting_view_follows_actual_package_after_capture_handoff(
     app._render_deferred_observability(store.status_readback())
     rows = app.deferred_observability_tree.rows
     assert rows[f"deferred-{group_key}"]["values"][1] == 1
-    assert bool(app.operator_footer_label.cget("text")) == (status != "ACKED")
+    # The common line remains present after ACK; administrator text requires a review row.
+    assert ("관리자 확인" in app.operator_footer_label.cget("text")) == (status == "CONFLICT")
+    assert app._logistics_admin_review_count == (1 if status == "CONFLICT" else 0)
     assert app.current_set_info == current
     assert app.entry.focused == focus_before
 

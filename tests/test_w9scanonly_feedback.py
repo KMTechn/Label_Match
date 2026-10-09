@@ -108,11 +108,92 @@ def test_connection_summary_uses_acked_times_and_counts_each_unresolved_transmis
     label = SimpleNamespace(configure=lambda **kw: setattr(app, "connection_text", kw["text"]))
     app.logistics_connection_label = label
     app._render_logistics_connection("normal", pending, last_success)
-    assert "연결: 정상" in app.connection_text and "대기 3건" in app.connection_text
-    assert "마지막 성공 전송" in app.connection_text and "없음" not in app.connection_text
+    assert app.connection_text == "회사 서버 연결됨 · 보낼 것 3건"
+    assert app._logistics_last_transmission == last_success
+    assert "마지막 전송" not in app.connection_text
     app._render_logistics_connection("retrying", pending, None)
-    assert "연결: 끊김" in app.connection_text and "대기 3건" in app.connection_text
-    assert "없음" not in app.connection_text, "disconnection must retain the last actual ACK time"
+    assert app.connection_text == "회사 서버 연결 안 됨 · 이 PC에 저장 중 · 보낼 것 3건"
+    assert app._logistics_last_transmission == last_success, "disconnection must retain the last actual ACK time"
+
+
+@pytest.mark.parametrize("connected,pending,expected", [
+    (True, 0, "회사 서버 연결됨 · 보낼 것 0건"),
+    (None, 0, "회사 서버 확인 중"),
+    (False, 3, "회사 서버 연결 안 됨 · 이 PC에 저장 중 · 보낼 것 3건"),
+    (True, None, "회사 서버 연결됨"),
+])
+def test_connection_footer_uses_field_guidance_without_inventing_success(connected, pending, expected):
+    app = object.__new__(lm.Label_Match)
+    options = {}
+    app.logistics_connection_label = SimpleNamespace(configure=lambda **kw: options.update(kw))
+    stamp = datetime.now(timezone.utc)
+    observation = (stamp, connected) if connected is not None else None
+    app._render_logistics_connection("normal", pending, None, progress_observation=observation)
+    assert options["text"] == expected
+    assert options["style"] == "Status.TLabel"
+    assert options["background"] == ("#FFEDD5" if connected is False else "#F8FAFC")
+    assert app.__dict__.get("_logistics_last_transmission") is None
+    assert "없음" not in options["text"]
+
+
+@pytest.mark.parametrize("connected,count,review,age,width,expected", [
+    (True, 3, 2, 601, 1366, "관리자 확인 필요 2건 · 보낼 것 3건"),
+    (False, 3, 2, 0, 1366, "관리자 확인 필요 2건 · 보낼 것 3건"),
+    (None, None, 2, 0, 1366, "관리자 확인 필요 2건"),
+    (False, 3, 0, 601, 1366, "회사 서버 연결 안 됨 · 이 PC에 저장 중 · 보낼 것 3건"),
+    (True, 3, 0, 601, 1366, "회사 서버로 못 보낸 것 3건"),
+    (True, 3, 0, 600, 1366, "회사 서버 연결됨 · 보낼 것 3건"),
+    (True, 0, 0, 601, 1366, "회사 서버 연결됨 · 보낼 것 0건"),
+    (None, 3, 0, 601, 1366, "회사 서버 확인 중"),
+    (True, 3, 2, 601, 1024, "관리자 확인 2건"),
+    (False, 3, 0, 601, 1024, "연결 안 됨 · 보낼 것 3건"),
+    (True, 3, 0, 601, 1024, "못 보낸 것 3건"),
+    (None, 0, 0, 0, 1024, "확인 중"),
+    (True, 0, 0, 0, 1024, "연결됨 · 0건"),
+])
+def test_common_footer_priority_short_forms_and_ten_minute_boundary(connected, count, review, age, width, expected):
+    app = object.__new__(lm.Label_Match)
+    options = {}
+    app.winfo_width = lambda: width
+    app.logistics_connection_label = SimpleNamespace(configure=lambda **kw: options.update(kw))
+    app._logistics_admin_review_count = review
+    app._logistics_oldest_pending_at = datetime.now(timezone.utc) - timedelta(seconds=age) if age else None
+    app.entry = SimpleNamespace(focus_set=lambda: pytest.fail("status stole scanner focus"),
+                                delete=lambda *args: pytest.fail("status erased a scan"))
+    stamp = datetime.now(timezone.utc)
+    observation = (stamp, connected) if connected is not None else None
+    app._render_logistics_connection("normal", count, None, progress_observation=observation)
+    assert options["text"] == expected
+    assert options["wraplength"] == 0 and options["width"] == 1
+    assert "\n" not in options["text"] and "…" not in options["text"]
+    assert not any(word in options["text"] for word in ("대기", "outbox", "동기화", "반영", "없음"))
+    assert options["font"][1] < 14
+    assert options["font"][2] == ("bold" if review else "normal")
+    if review:
+        assert options["foreground"] == "#B91C1C"
+    elif connected is False:
+        assert options["background"] == "#FFEDD5"
+    elif connected is True and count and age > 600:
+        assert options["foreground"] == "#9A3412"
+    else:
+        assert options["foreground"] == "#64748B"
+
+
+@pytest.mark.parametrize("days", [0, 1])
+def test_last_actual_ack_time_only_appears_in_accumulating_state(days):
+    app = object.__new__(lm.Label_Match)
+    options = {}
+    app.logistics_connection_label = SimpleNamespace(configure=lambda **kw: options.update(kw))
+    now = datetime.now(timezone.utc)
+    ack = now - timedelta(days=days)
+    local = ack.astimezone()
+    expected_time = local.strftime("%H:%M") if days == 0 else f"{local.month}. {local.day}. {local:%H:%M}"
+    app._logistics_oldest_pending_at = now - timedelta(minutes=11)
+    app._render_logistics_connection("normal", 3, ack)
+    assert options["text"] == f"회사 서버로 못 보낸 것 3건 · 마지막 전송 {expected_time}"
+    app._render_logistics_connection("normal", 0, None)
+    assert options["text"] == "회사 서버 연결됨 · 보낼 것 0건"
+    assert app._logistics_last_transmission == ack
 
 
 def test_unreadable_transmission_queue_keeps_unknown_count(tmp_path):
@@ -120,6 +201,34 @@ def test_unreadable_transmission_queue_keeps_unknown_count(tmp_path):
     broken = tmp_path / "broken.sqlite3"
     broken.write_bytes(b"not sqlite")
     assert app._read_logistics_transmission_summary(str(broken)) == (None, None)
+
+
+@pytest.mark.parametrize("table", ["direct_sync_relay_batches", "package_command_outbox",
+                                 "package_cancellation_outbox", "sealed_transfer_exchange_intents",
+                                 "deferred_intents"])
+def test_oldest_unsent_age_comes_from_existing_rows_without_writes(tmp_path, table):
+    app = object.__new__(lm.Label_Match)
+    db = tmp_path / "queue.sqlite3"
+    column = "state" if table == "deferred_intents" else "status"
+    pending = "VALIDATED" if table == "deferred_intents" else "PENDING"
+    done = "SUPERSEDED" if table == "deferred_intents" else "ACKED"
+    now = datetime.now(timezone.utc)
+    oldest = now - timedelta(minutes=11)
+    with sqlite3.connect(db) as conn:
+        conn.execute(f"CREATE TABLE {table}({column} TEXT, created_at TEXT, updated_at TEXT)")
+        conn.executemany(f"INSERT INTO {table} VALUES (?,?,?)", [
+            (pending, oldest.isoformat(), now.isoformat()),
+            (done, (oldest - timedelta(days=1)).isoformat(), now.isoformat()),
+        ])
+    before = db.read_bytes()
+    count, ack = app._read_logistics_transmission_summary(str(db))
+    assert count == 1 and app._logistics_oldest_pending_at == oldest
+    assert ack == (None if table == "deferred_intents" else now)
+    assert db.read_bytes() == before
+    with sqlite3.connect(db) as conn:
+        conn.execute(f"DELETE FROM {table} WHERE {column}=?", (pending,))
+    assert app._read_logistics_transmission_summary(str(db))[0] == 0
+    assert app._logistics_oldest_pending_at is None
 
 
 def install_connection_relay(app, tmp_path, monkeypatch, status="idle"):
@@ -149,7 +258,7 @@ def test_progress_failure_overrides_idle_relay(progress_app, tmp_path, monkeypat
     open_progress(app)
     root.run_until(lambda: app.__dict__.get("_logistics_progress_connected") is False, timeout=5)
     assert "연결 끊김" in app.progress_text
-    assert "서버 연결: 끊김" in app.connection_text
+    assert "회사 서버 연결 안 됨" in app.connection_text
     assert dialogs == []
 
 
@@ -159,11 +268,11 @@ def test_local_idle_cannot_clear_loss_without_server_response(progress_app, tmp_
     app.package_logistics_client = SimpleNamespace(get_progress=offline_progress)
     open_progress(app)
     root.run_until(lambda: app.__dict__.get("_logistics_progress_connected") is False, timeout=5)
-    assert "서버 연결: 끊김" in app.connection_text
+    assert "회사 서버 연결 안 됨" in app.connection_text
     app._relay_screen_status_payload = {"status": "idle"}
     app._refresh_relay_screen_status()
     assert app._logistics_relay_state == "normal"
-    assert "서버 연결: 끊김" in app.connection_text
+    assert "회사 서버 연결 안 됨" in app.connection_text
 
 
 def test_new_relay_retry_overrides_old_progress_success(progress_app, tmp_path, monkeypatch):
@@ -172,20 +281,21 @@ def test_new_relay_retry_overrides_old_progress_success(progress_app, tmp_path, 
     app.package_logistics_client = SimpleNamespace(get_progress=lambda **kw: copy.deepcopy(PROGRESS))
     open_progress(app)
     root.run_until(lambda: app.__dict__.get("_logistics_progress_connected") is True, timeout=5)
-    assert "서버 연결: 정상" in app.connection_text
+    assert "회사 서버 연결됨" in app.connection_text
     with sqlite3.connect(db) as conn:
         conn.execute("INSERT INTO direct_sync_relay_batches VALUES ('retry_wait', ?)", (datetime.now(timezone.utc).isoformat(),))
     app._refresh_relay_screen_status()
     assert app._logistics_relay_state == "retrying"
-    assert "서버 연결: 끊김" in app.connection_text
+    assert "회사 서버 연결 안 됨" in app.connection_text
     assert "연결 끊김" in app.progress_text
 
 
 def test_idle_and_live_lease_alone_leave_connection_unconfirmed(progress_app, tmp_path, monkeypatch):
     app, _dialogs, _root = progress_app
     install_connection_relay(app, tmp_path, monkeypatch)
-    assert "서버 연결: 확인 중" in app.connection_text
-    assert "마지막 성공 전송 없음" in app.connection_text
+    assert "회사 서버 확인 중" in app.connection_text
+    assert app.__dict__.get("_logistics_last_transmission") is None
+    assert "없음" not in app.connection_text
 
 
 def test_fresh_progress_response_restores_connection_despite_old_retry(progress_app, tmp_path, monkeypatch):
@@ -198,8 +308,9 @@ def test_fresh_progress_response_restores_connection_despite_old_retry(progress_
     app._refresh_logistics_progress()
     root.run_until(lambda: app.__dict__.get("_logistics_progress_connected") is True, timeout=5)
     app._refresh_relay_screen_status()
-    assert "서버 연결: 정상" in app.connection_text
-    assert "마지막 성공 전송 없음" in app.connection_text
+    assert "회사 서버 연결됨" in app.connection_text
+    assert app.__dict__.get("_logistics_last_transmission") is None
+    assert "없음" not in app.connection_text
 
 
 def test_historical_ack_cannot_clear_loss_but_fresh_ack_can(progress_app, tmp_path, monkeypatch):
@@ -213,13 +324,13 @@ def test_historical_ack_cannot_clear_loss_but_fresh_ack_can(progress_app, tmp_pa
     open_progress(app)
     root.run_until(lambda: app.__dict__.get("_logistics_progress_connected") is False, timeout=5)
     app._refresh_relay_screen_status()
-    assert "서버 연결: 끊김" in app.connection_text
+    assert "회사 서버 연결 안 됨" in app.connection_text
     assert app._logistics_last_transmission == old
     fresh = datetime.now(timezone.utc)
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE direct_sync_relay_batches SET updated_at=?", (fresh.isoformat(),))
     app._refresh_relay_screen_status()
-    assert "서버 연결: 정상" in app.connection_text
+    assert "회사 서버 연결됨" in app.connection_text
     assert app._logistics_last_transmission == fresh
 
 
@@ -238,7 +349,7 @@ def test_new_transport_failure_overrides_success_without_relay_state_change(prog
     app._relay_screen_status_payload = {"status": "retry_wait"}
     app._refresh_relay_screen_status()
     app._refresh_logistics_progress()
-    root.run_until(lambda: "서버 연결: 정상" in app.connection_text, timeout=5)
+    root.run_until(lambda: "회사 서버 연결됨" in app.connection_text, timeout=5)
     with sqlite3.connect(db) as conn:
         if table == "direct_sync_relay_batches":
             conn.execute("INSERT INTO direct_sync_relay_batches VALUES (?, ?)", (status, datetime.now(timezone.utc).isoformat()))
@@ -247,8 +358,8 @@ def test_new_transport_failure_overrides_success_without_relay_state_change(prog
             conn.execute(f"INSERT INTO {table} VALUES (?, ?, 'TRANSPORT_ERROR')", (status, datetime.now(timezone.utc).isoformat()))
     app._refresh_relay_screen_status()
     assert app._logistics_relay_state == "retrying"
-    assert "서버 연결: 끊김" in app.connection_text
-    assert "대기 1건" in app.connection_text
+    assert "회사 서버 연결 안 됨" in app.connection_text
+    assert "보낼 것 1건" in app.connection_text
 
 
 def test_delayed_progress_poll_does_not_override_newer_relay_loss(progress_app, tmp_path, monkeypatch):
@@ -261,7 +372,7 @@ def test_delayed_progress_poll_does_not_override_newer_relay_loss(progress_app, 
     app._relay_screen_status_payload = {"status": "retry_wait"}
     app._refresh_relay_screen_status()
     root.run_until(lambda: app.__dict__.get("_logistics_progress_connected") is True, timeout=5)
-    assert "서버 연결: 끊김" in app.connection_text
+    assert "회사 서버 연결 안 됨" in app.connection_text
 
 
 @pytest.mark.parametrize("newer_success", [True, False])
@@ -303,7 +414,7 @@ def test_late_progress_response_keeps_newer_transport_observation(progress_app, 
         assert not app._logistics_progress_thread.is_alive()
         app._poll_logistics_progress()  # A finishes after B, in either direction.
         expected = "정상" if newer_success else "끊김"
-        assert f"서버 연결: {expected}" in app.connection_text
+        assert ("회사 서버 연결됨" if newer_success else "회사 서버 연결 안 됨") in app.connection_text
         assert f"연결 {expected}" in app.progress_text
         assert app.__dict__.get("_logistics_last_transmission") == (stamp if newer_success else None)
     finally:
@@ -339,6 +450,6 @@ def test_delayed_retry_read_keeps_newer_success(progress_app, tmp_path, monkeypa
             conn.execute("INSERT INTO direct_sync_relay_batches VALUES ('acked', ?)", (fresh_ack.isoformat(),))
     app._refresh_relay_screen_status()
     assert app._logistics_relay_state == ("retrying" if table == "direct_sync_relay_batches" else "normal")
-    assert "서버 연결: 정상" in app.connection_text
+    assert "회사 서버 연결됨" in app.connection_text
     assert "연결 정상" in app.progress_text
     assert app.__dict__.get("_logistics_last_transmission") == (fresh_ack if newer_success == "ack" else None)

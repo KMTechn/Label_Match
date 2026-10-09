@@ -15,6 +15,7 @@ def test_recovery_entry_is_only_in_header_administrator_menu(operator_workbench)
     app = operator_workbench
     button = _required_widget(app, "administrator_menu_button")
     assert button.master is app.settings_button.master
+    assert button.pack_options["before"] is app.about_button
     assert button.cget("text") == "관리자"
     commands = app.package_recovery_menu.options["menu_commands"]
     assert commands == [{"label": "멈춘 작업 확인 (관리자)", "command": app._show_package_recovery_workbench}]
@@ -83,5 +84,5 @@ def test_administrator_footer_is_only_present_for_review(operator_workbench, tmp
     readback = replace(store.status_readback(), operator_groups=(group,), nonterminal_count=count)
     before = app.entry.focused
     app._render_deferred_observability(readback)
-    assert app.operator_footer_label.cget("text") == (f"관리자 확인 필요 {count}건" if count else "")
+    assert app.operator_footer_label.cget("text") == (f"관리자 확인 필요 {count}건" if count else "회사 서버 확인 중")
     assert app.entry.focused == before

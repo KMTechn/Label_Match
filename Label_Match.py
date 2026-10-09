@@ -1149,6 +1149,17 @@ def _label_match_recent_runtime_status(context, max_age_seconds=7 * 24 * 60 * 60
         return False
 
 
+LABEL_MATCH_STATUS_LINE_TEXT = {
+    "review": ("관리자 확인 필요 {review}건", "관리자 확인 {review}건"),
+    "offline": ("회사 서버 연결 안 됨 · 이 PC에 저장 중", "연결 안 됨"),
+    "accumulating": ("회사 서버로 못 보낸 것 {count}건", "못 보낸 것 {count}건"),
+    "checking": ("회사 서버 확인 중", "확인 중"),
+    "normal": ("회사 서버 연결됨", "연결됨"),
+    "send_count": " · 보낼 것 {count}건",
+    "short_count": " · {count}건",
+    "last_send": " · 마지막 전송 {stamp}",
+}
+
 LABEL_MATCH_RELAY_SCREEN_TEXT = {
     "normal": "회사 서버 전송 정상",
     "retrying": "회사 서버로 다시 보내는 중",
@@ -6577,7 +6588,7 @@ class Label_Match(tk.Tk):
         """Read counts and actual ACK timestamps; never create a status store."""
         outbox = self.__dict__.get("package_outbox")
         paths = {str(relay_db_path or ""), str(getattr(outbox, "db_path", "") or "")}
-        pending, last_success, read = 0, None, False
+        pending, last_success, read, oldest_pending = 0, None, False, None
         for path in paths:
             if not path or not os.path.isfile(path):
                 continue
@@ -6596,11 +6607,23 @@ class Label_Match(tk.Tk):
                             f"SELECT COUNT(*) FROM {table} WHERE UPPER({state_column}) NOT IN "
                             "('ACKED','LOCAL_EFFECT_PENDING','COMPLETED','CANCELLED','SUPERSEDED')"
                         ).fetchone()[0]
+                        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                        if "created_at" in columns:
+                            stamp = conn.execute(
+                                f"SELECT MIN(created_at) FROM {table} WHERE UPPER({state_column}) NOT IN "
+                                "('ACKED','LOCAL_EFFECT_PENDING','COMPLETED','CANCELLED','SUPERSEDED')"
+                            ).fetchone()[0]
+                            if stamp:
+                                try:
+                                    parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+                                    parsed = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+                                    oldest_pending = min(oldest_pending, parsed) if oldest_pending else parsed
+                                except ValueError:
+                                    pass
                         # Deferred completion timestamps include local effects;
                         # only transport ACK rows prove a successful transmission.
                         if table == "deferred_intents":
                             continue
-                        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
                         retry = "UPPER(status)='RETRY_WAIT'"
                         if "last_error_code" in columns:
                             retry += " OR (UPPER(status)='PENDING' AND COALESCE(last_error_code,'')!='')"
@@ -6623,6 +6646,8 @@ class Label_Match(tk.Tk):
                                 pass
             except (sqlite3.Error, OSError):
                 return None, last_success
+        if read:
+            self._logistics_oldest_pending_at = oldest_pending
         return (pending if read else None), last_success
 
     def _render_logistics_connection(self, relay_state, pending, last_success, *, progress_observation=None):
@@ -6631,8 +6656,6 @@ class Label_Match(tk.Tk):
         previous = self.__dict__.get("_logistics_last_transmission")
         if last_success is not None and (previous is None or last_success > previous):
             self._logistics_last_transmission = last_success
-        latest = self.__dict__.get("_logistics_last_transmission")
-        last_text = latest.astimezone().strftime("%H:%M:%S") if latest else "없음"
         # Local idle/lease changes prove no server response. Progress carries
         # request start time; durable retries retain their stored time when read late.
         observations = []
@@ -6653,15 +6676,64 @@ class Label_Match(tk.Tk):
                     or (candidate[0] == observation[0] and candidate[1] is False)):
                 observation = candidate
         self._logistics_connection_observation = observation
-        connected = observation[1] if observation else None
-        connection = "정상" if connected is True else "끊김" if connected is False else "확인 중"
-        count = self.__dict__.get("_logistics_pending_transmissions")
-        waiting = f"대기 {count}건" if count is not None else "대기 확인 중"
-        if pending is None and count is not None:
-            waiting += "(마지막 확인)"
+        self._render_logistics_connection_footer()
+
+    def _render_logistics_connection_footer(self):
+        """Present the common status line using existing read-only observations."""
         label = self.__dict__.get("logistics_connection_label")
-        if label is not None:
-            label.configure(text=f"서버 연결: {connection} · 마지막 성공 전송 {last_text} · {waiting}")
+        if label is None:
+            return None
+        observation = self.__dict__.get("_logistics_connection_observation")
+        connected = observation[1] if observation else None
+        count = self.__dict__.get("_logistics_pending_transmissions")
+        review = self.__dict__.get("_logistics_admin_review_count", 0)
+        oldest = self.__dict__.get("_logistics_oldest_pending_at")
+        age = max(0, int((datetime.now(timezone.utc) - oldest).total_seconds())) if oldest else 0
+        age = max(age, self.__dict__.get("_logistics_oldest_pending_age", 0))
+        words = LABEL_MATCH_STATUS_LINE_TEXT
+        suffix = words["send_count"].format(count=count) if count is not None else ""
+        foreground, weight = "#64748B", "normal"
+        background = self.__dict__.get("colors", {}).get("background", "#F8FAFC")
+        if review:
+            long_text, short_text = (value.format(review=review) for value in words["review"])
+            long_text += suffix
+            foreground, weight = "#B91C1C", "bold"
+        elif connected is False:
+            long_text, short_text = words["offline"]
+            long_text += suffix
+            short_text += suffix
+            background = "#FFEDD5"
+        elif connected is True and count and age > 600:
+            long_text, short_text = (value.format(count=count) for value in words["accumulating"])
+            foreground = "#9A3412"
+            latest = self.__dict__.get("_logistics_last_transmission")
+            if latest is not None:
+                local = latest.astimezone()
+                stamp = local.strftime("%H:%M")
+                if local.date() != datetime.now().astimezone().date():
+                    stamp = f"{local.month}. {local.day}. {stamp}"
+                long_text += words["last_send"].format(stamp=stamp)
+        elif connected is None:
+            long_text, short_text = words["checking"]
+        else:
+            long_text, short_text = words["normal"]
+            long_text += suffix
+            short_text += words["short_count"].format(count=count) if count is not None else ""
+        font = (self.__dict__.get("default_font_name", "Malgun Gothic"),
+                self.__dict__.get("_logistics_footer_font_size", 13), weight)
+        width = 1366
+        if "operator_status_frame" in self.__dict__ or "winfo_width" in self.__dict__:
+            try:
+                measured = self.winfo_width()
+                if measured > 200:
+                    width = measured
+            except (TclError, AttributeError):
+                pass
+        available = self.__dict__.get("_logistics_footer_available_width", width - 40)
+        text = short_text if width < 1366 or self._text_pixel_width(long_text, font) > available else long_text
+        label.configure(text=text, style="Status.TLabel", foreground=foreground,
+                        background=background, font=font, wraplength=0, width=1)
+        return None
 
     def _render_relay_screen_status(self, state):
         label = self.__dict__.get("relay_screen_status_label")
@@ -13035,21 +13107,15 @@ class Label_Match(tk.Tk):
     def _render_deferred_observability(self, readback):
         if not isinstance(readback, DeferredIntentStatusReadback):
             return None
-        footer = self.__dict__.get("operator_footer_label")
-        if footer is not None:
-            review_count = sum(
-                group.count for group in readback.operator_groups if group.key == "admin_review"
-            )
-            pending_text = (
-                f"관리자 확인 필요 {review_count}건"
-                if review_count else
-                f"처리 대기 {readback.nonterminal_count}건 · 대기 현황에서 확인"
-                if readback.nonterminal_count else ""
-            )
-            footer.configure(
-                text=pending_text,
-                style="Error.TLabel" if review_count else "Status.TLabel",
-            )
+        self._logistics_admin_review_count = sum(
+            group.count for group in readback.operator_groups if group.key == "admin_review"
+        )
+        self._logistics_oldest_pending_age = max(
+            (group.oldest_age_seconds for group in readback.operator_groups
+             if group.count and group.key in {"validation_pending", "dependency_wait", "transmission_wait", "result_checking"}),
+            default=0,
+        )
+        self._render_logistics_connection_footer()
         tree = self.__dict__.get("deferred_observability_tree")
         if tree is not None:
             try:
@@ -19700,9 +19766,9 @@ class Label_Match(tk.Tk):
             self.clock_label.configure(
                 font=("Consolas", operator_caption_size),
             )
-            self.operator_footer_label.configure(
-                font=(self.default_font_name, min(13, operator_caption_size)),
-            )
+            self._logistics_footer_font_size = min(13, operator_caption_size)
+            self._logistics_footer_available_width = max(1, panes.right_width - 2 * card_padding)
+            self._render_logistics_connection_footer()
             self.relay_screen_status_label.configure(
                 font=(self.default_font_name, min(13, operator_caption_size)),
             )
@@ -21713,6 +21779,24 @@ class Label_Match(tk.Tk):
             build_style_tokens=build_style_tokens,
             _label_match_operator_context=_label_match_operator_context,
         )
+        self.package_recovery_button.destroy()
+        del self.package_recovery_button
+        self._package_recovery_callback = self.__dict__.setdefault(
+            "_package_recovery_callback", self._show_package_recovery_workbench,
+        )
+        self.administrator_menu_button = ttk.Menubutton(
+            self.top_right_frame, text="관리자", style="Control.TButton", takefocus=False,
+        )
+        self.package_recovery_menu = tk.Menu(self.administrator_menu_button, tearoff=False)
+        self.package_recovery_menu.add_command(
+            label="멈춘 작업 확인 (관리자)", command=self._package_recovery_callback,
+        )
+        self.package_recovery_menu.bind(
+            "<Unmap>", lambda _event: self._schedule_scan_entry_focus_return(),
+        )
+        self.administrator_menu_button.configure(menu=self.package_recovery_menu)
+        self.administrator_menu_button.pack(side=tk.LEFT, padx=(0, 6), before=self.about_button)
+
         self._render_legacy_transition_banner()
 
         label_workbench_scan.create_scan_status(
@@ -21735,6 +21819,36 @@ class Label_Match(tk.Tk):
             tk=tk,
             ttk=ttk,
         )
+
+        self.operator_details_button.destroy()
+        self.operator_scan_summary_frame = ttk.Frame(
+            self.operator_center_pane, style="Borderless.TFrame",
+        )
+        self.operator_scan_summary_frame.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        self.operator_scan_summary_frame.grid_columnconfigure(0, weight=1)
+        self.operator_tray_progress_label = ttk.Label(
+            self.operator_scan_summary_frame, text="현재 트레이 0/5",
+            font=(self.default_font_name, 30, "bold"), anchor="center",
+        )
+        self.operator_tray_progress_label.grid(row=0, column=0, sticky="ew")
+        self.operator_next_scan_label = ttk.Label(
+            self.operator_scan_summary_frame, text="현품표를 스캔하세요",
+            font=(self.default_font_name, 18, "bold"), anchor="center",
+        )
+        self.operator_next_scan_label.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self.operator_scan_result_label = ttk.Label(
+            self.operator_scan_summary_frame, text="방금 결과: -",
+            font=(self.default_font_name, 16, "bold"), anchor="center",
+            wraplength=max(260, panes.center_width - 40),
+        )
+        self.operator_scan_result_label.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+        self.operator_details_button = ttk.Button(
+            self.operator_scan_summary_frame,
+            text="작업 상세 보기 ▾",
+            command=self._toggle_operator_details,
+            style="Control.TButton",
+        )
+        self.operator_details_button.grid(row=3, column=0, sticky="w", pady=(4, 0))
 
         label_workbench_activity.create_activity_pane(
             self,
@@ -21778,10 +21892,11 @@ class Label_Match(tk.Tk):
         self._render_logistics_progress()
 
         self.logistics_connection_label = ttk.Label(
-            self.operator_right_pane, text="서버 연결: 확인 중 · 마지막 성공 전송 없음 · 대기 확인 중",
-            style="Status.TLabel", wraplength=max(180, panes.right_width - 30),
+            self.operator_right_pane, text=LABEL_MATCH_STATUS_LINE_TEXT["checking"][0],
+            style="Status.TLabel", width=1, wraplength=0,
         )
         self.logistics_connection_label.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        self._logistics_footer_available_width = max(1, panes.right_width - 30)
 
         label_workbench_context.create_status_footer(
             self,
@@ -21790,6 +21905,10 @@ class Label_Match(tk.Tk):
             tk=tk,
             ttk=ttk,
         )
+
+        self.operator_footer_label.grid_remove()
+        self.relay_screen_status_label.grid_remove()
+        self.operator_footer_label = self.logistics_connection_label
 
         self._workflow_widgets_ready = True
         self.operator_workbench_ready = True

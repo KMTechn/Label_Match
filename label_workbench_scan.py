@@ -151,34 +151,13 @@ def create_scan_details(
     self.entry.grid(row=0, column=1, sticky="ew", ipady=8)
     self.entry.bind("<Return>", self._handle_scan_enter)
 
-    self.operator_scan_summary_frame = ttk.Frame(
-        self.operator_center_pane, style="Borderless.TFrame",
-    )
-    self.operator_scan_summary_frame.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-    self.operator_scan_summary_frame.grid_columnconfigure(0, weight=1)
-    self.operator_tray_progress_label = ttk.Label(
-        self.operator_scan_summary_frame, text="현재 트레이 0/5",
-        font=(self.default_font_name, 30, "bold"), anchor="center",
-    )
-    self.operator_tray_progress_label.grid(row=0, column=0, sticky="ew")
-    self.operator_next_scan_label = ttk.Label(
-        self.operator_scan_summary_frame, text="현품표를 스캔하세요",
-        font=(self.default_font_name, 18, "bold"), anchor="center",
-    )
-    self.operator_next_scan_label.grid(row=1, column=0, sticky="ew", pady=(2, 0))
-    self.operator_scan_result_label = ttk.Label(
-        self.operator_scan_summary_frame, text="방금 결과: -",
-        font=(self.default_font_name, 16, "bold"), anchor="center",
-        wraplength=max(260, panes.center_width - 40),
-    )
-    self.operator_scan_result_label.grid(row=2, column=0, sticky="ew", pady=(2, 0))
     self.operator_details_button = ttk.Button(
-        self.operator_scan_summary_frame,
+        self.operator_center_pane,
         text="작업 상세 보기 ▾",
         command=self._toggle_operator_details,
         style="Control.TButton",
     )
-    self.operator_details_button.grid(row=3, column=0, sticky="w", pady=(4, 0))
+    self.operator_details_button.grid(row=4, column=0, sticky="w", pady=(0, 8))
     self.live_scan_notebook = ttk.Notebook(self.operator_center_pane)
     self.live_scan_notebook.grid(row=5, column=0, sticky="nsew")
     self.qa_scan_frame = ttk.Frame(self.live_scan_notebook, style="Card.TFrame")

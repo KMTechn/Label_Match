@@ -2,6 +2,8 @@
 
 시험 장치 흔들림(컷 뒤): tests/test_label_ui_lane_integration.py::test_saved_exchange_retry_keeps_immutable_command_off_tk 세 매개변수 — 부하 중 fake Tk pump 2.0 s 벽시계, a63caec 에서도 단독 실패(w9setupprep sub-451)
 
+P1-LM-02·03·05: 트레이 진행·다음 스캔·방금 결과와 현재 트레이 표를 계속 보이고, 복구 목록은 관리자 메뉴로 옮기며, 바닥 상태는 공통 문구 한 줄로 표시한다. 제목 접두·PIN 관문·입력 보존·after_idle 한 번 복귀는 창 차단 headless 시험으로 검증한다. 실제 Tk 창·DPI·스캐너·설치 수용은 sub-510 결합 뒤 w9setupprep stock과 배정 VM 회차에서 판정한다. 이 레인은 판 번호·서버 계약을 바꾸지 않는다.
+
 onboarding admission 분리 후 랩 수용: 새 MachineGuid의 처음 설치·첫 GUI와 로그온 Run relay가 뜨기 전 GUI 시작, 기존 relay의 상태 갱신·실제 전송 지속을 확인한다. headless 두 프로세스의 실제 named mutex 검증과 실제 GUI/전송 수용은 구분하며, 기존 옛 예약 작업 은퇴의 admission 보유 시간은 별도 측정한다.
 
 sub-474 측정 P2(컷 뒤): 기존 자료 세대 5-root 기록 묶음의 실제 admission은 6.641초였다. relay는 5초 허가를 한 번 놓쳐도 기존 재시도로 135초 신선도와 READY를 유지했다. 코디 msg_db8476bebd24에 따라 G 내부와 B2의 app_generation 1회 단언을 보존하며, 이전 예약 작업 은퇴 8.890초와 함께 후속으로 남긴다.
