@@ -22,7 +22,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     sys.path.insert(1, str(Path(__file__).resolve().parent / "site-packages"))
 
-from writer_session_fence import WriterFencedError, writer_sink, _assert_no_reparse_components
+from writer_session_fence import WriterFencedError, writer_sink, _assert_no_reparse_components, WriterFenceError
 
 
 SCHEMA = "label-match-startup-update-v1"
@@ -2345,7 +2345,7 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
         if not (report_once and previous and previous.get("reason_code") == code
                 and previous.get("apply_claim_sha256") == report["apply_claim_sha256"]):
             write_json_durable(report_path, report)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, WriterFenceError):
         # A support sink failure cannot turn a safe ordinary launch into a stop.
         emit_support_record({"reason_code": "REPORT_UNAVAILABLE"}, stage="update_apply")
     started_at = now_utc()
