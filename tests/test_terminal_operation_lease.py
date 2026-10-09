@@ -993,6 +993,7 @@ def test_refused_lease_created_by_drain_reports_only_on_next_cycle(tmp_path, mon
 
 def test_conflict_without_lease_and_conflict_rollback_do_not_report(tmp_path, monkeypatch):
     outbox, store, draft, _clock = _refused_lease_fixture(tmp_path, monkeypatch, status="LOCAL_COMPLETED")
+    monkeypatch.setattr(outbox, "claim_next", lambda **_kwargs: None)
     before = _business_bytes(tmp_path / "refused.sqlite3")
     with sqlite3.connect(outbox.db_path) as conn:
         conn.execute("CREATE TRIGGER refuse_retirement BEFORE UPDATE ON package_operation_lease_issue_attempts "
