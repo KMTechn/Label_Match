@@ -116,6 +116,8 @@ review API inventory의 추가 네 소비자는 업무 fixture의 수동 drain�
 
 `label_workbench_history.py`는 같은 오른쪽 pane의 이력·통과 요약·작업 버튼을 구성한다. 완료 트레이 취소의 danger 버튼 생성자는 owner가 callback으로 전달해 원 생성 시점에 실행한다. 날짜 조회·원문/복사·정렬·취소·F1–F5/Enter/Escape/Delete의 기존 owner callback과 disabled 초기 상태를 유지하며 이력 worker·generation/input gate는 이동하지 않는다.
 
+`_create_widgets`는 작업 단추의 빈 세 번째 열을 uniform 그룹에서 빼고 weight 0으로 두며 완료 단추의 span을 1로 맞춰, 두 개의 uniform 열을 같은 폭으로 사용한다. 서버 연결 label은 `operator_right_pane`의 row 2에 두어 row 1의 단추 틀 아래에 표시한다. 창 없는 위젯 기록 시험은 오른쪽 자식의 grid 칸 중복 0과 바닥 줄 순서를 확인한다. 실제 해상도·배율에서 글자와 클릭 영역을 확인하는 VM 수용은 별도다.
+
 `label_workbench_context.py`는 공통 frame/header·왼쪽 작업 context와 footer/로딩 표시를 구성한다. profile·main frame·pane metrics를 기존 순서로 전달하고 `_create_widgets`는 pane 순서·notice binding·준비 flag·step rail·기존 renderer/responsive 적용을 소유한다. 버튼/문구/절차·레이아웃 계산·실행 thread는 바꾸지 않는다.
 
 F3 진입/action gate·성공음/이력·중앙 worker dispatch·재시도/자정 복구는 기존 owner를 사용한다. [LM-3 검증 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm3/RESULT.md)은 AST·동일 입력/실패 벡터·기존 headless pack 범위이며 실제 GUI·프린터·모니터·설치 수용은 별도다.

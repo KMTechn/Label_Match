@@ -32,6 +32,8 @@ relay install pack의 `--program-data-root`는 절대 경로 인수다. 상대 �
 
 <a id="scanner-only-packaging"></a>
 
+오른쪽 pane은 조회 notebook(row 0) → 작업 단추 틀(row 1) → 서버 연결 상태(row 2) 순서다. 연결 표시와 단추는 같은 grid 칸을 사용하지 않으며, 단추 넷은 동일 폭의 두 열·두 줄에 한 칸씩 배치한다. 기존 연결 문구·style·wraplength·ACK/대기 갱신과 단추 동작·입력 gate를 유지한다.
+
 유지보수 active fence가 있으면 중앙 포장·교환·인쇄·PIN·등록·런타임 임대는 첫 HTTP 전에 거절한다. 공개 임대 갱신과 CLI 등록·부분 복구·관리자 복구도 같은 admission을 확인한다. 원 명령·멱등 키·pending 임대 요청·UNKNOWN·복구 원본을 보존하고 해제 뒤 같은 내구 요청을 재시도한다.
 
 예외: 이전 판에서 저장된 F5 교환의 recover_current/recover_reconciliation만 원격 응답과 로컬 적용까지 writer admission을 보유한다(코디 결정 2026-10-02). 화면의 기존 busy gate는 스캔을 거절하고 미리 입력된 값은 보존하며, 응답 뒤 다시 Enter하면 저장한다.

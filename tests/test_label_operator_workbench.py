@@ -86,7 +86,9 @@ class FakeWidget:
     rowconfigure = grid_rowconfigure
 
     def grid_columnconfigure(self, column, **kwargs):
-        self.grid_columns.setdefault(column, {}).update(kwargs)
+        columns = column if isinstance(column, tuple) else (column,)
+        for index in columns:
+            self.grid_columns.setdefault(index, {}).update(kwargs)
 
     columnconfigure = grid_columnconfigure
 
@@ -1005,8 +1007,34 @@ def test_four_visible_actions_fit_two_rows_in_right_pane(operator_workbench):
         (1, 0),
         (1, 1),
     ]
-    assert app.cancel_tray_button.grid_options.get("columnspan") == 2
+    # UI-AUDIT-1009 U5: every action gets half the pane, including UNDO.
+    assert action_frame.grid_columns[0] == action_frame.grid_columns[1] == {
+        "weight": 1, "uniform": "operator_actions",
+    }
+    assert action_frame.grid_columns[2] == {"weight": 0, "uniform": ""}
+    assert all(button.grid_options.get("columnspan", 1) == 1 for button in buttons)
     assert "phs_label_exchange_button" not in app.__dict__
+
+
+def test_connection_status_has_its_own_bottom_row_below_actions(operator_workbench):
+    # UI-AUDIT-1009 U7: status occupies the bottom row below the button frame.
+    app = operator_workbench
+    right = app.operator_right_pane
+    status = app.logistics_connection_label
+    actions = app.operator_action_frame
+    cells = {}
+    for widget in right.children:
+        if not widget.winfo_ismapped() or not widget.grid_options:
+            continue
+        grid = widget.grid_options
+        for row in range(grid.get("row", 0), grid.get("row", 0) + grid.get("rowspan", 1)):
+            for column in range(grid.get("column", 0), grid.get("column", 0) + grid.get("columnspan", 1)):
+                assert (row, column) not in cells, (widget.kind, cells.get((row, column)))
+                cells[row, column] = widget.kind
+    assert status.master is actions.master is right
+    status_row = status.grid_options["row"]
+    assert status_row > actions.grid_options["row"]
+    assert status_row == max(row for row, _column in cells)
 
 
 def test_workbench_renderer_uses_snapshot_adapter_then_pure_presenter():

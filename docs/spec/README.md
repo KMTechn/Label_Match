@@ -1,5 +1,7 @@
 # Label_Match 기술 명세
 
+오른쪽 작업 단추 넷은 같은 폭의 두 열·두 줄을 사용한다. 서버 연결 상태는 단추 틀 아래의 독립된 바닥 줄에 표시한다([화면 계약](contracts.md#scanner-only-packaging)).
+
 portable의 매 시작에 실행하는 onboarding과 relay 시작은 admission을 확인한 뒤 부모 lease도 내려놓는다. lifecycle helper·relay 시작/생존 확인 동안 relay가 상태를 갱신할 수 있고, 로컬 쓰기와 READY 게시 직전에 다시 admission과 fence를 확인한다. [쓰기 경계와 검증 범위](operations.md#onboarding-writer-admission)를 따른다.
 
 PIN·relay 반복 회차·profile/TLS의 첫 보호 판독은 startup 허용 뒤에도 현재 G를 재확인한다. [현재 reader 경계와 검증 한계](operations.md#first-field-data-generation)를 따른다.

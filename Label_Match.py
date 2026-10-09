@@ -21688,6 +21688,8 @@ class Label_Match(tk.Tk):
                 style=self.COMPLETED_TRAY_CANCEL_BUTTON_STYLE,
             ),
         )
+        self.operator_action_frame.grid_columnconfigure(2, weight=0, uniform="")
+        self.cancel_tray_button.grid_configure(columnspan=1)
 
         self.logistics_progress_tab = ttk.Frame(self.operator_notebook, style="Card.TFrame", padding=8)
         self.operator_notebook.add(self.logistics_progress_tab, text="진행 현황")
@@ -21710,7 +21712,7 @@ class Label_Match(tk.Tk):
             self.operator_right_pane, text="서버 연결: 확인 중 · 마지막 성공 전송 없음 · 대기 확인 중",
             style="Status.TLabel", wraplength=max(180, panes.right_width - 30),
         )
-        self.logistics_connection_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.logistics_connection_label.grid(row=2, column=0, sticky="ew", pady=(6, 0))
 
         label_workbench_context.create_status_footer(
             self,
