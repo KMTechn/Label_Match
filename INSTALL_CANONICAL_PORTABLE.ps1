@@ -631,7 +631,7 @@ integrity_order_transition = (
     release_digest(installed / integrity_order_path) ==
         'bfd59326ad76a400c70a62d78622b518a549e844c4bf4725f59eb7525c20a57f' and
     release_digest(source / integrity_order_path) ==
-        '0a5daba50423966d0372ab6912cba0d4a3a40652a5033ac21e30a1b2b8603d2e'
+        '93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd'
 )
 
 shared_transition = all(

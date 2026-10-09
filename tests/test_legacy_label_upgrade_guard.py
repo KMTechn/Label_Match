@@ -45,6 +45,51 @@ def _release_digest(data: bytes) -> str:
     return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
+@pytest.mark.parametrize("case,expected", [
+    ("forward", True), ("stale-source", False), ("one-byte", False),
+    ("other-before", False), ("reverse", False),
+    ("missing-source", False), ("missing-installed", False),
+])
+def test_integrity_order_transition_uses_exact_historical_before_and_current_source(tmp_path, case, expected):
+    source = INSTALLER.read_text(encoding="utf-8-sig")
+    start = source.index("$probe = @'") + len("$probe = @'")
+    tree = ast.parse(source[start:source.index("\n'@", start)].lstrip())
+    nodes = [node for node in tree.body
+             if (isinstance(node, ast.FunctionDef) and node.name == "release_digest")
+             or (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                 and node.targets[0].id in {"integrity_order_path", "integrity_order_transition"})]
+    assert len(nodes) == 3
+    before = subprocess.check_output(
+        ["git", "-C", str(ROOT), "show", "d0e504e:current_user_onboarding.py"],
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    current = (ROOT / "current_user_onboarding.py").read_bytes()
+    installed, candidate = tmp_path / "installed", tmp_path / "source"
+    installed_file = installed / "app/current_user_onboarding.py"
+    source_file = candidate / "app/current_user_onboarding.py"
+    installed_file.parent.mkdir(parents=True)
+    source_file.parent.mkdir(parents=True)
+    installed_file.write_bytes(before)
+    source_file.write_bytes(current)
+    if case == "stale-source":
+        source_file.write_bytes(subprocess.check_output(
+            ["git", "-C", str(ROOT), "show", "7ff8cd4:current_user_onboarding.py"],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)))
+    elif case == "one-byte":
+        source_file.write_bytes(current + b"\n")
+    elif case == "other-before":
+        installed_file.write_bytes(before + b"\n")
+    elif case == "reverse":
+        installed_file.write_bytes(current)
+        source_file.write_bytes(before)
+    elif case == "missing-source":
+        source_file.unlink()
+    elif case == "missing-installed":
+        installed_file.unlink()
+    namespace = {"hashlib": hashlib, "installed": installed, "source": candidate}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), "production-integrity-order", "exec"), namespace)
+    assert namespace["integrity_order_transition"] is expected
+
+
 def _declared_pair():
     source = INSTALLER.read_text(encoding="utf-8")
     start = source.index("$probe = @'") + len("$probe = @'")
