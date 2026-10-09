@@ -163,7 +163,7 @@ def create_activity_pane(
     )
     self.deferred_observability_detail_text.insert(
         "1.0",
-        "로컬 대기 상태를 읽는 중입니다.",
+        "이 PC의 대기 상태를 읽는 중입니다.",
     )
     self.deferred_observability_detail_text.configure(state="disabled")
     # Compatibility alias for renderer-focused tests and integrations that

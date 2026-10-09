@@ -1247,7 +1247,7 @@ def test_valid_sealed_start_label_names_the_cause_and_next_step(tmp_path, monkey
 
     [(title, message)] = app.errors  # approved: not a start label in either mode
     assert title == "[현품표 필요]" and app.current_set_info["raw"] == []
-    assert "이적 봉인 QR" in message and "원본 PHS2 현품표를 스캔" in message
+    assert "이적 봉인 QR" in message and "원본 현품표를 스캔" in message
     assert "관리자" in message and "디스크" not in message
 
 

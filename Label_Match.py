@@ -14649,7 +14649,7 @@ class Label_Match(tk.Tk):
                     title="[현품표 필요]",
                     reason=(
                         "이 QR은 제품 교체 뒤 붙이는 이적 봉인 QR이라 포장 시작 라벨로 쓸 수 없습니다. "
-                        "같은 상자의 원본 PHS2 현품표를 스캔하세요. 원본 현품표가 없거나 읽히지 않으면 "
+                        "같은 상자의 원본 현품표를 스캔하세요. 원본 현품표가 없거나 읽히지 않으면 "
                         "상자를 따로 두고 관리자에게 알리세요."
                     ),
                 )
@@ -18859,7 +18859,7 @@ class Label_Match(tk.Tk):
         main_frame = ttk.Frame(about_win, padding=25)
         main_frame.pack(expand=True, fill=tk.BOTH)
 
-        ttk.Label(main_frame, text="바코드 세트 검증기", font=header_font).pack(pady=(0, 5))
+        ttk.Label(main_frame, text="포장 라벨 검증", font=header_font).pack(pady=(0, 5))
         ttk.Label(main_frame, text=f"Version {APP_VERSION}", font=(self.default_font_name, 10, "italic")).pack(pady=(0, 20))
 
         info_frame = ttk.Frame(main_frame)
@@ -18877,7 +18877,7 @@ class Label_Match(tk.Tk):
         ttk.Label(keys_frame, text="주요 단축키", font=title_font).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 5))
 
         key_map = {
-            self.CURRENT_SET_CANCEL_ACTION_TEXT: "F1",
+            "현재 트레이 취소": "F1",
             self.COMPLETED_TRAY_CANCEL_ACTION_TEXT: "F2",
             self.MANUAL_COMPLETE_ACTION_TEXT: "F3",
             f"{self.HISTORY_DELETE_ACTION_TEXT} (기록 목록 선택 시)": "Delete",
@@ -20726,7 +20726,7 @@ class Label_Match(tk.Tk):
                 self._operator_task_detail_text_value = detail_text
 
         standard_phs2 = self._standard_phs2_workflow_expected(source)
-        membership = "레거시 QA 5단계"
+        membership = "옛 방식 5단계"
         if standard_phs2:
             # Counts come from the resolved source or verified seal, never the
             # one physical scan or the number of rows in the history table.
@@ -22329,9 +22329,9 @@ ITEM_CATALOG_STARTUP_ERROR_MESSAGE = (
 )
 ITEM_CATALOG_CACHE_WARNING_TITLE = "저장해 둔 검증된 품목 목록 사용"
 ITEM_CATALOG_CACHE_WARNING_MESSAGE = (
-    "중앙 품목 목록을 새로 받지 못해 무결성이 검증된 로컬 캐시로 시작합니다.\n\n"
-    "캐시 기준 시각: {cache_time}\n"
-    "네트워크가 복구되면 다음 실행에서 중앙 목록을 다시 확인합니다."
+    "회사 서버 품목 목록을 받지 못해 이 PC에 저장된 목록으로 시작합니다.\n\n"
+    "저장된 목록 시각: {cache_time}\n"
+    "네트워크가 돌아오면 다음 실행 때 회사 서버 목록을 다시 받습니다."
 )
 ITEM_CATALOG_TRANSITION_WARNING_TITLE = "과도기 모드 — 품목 목록 미확인"
 ITEM_CATALOG_TRANSITION_WARNING_MESSAGE = (

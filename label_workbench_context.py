@@ -180,9 +180,9 @@ def create_context_pane(
     self.operator_membership_label = ttk.Label(
         self.operator_left_pane,
         text=(
-            "PHS2 1장 · 중앙 멤버십 상속"
+            "제품 수량 -"
             if self._standard_phs2_workflow_expected()
-            else "레거시 QA 5단계"
+            else "옛 방식 5단계"
         ),
         style="Header.TLabel",
         wraplength=max(150, panes.left_width - 40),
