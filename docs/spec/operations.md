@@ -277,7 +277,9 @@ Main/Web은 원590b의 APP_CLOSE75·accepted/committed/RAW_LEGITIMATE/inserted1/
 <a id="routine-details-20260912"></a>
 ## 2026-09-12 · 일상 포장 화면 단순화
 
-표준 PHS2에서 반복되던 단계표·일반 안내와 스캔 원문 상시 노출을 줄였다. 원문·세트·접수/진단 코드·절차는 `작업 상세 보기`의 읽기 전용 스크롤 영역에서 확인한다. 품목·제품 수량과 다음 행동은 기본 화면에 남으며, 대기·실패·충돌·교체 복구 안내는 접히지 않는다. 기존 세 pane과 이력 위젯은 유지한다. 이전 left `operator_set_id_label`/`operator_left_hint_label`은 `operator_task_detail_text`로 합쳤다. Today observer의 제품/레이아웃 pin은 이전 후보의 증거이며 이번 UI나 성능 증거로 상속하지 않는다.
+상세 조작 뒤 스캔 칸으로 돌아가는 초점은 after_idle 한 번으로 예약하며 입력 중인 원문을 지우거나 선택하지 않는다. PIN 등 모달이 열려 있으면 초점을 옮기지 않는다. 창 제목 접두 `바코드 세트 검증기 (`는 기존 창 찾기 계약이므로 유지한다.
+
+표준 PHS2의 스캔 칸 아래에는 큰 `현재 트레이 N/5`, 다음 스캔 대상과 방금 결과가 항상 보인다. 현품표를 포함한 다섯 입력의 진행 수이며 제품 수량과는 다르다. 현재 트레이 표는 상세를 닫아도 표시한다. 원문·세트·접수/진단 코드·절차만 `작업 상세 보기`의 읽기 전용 영역에서 접고 펼친다. 대기·실패·충돌·교체 복구 안내는 접히지 않는다. 중복 거절도 빨간 이유를 표시하며 다음 스캔 gate는 유지한다. 기존 세 pane과 이력 위젯은 유지한다. 이전 left `operator_set_id_label`/`operator_left_hint_label`은 `operator_task_detail_text`로 합쳤다. 아래 native 근거는 이전 화면의 증거이며 이 변경의 실제 화면·배율 수용은 별도 VM 확인이 필요하다.
 
 **PROVEN — 격리 host, Python 3.12.10:** workbench/presenter/adapter/action-gate와 closed-port 접수 UI를 실제 실행해 **151 PASS / 2 native 검사 제외**다. 상세 왕복의 입력·원문·상태·action gate 보존, source48개·seal12개 표시, 수량 미확인, 복구 경고 및 ID의 상세 이동을 확인했다. 기존 layout fake가 `Style.lookup`을 구현하지 않아 중간에 빠지던 실패를 원 HEAD에서도 확인하고 fixture를 보완했다. **FAILED, 기존 소스에서도 동일:** 별도 clock 회귀의14개는 UI 도달 전 `VALIDATED`/`ORDERED_LABEL_VALIDATION_VALID`와 과거 lease 기대값이 달라 실패했고 baseline에서도 재현했다. 원 로그를 보존하며 이번 UI PASS에 합치지 않는다.
 

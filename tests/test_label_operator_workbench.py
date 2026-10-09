@@ -418,6 +418,9 @@ def operator_workbench(monkeypatch):
     app._root_bindings = []
     app.bind = lambda sequence, callback, add=None: app._root_bindings.append((sequence, callback, add))
     app.after = lambda delay, callback=None, *args: "after-fixture"
+    app._idle_callbacks = []
+    app.after_idle = lambda callback: app._idle_callbacks.append(callback) or "idle-fixture"
+    app.grab_current = lambda: None
     app.winfo_width = lambda: 1440
     app.winfo_height = lambda: 900
     app.winfo_screenwidth = lambda: 1440
@@ -2701,7 +2704,7 @@ def test_phs2_details_round_trip_preserves_scan_quantity_and_action_gates(operat
     assert app.operator_membership_label.cget("text") == "제품 48개"
     assert app.big_display_label.cget("text") == "2/5 제품 1 스캔"
     assert not app.workflow_notice_frame.winfo_ismapped()
-    assert not app.live_scan_notebook.winfo_ismapped()
+    assert app.live_scan_notebook.winfo_ismapped()
     assert not app.operator_task_detail_frame.winfo_ismapped()
 
     app.operator_details_button.cget("command")()
@@ -2712,7 +2715,7 @@ def test_phs2_details_round_trip_preserves_scan_quantity_and_action_gates(operat
     assert app._render_operator_workbench() == view
 
     app.operator_details_button.cget("command")()
-    assert not app.live_scan_notebook.winfo_ismapped()
+    assert app.live_scan_notebook.winfo_ismapped()
     assert app.current_set_info == original
     assert app._last_workflow_view == view
     assert app.entry.cget("state") == "normal"  # DESIGN §2 LM keeps sample input open.
@@ -2721,7 +2724,94 @@ def test_phs2_details_round_trip_preserves_scan_quantity_and_action_gates(operat
     app._render_operator_workbench()
     app.operator_details_button.cget("command")()
     app.operator_details_button.cget("command")()
+    app._idle_callbacks.pop(0)()
     assert app.entry.focused
+
+
+@pytest.mark.parametrize("accepted", [0, 1, 2, 4])
+def test_scan_summary_stays_below_input_with_progress_next_scan_and_result(operator_workbench, accepted):
+    app = operator_workbench
+    scans = ["PHS=2|SRC=KMTECH_INPUT_TAG|ITG=fixture|CLC=ITEM-001|LBL=fixture|HSH=0123456789abcdef",
+             "PRODUCT-1", "PRODUCT-2", "PRODUCT-3"][:accepted]
+    app.current_set_info.update(raw=scans, parsed=["ITEM-001"] * accepted, central_inherit_all=True)
+    original = copy.deepcopy(app.current_set_info)
+    view = app._render_operator_workbench()
+    summary = _required_widget(app, "operator_scan_summary_frame")
+    assert summary.winfo_ismapped()
+    assert summary.master is app.operator_center_pane
+    assert app.operator_input_frame.grid_options["row"] < summary.grid_options["row"]
+    assert summary.grid_options["row"] < app.live_scan_notebook.grid_options["row"]
+    assert app.operator_tray_progress_label.cget("text") == f"현재 트레이 {accepted}/5"
+    assert app.operator_next_scan_label.cget("text") == (
+        "현품표를 스캔하세요" if accepted == 0 else f"제품 {accepted}번째를 스캔하세요"
+    )
+    assert app.operator_scan_result_label.cget("text") == ("맞음" if accepted else "방금 결과: -")
+    if accepted:
+        assert app.operator_scan_result_label.cget("foreground") == app.colors["success"]
+    for label in (app.operator_tray_progress_label, app.operator_next_scan_label, app.operator_scan_result_label):
+        assert label.master is summary and label.winfo_ismapped()
+    assert app.live_scan_notebook.winfo_ismapped()
+    app.operator_details_button.cget("command")()
+    app.operator_details_button.cget("command")()
+    assert summary.winfo_ismapped() and app.live_scan_notebook.winfo_ismapped()
+    assert not app.qa_scan_detail_frame.winfo_ismapped()
+    assert app.current_set_info == original and app._last_workflow_view == view
+    assert app.entry.cget("state") == "normal"
+
+
+def test_scan_summary_keeps_failure_reason_red_without_changing_scan_gate(operator_workbench):
+    app = operator_workbench
+    app.current_set_info["central_inherit_all"] = True
+    app._workflow_notice = label_match_module.WorkflowNotice(
+        "품목 불일치", "다른 품목입니다.", kind="error", tone="danger",
+    )
+    original = copy.deepcopy(app.current_set_info)
+    view = app._render_operator_workbench()
+    label = _required_widget(app, "operator_scan_result_label")
+    assert label.cget("text") == "틀림 · 품목 불일치"
+    assert label.cget("foreground") == app.colors["danger"]
+    assert app.workflow_notice_frame.winfo_ismapped()
+    assert app.live_scan_notebook.winfo_ismapped()
+    assert app.current_set_info == original and not view.scan_input_enabled
+    assert app.entry.cget("state") == "disabled"
+
+
+def test_scan_summary_marks_ignored_duplicate_red_while_input_stays_open(operator_workbench):
+    app = operator_workbench
+    app.current_set_info.update(raw=["MASTER"], parsed=["ITEM-001"], central_inherit_all=True)
+    app._phs_label_guidance_notice = label_match_module.WorkflowNotice(
+        "중복 제품", "이 제품은 이미 스캔했습니다.", kind="scanner_notice", tone="warning",
+    )
+    original = copy.deepcopy(app.current_set_info)
+    app._render_operator_workbench()
+    label = _required_widget(app, "operator_scan_result_label")
+    assert label.cget("text") == "틀림 · 중복 제품"
+    assert label.cget("foreground") == app.colors["danger"]
+    assert app.current_set_info == original and app.entry.cget("state") == "normal"
+
+
+def test_label_title_retains_single_instance_discovery_prefix():
+    from label_match_single_instance import LABEL_WINDOW_TITLE_PREFIX
+    assert LABEL_WINDOW_TITLE_PREFIX == "바코드 세트 검증기 ("
+    assert label_match_module._label_match_window_title() == f"바코드 세트 검증기 ({label_match_module.APP_VERSION})"
+    assert label_match_module._label_match_window_title().startswith(LABEL_WINDOW_TITLE_PREFIX)
+
+
+@pytest.mark.parametrize("modal", [False, True])
+def test_details_focus_return_runs_once_at_idle_and_preserves_partial_input(operator_workbench, modal):
+    app = operator_workbench
+    app.current_set_info["central_inherit_all"] = True
+    app.entry.options["input"] = "HALF-SCANNED-"
+    calls = []
+    app.entry.focus_set = lambda: calls.append("scan")
+    app.grab_current = lambda: object() if modal else None
+    app.operator_details_button.cget("command")()
+    app.operator_details_button.cget("command")()
+    assert len(app._idle_callbacks) == 1 and calls == []
+    app._idle_callbacks.pop(0)()
+    assert calls == ([] if modal else ["scan"])
+    assert app.entry.options["input"] == "HALF-SCANNED-"
+    assert not app._idle_callbacks and app._scan_focus_return_after_id is None
 
 
 class _LayoutFont:
@@ -2880,7 +2970,7 @@ def test_collapsed_phs2_details_keep_pending_and_review_notice_visible(operator_
     app.current_set_info["central_inherit_all"] = True
     app._package_create_review_notice = notice
     app._render_operator_workbench()
-    assert not app.live_scan_notebook.winfo_ismapped()
+    assert app.live_scan_notebook.winfo_ismapped()
     assert app.workflow_notice_frame.winfo_ismapped()
     assert app.workflow_notice_title_label.cget("text") == notice.title
     assert app.workflow_notice_label.cget("text").startswith(notice.message)

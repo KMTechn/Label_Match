@@ -19800,6 +19800,16 @@ class Label_Match(tk.Tk):
                     "bold",
                 ),
             )
+            if self.__dict__.get("operator_scan_summary_frame") is not None:
+                summary_wrap = max(260, panes.center_width - card_padding * 2 - 8)
+                self.operator_tray_progress_label.configure(
+                    font=(self.default_font_name, min(30, headline_font_size), "bold"),
+                )
+                for name in ("operator_next_scan_label", "operator_scan_result_label"):
+                    self.__dict__[name].configure(
+                        font=(self.default_font_name, min(18, notice_font_size), "bold"),
+                        wraplength=summary_wrap,
+                    )
             self.entry.grid_configure(
                 ipady=(
                     5
@@ -20762,13 +20772,9 @@ class Label_Match(tk.Tk):
     def _set_operator_details_visibility(self, source=None):
         """Disclose scan evidence without changing workflow state or admission."""
         expanded = bool(self.__dict__.get("_operator_details_expanded", False))
-        standard = self._standard_phs2_workflow_expected(source)
         notebook = self.__dict__.get("live_scan_notebook")
         if notebook is not None:
-            if expanded or not standard:
-                notebook.grid()
-            else:
-                notebook.grid_remove()
+            notebook.grid()
         for name in ("qa_scan_detail_frame", "exact_rescan_detail_frame",
                      "operator_task_detail_frame"):
             widget = self.__dict__.get(name)
@@ -20789,8 +20795,28 @@ class Label_Match(tk.Tk):
             self.__dict__.get("_operator_details_expanded", False)
         )
         self._set_operator_details_visibility(self._workflow_view_source())
-        if not self._operator_details_expanded:
+        self._schedule_scan_entry_focus_return()
+
+    def _schedule_scan_entry_focus_return(self):
+        """Return focus once after a control closes, preserving any partial scan."""
+        pending = self.__dict__.get("_scan_focus_return_after_id")
+        if pending is not None:
+            return pending
+
+        def restore_focus():
+            self._scan_focus_return_after_id = None
+            try:
+                if self.grab_current() is not None:
+                    return
+                recovery = self.__dict__.get("_package_recovery_window")
+                if recovery is not None and recovery.winfo_exists():
+                    return
+            except (TclError, AttributeError):
+                return
             self._focus_scan_entry_if_available()
+
+        self._scan_focus_return_after_id = self.after_idle(restore_focus)
+        return self._scan_focus_return_after_id
 
     def _render_operator_workbench(self):
         """Render the current runtime through adapter -> pure presenter."""
@@ -21072,16 +21098,45 @@ class Label_Match(tk.Tk):
             display_notice,
             "" if deferred_capture_notice is not None else view.next_action,
         )
+        summary = self.__dict__.get("operator_scan_summary_frame")
+        if summary is not None:
+            summary.grid()
+            completed = view.qa_total if view.completion_kind == "full" else view.qa_completed
+            self.operator_tray_progress_label.configure(text=f"현재 트레이 {completed}/{view.qa_total}")
+            next_scan = (
+                "현품표를 스캔하세요" if not source.get("raw") else
+                f"제품 {view.qa_completed}번째를 스캔하세요"
+                if view.notice is None and 0 < view.qa_completed < view.qa_total
+                and view.exact_rescan.status != "active" else view.next_action
+            )
+            self.operator_next_scan_label.configure(text=next_scan)
+            rejected = bool(
+                view.current_stage in {"error", "completion_failed"}
+                or (display_notice is not None and (
+                    display_notice.tone == "danger" or display_notice.kind == "scanner_notice"
+                ))
+            )
+            result = (
+                f"틀림 · {display_notice.title}" if rejected and display_notice is not None else
+                "틀림" if rejected else
+                "맞음" if view.qa_completed or view.completion_kind in {"full", "partial"} else
+                "방금 결과: -"
+            )
+            self.operator_scan_result_label.configure(
+                text=result, foreground=self.colors.get(
+                    "danger" if rejected else "success" if result == "맞음" else "text_subtle",
+                    "#B91C1C" if rejected else "#047857" if result == "맞음" else "#6B7280",
+                ),
+            )
         # The standard one-scan flow needs one next action.  Keep the full
         # notice surface for every exception, uncertain result and recovery.
         if self._standard_phs2_workflow_expected(source):
             routine = display_notice is None
             if routine and headline is not None:
-                headline.grid()
                 headline.configure(text=(
                     "현품표를 스캔하세요" if not source.get("raw") else view.next_action
                 ))
-            elif headline is not None:
+            if headline is not None:
                 headline.grid_remove()
             progress_frame = self.__dict__.get("progress_frame")
             if progress_frame is not None:
@@ -21631,8 +21686,8 @@ class Label_Match(tk.Tk):
     def _create_widgets(self):
         """Create the work-focused three-column operator surface.
 
-        Routine PHS2 work shows the item/count, scan and next action. Accepted
-        scans and technical context are available through the work disclosure;
+        Routine PHS2 work shows the item/count, scan, progress and last result.
+        Accepted scans stay visible; raw evidence uses the work disclosure;
         legacy multi-scan progress and exception notices remain visible.
         """
         profile, main_frame, panes = label_workbench_context.create_context_pane(
