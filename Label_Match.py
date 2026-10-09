@@ -3623,7 +3623,7 @@ from label_data_generation import (
     CURRENT_VERSION, DataGenerationError, check_user_data_open,
     record_user_data_open, release_identity,
 )
-APP_VERSION = "v2.0.96"
+APP_VERSION = "v2.0.97"
 if APP_VERSION != CURRENT_VERSION:
     raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
 
