@@ -2,6 +2,8 @@
 
 시험 장치 흔들림(컷 뒤): tests/test_label_ui_lane_integration.py::test_saved_exchange_retry_keeps_immutable_command_off_tk 세 매개변수 — 부하 중 fake Tk pump 2.0 s 벽시계, a63caec 에서도 단독 실패(w9setupprep sub-451)
 
+LM-02 follow-up(코디 10-09 18:2x): full 완료의 방금 결과 문구·초록색과 표준 PHS2 알림의 중복 `다음:` 줄 생략을 창 차단 headless 시험으로 검증한다. 부분 완료·다른 화면·시작 안내와 업무 판정은 유지한다. 실제 Tk 창 수용은 별도 범위다([계약](contracts.md#scanner-only-packaging)).
+
 P1-LM-02·03·05: 트레이 진행·다음 스캔·방금 결과와 현재 트레이 표를 계속 보이고, 복구 목록은 관리자 메뉴로 옮기며, 바닥 상태는 공통 문구 한 줄로 표시한다. 제목 접두·PIN 관문·입력 보존·after_idle 한 번 복귀는 창 차단 headless 시험으로 검증한다. 실제 Tk 창·DPI·스캐너·설치 수용은 sub-510 결합 뒤 w9setupprep stock과 배정 VM 회차에서 판정한다. 이 레인은 판 번호·서버 계약을 바꾸지 않는다.
 
 onboarding admission 분리 후 랩 수용: 새 MachineGuid의 처음 설치·첫 GUI와 로그온 Run relay가 뜨기 전 GUI 시작, 기존 relay의 상태 갱신·실제 전송 지속을 확인한다. headless 두 프로세스의 실제 named mutex 검증과 실제 GUI/전송 수용은 구분하며, 기존 옛 예약 작업 은퇴의 admission 보유 시간은 별도 측정한다.

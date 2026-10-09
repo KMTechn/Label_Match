@@ -2806,6 +2806,63 @@ def test_scan_summary_stays_below_input_with_progress_next_scan_and_result(opera
     assert app.entry.cget("state") == "normal"
 
 
+@pytest.mark.parametrize("completion_kind, expected", [
+    ("full", "트레이 완료 · 이 PC에 저장됨"),
+    ("partial", "맞음"),
+    (None, "맞음"),
+])
+def test_scan_summary_names_full_completion_and_keeps_success_color(
+    operator_workbench, completion_kind, expected,
+):
+    # Coordinator 18:2x: name only a fully completed tray; retain other results.
+    app = operator_workbench
+    scans = tuple(f"RAW-{index}" for index in range(1, 6))
+    app.current_set_info.update(raw=list(scans), parsed=["ITEM-001"] * 5)
+    app._workflow_completion_kind = completion_kind
+    app._workflow_display_scans = scans if completion_kind else ()
+    app._workflow_display_parsed_scans = ("ITEM-001",) * 5 if completion_kind else ()
+    original = copy.deepcopy(app.current_set_info)
+    view = app._render_operator_workbench()
+    assert view.completion_kind == completion_kind
+    assert app.operator_scan_result_label.cget("text") == expected
+    assert app.operator_scan_result_label.cget("foreground") == app.colors["success"]
+    assert app.current_set_info == original
+    assert app._workflow_completion_kind == completion_kind
+
+
+@pytest.mark.parametrize("standard, ready, initialized, duplicate_next", [
+    (True, True, True, False),
+    (False, True, True, True),
+    (True, False, True, True),
+    (True, True, False, True),
+])
+def test_notice_omits_duplicate_next_only_on_standard_phs2_workbench(
+    operator_workbench, standard, ready, initialized, duplicate_next,
+):
+    # Coordinator 18:2x: the working PHS2 screen already has a next-scan row.
+    app = operator_workbench
+    app.current_set_info.update(raw=["MASTER"], parsed=["ITEM-001"], central_inherit_all=standard)
+    app.operator_workbench_ready = ready
+    app.initialized_successfully = initialized
+    notice = label_match_module.WorkflowNotice("품목 확인", "다른 품목입니다.", tone="warning")
+    original = copy.deepcopy(app.current_set_info)
+    app._set_workflow_notice_ui(notice, "제품을 다시 스캔하세요.")
+    message = app.workflow_notice_label.cget("text")
+    assert ("다음:" in message) is duplicate_next
+    assert message == ("다른 품목입니다.\n다음: 제품을 다시 스캔하세요." if duplicate_next
+                       else "다른 품목입니다.")
+    assert app.workflow_notice_title_label.cget("text") == notice.title
+    assert app.current_set_info == original
+
+
+def test_notice_preserves_start_guidance_without_a_notice(operator_workbench):
+    app = operator_workbench
+    app.current_set_info["central_inherit_all"] = True
+    app._set_workflow_notice_ui(None, "현품표를 스캔하세요.")
+    assert app.workflow_notice_title_label.cget("text") == "다음 행동"
+    assert app.workflow_notice_label.cget("text") == "현품표를 스캔하세요."
+
+
 def test_scan_summary_keeps_failure_reason_red_without_changing_scan_gate(operator_workbench):
     app = operator_workbench
     app.current_set_info["central_inherit_all"] = True

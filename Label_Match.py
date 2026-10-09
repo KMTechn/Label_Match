@@ -20615,7 +20615,12 @@ class Label_Match(tk.Tk):
             title = str(notice.title)
             message = self._compact_operator_notice_message(notice.message)
             next_action_text = str(next_action or "").strip()
-            if next_action_text and next_action_text not in message:
+            standard_workbench = bool(
+                self.__dict__.get("operator_workbench_ready")
+                and self.__dict__.get("initialized_successfully")
+                and self._standard_phs2_workflow_expected()
+            )
+            if next_action_text and next_action_text not in message and not standard_workbench:
                 message = f"{message}\n다음: {next_action_text}"
             message = self._compact_operator_notice_message(message)
             tone = str(notice.tone or "danger")
@@ -21212,13 +21217,15 @@ class Label_Match(tk.Tk):
             result = (
                 f"틀림 · {display_notice.title}" if rejected and display_notice is not None else
                 "틀림" if rejected else
+                "트레이 완료 · 이 PC에 저장됨" if view.completion_kind == "full" else
                 "맞음" if view.qa_completed or view.completion_kind in {"full", "partial"} else
                 "방금 결과: -"
             )
+            success_result = result in {"맞음", "트레이 완료 · 이 PC에 저장됨"}
             self.operator_scan_result_label.configure(
                 text=result, foreground=self.colors.get(
-                    "danger" if rejected else "success" if result == "맞음" else "text_subtle",
-                    "#B91C1C" if rejected else "#047857" if result == "맞음" else "#6B7280",
+                    "danger" if rejected else "success" if success_result else "text_subtle",
+                    "#B91C1C" if rejected else "#047857" if success_result else "#6B7280",
                 ),
             )
         # The standard one-scan flow needs one next action.  Keep the full
