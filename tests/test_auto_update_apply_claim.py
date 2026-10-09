@@ -12,7 +12,7 @@ import time
 import pytest
 
 import auto_update as updates
-from tests.test_auto_update_endpoints import endpoint, assert_ordinary, OLD, NEW
+from tests.test_auto_update_endpoints import endpoint, assert_ordinary, hotfix_packet, bootstrap_variant, OLD, NEW
 from kmtech_shared import data_generation as generation
 
 
@@ -113,7 +113,7 @@ def test_e1_absent_or_reused_apply_owner_starts_current(endpoint, monkeypatch, o
     assert updates.read_json(control/'active.json')['sha'] == OLD
 
 
-def test_e1_unknown_owner_waits_existing_window_and_reports_progress(endpoint, monkeypatch, capsys):
+def test_e1_unknown_owner_waits_existing_window_and_reports_progress(endpoint, monkeypatch, capsys, bootstrap_variant):
     control = prepared_start(endpoint)
     clock = [0.0]
     updates.write_json_durable(control/'apply-claim.json', own_claim())
@@ -152,13 +152,14 @@ def test_e1_next_logon_system_replaces_absent_claim_and_applies(endpoint, monkey
     assert updates.apply_prepared(control) == 0
     assert len(started) == 1 and started[0]['creation_identity'] == own_claim()['creation_identity']
     assert updates.read_json(control/'transition.json')['phase'] == 'ROLLED_BACK'
+    assert updates.read_json(control/'transition.json')['failed_shas'] == []
     assert updates.read_json(control/'apply-claim.json')['status'] == 'SETTLED'
     assert_ordinary(endpoint, OLD)
 
 
 @pytest.mark.parametrize('phase', ['FAILED', 'UNKNOWN'])
 @pytest.mark.parametrize('guard', ['allow', 'writer', 'generation_unknown', 'generation_denied', 'prepared'])
-def test_b1_settled_trial_recovers_in_same_bootstrap(endpoint, monkeypatch, phase, guard):
+def test_b1_settled_trial_recovers_in_same_bootstrap(endpoint, monkeypatch, phase, guard, bootstrap_variant):
     control, stage, policy, state, marker, observation = endpoint
     clock = [0.0]
     monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
@@ -182,12 +183,12 @@ def test_b1_settled_trial_recovers_in_same_bootstrap(endpoint, monkeypatch, phas
         protected.update({path: path.read_bytes() for path in control.glob('*.json')})
 
     monkeypatch.setattr(updates, 'request_apply_task', settle)
-    if guard == 'allow':
+    if guard == 'allow' and bootstrap_variant == 'a63caec':
         assert_ordinary(endpoint, NEW)
         assert clock[0] == 0.0
         assert updates.read_json(stage / 'startup-support.json')['reason_code'] == 'UPDATE_TERMINAL_RECOVERED'
     else:
-        assert updates.bootstrap(control.parent / 'current/app', [], role='gui') == (0 if guard == 'writer' else 20)
+        assert updates.bootstrap(control.parent / 'current/app', [], role='gui') == (0 if guard == 'writer' and bootstrap_variant == 'a63caec' else 20)
         assert not observation.exists()
     assert requests == [True]
     assert updates.apply_claim_status(control) == 'NONE'
@@ -199,7 +200,7 @@ def test_b1_settled_trial_recovers_in_same_bootstrap(endpoint, monkeypatch, phas
     'allow', 'fresh', 'boundary', 'future', 'live', 'stat_error', 'writer',
     'generation_unknown', 'generation_denied', 'prepared', 'claim_renewed', 'lock_busy',
 ])
-def test_b3_stale_unknown_claim_recovers_only_after_window_and_recheck(endpoint, monkeypatch, guard):
+def test_b3_stale_unknown_claim_recovers_only_after_window_and_recheck(endpoint, monkeypatch, guard, bootstrap_variant):
     control, stage, policy, state, marker, observation = endpoint
     updates.write_json_durable(control / 'transition.json', {**state, 'phase': 'FAILED'})
     claim_path = control / 'apply-claim.json'
@@ -241,16 +242,49 @@ def test_b3_stale_unknown_claim_recovers_only_after_window_and_recheck(endpoint,
         yield
     monkeypatch.setattr(updates, 'update_lock', lock)
     protected = {path: path.read_bytes() for path in control.glob('*.json')}
-    if guard == 'allow':
+    if guard == 'allow' and bootstrap_variant == 'a63caec':
         assert_ordinary(endpoint, NEW)
         assert locked and locked[0] == 240.0
         report = updates.read_json(stage / 'startup-support.json')
         assert report['reason_code'] == 'UPDATE_SUPERVISION_UNAVAILABLE'
         assert report['apply_claim_sha256'] == updates.hashlib.sha256(claim_path.read_bytes()).hexdigest()
     else:
-        assert updates.bootstrap(control.parent / 'current/app', [], role='gui') == (0 if guard == 'writer' else 20)
+        assert updates.bootstrap(control.parent / 'current/app', [], role='gui') == (0 if guard == 'writer' and bootstrap_variant == 'a63caec' else 20)
         assert not observation.exists()
     assert clock[0] == 240.0
     assert not requests
     assert all(path.read_bytes() == value for path, value in protected.items() if not (guard == 'claim_renewed' and path == claim_path))
     assert not (stage / 'trial.json').exists()
+
+
+@pytest.mark.parametrize('crash_phase', ['PREPARED', 'APPLIED_PENDING_READY'])
+def test_system_restart_supervises_only_a_window_it_opens(endpoint, monkeypatch, crash_phase):
+    control, _, _, state, _, _ = endpoint
+    updates.write_json_durable(control/'transition.json', {**state, 'phase': 'FAILED'})
+    updates.write_json_durable(control/'active.json', {'sha': OLD})
+    hot = hotfix_packet(endpoint, monkeypatch)
+    written = updates.write_json_durable
+    def crash(path, value):
+        written(path, value)
+        if crash_phase == 'PREPARED':
+            if path == control/'transition.json' and value.get('phase') == 'PREPARED':
+                raise SystemExit(0)
+        elif path == control/'active.json' and value.get('sha') == hot:
+            raise SystemExit(0)
+    monkeypatch.setattr(updates, 'write_json_durable', crash)
+    with pytest.raises(SystemExit):
+        updates.apply_prepared(control)
+    assert updates.read_json(control/'transition.json')['phase'] == crash_phase
+    observations = []
+    def observe(path, value):
+        written(path, value)
+        if path == control/'transition.json':
+            observations.append(value)
+    monkeypatch.setattr(updates, 'write_json_durable', observe)
+    # Same interpreter: ownership must be local to each SYSTEM call.
+    assert updates.apply_prepared(control) == 0
+    settled = updates.read_json(control/'transition.json')
+    assert settled['phase'] == 'ROLLED_BACK'
+    assert settled['failed_shas'] == ([hot] if crash_phase == 'PREPARED' else [])
+    assert any(value['phase'] == 'UNKNOWN' for value in observations) is (crash_phase == 'APPLIED_PENDING_READY')
+    assert updates.read_json(control/'active.json')['sha'] == OLD

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 import auto_update as updates
+from tests.test_auto_update_endpoints import bootstrap_variant
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -216,7 +217,7 @@ def test_trial_launch_failure_waits_and_starts_previous_code(monkeypatch, tmp_pa
     assert calls.count((new, failed_role)) == 1
 
 
-def test_failed_trial_keeps_unknown_and_never_launches_previous_code(monkeypatch, tmp_path):
+def test_failed_trial_keeps_unknown_and_never_launches_previous_code(monkeypatch, tmp_path, bootstrap_variant):
     old, new, _, records = bootstrap_fixture(monkeypatch, tmp_path)
     calls = []
     def fail(control, sha, args, **kwargs):
@@ -233,7 +234,7 @@ def test_failed_trial_keeps_unknown_and_never_launches_previous_code(monkeypatch
 
 
 @pytest.mark.parametrize("change", ["missing", "reused_pid", "wrong_sid", "wrong_sha", "wrong_transition", "missing_relay"])
-def test_existing_trial_claim_requires_live_bound_processes(monkeypatch, tmp_path, change):
+def test_existing_trial_claim_requires_live_bound_processes(monkeypatch, tmp_path, change, bootstrap_variant):
     _, new, state, records = bootstrap_fixture(monkeypatch, tmp_path)
     records["trial.json"] = {"pid": 42, "nonce": state["nonce"],
                              "transition_id": state["transition_id"], "claimed_at": state["applied_at"]}
@@ -250,7 +251,9 @@ def test_existing_trial_claim_requires_live_bound_processes(monkeypatch, tmp_pat
     monkeypatch.setattr(time, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
     # B1 keeps a rejected trial rejected, but an existing ordinary writer owns
     # work after supervision settles. With no writer and unknown G, keep 20.
-    expected = 20 if change == "missing" else 0
+    # e78 stops after an observed trial settles UNKNOWN with a non-ABSENT
+    # claim; a63 permits the existing ordinary writer to keep ownership.
+    expected = 20 if change == "missing" or bootstrap_variant == "e780231" else 0
     assert updates.bootstrap(tmp_path / "app", [], role="gui") == expected
     assert records["trial-failure.json"]["sha"] == new
     assert records["trial-failure.json"]["nonce"] == state["nonce"]

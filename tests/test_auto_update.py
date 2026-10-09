@@ -286,7 +286,7 @@ def test_failed_preparation_defers_but_failed_activation_remains_unknown(monkeyp
     assert writes[-1][1]["phase"] == "UNKNOWN"
 
 
-@pytest.mark.parametrize("failure_mode", ["exit", "launch_error"])
+@pytest.mark.parametrize("failure_mode", ["exit", "launch_error", "timeout"])
 def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(monkeypatch, tmp_path, failure_mode):
     """Exercise the apply loop/journal with synthetic process and crypto adapters."""
     import json
@@ -337,6 +337,8 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
         if not state or state["phase"] == "PREPARED":
             return []
         if state["phase"] == "APPLIED_PENDING_READY":
+            if failure_mode == "timeout":
+                return []  # This invocation opened the supervised window.
             if candidate_seen:
                 return []  # New GUI exited normally before READY.
             candidate_seen = True
@@ -353,6 +355,9 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
             raise AssertionError("E6 must not launch another previous-version trial")
         return []  # Candidate writers are absent before rollback.
     monkeypatch.setattr(updates, "process_snapshot", snapshot)
+    if failure_mode == "timeout":
+        ticks = iter(range(0, 1000000))
+        monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     original_policy = (control / "policy.json").read_bytes()
     original_marker = marker.read_bytes()
@@ -361,7 +366,7 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
     assert result["phase"] == "ROLLED_BACK"
     assert result["failed_shas"] == [NEW]
     assert updates.read_json(control / "active.json")["sha"] == OLD
-    assert len(nonces) == 1
+    assert len(nonces) == (0 if failure_mode == "timeout" else 1)
     assert result["trial_sha"] is None
     assert marker.read_bytes() == original_marker
     assert result["data_api_evidence"] == {"previous_data_api_sha256":"c"*64,"candidate_data_api_sha256":"d"*64,"consumer_bytes_equal":False}

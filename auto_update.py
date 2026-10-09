@@ -1159,10 +1159,7 @@ def apply_prepared(control: Path) -> int:
 
 def settle_trial_failure(control: Path, state: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:
     """SYSTEM only, with writer absence and the update lock already proved."""
-    failures = list(state.get("failed_shas", []))
-    if state["candidate_sha"] not in failures:
-        failures.append(state["candidate_sha"])
-    state = decide_trial_failure({**state, "phase": "ROLLBACK_PENDING", "failed_shas": failures,
+    state = decide_trial_failure({**state, "phase": "ROLLBACK_PENDING",
                                   "recovery_pending": False}, policy)
     write_json_durable(control / "transition.json", state)
     selected = state["failure_decision"]["selected_sha"]
@@ -1205,6 +1202,7 @@ def _apply_prepared(control: Path) -> int:
     import time
     from Label_Match import _sha256_file as file_sha256
 
+    opened_here = False
     fixed_helper(control, "Authority")
     policy = load_policy(control)
     # SYSTEM must never resolve user credentials or start a user process.
@@ -1294,6 +1292,7 @@ def _apply_prepared(control: Path) -> int:
             state = {**state, "rollback_pair": rollback_pair, "pin_authority": pin_authority, "policy_sha256": file_sha256(control / "policy.json"), "data_api_evidence": data_api_evidence, "prepared_packet_root": str(protected), "generation_before": generation_before, "generation_previous_release": current, "generation_candidate_release": candidate_manifest}
             write_json_durable(control / "transition.json", state)
             state = apply_transition(state, writers_absent=not writer_processes(process_snapshot(control), own_pid=os.getpid()), packet_verified=True, durable_prepared=True, now=now_utc())
+            opened_here = True
             persist_switch(control, state, sha)
         else:
             pointer = read_json(control / "active.json")
@@ -1303,6 +1302,7 @@ def _apply_prepared(control: Path) -> int:
                 authorize_prepared_replay(control, policy, state)
                 fixed_helper(control, "Verify", code_root=version_bundle(control, state["candidate_sha"]))
                 state = apply_transition(state, writers_absent=True, packet_verified=True, durable_prepared=True, now=now_utc())
+                opened_here = True
                 persist_switch(control, state, state["candidate_sha"])
             if state["phase"] == "ROLLBACK_PENDING":
                 if writer_processes(process_snapshot(control), own_pid=os.getpid()):
@@ -1358,7 +1358,13 @@ def _apply_prepared(control: Path) -> int:
         if state["phase"] == "ROLLBACK_PENDING_READY":
             write_json_durable(control / "transition.json", {**state, "phase": "FAILED", "reason": "previous version readiness failed"})
             return 20
-        state = request_rollback(state, reason="candidate startup failed or readiness timed out")
+        if opened_here:
+            state = request_rollback(state, reason="candidate startup failed or readiness timed out")
+        else:
+            if state["phase"] != "APPLIED_PENDING_READY":
+                raise ValueError("rollback requires a pending trial")
+            # An inherited window supplies no supervised failure evidence.
+            state = {**state, "phase": "UNKNOWN"}
         write_json_durable(control / "transition.json", state)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:

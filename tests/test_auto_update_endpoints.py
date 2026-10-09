@@ -21,6 +21,29 @@ REPO = Path(updates.__file__).parent
 NATIVE_SLEEP = time.sleep
 
 
+@pytest.fixture(params=["a63caecc881bad7e51887296be32ef702ae0a781", "e78023199d99e1878a5927139595dcf25088fdfa"], ids=["a63caec", "e780231"])
+def bootstrap_variant(monkeypatch, request):
+    """Pin both committed UNKNOWN policies without modifying another worktree."""
+    import ast
+    native = getattr(subprocess.Popen, "native", subprocess.Popen)
+    with monkeypatch.context() as patch:
+        patch.setattr(subprocess, "Popen", native)
+        source = subprocess.check_output(
+            ["git", "--no-optional-locks", "show", request.param + ":auto_update.py"],
+            cwd=REPO, creationflags=subprocess.CREATE_NO_WINDOW).decode("utf-8")
+    wanted = {"_bootstrap", "start_current", "_launch_bootstrap_version"}
+    nodes = [node for node in ast.parse(source).body
+             if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    assert {"_bootstrap", "start_current"} <= {node.name for node in nodes}
+    namespace = {}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), request.param + ":bootstrap", "exec"),
+         vars(updates), namespace)
+    for name, function in namespace.items():
+        monkeypatch.setattr(updates, name, function, raising=False)
+    monkeypatch.setattr(updates, "WriterFencedError", fence.WriterFencedError, raising=False)
+    return request.param[:7]
+
+
 class Endpoint(tuple):
     """Keep native child handles outside product launch ownership."""
     pass
@@ -149,7 +172,7 @@ def assert_ordinary(endpoint, expected, *, role="gui", arguments=None):
 
 
 @pytest.mark.parametrize("phase", ["FAILED", "UNKNOWN"])
-def test_x1_x3_terminal_next_start_really_launches_allowed_version(endpoint, phase):
+def test_x1_x3_terminal_next_start_really_launches_allowed_version(endpoint, phase, bootstrap_variant):
     control, _, _, state, _, _ = endpoint
     updates.write_json_durable(control / "transition.json", {**state, "phase": phase})
     assert_ordinary(endpoint, NEW)
@@ -201,7 +224,7 @@ def test_x7_terminal_recovery_reopens_prepared_path(endpoint):
     assert updates.startup_action(updates.read_json(control / "transition.json"), prepared_present=True) == "REQUEST_APPLY"
 
 
-def test_x3_hung_writer_is_preserved_then_recovered_after_logon(endpoint, monkeypatch):
+def test_x3_hung_writer_is_preserved_then_recovered_after_logon(endpoint, monkeypatch, bootstrap_variant):
     control, _, _, state, _, _ = endpoint
     updates.write_json_durable(control / "transition.json", {**state, "phase": "UNKNOWN"})
     monkeypatch.setattr(updates, "process_snapshot", lambda *_: [{"pid": 456, "observable": False}])
@@ -538,7 +561,7 @@ def test_e1_pointer_switch_and_ordinary_launch_exclude_competing_versions(endpoi
             assert child.returncode == 0, error[-1000:]
 
 
-def test_x3_real_hung_trial_remains_alive_until_logoff_then_next_start_works(endpoint, monkeypatch):
+def test_x3_real_hung_trial_remains_alive_until_logoff_then_next_start_works(endpoint, monkeypatch, bootstrap_variant):
     control, stage, _, state, marker, _ = endpoint
     stop = control.parent / "logoff"
     native = subprocess.Popen.native
@@ -570,9 +593,11 @@ def test_x3_real_hung_trial_remains_alive_until_logoff_then_next_start_works(end
 
 @pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "UNKNOWN", "FAILED"])
 @pytest.mark.parametrize("advanced", [False, True])
-def test_deferred_recovery_settles_once_after_writer_exit(endpoint, monkeypatch, phase, advanced):
-    control, _, _, state, marker, _ = endpoint
+def test_deferred_recovery_settles_once_after_writer_exit(endpoint, monkeypatch, phase, advanced, bootstrap_variant):
+    control, stage, policy, state, marker, _ = endpoint
+    failures = [NEW] if phase == "FAILED" else []
     updates.write_json_durable(control / "transition.json", {**state, "phase": phase,
+        "failed_shas": failures,
         "reason_code": "UPDATE_SUPERVISION_UNAVAILABLE"})
     row = dict(pid=456, observable=True, sha=NEW, sid=SID, ordinary_user=True,
                role="gui", created_at=updates.now_utc())
@@ -590,6 +615,7 @@ def test_deferred_recovery_settles_once_after_writer_exit(endpoint, monkeypatch,
     assert_ordinary(endpoint, expected)  # A fresh icon must request pending recovery.
     settled = updates.read_json(control / "transition.json")
     assert settled["recovery_pending"] is False
+    assert settled["failed_shas"] == failures
     assert settled["phase"] == ("DEFERRED" if advanced else "ROLLED_BACK")
     assert updates.read_json(endpoint[1] / "startup-support.json")["retained_candidate"] is advanced
     assert settled["failure_decision"]["selected_sha"] == expected
@@ -597,6 +623,47 @@ def test_deferred_recovery_settles_once_after_writer_exit(endpoint, monkeypatch,
     assert updates.apply_prepared(control) == 0
     assert (control / "transition.json").read_bytes() == before
     assert_ordinary(endpoint, expected)
+    if phase == "APPLIED_PENDING_READY" and not advanced:
+        # The original authenticated candidate remains eligible for supervision.
+        updates.write_json_durable(stage / "prepared.json", {
+            "source_commit": NEW, "packet_sha256": "3" * 64})
+        assert updates.prepared_pending(control, policy, settled) is True
+        app = control.parent / "current/app"
+        app.mkdir(parents=True, exist_ok=True)
+        updates.write_json_durable(app / "update-manifest-key-config.json", {
+            "manifest_public_key": "feed-key-adapter"})
+        import requests
+        import Label_Match as update_service
+        import current_user_onboarding as onboarding
+        import label_data_generation as data_gate
+        import protected_admin
+        from types import SimpleNamespace
+        # Inject installed identity and device profile at their OS boundaries;
+        # keep the data, authenticated-policy and failed-version gates active.
+        monkeypatch.setattr(data_gate, "_installed_identity", lambda _: {
+            "version": "v2.0.98", "build_id": OLD})
+        monkeypatch.setattr(protected_admin, "current_process_sid", lambda: SID)
+        monkeypatch.setattr(onboarding, "_default_profile_loader", lambda _: SimpleNamespace(
+            base_url=policy["feed_url"], bearer_token="", tls_ca_bundle_path=None))
+        monkeypatch.setattr(update_service, "_verify_update_manifest_signature", lambda *_: None)
+        monkeypatch.setattr(update_service, "_update_candidate_from_manifest", lambda *a, **k: {
+            "archive": {"layout": "canonical_portable"}, "sha256": "3" * 64})
+        class FeedSession(contextlib.AbstractContextManager):
+            cookies = {}
+            def __exit__(self, *args):
+                return False
+            def get(self, url, **kwargs):
+                class Response(contextlib.AbstractContextManager):
+                    status_code = 200
+                    def __exit__(self, *args):
+                        return False
+                    def iter_content(self, size):
+                        yield json.dumps({"source_commit": NEW}).encode()
+                response = Response()
+                response.url = url
+                return response
+        monkeypatch.setattr(requests, "Session", FeedSession)
+        assert updates.prepare_feed_packet(app) == {"status": "PREPARED", "source_commit": NEW}
 
 
 @pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "UNKNOWN", "FAILED"])
@@ -651,3 +718,99 @@ def test_ordinary_recovery_rejects_each_unrelated_writer_condition(endpoint, mon
         monkeypatch.setattr(updates, "process_snapshot", lambda *_: [row])
         with pytest.raises(ValueError):
             updates.startup_gate(updates.version_bundle(control, NEW) / "app", [])
+
+
+@pytest.mark.parametrize("exit_kind", ["dead_trial", "timeout", "launch_failure"])
+@pytest.mark.parametrize("generation_case", ["unchanged", "advanced", "unknown"])
+def test_inherited_ready_failure_uses_unknown_then_generation_only(endpoint, monkeypatch, exit_kind, generation_case):
+    control, stage, _, state, marker, _ = endpoint
+    if exit_kind == "dead_trial":
+        state = updates.bind_trial(state, sha=NEW, pid=456, ordinary_user=True, now=updates.now_utc())
+    state = {**state, "reason": "inherited READY observation"}
+    updates.write_json_durable(control / "transition.json", state)
+    if generation_case == "advanced":
+        generation.record_generation(marker, "v2.0.99", app_id="Label_Match", subject_sid=SID, build_id=NEW)
+    elif generation_case == "unknown":
+        marker.write_bytes(b"{unreadable-generation")
+    if exit_kind == "launch_failure":
+        updates.write_json_durable(stage / "trial-failure.json", {
+            "nonce": state["nonce"], "transition_id": state["transition_id"], "sha": NEW,
+            "failed_role": "gui", "launch_failure_details": [{"type": "builtins.OSError", "win32_error": 5}]})
+    marker_before = marker.read_bytes()
+    written, observations = updates.write_json_durable, []
+    def observe(path, value):
+        written(path, value)
+        if path == control / "transition.json":
+            observations.append(value)
+    monkeypatch.setattr(updates, "write_json_durable", observe)
+    retained = generation_case != "unchanged"
+    assert updates.apply_prepared(control) == (20 if retained else 0)
+    assert observations[0] == {**state, "phase": "UNKNOWN"}
+    settled = updates.read_json(control / "transition.json")
+    assert settled["failed_shas"] == []
+    assert settled["phase"] == ("DEFERRED" if retained else "ROLLED_BACK")
+    assert settled["failure_decision"]["code"] == "TRIAL_GENERATION_" + generation_case.upper()
+    assert updates.read_json(control / "active.json")["sha"] == (NEW if retained else OLD)
+    assert marker.read_bytes() == marker_before
+
+
+
+def test_inherited_ready_can_still_confirm_valid_gui_and_relay(endpoint, monkeypatch):
+    control, stage, _, state, _, _ = endpoint
+    stamp = updates.now_utc()
+    updates.write_json_durable(stage / "trial.json", {
+        "nonce": state["nonce"], "transition_id": state["transition_id"], "pid": 456})
+    updates.write_json_durable(stage / "ready.json", {
+        **{check: True for check in updates.READY_CHECKS}, "nonce": state["nonce"],
+        "transition_id": state["transition_id"], "sha": NEW, "pid": 456, "ready_at": stamp})
+    rows = [dict(pid=pid, observable=True, sha=NEW, sid=SID, ordinary_user=True,
+                 role=role, created_at=stamp) for pid, role in ((456, "gui"), (457, "relay"))]
+    monkeypatch.setattr(updates, "process_snapshot", lambda *_: rows)
+    assert updates.apply_prepared(control) == 0
+    confirmed = updates.read_json(control / "transition.json")
+    assert confirmed["phase"] == "CONFIRMED" and confirmed["failed_shas"] == []
+    assert updates.read_json(control / "active.json")["sha"] == NEW
+
+
+
+@pytest.mark.parametrize("phase", ["ROLLBACK_PENDING", "UNKNOWN"])
+def test_inherited_supervised_rollback_preserves_exact_failure_list(endpoint, phase):
+    control, _, _, state, _, _ = endpoint
+    state = updates.request_rollback(state, reason="supervised candidate failure")
+    updates.write_json_durable(control / "transition.json", {**state, "phase": phase})
+    assert updates.apply_prepared(control) == 0
+    settled = updates.read_json(control / "transition.json")
+    assert settled["phase"] == "ROLLED_BACK" and settled["failed_shas"] == [NEW]
+    assert updates.read_json(control / "active.json")["sha"] == OLD
+
+
+
+@pytest.mark.parametrize("changed_phase,code,final_phase", [
+    ("CONFIRMED", 0, "DEFERRED"), ("ROLLBACK_PENDING_READY", 20, "FAILED")])
+def test_inherited_expiry_preserves_other_system_phase_change(endpoint, monkeypatch, changed_phase, code, final_phase):
+    control, _, _, state, _, _ = endpoint
+    state = {**state, "failed_shas": ["9" * 40]}
+    updates.write_json_durable(control / "transition.json", state)
+    pointer_before = (control / "active.json").read_bytes()
+    clock = [0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    def other_system(_):
+        updates.write_json_durable(control / "transition.json", {**state, "phase": changed_phase})
+        clock[0] = 120
+    monkeypatch.setattr(time, "sleep", other_system)
+    written, phases = updates.write_json_durable, []
+    def observe(path, value):
+        written(path, value)
+        if path == control / "transition.json":
+            phases.append(value["phase"])
+    monkeypatch.setattr(updates, "write_json_durable", observe)
+    assert updates.apply_prepared(control) == code
+    settled = updates.read_json(control / "transition.json")
+    assert phases == [changed_phase, final_phase]
+    assert settled["failed_shas"] == ["9" * 40]
+    if changed_phase == "CONFIRMED":
+        assert settled["reason"] == "ValueError"
+        assert settled["reason_code"] == "UPDATE_PREPARATION_FAILED"
+    else:
+        assert settled["reason"] == "previous version readiness failed"
+    assert (control / "active.json").read_bytes() == pointer_before

@@ -1203,6 +1203,9 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 허용 목록의 `relay_child_launch`는 `probe_only` 플래그 없이도 정확한 이름 쌍으로 probe 경로를 고르므로 정의 파일·모듈 별칭이 달라지면 spanning 허가로 바뀔 수 있다(D1). `_label_match_in_process_<stem>` 별칭 로더는 `__main__` 정규화 대상이 아니며, 현재 대상에는 probe-only sink가 없지만 추가하면 import 거절을 재검증해야 한다(D7).
 
 허가 보유 시간은 해당 writer가 허가를 잡고 있던 시간이고, 스캔 대기 시간은 경쟁 writer가 허가를 얻거나 거절될 때까지 기다린 시간이다. sub-492의 64 MiB 측정에서 복사 경로 허가 보유 합은 5.4 ms(게시 교체 4.1 ms)였지만, 별도 `prepared.json` 내구 쓰기는 HDD 경합에서 8.9 s 보유했다. 기존 5 s 스캔 허가 한도를 넘을 수 있으므로 K6에서는 표지 쓰기까지 스캐너를 켜 두고 표지 보유·스캔 대기·거절을 따로 기록한다. 후속 K6(stock·256 MiB 각 3회)의 표지 보유 최대는 569.67 ms, 스캔 대기 최대는 547.24 ms, 거절은 0이었다. 후속 기준(표지 보유 > 2 s 또는 거절 ≥ 1)을 넘지 않아 표지 쓰기 분리는 POSTCUT으로 남긴다. 이전 8.9 s 관측은 유지한다.
+이전 실행이 남긴 업데이트 확인을 이어받으면 자료가 그대로일 때 정상 새 판도 이전 판으로 돌아갈 수 있다. 자동 갱신이 켜져 있으면 다음 시작 때 새 판을 감독하며 다시 적용한다.
+10/14 이후에는 PC마다 실제로 실행 중인 판을 확인한다.
+지원 절차는 「앱 닫고 다시 열기」다.
 
 D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
 SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
