@@ -960,6 +960,7 @@ def test_refused_lease_report_next_cycle_restart_replay_and_business_bytes(
 @pytest.mark.parametrize("status", ["PREFETCHED", "LOCAL_COMPLETED", "ACKED"])
 def test_refused_lease_reporting_ignores_non_review_status(tmp_path, monkeypatch, status):
     outbox, _store, _draft, _clock = _refused_lease_fixture(tmp_path, monkeypatch, status=status)
+    monkeypatch.setattr(outbox, "claim_next", lambda **_kwargs: None)
     client = _refusal_client(lambda *_args: pytest.fail("unexpected refusal HTTP"))
     PackageOutboxProcessor(outbox, client).drain(limit=1)
 
