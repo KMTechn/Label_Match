@@ -29,6 +29,7 @@ REQUIRED_MEMBERS = {
     "kmtech_shared.manifest.json",
     "kmtech_shared/powershell/portable.ps1",
     "kmtech_shared/powershell/data_generation.ps1",
+    "kmtech_shared/powershell/ps51_module_prologue.ps1",
 }
 FORBIDDEN_ACTIVE_AUTHORITY_MEMBERS = {
     "install_label_match_direct_sync.ps1",
@@ -45,6 +46,10 @@ FORBIDDEN_ACTIVE_AUTHORITY_MEMBERS = {
 # including code factories/evaluators, jobs, reflection/assembly loaders and
 # dynamic member names. These are fixed stock inputs, never candidate-derived.
 BOOTSTRAP_STATIC_SOURCE = {
+    'module_prologue': [
+        r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop",
+        r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop",
+    ],
     'casts': """
         bool byte[] char char[] int int64 object[] ordered pscustomobject ref
         security.accesscontrol.aceflags security.accesscontrol.filesystemrights string
@@ -338,6 +343,10 @@ foreach($entry in @(@('installer',$ast),@('helper',$helper))){
   $name=($name -split '[\\/]')[-1]
   # The only code-generation exceptions are the two pinned Win32 declarations.
   if($name -ieq 'Add-Type'){$calls+=$row;continue}
+  if($name -ieq 'Import-Module'){
+   if($row.command -cnotin $policy.module_prologue){exit 1}
+   continue
+  }
   if($name -notin $policy.commands){exit 1}
   # These pipeline commands otherwise invoke nonliteral ScriptBlocks or
   # a named member (ForEach-Object -MemberName Invoke / % Invoke).

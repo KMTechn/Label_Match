@@ -293,8 +293,10 @@ def _copy_application(repo_root: Path, app_root: Path) -> list[Path]:
         shutil.copy2(source, app_root / source.name)
     for name in APP_PACKAGE_DIRS:
         _copy_tree(repo_root / name, app_root / name)
-    if not (app_root / SHARED_POWERSHELL_LEAF).is_file():
-        raise PortableBuildError("shared PowerShell leaf is missing from application payload")
+    for relative in (SHARED_POWERSHELL_LEAF, DATA_GENERATION_POWERSHELL_LEAF,
+                     Path("kmtech_shared/powershell/ps51_module_prologue.ps1")):
+        if not (app_root / relative).is_file():
+            raise PortableBuildError(f"shared PowerShell leaf is missing from application payload: {relative}")
     for name in APP_DATA_DIRS:
         _copy_tree(repo_root / name, app_root / name)
     for name in APP_DATA_FILES:

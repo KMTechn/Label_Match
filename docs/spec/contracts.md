@@ -130,13 +130,15 @@ portable build는 clean source 확인 후 commit/tree를 고정하고 Git blob s
 
 0.3.1 reader는 원 parser의 배열 형태를 보존한다. PS5 `[manifest]`, 양 엔진의 중첩·빈 배열은 원본처럼 거부하고 PS7의 기존 singleton 수용을 유지한다. 0.3.0의 두 실패 원본과 0.3.1 회귀 결과는 [X13-B](operations.md#shared-powershell-x13b)에 연결한다.
 
-canonical/placement 설치기는 자체 bootstrap으로 source 또는 portable `app/` root와 상위 경로의 reparse를 거부하고, 고정 0.3.1 consumer pin → manifest bytes → PowerShell leaf SHA256 순서로 확인한 뒤 dot-source한다. bootstrap 무결성 helper는 `-SharedCodeRoot`를 받은 inventory 소비자에서만 shared를 초기화하며, 초기 native SHA는 module auto-loading 없이 동작한다. 신뢰 확인에 shared 함수나 준비 전 Python checker를 사용하지 않는다.
+canonical/placement 설치기는 자체 bootstrap으로 source 또는 portable `app/` root와 상위 경로의 reparse를 거부하고, 고정 0.3.6 consumer pin → manifest bytes → PowerShell leaf SHA256 순서로 확인한 뒤 dot-source한다. bootstrap 무결성 helper는 `-SharedCodeRoot`를 받은 inventory 소비자에서만 shared를 초기화하며, 초기 native SHA는 module auto-loading 없이 동작한다. 신뢰 확인에 shared 함수나 준비 전 Python checker를 사용하지 않는다.
 
 Manifest는 기존 required-file 순서 → bounded parse → LM schema/field/hash → CPython signature 순서를 유지한다. `PortableInventory`의 domain framing·critical 3파일·ordinal UTF-16 정렬, task migration/conflict receipt·code/current-user 복원 정책은 앱 소유다. 고정 UAC helper closure는 기존 3개 helper 외 manifest/lock/leaf도 복사·검증·쓰기 거부하며, source 교체 후에도 같은 closure로 검사한다. [검증 범위](operations.md#shared-powershell-x13b).
 
 ## 고정 renderer core
 
-`kmtech_shared` 0.3.1은 앱 안에 고정 복사하며 `kmtech_shared.lock.json`이 manifest SHA256을 고정한다. 기존 factory `contract.lock.json`과 독립이다. `kmtech_zero_pe`의 `RasterImage`/`RasterCanvas` class와 import 경로는 facade로 유지하고 모든 image factory는 앱 class를 반환한다. PNG signature·bytes·GDI 픽셀·QR은 보존하며 제품 PNG 출력은 기존 PHS 교환·복구의 writer admission 아래에 있다. core에서 별도 writer 권한이나 앱 상태를 만들지 않는다.
+`kmtech_shared` 0.3.6의 9파일은 앱 안에 바이트 그대로 고정 복사하며 `kmtech_shared.lock.json`이 manifest SHA256을 고정한다. 기존 factory `contract.lock.json`과 독립이다. `kmtech_zero_pe`의 `RasterImage`/`RasterCanvas` class와 import 경로는 facade로 유지하고 모든 image factory는 앱 class를 반환한다. PNG signature·bytes·GDI 픽셀·QR은 보존하며 제품 PNG 출력은 기존 PHS 교환·복구의 writer admission 아래에 있다. core에서 별도 writer 권한이나 앱 상태를 만들지 않는다.
+
+자료 세대 판정의 공개 여섯 필드·순서·문구는 그대로다. UNKNOWN의 형식·코드 좌표만 담은 `private_cause`를 `DataGenerationError`의 비공개 속성으로 보존하며 공개 투영에 copy/pickle을 쓰지 않는다. `diagnostic_log.py`는 배포에 포함만 하고 런타임 import·호출·새 로그 저장 경로를 연결하지 않는다.
 
 ## 고정 runtime core와 앱 transaction
 

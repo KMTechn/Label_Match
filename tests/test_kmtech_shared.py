@@ -31,16 +31,33 @@ def test_pinned_shared_source_and_packaging_inputs():
     assert result.returncode == 0, result.stdout + result.stderr
     # The tracked frozen builder generates its spec; the legacy local .spec is ignored.
     frozen = (ROOT / "tools/build_frozen_release_candidate.ps1").read_text(encoding="utf-8")
-    for module in ("kmtech_shared.catalog", "kmtech_shared.raster", "kmtech_shared.runtime"):
+    for module in ("kmtech_shared.catalog", "kmtech_shared.raster", "kmtech_shared.runtime",
+                   "kmtech_shared.diagnostic_log"):
         assert f'"--hidden-import", "{module}"' in frozen
     for name in ("kmtech_shared.manifest.json", "kmtech_shared.lock.json"):
         assert f'"--add-data", "$(Join-Path $repoRoot \'{name}\');."' in frozen
         assert f'--expected-file {name} `' in frozen
     assert '"--add-data", "$(Join-Path $repoRoot \'kmtech_shared/powershell/portable.ps1\');kmtech_shared/powershell"' in frozen
     assert '--expected-file kmtech_shared/powershell/portable.ps1 `' in frozen
+    assert '"--add-data", "$(Join-Path $repoRoot \'kmtech_shared/powershell/ps51_module_prologue.ps1\');kmtech_shared/powershell"' in frozen
+    assert '--expected-file kmtech_shared/powershell/ps51_module_prologue.ps1 `' in frozen
     provenance = json.loads((ROOT / "kmtech_zero_pe.vendor.json").read_bytes())
+    manifest = json.loads((ROOT / "kmtech_shared.manifest.json").read_bytes())
+    assert (provenance["raster_core"]["version"], provenance["raster_core"]["source_commit"]) == (
+        manifest["version"], manifest["source_commit"])
     for name, digest in provenance["files"].items():
         assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == digest
+
+
+@pytest.mark.parametrize("leaf", ["diagnostic_log.py", "powershell/ps51_module_prologue.ps1"])
+def test_new_shared_leaves_are_packaged_and_pin_checked(tmp_path, leaf):
+    app = tmp_path / "app"
+    builder._copy_application(ROOT, app)
+    copied = app / "kmtech_shared" / leaf
+    assert copied.read_bytes() == (ROOT / "kmtech_shared" / leaf).read_bytes()
+    assert _check(app).returncode == 0
+    copied.write_bytes(copied.read_bytes() + b"\n# unexpected drift\n")
+    assert _check(app).returncode == 1
 
 
 @pytest.mark.parametrize("mutation", ["missing", "extra", "changed", "manifest", "leaf_missing", "leaf_changed", "leaf_extra"])

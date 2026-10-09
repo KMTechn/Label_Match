@@ -114,18 +114,18 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot, [ValidateSet('portab
         Join-Path $root 'app'
     } else { $root }
     foreach ($relative in @('', 'kmtech_shared', 'kmtech_shared\powershell',
-        'kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1', 'kmtech_shared\powershell\data_generation.ps1')) {
+        'kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1', 'kmtech_shared\powershell\data_generation.ps1', 'kmtech_shared\powershell\ps51_module_prologue.ps1')) {
         $path = if ($relative) { Join-Path $appRoot $relative } else { $appRoot }
         $item = Get-Item -LiteralPath $path -Force
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Shared PowerShell path contains a reparse point: $path"
         }
     }
-    $expectedManifestSha = 'de1aa3a5a2b072ec15ec2b3d60733881dcf4d5c87f14b15ed06691ba643ac918'
+    $expectedManifestSha = '8c310e69a97c613dbfc3405b17e2ca9f15290a4373c98c140510ea16b9d94c84'
     $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
     if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
     $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$lock.version -cne '0.3.3' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
+    if ([string]$lock.version -cne '0.3.6' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
         throw 'Shared consumer manifest pin mismatch.'
     }
     $manifestPath = Join-Path $appRoot 'kmtech_shared.manifest.json'
@@ -1810,7 +1810,7 @@ function FreezePlacementHelper(
     $sourceSharedLeaf = Get-LabelSharedPortableLeafPath $GuardedHelperOrigin
     $sourceSharedApp = Split-Path (Split-Path (Split-Path $sourceSharedLeaf -Parent) -Parent) -Parent
     $frozenSharedPaths = @()
-    foreach ($relative in @('kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1', 'kmtech_shared\powershell\data_generation.ps1')) {
+    foreach ($relative in @('kmtech_shared.lock.json', 'kmtech_shared.manifest.json', 'kmtech_shared\powershell\portable.ps1', 'kmtech_shared\powershell\data_generation.ps1', 'kmtech_shared\powershell\ps51_module_prologue.ps1')) {
         $target = Join-Path $frozenRoot $relative
         [void](New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force)
         [IO.File]::WriteAllBytes($target, [IO.File]::ReadAllBytes((Join-Path $sourceSharedApp $relative)))

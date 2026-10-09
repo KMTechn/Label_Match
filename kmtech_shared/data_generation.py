@@ -20,10 +20,23 @@ REFUSAL_MESSAGE = "이 PC의 자료가 새 판으로 이미 열려 옛 판으로
 UNKNOWN_MESSAGE = "이 PC의 자료 판을 확인할 수 없어 옛 판으로 되돌릴 수 없습니다. 자료와 확인 기록을 보존하고 관리자 지원 복구를 요청하세요."
 _VERSION = re.compile(r"v?(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})")
 _FIELDS = frozenset({"schema", "app_id", "subject_sid", "version", "data_compatible_min_version", "build_id", "compatibility_verified"})
+_CAUSE_IDENTIFIER = re.compile(r"[A-Za-z_<][A-Za-z0-9_<>]*(\.[A-Za-z_<][A-Za-z0-9_<>]*)*")
 
 
 class DataGenerationError(RuntimeError):
     """A marker cannot be safely observed or recorded."""
+
+
+class DecisionResult(dict):
+    """Public decision fields with an optional sanitized in-memory cause.
+
+    The cause is an attribute, absent from dict/JSON/repr/equality projections.
+    copy.copy and pickle may carry the attribute; they are not public projections.
+    """
+
+    def __init__(self, *args, private_cause: dict[str, object] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.private_cause = private_cause
 
 
 def version_key(version: str) -> tuple[int, int, int]:
@@ -106,7 +119,13 @@ def _read(path: Path | str, app_id: str, subject_sid: str) -> dict[str, object] 
     return _decode(raw, app_id, subject_sid)
 
 
-def probe_downgrade(marker_paths: Iterable[Path | str], target_version: str, *, app_id: str, subject_sid: str, target_build_id: str) -> dict[str, object]:
+def _cause_identifier(value: object) -> str:
+    if type(value) is str and len(value) <= 200 and _CAUSE_IDENTIFIER.fullmatch(value):
+        return value
+    return "<invalid>"
+
+
+def probe_downgrade(marker_paths: Iterable[Path | str], target_version: str, *, app_id: str, subject_sid: str, target_build_id: str) -> DecisionResult:
     """ALLOW/REFUSE/UNKNOWN; UNKNOWN denies, even if the other slot is readable."""
     try:
         _identity(app_id, subject_sid)
@@ -117,19 +136,38 @@ def probe_downgrade(marker_paths: Iterable[Path | str], target_version: str, *, 
             raise DataGenerationError("data generation marker locations are absent")
         records = [record for path in paths if (record := _read(path, app_id, subject_sid)) is not None]
         if not records:
-            return {"status": "ALLOW", "allowed": True, "message_key": "no_generation", "message": "", "version": None, "minimum_version": None}
+            return DecisionResult({"status": "ALLOW", "allowed": True, "message_key": "no_generation", "message": "", "version": None, "minimum_version": None})
         latest = max(version_key(record["version"]) for record in records)
         newest = [record for record in records if version_key(record["version"]) == latest]
         if target == latest and any(record["build_id"] != target_build_id and not record["compatibility_verified"] for record in newest):
             raise DataGenerationError("same version has a different unverified build")
         floor = max(version_key(record["data_compatible_min_version"]) for record in newest)
         allowed = target >= floor
-        return {"status": "ALLOW" if allowed else "REFUSE", "allowed": allowed,
+        return DecisionResult({"status": "ALLOW" if allowed else "REFUSE", "allowed": allowed,
                 "message_key": "compatible_generation" if allowed else "data_generation_downgrade_refused",
                 "message": "" if allowed else REFUSAL_MESSAGE,
-                "version": "v" + ".".join(map(str, latest)), "minimum_version": "v" + ".".join(map(str, floor))}
-    except (OSError, ValueError, TypeError, DataGenerationError):
-        return {"status": "UNKNOWN", "allowed": False, "message_key": "data_generation_unknown", "message": UNKNOWN_MESSAGE, "version": None, "minimum_version": None}
+                "version": "v" + ".".join(map(str, latest)), "minimum_version": "v" + ".".join(map(str, floor))})
+    except (OSError, ValueError, TypeError, DataGenerationError) as error:
+        try:
+            raised_at = seen_in = None
+            traceback = error.__traceback__
+            while traceback is not None:
+                line = traceback.tb_lineno
+                location = {"module": _cause_identifier(traceback.tb_frame.f_globals["__name__"]),
+                            "function": _cause_identifier(traceback.tb_frame.f_code.co_name),
+                            "line": line if type(line) is int and 1 <= line <= 10_000_000 else None}
+                raised_at = location
+                if location["module"] == __name__:
+                    seen_in = location
+                traceback = traceback.tb_next
+            cause_type = type(error)
+            private_cause = {"type": _cause_identifier(cause_type.__qualname__),
+                             "type_module": _cause_identifier(cause_type.__module__),
+                             "raised_at": raised_at, "seen_in": seen_in}
+        except Exception:
+            private_cause = None
+        return DecisionResult({"status": "UNKNOWN", "allowed": False, "message_key": "data_generation_unknown", "message": UNKNOWN_MESSAGE, "version": None, "minimum_version": None},
+                              private_cause=private_cause)
 
 
 def record_generation(marker_path: Path | str, version: str, *, app_id: str, subject_sid: str, build_id: str,

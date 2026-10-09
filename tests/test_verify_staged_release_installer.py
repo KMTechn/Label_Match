@@ -447,6 +447,9 @@ def test_bootstrap_source_refuses_generated_code_in_allowed_action(tmp_path):
     "[System.Text.RegularExpressions.MatchEvaluator]$code",
     "[regex]::Replace('text','.*',$callback)",
     "$regex.Replace('text',$callback)",
+    "Import-Module -Name $module",
+    "Import-Module -Name (Join-Path $PSHOME 'Modules\\untrusted.psd1') -ErrorAction Stop",
+    "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Global -ErrorAction Stop",
 ))
 def test_bootstrap_source_default_denies_other_code_factories(tmp_path, command):
     package = _package(tmp_path)
@@ -464,6 +467,7 @@ def test_bootstrap_source_default_denies_other_code_factories(tmp_path, command)
     "$example = '[scriptblock]::Create(\"documentation\").Invoke()'",
     "Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue",
     "@('a','b') | ForEach-Object { $_.ToString() }",
+    *verifier.BOOTSTRAP_STATIC_SOURCE["module_prologue"],
 ))
 def test_bootstrap_source_allows_static_operations_and_documentation(tmp_path, command):
     package = _package(tmp_path)

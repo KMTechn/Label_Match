@@ -1,7 +1,7 @@
 """Read-only shared package/manifest check using this app's committed lock.
 
 The four validation functions below are copied unchanged from
-kmtech_shared 1555dea manifest/sync_shared.py; the explicit integration test
+kmtech_shared dd34e4d manifest/sync_shared.py; the explicit integration test
 checks their source against the canonical checkout. No sibling is needed here.
 """
 from __future__ import annotations
@@ -18,7 +18,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("kmtech_shared/__init__.py", "kmtech_shared/catalog.py", "kmtech_shared/raster.py",
          "kmtech_shared/runtime.py", "kmtech_shared/powershell/portable.ps1",
-         "kmtech_shared/data_generation.py", "kmtech_shared/powershell/data_generation.ps1")
+         "kmtech_shared/data_generation.py", "kmtech_shared/powershell/data_generation.ps1",
+         "kmtech_shared/diagnostic_log.py", "kmtech_shared/powershell/ps51_module_prologue.ps1")
 SCHEMA = "kmtech.shared.source.v1"
 
 

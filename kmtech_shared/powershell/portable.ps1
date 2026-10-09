@@ -1,6 +1,9 @@
 # Shared read-only installer leaves. Windows PowerShell 5.1 / PowerShell 7.
-# Dot-sourcing only defines functions; app schema, inventory order and lifecycle
+# Dot-sourcing defines functions and imports two OS modules by absolute path;
+# app schema, inventory order and lifecycle
 # remain with the caller. See docs/powershell-equivalence.md before adoption.
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 
 function Get-KmtechFileSha([string]$Path) {
     $stream = [IO.File]::OpenRead($Path)

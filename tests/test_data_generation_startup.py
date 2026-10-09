@@ -61,6 +61,33 @@ def test_direct_product_start_records_before_workflow_and_blocks_old_code(monkey
     assert app.main([]) == 0
 
 
+@pytest.mark.parametrize("entry", ["check_user_data_open", "record_user_data_open"])
+def test_unknown_generation_keeps_private_cause_without_public_details(monkeypatch, tmp_path, entry):
+    from kmtech_shared import data_generation as shared
+
+    opened = []
+    monkeypatch.setattr(protected_admin, "current_process_sid", lambda: SID)
+
+    def denied_read(*_args, **_kwargs):
+        raise PermissionError("synthetic private path and sensitive detail")
+
+    monkeypatch.setattr(shared, "_read", denied_read)
+    invoke = getattr(generation, entry)
+    kwargs = {"opener": lambda: opened.append(True)} if entry == "record_user_data_open" else {}
+    with pytest.raises(generation.DataGenerationError) as failure:
+        invoke(ROOT, [tmp_path / "data"], **kwargs)
+    error = failure.value
+    assert str(error) == shared.UNKNOWN_MESSAGE
+    assert error.args == (shared.UNKNOWN_MESSAGE,)
+    assert error.private_cause["type"] == "PermissionError"
+    assert error.private_cause["raised_at"]["function"] == "denied_read"
+    assert error.private_cause["seen_in"]["module"] == "kmtech_shared.data_generation"
+    assert set(error.private_cause) == {"type", "type_module", "raised_at", "seen_in"}
+    assert "synthetic" not in json.dumps(error.private_cause)
+    assert opened == []
+    assert not (tmp_path / "data/data-generation.json").exists()
+
+
 @pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
 @pytest.mark.parametrize("state", ["before_open", "direct_open", "installer_open", "compatible", "corrupt",
                                   "same_build", "same_version_other_build"])

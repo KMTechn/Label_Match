@@ -24,7 +24,9 @@ UNKNOWN_MESSAGE = (
 
 
 class DataGenerationError(RuntimeError):
-    pass
+    def __init__(self, *args, private_cause=None):
+        super().__init__(*args)
+        self.private_cause = private_cause
 
 
 def release_identity(app_root: Path) -> dict[str, object]:
@@ -324,7 +326,8 @@ def _check_user_data_open(app_root: Path, data_roots=(), *, environ=None, identi
         decision = probe_downgrade(marker_paths(roots, sid), str(identity["version"]),
             app_id=APP_ID, subject_sid=sid, target_build_id=str(identity["build_id"]))
         if not decision["allowed"]:
-            raise DataGenerationError(str(decision["message"]))
+            raise DataGenerationError(str(decision["message"]),
+                                      private_cause=getattr(decision, "private_cause", None))
         return identity
     except DataGenerationError:
         raise
@@ -345,7 +348,8 @@ def record_user_data_open(app_root: Path, data_roots, *, environ=None, opener=No
         decision = probe_downgrade(paths, str(identity["version"]), app_id=APP_ID,
                                   subject_sid=sid, target_build_id=str(identity["build_id"]))
         if not decision["allowed"]:
-            raise DataGenerationError(str(decision["message"]))
+            raise DataGenerationError(str(decision["message"]),
+                                      private_cause=getattr(decision, "private_cause", None))
         for path in paths:
             from logistics_runtime_profile import assert_path_has_no_reparse_components
             assert_path_has_no_reparse_components(path, label="data generation marker")
