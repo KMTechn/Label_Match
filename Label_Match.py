@@ -1882,7 +1882,7 @@ LABEL_TRANSITION_LOCAL_NOTICES = {
     ),
     label_transition.PHS2_LOCAL: (
         "회사 서버 확인 불가 · 과도기 이 PC 기록",
-        "중앙 확인이 막혀 이 세트는 '로컬'로 따로 기록합니다. 제품 4개를 "
+        "회사 서버 확인이 막혀 이 트레이는 '이 PC에 저장됨'으로 따로 기록합니다. 제품 4개를 "
         "스캔하세요. 포장 원장에는 들어가지 않습니다.",
     ),
     "DUPLICATE": (
@@ -5872,7 +5872,7 @@ class Label_Match(tk.Tk):
                 message=(
                     (
                         "중앙 확인 전에 멈춘 포장 작업입니다. "
-                        "F1로 현재 세트만 비운 뒤 같은 PHS2를 다시 스캔하세요. "
+                        "F1로 현재 트레이만 비운 뒤 같은 PHS2를 다시 스캔하세요. "
                         "충돌 증거는 보존됩니다."
                     )
                     if recoverable_prewrite_conflict
@@ -11530,7 +11530,7 @@ class Label_Match(tk.Tk):
             self._show_scanner_notice(
                 "이전 작업 복구",
                 "이전에 완료되지 않은 세트를 복구했습니다. "
-                "계속 스캔하거나 현재 세트를 취소하세요."
+                "계속 스캔하거나 현재 트레이를 취소하세요."
                 + (f" 이전 작업자: {display_operator_name(saved_worker_name)}."
                     if saved_worker_name and (
                         saved_set_info.get('worker_id') != self.__dict__.get('worker_id')
@@ -18007,9 +18007,9 @@ class Label_Match(tk.Tk):
             and self._sealed_transfer_exchange_blocks_local_action("현재 세트 취소")
         ):
             return False
-        if full_reset and not from_finalize and self._block_active_history_load_action("현재 세트를 취소"):
+        if full_reset and not from_finalize and self._block_active_history_load_action("현재 트레이를 취소"):
             return False
-        if full_reset and not from_finalize and self._block_view_only_action("현재 세트를 취소"):
+        if full_reset and not from_finalize and self._block_view_only_action("현재 트레이를 취소"):
             return False
         dismissed_package_conflict = False
         if full_reset and not from_finalize:
@@ -18039,7 +18039,7 @@ class Label_Match(tk.Tk):
                     # durable local-recovery dismissal is recorded.
                     self._set_active_package_submission_notice(package_row)
                     self._show_scanner_notice(
-                            "현재 세트 취소 보류",
+                            "현재 트레이 취소 보류",
                             (
                                 "충돌 증거의 로컬 복구 해제 상태를 저장하지 "
                                 "못했습니다. 현재 세트는 유지됩니다. "
@@ -18056,7 +18056,7 @@ class Label_Match(tk.Tk):
             except Exception as exc:
                 print(f"현재 세트 취소 보류: {getattr(exc, 'code', type(exc).__name__)}")
                 self._show_scanner_notice(
-                        "현재 세트 취소 보류",
+                        "현재 트레이 취소 보류",
                         "저장된 작업의 처리 결과를 확인할 수 없어 현재 트레이를 유지합니다. 관리자와 확인하세요.",
                     )
                 return False

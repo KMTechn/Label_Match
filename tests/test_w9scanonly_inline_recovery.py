@@ -157,4 +157,4 @@ def test_cancel_capture_failure_is_inline_and_preserves_the_active_set(packaging
     assert not app._reset_current_set(full_reset=True)
     assert dialogs == []
     assert app.current_set_info == before
-    assert app._phs_label_guidance_notice.title == "현재 세트 취소 보류"
+    assert app._phs_label_guidance_notice.title == "현재 트레이 취소 보류"
