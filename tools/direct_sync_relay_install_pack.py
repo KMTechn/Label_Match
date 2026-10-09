@@ -356,6 +356,8 @@ def _scheduled_task_create_command(
 def _scheduled_task_probe_command(task_name: str) -> list[str]:
     script = "\n".join(
         [
+            r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop",
+            r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop",
             "$ErrorActionPreference = 'Stop'",
             f"$taskName = {_ps_single_quote(task_name)}",
             "$tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskPath -eq '\\' -and [string]$_.TaskName -eq $taskName })",
@@ -380,6 +382,8 @@ def _scheduled_task_stop_command(
     expected_arguments = _quote_cmd([str(part) for part in expected_action_parts[1:]])
     script = "\n".join(
         [
+            r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop",
+            r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop",
             "$ErrorActionPreference = 'Stop'",
             f"$taskName = {_ps_single_quote(task_name)}",
             f"$expectedExecute = {_ps_single_quote(expected_execute)}",
@@ -414,6 +418,8 @@ def _scheduled_task_delete_command(
 ) -> list[str]:
     # Retired from stock. Only canonical removal owns the writer fence proof.
     script = "\n".join([
+        r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop",
+        r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop",
         "$ErrorActionPreference = 'Stop'",
         f"$taskName = {_ps_single_quote(task_name)}",
         "$tasks=@(Get-ScheduledTask -ErrorAction Stop|Where-Object { [string]$_.TaskPath -eq '\\' -and [string]$_.TaskName -eq $taskName })",
@@ -465,6 +471,8 @@ def _stored_password_task_register_command(
     task_args = _quote_cmd([str(part) for part in task_action_parts[1:]])
     script = "\n".join(
         [
+            r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop",
+            r"Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop",
             "$ErrorActionPreference = 'Stop'",
             f"$taskName = {_ps_single_quote(task_name)}",
             f"$execute = {_ps_single_quote(str(task_action_parts[0]))}",

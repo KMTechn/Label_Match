@@ -137,6 +137,8 @@ def build_current_user_task_spec(
 
 
 _LEGACY_TASK_READBACK_POWERSHELL = r"""
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $name = 'direct-sync-relay-label-match-current-pc'
@@ -183,6 +185,8 @@ exit 0
 
 
 _TASK_POWERSHELL = r"""
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $spec = $env:KMTECH_LABEL_CURRENT_USER_TASK_SPEC | ConvertFrom-Json
