@@ -1,6 +1,7 @@
 """Recovery PIN callbacks use the real lane with injected transport and fake Tk."""
 
 import hashlib
+import json
 import threading
 from types import SimpleNamespace
 
@@ -207,7 +208,8 @@ def test_pending_pin_flag_is_released_on_every_exit(pin_lane, monkeypatch, failu
     assert _intent(p.app)[2] == "APPLIED"
 
 
-def test_preparation_own_generation_change_continues_same_click_to_apply(pin_lane, monkeypatch):
+@pytest.mark.parametrize("advances", [1, 2])
+def test_preparation_own_generation_change_continues_same_click_to_apply(pin_lane, monkeypatch, advances):
     p = pin_lane
     original = p.app._prepare_package_pin_action
 
@@ -217,16 +219,244 @@ def test_preparation_own_generation_change_continues_same_click_to_apply(pin_lan
         assert preparation[0] is False
         # Local cleanup fences queued scans from the previous screen. That
         # fence must still allow this request's idle PIN/apply continuation.
-        p.app._advance_ui_lane_generation()
+        for _ in range(advances):
+            p.app._advance_ui_lane_generation()
         return preparation
 
     monkeypatch.setattr(p.app, "_prepare_package_pin_action", prepare)
     assert p.submit()
     p.root.run_until(lambda: not p.app._package_pin_pending_targets)
-    assert p.app._ui_lane_generation == 1
+    assert p.app._ui_lane_generation == advances
     assert p.prompts == [1] and p.finished == [True] and not p.errors
     assert p.server.verify_calls == p.server.redeem_calls == 1
     assert _intent(p.app)[2] == "APPLIED"
+
+
+def test_external_real_reset_during_pin_input_cancels_before_verify(pin_lane, monkeypatch):
+    p = pin_lane
+    p.app.is_blinking = False
+    p.app.initialized_successfully = False
+    p.app.progress_bar = {}
+    original = p.app._prompt_package_admin_pin
+
+    def prompt():
+        credentials = original()
+        assert threading.get_ident() == p.root.owner_thread_id
+        assert app_module.Label_Match._reset_current_set(p.app)
+        return credentials
+
+    monkeypatch.setattr(p.app, "_prompt_package_admin_pin", prompt)
+    assert p.submit()
+    p.root.run_until(lambda: not p.app._package_pin_pending_targets)
+    assert p.server.verify_calls == p.server.redeem_calls == 0
+    assert p.app._ui_lane_generation == 1 and p.journal.path.exists()
+    assert not p.app._admin_pin_store.list_pending()
+    assert p.app._admin_pin_store.applied("label_f5_recovery", p.item[3:], "LABEL.F5_HOLD") is None
+    assert p.rejected == ["changed"] and not p.finished and not p.errors
+
+
+@pytest.mark.parametrize("boundary", ["prepare", "pin", "apply"])
+@pytest.mark.parametrize("set_first", [False, True])
+def test_different_valid_target_waits_in_same_lane_and_completes_once(pin_lane, tmp_path, monkeypatch, boundary, set_first):
+    p = pin_lane
+    other, _journal, current, other_server, other_id = _active_set_pin_app(
+        tmp_path / "other", monkeypatch, linked=False,
+    )
+    p.app.current_set_info = other.current_set_info
+    p.app.data_manager = other.data_manager
+    p.app.__dict__.pop("_reset_current_set", None)
+    p.app.is_blinking = False
+    p.app.initialized_successfully = False
+    p.app.progress_bar = {}
+    target, _ = p.app._package_pin_target("LABEL.SET_HOLD", other_id)
+    assert target["id"] == other_id and current.exists()
+    second_finished = []
+    first_action, first_id = (("LABEL.SET_HOLD", other_id) if set_first
+                              else ("LABEL.F5_HOLD", p.item))
+    second_action, second_id = (("LABEL.F5_HOLD", p.item) if set_first
+                                else ("LABEL.SET_HOLD", other_id))
+
+    def transport(path, raw, headers):
+        target_id = (json.loads(raw).get("target") or {}).get("id")
+        server = other_server if target_id == other_id else p.server
+        return server(path, raw, headers)
+
+    monkeypatch.setattr(p.app._admin_pin_client, "transport", transport)
+
+    def second():
+        assert p.app._submit_package_pin_action(
+            second_action, second_id, window=p.window,
+            finish=second_finished.append, fail=p.errors.append,
+        )
+        assert not p.app._submit_package_pin_action(
+            second_action, second_id, window=p.window,
+            finish=second_finished.append, fail=p.errors.append,
+        )
+
+    entered, release = threading.Event(), threading.Event()
+    if boundary == "pin":
+        original = p.app._prompt_package_admin_pin
+        def prompt():
+            credentials = original()
+            if len(p.prompts) == 1:
+                second()
+                p.root.after(0, lambda: entered.set())
+                p.root.run_until(entered.is_set)
+                assert p.server.verify_calls == p.server.redeem_calls == 0
+            return credentials
+        monkeypatch.setattr(p.app, "_prompt_package_admin_pin", prompt)
+    else:
+        method = "_prepare_package_pin_action" if boundary == "prepare" else "_execute_package_pin_action"
+        original = getattr(p.app, method)
+        def block(action, *args):
+            if action == first_action:
+                entered.set()
+                assert release.wait(2)
+            return original(action, *args)
+        monkeypatch.setattr(p.app, method, block)
+    try:
+        assert p.app._submit_package_pin_action(
+            first_action, first_id, window=p.window,
+            finish=p.finished.append, fail=p.errors.append,
+        )
+        if boundary != "pin":
+            p.root.run_until(entered.is_set)
+            second()
+    finally:
+        release.set()
+    p.root.run_until(lambda: not p.app._package_pin_pending_targets)
+    assert p.finished == second_finished == [True] and not p.errors, {
+        "first_counts": (p.server.verify_calls, p.server.redeem_calls),
+        "second_counts": (other_server.verify_calls, other_server.redeem_calls),
+        "pending_states": [(row["state"], row["error_code"])
+                           for row in p.app._admin_pin_store.list_pending()],
+    }
+    assert p.prompts == [1, 1] and p.rejected == ["busy"]
+    assert p.server.verify_calls == p.server.redeem_calls == 1
+    assert other_server.verify_calls == other_server.redeem_calls == 1
+    assert p.app._admin_pin_store.applied("label_f5_recovery", p.item[3:], "LABEL.F5_HOLD")
+    assert p.app._admin_pin_store.applied("label_set_recovery", other_id, "LABEL.SET_HOLD")
+    assert not current.exists() and p.app.current_set_info["id"] is None
+    assert p.app._ui_lane_generation == 1
+
+
+def test_external_then_worker_generation_change_keeps_preparation_stale(pin_lane, monkeypatch):
+    p = pin_lane
+    original = p.app._prepare_package_pin_action
+    entered, release = threading.Event(), threading.Event()
+
+    def prepare(*args):
+        value = original(*args)
+        entered.set()
+        assert release.wait(2)
+        p.app._advance_ui_lane_generation()
+        return value
+
+    monkeypatch.setattr(p.app, "_prepare_package_pin_action", prepare)
+    try:
+        assert p.submit()
+        p.root.run_until(entered.is_set)
+        p.app._advance_ui_lane_generation()
+    finally:
+        release.set()
+    p.root.run_until(lambda: not p.app._package_pin_pending_targets)
+    assert p.app._ui_lane_generation == 2
+    assert not p.prompts and not p.finished and not p.errors
+    assert p.server.verify_calls == p.server.redeem_calls == 0
+
+
+@pytest.mark.parametrize("reset_after_pin", [False, True])
+def test_pin_continuation_waits_for_existing_lane_and_rechecks_generation(pin_lane, monkeypatch, reset_after_pin):
+    p = pin_lane
+    entered, release = threading.Event(), threading.Event()
+    def other_work():
+        entered.set()
+        assert release.wait(2)
+
+    def other():
+        assert p.app._submit_ui_lane_task(
+            name="other-work", busy_text="", work=other_work,
+            finish=lambda _: None, fail=p.errors.append,
+        ).accepted
+
+    if reset_after_pin:
+        p.app.is_blinking = False
+        p.app.initialized_successfully = False
+        p.app.progress_bar = {}
+        original = p.app._prompt_package_admin_pin
+        def prompt():
+            credentials = original()
+            other()
+            p.root.run_until(entered.is_set)
+            return credentials
+        monkeypatch.setattr(p.app, "_prompt_package_admin_pin", prompt)
+    else:
+        other()
+        p.root.run_until(entered.is_set)
+    try:
+        assert p.submit()
+        if reset_after_pin:
+            p.root.run_until(entered.is_set)
+            assert app_module.Label_Match._reset_current_set(p.app)
+        assert p.server.verify_calls == p.server.redeem_calls == 0
+        assert not p.submit()
+    finally:
+        release.set()
+    p.root.run_until(lambda: not p.app._package_pin_pending_targets)
+    assert not p.errors
+    if reset_after_pin:
+        assert p.server.verify_calls == p.server.redeem_calls == 0
+        assert p.rejected == ["busy", "changed"] and not p.finished
+        assert not p.app._admin_pin_store.list_pending() and p.journal.path.exists()
+    else:
+        assert p.server.verify_calls == p.server.redeem_calls == 1
+        assert p.rejected == ["busy"] and p.finished == [True]
+        assert _intent(p.app)[2] == "APPLIED"
+
+
+@pytest.mark.parametrize("exit", ["closed", "fault"])
+def test_queued_target_releases_on_close_or_runner_fault_without_new_pin(pin_lane, tmp_path, monkeypatch, exit):
+    p = pin_lane
+    other, _journal, current, other_server, other_id = _active_set_pin_app(
+        tmp_path / "queued", monkeypatch, linked=False,
+    )
+    p.app.current_set_info = other.current_set_info
+    p.app.data_manager = other.data_manager
+    assert p.app._package_pin_target("LABEL.SET_HOLD", other_id)[0]["id"] == other_id
+    queued_window = SimpleNamespace(alive=True)
+    queued_window.winfo_exists = lambda: queued_window.alive
+    entered, release = threading.Event(), threading.Event()
+    original = p.app._admin_pin_client.redeem
+    def redeem(**kwargs):
+        entered.set()
+        assert release.wait(2)
+        return original(**kwargs)
+    monkeypatch.setattr(p.app._admin_pin_client, "redeem", redeem)
+    def unexpected(_value):
+        raise AssertionError("unstarted queued target must not render")
+    try:
+        assert p.submit()
+        p.root.run_until(entered.is_set)
+        assert p.app._submit_package_pin_action(
+            "LABEL.SET_HOLD", other_id, window=queued_window,
+            finish=unexpected, fail=unexpected,
+        )
+        if exit == "closed":
+            queued_window.alive = False
+        else:
+            def broken_after(*args):
+                raise RuntimeError("injected terminal scheduler fault")
+            monkeypatch.setattr(p.app, "after", broken_after)
+    finally:
+        release.set()
+    p.root.run_until(lambda: not p.app._package_pin_pending_targets)
+    assert _intent(p.app)[2] == "APPLIED"
+    assert p.server.verify_calls == p.server.redeem_calls == 1
+    assert other_server.verify_calls == other_server.redeem_calls == 0
+    assert p.prompts == [1] and current.exists()
+    assert not p.app._package_pin_request_queue
+    assert p.app.__dict__.get("_package_pin_active_request") is None
+    assert not p.app._admin_pin_store.applied("label_set_recovery", other_id, "LABEL.SET_HOLD")
 
 
 @pytest.mark.parametrize("result", [None, "", {}])

@@ -5566,7 +5566,7 @@ class Label_Match(tk.Tk):
     def _handle_ui_lane_fault(self, error):
         self._ui_lane_busy_task = ""
         self._ui_lane_busy_label = ""
-        self.__dict__.get("_package_pin_pending_targets", {}).clear()
+        self._clear_package_pin_requests()
         print(
             "Label Tk UI lane technical diagnostic: "
             f"{self._ui_lane_diagnostic_text(error)}"
@@ -8311,6 +8311,7 @@ class Label_Match(tk.Tk):
             return None
         ui_lane = state.get("ui_lane")
         state["_app_close_in_progress"] = True
+        self._clear_package_pin_requests()
         if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
             if ui_lane.is_busy():
                 if not state.get("_tk_destroy_waiting_for_ui_lane", False):
@@ -8597,6 +8598,7 @@ class Label_Match(tk.Tk):
             entry = self.__dict__.get("entry")
             if not self.__dict__.get("_app_close_in_progress", False):
                 self._app_close_in_progress = True
+                self._clear_package_pin_requests()
                 self._app_close_previous_is_blinking = bool(
                     self.__dict__.get("is_blinking", False)
                 )
@@ -10451,21 +10453,68 @@ class Label_Match(tk.Tk):
             return None
         return callback(*args, **kwargs)
 
+    def _clear_package_pin_requests(self):
+        """Cancel unstarted continuations; admitted worker durability continues."""
+        self.__dict__.get("_package_pin_pending_targets", {}).clear()
+        self.__dict__.get("_package_pin_request_queue", []).clear()
+        self.__dict__.pop("_package_pin_active_request", None)
+
+    def _start_next_package_pin_request(self):
+        if self.__dict__.get("_package_pin_active_request") is not None:
+            return True
+        if self.__dict__.get("_app_close_in_progress", False):
+            self._clear_package_pin_requests()
+            return False
+        queue = self.__dict__.get("_package_pin_request_queue", [])
+        pending = self.__dict__.get("_package_pin_pending_targets", {})
+        while queue:
+            request = queue.pop(0)
+            target, window = request["target"], request["window"]
+            if pending.get(target) is not window:
+                continue
+            try:
+                exists = window.winfo_exists()
+            except BaseException:
+                self._clear_package_pin_requests()
+                raise
+            if not exists:
+                pending.pop(target, None)
+                continue
+            self._package_pin_active_request = request
+            return request["start"]()
+        return False
+
     def _submit_package_pin_action(
         self, action, set_id, physical_qr="", *, window, finish, fail,
     ):
         """Keep preparation and authorized apply on the existing UI lane."""
         pending = self.__dict__.setdefault("_package_pin_pending_targets", {})
-        if str(set_id) in pending or self._ui_lane_is_busy():
+        if str(set_id) in pending:
             self._show_ui_lane_rejection("busy")
             return False
-        if self.__dict__.get("ui_lane") is None:
+        lane = self.__dict__.get("ui_lane")
+        if lane is None:
+            return False
+        if self.__dict__.get("_app_close_in_progress", False) or lane.state in {
+                LaneState.DRAINING, LaneState.BROKEN, LaneState.CLOSED}:
+            self._show_ui_lane_rejection(
+                "broken" if lane.state is LaneState.BROKEN else "closing")
             return False
         pending[str(set_id)] = window
+        request = {"target": str(set_id), "window": window}
+        queue = self.__dict__.setdefault("_package_pin_request_queue", [])
 
         def release():
             if pending.get(str(set_id)) is window:
                 pending.pop(str(set_id), None)
+            if self.__dict__.get("_package_pin_active_request") is request:
+                self.__dict__.pop("_package_pin_active_request", None)
+                if queue:
+                    try:
+                        self.after(0, self._start_next_package_pin_request)
+                    except BaseException:
+                        self._clear_package_pin_requests()
+                        raise
 
         def finish_action(value):
             try:
@@ -10473,10 +10522,11 @@ class Label_Match(tk.Tk):
             finally:
                 release()
 
-        def submit_stage(name, work, complete):
+        def submit_stage(name, work, complete, generation=None):
             terminal = {}
             owner = {"worker": None, "ui": [], "generation": int(
-                self.__dict__.get("_ui_lane_generation", 0))}
+                self.__dict__.get("_ui_lane_generation", 0)
+                if generation is None else generation)}
 
             def owned_work():
                 owner["worker"] = threading.get_ident()
@@ -10489,6 +10539,9 @@ class Label_Match(tk.Tk):
 
             def complete_on_ui():
                 try:
+                    if self.__dict__.get("_package_pin_active_request") is not request:
+                        release()
+                        return
                     if owner["generation"] != int(
                             self.__dict__.get("_ui_lane_generation", 0)):
                         release()
@@ -10526,23 +10579,39 @@ class Label_Match(tk.Tk):
                     release()
                     raise
 
-            try:
-                admission = self._submit_ui_lane_task(
-                    name="package-admin-pin-" + name,
-                    busy_text="회사 서버 확인 중",
-                    work=owned_work,
-                    finish=lambda _value: None,
-                    fail=lambda _error: None,
-                    settle=lambda value, error: terminal.update(value=value, error=error),
-                    on_idle=idle,
-                )
-                if admission is None or not admission.accepted:
+            def admit_when_idle():
+                try:
+                    if self.__dict__.get("_package_pin_active_request") is not request:
+                        return False
+                    if not window.winfo_exists():
+                        release()
+                        return False
+                    if owner["generation"] != int(self.__dict__.get("_ui_lane_generation", 0)):
+                        release()
+                        self._show_ui_lane_rejection("changed")
+                        return False
+                    if lane.is_busy() and lane.state is LaneState.BUSY:
+                        lane.defer_until_idle(admit_when_idle)
+                        return True
+                    admission = self._submit_ui_lane_task(
+                        name="package-admin-pin-" + name,
+                        busy_text="회사 서버 확인 중",
+                        work=owned_work,
+                        finish=lambda _value: None,
+                        fail=lambda _error: None,
+                        generation=owner["generation"],
+                        settle=lambda value, error: terminal.update(value=value, error=error),
+                        on_idle=idle,
+                    )
+                    if admission is None or not admission.accepted:
+                        release()
+                        return False
+                    return True
+                except BaseException:
                     release()
-                    return False
-                return True
-            except BaseException:
-                release()
-                raise
+                    raise
+
+            return admit_when_idle()
 
         def prepared_on_ui(preparation):
             done, value = preparation
@@ -10552,7 +10621,12 @@ class Label_Match(tk.Tk):
             # The first task and its idle barrier have ended. The PIN dialog
             # holds no writer admission and the second task receives its input.
             try:
+                generation = int(self.__dict__.get("_ui_lane_generation", 0))
                 credentials = self._prompt_package_admin_pin()
+                if generation != int(self.__dict__.get("_ui_lane_generation", 0)):
+                    release()
+                    self._show_ui_lane_rejection("changed")
+                    return
                 if credentials is None:
                     finish_action(False)
                     return
@@ -10561,14 +10635,17 @@ class Label_Match(tk.Tk):
                     return
                 submit_stage("apply", lambda: self._execute_package_pin_action(
                     action, set_id, physical_qr, value, credentials,
-                ), finish_action)
+                ), finish_action, generation=generation)
             except BaseException:
                 release()
                 raise
 
-        return submit_stage("prepare", lambda: self._prepare_package_pin_action(
-            action, set_id, physical_qr,
-        ), prepared_on_ui)
+        request["start"] = lambda: submit_stage(
+            "prepare", lambda: self._prepare_package_pin_action(action, set_id, physical_qr),
+            prepared_on_ui,
+        )
+        queue.append(request)
+        return self._start_next_package_pin_request()
 
     def _prepare_package_pin_action(self, action, set_id, physical_qr=""):
         """Read/reconcile the target before the UI asks for a fresh PIN."""
@@ -11562,8 +11639,7 @@ class Label_Match(tk.Tk):
             return candidates[indexes[0]] if indexes else None
 
         def pin_busy(item):
-            if (item["set_id"] in self.__dict__.get("_package_pin_pending_targets", ())
-                    or self._ui_lane_is_busy()):
+            if item["set_id"] in self.__dict__.get("_package_pin_pending_targets", ()):
                 self._show_ui_lane_rejection("busy")
                 return True
             return False
@@ -11700,6 +11776,9 @@ class Label_Match(tk.Tk):
         def park_unverified():
             item = selected()
             if item is None or pin_busy(item):
+                return
+            if self._ui_lane_is_busy():
+                self._show_ui_lane_rejection("busy")
                 return
             parked = self._park_unverified_pin_item(item["set_id"])
             status.set(self.__dict__.get("_admin_pin_last_message", "보류하지 못했습니다."))
