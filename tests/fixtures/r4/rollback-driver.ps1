@@ -3,7 +3,7 @@
       [Parameter(Mandatory)][string]$Output,
       [ValidateSet('success','early_failure','runtime_unproven','g_refusal','fresh_cancel','installed_cancel')][string]$Case='early_failure',
       [ValidateSet('complete','preimage_present','install_present','placement_committed','setup_started',
-          'missing_preimage','missing_placement','missing_setup','string_setup','absence_unproven')][string]$Proof='complete')
+          'missing_preimage','missing_placement','missing_setup','string_setup','absence_unproven','first_registration_retry')][string]$Proof='complete')
 $ErrorActionPreference='Stop'
 # Keep every extracted function name together for sub-274.
 $ExtractedFunctionNames=@('Invoke-LabelRollbackStep','Get-LabelLaunchFailure',
@@ -11,7 +11,8 @@ $ExtractedFunctionNames=@('Invoke-LabelRollbackStep','Get-LabelLaunchFailure',
     'Invoke-LabelCanonicalRollback','Save-LabelRollbackContext',
     'Stop-LabelRollbackCandidateRelay','Invoke-LabelGenerationRefusalRecovery',
     'Assert-LabelRollbackTaskPreimage','Get-LabelCurrentUserScheduledTasks',
-    'Protect-LabelFailureText','ByteSha','Sha','InvokeFrozenPlacementHelper')
+    'Protect-LabelFailureText','ByteSha','Sha','InvokeFrozenPlacementHelper',
+    'Full','Test-LegacyFirstRegistrationState')
 . (Join-Path $Repo 'tools/failure_redaction.ps1')
 New-Item -ItemType Directory -Path $Root,(Join-Path $Root 'control') | Out-Null
 if($Case -cne 'fresh_cancel'){
@@ -46,6 +47,7 @@ function Manifest { param($Path,$Skip) return [pscustomobject]@{version='v2.0.95
 function PortableInventory { param($Path) $script:NativeCalls.inventory++;return [pscustomobject]@{sha256=$inventorySha;file_count=1;byte_count=1} }
 function Same { param($a,$b) return [IO.Path]::GetFullPath($a) -ceq [IO.Path]::GetFullPath($b) }
 function InvokeFrozenIntegrityProbe { param($Frozen,$Path) if(-not (Test-Path -LiteralPath $Path -PathType Container)){throw 'Isolated tree absent'} }
+function Assert-WriterTransition { return $script:RetryWriterTransition }
 function Set-LabelWriterFenceDelegation { }
 function SetWriterDelegationEnvironment { }
 function Set-LabelWriterFenceInstalledTree { }
@@ -133,6 +135,11 @@ if($Case -cin @('fresh_cancel','installed_cancel')){
     $elevationLogPath=Join-Path $Root 'placement.jsonl';$RunName='isolated-run'
     $serverBaseUrlSource='isolated';$serverBaseUrl='';$wanted='isolated-mutated-command'
     $writerTransition=[pscustomobject]@{compatibility='isolated';installed_inventory_sha256=$inventorySha;candidate_inventory_sha256=$inventorySha}
+    if($Proof -ceq 'first_registration_retry'){
+        $legacyFirstRegistration=$true
+        $firstRegistrationQuarantinePaths=@()
+        $defaultDirectSyncRoot=Join-Path $Root 'first-registration-state'
+    }
     $auditInitialization=@($ast.FindAll({param($n)
         $n -is [Management.Automation.Language.AssignmentStatementAst] -and
         $n.Left -is [Management.Automation.Language.VariableExpressionAst] -and
@@ -151,6 +158,27 @@ if($Case -cin @('fresh_cancel','installed_cancel')){
     $frozenPlacement=[pscustomobject]@{root=$Root;helper_path=(Join-Path $Root 'helper.ps1');helper_sha256=('a'*64);
         integrity_sha256=('b'*64);writer_fence_path=(Join-Path $Root 'writer.ps1');writer_fence_sha256=('c'*64);
         data_generation_path=(Join-Path $Root 'generation.ps1');data_generation_sha256=('d'*64)}
+    if($Proof -ceq 'first_registration_retry'){
+        # Execute the whole real retry branch, including its preimage checks.
+        # Only native identity observations use the existing isolated stand-ins.
+        $testMode=$true;$SkipSignatureValidationForTest=$true
+        $backup=Join-Path $Root '.current.rollback.retry'
+        New-Item -ItemType Directory -Path $backup | Out-Null
+        $script:RetryWriterTransition=[pscustomobject]@{compatibility='PINNED_DATA_GENERATION_G';installed_inventory_sha256=$inventorySha;candidate_inventory_sha256=$inventorySha}
+        $firstRegistrationResume=[pscustomobject]@{record_path=(Join-Path $Root 'retry.json');absent_ancestors=@();state_verified=$true;registration_started=$true;
+            writer_contract_sha256=$writerContractSha256;preimage_inventory=$installedPreimageInventory;code_backup_root=$backup;
+            installed_writer_inventory_sha256=$inventorySha;writer_session_id=$writerSessionId;writer_attempt_id=$writerAttemptId;
+            writer_transaction_id=$writerTransactionId;run_id='isolated-first-registration-retry'}
+        $retry=@($ast.FindAll({param($n)
+            $n -is [Management.Automation.Language.IfStatementAst] -and
+            $n.Clauses[0].Item1.Extent.Text -ceq '$null -ne $firstRegistrationResume' -and
+            $n.Clauses[0].Item2.Extent.Text.Contains('$originalInventory = $firstRegistrationResume.preimage_inventory')
+        },$true))
+        if($retry.Count -ne 1){throw 'Unique first-registration retry branch not found'}
+        . ([scriptblock]::Create($retry[0].Extent.Text))
+        $retryAudit=[ordered]@{code_preimage=$audit.code_preimage;code_placement=$audit.code_placement;current_user_setup_started=$audit.current_user_setup_started}
+        $retryInstallAbsent=-not (Test-Path -LiteralPath $install)
+    }
     if($Proof -ceq 'preimage_present'){$audit.code_preimage='PRESENT'}
     if($Proof -ceq 'install_present'){New-Item -ItemType Directory -Path $install | Out-Null}
     if($Proof -ceq 'placement_committed'){$audit.code_placement='PASS'}
@@ -195,7 +223,7 @@ if($Case -cin @('fresh_cancel','installed_cancel')){
 }
 $shortcutPath=Join-Path $Root 'shortcut-stand-in.txt'
 [IO.File]::WriteAllText($shortcutPath,'isolated prior shortcut')
-$forward=if($Case -cin @('fresh_cancel','installed_cancel')){'[void](InvokeFrozenPlacementHelper $frozenPlacement @{ElevationLogPath=(Join-Path $Root ''placement'')})'}else{'throw ''Injected isolated forward failure'''}
+$forward=if($Proof -ceq 'first_registration_retry'){'throw ''RESUME_FIRST_REGISTRATION_ROLLBACK'''}elseif($Case -cin @('fresh_cancel','installed_cancel')){'[void](InvokeFrozenPlacementHelper $frozenPlacement @{ElevationLogPath=(Join-Path $Root ''placement'')})'}else{'throw ''Injected isolated forward failure'''}
 $execute=[scriptblock]::Create("try {$forward} catch $catchBody finally $finallyBody")
 $failed=$false
 try{. $execute}catch{$failed=$true;$failureMessage=[string]$_.Exception.Message}
@@ -220,5 +248,10 @@ if($Case -cin @('fresh_cancel','installed_cancel')){
     $record.removal_arguments=$script:RemovalArguments
     $record.original_failure_preserved=([string]$audit.failure_details.placement_code -ceq 'PLACEMENT_LAUNCH_FAILED')
     $record.original_native_error=$original.Exception.GetBaseException().NativeErrorCode
+    if($Proof -ceq 'first_registration_retry'){
+        $record.retry_audit=$retryAudit;$record.retry_install_absent=$retryInstallAbsent
+        $record.real_first_registration_retry=$true;$record.existing_verified=$existingVerified
+        $record.original_failure_preserved=([string]$original.Exception.Message -ceq 'RESUME_FIRST_REGISTRATION_ROLLBACK')
+    }
 }
 $record | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Output -Encoding UTF8

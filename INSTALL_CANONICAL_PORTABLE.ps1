@@ -5704,6 +5704,7 @@ if ($null -ne $firstRegistrationResume) {
         throw 'Pending first-registration writer inventory differs from its validated legacy release.'
     }
     $existingVerified = $true
+    $audit.code_preimage = 'PRESENT'
     $pristineInstall = $false
     $installedPreimageInventory = $originalInventory
     $before = [pscustomobject]@{exists=$false;kind='';data=''}

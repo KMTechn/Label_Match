@@ -111,6 +111,27 @@ def test_installed_placement_cancellation_keeps_existing_removal(tmp_path, engin
     assert record['counts']['fence_release'] == record['counts']['relay_restart'] == 1
 
 
+def test_first_registration_retry_without_install_keeps_existing_removal(tmp_path, engine):
+    root = tmp_path / 'state'
+    record = run_driver(tmp_path, engine, 'rollback-driver.ps1', Root=root,
+                        Case='fresh_cancel', Proof='first_registration_retry')
+    assert record['real_first_registration_retry'] and record['existing_verified']
+    assert record['retry_install_absent']
+    assert record['initial_audit']['code_preimage'] == 'ABSENT'
+    assert record['failed'] and record['original_failure_preserved']
+    assert record['counts']['placement'] == record['counts']['setup'] == 0
+    # A verified retained preimage is an existing setup even without its folder.
+    assert record['counts']['product'] == 1
+    removal = [step for step in record['steps'] if step['phase'] == 'current_user_removal']
+    assert len(removal) == 1 and removal[0]['status'] == 'FAILED'
+    assert 'current_user_removal' in record['failed_steps']
+    assert record['retry_audit'] == {'code_preimage': 'PRESENT', 'code_placement': 'PENDING',
+                                     'current_user_setup_started': False}
+    assert record['removal_arguments'] == {'root': str(root / 'packet'),
+                                           'mode': '--remove-current-user-setup',
+                                           'logical_root': str(root / 'installed')}
+
+
 def test_preflight_observes_official_dynamic_task(tmp_path, engine):
     import json
     from tests.test_r4_official_relay import TABLE, vector_input
