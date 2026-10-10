@@ -459,6 +459,69 @@ def test_queued_target_releases_on_close_or_runner_fault_without_new_pin(pin_lan
     assert not p.app._admin_pin_store.applied("label_set_recovery", other_id, "LABEL.SET_HOLD")
 
 
+def test_cancelled_predecessor_cannot_release_replacement_target_reservation(pin_lane, tmp_path, monkeypatch):
+    p = pin_lane
+    _other, _journal, replacement_server = _pin_app(tmp_path / "replacement", monkeypatch)
+    entered, replacement_entered = threading.Event(), threading.Event()
+    release, replacement_release = threading.Event(), threading.Event()
+    original_redeem = p.app._admin_pin_client.redeem
+    original_prepare = p.app._prepare_package_pin_action
+    replacement_finished = []
+
+    def transport(path, raw, headers):
+        server = replacement_server if json.loads(raw).get("action") == "LABEL.RECHECK" else p.server
+        return server(path, raw, headers)
+
+    def redeem(**kwargs):
+        if kwargs["action"] == "LABEL.F5_HOLD":
+            entered.set()
+            assert release.wait(2)
+        return original_redeem(**kwargs)
+
+    def prepare(action, *args):
+        if action == "LABEL.RECHECK":
+            replacement_entered.set()
+            assert replacement_release.wait(2)
+        return original_prepare(action, *args)
+
+    monkeypatch.setattr(p.app._admin_pin_client, "transport", transport)
+    monkeypatch.setattr(p.app._admin_pin_client, "redeem", redeem)
+    monkeypatch.setattr(p.app, "_prepare_package_pin_action", prepare)
+    # Exercise the real busy destroy entry; suppress only its later Tk
+    # destruction/watchdog so the close rollback can keep this window alive.
+    monkeypatch.setattr(p.app, "destroy", lambda: None)
+    monkeypatch.setattr(p.app, "_arm_app_close_lane_drain_watchdog", lambda _: None)
+    accepted = False
+    try:
+        assert p.submit()
+        p.root.run_until(entered.is_set)
+        assert p.app.ui_lane.is_busy()
+        app_module.Label_Match.destroy(p.app)
+        assert p.app._app_close_in_progress and not p.app._package_pin_pending_targets
+        p.app._app_close_in_progress = False
+        accepted = p.app._submit_package_pin_action(
+            "LABEL.RECHECK", p.item, window=p.window,
+            finish=replacement_finished.append, fail=p.errors.append,
+        )
+        assert accepted
+        release.set()
+        p.root.run_until(replacement_entered.is_set)
+        assert p.item in p.app._package_pin_pending_targets
+        assert not p.app._submit_package_pin_action(
+            "LABEL.RECHECK", p.item, window=p.window,
+            finish=replacement_finished.append, fail=p.errors.append,
+        )
+    finally:
+        release.set()
+        replacement_release.set()
+        if accepted:
+            p.root.run_until(lambda: bool(replacement_finished or p.errors))
+    assert not p.finished and not p.errors and len(replacement_finished) == 1
+    assert p.server.verify_calls == p.server.redeem_calls == 1
+    assert replacement_server.verify_calls == replacement_server.redeem_calls == 1
+    assert p.rejected == ["closing", "busy"] and not p.app._package_pin_pending_targets
+
+
 @pytest.mark.parametrize("result", [None, "", {}])
 @pytest.mark.parametrize("target_kind", ["set", "f5"])
 def test_consumed_replay_empty_apply_finishes_same_intent_without_new_pin(pin_lane, tmp_path, monkeypatch, result, target_kind):

@@ -10505,16 +10505,17 @@ class Label_Match(tk.Tk):
         queue = self.__dict__.setdefault("_package_pin_request_queue", [])
 
         def release():
+            if self.__dict__.get("_package_pin_active_request") is not request:
+                return
             if pending.get(str(set_id)) is window:
                 pending.pop(str(set_id), None)
-            if self.__dict__.get("_package_pin_active_request") is request:
-                self.__dict__.pop("_package_pin_active_request", None)
-                if queue:
-                    try:
-                        self.after(0, self._start_next_package_pin_request)
-                    except BaseException:
-                        self._clear_package_pin_requests()
-                        raise
+            self.__dict__.pop("_package_pin_active_request", None)
+            if queue:
+                try:
+                    self.after(0, self._start_next_package_pin_request)
+                except BaseException:
+                    self._clear_package_pin_requests()
+                    raise
 
         def finish_action(value):
             try:
