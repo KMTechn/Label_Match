@@ -503,6 +503,7 @@ Main이 배정한 `KMTech-Label-Qualification-20260908-01`(GUID `ab171ce3-7967-4
 | 구성 | 현재 근거와 적용 한계 |
 | --- | --- |
 | 현행 portable 후보 | [기존 builder](../../tools/build_portable_release_candidate.py)는 CPython3.12.10과 curated 의존성·앱 소스를 배치하며 [정본 installer](../../INSTALL_CANONICAL_PORTABLE.ps1)의 기본 대상은 `C:\KMTech\Apps\Label_Match\current`다. [RELEASE_GATE_CONTRACT](../../RELEASE_GATE_CONTRACT.md)의 PyInstaller/`INSTALL_THIS_PC.ps1` 문구는 별도 legacy 경로다. mutable identity·profile·ledger·relay 등록과 실제 설치 수용은 후보 build와 구분한다([후속 근거](#label-black-continuation)) |
+| 공개 설치 호출자 | 작업자 일반 화면 세션에서 시작한다. 상승·High/System·Session 0 및 보안 판독 실패는 상태 쓰기 전 기존 공개 실패 한 줄·exit 1로 멈추고 보호 보고서를 만들지 않는다. 내부 UAC 자식은 유지하며 관리자 SSH 숨김 설치는 다음 판 범위다 |
 | 일반 사용자 실행 | [current_user_onboarding](../../current_user_onboarding.py) `resolve_current_user_onboarding_paths/apply_current_user_runtime_environment`가 사용자별 데이터·설정·relay·프로필 위치를 정하고 환경에 적용한다. Machine logistics anchor와 기존 사용자 설정의 영향은 아래처럼 별도 확인 |
 | relay | 현행 릴리스 계약은 HKCU `KMTech.LabelMatch.Relay`, 동일 제품의 `--label-match-user-relay`/`--label-match-direct-sync-relay`, `:18456` 계약과 로그인 사용자 실행을 사용한다. SYSTEM/AtStartup task를 현행 지원 배포로 안내하지 않는다. 과거 scheduled argv는 exit2로 거부하고 실제 이전 버전 migration/rollback 소비자만 유지함([product host](../../label_match_product_host.py), [릴리스 계약](../../RELEASE_GATE_CONTRACT.md)) |
 | source/portable 진입 | [portable/main.py](../../portable/main.py)도 같은 `Label_Match.main`을 부른다. checked-in 대체 진입점 존재와 현행 배포 후보의 실제 포함·선택은 다르다. [requirements-release](../../requirements-release.txt), factory bundle/pin과 실행 산출물 조합을 함께 식별 |

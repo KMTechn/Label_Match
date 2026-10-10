@@ -57,6 +57,15 @@ def _run_clean_install_receipt_gate_harness(
     source_root.mkdir(parents=True)
 
     installer_source = _source()
+    # This absent-machine fixture supplies an ordinary original caller at the
+    # native token boundary; keep the public admission predicate unchanged.
+    caller_read = "$publicCaller = Get-CanonicalRelaySecurity $PID"
+    assert installer_source.count(caller_read) == 1
+    installer_source = installer_source.replace(
+        caller_read,
+        "$publicCaller = [pscustomobject]@{elevated=$false;integrity_rid=8192;session_id=7}",
+        1,
+    )
     sentinel = "$runId = (Get-Date).ToUniversalTime()"
     assert sentinel in installer_source
     assert installer_source.index(
