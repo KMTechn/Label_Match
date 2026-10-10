@@ -11,15 +11,13 @@ param(
     [switch]$SkipSignatureValidationForTest
 )
 
-$script:CanonicalCallerAdmitted = $false
 trap {
     $publicError = $_
     $publicExit = 1
     if ($publicError.Exception.Data.Contains('installation_preparation_exit_code')) {
         $publicExit = [int]$publicError.Exception.Data['installation_preparation_exit_code']
     }
-    if ($script:CanonicalCallerAdmitted -and
-        (Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) -and
+    if ((Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) -and
         (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue)) {
         $publicFailure = Get-LabelLaunchFailure $publicError 'forward'
     } else {
@@ -4752,13 +4750,6 @@ if ($conflictReceiptSupplied) {
     $receiptSource = ReceiptSource $source $sourceManifest
 }
 $wanted = Command $install -StartupUpdate:($sourceManifest.startup_update_protocol -eq 1)
-# Admit the original public caller before audit or other user-state writers.
-# The existing UAC child enters INSTALL_THIS_PC.ps1, not this controller.
-$publicCaller = Get-CanonicalRelaySecurity $PID
-if ($publicCaller.elevated -or $publicCaller.integrity_rid -ne 8192 -or $publicCaller.session_id -le 0) {
-    throw 'Canonical relay normal-user security readback failed.'
-}
-$script:CanonicalCallerAdmitted = $true
 if ($PlanOnly) {
     "install_status=PLAN_ONLY"
     "install_root=$install"
