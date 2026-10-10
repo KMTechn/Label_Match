@@ -223,6 +223,10 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
     passed = []
     app._admin_pin_last_message = "관리자 확인 실패"
     app._run_package_pin_action = lambda action, set_id: passed.append((action, set_id)) or "관리자 확인 실패"
+    def submit_pin(action, set_id, _physical_qr="", *, window, finish, fail):
+        finish(app._run_package_pin_action(action, set_id))
+        return True
+    app._submit_package_pin_action = submit_pin
     app._park_unverified_pin_item = lambda set_id: passed.append(("PARK", set_id)) or True
     widgets = []
     values = []
@@ -235,6 +239,9 @@ def test_f5_workbench_button_passes_selected_hold_id(tmp_path, monkeypatch):
             widgets.append(self)
 
         def title(self, _value):
+            pass
+
+        def transient(self, _parent):
             pass
 
         def pack(self, **_options):

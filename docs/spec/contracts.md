@@ -379,6 +379,7 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 <a id="c-04"></a>
 ## C-04 F3 포장 명령·lease·outbox
 
+- 복구 창의 관리자 재확인·보류·지원 인계·실물 조회·관리자 요청 재조회·변경 파일 복원은 기존 UI lane의 준비/적용 단계로 실행한다. 사람 입력은 UI 단계에서 받고 새 verify는 입력 뒤 실행한다. 기존 pending status/중앙 대상 조회 순서와 verify 뒤 intent prepare 순서를 유지한다. 같은 대상의 요청은 중복 접수하지 않으며 창 닫힘은 내구 적용을 취소하지 않는다. 표시만 UI terminal 단계에서 창·generation을 확인한다. 내구 효과가 확인된 빈 결과도 APPLIED로 끝내고 기존 fallback 안내·목록 갱신을 한 번 수행한다.
 - [LM-3 완료 경계](operations.md#module-boundaries-lm3)는 기존 F3 handler·내구 commit signature와 호출 시점 전역/patch를 보존한다. 실패 뒤 원 작업·command, current-state→intent→CSV flush/fsync→marker→성공→중앙 ACK 순서는 불변이다.
 - LM-3 pane 구성은 기존 widget 생성·binding 순서와 disabled 초기 상태를 유지한다. notice Enter binding과 danger 취소 버튼 생성자는 owner에 두고 기존 snapshot adapter·action gate를 재사용한다.
 

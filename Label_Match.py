@@ -5347,6 +5347,12 @@ class Label_Match(tk.Tk):
             self.__dict__.get("_ui_lane_generation", 0)
         ) + 1
         self._ui_lane_generation = generation
+        owner = self.__dict__.get("_package_pin_ui_owner")
+        # A reset by this request fences old scans, but its own idle
+        # continuation must survive. An external generation stays stale.
+        if (owner is not None and owner["worker"] == threading.get_ident()
+                and owner["generation"] == generation - 1):
+            owner["generation"] = generation
         return generation
 
     @staticmethod
@@ -5560,6 +5566,7 @@ class Label_Match(tk.Tk):
     def _handle_ui_lane_fault(self, error):
         self._ui_lane_busy_task = ""
         self._ui_lane_busy_label = ""
+        self.__dict__.get("_package_pin_pending_targets", {}).clear()
         print(
             "Label Tk UI lane technical diagnostic: "
             f"{self._ui_lane_diagnostic_text(error)}"
@@ -5952,7 +5959,7 @@ class Label_Match(tk.Tk):
             self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
         self._workflow_blocking_notice = notice
         self._workflow_notice = notice
-        self._render_operator_workbench()
+        self._package_pin_ui(self._render_operator_workbench)
         return False
 
     def _reconcile_active_package_submission(self):
@@ -9283,14 +9290,14 @@ class Label_Match(tk.Tk):
         self._workflow_notice = notice
         self._workflow_notice_action = retry_action or self._load_current_set_state
         self._workflow_notice_action_text = "다시 확인"
-        self._render_operator_workbench()
+        self._package_pin_ui(self._render_operator_workbench)
 
     def _show_label_recovery_hold_notice(self, message):
         self._phs_label_guidance_notice = WorkflowNotice(
             title="현품표 교환 보류", message=message,
             kind="phs_label_exchange", tone="danger",
         )
-        self._render_operator_workbench()
+        self._package_pin_ui(self._render_operator_workbench)
 
     def _show_package_pin_changed_notice(self, *, restored=False):
         self._workflow_notice = WorkflowNotice(
@@ -9302,7 +9309,7 @@ class Label_Match(tk.Tk):
                 "보존했습니다. 관리자 메뉴 「멈춘 작업 확인」에서 이 항목을 다시 확인하거나 보류하세요."
             ), kind="submission_blocked", tone="danger",
         )
-        self._render_operator_workbench()
+        self._package_pin_ui(self._render_operator_workbench)
 
     def _package_pin_changed_move_pending(self, current_path):
         store = self.__dict__.get("_admin_pin_store")
@@ -9665,7 +9672,7 @@ class Label_Match(tk.Tk):
                     "F5:" + digest, "FILE_UNVERIFIED", manager_id,
                     evidence["reason"],
                 )
-                self._render_operator_workbench()
+                self._package_pin_ui(self._render_operator_workbench)
                 return True
             state = evidence["value"] if evidence["verified"] else {}
             # A valid-looking journal identity is still only a claim. Keep it
@@ -9703,7 +9710,7 @@ class Label_Match(tk.Tk):
                 if (self._read_package_recovery_file(archive, journal=True)["raw"] != raw
                         or path.exists()):
                     raise PackageLogisticsError("held label archive readback failed")
-            self._render_operator_workbench()
+            self._package_pin_ui(self._render_operator_workbench)
             return True
         except Exception as exc:
             if isinstance(exc, AdminPinError) and exc.code == "TARGET_CHANGED":
@@ -10430,37 +10437,178 @@ class Label_Match(tk.Tk):
 
     def _run_package_pin_action(self, action, set_id, physical_qr=""):
         """Authorize one selected recovery item without blocking other items."""
+        done, value = self._prepare_package_pin_action(action, set_id, physical_qr)
+        if done:
+            return value
+        credentials = self._prompt_package_admin_pin()
+        return self._execute_package_pin_action(action, set_id, physical_qr, value, credentials)
+
+    def _package_pin_ui(self, callback, *args, on_closed=False, **kwargs):
+        """Defer display-only recovery work until the lane's UI terminal stage."""
+        owner = self.__dict__.get("_package_pin_ui_owner")
+        if owner is not None and owner["worker"] == threading.get_ident():
+            owner["ui"].append((lambda: callback(*args, **kwargs), on_closed))
+            return None
+        return callback(*args, **kwargs)
+
+    def _submit_package_pin_action(
+        self, action, set_id, physical_qr="", *, window, finish, fail,
+    ):
+        """Keep preparation and authorized apply on the existing UI lane."""
+        pending = self.__dict__.setdefault("_package_pin_pending_targets", {})
+        if str(set_id) in pending or self._ui_lane_is_busy():
+            self._show_ui_lane_rejection("busy")
+            return False
+        if self.__dict__.get("ui_lane") is None:
+            return False
+        pending[str(set_id)] = window
+
+        def release():
+            if pending.get(str(set_id)) is window:
+                pending.pop(str(set_id), None)
+
+        def finish_action(value):
+            try:
+                finish(value)
+            finally:
+                release()
+
+        def submit_stage(name, work, complete):
+            terminal = {}
+            owner = {"worker": None, "ui": [], "generation": int(
+                self.__dict__.get("_ui_lane_generation", 0))}
+
+            def owned_work():
+                owner["worker"] = threading.get_ident()
+                self._package_pin_ui_owner = owner
+                try:
+                    return work()
+                finally:
+                    if self.__dict__.get("_package_pin_ui_owner") is owner:
+                        self.__dict__.pop("_package_pin_ui_owner", None)
+
+            def complete_on_ui():
+                try:
+                    if owner["generation"] != int(
+                            self.__dict__.get("_ui_lane_generation", 0)):
+                        release()
+                        return
+                    for callback, on_closed in owner["ui"]:
+                        if on_closed or window.winfo_exists():
+                            callback()
+                    if not window.winfo_exists():
+                        release()
+                        return
+                    if terminal.get("error") is not None:
+                        try:
+                            fail(terminal["error"])
+                        finally:
+                            release()
+                    else:
+                        complete(terminal.get("value"))
+                except Exception as error:
+                    try:
+                        if window.winfo_exists():
+                            fail(error)
+                    finally:
+                        release()
+                except BaseException:
+                    release()
+                    raise
+
+            def idle():
+                try:
+                    if self.winfo_exists():
+                        self.after(0, complete_on_ui)
+                    else:
+                        release()
+                except BaseException:
+                    release()
+                    raise
+
+            try:
+                admission = self._submit_ui_lane_task(
+                    name="package-admin-pin-" + name,
+                    busy_text="회사 서버 확인 중",
+                    work=owned_work,
+                    finish=lambda _value: None,
+                    fail=lambda _error: None,
+                    settle=lambda value, error: terminal.update(value=value, error=error),
+                    on_idle=idle,
+                )
+                if admission is None or not admission.accepted:
+                    release()
+                    return False
+                return True
+            except BaseException:
+                release()
+                raise
+
+        def prepared_on_ui(preparation):
+            done, value = preparation
+            if done:
+                finish_action(value)
+                return
+            # The first task and its idle barrier have ended. The PIN dialog
+            # holds no writer admission and the second task receives its input.
+            try:
+                credentials = self._prompt_package_admin_pin()
+                if credentials is None:
+                    finish_action(False)
+                    return
+                if not window.winfo_exists():
+                    release()
+                    return
+                submit_stage("apply", lambda: self._execute_package_pin_action(
+                    action, set_id, physical_qr, value, credentials,
+                ), finish_action)
+            except BaseException:
+                release()
+                raise
+
+        return submit_stage("prepare", lambda: self._prepare_package_pin_action(
+            action, set_id, physical_qr,
+        ), prepared_on_ui)
+
+    def _prepare_package_pin_action(self, action, set_id, physical_qr=""):
+        """Read/reconcile the target before the UI asks for a fresh PIN."""
         try:
             self._package_pin_client()
         except DataGenerationError as exc:
             self._admin_pin_last_message = str(exc)
-            return str(exc)
+            return True, str(exc)
         store = self._admin_pin_store
         self.__dict__.pop("_admin_pin_closing_intent", None)
         if action == "LABEL.SUPPORT_HANDOFF":
             decision = self._prepare_missing_pin_handoff(set_id)
             if decision is not None:
                 self._admin_pin_last_message = decision
-                return decision
+                return True, decision
         closing = self.__dict__.get("_admin_pin_closing_intent")
         kind = ("label_pin_handoff" if closing else
                 "label_f5_recovery" if str(set_id).startswith("F5:") else "label_set_recovery")
-        target_id = str(set_id)[3:] if action == "LABEL.F5_HOLD" else str(set_id)
+        # Match the identity already persisted by _package_pin_target. F5
+        # physical lookup uses the full item ID; the other F5 actions do not.
+        target_id = (str(set_id)[3:]
+                     if kind == "label_f5_recovery" and action != "LABEL.PHS_LOOKUP"
+                     else str(set_id))
         pending = store.pending(kind, target_id)
         if pending:
             if pending["action"] != action:
                 self._admin_pin_last_message = "이 항목의 앞선 관리자 요청을 먼저 다시 확인하세요."
-                return False
+                return True, False
             result = self._reconcile_package_pin_intent(pending, set_id, physical_qr)
-            if result is not None:
-                self._admin_pin_last_message = str(result)
-                return result
+            if (result is not None
+                    or store.get(pending["operation_key"])["state"] == "APPLIED"):
+                self._admin_pin_last_message = (str(result) if result else
+                                               "관리자 확인을 마치지 못했습니다.")
+                return True, result
         if action in {"LABEL.F5_HOLD", "LABEL.SET_HOLD"}:
             try:
                 applied = store.applied(kind, target_id, action)
             except Exception:
                 self._admin_pin_last_message = admin_pin_message("AUDIT_UNAVAILABLE")
-                return False
+                return True, False
             if applied:
                 try:
                     complete = self._package_pin_effect(applied)
@@ -10468,19 +10616,24 @@ class Label_Match(tk.Tk):
                     complete = False
                 if complete:
                     self._admin_pin_last_message = "같은 관리자 요청의 보류 완료를 확인했습니다."
-                    return True
+                    return True, True
                 self._admin_pin_last_message = admin_pin_message("EFFECT_UNVERIFIED")
-                return False
+                return True, False
         try:
             file_binding = self._package_pin_current_file_binding(action, set_id)
             target, source_sha = self._package_pin_target(action, set_id, physical_qr)
             operator = self._package_pin_operator()
         except Exception:
             self._admin_pin_last_message = admin_pin_message("TARGET_CHANGED")
-            return False
-        credentials = self._prompt_package_admin_pin()
+            return True, False
+        return False, (file_binding, target, source_sha, operator, closing)
+
+    def _execute_package_pin_action(self, action, set_id, physical_qr, prepared, credentials):
+        """Verify, persist, redeem and apply on the existing lane after UI input."""
         if credentials is None:
             return False
+        file_binding, target, source_sha, operator, closing = prepared
+        store = self._admin_pin_store
         admin_id, pin = credentials
         if not admin_id or not (len(pin) == 6 and pin.isascii() and pin.isdecimal()):
             try:
@@ -10562,7 +10715,8 @@ class Label_Match(tk.Tk):
                 if closing:
                     store.transition(closing["operation_key"], "HANDED_OFF_UNKNOWN",
                                      error_code="NO_KEYED_LEDGER_EFFECT")
-                self._admin_pin_last_message = str(result)
+                self._admin_pin_last_message = (str(result) if result else
+                                               "관리자 확인을 마치지 못했습니다.")
                 return result
             raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
         except AdminPinError as exc:
@@ -11315,6 +11469,10 @@ class Label_Match(tk.Tk):
 
         def restore_scan_focus(event):
             if event.widget is window:
+                pending = self.__dict__.get("_package_pin_pending_targets", {})
+                for target, owner_window in list(pending.items()):
+                    if owner_window is window:
+                        pending.pop(target, None)
                 self._package_recovery_window = None
                 self._schedule_scan_entry_focus_return()
 
@@ -11403,15 +11561,28 @@ class Label_Match(tk.Tk):
             indexes = listing.curselection()
             return candidates[indexes[0]] if indexes else None
 
+        def pin_busy(item):
+            if (item["set_id"] in self.__dict__.get("_package_pin_pending_targets", ())
+                    or self._ui_lane_is_busy()):
+                self._show_ui_lane_rejection("busy")
+                return True
+            return False
+
+        def show_result(result, fallback="관리자 확인을 마치지 못했습니다."):
+            status.set(str(result) if result else self.__dict__.get(
+                "_admin_pin_last_message", fallback,
+            ))
+            refresh()
+
         def recheck():
             try:
                 item = selected()
                 if item:
-                    result = self._run_package_pin_action("LABEL.RECHECK", item["set_id"])
-                    status.set(str(result) if result else self.__dict__.get(
-                        "_admin_pin_last_message", "관리자 확인을 마치지 못했습니다."
-                    ))
-                    refresh()
+                    self._submit_package_pin_action(
+                        "LABEL.RECHECK", item["set_id"], window=window, finish=show_result,
+                        fail=lambda _error: status.set(
+                            "결과 확인을 끝내지 못했습니다. 해당 보류를 유지하고 다시 시도하세요."),
+                    )
             except Exception as exc:
                 print(f"포장 관리자 재확인 진입 기술 진단: {exc}")
                 status.set("결과 확인을 끝내지 못했습니다. 해당 보류를 유지하고 다시 시도하세요.")
@@ -11422,13 +11593,21 @@ class Label_Match(tk.Tk):
                 if item:
                     action = ("LABEL.F5_HOLD" if item["set_id"].startswith("F5:")
                               else "LABEL.SET_HOLD")
-                    held = self._run_package_pin_action(action, item["set_id"])
-                    if held is True:
-                        status.set("해당 트레이의 원본·요청 키를 보류하고 다른 트레이 작업을 계속할 수 있습니다.")
-                        refresh()
-                    else:
-                        status.set(self.__dict__.get("_admin_pin_last_message") or
-                                   "선택한 항목을 보류하지 않았습니다. 목록을 다시 확인하세요.")
+                    def finish_hold(held):
+                        if held is True:
+                            status.set("해당 트레이의 원본·요청 키를 보류하고 다른 트레이 작업을 계속할 수 있습니다.")
+                            refresh()
+                        else:
+                            status.set(self.__dict__.get("_admin_pin_last_message") or
+                                       "선택한 항목을 보류하지 않았습니다. 목록을 다시 확인하세요.")
+
+                    self._submit_package_pin_action(
+                        action, item["set_id"], window=window, finish=finish_hold,
+                        fail=lambda _error: self._show_package_recovery_block(
+                            "보류 기록을 저장하지 못했습니다. 디스크 공간·폴더 권한·파일 잠금을 확인하세요.",
+                            retry_action=self._show_package_recovery_workbench,
+                        ),
+                    )
             except Exception as exc:
                 print(f"포장 관리자 보류 진입 기술 진단: {exc}")
                 self._show_package_recovery_block(
@@ -11441,19 +11620,24 @@ class Label_Match(tk.Tk):
                 item = selected()
                 if not item:
                     return
-                result = self._run_package_pin_action(
-                    "LABEL.SUPPORT_HANDOFF", item["set_id"]
-                )
-                if not result:
-                    status.set(self.__dict__.get("_admin_pin_last_message") or
-                               "지원 인계에는 관리자 확인이 필요합니다.")
-                    return
-                package = item.get("package") or {}
-                label = item.get("label") or {}
-                status.set(
-                    f"지원 담당자에게 세트 {item['set_id']} / 요청 "
-                    f"{package.get('idempotency_key') or label.get('exchange_id') or label.get('hold_id') or '교체 journal'} / "
-                    "실물 분리 보관 상태를 알려 주세요. 원본 기록은 보존됩니다."
+                def finish_handoff(result):
+                    if not result:
+                        status.set(self.__dict__.get("_admin_pin_last_message") or
+                                   "지원 인계에는 관리자 확인이 필요합니다.")
+                        return
+                    package = item.get("package") or {}
+                    label = item.get("label") or {}
+                    status.set(
+                        f"지원 담당자에게 세트 {item['set_id']} / 요청 "
+                        f"{package.get('idempotency_key') or label.get('exchange_id') or label.get('hold_id') or '교체 journal'} / "
+                        "실물 분리 보관 상태를 알려 주세요. 원본 기록은 보존됩니다."
+                    )
+
+                self._submit_package_pin_action(
+                    "LABEL.SUPPORT_HANDOFF", item["set_id"], window=window,
+                    finish=finish_handoff,
+                    fail=lambda _error: status.set(
+                        "지원 인계 기록을 저장하지 못했습니다. 해당 보류를 유지하고 다시 시도하세요."),
                 )
             except Exception as exc:
                 print(f"포장 지원 인계 감사 저장 기술 진단: {exc}")
@@ -11462,19 +11646,18 @@ class Label_Match(tk.Tk):
         def scan_physical():
             try:
                 item = selected()
-                if not item:
+                if not item or pin_busy(item):
                     return
                 value = simpledialog.askstring(
                     "실물 현품표 확인", "해당 실물 현품표를 스캔하세요.", parent=window
                 )
                 if value:
-                    result = self._run_package_pin_action(
-                        "LABEL.PHS_LOOKUP", item["set_id"], value
+                    self._submit_package_pin_action(
+                        "LABEL.PHS_LOOKUP", item["set_id"], value,
+                        window=window, finish=show_result,
+                        fail=lambda _error: status.set(
+                            "현품표를 확인하지 못했습니다. 해당 보류를 유지하고 다시 시도하세요."),
                     )
-                    status.set(str(result) if result else self.__dict__.get(
-                        "_admin_pin_last_message", "관리자 확인을 마치지 못했습니다."
-                    ))
-                    refresh()
             except Exception as exc:
                 print(f"포장 실물 현품표 복구 창 기술 진단: {exc}")
                 status.set("현품표를 확인하지 못했습니다. 해당 보류를 유지하고 다시 시도하세요.")
@@ -11491,7 +11674,7 @@ class Label_Match(tk.Tk):
         ).pack(anchor="w", pady=4)
         def retry_pin():
             item = selected()
-            if not item or not item.get("pin_intent"):
+            if not item or not item.get("pin_intent") or pin_busy(item):
                 return
             intent = item["pin_intent"]
             if intent["action"] == "LABEL.PHS_LOOKUP":
@@ -11507,18 +11690,16 @@ class Label_Match(tk.Tk):
                         resume_input = "__RESTORE_CHANGED_PIN_FILE__"
                 except Exception:
                     pass
-            result = (self._run_package_pin_action(intent["action"], item["set_id"],
-                                                   resume_input)
-                      if resume_input else self._run_package_pin_action(
-                          intent["action"], item["set_id"]))
-            status.set(str(result) if result else self.__dict__.get(
-                "_admin_pin_last_message", "관리자 확인을 마치지 못했습니다."
-            ))
-            refresh()
+            self._submit_package_pin_action(
+                intent["action"], item["set_id"], resume_input,
+                window=window, finish=show_result,
+                fail=lambda _error: status.set(
+                    "결과 확인을 끝내지 못했습니다. 해당 보류를 유지하고 다시 시도하세요."),
+            )
 
         def park_unverified():
             item = selected()
-            if item is None:
+            if item is None or pin_busy(item):
                 return
             parked = self._park_unverified_pin_item(item["set_id"])
             status.set(self.__dict__.get("_admin_pin_last_message", "보류하지 못했습니다."))
@@ -11530,13 +11711,12 @@ class Label_Match(tk.Tk):
             if not item or not item.get("changed_hold"):
                 status.set("변경 파일 보류 항목을 선택하세요.")
                 return
-            result = self._run_package_pin_action(
-                "LABEL.RECHECK", item["set_id"], "__RESTORE_CHANGED_PIN_FILE__"
+            self._submit_package_pin_action(
+                "LABEL.RECHECK", item["set_id"], "__RESTORE_CHANGED_PIN_FILE__",
+                window=window,
+                finish=lambda result: show_result(result, "활성 위치 복원을 확인하지 못했습니다."),
+                fail=lambda _error: status.set("활성 위치 복원을 확인하지 못했습니다."),
             )
-            status.set(str(result) if result else self.__dict__.get(
-                "_admin_pin_last_message", "활성 위치 복원을 확인하지 못했습니다."
-            ))
-            refresh()
 
         pin_buttons = ttk.Frame(frame)
         pin_buttons.pack(fill="x", pady=(0, 4))
@@ -11607,10 +11787,10 @@ class Label_Match(tk.Tk):
             if self.current_set_info.get("shortage_confirmation_pending"):
                 if isinstance(self.current_set_info.get("start_time"), str):
                     self.current_set_info["start_time"] = datetime.fromisoformat(self.current_set_info["start_time"])
-                self._finalize_set(self.Results.PASS)
+                self._package_pin_ui(self._finalize_set, self.Results.PASS, on_closed=True)
                 return
-            self.update_big_display("부족 확정 · 취소 카드로 되돌리거나 다음 현품표를 스캔하세요.", "primary")
-            self._arm_shortage_confirmation_timeout()
+            self._package_pin_ui(self.update_big_display, "부족 확정 · 취소 카드로 되돌리거나 다음 현품표를 스캔하세요.", "primary")
+            self._package_pin_ui(self._arm_shortage_confirmation_timeout)
             return
         if state_data:
             held_set_id = str((state_data.get("current_set_info") or {}).get("id") or "")
@@ -11647,7 +11827,7 @@ class Label_Match(tk.Tk):
                 self._workflow_blocking_notice = None
                 self._workflow_notice = None
                 self._workflow_notice_action = None
-                self._render_operator_workbench()
+                self._package_pin_ui(self._render_operator_workbench)
         if not state_data and os.path.lexists(self._package_current_state_path()):
             if (self._package_pin_changed_move_pending(current_path)
                     or self._package_pin_changed_restored_active(current_path)):
@@ -11753,7 +11933,7 @@ class Label_Match(tk.Tk):
                         "_package_recovery_callback", self._show_package_recovery_workbench,
                     )
                     self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
-                    self._render_operator_workbench()
+                    self._package_pin_ui(self._render_operator_workbench)
                     return
             elif recoverable or invalid:
                 detail = (
@@ -11775,7 +11955,7 @@ class Label_Match(tk.Tk):
                     "_package_recovery_callback", self._show_package_recovery_workbench,
                 )
                 self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
-                self._render_operator_workbench()
+                self._package_pin_ui(self._render_operator_workbench)
                 return
             else:
                 exchange_store = self.__dict__.get("sealed_transfer_exchange_store")
@@ -11797,9 +11977,11 @@ class Label_Match(tk.Tk):
             start_time = self.current_set_info.get("start_time")
             if isinstance(start_time, str):
                 self.current_set_info["start_time"] = datetime.fromisoformat(start_time)
-            if self._resume_scanner_failure():
-                self._show_scanner_notice("이전 오류 기록 복구",
-                    "이전 트레이의 오류 기록을 저장했습니다. 새 현품표부터 스캔하세요.")
+            def resume_failure():
+                if self._resume_scanner_failure():
+                    self._show_scanner_notice("이전 오류 기록 복구",
+                        "이전 트레이의 오류 기록을 저장했습니다. 새 현품표부터 스캔하세요.")
+            self._package_pin_ui(resume_failure, on_closed=True)
             return
         detached_capture = False
         try:
@@ -11878,7 +12060,7 @@ class Label_Match(tk.Tk):
                     and not transition_state
                 ):
                     if not self.run_tests:
-                        self._show_scanner_notice("이전 작업 만료", "어제 완료되지 않은 작업 데이터는 자동으로 삭제됩니다.")
+                        self._package_pin_ui(self._show_scanner_notice, "이전 작업 만료", "어제 완료되지 않은 작업 데이터는 자동으로 삭제됩니다.")
                     self.data_manager.delete_current_state()
                     return
         except (ValueError, TypeError) as e:
@@ -11900,7 +12082,7 @@ class Label_Match(tk.Tk):
                     "_package_recovery_callback", self._show_package_recovery_workbench,
                 )
                 self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
-                self._render_operator_workbench()
+                self._package_pin_ui(self._render_operator_workbench)
                 return
             print(f"저장된 타임스탬프 파싱 오류: {e}. 이전 작업을 무시합니다.")
             self.data_manager.delete_current_state()
@@ -11915,7 +12097,7 @@ class Label_Match(tk.Tk):
         if should_restore:
             saved_worker_name = persistent_operator_name(state_data.get('worker_name'))
             state_data['worker_name'] = saved_worker_name
-            self._show_scanner_notice(
+            self._package_pin_ui(self._show_scanner_notice,
                 "이전 작업 복구",
                 "이전에 완료되지 않은 세트를 복구했습니다. "
                 "계속 스캔하거나 현재 트레이를 취소하세요."
@@ -11950,17 +12132,17 @@ class Label_Match(tk.Tk):
                 self.Events.SET_RESTORED,
                 {"set_id": self.current_set_info.get("id"), "continued_by": self.worker_name},
             )
-            self.progress_bar['value'] = len(self.current_set_info['raw'])
+            self._package_pin_ui(self.progress_bar.__setitem__, 'value', len(self.current_set_info['raw']))
             if self.current_set_info.get("exact_rescan_active"):
                 completed = len(self.current_set_info.get("exact_rescan_barcodes") or [])
                 target = int(self.current_set_info.get("exact_rescan_target_count") or 0)
-                self.update_big_display(f"전체 제품 재스캔 {completed}/{target}", "primary")
+                self._package_pin_ui(self.update_big_display, f"전체 제품 재스캔 {completed}/{target}", "primary")
             else:
-                self.update_big_display(self._next_action_text(len(self.current_set_info.get('parsed', []))), "green")
-            self._update_status_label()
-            self._update_history_tree_in_progress()
+                self._package_pin_ui(self.update_big_display, self._next_action_text(len(self.current_set_info.get('parsed', []))), "green")
+            self._package_pin_ui(self._update_status_label)
+            self._package_pin_ui(self._update_history_tree_in_progress)
             self._workflow_recovered = True
-            self._render_operator_workbench()
+            self._package_pin_ui(self._render_operator_workbench)
             if completion_sync_error is not None:
                 self._publish_durable_commit_block(completion_sync_error)
                 return
@@ -11996,9 +12178,9 @@ class Label_Match(tk.Tk):
                 self._workflow_notice = notice
                 self._workflow_notice_action = self._retry_blocked_submission
                 self._workflow_notice_action_text = "저장 재시도"
-                self._render_operator_workbench()
+                self._package_pin_ui(self._render_operator_workbench)
             self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
-            self._reconcile_active_package_submission()
+            self._package_pin_ui(self._reconcile_active_package_submission, on_closed=True)
 
     def _discard_declined_saved_set(self, saved_set_info):
         """Delete a saved set the operator declined to restore (see below)."""
@@ -15884,17 +16066,17 @@ class Label_Match(tk.Tk):
                 )
             if self.run_tests:
                 raise
-            self._show_scanner_notice(
+            self._package_pin_ui(self._show_scanner_notice,
                 "제품 교체 로컬 반영 보류",
                 "중앙 교체 결과는 보존됐지만 현재 포장 화면 저장에 실패했습니다.\n"
                 "프로그램을 종료하지 말고 다시 시도하세요. "
                 "계속 실패하면 관리자에게 확인을 요청하세요.",
             )
             return False
-        self._update_history_tree_in_progress()
-        self._update_status_label()
-        self._render_operator_workbench()
-        self.update_big_display("제품 교체 및 새 봉인 확인 완료", "green")
+        self._package_pin_ui(self._update_history_tree_in_progress)
+        self._package_pin_ui(self._update_status_label)
+        self._package_pin_ui(self._render_operator_workbench)
+        self._package_pin_ui(self.update_big_display, "제품 교체 및 새 봉인 확인 완료", "green")
         return True
 
     def _accept_background_exchange_receipt(self, attempt):
@@ -17992,10 +18174,10 @@ class Label_Match(tk.Tk):
             self._workflow_recovered = False
         self._reset_current_set(from_finalize=True)
         if self.__dict__.get("operator_workbench_ready"):
-            self._refresh_session_tree()
-            self._render_operator_workbench()
+            self._package_pin_ui(self._refresh_session_tree)
+            self._package_pin_ui(self._render_operator_workbench)
         elif "big_display_label" in self.__dict__:
-            self.after(1800, self._show_idle_instruction_if_idle)
+            self._package_pin_ui(self.after, 1800, self._show_idle_instruction_if_idle)
         return True
 
     def _handle_input_error(self, raw, title="[입력 오류]", reason="알 수 없는 입력 오류가 발생했습니다."):
@@ -18523,14 +18705,16 @@ class Label_Match(tk.Tk):
         }
         if short_checkpoint:
             self.current_set_info.update(short_checkpoint)
-        self.progress_bar['value'] = 0
-        if dismissed_package_conflict:
-            self._refresh_package_cancellation_review_notice()
-        if self.initialized_successfully:
-            self._update_status_label()
-            self.update_big_display(self._idle_instruction_text(), "")
-            self.entry.focus_set()
-            self._render_operator_workbench()
+        def render_reset():
+            self.progress_bar['value'] = 0
+            if dismissed_package_conflict:
+                self._refresh_package_cancellation_review_notice()
+            if self.initialized_successfully:
+                self._update_status_label()
+                self.update_big_display(self._idle_instruction_text(), "")
+                self.entry.focus_set()
+                self._render_operator_workbench()
+        self._package_pin_ui(render_reset)
         return True
 
     def _close_popup(self, popup, result, error_details):
@@ -21992,13 +22176,15 @@ class Label_Match(tk.Tk):
             "다시 확인" if policy_notice and not lease_failure else "저장 재시도"
         )
         self._workflow_last_normal_override = scans[-1] if scans else ""
-        notice_label = self.__dict__.get("workflow_notice_label")
-        if notice_label is not None:
-            try:
-                notice_label.configure(text=message)
-            except (TclError, AttributeError):
-                pass
-        self._render_operator_workbench()
+        def render_notice():
+            notice_label = self.__dict__.get("workflow_notice_label")
+            if notice_label is not None:
+                try:
+                    notice_label.configure(text=message)
+                except (TclError, AttributeError):
+                    pass
+            self._render_operator_workbench()
+        self._package_pin_ui(render_notice)
         return False
 
     def _publish_submission_block(self, error):

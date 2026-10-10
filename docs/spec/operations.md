@@ -1,5 +1,9 @@
 # Label_Match 운영·복구·검증
 
+<a id="package-admin-pin-ui-lane"></a>
+
+건별 복구의 관리자 서버 요청은 기존 UI lane에서 처리한다. 준비 뒤 필요한 PIN은 idle UI 단계에서 받으며, 승인·원본 재대조·보류/복원·감사는 기존 writer sink에서 적용한다. 자기 정리로 lane 세대를 올리면 같은 요청의 다음 단계는 새 세대로 이어지고, 외부 작업이 바꾼 세대의 화면 결과는 버린다. 닫힌 복구 창은 갱신하지 않고 내구 적용을 마친다. PIN·취소·예외·제출 거절·낡은 화면 결과 뒤에는 대상의 대기 표시를 해제한다. headless 검증은 transport 대기 중 다른 after callback, 중복 요청 1회, 닫힘 뒤 내구 적용, 빈 결과 fallback 및 실제 reset의 widget 소유 스레드를 검사한다. 실제 Tk·음향·장치·서버 수용과 생성 선언 갱신은 별도 통합 단계다.
+
 PowerShell lifecycle 관측·고정 helper·새 SYSTEM 로그온 action과 옛 사용자 작업 조회·정리는 자식 인수에 `-ExecutionPolicy Bypass`를 명시한다. OS·레지스트리·GPO 정책은 변경하지 않는다. 설치·제거·관측은 정확한 이전 무정책 SYSTEM action과 새 action만 인정하며 원본 복원 XML을 보존한다. GPO 강제 및 실제 현장 실행은 별도 수용 항목이다.
 
 ## 관리자 입구 후보 — w9firstupdsub63 (10/11 1차 답 v0)
