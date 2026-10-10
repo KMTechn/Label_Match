@@ -11,7 +11,7 @@ $ExtractedFunctionNames=@('Invoke-LabelRollbackStep','Get-LabelLaunchFailure',
     'Invoke-LabelCanonicalRollback','Save-LabelRollbackContext',
     'Stop-LabelRollbackCandidateRelay','Invoke-LabelGenerationRefusalRecovery',
     'Assert-LabelRollbackTaskPreimage','Get-LabelCurrentUserScheduledTasks',
-    'Protect-LabelFailureText','ByteSha','InvokeFrozenPlacementHelper')
+    'Protect-LabelFailureText','ByteSha','Sha','InvokeFrozenPlacementHelper')
 . (Join-Path $Repo 'tools/failure_redaction.ps1')
 New-Item -ItemType Directory -Path $Root,(Join-Path $Root 'control') | Out-Null
 if($Case -cne 'fresh_cancel'){
@@ -33,6 +33,7 @@ $gDefinition=$functions['Assert-LabelRollbackGeneration'].Replace('function Asse
 . ([scriptblock]::Create($gDefinition))
 # Use the unmodified shared marker reader and downgrade policy.
 . (Join-Path $Repo 'kmtech_shared/powershell/data_generation.ps1')
+. (Join-Path $Repo 'kmtech_shared/powershell/portable.ps1')
 $script:GCalls=0
 function Assert-LabelRollbackGeneration {
     $script:GCalls++
@@ -69,6 +70,7 @@ function Snapshot {
 function Stop-LabelWriterFence { $script:NativeCalls.fence_release++;return [pscustomobject]@{writer_inventory_sha256=$inventorySha} }
 function StartRaw { $script:NativeCalls.relay_restart++;return 1 }
 function Get-CimInstance { return [pscustomobject]@{ExecutablePath=(Join-Path $Root 'prior-runtime.exe')} }
+function Get-AuthenticodeSignature { return [pscustomobject]@{Status='NotSigned'} }
 function Start-Sleep { }
 function Start-Process { throw 'R4 native process execution prohibited' }
 function Start-LabelPlacementSession { $script:NativeCalls.placement++;throw [ComponentModel.Win32Exception]::new(1223) }
@@ -121,7 +123,30 @@ $transaction=@($ast.FindAll({param($n)
 if($transaction.Count -ne 1){throw 'Unique product transaction not found'}
 if($Case -cin @('fresh_cancel','installed_cancel')){
     if($Case -ceq 'fresh_cancel'){$existingVerified=$false;$old=@();$replacementRollbackRoot=''}
-    $audit.code_preimage=if($existingVerified){'PRESENT'}else{'ABSENT'};$audit.code_placement='PENDING';$audit.current_user_setup_started=$false
+    # Run the complete source audit initializer before altering any proof input.
+    # Its file hash reads only a fixture packet; Authenticode is a native stand-in.
+    $source=Join-Path $Root 'packet'
+    New-Item -ItemType Directory -Path (Join-Path $source 'runtime') | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $source 'runtime/pythonw.exe'),[byte[]]@())
+    $runId=[guid]::NewGuid().ToString();$pristineInstall=-not $existingVerified
+    $sourceManifest=[pscustomobject]@{source_commit=$sourceCommit};$candidate=$sourceManifest
+    $elevationLogPath=Join-Path $Root 'placement.jsonl';$RunName='isolated-run'
+    $serverBaseUrlSource='isolated';$serverBaseUrl='';$wanted='isolated-mutated-command'
+    $writerTransition=[pscustomobject]@{compatibility='isolated';installed_inventory_sha256=$inventorySha;candidate_inventory_sha256=$inventorySha}
+    $auditInitialization=@($ast.FindAll({param($n)
+        $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $n.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+        $n.Left.VariablePath.UserPath -ceq 'audit' -and
+        $n.Right.Extent.Text.Contains("schema = 'label-match-canonical-portable-install-v1'") -and
+        $n.Right.Extent.Text.Contains('code_preimage =')
+    },$true))
+    if($auditInitialization.Count -ne 1){throw 'Unique source audit initializer not found'}
+    . ([scriptblock]::Create($auditInitialization[0].Extent.Text))
+    $initialAudit=[ordered]@{}
+    foreach($name in @('schema','status','code_preimage','code_state','code_placement','current_user_setup_started')){
+        $initialAudit[$name]=$audit[$name]
+    }
+    $audit.writer_fence=[ordered]@{status='RESTORING'}
     $helperParameters=@{}
     $frozenPlacement=[pscustomobject]@{root=$Root;helper_path=(Join-Path $Root 'helper.ps1');helper_sha256=('a'*64);
         integrity_sha256=('b'*64);writer_fence_path=(Join-Path $Root 'writer.ps1');writer_fence_sha256=('c'*64);
@@ -185,6 +210,7 @@ $record=[ordered]@{source_commit=$sourceCommit;case=$Case;g_calls=$script:GCalls
     errors=@($Script:LabelRollbackFailures | ForEach-Object phase);
     real_generation_helper=$true;real_product_catch_and_finally=$true}
 if($Case -cin @('fresh_cancel','installed_cancel')){
+    $record.initial_audit=$initialAudit
     $record.run_preimage_restored=($script:RunState.exists -eq $before.exists -and $script:RunState.data -ceq $before.data)
     $record.task_preimage_restored=($script:TaskState.exists -eq $taskBefore.exists)
     $record.shortcut_preimage_restored=([IO.File]::ReadAllText($shortcutPath) -ceq 'isolated prior shortcut')

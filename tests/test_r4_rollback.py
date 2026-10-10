@@ -55,6 +55,11 @@ def test_nested_phase_records_keep_parent_identity(tmp_path, engine, case):
 def test_fresh_placement_cancellation_removes_only_created_user_setup(tmp_path, engine, proof):
     record = run_driver(tmp_path, engine, 'rollback-driver.ps1', Root=tmp_path / 'state',
                         Case='fresh_cancel', Proof=proof)
+    assert record['initial_audit'] == {
+        'schema': 'label-match-canonical-portable-install-v1', 'status': 'PREIMAGE_SAVED',
+        'code_preimage': 'ABSENT', 'code_state': 'ABSENT', 'code_placement': 'PENDING',
+        'current_user_setup_started': False,
+    }
     removal = [step for step in record['steps'] if step['phase'] == 'current_user_removal']
     assert len(removal) == 1
     assert record['failed']  # The original forward failure still reaches the caller.
@@ -89,6 +94,11 @@ def test_fresh_placement_cancellation_removes_only_created_user_setup(tmp_path, 
 def test_installed_placement_cancellation_keeps_existing_removal(tmp_path, engine):
     root = tmp_path / 'state'
     record = run_driver(tmp_path, engine, 'rollback-driver.ps1', Root=root, Case='installed_cancel')
+    assert record['initial_audit'] == {
+        'schema': 'label-match-canonical-portable-install-v1', 'status': 'PREIMAGE_SAVED',
+        'code_preimage': 'PRESENT', 'code_state': 'PRESENT', 'code_placement': 'PENDING',
+        'current_user_setup_started': False,
+    }
     assert record['status'] == 'ROLLBACK_FAILED'
     assert record['counts']['product'] == record['counts']['placement'] == 1
     assert record['removal_arguments'] == {'root': str(root / 'installed'),

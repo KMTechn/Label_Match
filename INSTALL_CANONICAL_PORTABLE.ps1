@@ -4427,10 +4427,10 @@ function Invoke-LabelCanonicalRollback {
         }
         if ($rollbackGenerationReady -and $rollbackCustodyReady) {
             $noCurrentUserSetupCreated = $false
-            if ([string]$audit.code_preimage -ceq 'ABSENT' -and
-                [string]$audit.code_placement -cin @('NOT_STARTED', 'PENDING') -and
-                $audit.current_user_setup_started -is [bool] -and
-                -not $audit.current_user_setup_started) {
+            if ([string]$audit['code_preimage'] -ceq 'ABSENT' -and
+                [string]$audit['code_placement'] -cin @('NOT_STARTED', 'PENDING') -and
+                $audit['current_user_setup_started'] -is [bool] -and
+                -not $audit['current_user_setup_started']) {
                 try { $noCurrentUserSetupCreated = -not (Test-Path -LiteralPath $install -ErrorAction Stop) }
                 catch { $noCurrentUserSetupCreated = $false }
             }
