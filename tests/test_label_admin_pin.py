@@ -674,7 +674,7 @@ def test_incomplete_status_200_keeps_consumed_intent_unknown(tmp_path, monkeypat
         admin_id="admin-personal", source_evidence_sha256=source_sha,
     )
     result = app._run_package_pin_action("LABEL.F5_HOLD", "F5:" + digest)
-    assert "불확실" in result and result == app._admin_pin_last_message
+    assert "결과를 알 수 없습니다" in result and result == app._admin_pin_last_message
     assert journal.path.exists() and app.package_outbox.get_label_exchange_hold(digest) is None
 
 

@@ -47,7 +47,7 @@ def operator_message(code: str) -> str:
         return "이 관리자 동작의 서버 확인을 사용할 수 없습니다. 이 건만 보류하고 다른 작업을 계속하세요."
     if code in {"PIN_BUSY", "PIN_RATE_LIMITED"}:
         return "관리자 확인이 바쁩니다. 잠시 뒤 다시 확인하세요. 이 건만 보류하고 다른 작업을 계속하세요."
-    return "관리자 확인이 불확실합니다. 다시 확인하거나 이 건만 보류하고 다른 작업을 계속하세요."
+    return "관리자 확인 결과를 알 수 없습니다. 이 건만 보류하고 다른 작업을 계속하세요."
 
 
 def fingerprint(value: Mapping[str, Any]) -> str:

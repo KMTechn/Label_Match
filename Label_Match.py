@@ -11736,8 +11736,8 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showwarning(
                     "작업 복구",
-                    "이 세트는 로컬 과도기 세트로 정해졌지만 중앙 확인 기록을 지금 닫지 못해 "
-                    "지울 수 없습니다. 세트를 이어서 엽니다. 마저 끝내거나 F1로 다시 취소하세요. "
+                    "이 트레이는 이 PC에서 과도기 트레이로 정해졌지만 회사 서버 확인 기록을 지금 닫지 못해 "
+                    "지울 수 없습니다. 트레이를 이어서 엽니다. 마저 끝내거나 F1로 다시 취소하세요. "
                     "계속 안 되면 관리자에게 알리세요.",
                     parent=self,
                 )
@@ -15861,10 +15861,10 @@ class Label_Match(tk.Tk):
             self.update_big_display("제품 교체 준비 차단", "red")
             self._render_operator_workbench()
             messagebox.showerror(
-                "제품 교체 준비 실패",
+                "제품 교환 준비 안 됨",
                 (
-                    "중앙 연결 상태를 확인한 뒤 다시 시도하세요. "
-                    "계속 실패하면 관리자에게 확인을 요청하세요."
+                    "회사 서버 확인을 받지 못했습니다. 잠시 뒤 다시 하세요. "
+                    "계속 안 되면 관리자에게 알려 주세요."
                 ),
                 parent=self,
             )
@@ -15939,10 +15939,10 @@ class Label_Match(tk.Tk):
                 self.update_big_display("제품 교체 준비 차단", "red")
                 self._render_operator_workbench()
                 messagebox.showerror(
-                    "제품 교체 준비 실패",
+                    "제품 교환 준비 안 됨",
                     (
-                        "중앙 연결 상태를 확인한 뒤 다시 시도하세요. "
-                        "계속 실패하면 관리자에게 확인을 요청하세요."
+                        "회사 서버 확인을 받지 못했습니다. 잠시 뒤 다시 하세요. "
+                        "계속 안 되면 관리자에게 알려 주세요."
                     ),
                     parent=self,
                 )
@@ -17099,7 +17099,7 @@ class Label_Match(tk.Tk):
             return "해당 작업이 정상적으로 취소되었습니다."
         status = str(cancellation.get("status") or "").strip().upper()
         if bool(cancellation.get("central_cancellation_acked")) or status == "ACKED":
-            return "로컬 기록과 회사 서버 포장이 모두 취소되었습니다."
+            return "이 PC의 기록과 회사 서버 포장이 모두 취소되었습니다."
         if status == "CONFLICT":
             return (
                 "로컬 취소 기록은 저장되었지만 중앙 취소 확인이 필요합니다. "
