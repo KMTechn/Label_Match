@@ -1,388 +1,279 @@
-# Label_Match 기술 명세
-
-오른쪽 작업 단추 넷은 같은 폭의 두 열·두 줄을 사용한다. 서버 연결 상태는 단추 틀 아래의 독립된 바닥 줄에 표시한다([화면 계약](contracts.md#scanner-only-packaging)).
-
-트레이 전체 완료 직후 방금 결과 줄은 `트레이 완료 · 이 PC에 저장됨`을 초록색으로 표시한다. 표준 PHS2 작업 화면의 다음 스캔 안내는 가운데 요약 줄에 표시한다([표시 범위](contracts.md#scanner-only-packaging)).
-
-portable의 매 시작에 실행하는 onboarding과 relay 시작은 admission을 확인한 뒤 부모 lease도 내려놓는다. lifecycle helper·relay 시작/생존 확인 동안 relay가 상태를 갱신할 수 있고, 로컬 쓰기와 READY 게시 직전에 다시 admission과 fence를 확인한다. [쓰기 경계와 검증 범위](operations.md#onboarding-writer-admission)를 따른다.
-
-PIN·relay 반복 회차·profile/TLS의 첫 보호 판독은 startup 허용 뒤에도 현재 G를 재확인한다. [현재 reader 경계와 검증 한계](operations.md#first-field-data-generation)를 따른다.
-
-명단에서 고른 사람의 번호·당시 이름을 묶음 시작 때 내구 저장하고 이름 정정은 다음 묶음부터 반영한다. CSV·물류의 새 신원 metadata는 서버 켜짐 신호가 true일 때만 추가하며 완료 저장 실패·재시도·재시작은 처음 내구 저장한 신원과 신호 결정을 유지한다. 미완료 세트의 UNDO는 가능하며 CSV 내구 완료 뒤에는 취소·교환·편집을 거절한다. 신원 archive·후속 저장 실패는 완료된 원 snapshot으로 재시도하고 재시작도 같은 CSV 완료를 확인한다([C-00](contracts.md#c-00), [설정·업그레이드](operations.md#configuration)).
-
-중복 제품은 그 입력만 거절하고 세트·교환·UNDO를 유지한다. `진행 현황` 탭에서 오늘 출고 계획 대비 포장 진행을 60초마다 확인하며, 스캔하면 작업 화면에서 그대로 처리한다. 성공·완료·반복 오류음과 회사 서버 연결·보낼 것 한 줄 표시, 옛 현품표 `제품4` 슬롯의 현재 계약은 [스캐너 포장](contracts.md#scanner-only-packaging)을 따른다. 늦은 현황 응답은 요청 시작 시각으로 판정하고 저장된 retry의 늦은 읽기는 더 새 연결 관측을 덮지 않는다. [전송 경로 전체의 시작 시각 기록](BACKLOG.md#connection-observation-order)과 실제 화면·장치·소리 확인은 별도 수용 범위다.
-
-<a id="scanner-only-packaging"></a>
-
-relay 업로드·runtime lease·포장 명령·PIN HTTP는 전송 구간에 공용 writer mutex를 내려놓고, 응답 뒤 재획득·fence 재검증 후에만 로컬에 적용한다. 포장/취소의 명령 저장·ACK·retry·conflict는 같은 SQL transaction에서 SENDING·attempt·불변 명령·보류를 CAS로 대조하며 적용된 conflict에만 검토 감사·lease 정리를 기록한다. 늦은 실패는 무시하고, 같은 명령의 늦은 성공은 내구 receipt 재확인 표식 뒤 조회만으로 수렴한다. 정상 스캔의 checkpoint는 HTTP 지연을 기다리지 않는다([계약](contracts.md#scanner-only-packaging), [검증 경계](operations.md#remote-writer-admission)).
-
-fake Tk pump는 예약 callback이 계속 생겨도 반복마다 작업 스레드에 실행 기회를 준다. 기본 2초 제한과 완료 단언은 유지하며 실제 정지된 lane이 여전히 제한 시간에 실패하는 부정 시험으로 검사한다. 실제 Tk·스캐너·서버·설치 수용과 브랜치 전체 시험은 별도 통합 검증 범위다.
-
-DESIGN §1.7에 따라 조회 탭에서 스캐너 Entry 입력을 받으면 이번 세션 작업 화면으로 돌아가 같은 원문을 처리한다. 지난 날짜 조회는 오늘의 작업·중복 인덱스를 보존하며, 복귀 때 이전 날짜의 배경 조회/표시 generation을 무효화하고 보관한 오늘 화면으로 돌아간다. 초기화·오늘 인덱스 오류·저장 차단·중앙 처리 등 기존 안전 gate는 유지한다.
-
-DESIGN §1.2와 코디 추가 결정에 따라 품목 불일치·입력 오류는 오류 순간 기존 FAIL 판정·기록 내용을 내구 완료한다. 로컬 current_set의 선택 필드 scanner_failure_result/scanner_failure_details가 판정과 원문을 보존하며 중단·재시작과 저장 재시도에도 같은 FAIL을 이어서 한 번만 기록한다. 안내를 닫는 다음 Entry 스캔도 새 입력으로 처리하고 Enter/ESC는 안내를 닫는다. 저장 실패 때는 기존 세트·실패 intent를 유지하고 재시도에서도 PASS로 바꾸지 않는다. 서버 필드·명령 형식은 바꾸지 않는다.
-
-보류 현품표·중앙/교환 대기·음향/이력 callback 오류는 창 안 안내와 기존 소리를 사용한다. 미완료 저장본은 질문 없이 현재 교대 작업자에게 복원하며 원 스캔·접수와 과거 작업자 귀속을 보존한다. 복원 안내 자체는 입력을 잠그지 않고 다음 정상 제품 뒤 사라진다. 작업자 선택/등록, 설치·기준 파일 수리, 설정·켜진 시뮬레이션의 PC 앞 창은 유지한다. 미완료 현품표 재출력·완료 이력 취소/삭제·미완료 종료 확인은 기존 강조 안내의 마우스 선택으로 진행한다. 스캔·Enter·Space·Y/N은 승인하지 않으며 같은 확인 요청에서 마우스를 누르고 놓은 경우만 원 대상과 현재 상태를 다시 확인한다. 누른 뒤 다른 확인 요청으로 바뀌면 다시 클릭해야 한다. 업무 입력칸의 스캔은 업무 입력으로 받고, 확인·원문·날짜 영역에서 받은 키는 화면에 다시 스캔 안내를 남긴다. 원문과 날짜 Calendar는 기존 이력 상세 영역을 사용하고 별도 창·grab·wait를 만들지 않는다.
-
-빈 작업대는 종료 확인 없이 기존 저장·lane drain·전송 정리를 실행한다. 현재 세트 raw·교환 단계·미달 UNDO 또는 현품표 교환 미완료 상태가 있을 때만 종료를 묻는다. 내구 전송 대기열만 있는 것은 확인 사유가 아니다. 정상 화면의 F5 키·날짜 교환 단추·새 교환 코드와 전용 조회는 제거했으며 저장된 교환은 `관리자 → 멈춘 작업 확인 (관리자) → 미완료 현품표 교환 복구`에서 같은 요청으로 재개한다.
-
-mainloop 예외·직접 반환·종료 접수 직후 반환도 기존 종료 callback을 UI owner에서 이어 실행한다. 105초 마감은 지연 표시 시점이며 유한 작업의 결과 적용·로그 writer·UI lane 종료를 계속 기다린 뒤 단일 실행 잠금을 해제한다. 원 mainloop 예외와 SystemExit 코드는 정리 오류로 덮지 않는다. 영구 정지 중에는 잠금·내구 원본을 보존한다.
-
-교환·일반 UNDO·미달 release·자동 source 검토 감사는 current-state의 scanner_audit_outbox에 업무 checkpoint와 함께 저장한다. 고정 key·원 시각·작업자·이벤트 내용을 보존하고 직후·다음 스캔 전·저장 재시도·기동 때 기존 CSV writer로 재생한다. 같은 key의 동일 CSV 행은 재append하지 않고 fsync하며, CSV와 outbox 제거 checkpoint가 모두 성공한 항목만 목록에서 지운다. CSV 실패는 입력을 막지 않고 pending을 유지한다; 업무 checkpoint 실패만 기존 차단한다. UNDO·reset·완료 후에도 미전송 감사는 보존하므로 교환과 그 UNDO가 모두 남는다. 목표 수량에 도달하지 않은 재시도를 PASS 완료하지 않는다. 기동·복구는 기존 DB 보류 snapshot과 검증된 archive의 pending 감사도 읽어서 같은 ID로 재생한다. 보류 원본·PIN에 결속된 현재 파일은 재작성하지 않고, 활성 파일이 없으면 만들지 않는다; 보류 감사의 재생 여부는 CSV readback으로 판정한다. 큰 감사 목록은 `_scanner_audit_outbox/<SHA256>.json`의 내구 조각을 먼저 저장한 뒤 `scanner_audit_segments` 참조와 업무 checkpoint를 원자 저장한다. 재기동은 SHA·스키마가 맞는 조각을 기록 순서대로 재생하며, 손상·소실 조각의 원본과 참조는 보존한 채 다른 감사와 입력을 계속한다. 이전 8MiB 초과 inline 감사도 업무 본문 검증 뒤 읽는다. 백업·보류 복원에는 checkpoint와 `_scanner_audit_outbox` 폴더를 함께 보존하며, 완료된 조각도 자동 삭제하지 않는다. CSV 재생은 prefix의 byte 수·행 수·SHA256·마지막 행 hash를 기존 current-state의 scanner_audit_csv_prefixes에 함께 저장한다. 재기동·파일 변화 때 전체 prefix와 전 행을 검증하고 같은 writer의 내구 append만 증분 색인하며 ACK 직전에 원 바이트를 재대조한다. 증명 손상·불일치는 기존 전 행 비교로 되돌아가며 업무 복구를 차단하지 않는다. 같은 key의 다른 내용만 기존처럼 거절하고 동일 중복·순서 변경·잘린 끝에 새 전역 오류를 추가하지 않는다. 행별 fsync·마지막 ACK checkpoint와 찢긴 쓰기 뒤 정확히 한 번 재생을 유지한다.
-
-교환 pair·제품 raw/parsed·UNDO 위치·감사 intent를 같은 checkpoint에 저장한 뒤 표시한다. 이벤트 저장이 끊겨도 제품과 되돌림 위치를 함께 복원하며, 옛 pair-only tail 저장본의 UNDO도 받는다. 표본·교환 대상·늦은 source 확인은 교환 overlay를 적용한 같은 유효 구성원 목록을 사용한다. 대체품은 알려진 원 봉인 구성원·대상 자신·앞선 교환의 불량/대체품을 상태 변경 전에 거절하며 source 목록을 모르면 기존 배경 판정으로 넘긴다. 일반 UNDO도 checkpoint 저장 직후 메모리를 맞춰 후속 이벤트 실패 때 저장본과 어긋나지 않는다.
-
-[제거한 화면 진입점과 보존 경계](scanner-retirement.md)를 함께 확인한다.
-
-현품표 1장 + 상단 제품 4개를 받아 다섯 번째에서 자동 내구 완료한다. 새 PHS2의 네 제품 자리는 같은 품목·중복·알려진 구성원을 검사하며 마지막 자리에 추가 길이·생산일자 조건을 두지 않는다. 옛 현품표의 과도기 조건은 유지한다. 중앙 조회는 배경이고 무응답·단절에도 스캔과 로컬 완료를 받는다. 로컬 intent → 완료 CSV flush → commit marker → 표시 순서를 지키고 같은 key로 교환 ACK → source 확인 → 서명 lease → CREATE_PACKAGE를 배경 전송한다. 늦은 표본 불일치는 해당 outbox만 OPERATOR_REVIEW로 남기며 로컬 완료를 취소하지 않는다.
-
-KMCMD:EXCHANGE/교환 단추는 불량 대상 → 대체품을 받아 연결된 로컬 교환 기록을 먼저 저장한다. KMCMD:UNDO/취소 단추는 미완료 세트의 마지막 입력을 되돌린다. 같은 현품표 재스캔은 제품이 하나 이상 있을 때 미달을 확정하며 직전 같은 현품표의 3초 이내 중복 읽기는 짧은 소리로 무시한다. 미달은 다른 소리와 큰 글씨 부족 N개로 확정을 표시한다. 다음 현품표·작업자 변경·정상 종료 또는 60초 무입력 중 먼저 온 경계에서 UNDO 유예를 끝내고 기존 outbox로 전송한다. 실행 중 유예는 Tk owner의 단조 시계로 재며 새 스레드·화면을 만들지 않는다. current-state의 선택 필드 shortage_confirmed_at을 확정 결정·완료 checkpoint에 내구 저장한다. 재시작은 확정 시각부터 경과한 시간이 60초 이상이면 바로 release하고, 아니면 남은 시간 뒤 release한다. 필드 없는 옛 상태는 읽기 호환을 유지하고 현재 시각을 내구 저장한 뒤 60초 유예를 준다. UNDO·앞선 경계는 예약 callback을 무효화하며 release의 원 key·감사·writer guard를 보존한다. UNDO를 받아들이면 취소 내구 단계 전에 타이머를 무효화하며 후속 상태 저장이 실패해도 취소된 완료를 전송하지 않는다. 완료 저장이 60초를 넘겨 즉시 release한 경우에도 확정 호출자가 만료된 UNDO를 다시 설치하지 않는다. 기록 삭제·UNKNOWN 재분류는 하지 않는다. F3 수동 완료·확인 창·F4 교체 창·새 봉인 QR 물리 확인은 제거했다. 시작 경고 세 종류와 과도기 안내는 작업 화면 안내와 기존 소리로 표시한다.
-
-
-관리자 과도기 모드(Machine `KMTECH_LEGACY_LABEL_TRANSITION=1`)는 등록 PC에서 옛 5단계와 새 현품표를 모두 받고 완료마다 `LEGACY`·`PHS2_CENTRAL`·`PHS2_LOCAL`·`PHS2_MALFORMED` 중 하나와 사유 코드·중복 표시를 기록한다. `PHS2_CENTRAL`만 포장 전송함·중앙 원장에 들어가고 나머지는 로컬 완료로 기존 relay를 통해 서버 화면에만 보인다. 꺼져 있으면 옛 현품표는 첫 스캔 뒤 원인을 안내하고 제품 스캔을 거부한다([켜고 끄기](operations.md#legacy-label-transition), [계약](contracts.md#legacy-label-transition)).
-
-업무하던 PC의 관리자 신원 복구는 중앙 확정 뒤 같은 사용자·PC·설치의 relay 큐 자격 결속을 감사 기록과 함께 이전한다. 미전송 원문·runtime proof·완료/보류 상태를 보존하며, 정상 정지 → 복구 → `--onboard-current-user`의 READY/ALIVE 확인으로 전송을 재개한다([절차·거부 경계](operations.md#registration-relay-recovery)).
-
-등록 중단으로 신원 파일 일부만 남았으면 지원 담당자가 같은 Windows 사용자·PC에서 `--recover-partial-local-state` 관리자 복구를 사용한다. 기존 설치 신원·소유 키를 대조하고 원본을 보관하며 보호된 journal과 중앙 prepare/status/commit으로 재개한다([범위·절차](operations.md#partial-registration-recovery)).
-만료·취소·완료된 복구 뒤에는 서버 root의 새 승인으로 별도 transaction을 시작할 수 있다. 기존 journal·이동한 원본을 보존하며 진행 중이거나 서버 확인이 불가능한 시도는 임의로 대체하지 않는다.
-설치된 등록 도구는 `app/site-packages`를 직접 로드하므로 packet의 `runtime/python.exe -I -B app/tools/register_label_match_worker_pc.py`로 실행한다. 복구의 명시 신원·hash 인수가 빠지면 신원 조회 전에 필요한 옵션과 서버 root의 읽기 출처를 한국어로 안내한다.
-
-기존 전체 시험의 21 FAIL은 [w9 시험 감사](operations.md#test-audit-w9)의 fixture/API 정합과 저장 루트 격리로 교정했다. 제품 계약·실제 GUI 수용과 호스트 회귀 결과를 구분한다.
-
-F3 준비·내구 완료의 본문은 [label_completion.py](../../label_completion.py)에 있고 기존 앱 API·writer admission·성공 표시·worker dispatch는 [LM-3 경계](operations.md#module-boundaries-lm3)를 유지한다.
-
-작업 화면 구성은 context·scan·activity·history pane 모듈로 나뉜다. `_create_widgets`의 생성 순서와 기존 notice/view-state adapter·버튼/단축키·업무 절차는 같은 [LM-3 경계](operations.md#module-boundaries-lm3)를 따른다.
-
-포장 draft·오류·생성 outbox·전송 processor·source 검증의 구현은 독립 모듈에 두고 기존 `package_logistics` API를 유지한다([LM-2 경계](operations.md#module-boundaries-lm2)).
-
-`DataManager`의 이벤트 writer·현재 세트 저장은 [label_data_manager.py](../../label_data_manager.py)에 있고 기존 `Label_Match.DataManager` 생성·save/load API를 유지한다. [label_history.py](../../label_history.py)는 이력 CSV 읽기·집계 계산을 담당하고 generation·활성 입력 gate·화면 chunk 적용은 앱에 남긴다. 저장 루트 선택과 중단·자정 복구는 앱이 소유하며 [LM-1 경계](operations.md#module-boundaries-lm1)를 따른다.
-
-설치 packet의 release identity는 해석된 제품 루트·진입점별 PASS를 프로세스 안에서 기억한다. relay·GUI는 첫 writer admission 전에 확인하며 자료 세대 G는 자료 열기마다 유지한다([확인 시점과 별도 시작 비용](operations.md#release-identity-admission)).
-
-설치기는 고정 `kmtech_shared` 0.3.1 PowerShell leaf를 manifest/leaf pin 확인 뒤 호출한다. LM ordinal inventory·task migration·conflict receipt·복원 경계는 [X13-B](operations.md#shared-powershell-x13b)를 따른다.
-
-`d0e504e` 이하의 canonical 재시작 무결성 순서 오탐은 `w9labelintegrityorder` 수정본에서 교정한다. 기존 v1 기록은 재작성 없이 파일 집합·크기·SHA와 원래 순서의 aggregate를 검증한다([설치·재시작](operations.md#bootstrap-integrity-order)).
-
-`d0e504e` → `0cf5bf6`의 onboarding 변경은 `w9labelwriterupgrade` installer의 정확한 전/후 module pin 쌍으로 지원한다. 설치본 무결성·writer membership·나머지 코드 검사는 유지하며, 데이터 변환 없이 기존 교체/실패 복원 절차를 사용한다([업그레이드·롤백](operations.md#bootstrap-integrity-writer-transition)).
-
-stock portable 빌더는 clean checkout의 파일 표현 대신 고정한 Git commit의 격리 snapshot을 패키징한다. `Item.csv`·설정 template을 포함한 저장소 입력은 commit bytes를 보존하며 CRLF 차이를 writer guard 예외로 허용하지 않는다([빌드·실제 이전 설치본 회귀](operations.md#bootstrap-integrity-writer-transition)).
-
-정상 제거 보고서보다 나중의 유효한 stop marker가 남으면 같은 사용자의 문서화된 제거로 predecessor를 보존한 새 marker/report를 만든 뒤 canonical 설치를 진행한다. PowerShell 5.1의 정상 stderr 오인으로 wrapper가 중단되지 않도록 `Start-Process`의 native exit를 확인한다([복구 절차·회귀 범위](operations.md#abnormal-stop-marker-recovery)).
-
-57f52e1 설치본에서 X13-B로의 교체는 선언된 shared leaf 추가와 여섯 release 파일의 전/후 pin이 모두 일치할 때 지원한다. 그 외 파일 집합·writer 멤버십·runtime·계약 검사는 유지한다.
-
-0.3.1의 배열 manifest 회귀는 PS5/PS7 원본의 수용·거부 형태를 보존한다([현재 검증·한계](operations.md#shared-powershell-x13b)).
-
-`kmtech_zero_pe` renderer는 앱 호환 class를 유지하며 고정 `kmtech_shared.raster` 계산을 사용한다. PNG·QR·저장 경계와 배포 pin은 [X04-B](operations.md#shared-core-x04b)를 따른다.
-
-`producer_runtime_client`의 25개 leaf/binding/transaction 함수는 고정 `kmtech_shared.runtime`을 호출한다. LM transport·writer admission·신원 callback·명시 reviewed 복구와 caller ACK transaction은 [X05-B](operations.md#shared-runtime-x05b) 경계에 유지한다.
-
-W5-S0는 runtime scope 3호출과 profile/legacy 공통 package-client 생성에 기존 값을 이름 있는 인자로 전달한다. signature·positional 호환·wire·복구는 유지하며 [검증 범위](operations.md#named-context-w5s0)를 따른다.
-
-## 2026-09-12 · Committed stale-runtime review 지원 복구
-
-정상 재시도에서 raw APP_CLOSE는 committed였지만 만료 runtime 거부로 authority가 review에 남았다. Main/Web의 독립 판정에 따라 기존 ack-reviewed에 단일 만료 authority의 명시적 복구를 추가하고 새19·기존13 focused host 검사를 통과했다. 현재 원 VM은 Saved/0이며 실제 복구·Today30/30은 [최종 candidate 검토와 배정 경계](operations.md#committed-stale-runtime-recovery-20260912)를 따른다.
-
-## 2026-09-12 · 수락 입력 정리와 실제 package 대기 표시
-
-durable capture 후 비활성 Entry의 원문이 남던 원인과 실제 package PENDING이 deferred handoff 뒤 누락되던 집계를 교정한다. 스캔 원문·저장 명령은 보존하고, read-only operator view에서 같은 작업의 capture와 package를 중복 없이 표시한다. 최종8d의 원 VM 격리 native8장면과 지원 local review ACK1을 Main이 수용했다. 후속 정상 producer 한 재시도는 committed APP_CLOSE receipt와 STALE_RUNTIME_FENCE review를 남겨 Today를 시작하지 않았고 원 VM을 Saved/0으로 반환했다. 원 M06/F3는 재실행하지 않으며 [현재 검증·복구 경계](operations.md#package-waiting-display-20260912)를 따른다.
-
-## 2026-09-12 · M06 lost-ACK 복구와 계정 전환 인계
-
-실제 CA handoff의 한 PHS2로 source1ac 일반 F3를 한 번 실행했다. 중앙 package1/COMMITTED receipt1·member1과 로컬 PENDING/marker1을 독립 확인한 뒤 같은 key/command로 정상 재시작 ACKED를 확인했다. 원 package/lease 행과 실패 근거를 보존했으며 shipping handoff는 Main 수용 대기다. 최신 사용자 지시에 따라 account347 작업을 안전 종료하고 blackdwarfian 후속 작업자에게 넘긴다. producer 원 REVIEW1·RETRY_WAIT3, routine 입력/대기 표시 문제와 Today30/30은 남으며 [실제 경계와 인계](operations.md#m06-account-handoff-20260912)를 따른다.
-
-## 2026-09-12 · M06 lost-ACK·Today 후속 호스트 준비
-
-M06의 실제 CA seal/Label handoff와 Main의 원76a3 배정 전까지 호스트 준비만 수행한다. 제품1ac의 실제123파일 입력, 한 멤버/한 command fault와 새 `a7e → 1ac` Today observer 결속을 준비했으며 기존 함수·통계·수치 기준은 유지한다. 실제 binding·당일 history·case·30/30·limits는 아직 없고 원 case03의23 ACK+게시 실패는 보존한다. [준비·현재 의존성](operations.md#m06-today-preparation-20260912)을 따른다.
-
-## 2026-09-12 · 초기 검증과 F3 clock 회귀 정합
-
-기존 clock14 FAIL은 초기 PHS2가 lease를 발급하던 과거 테스트와 현행 읽기 전용 admission의 불일치였다. 제품 변경 없이 회귀를 실제 F3 발급 경로로 옮겨 원 요청/key 재사용, 서명·만료·binding·snapshot·fence 거부를 확인했다. 보존된 2단계 validation plan의 clock/read/service 재시도와 unknown 결과 격리는 별도로 검증했다. host **32 PASS + 기존 계약38 PASS**이며 [진단·원 실패·한계](operations.md#clock-recovery-tests-20260912)를 따른다. 성능·실제 업무·전체 Goal 종결은 아니다.
-
-## 2026-09-12 · 일상 포장 화면과 작업 상세
-
-표준 PHS2 화면은 스캔 칸 바로 아래에 `현재 트레이 N/5`, 다음 스캔 대상, 방금 결과(맞음 초록 / 틀림 빨강과 이유)를 늘 표시한다. 현재 트레이 표도 접지 않는다. `작업 상세 보기`는 수락된 원문과 세트·접수·상태 코드·대기 항목·절차만 접고 펼친다. 경고·미완료·중앙 충돌은 상세를 닫아도 표시한다. 제품 수량은 source `member_count` 또는 교체 후 검증된 seal `QT`를 사용하며 스캔 횟수와 구분한다. 스캔·단축키·복구·durable 확정은 유지한다. [검증 범위와 한계](operations.md#routine-details-20260912)을 따른다.
-
-## 2026-09-11 · 원래 F4 같은 요청 복구·F3 완료
-
-원 VM/runtime8df에서 Main의 정상 공유 전환·grant 뒤 저장 F4의 같은 key/command 재시도 한 번으로 중앙 교체1건·새 seal2를 확인했다. 실제 화면 QR 해독·정상 guest 입력 뒤 VERIFIED/APPLIED, 원 PHS2/raw1의 일반 F3에서 완료 event1·local marker1·ACKED/COMMITTED 저장 receipt와 fresh lease1을 기록했다. Web 독립 검증은 같은 package/receipt의 중앙 효과1건·lease 소비와 JSON 표현별 hash 일치를 수용했다. 실물 스캐너·후속 고유 업무·lost-ACK·Today30/30의 범위는 [이번 운영 근거](operations.md#original-f4-f3-continuation-20260911)와 [남은 일](BACKLOG.md)을 따른다. Today case03은 상태 게시·종료 시 열 너비 guard 실패로 미입증이며, 원 데이터 보존과 정상 릴레이 정지 뒤 Main/Defect에 VM을 인계했다. 제품 소스 변경은 없다.
-
-2026-09-12 [호스트 observer·문서 종결](operations.md#today-host-repair-20260911)은 최종 `f92a8671`의 실제 세 operator pane·선택적 legacy pane 결속과 기존27개 host 검사 결과를 반영한다. 이전 a4의 없는 pane 실패와 실제 `read_layout`을 대체한21개 검사의 한계는 보존한다. Main의 직접 소스 대조를 반영했으며 Claude는 USER-ENDED/NOT COMPLETED다. reader·제품8df·기준a7e·설정·수치 기준·원9월11일 입력은 유지하고 합성 host geometry를 native 수용으로 간주하지 않는다. 기존 M06 receiving → CA → Label 일반 F3/lost-ACK 조정 → quiescent 실제 당일 이력 → 배정 Today 측정이 남는다. 새 Today 입력은 없고 원901–904/F4/F3/shipping은 재실행하지 않으며, 이 종결은 Label native·성능·전체 Goal 완료가 아니다.
-
-## 2026-09-10 · 이력표 가시성과 우측 패널
-
-이력표는 세 머리글이 들어가는 폭에서 `현품표/결과/시간`을 함께 표시하고, 남는 폭으로 본문을 넓힌다. 셀 원문은 기존 선택 행 상세·복사 경로에 보존한다. 높이가 짧은 넓은 창에서도 기존 비율과 최대720px 범위에서 우측 공간을 쓰며, 우측 탭만 기존 조작 글꼴·간격을 적용한다. 선택 원문 영역은 측정된 요청 높이를112px로 자르지 않는다. [한정 검증과 실제 화면의 남은 수용](operations.md#history-layout-20260910)을 따른다.
-
-## 2026-09-09 · S05 승인 소스 단순화
-
-Main의 독립 `SIX-PROGRAM-COMPOSITION-REVIEW.md`로 선택된 여섯 프로그램 qualification은 종결되었다. 아래의 과거 Ready 0/6·대기·실패 기록은 당시 후보와 범위의 이력이며 S05의 새 실행 gate가 아니다.
-
-S05는 Main이 기존 변경을 commit한 원본 `C:\company\program\Label_Match`에서 진행하며, 초기 E: checkpoint의 delta는 한 번만 반영했다. 호출되지 않는 옛 UI builder와 보조 함수, 소비되지 않는 전환기 Pillow/GDI 비교 도구, 기존 취소·교체 테스트의 중복 assertion을 제거했다. 현재 `_create_widgets`와 F1/F4/F3, private durable payload, resident lifecycle 및 44개 writer identity/guard는 유지한다. [검증 범위](operations.md#s05-simplification)와 [후속 독립 검토](BACKLOG.md#lm-s05)를 따른다.
-
-포장실 작업자가 원본 PHS2로 현재 제품 구성을 확인하고, 필요한 제품 교체와 실물 랩핑 후 포장 완료를 기록하는 Windows 앱이다. 앱은 입력·로컬 보존·명령 재전송을, 중앙 서버는 멤버십·재고·명령 확정을, 웹은 관측 이벤트의 집계·표시를 소유한다. 근거: [CODEX](../../CODEX.md), [앱 main](../../Label_Match.py), [물류 클라이언트](../../package_logistics.py).
-
-[전체 허브](../../../Program_Spec_Hub/README.md) · [계약](contracts.md) · [운영](operations.md) · [남은 일](BACKLOG.md) · [중앙 준비도](../../../Program_Spec_Hub/READINESS.md)
-
-[receipt12 최종 native continuation](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/RECEIPT12-NATIVE.md)은 수용 source `da60e05e9bf07855f701fff328df70c10db0a094` / ZIP `782d585bf09396da8c33fbb3f1c3b24afc6a8716f73e0b4983b951a896633d6e` / manifest `829f5f2230add6f0245106c5b4dac40547f56941792c2da46dbf5318effa6111`에 결속된다. 원 assigned VM에서 동일 artifact의 정상 설치 attempt02 native0, exact retained14의 지원 `ack-reviewed` native0, 지원 current-user 제거·code-only 제거, 수용 timing06 prior-code 설치/보존, 최종 receipt12 복귀 설치03:42:16Z/native0와 readback0을 완료했다. GUI13은 기존 resident를 재사용하여 PHS2 대기·이전 완료 이력을 표시하고03:44:40Z/native0으로 정상 종료했다. 실제 정상 shutdown 뒤 Off/uptime0을 관측하고 새 boot03:46:01Z·Explorer4640/session1에서 원 SID의 resident7556이 03:46:22Z에 자동 시작한 것을 확인했다. 수동 product 시작 전 단일 resident·정상 HKCU Run·canonical task0·stop/fence 없음이며 postboot native0은 payload3,391개와 보호 파일25개, 최신 post-review backup의 업무11 tables/40 rows를 확인한다. 전체 상태 메타데이터는 40/51개 동일하며 나머지 11개 status/control/settings/log 변경을 기록했다. app_settings 필드별 차이는 미확인이고 전체 config/DB/schema/hidden-rowid 동일성이나 새 대상 설치를 주장하지 않는다. [최종 보존 readback0](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/RECEIPT12-FINAL-PRESERVATION02.json)은 원 receipt/metadata/spool/attempt1·audit1과 inserted10/quarantined4를 유지하고 queue11ACKED를 기록한다. 원 event CSV prefix 두 개가 동일하며 APP_START1·APP_CLOSE1만 추가됐다. 원 F1/F4/F3·shipping·로컬7 업무나 pre-F3 DB 복원을 반복하지 않았다. 첫 설치 native1/UAC 취소·지원 rollback, 별도 pre-execution policy rejection과 reader 실패는 이력으로 보존한다. [Main의 선택 범위 최종 native 수용](E:/KMTech/resume-after-input-20260908/LABEL-RECEIPT12-FINAL-NATIVE-ACCEPTED.json)은 `PROVEN_SELECTED_LABEL_FINAL_NATIVE_ACCEPTED`이며 Main msg_b42de21979ea 승인에 따른 정상 guest shutdown 뒤 [최종 VM Off/uptime0](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/RECEIPT12-FINAL-VM-OFF.json)을 03:58:51Z에 확인했다. 이 수용은 기존 assigned VM의 선택된 Label 범위에 한정한다. 전체 제품 Ready는 **0/6**이며 여섯 프로그램의 현재 조합 판정과 다음 S05 source workspace 결정은 Main 소유다.
-
-[receipt12 공개 이벤트·strict RAW 교정](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/RECEIPT12-SOURCE.md)은 `SET_CANCELLED`를 공개 `set_id`만 기록하도록 제한하고 `SEALED_TRANSFER_EXCHANGE_APPLIED`에서 `old_seal_qr_payload`·`new_seal_qr_payload`만 제거한다. 공개 set/intent/receipt/bundle·멤버 목록·version과 private 취소·복구·apply 상태는 유지한다. strict RAW allowlist에 정확히 두 이름만 추가하며 receipt/identity/hash/bytes/행·event 합계, `OBSERVED/RAW_EVIDENCE_ONLY/NOT_PROJECTED/NO_STAGE1_REDUCER`, quarantine/errors=0 및 runtime fence를 그대로 요구한다. 저장된 bytes와 근거 hash를 확인하여 focused60·inventory4 PASS와 parent causal6 FAIL을 재실행 없이 재사용했다. 동일44 writer identity/guard의 pin은 `507da9c952a88649cd06c090f45fb6e1bb5129de12260a747741b744ccc1d4cb`다. receipt11 `7c4abfa`/ZIP2094ba6a를 parent/recovery로 보존하고 단 한 번 고정·빌드한 수용 source12는 `da60e05e9bf07855f701fff328df70c10db0a094`다. Web05 normalizer의 기존 공개 형식을 사용하며 reducer/비밀 검증을 변경하지 않는다. [native 완료 근거](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/RECEIPT12-NATIVE.md)와 [최종 source 소유권 지도](D:/KMTech/cold-program-material/from-E/KMTech/label-install-qualification-20260908/RECEIPT12-SOURCE-OWNERSHIP.md)를 연결한다. 이 문서의 최종 native 기록만 갱신했으며 고정 artifact는 재빌드하지 않았다. Ready **0/6**이다.
-
-### 2026-09-09 · F1 현재 접수 취소 (source 및 원래 세트 native 검증)
-
-Main의 F1 독립 감사에 따라 cancel07은 현재 세트의 정확한 owned·unsubmitted 접수를 `CANCELLED`와 `TC_CANCEL`로 먼저 commit한 뒤 화면·저장 cache를 비운다. 확인된 과거 lease 발급은 로컬 취소의 일괄 금지 사유가 아니며, payload·검증 이력·PREFETCHED lease·ACTIVE issue attempt·중앙 reservation·receipt는 유지한다. commit과 cache 삭제 사이 중단 뒤 복원 및 늦은 materializer도 CANCELLED를 되살리지 않는다. [계약](contracts.md#f1-capture-cancellation)과 [후보 검증·운영 범위](operations.md#f1-cancel07-qualification)를 함께 따른다.
-
-host 370 PASS와 만료 보존 lease의 최종 22 PASS는 source 범위다. [원래 세트 native F1·정상 재시작](operations.md#f1-cancel07-native)은 해당 후보에서 실제 확인했으며, 새 case04 업무와 최종 artifact lifecycle은 아직 별도 수용 범위다. 실패와 이전 timing06 증거는 각 원래 범위로 보존한다.
-
-
-<a id="evidence-scope"></a>
-<a id="기준과-판정-범위"></a>
-## 기준과 판정 범위
-
-2026-09-08 새 VM 수용은 원래 HTTP409·등록 복구 epoch 4·relay 재시작 및 successor 설치 실패를 보존한다. 현재 후보의 실제 설치·입력·상태 보존과 직전 후보의 F3 서버 확정은 위 범위로 구분한다. 앱 READY는 등록 상태이며 전체 업무·운영 수용 완료를 뜻하지 않는다.
-
-- 최초 조사일: **2026-09-07**, 후속 소스 종결·증거 갱신일: **2026-09-08**. 최초 Label HEAD `3f535c97086129862e5c4699f0d4d0b3b69152a7`, 소스의 `APP_VERSION=v2.0.94`를 기준으로 조사했다. 버전 문자열은 설치본의 신원이 아니다.
-- 최초 작업 트리는 `Label_Match.py`, `tests/test_deferred_intent_capture.py`, `tests/test_label_match_core.py`, `tests/test_label_ui_lane_integration.py` 수정 및 `tests/test_completion_csv_durability.py` 미추적 상태였으므로 당시 HEAD만으로 재현할 수 없었다. [작성 전 파일·index 해시](E:/KMTech/spec-hub-build-20260907/Label_Match/PRESTATE.json)와 [문서 검토 보고](E:/KMTech/spec-hub-build-20260907/Label_Match/IMPLEMENTATION.md)는 이력으로 보존한다. 후속 [잔여 소스 종결](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-close/CLOSE.md)은 parent `a28e40d9b11cb374b34835b5b94c92fc2ee12071` 위에 다섯 경로의 테스트 당시 working bytes와 네 명세를 묶고, working SHA256과 Git EOL 정규화 blob pins를 별도로 기록한다.
-- 후속 LM-B10 작업에서 `label_match_single_instance.py`와 `tests/test_label_match_single_instance.py`를 수정했다. 기존 writer 위치·위 dirty 파일·HEAD/index는 보존했다. [소스 교정·정적 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-fix/IMPLEMENTATION.md)에 전후 해시·diff·미실행 회귀 범위를 연결하며, 아래 과거 PASS를 새 코드에 상속하지 않는다.
-- [독립 소스 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-independent/REVIEW.md), [Windows focused packet](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-vm-prepare/PREPARATION.md)의 [독립 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-vm-independent/REVIEW.md)와 Main의 전체 제어 파일·diff 검토를 마쳤다. Main은 **2026-09-07 13:09:40Z에 SaveRoot13 실제 13 PASS / 39 ordered phase PASS**를 수용했다. 기존 VM01 interpreter/providers, 원본 108개와 guard/test 2개의 110개 source closure에서 선택한 6개 정의만 해당한다. [실제 결과의 독립 검토·명세 갱신](E:/KMTech/coordinator-handoff-20260907-01a07992/label-save-root-actual-source-close/REVIEW-AND-UPDATE.md)과 [정확한 실행 범위·한계](operations.md#saveroot13-evidence)를 연결한다.
-- [완료된 조사](E:/KMTech/spec-hub-research-20260907/Label_Match/RESEARCH.md), [근거 인덱스 S01–S58](E:/KMTech/spec-hub-research-20260907/Label_Match/SOURCE-MAP.tsv)를 바탕으로 관련 현행 소스를 재대조했다. 서버 조사 기준 HEAD는 `0218a671e13bb4d2210b3197a7245e9bec35417a`와 당시 dirty 작업 트리다. 서버 링크는 소유 저장소의 변하는 소스이며 설치 서버 증거가 아니다.
-
-| 판단 축 | 이 기준선에서 말할 수 있는 범위 |
-| --- | --- |
-| 구현 | **PROVEN — 2026-09-07 위 작업 트리에서 아래 인용 분기·저장 경계의 정적 존재를 확인한 범위만**. 모든 함수의 완전성 판정은 아님 |
-| 실제 연동 | **UNPROVEN — 이 기준선과 실제 설치 앱·서버·소비 화면 조합의 일치 및 종단 결과** |
-| 수용 검증 | **PROVEN — M3 실제 313/939 중 변경 13사례 매핑, 별도 N6 실제 6/18, ProducerClose 실제 50/150, SaveRoot13 실제 13/39, 후속 relay 발견·inventory의 headless 26 PASS 각 한정 범위**. 서로 합산하지 않으며 Baseline8, 카드 전체 및 설치 조합의 남은 기준은 **UNPROVEN / NOT TESTED** |
-| 운영 준비 | **UNPROVEN — 최종 설치·재시작·재설치·롤백·통합 E2E 및 실장비 범위**. 중앙 준비도에서 통합 판정 |
-
-기존 Goal의 Label Modules3 **313 PASS / 939 ordered PASS**는 2026-09-07 08:11:02Z 코디네이터가 수정된 reader 결과를 수용한 이력이다. 원래 reader의 11개 repr ID/33개 비교 불일치 실패도 보존된다. 이번에는 [M3/N6 사례·소스 매핑](operations.md#residual-source-evidence)을 추가했고 시험을 재실행하거나 통합 후보 전체로 PASS를 확장하지 않았다. 정확한 동결 소스·provider·환경·원본 결과는 원래 pins와 [DIRECTION](E:/KMTech/coordinator-handoff-20260907-01a07992/DIRECTION.md)의 해당 시점을 따른다. 문서 기준선 작성, 개발 작업 완료, 제품 Ready는 별도 상태다.
-
-### 2026-09-08 relay custom CSV 발견 교정
-
-clean `394c21f` 뒤 [좁은 source 변경](E:/KMTech/coordinator-handoff-20260907-01a07992/repo-parallel-0826/label-ready-improvement/CHANGE.md)은 상주·예약 relay가 기존 `custom_save_path`를 무시하던 문제를 고쳤다. 명시 scan override를 우선하고, 그 외에는 GUI guard의 기존 settings 우선 resolver로 CSV 발견 위치를 정한다. 큐·spool·identity·profile이나 onboarding ledger 위치를 옮기지 않는다. 기존 writer inventory의 Python/PowerShell pin도 후속 source에 맞췄으며 45개 writer 식별자·guard 방식은 동일하다.
-
-[실제 검증](operations.md#relay-custom-root-evidence)은 수정 전 custom 사례 **4 FAIL / 대조 10 PASS**, 최종 격리 호스트 **26 PASS**다. 실제 relay 진입·command builder·CSV scanner를 사용했지만 child process/transport는 대체했다. native 로그인/재시작·실제 enqueue/ACK·F3/F4·설치·FULL은 **NOT TESTED / UNPROVEN**이다. 기존 Stage/MainStage **9,445파일·issues 0**은 원래 `394c21f`에만 유효하며, 후속 후보는 source/host bindings를 새로 결속해야 한다. [LM-B10](BACKLOG.md#lm-b10)의 onboarding·두 GUI 복구 잔여 항목과 Ready **0/6**은 유지한다.
-
-[relay 독립 검토·소스 종결 및 successor 준비](E:/KMTech/coordinator-handoff-20260907-01a07992/repo-parallel-0826/label-relay-closure-review/REVIEW-PREPARE.md)는 최종 26개 검증의 product/test bytes와 45개 writer identity·guard 종류 보존을 별도로 대조한다. 이 작업의 exact commit·후속 packet·정적 검증·남은 실행은 해당 보고서를 정본으로 하며, 과거 Stage/MainStage를 successor 수용으로 바꾸지 않는다. Ready **0/6**과 native/backend/설치 공백은 유지한다.
-
-### 2026-09-08 완료 CSV·복구 잔여 소스 종결
-
-[독립 전체 diff·증거 검토](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-review/REVIEW.md)는 다섯 경로에서 구체적인 결함을 확인하지 않았고 Main이 한 소스 단위 종결을 승인했다. 기존 완료 CSV는 writer barrier 뒤 write-capable descriptor에서 같은 set를 다시 확인하고 fsync한 뒤 재사용한다. 동기화 실패는 중복 append·marker 승격을 차단하며 ACKED orphan의 같은 작업·스캔을 복구 차단 상태로 보존한다. F3의 intent → durable event → marker/lease → UI 성공 순서를 유지한다.
-
-V03의 실제 저장·중단/자정·materializer와 V07의 worker/Tk 적용 경계를 [M3/N6 사례·소스 매핑](operations.md#residual-source-evidence)에 연결했다. **Baseline8 causal RED는 NOT TESTED인 역사 공백이며 이번 승인된 소스 종결의 선행 조건이 아니다.** real lease-bearing orphan 통합 재시작, native F3/close/reopen, 두 GUI writer, 실제 backend와 FULL은 **UNPROVEN**이다. 다음 실행은 종결된 후보·provider·환경을 동결해 남은 native/backend/FULL 범위를 확인한다. Ready **0/6** 유지.
-
-### 2026-09-08 producer 정상 종료 계약 교정
-
-[소스·회귀·새 VM 준비](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-contract-fix/PREPARATION.md)에서 F3 전송 ACK 뒤 `APP_CLOSE`만 새 delta로 전송되는 경로를 정적으로 확인하고 `direct_sync_push.py`와 해당 테스트를 교정했다. 동결 서버는 이 lifecycle evidence에 `accepted/committed + RAW_LEGITIMATE`를 반환하므로, exact CSV·identity·hash/byte·행별 nonprojecting observation이 일치할 때만 raw 수신 ACK를 허용한다. 업무 투영은 계속 `COMPLETE`가 필요하다.
-
-구현 분기·도달 가능성은 **PROVEN(정적)**이며, 독립/Main 소스·packet 검토 후 Main이 [ProducerClose 실제 50 collected/50 PASS·150 ordered phase PASS](operations.md#producer-close-evidence)를 수용했다. `Label112-ProducerClose-20260908`의 동결 receipt·로컬 session double 회귀에 한정하며 native close/F3·실제 서버 연동은 **NOT TESTED / UNPROVEN**이다. [소스 종결 근거](E:/KMTech/coordinator-handoff-20260907-01a07992/label-producer-close-source-close/CLOSE.md)는 테스트 당시 uploader·회귀 두 파일과 네 명세의 커밋·parent·해시를 결속한다. 당시 보존한 다른 dirty 다섯 파일은 위 후속 소스 종결에 연결하며 과거 packet·Main hash pins는 보존한다. Modules3 313/939와 SaveRoot13 13/39는 각 원래 소스 범위로 유지하며 합산·상속하지 않는다. Ready **0/6** 유지.
-
-업데이트 조회·서명 검증은 유지하며 앱 내부 apply/batch/prompt는 제거했다. 코드 배치와 integrity 재생성은 [외부 installer](operations.md)의 책임이다.
-
-<a id="supported-workflows"></a>
-<a id="사용자경계지원-경로"></a>
-## 사용자·경계·지원 경로
-
-포장 작업자는 이름 귀속, 스캔, 실물 대조·랩핑, 완료·취소를 수행한다. 작업 리더/관리자는 충돌 실물과 복구 사건을 인계받는다. 기계 API 권한과 작업자 표시명은 다르다([protected_admin](../../protected_admin.py), [계약 C-00](contracts.md#c-00)). ERPNext는 별도 제품이며 그 스캔 한도를 이 앱의 업무 제한으로 적용하지 않는다. 상류 PHS 발행·검사·이적 전체 구현은 본 앱 소유가 아니다([공정 계약](../../../WorkerAnalysisGUI-web/docs/PHS2_RESIDUAL_PROCESS_CONTRACT.md)).
-
-| 지원 상태 | 진입점·조건 | 현행 의미·설치본 확인 |
-| --- | --- | --- |
-| 기본 중앙 업무 | `Label_Match.py:main` → onboarding/guard → Tk, [portable/main.py:main](../../portable/main.py)도 같은 앱 진입 | 원본 compact PHS2 1회 → 필요 시 F4 → 랩핑 → F3. 중앙 프로필·멤버십 확인 필요; 설치 형태·활성 설정 미확인 |
-| 조건부 F4 | 전체 단일 TRANSFER를 대표하는 현재 작업, 교체 capability·버전·적합 donor | 대상 멤버 수 이내의 목록을 확인·일괄 적용 후 새 **전자** 봉인 QR 확인. 부분/복수 transfer work-group은 F3 가능해도 F4 불가 |
-| 현품표 교환 복구 | 저장된 교환 journal과 중앙 API, Windows 프린터 | 새 교환 진입·전용 조회는 제거했고 건별 복구에서 저장 요청의 출력·ACK·활성화만 재개 |
-| 호환 | 명시적으로 분류된 과거 입력 및 membership mode | 현품표+제품 표본 3개+최종 라벨, F4 전체 재스캔 분기가 남아 있음. 미분류 중앙 입력의 자동 fallback 아님 |
-| 현재 사용하는 이름 | `legacy_packaging_csv` | producer 전송 dataset 식별자. `legacy`라는 이름 때문에 폐기로 분류하지 않음 |
-| 이력·제외 | [README.txt](../../README.txt), 오래된 OUTLINE/UI; Syncthing·`C:\Sync` | 과거 문서는 현행 절차 근거로 쓰지 않음. 운영 전송은 HTTPS/direct-sync([정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md)) |
-
-경로 근거: [앱 `_handle_f4_action`, `_prompt_exact_rescan`, `main`](../../Label_Match.py), [F5 workflow](../../phs_label_workflow.py), [물류 프로필](../LOGISTICS_RUNTIME_PROFILE.md). 호환 분기의 현장 지원 기간과 설치 활성 여부는 [LM-B08](BACKLOG.md#lm-b08)에서 확인한다.
-
-## 정상·예외 업무 흐름
-
-1. 시작 시 작업자·품목 캐시·저장 위치와 복구 안내를 확인한다. 복구할 이전 세트가 있으면 그 작업의 identity를 유지한다.
-2. 원본 PHS2를 한 번 제출한다. 서버가 라벨 identity와 현재 제품 멤버십을 확인한다. 표준 업무에 제품 3개·최종 라벨을 추가하지 않는다.
-3. 교체가 필요하면 F4에서 대상→새 양품 쌍을 목록에 추가하고 확인·수정·삭제 후 **교체 적용**을 누른다. 중앙 교체 ACK 뒤 화면의 새 전자 QR을 스캐너로 다시 확인한다. 원본 물리 PHS2는 유지한다.
-4. 현재 멤버십과 실물을 대조하고 실제로 랩핑한 뒤 F3 확인을 확정한다. current-state, intent, CSV flush/fsync, 완료 marker·lease 처리가 끝나야 로컬 성공을 표시한다.
-5. 같은 키로 중앙 확정을 재시도하며 다음 준비 작업으로 돌아간다. 로컬 완료 후 단순 전송 대기와, 복구 미완료/중앙 충돌로 작업이 차단된 상태를 구분한다.
-
-근거: [앱 `_commit_finalized_set_durable`, `_return_to_idle_after_finalized_set`, `_prompt_new_seal_verification`](../../Label_Match.py), [완료 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md), [작업자 정본](../LABEL_MATCH_WORKER_GUIDE.md). F4 목록·일괄 적용·3쌍 이상 추가 capability·새 전자 QR 확인 안내는 소스와 대조해 갱신했다([LM-B01](BACKLOG.md#lm-b01)). 실제 설치 버전과 화면 수용은 별도다.
-
-| 예외 | 관측·다음 행동 | 기능 |
-| --- | --- | --- |
-| 중앙 조회 지연/오프라인 접수 | 저장됨-검증대기는 업무 완료가 아님. 검증·동일 작업 lease 없이 F3 완료하지 않음 | [LM-04](#lm-04), [LM-06](#lm-06) |
-| 저장 실패/종료 중단 | 성공 선행 없음; 현재 세트·intent·로그를 보존해 재시작 시 같은 작업으로 복구 | [LM-06](#lm-06), [LM-08](#lm-08) |
-| 서버 ACK 유실 | 저장된 명령의 receipt부터 확인; 새 키로 다시 완료하지 않음 | [LM-07](#lm-07) |
-| 중앙 충돌 | 로컬 commit 여부를 유지하며 관리자 검토·실물 구분 보관으로 인계 | [LM-07](#lm-07) |
-| busy 중 추가 스캔 | 접수되지 않은 입력칸 값을 보존; idle 뒤 한 번 제출 | [LM-12](#lm-12) |
-| 출력 여부 불명확 | journal·서버 상태를 조정하고 재출력 판단; spool 접수를 실물 출력 증거로 대체하지 않음 | [LM-10](#lm-10) |
-
-<a id="feature-cards"></a>
-<a id="기능-카드"></a>
-## 기능 카드
-
-아래 ID는 안정적인 탐색 단위다. 12개는 대표 기능 묶음이며 전체 함수 수·개발량·완성도 분모가 아니다. 모든 카드의 확인일·네 판단 축은 위 기준을 공유한다. 수용 기준은 **현행 계약을 보존하기 위한 확인 항목**이며 새 사업 규칙 승인이나 실행 PASS를 뜻하지 않는다. 담당 실명·기한은 미지정이고 역할·다음 행동은 연결한 백로그에서 관리한다.
-
-| 기능·카드 | 주요 진입·소유 심볼 |
-| --- | --- |
-| [LM-01 시작·작업자](#lm-01) | [run_guarded_entrypoint](../../label_match_single_instance.py) |
-| [LM-02 품목·캐시](#lm-02) | [refresh_item_catalog](../../item_catalog_sync.py) |
-| [LM-03 PHS2 접수](#lm-03) | [resolve_package_source_projection](../../package_logistics.py) |
-| [LM-04 지연 입력 보존](#lm-04) | [DeferredIntentCaptureStore](../../deferred_intent_capture.py) |
-| [LM-05 F4 교체·QR 확인](#lm-05) | [_prompt_new_seal_verification](../../Label_Match.py) |
-| [LM-06 F3 로컬 확정](#lm-06) | [_commit_finalized_set_durable](../../Label_Match.py) |
-| [LM-07 중앙 ACK·충돌](#lm-07) | [PackageOutboxProcessor.drain](../../package_logistics.py) |
-| [LM-08 중단·날짜 복구](#lm-08) | [_load_current_set_state](../../Label_Match.py) |
-| [LM-09 초기화·완료 취소](#lm-09) | [PackageCancellationOutbox](../../package_logistics.py) |
-| [LM-10 F5 인쇄·조정](#lm-10) | [recover_current / recover_reconciliation](../../phs_label_workflow.py) |
-| [LM-11 관측·세트 집계](#lm-11) | [direct_sync_push](../../direct_sync_push.py) |
-| [LM-12 화면·입력 gate](#lm-12) | [TkSerialUiLane](../../tk_serial_ui_lane.py) |
-
-<a id="lm-01"></a>
-### LM-01 시작·작업자 귀속
-
-- 시작/입력: source 또는 portable 진입, 현재 사용자 설정·작업자 이름. onboarding, factory wire 계약, 데이터 범위 mutex를 거쳐 앱을 시작한다.
-- 등록/관리자 복구: 네트워크 승인 토큰은 선택 사항이며 비어 있으면 토큰 헤더/필드 없이 서버의 허용 IP 판정을 받는다. 거부 시 등록 도구 CLI·보고서에 IP 등록 또는 토큰 입력 안내를 표시하며, 일회용 복구 승인·manifest·TLS·소유 키 검증은 유지한다([절차](operations.md#enrollment-ip-policy)).
-- 효과: 작업자 정규화 후 CSV·현재 상태에 귀속한다. 보호 관리자 인증 값은 표시·지속 저장용 identity와 분리한다.
-- 실패/복구: 필수 profile·catalog·onboarding 실패는 시작을 차단한다. onboarding·GUI/guard·relay는 [공통 resolver](operations.md#configuration)의 custom → env → 등록 수명주기·onboarding 상태에서 LOCALAPPDATA 규칙을 사용한다. 최초 legacy 등록부터 환경 적용·relay·재시작까지 ProgramData 과거 파일을 무시하며, ProgramData fallback은 onboarding 문맥·상태가 없는 순수 standalone 실행 전용이다. split 설치는 업무 저장소와 기존 onboarding ledger를 각각 유지하고 기본 WARNING 로그 채널에 선택 규칙·분리를 기록한다. headless 회귀는 두 process의 같은 custom 저장소 writer callback 제외·해제와 원 bytes 보존을 검증했으며, 실제 GUI·pending 복구 수용은 [LM-B10](BACKLOG.md#lm-b10)에 남는다. 이전 작업자가 다르면 복원 확인을 거친다.
-- 수용 기준: 같은 실제 저장소에서 중복 GUI writer callback을 차단하고 첫 소유자 종료 후 같은 저장소를 복구한다. conflicting env/custom 및 null/빈 설정 fallback을 실제 writer resolver와 대조하며, 인증 실패가 일반 완료로 내려가지 않고 관리자 비밀이 로그/히스토리에 남지 않는다.
-- 근거: [main](../../Label_Match.py), [run_guarded_entrypoint](../../label_match_single_instance.py), [canonical_operator_id/persistent_operator_name](../../protected_admin.py). [운영 구성](operations.md#configuration), [LM-B04](BACKLOG.md#lm-b04).
-
-<a id="lm-02"></a>
-### LM-02 품목 마스터와 캐시
-
-- 시작/입력: 시작 시 중앙 품목 CSV를 갱신하고 품목 코드로 이름·규격을 조회한다.
-- 검증/저장: 중앙 등록 장비는 identity에 결속된 인증 캐시·검증된 snapshot을 사용한다. 비등록 호환 경로의 로컬 cache/bundled `Item.csv` fallback과 다르다.
-- 구현 경계: 4열 검증·canonical JSON·authority HMAC/record·sidecar 이름·authenticated payload 판정의 8개 leaf는 고정 `kmtech_shared.catalog`를 사용한다. profile 신원·빈 port 거부·redaction 진단·인증 I/O/복구·snapshot은 Label_Match adapter가 유지한다([X04-B](operations.md#shared-core-x04b)).
-- 실패/재시작: 중앙 요청 실패 시 인증된 이전 cache 복구가 가능하며, 없으면 중앙 등록 장비 시작을 차단한다. 화면에 이유·중앙 설정·오류 코드를 표시하고 같은 검증 원본을 프로그램 재시작 없이 다시 확인할 수 있다. 임의 파일을 중앙 마스터로 인정하지 않는다.
-- 수용 기준: 정상 갱신, 인증 cache 복구, 손상/다른 identity cache 거부를 구분하고 화면에 실제 출처·경고가 대응한다.
-- 근거: [refresh_item_catalog](../../item_catalog_sync.py), [prepare_startup_item_catalog](../../Label_Match.py). [C-01](contracts.md#c-01), [LM-B04](BACKLOG.md#lm-b04).
-
-<a id="lm-03"></a>
-### LM-03 PHS2 접수·현재 구성 조회
-
-- parser의 현행 raw/인코딩·legacy 차이와 오류 계약은 [carrier 규칙 표](carrier_identity.md)에 고정한다.
-
-- 시작/입력: idle 작업 화면에서 원본 PHS2 1회. `PHS,SRC,ITG,CLC,LBL,HSH` 여섯 필드의 순서·빈 값·중복·16자리 hex를 검사한다.
-- 검증/효과: `PACKAGE_SOURCE` 조회로 중앙 라벨 계보, unit↔barcode, 멤버십 hash·version·work-group topology를 대조해 현재 세트 snapshot을 만든다. 수량은 현재 멤버십에서 얻는다.
-- 실패/취소: 오형식·불일치는 포장 준비로 승격하지 않는다. 정상 미완료 작업의 F1과 중앙 미확정/교체 중 작업의 차단 조건은 별도 gate를 따른다.
-- 수용 기준: 정상 PHS2 한 번으로 준비되며 잘못된 LBL/HSH·미분류 중앙 입력은 거부된다. 부분/다중 work-group의 F3/F4 허용 차이가 화면과 일치한다.
-- 근거: [parser/현재 세트](../../Label_Match.py), [resolve_package_source_projection](../../package_logistics.py). [C-02](contracts.md#c-02), [LM-B05](BACKLOG.md#lm-b05).
-
-<a id="lm-04"></a>
-### LM-04 지연 입력 보존·검증 대기
-
-- 시작/입력: 외부 요청 전에 접수 intent를 durable 저장한다. capture identity와 payload hash·사용자 보호 문맥을 결속한다.
-- 효과: `CAPTURED_UNVERIFIED`에서 검증/의존 대기/전송/로컬 적용 상태를 구분한다. 저장됨은 제품·재고·포장 완료가 아니다.
-- 실패/재시작: 디스크 실패는 저장 성공으로 알리지 않는다. 유효성 실패는 격리하고 결과 불명확은 reconcile한다. legacy outbox 인계는 같은 로컬 transaction에서 기존 capture를 supersede하여 제출 소유권을 겹치지 않게 한다.
-- 수용 기준: 같은 입력의 중복 접수는 수렴하고 다른 payload는 차단되며, 중단 후 원래 identity로 복구된다. ACKED와 COMPLETED를 같은 표시로 합치지 않는다.
-- 근거: [deferred_intent_capture](../../deferred_intent_capture.py), [재구성된 fixture 계약](../../tests/fixtures/deferred_intent_contract/CONTRACT.md). [상태](contracts.md#states), [LM-B02](BACKLOG.md#lm-b02), [LM-B05](BACKLOG.md#lm-b05).
-
-<a id="lm-05"></a>
-### LM-05 F4 제품 교체·새 전자 QR 확인
-
-- 시작/입력: PACKAGE 생성 전 전체 단일 TRANSFER 작업에서 F4, 기존 제품→새 GOOD 제품 쌍을 목록에 추가한다. 수량을 먼저 정하지 않으며 실제 대상 멤버 수 이내에서 확인·수정·삭제 후 **교체 적용** 한 번으로 제출한다. 중앙 capability와 현재 seal, 같은 권한·원장·품목·UOM과 bundle 내부 accounting binding, 단품 donor PHS를 대조하며 3쌍 이상은 [추가 capability](contracts.md#c-03)가 필요하다.
-- 쓰기/결과: 중앙은 대상·donor·damage bundle version을 검사해 원자 교체하고 새 seal receipt를 만든다. 앱은 저장된 receipt를 검증한 뒤 새 QR 확인을 요구한다. **원본 물리 PHS2는 유지하고 새 전자 봉인 QR을 화면에서 다시 스캔한다.**
-- 실패/복구: 부분/다중 TRANSFER work-group, 부적합 donor·stale version·불완전 receipt는 차단한다. ACK 유실은 저장 intent/receipt로 복구하고 재확인 전 정상 후속 동작을 제한한다. exact legacy IIN pre-command review는 같은 intent로 fresh validation→durable bind한다. exact precommit PHS instruction rejection의 durable review만 authoritative receipt 부재·원 command/hash 무결성·fresh command 완전 일치 뒤 같은 key로 복구하며, 반복 terminal 거부는 별도 review reason으로 멈춘다. 그 외 durable review는 receipt 조회만 허용한다. 일반 F4는 물리 출력 업무가 아니다.
-- 미해결 교체·새 봉인 확인은 관리자 건별 보류를 durable 기록한 뒤 현재 작업대를 비울 수 있다. 원 intent/receipt/봉인과 실물은 격리하며 같은 PHS2 재접수와 보류 intent 자동 재전송을 막는다([C-04](contracts.md#c-04)).
-- 수용 기준: 유효한 1쌍/2쌍/3쌍 이상, 전체·일부 대상 교체에서 제품 수와 교체 멤버·seal version이 일치한다. 목록 완성만으로 제출하지 않으며 미완성·중복·대상 초과 입력을 차단한다. durable 접수 전 거부만 목록 편집을 재개하고, 접수 후 pending·오류는 같은 명령과 잠긴 목록을 보존한다. 거부 시 부분 교체가 없고, 새 QR 검증·로컬 저장 중단 후에도 두 번 교체하지 않는다.
-- 근거: [교체 command/attempt](../../sealed_transfer_exchange.py), [QR 확인/gate](../../Label_Match.py), [기존 정책](../MEMBER_EXCHANGE_POLICY.md). [C-03](contracts.md#c-03), [LM-B01](BACKLOG.md#lm-b01), [LM-B05](BACKLOG.md#lm-b05).
-
-<a id="lm-06"></a>
-### LM-06 F3 랩핑 완료·로컬 확정
-
-- 시작/입력: 현재 업무 날짜 화면에서 실물 랩핑 후 F3 확인. 정확한 source snapshot에 결속된 검증 lease와 작업자·현재 set가 필요하다. 수기 수량으로 우회하지 않는다.
-- 쓰기/결과: current-state 보존 → outbox intent → `TRAY_COMPLETE` CSV flush/fsync → `local_completion_committed=1` 및 operation lease transaction → 성공음·이력·다음 준비. marker=0인 PENDING은 로컬 완료가 아니다.
-- 표시: F3 lane은 `권한 확인 및 로컬 완료 저장 중`, durable 성공 뒤 `로컬 완료 저장됨 · 중앙 전송 대기`, 확인된 ACKED는 `중앙 확정`으로 구별한다. 충돌·전송 실패·복구 안내와 수량은 유지한다.
-- 실패/취소/복구: 유효한 재사용 lease 없이 오프라인 완료하지 않는다. CSV·marker 실패는 성공을 표시하지 않고 같은 작업으로 복구한다. 서버 ACK 실패로 이미 durable한 로컬 완료를 취소하지 않는다.
-- 완료 존재 조회는 같은 PC prefix의 모든 CSV를 직접 검색한다. 거짓 부재·중복 `TRAY_COMPLETE` 위험으로 LM-B02 위치 색인을 철회했으며 부재 판정에 캐시/색인을 사용하지 않는다. 적중 CSV의 flush→재대조→fsync를 유지하고, 조회 중 파일 소실은 현재 목록으로 한 번 재검색한 뒤 계속 이동하면 완료를 중단한다. 비용은 보관 파일 수에 비례하므로 보관 정책으로 관리한다. [최종 host 검증·한계](operations.md#responsiveness-w2)를 따른다.
-- 수용 기준: 각 쓰기 경계의 중단에서 거짓 성공이 없고, 재시작·자정 변경 뒤 완료 이벤트와 중앙 효과가 중복되지 않는다. 로컬 확정 후 전송 pending은 다음 준비를 막지 않는다.
-- 근거: [ `_queue_authoritative_package`, `_commit_finalized_set_durable`](../../Label_Match.py), [mark_local_completion_committed](../../package_logistics.py). [C-04](contracts.md#c-04), [LM-B02](BACKLOG.md#lm-b02), [LM-B05](BACKLOG.md#lm-b05).
-
-<a id="lm-07"></a>
-### LM-07 중앙 ACK·재전송·충돌 인계
-
-- 시작/입력: marker=1인 due PENDING row를 claim하고 저장 명령 또는 draft를 전송한다. key는 같은 set/package identity에서 유지한다.
-- 효과: 저장 명령이 있으면 receipt부터 조회한다. 검증된 중앙 COMMITTED만 ACKED로 저장한다. due-time·마지막 시도 시각으로 후속 준비 row도 진행한다.
-- 실패/복구: transport/일시 오류는 retry, 409/412 및 비재시도 오류·불일치 receipt는 conflict다. marker=1 충돌은 로컬 완료를 보존하며 `OPERATOR_REVIEW` 사건으로 인계한다. marker=0 충돌을 PASS로 복구하지 않는다.
-- marker=0 미해결 command는 관리자 건별 보류의 원본 저장·readback 뒤 다른 세트를 진행한다. 보류 command는 자동 재전송하지 않고 동일 PHS2는 다시 접수하지 않는다. 기존 exact prewrite F1만 별도 복구 경로로 유지한다.
-- 관리자 경고 조회가 실패하면 생성·취소의 마지막 확인 목록과 경고를 유지하고 `조회 실패 · 오래됨`을 표시한다. 성공적으로 읽은 빈 목록만 경고를 해제한다.
-- 주기 충돌 정리·조회와 workbench의 F4 상태 조회는 package worker에서 읽은 불변 snapshot을 Tk에서 적용한다. 현재 set·generation·업무 시작 또는 봉인 적용 epoch가 바뀐 결과는 무시하며 F3/F4 행동 직전의 정본 검사는 유지한다.
-- actual-input walkthrough도 `review_only=True`를 기존 worker에 위임하고 완료 snapshot을 poll로 적용한다. 일반 outbox 전송 억제는 유지하며 [소비자 검증 범위](operations.md#responsiveness-w2)를 따른다.
-- 수용 기준: 동일 key 재요청은 중앙 효과 1회, 첫 실패가 뒤 작업을 굶기지 않음, 다중 PC 경합의 승자/충돌이 중앙 CAS 결과와 일치함. 검토 종결·실물 처리는 운영 요구 확정이 필요하다.
-- 근거: [claim_next/drain/mark_conflict](../../package_logistics.py). [C-04](contracts.md#c-04), [LM-B02](BACKLOG.md#lm-b02), [LM-B06](BACKLOG.md#lm-b06).
-
-<a id="lm-08"></a>
-### LM-08 중단·날짜 변경 복구
-
-- 시작/입력: 시작 시 `_current_set_state_packaging.json`, outbox marker, 기존 완료 이벤트·교체/접수 journal을 확인한다.
-- 검증/효과: 작업자 변경·중앙 상태 migration·이미 기록된 이벤트를 대조해 같은 set를 복원한다. 날짜가 달라도 미확정 PHS2/outbox를 폐기하지 않는다.
-- 중앙 current-state의 timestamp 파싱 실패는 원본 파일을 보존한 복구 잠금이다. 자동 삭제·현재 시각 치환 없이 관리자 확인·수리를 요청한다.
-- 건별 복구 창은 현재 작업자를 바꾸지 않고 `admin-pin.v1`의 개인 관리자 ID·6자리 PIN으로 보류·재확인·실물 조회·지원 인계를 동작별 확인한다. 원본 readback→내구 intent→온라인 redemption→원본·작업자 재대조→기존 writer·key 결속 감사 순서이며 결과 불명은 해당 건만 보류한다([C-00](contracts.md#c-00)). 세트 보류 중단은 같은 key로 파일·화면 슬롯 정리를 재개하고 완료 감사의 readback 뒤에만 적용으로 확정한다. current-state·draft·F5 journal/archive는 원 JSON 타입과 맥락별 PHS2·ITG 형식을 검증한다. 복구 파일의 모든 부모와 최종 파일 handle은 재분석 지점·하드링크를 거부하며, PNG는 허용 출력 루트 안에서만 원자 기록한다. 손상된 파일은 원 bytes/SHA를, 읽지 않은 링크 항목은 원 항목과 handle identity를 보존해 보류한다. 부모 경로 자체가 정션이거나 저장소 쓰기가 실패하면 그 경로의 복구 잠금을 유지한다. 신원이 끝내 불명인 포장 보류는 UNKNOWN으로 두고 원 요청의 로컬 완료·전송을 막는다.
-- F5 미완료 교환은 선택한 journal의 원본 bytes/SHA 또는 읽지 않은 파일 항목 identity를 관리자 보류·readback 후 별도 보관한다. 형식이 맞는 journal 신원도 중앙 교환 operation key·전체 source label·실물 PHS2와 맞기 전에는 알려진 신원으로 결속하지 않는다. 신원 불명 F5와 exchange ID 없는 PREPARE_PENDING은 UNKNOWN으로 남지만 다른 F5를 막지 않는다. 같은 source의 두 번째 교환 prepare는 중앙 CAS가 거부하며, 중앙 대조로 결속한 source label만 로컬에서 막는다. archive·감사 오류는 해당 F5의 파일 미검증/재시도로 보존한다.
-- PIN 확인 불가 건의 명시 보류는 F5 journal·연결 세트, 유효 현재 세트 파일, 손상 `CURRENT:` 파일의 원 경로·보류 경로·원 SHA를 이동 전에 내구 기록하고 원자 이동한 bytes를 검증한다. 재시작 때 정확히 이동한 원본은 효과와 감사 readback을 이어서 완료한다. 달라진 파일은 활성 위치로 무덮어쓰기 복원한 뒤 변경 SHA·사유를 별도 내구 기록하고 key 전용 미검증 위치에 보존한다. 원 PIN은 적용하지 않고 닫으며 같은 세트의 원 보류는 유지한다. 새 활성 파일이 있으면 둘 다 보존한다. 관리자는 변경본을 새 PIN으로 재조회·보류하거나 빈 활성 위치로 복원한다. 이동 기록 없는 고아 보류 파일은 삭제하지 않고 관리자 목록에 원인을 표시한다. 원본 보관·활성 슬롯 분리·감사 readback 후에만 완료로 표시한다. 소비된 PIN key의 부분 효과는 동일 작업자·동일 대상이면 재로그인 뒤에도 재개하며 새 세션의 작업자를 감사한다.
-- 변경본은 같은 PIN key 안에서도 current/journal 종류·원 경로별로 보류·복원한다. 완료된 복원은 재시작 후 활성 위치를 유지하며, 복원 기록과 파일이 다르면 관리자 목록과 재복원 경로를 유지한다.
-- 실패/취소: 읽기 손상·writer 오류·marker 경계 불일치를 정상 완료로 취급하지 않는다. 상태·DB를 수동 편집해 복구했다고 판단하지 않는다.
-- 수용 기준: CSV 기록 직후/marker 직전/성공 표시 직전 중단과 날짜 변경을 구분해 중복 없이 복구하며 미확정 증거를 유지한다.
-- 근거: [DataManager, `_load_current_set_state`, `_label_match_local_completion_event_exists`](../../Label_Match.py), [완료 내구성 테스트 설계](../../tests/test_completion_csv_durability.py). [복구 운영](operations.md#recovery), [LM-B05](BACKLOG.md#lm-b05), [LM-B07](BACKLOG.md#lm-b07).
-
-<a id="lm-09"></a>
-### LM-09 현재 작업 초기화·완료 취소
-
-- 시작/입력: F1은 gate가 허용하는 현재 미완료 세트 초기화, F2는 완료 트레이 선택·사유와 관련 취소 event를 사용한다.
-- 쓰기/결과: 취소 outbox는 원래 CREATE_PACKAGE key/ACK에 결속한다. 중앙 취소는 포장의 유효성을 변경하며 재고는 `SHIPPING-WAIT`에 남는다. 로컬 삭제나 재고 반환 명령과 같지 않다.
-- 실패/복구: CREATE 미확정은 취소 dependency로 기다리고 전송 실패·ACK 유실은 취소 identity를 유지해 재시도한다. 교체/복구 차단 상태를 F1로 우회하지 않는다.
-- 수용 기준: 생성 ACK 전후 취소와 중복 취소가 연결되고, 취소 세트는 집계에서 제외되며, 실제 재고 위치가 임의 복귀하지 않는다.
-- 근거: [F1/F2 handlers](../../Label_Match.py), [PackageCancellationOutbox/processor](../../package_logistics.py). [C-06](contracts.md#c-06), [LM-B05](BACKLOG.md#lm-b05), [LM-B06](BACKLOG.md#lm-b06).
-
-<a id="lm-10"></a>
-### LM-10 저장된 F5 현품표 교환·인쇄 복구
-
-- 시작/입력: 정상 화면의 F5 단축키·현품표 날짜 교환 단추와 새 교환 실행·후보/action 조회는 제거했다. 건별 복구의 `미완료 현품표 교환 복구`로 저장 journal의 같은 요청만 재개한다. 새 날짜 입력·새 reconciliation 조회는 없다. 이전 판의 v1 미완료 journal·hold·PIN intent는 보존하고 같은 요청만 복구한다.
-- 쓰기/결과: 로컬 journal, 중앙 prepare/status/print attempt/activate를 연결한다. Windows GDI 출력 proof는 printer·job ID·문서·시각·EndDoc를 기록한다.
-- 실패/복구: 출력 실패와 출력 후 ACK 유실을 구분해 `recover_current`/`recover_reconciliation`으로 조정한다. 결과가 불명확하면 무조건 새 출력부터 반복하지 않는다.
-- 수용 기준: 재시작 후 준비/인쇄/활성화 단계가 일치하고 중복 출력을 통제하며 기본 프린터 설정을 보존한다. 큐 접수와 실물 종이·QR 가독성을 각각 관찰한다.
-- 근거: [PhysicalPrintEvidence/recover_current/recover_reconciliation](../../phs_label_workflow.py). [C-07](contracts.md#c-07), [장비](operations.md#devices), [LM-B04](BACKLOG.md#lm-b04).
-
-<a id="lm-11"></a>
-### LM-11 관측 전송·포장 세트 집계
-
-- 시작/입력: 작업 event CSV와 source-file metadata를 direct-sync spool에 보존하고 HTTPS producer-ingest로 전송한다.
-- 발견/재시작: 상주·예약 relay는 명시 scan 경로가 없으면 onboarding·GUI/guard와 같은 공통 resolver를 사용한다. custom/env와 기존 설치의 두 기본 위치 및 split 보존은 [현재 구성](operations.md#configuration)을 따른다. [두 번의 headless 진입·실제 CSV 발견](operations.md#relay-custom-root-evidence)은 PROVEN이며 native 재시작·실제 enqueue/전송 수용은 별도다.
-- 검증/결과: 업무 projection은 receipt identity·행 합계·accepted/committed·`COMPLETE`를 요구한다. C-05의 명시된 lifecycle allowlist만 있는 canonical emitter CSV는 [C-05](contracts.md#c-05)의 exact nonprojecting receipt 검증을 통과한 `RAW_LEGITIMATE`도 raw 수신 ACK로 처리한다. 웹의 `total_sets_completed`는 포장 세트이며 raw lifecycle로 증가시키지 않는다.
-- 실패/복구: pending·retry·operator review·permanent failure를 보존한다. CSV 수신 ACK를 package command ACK로 사용하지 않으며 누락 spool은 통신 재시도로 복원되지 않는다.
-- 수용 기준: 정상/취소/부분·중복 event의 집계 단위와 수신·투영·화면 반영을 각각 확인한다. F3 ACK 이후 close-only delta, reopen-close 및 정확히 결속된 입력 오류 raw batch가 원래 hash/key로 수신되고, 미투영 업무·거부·불완전 receipt는 ACK되지 않아야 한다. 명령 ACK, raw 수신, 업무 projection을 서로 대체하지 않는다.
-- 근거: [direct_sync_push](../../direct_sync_push.py), [이벤트 분리](../../event_stream_policy.py). [C-05](contracts.md#c-05), [수량](contracts.md#quantities), [LM-B06](BACKLOG.md#lm-b06).
-
-<a id="lm-12"></a>
-### LM-12 작업 화면·이력·입력 gate
-
-- 시작/입력: 현재/과거 날짜 조회, 히스토리·집계, 스캔 Enter와 업무 버튼/단축키. F1–F4는 날짜·busy·교체/복구 상태의 공통 action gate를 사용하며, 이전 판 F5의 저장 교환 복구는 건별 복구에서 기존 진입 조건을 검사한다.
-- 효과: 업무 비동기는 UI lane, 이력 읽기는 별도 worker/queue를 사용하며 오래된 generation의 결과 적용을 차단한다. 완전한 이력 결과의 논리 색인을 먼저 설치하고 오늘 읽기 gate를 해제한 뒤 Treeview 삭제·삽입·집계를 after 배치로 적용한다. 적용 중 새 스캔·완료·취소를 보존하며 새 조회 generation은 이전 배치를 중단한다. 읽기 진행 중 및 과거 조회의 기존 업무 gate는 유지한다.
-- 처리 중 스캔: lane이 일하는 동안 입력칸은 잠겨 스캐너 글자가 들어가지 않는다. 그때의 Enter는 `이전 작업 처리 중 · 스캔 안 받음`·`처리 중이라 이번 스캔은 받지 않았습니다. 끝나면 다시 스캔하세요.`와 경고음을 낸다. 처리 시작 전 입력칸에 이미 있던 값만 지우지 않고 `입력 보존`으로 안내한다. 스캔 없이 시작하는 뒤 작업(저장된 현품표 중앙 확인)은 입력칸이 비어 있고 마지막 Enter 뒤 1초가 지나야 시작하며, 그 전에는 1초 뒤 다시 확인한다(작업은 버리지 않는다). PHS2 현품표의 로컬 캡처 저장이 실패하면 입력칸을 비운다: 끔은 `저장 실패—다시 스캔 필요` 안내대로 다시 스캔한 값만, 켬은 그 현품표로 시작한 로컬 세트의 다음 제품만 받는다. 남은 값이 다음 스캔과 붙어 한 값으로 접수되지 않게 하기 위해서다(w9scanflow). 화면이 입력칸을 잠근 다른 상태(이력 불러오기·지난 이력 보기·차단 안내·중앙 1/1 F3 대기·조회 중·종료 중)의 스캔도 조용히 버리지 않는다: 경고음과 그 상태의 안내(안내가 없으면 `스캔 안 받음 · <다음 행동>`, 조회 중은 `스캔 안 받음` 안내, 종료 중은 `처리 완료 후 종료합니다`)를 낸다. 값·세트·기록은 바뀌지 않는다(w9lmscanmsg). 예외는 F3 완료 저장(lane `f3-package-completion`, 측정 1.2–2.6초)이다: 화면 gate가 없으면(이력·차단 안내·오류) 입력칸을 열어 두고 각 Enter 값을 입력칸에서 꺼내 순서 대기열에 넣는다(`포장 완료 저장 뒤 이어서 처리할 스캔 N건`, 중앙 1/1의 F3 대기도 이 저장이 끝내므로 연다; 처리 중 상태줄 꼬리 문구는 M7 캡처 계약 때문에 그대로 — BACKLOG). 대기열은 그 완료가 durable하게 끝나 세트가 초기화된 뒤에만 다음 세트 입력으로 차례로 처리한다(그 사이 들어온 Enter도 뒤에 선다). 완료 실패·보류, 저장 중 종료, F1·작업 초기화·세대 변경, lane 고장, 처리한 스캔이 다른 lane 작업을 시작하거나 화면 gate를 닫으면 남은 대기 스캔을 모두 경고음과 `… 이어서 들어온 스캔 N건은 받지 않았습니다 … 다시 스캔하세요`로 거절한다(조용한 유실 없음). 원장·전송함·lease·단일 writer 계약과 완료 저장 순서는 바뀌지 않는다(w9lmscanmsg B).
-- 이력 읽기 실패: timestamp·JSON syntax/shape·파일 오류는 불완전 조회다. 마지막 완전한 활성 집계·중복·완료 색인을 보존하고 손상 행 수를 경고하며 이력 상세에 파일·행 위치를 표시한다. 오늘 조회 실패는 작업을 차단하지만 재조회는 허용하고 완전한 오늘 결과로만 해제한다([C-08](contracts.md#c-08)).
-- 이력 적용 최적화: 빈 보조 스캔 셀은 열 너비를 조회하지 않고, 날짜 모드에서 이미 반영한 workbench를 결과 callback 끝에서 다시 그리지 않는다. 후속 LM-A2는 오늘 모드와 호환 전체 재스캔의 상태 갱신 직후 중복 render 3곳을 추가 제거하며, 복구 ACK 반영의 명시 render는 유지한다. 현품표 원문·비어 있지 않은 셀의 축약, 과거 조회 details와 오늘의 중복 색인은 보존한다. [합성·실제 Tk 측정과 남은 VM 업무 검증](operations.md#history-optimization).
-- 실패/취소/종료: BROKEN lane은 추가 입력을 차단한다. 처리 중 종료 요청은 drain 후 종료하며 타임아웃의 강제 중단을 정상 저장 증거로 삼지 않는다.
-- 수용 기준: 버튼/키보드 gate가 일치하고 busy 중 스캔 거절 안내·처리 전 값 보존·idle 재제출·stale 결과 무시·종료 경계가 대응한다. 실장비 입력과 화면 배율의 가독성은 별도 확인한다.
-- busy·BROKEN 안내 본문은 레이아웃 갱신 중에도 표시하고 실제 idle에서 일상 화면으로 복귀한다. 작은 화면/큰 글씨의 실제 가독성은 별도 확인한다.
-- 근거: [앱 workflow handlers](../../Label_Match.py), [TkSerialUiLane](../../tk_serial_ui_lane.py), [관련 테스트 설계](../../tests/test_label_ui_lane_integration.py). [LM-B04](BACKLOG.md#lm-b04), [LM-B05](BACKLOG.md#lm-b05).
-
-<a id="specification-coverage"></a>
-<a id="명세-진행알려진-미조사-범위"></a>
-## 명세 진행·알려진 미조사 범위
-
-최초 명세 기준선은 AGENTS·기능·계약·운영·백로그를 정적으로 대조하고 당시 제품 코드·테스트를 보존했으며, [독립 교차 검토](E:/KMTech/spec-hub-build-20260907/cross-review/REVIEW.md)와 Main 대조도 완료했다. 후속 LM-B10 단위에서는 guard와 해당 회귀 테스트, 이 네 spec 문서를 수정했고 SaveRoot13의 한정 runtime 수용까지 연결했다. 앞선 실제 증거 검토·명세 갱신은 문서 작업이었다. 2026-09-08 후속 producer-close 소스 종결은 테스트 당시 uploader·회귀와 이 네 명세를 한 소스 단위로 묶고 실제 50/150 수용을 연결했다. 동결 packet과 과거 Main hash pins는 보존했다. 그때 보존한 잔여 다섯 경로는 2026-09-08 후속 [잔여 소스 종결](E:/KMTech/coordinator-handoff-20260907-01a07992/label-residual-source-close/CLOSE.md)에서 working bytes 변경 없이 네 명세와 묶고 M3 변경 13사례·N6 6사례의 기존 수용을 매핑했다. 기존 CODEX·작업자 정본은 보존했다. 설정 template/사용자 쓰기 위치, onboarding/기본/Machine 경로와 오래된 안내는 [운영](operations.md#configuration), [LM-B09](BACKLOG.md#lm-b09), [LM-B10](BACKLOG.md#lm-b10)에서 구분한다. 소스 교정·focused runtime 수용·제품 준비도는 별도다.
-
-이번 산출물은 핵심 업무·예외·계약·운영 공백과 수용 기준을 연결한 **소스 기반 기준선**이다. 메뉴 전체, 모든 호환 barcode/수정·관리자 분기, 업데이트 모든 장애 단계, 실제 provider/overlay·설치 플래그, 상류 PHS 발행부터 출고까지, 검토 사건의 실제 화면 소비·종결은 전수 확인하지 않았다. 테스트 파일의 존재를 실행 증거로 세지 않는다. 후속 작업은 [BACKLOG](BACKLOG.md)에서 관리하고 공통 관계·우선순위는 [중앙 통합](../../../Program_Spec_Hub/INTEGRATIONS.md)과 [중앙 백로그](../../../Program_Spec_Hub/BACKLOG.md)에 전달한다.
-
-자동 업데이트의 [서명 쌍 계약](PAIR-RULE-CONTRACT.md)과 [지원 수명주기/내용 증명 제거](LIFECYCLE-DESIGN.md)는 사용자 준비·SYSTEM·지원 설치/제거 및 등록 경로의 현재 구현 규칙을 정의한다. source 회귀와 실제 Windows 수용·출시 선언 동결을 구별하며 남은 수용은 LM-StartupUpdate1에 기록한다.
-D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
-SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
-늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
-
-### D-16 E1 · apply 시작 증거(23:0x 정정)
-
-60초는 SYSTEM apply 시작 claim이 없는 상한이다. Authority 뒤 보호 apply-claim에 PID·native creation identity를 기록한다. LIVE/UNKNOWN 소유자는 기존240초 창에서 기다리며 느린90초 apply 동안 일반 실행을 시작하지 않는다. 정상 종료는 기존 guarded sink로 claim을 SETTLED 기록해 증거를 보존한다. 시험을 본 같은 bootstrap도 FAILED/UNKNOWN에서 claim이 NONE/ABSENT이고 일반 writer가 없으며 active G ALLOW·prepared 부재이면 현재 판을 일반 실행한다. 240초 뒤에도 UNKNOWN이면 update_lock 안에서 claim과 수정 시각을 다시 확인한다. 수정된 지 15분을 넘긴 claim만 같은 writer·G·prepared 조건으로 `UPDATE_SUPERVISION_UNAVAILABLE` 일반 실행을 허용하며 같은 claim hash의 지원 코드는 한 번 기록한다. LIVE·신선한 UNKNOWN·시각 읽기 실패·G 거절은 진행 안내+20을 유지한다. 이 복귀는 포인터·시험·READY·CONFIRMED를 쓰지 않는다.
-
-사망한 SYSTEM의 같은 claim은 같은 세션에서 재요청하지 않고 현재 G 허용 판을 일반 실행한다. 지원 코드는 같은 protected claim hash에 대해 한 번 게시하며 다음 로그온의 기존 SYSTEM 작업이 새 claim을 덮어써 재시도한다(1차 결정 msg_c93ef274762a).
-
-
-### Bootstrap relay 시작의 일시 admission 대기
-
-Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRITER_GATE_TIMEOUT`만 기존 240초 창에서 0.1초씩 쉬며 재시도한다. 각 시도는 기존 launch_version의 admission을 다시 얻으며 시도 사이에는 admission을 보유하지 않는다. 상한은 240초 + 마지막 admission 대기 최대 5초이며 마감 뒤에는 기존 실패 출구를 유지한다. fence 확정·버려진 소유권 등 다른 거절과 GUI 실행 자체의 timeout은 재시도하지 않는다. 포인터·trial claim·READY·CONFIRMED·G 허가·cohort·잠금 순서는 유지한다. bootstrap 밖의 relay launcher admission과 실제 로그온/pythonw 수용은 별도 범위다.
+# 포장 목표 명세 (Label_Match)
+
+- 기준: 출시 판 v2.0.99 `55cab72`(2026-10-09).
+- 쓴 날: 2026-10-11, w9archplan.
+- 이 문서는 **목표 명세**다. 포장 앱이 무엇을 해야 하는지를 현장 말로 적는다.
+- 지금 코드와 다른 줄은 §4 「지금 상태」 와 §7 고칠 목록에 있다.
+- 옛 명세(55cab72 판 README, 기술 이력 포함)는 git 이력에 그대로 있다.
+- 기술 계약은 [contracts.md](contracts.md), 운영은 [operations.md](operations.md), 설치·업데이트 설계는 [LIFECYCLE-DESIGN.md](LIFECYCLE-DESIGN.md)·[PAIR-RULE-CONTRACT.md](PAIR-RULE-CONTRACT.md) 가 정본이다.
+- 근거:
+  - 지금 상태 조사표: `D:\KMTech\program-improvement-20260912\work\program\w9archplan\sub-27\INVENTORY.md`. 정적 조사이며, 기능 ID F-01–F-74 가 그 표의 ID 다.
+  - 현장 사실: 사용자 확인분.
+  - 화면 기준: `specs/UI-AUDIT-1009.md` U7.
+  - 허브 결정: `Program_Spec_Hub/DECISIONS.md`.
+
+## 요약
+- **한 줄**: 현품표 1장과 트레이 위 제품 4개, 모두 5번을 찍어 맞는지 확인하고 5번째에 저절로 끝나는 앱. 라벨은 뽑지 않는다(현품표가 유일한 라벨).
+- **기능 74개**(조사표 B)의 지금 상태:
+  - 맞음 56 · 이상함 10 · 불필요 5 · 확인 대기 3
+  - 목표에 있는데 코드에 없는 것(없음) 2: 앱 안 작업자 등록, 「출고 전 관리자 보충 필요」 표시
+- **고칠 것** 17줄: P1 6(고침 4 · 확인 2) · P2 11. 종류는 바로잡기 8 · 빼기 3 · 구현 1 · 이름 바꾸기 2 · 확인 3 (§7).
+- **◆ 현장 흐름이 바뀌는 줄** 3:
+  - LM-17 새 현품표는 미달 완료를 막는다. 모자라면 대체품으로 채우고, 못 채우면 따로 두고 관리자에게 알린다.
+  - LM-7 앱 안 작업자 등록: 새 사람이 그 PC 에서 바로 이름을 등록한다.
+  - LM-9 스캔 기록 우클릭 삭제를 없애고 「완료된 트레이 취소」 하나로 모은다.
+- **실제 PC 작동 확인**:
+  - 포장 v2.0.99 는 실제 현장 PC 에 아직 깔린 적이 없다. TEST1 포장 L7(옛 포장으로 돌아가는 길 증명 포함)은 이적 L7 다음 차례다(10/11 w9setupprep).
+  - 화면 결함 LM-01–05 는 고친 코드가 이 판에 있다. 실제 화면 판정은 아직 없다(`SCREEN-JUDGE-1011.md` §1).
+
+## 1. 누가 · 어느 PC · 언제
+- **포장 작업자**: 명단에서 이름을 고른다.
+  - 지금: 명단에 없는 사람은 웹 관리자가 미리 등록해야 한다.
+  - 다음 판부터: 그 PC 에서 바로 등록한다(관리자 승인 없음). 마지막 작업 뒤 30일이 지나면 고르는 목록에서만 숨긴다(지우지 않음).
+- **포장 PC 1대**: 늘어날 수 있다. HDD 이고, 풋페달은 없고, 스캐너는 거치형이다. 작업자는 화면과 소리를 다 보지만 멀어서 조작이 힘들다 → 일상 조작은 스캔과 단축키·명령 카드로 끝나야 한다.
+- **지금 업무**:
+  - 옛 포장 v2.0.5 가 쓰인다. 옛 포장은 새 현품표를 거절한다.
+  - 그래서 기준일(새 현품표가 나오기 시작하는 날) **전에** 새 포장이 그 PC 에 깔려야 하고, 「옛 현품표 받기」 켬으로 업무에 쓰이고 있어야 한다(묶음 관문 G0).
+  - 이적·포장은 현장 무중단 대상이다. 깔다가 실패하면 옛 포장으로 업무를 잇는다.
+- **관리자**: 관리자 메뉴의 「멈춘 작업 확인 (관리자)」 에서 동작마다 개인 관리자 ID + 6자리 PIN 을 넣는다.
+- **언제**:
+  - 업무: 평일 늦어도 21:00 마감, 토 오전 근무 있음.
+  - 설치·업데이트: 업무 밖(토 저녁·일요일·평일 21:00 뒤)에 관리자가 원격으로 숨겨서 한다(§8-1).
+
+## 2. 업무 흐름
+1. **시작**: 로그온하면 포장 앱이 저절로 뜬다(F-01). 작업자 이름을 고른다(F-08·F-09).
+   - 이름은 그 트레이를 시작할 때 고정된다. 바꾼 이름은 다음 트레이부터 쓰인다(F-10).
+2. **현품표를 찍는다(1/5)**: 화면 가운데에 「현재 트레이 1/5」 와 「상단 제품 1번째를 스캔하세요」 가 크게 뜬다(F-11·F-47).
+   - **새 현품표**: 뒤에서 회사 서버에 그 현품표에 들어 있는 제품을 물어본다. 답이 늦거나 끊겨도 제품 4개를 계속 찍고 이 PC 에서 끝낼 수 있다(F-12).
+   - **옛 현품표**: 그 PC 의 「옛 현품표 받기」 가 켜져 있을 때만 받는다(F-14). 꺼져 있으면 한 줄로 거절하고 「실물을 그대로 두고 관리자에게 알리세요」 를 보인다.
+   - 같은 현품표가 3초 안에 다시 읽히면 조용히 무시한다(F-24).
+3. **트레이 위 제품 4개를 하나씩 찍는다(2/5–5/5)**: 같은 품목인지, 이미 찍었는지, 이 현품표에 들어 있는지 대조한다(F-16·F-17).
+   - 맞으면 초록과 짧은 소리.
+   - 틀리면 빨강·오류음과 까닭 한 줄. 확인 클릭 없이 다음 스캔으로 넘어간다(F-19).
+   - 제품 칸에 현품표를 찍으면 안내만 하고 계속한다(F-18).
+4. **5번째에서 저절로 끝난다**(F-27).
+   - 긴 소리와 「완료 — 다음 현품표를 스캔하세요」. F3·Enter 같은 완료 조작이나 확인 창은 없다. 라벨을 뽑지 않는다.
+   - 이 PC 에 먼저 저장하고(F-28), 회사 서버로는 뒤에서 보낸다(F-32·F-33).
+5. **불량이 보이면 제품 교환**: 「제품 교환」 단추·F4·교환 명령 카드 중 하나 → 불량 제품 찍기 → 대체품 찍기(F-20·F-21).
+   - 창이나 완료 클릭이 없다.
+   - 대체품을 찍는 것이 곧 양품 등록이다.
+   - 이미 교환한 제품, 불량 기록이 있는 제품, 다른 품목은 거절한다.
+6. **잘못 찍었을 때**
+   - 「방금 스캔 되돌리기」: 마지막 한 건(제품·교환·미달 확정)을 되돌린다(F-23).
+   - 「현재 트레이 취소 (F1)」: 이번 트레이를 처음부터 다시 한다(F-35).
+   - 「완료된 트레이 취소 (F2)」: 끝난 트레이의 현품표를 찍고 「완료 취소」 를 한 번 누른다. 회사 서버에 취소를 보낸다(F-36·F-38).
+7. **제품이 모자란 트레이(드묾)** ◆
+   - **새 현품표**: 대체품으로 채워 정상으로 끝낸다. 못 채우면 그 트레이를 따로 두고 관리자에게 알린다. 앱은 새 현품표의 미달 완료를 막는다(LM-17).
+     - 까닭: 포장 앱은 표본 4개만 찍어 실제로 담긴 제품을 모른다. 회사 웹은 포장 길에서 「미달」 표시를 읽지 않고 봉인된 이적 묶음 전량으로 포장한다(웹 `service.py:12810-12860`·`packages.py:1672-1760`, webux 10/11 02:31 코드 읽기). 그래서 모자란 트레이가 **전량으로 출고돼 수량이 실물보다 많아진다**. 앱에서 막는다. 웹도 포장 길의 미달 표시를 거절하게 고친다(웹 WEB-N4, 10/19 판).
+   - **옛 현품표**: 지금처럼 제품을 1개 이상 찍은 뒤 같은 현품표를 다시 찍으면 미달 완료다(F-25). 60초 안에는 「방금 스캔 되돌리기」 로 무를 수 있다(F-26).
+8. **회사 서버가 끊겨도 계속**: 입력을 막지 않는다.
+   - 바닥 줄이 「회사 서버 연결 안 됨 · 이 PC에 저장 중 · 보낼 것 N건」(주황)으로 바뀐다(F-52).
+   - 다시 연결되면 저절로 보낸다(F-33·F-64·F-65).
+   - 회사 서버가 그 트레이만 거절하면 그 트레이만 보류하고 다른 트레이는 계속한다(F-34).
+9. **다시 켰을 때**: 하던 트레이를 묻지 않고 그대로 이어 준다(F-39·F-40).
+10. **한 단계 안의 화면**: 오른쪽 탭에서 본다(F-43·F-49·F-51). 작업 화면에 늘 띄우지 않는다.
+    - 「진행 현황」: 오늘 출고 계획 대비 남은 수.
+    - 「이번 작업」·「스캔 기록」·「통과 요약」.
+    - 탭에서 스캔하면 작업 화면으로 돌아와 그대로 처리한다(F-44).
+11. **하루 끝**: 따로 할 일 없다. 하던 트레이가 있으면 닫을 때 한 번 묻는다(F-66).
+
+## 3. 주 화면과 상태
+### 3-1. 3초 안에 보여야 할 것 (U7)
+| 자리 | 무엇 | 지금(코드) |
+|---|---|---|
+| 스캔 칸 바로 아래, 가장 큼 | **현재 트레이 N/5** | 있음(F-47, LM-02 고친 코드 `Label_Match.py:21199`) |
+| 그 옆 | 다음에 찍을 것: 「현품표를 스캔하세요」 / 「상단 제품 N번째를 스캔하세요」 | 있음 |
+| 그 옆 | 방금 결과(맞음 초록 / 틀림 빨강 + 한 줄 까닭) | 있음 |
+| 스캔 칸 | 늘 커서가 있다. 탭·메뉴·상세를 닫은 뒤에도 돌아온다 | 있음(F-67) |
+| 오른쪽 아래 단추 넷 | 「방금 스캔 되돌리기」·「제품 교환」·「현재 트레이 취소 (F1)」·「완료된 트레이 취소 (F2)」. 글자가 끝까지 보인다 | 있음(LM-01 고친 코드 `:21894`) |
+| 맨 아래 한 줄 | 「회사 서버 연결됨 · 보낼 것 N건」(회색 작게). 단추와 겹치지 않는다. 「마지막 성공 전송 없음」 은 늘 띄우지 않는다 | 있음(LM-05 고친 코드 `:6683`) |
+
+- 위 다섯은 접지 않는다. 「작업 상세 보기 ▾」 안에는 바코드 원문 같은 상세만 둔다(F-48).
+- 작업 화면에 「건별 복구」 같은 관리자 단추가 없다(LM-03 고친 코드 `:21802`).
+- 개발자 말(PHS2·중앙·로컬·세션·원장·봉인)은 작업자 화면에 없다. 지금은 일부 안내 글에 남아 있다 → §7 LM-12.
+- **실제 화면 확인**: 위 「있음」 은 코드 기준이다. 1366×768·125 % 실제 PC 캡처 판정은 아직 없다(`SCREEN-JUDGE-1011.md` §1, w9fieldfit1008).
+
+### 3-2. 상태 다섯
+| 상태 | 화면 |
+|---|---|
+| 정상(작업 중) | 위 표 그대로 |
+| 경고 | 노랑 띠 한 줄, 현장 말(예: 「저장해 둔 품목 목록으로 작업 중」). 작업은 계속 |
+| 오류(틀린 바코드 등) | 빨강·오류음, 까닭 한 줄. 다음에 찍을 것은 그대로 보인다. 확인 클릭 없이 다음 스캔 |
+| 회사 서버 끊김 | 바닥 줄 주황 「회사 서버 연결 안 됨 · 이 PC에 저장 중 · 보낼 것 N건」, 작업 계속 |
+| 빈 목록(시작 전) | 「현품표를 스캔하세요」·작업자 이름·「현재 트레이 0/5」 |
+
+### 3-3. 관리자 메뉴 (작업 화면에서 뺀 것)
+- 「관리자」 → 「멈춘 작업 확인 (관리자)」(F-55): 목록을 열 때는 PIN 이 없고, 아래 동작마다 개인 관리자 ID + 6자리 PIN 을 받는다.
+  - 「같은 요청 다시 확인」(F-56)
+  - 「보류 후 계속」(F-57)
+  - 「지원 인계」(F-58)
+  - 「실물 현품표 스캔·회사 서버 조회」(F-59)
+  - 「관리자 확인 다시 조회」·「이 건만 보류하고 다른 작업 계속」(F-60)
+  - 「변경 파일 원위치 복원」(F-61)
+- 관리자 동작은 기존 화면 처리 순서 안에서 PIN 받기 → 회사 서버 확인 → 이 PC 적용으로 처리한다. 창이 닫혀도 이미 승인된 적용은 끝까지 한다. 상세는 [operations.md](operations.md#package-admin-pin-ui-lane).
+- 「대기 현황」 탭(F-50)과 바코드 원문 복사(F-45)는 다음 판에서 이 메뉴로 옮긴다(§7 LM-10·LM-11).
+
+## 4. 기능 표
+- 구분: **필수**(작업자 화면) / **관리자**(관리자 메뉴) / **자동**(사람 조작 없음) / **설치**(설치·지원 도구).
+- 지금 상태: 맞음 · 이상함 · 없음 · 불필요 · 확인 대기.
+- 근거의 코드 위치는 모두 `@55cab72`.
+
+| ID | 기능 | 구분 | 지금 상태 | 근거 | 목표 |
+|---|---|---|---|---|---|
+| F-01–F-04 | 앱 시작·이 PC 사용자 등록 확인·같은 자료에 앱 하나만·판 확인 | 자동 | 맞음 | `Label_Match.py:22903`·`current_user_onboarding.py:1009`·`label_match_single_instance.py:443`·`Label_Match.py:200` | 그대로 |
+| F-05–F-07 | 품목 목록 받기, 끊기면 저장해 둔 목록, 오늘 기록 읽기 | 자동 | 맞음 | `item_catalog_sync.py:979`·`Label_Match.py:22802`·`:6383` | 저장해 둔 목록 안내는 현장 말로(LM-04 고친 코드 `:22540`) |
+| F-08–F-10 | 명단 받기·고르기·트레이 시작 때 이름 고정 | 필수 | 맞음 | `label_worker_roster.py:176`·`Label_Match.py:18748`·`:6948` | 그대로 |
+| (없음) | **앱 안에서 새 작업자 등록**(승인 없이), 30일 안 쓰면 목록에서 숨김 | 필수 | 없음 | F-08 은 명단 고르기만 있다. 사용자 10/07 「작업자 등록은 각각의 프로그램에서 가능해야」, 10/08 첫 업데이트로 결정 | §7 LM-7 |
+| F-11–F-13 | 새 현품표 첫 스캔, 뒤에서 회사 서버 대조, 찍은 원문 먼저 저장 | 필수·자동 | 맞음 | `Label_Match.py:14453`·`:14130`·`:13907` | 그대로 |
+| F-14 | 「옛 현품표 받기」 켬/끔(PC 설정, HKLM 값 "1" 만 켬) | 관리자·자동 | 맞음 | `logistics_runtime_profile.py:244` | 그대로. 꺼짐 거절 글은 현장 말로(LM-12) |
+| F-15 | 옛 현품표 받기 중 형식 오류·확인 불가·중복을 따로 기록 | 자동 | 이상함 | `label_transition.py:222`. 새 현품표를 「이 PC 에만 완료」 로 끝내면 회사 서버에 포장 기록이 없어 출고가 막힌다(COMPAT-TABLE-1011 N1) | §7 LM-1 |
+| F-16–F-19 | 제품 넷 대조, 중복만 거절, 제품 칸 현품표 안내, 틀린 입력 기록·안내 | 필수 | 맞음 | `Label_Match.py:14840`·`:14910`·`:14884`·`:17682` | 그대로 |
+| F-20–F-22 | 제품 교환(단추·F4·명령 카드) → 불량 대상 → 대체품, 함께 저장 | 필수 | 맞음 | `Label_Match.py:16836`·`:15033`·`:15068` | 그대로 |
+| F-23 | 방금 스캔 되돌리기(명령 카드 포함) | 필수 | 맞음 | `Label_Match.py:15248` | 그대로 |
+| F-24 | 현품표가 3초 안에 다시 읽히면 무시 | 자동 | 맞음 | `Label_Match.py:14588` | 그대로 |
+| F-25–F-26 | 같은 현품표 다시 찍기 = 미달 완료, 60초 안 되돌리기 | 필수 | 이상함 | `Label_Match.py:15132`·`:15165`. 포장 앱은 실제 담긴 제품을 모르고, 회사 웹은 포장 길에서 미달 표시를 무시하고 봉인 전량으로 포장한다(웹 `service.py:12810-12860`·`packages.py:1672-1760`, webux 02:31) → 모자란 상자가 실물보다 많이 출고된다 | §7 LM-17 ◆ |
+| F-27–F-28 | 5번째에서 저절로 완료, 이 PC 에 먼저 저장 | 자동 | 맞음 | `Label_Match.py:17006`·`label_completion.py:682` | 그대로 |
+| F-29 | 저장 실패 때 원본 지키고 「저장 다시 하기」 | 필수 | 이상함 | `Label_Match.py:21590`. 관리자용 기술 안내가 작업자 안내에 섞여 있다(U7-아) | §7 LM-13 |
+| F-30–F-31 | 완료 뒤 다음 트레이, 저장 중 찍은 스캔 차례대로 처리 | 자동 | 맞음 | `Label_Match.py:17660`·`:5388` | 그대로 |
+| F-32–F-34 | 회사 서버로 포장 기록 보내기·재시도·충돌 트레이만 보류 | 자동 | 맞음 | `package_outbox_processor.py:46`·`package_outbox.py:705` | 그대로 |
+| F-35 | 현재 트레이 취소 (F1) | 필수 | 맞음 | `Label_Match.py:18089` | 그대로 |
+| F-36·F-38 | 완료된 트레이 취소 (F2): 현품표 찍기 + 「완료 취소」 한 번, 회사 서버 취소 | 필수 | 맞음 | `Label_Match.py:18382`·`package_logistics.py:609` | 그대로(되돌릴 수 없는 일이라 한 번 확인은 둔다) |
+| F-37 | 스캔 기록 우클릭·Delete 로 기록 삭제(회사 서버 취소까지 보냄) | 필수 | 불필요 | `Label_Match.py:17833`. F2 와 같은 효과의 둘째 길이고 숨은 우클릭이다. PIN 이 없고 마우스 확인만 있다 | §7 LM-9 ◆ |
+| F-39–F-42 | 다시 켰을 때 이어 하기, 날짜 바뀜 처리, 감사 기록 재생·조각 보존 | 자동 | 맞음 | `Label_Match.py:11268`·`label_data_manager.py:441`·`:547` | 그대로 |
+| F-43–F-44 | 오늘·지난 날짜 기록 보기, 거기서 스캔하면 작업으로 복귀 | 필수(한 단계 안) | 맞음 | `Label_Match.py:19140`·`:21441` | 그대로 |
+| F-45 | 기록의 바코드 원문 보기·복사 | 필수 | 이상함 | `Label_Match.py:19122`. 작업자 일이 아니다(지원용) | §7 LM-11 |
+| F-46 | 기록 표 정렬·열 폭·글자 크기, Ctrl+휠 확대 | 필수 | 맞음 | `Label_Match.py:22182`·`:21991` | 그대로 |
+| F-47–F-48 | 현재 트레이 N/5·다음 스캔·방금 결과, 상세만 접기 | 필수 | 확인 대기 | 코드 있음 `Label_Match.py:21199`·`:20888`(LM-02). 실제 화면 판정 없음 | §8-2 에서 화면으로 닫음 |
+| F-49 | 「이번 작업」·「통과 요약」 탭 | 필수(한 단계 안) | 맞음 | `label_workbench_activity.py:4`·`label_workbench_history.py:4` | 그대로 |
+| F-50 | 「대기 현황」 탭(저장된 접수의 대기·경보) | 필수 | 이상함 | `Label_Match.py:13117`. 작업자 탭에 「검증·선행조건·서버확정-로컬반영대기·경보 기준」 같은 기술 말이 있다. 작업자 몫은 바닥 줄의 「보낼 것 N건」 이다 | §7 LM-10 |
+| F-51 | 「진행 현황」 탭(오늘 출고 계획 대비, 60초마다) | 필수(한 단계 안) | 맞음 | `Label_Match.py:5849` | 그대로 |
+| F-52 | 바닥 한 줄 회사 서버 상태 | 자동 | 확인 대기 | 코드 있음 `Label_Match.py:6683`(LM-05). 실제 화면 판정 없음 | §8-2 |
+| F-53 | 맞음·완료·오류 소리 | 자동 | 맞음 | `Label_Match.py:22215` | 그대로 |
+| F-54 | 설정의 「관리자 인증」(보호 관리자 코드) | 관리자 | 이상함 | `Label_Match.py:18806`. 개인 6자리 관리자 PIN 과 다른 둘째 관리자 코드다. 관리자 본인 확인은 웹 개인 PIN 하나로 정했다(DECISIONS :148) | §7 LM-14 |
+| F-55–F-61 | 멈춘 작업 확인과 관리자 동작 여섯(PIN) | 관리자 | 맞음 | `Label_Match.py:11005`·`:11111`·`:11124`·`:11144`·`:11167`·`:11197`·`:8812` | 그대로. 이름은 현장 말로(LM-12) |
+| F-62–F-63 | 옛 판에서 저장된 현품표 교환 이어 하기, 그 교환의 현품표 인쇄·재출력 | 관리자·자동 | 불필요 | `Label_Match.py:16763`·`phs_label_workflow.py:2882`. 새 진입은 없고 저장된 것만 이어 한다. 인쇄는 「포장은 라벨을 뽑지 않는다」 와 어긋난다. 현장 PC 는 새로 설치하므로 저장된 교환이 없다 | §7 LM-15 |
+| F-64–F-65 | 포장 기록 파일을 회사 서버로 보내기·재시도 | 자동 | 맞음 | `direct_sync_runtime.py:796`·`:922` | 그대로 |
+| F-66 | 닫기(하던 트레이가 있을 때만 한 번 묻기) | 필수 | 맞음 | `Label_Match.py:8253` | 그대로 |
+| F-67 | 배율·탭·메뉴 뒤 스캔 칸으로 커서 복귀 | 자동 | 맞음 | `Label_Match.py:19593` | 그대로 |
+| F-68 | 정보 창(판·단축키 안내) | 필수 | 이상함 | `Label_Match.py:18935`·`:18971`. 없어진 「F3 수동 완료」 를 아직 안내하고, F4 교환·명령 카드는 안내하지 않는다 | §7 LM-8 |
+| F-69 | 개발용 자동 시험·시연·시험 기록 만들기(특수 바코드) | 설치(개발) | 불필요 | `Label_Match.py:553`·`:11992`. 현장에서는 꺼져 있다 | §7 LM-16 |
+| F-70 | 옛 GUI 업데이트 후보 확인(기본 꺼짐, 결과는 화면에 안 나옴) | 자동 | 불필요 | `Label_Match.py:6489`. 실제 업데이트는 F-71 길이다 | §7 LM-16 |
+| F-71–F-72 | 서명된 다음 판 준비·로그온 때 적용, 시험 시작 실패 때 앞 판으로 복귀 | 자동 | 맞음(실제 PC 미증명) | `auto_update.py:1913`·`:2375`·`:255` | §8-3 에서 증명 |
+| F-73–F-74 | 지원 설치·재등록·제거, 등록 중단 복구 | 설치 | 이상함 | `INSTALL_THIS_PC.ps1:2`·`tools/register_label_match_worker_pc.py:85`. 관리자 원격 숨김 설치 길이 없다(§8-1) | §7 LM-2 |
+| (없음) | 「이 PC 에만 완료」 트레이에 「출고 전 관리자 보충 필요」 표시 | 필수 | 없음 | COMPAT-TABLE-1011 N1 | §7 LM-1 |
+
+- 셈(ID 기준): 맞음 56 · 이상함 10(F-15·F-25·F-26·F-29·F-45·F-50·F-54·F-68·F-73·F-74) · 불필요 5(F-37·F-62·F-63·F-69·F-70) · 확인 대기 3(F-47·F-48·F-52) = 74, 그리고 없음 2.
+- 조사표 B 표의 74 ID 를 모두 위 줄에 담았다. 묶은 줄은 같은 상태끼리다.
+
+## 5. 회사 서버와 주고받기
+| 무엇 | 언제 | 끊겼을 때 |
+|---|---|---|
+| 품목 목록 받기 (`GET /inbound/api/item-catalog.csv`) | 시작 | 저장해 둔 목록으로 작업. 옛 현품표 받기 켬이면 앱 안 기본 목록 |
+| 작업자 명단 받기 (`POST /api/worker-roster/v1/query`) | 시작·명단 갱신 | 저장해 둔 명단 |
+| 기능 켜짐 확인 (`GET /logistics/api/v1/capabilities`) | 명단·교환 준비 | 그 트레이는 시작 때 결정을 그대로 씀 |
+| 진행 현황 (`GET /logistics/api/v1/progress`) | 탭·60초 | 마지막으로 받은 값과 받은 시각을 보임 |
+| 현품표에 들어 있는 제품 확인 (`GET …/bundles/{id}`·`resolve`) | 새 현품표를 찍은 뒤 뒤에서 | 이 PC 에서 끝내고, 다시 연결되면 대조. 다르면 그 트레이만 보류 |
+| 제품 교환 보내기 (`POST …/members/replace-and-reseal`) | 교환 뒤 뒤에서 | 같은 요청으로 다시 보냄 |
+| **포장 기록 보내기** (`POST /logistics/api/v1/packages`) | 트레이 완료 뒤 | 이 PC 대기열에 두고 같은 키로 다시 보냄. 이 PC 완료는 되돌리지 않음 |
+| 포장 취소 (`POST …/packages/cancel`) | F2·기록 삭제 | 포장 기록이 먼저 받아들여진 뒤 보냄 |
+| 받았는지 다시 묻기 (`GET …/receipts/{key}`) | 답을 잃었을 때 | 확인 전에는 새로 만들지 않음 |
+| 관리자 PIN 확인 (`POST /api/admin-pin/v1/…`) | 관리자 동작마다 | 그 건만 보류 |
+| 포장 기록 파일 보내기 (`POST /api/producer-ingest/v1/source-file`) | 완료·종료 때 | 이 PC 대기열(relay)에서 다시 보냄 |
+| 다음 판 받기(회사 feed·서명) | 백그라운드 | 지금 판으로 업무 계속 |
+
+- **작업자 이름**: 회사 서버가 「작업자 기록 신원」 기능을 켰다고 답할 때만 포장 기록에 작업자 번호·당시 이름을 붙인다(F-10). 모르면 붙이지 않고 보내며, 회사 웹은 그것을 받는다.
+- **옛 현품표 상자와 출고**:
+  - 옛 현품표 받기로 끝낸 트레이는 회사 서버 포장 기록 없이 이 PC 기록 파일로만 올라간다(F-15).
+  - 기준일 실사로 들어온 옛 현품표 상자는 웹 출고의 옛 상자 길로 나간다. 그래서 포장 기록이 없어도 막히지 않는다. 단, 기준일 실사 확정이 첫 출고 전에 끝나야 한다(w9stockimpl 10/11 01:42, 웹 명세).
+  - **새 현품표**를 이 PC 에만 끝내면(회사 서버가 거절했거나 확인하지 못함) 출고에서 막힌다 → LM-1·웹 WEB-N1. 새 현품표의 수동 미달은 LM-17 로 막는다.
+- C:\Sync 는 쓰지 않는다.
+
+## 6. 용어
+- 여섯 앱 공통 말은 [허브 용어](../../../Program_Spec_Hub/GLOSSARY.md)를 따른다.
+  - 초안: `W\w9archplan\spec-1011\GLOSSARY-DRAFT.md`.
+  - 바탕: 10/08 사용자 확정 TERMS v2.1.
+- 포장 화면에 남은 다른 말(조사표 TERMS.tsv 의 셈, 조건부 안내 글 포함):
+
+| 지금 화면 낱말 | 쓰는 말 | 화면 예 | 셈 |
+|---|---|---|---|
+| 세트 · 바코드 세트 검증기(창 제목) | 트레이 · 포장 | `Label_Match.py:394`(창 제목)·`:1926` | 37 |
+| 중앙 | 회사 서버 | `Label_Match.py:1932`·`:5884` | 46 |
+| 로컬 | 이 PC | `Label_Match.py:5893`·`:6263` | 21 |
+| PHS · PHS2 | 현품표 · 새 현품표 | `Label_Match.py:1926`·`:5887` | 22 |
+| 과도기 모드 | 옛 현품표 받기(켬/끔) | `Label_Match.py:1867`·`:1874` | 12 |
+| 원장 | 회사 서버 기록 | `Label_Match.py:1892` | 5 |
+| 교체(제품) | 제품 교환 | `Label_Match.py:1864` | 49(현품표 교체·서버 이름 포함) |
+| 확정 · 검증 · 봉인 | 회사 서버 확인됨 · 확인 · (관리자 화면만) | `:5898`·`:394`·`:10826` | 18·26·11 |
+| 무결성 | (작업자 화면에서 뺌) | `:22601` | 3 |
+
+## 7. 고칠 목록
+- 기존 [BACKLOG.md](BACKLOG.md) 맨 위 「목표 명세 고칠 목록(10/11)」 절과 같은 내용이다.
+- 누가: 포장 코드 주인 = w9firstupd. 설치 설계 = w9firstupdrd(관리자 w9mgrcut 10/11 02:07).
+- 판: 「다음 판」 = 10/14 동결 묶음(기준일 묶음 첫 업데이트), 「그 뒤」 = 그다음.
+
+| # | 종류 | 무엇 | 등급 | 판 | 누가 | ◆ |
+|---|---|---|---|---|---|---|
+| LM-1 | 바로잡기 | 새 현품표를 이 PC 에만 끝내면(회사 서버 거절·확인 불가 — 수동 미달은 LM-17 로 막음) 회사 서버에 포장 기록이 없어 새 웹 출고에서 막힌다. → 그 트레이는 화면과 기록에 **「출고 전 관리자 보충 필요」** 를 남긴다. 웹 보충 길이 정해지면 그 문구로(웹 WEB-N1, w9mgrweb). 근거 `W\w9firstupd\COMPAT-TABLE-1011.md` :7·:88·:92 | P1 | 다음 판(UI 고침 한 바퀴, 일 10/11 18:00) | 고치는 중(w9firstupd) | — |
+| LM-2 | 바로잡기 | **원격 숨김 설치 받기**. 현장 키트가 일반 작업자 세션에서만 돌고, 상승은 제품 안 Windows 허용 창(UAC RunAs)으로 한다 → 관리자 원격 숨김 설치 길이 없다(`install-onsite.ps1:68`·`:603`, `bootstrap_integrity.ps1:1753`·`:1787` — TEST1 sub-490 02:02, archrev 02:03). 사용자 9/30 규칙(원격 설치는 창·허용 창 0)과 어긋남. 검사의 `-WorkerAccount <SID>` 꼴처럼 관리자 SSH 에서 작업자 계정을 받아 깔게 한다 | P1 | w9firstupdrd 크기(일 12:00) 뒤 w9mgrcut 이 동결 안/밖 결정 — 밖이면 기준일 밤은 현장 사람이 허용 창을 누름 | w9firstupdrd 설계 → w9firstupd | — |
+| LM-3 | 확인 | 화면 결함 LM-01–05 는 고친 코드가 이 판에 있다(조사표 J). 실제 PC(1366×768·125 %) 캡처로 닫는다 | P1 | 지금 판 | TEST1 캡처 뒤 w9fieldfit1008 | — |
+| LM-4 | 확인 | 업데이트 길 증명: v2.0.99 위에 다음 판을 같은 숨김 길로 덮어 깔고 자료·등록·보낼 것이 남는지 readback(§8-3). 지금은 코드만 있고 실제 PC 증명 없음 | P1 | 기준일 전(w9firstupd 계획서 §3 업데이트 길 줄 — 화 랩 또는 TEST1 L7 뒤) | w9firstupd·w9setupprep | — |
+| LM-5 | 바로잡기 | 작업자 이름 붙이기: 회사 서버 기능 확인이 실패한 것과 꺼진 것을 구분하고, 실행 중에 주기적으로 다시 묻는다(지금은 모르면 빼고 보냄 — 받아들여지지만 이름이 빠짐) | P2 | 다음 판 | w9firstupd | — |
+| LM-6 | 확인 | 기준일 실사로 들어온 「포장 끝·출고 대기」 옛 현품표 상자는 웹의 옛 상자 길로 나간다. 기준일 실사 확정이 D+1 첫 출고 전에 끝나는지 기준일 절차(G11)에서 확인한다(웹 WEB-N2, w9stockimpl 10/11 01:42) | P2 | 기준일 | w9firstupd(기준일 절차) | — |
+| LM-7 | 구현 | **앱 안 작업자 등록**: 명단에 없는 사람이 그 PC 에서 바로 이름을 등록(관리자 승인 없음, 시스템 번호를 붙여 「이름 #번호」, 개인정보 없음, 잘못·대충 입력 방지). 마지막 작업 뒤 30일 지나면 고르는 목록에서만 숨김. 그 전까지는 웹 관리자가 미리 등록 | P1(새 사람이 웹 관리자 없이 시작 못 함) | 다음 판(이번 묶음 = 첫 업데이트, 사용자 10/08 결정). w9firstupd 가 이적 짝과 함께 크기(일 12:00) 뒤 안/밖 — 밖이면 코디에 알림 | w9firstupd | ◆ |
+| LM-8 | 바로잡기 | 정보 창의 단축키 안내를 지금 것으로: F3 수동 완료 줄을 빼고 F1·F2·F4(제품 교환)·명령 카드(교환·되돌리기)를 넣는다(F-68) | P2 | 다음 판 | w9firstupd | — |
+| LM-9 | 빼기 | 스캔 기록 우클릭·Delete 의 「선택 항목 삭제」 를 없애고, 끝난 트레이 취소는 「완료된 트레이 취소 (F2)」 하나로(같은 처리기). FAIL 줄 정리가 필요하면 관리자 메뉴로(F-37) | P2 | 다음 판 | w9firstupd | ◆ |
+| LM-10 | 바로잡기 | 「대기 현황」 탭을 관리자 메뉴로 옮기고 현장 말로. 작업자는 바닥 줄 「보낼 것 N건」 만 본다(F-50) | P2 | 다음 판 | w9firstupd | — |
+| LM-11 | 바로잡기 | 바코드 원문 보기·복사를 관리자 메뉴로(F-45) | P2 | 그 뒤 | w9firstupd | — |
+| LM-12 | 이름 | §6 표의 낱말을 작업자 화면·안내 글에서 바꾼다. 창 제목 「바코드 세트 검증기」 → 「포장」, 옛 현품표 꺼짐 거절 글 → 「옛 현품표입니다. 이 PC 는 옛 현품표 받기가 꺼져 있습니다 — 실물을 그대로 두고 관리자에게 알리세요」. 비교·저장·전송에 쓰이는 글은 바꾸지 않는다 | P2 | 다음 판 | w9firstupd | — |
+| LM-13 | 이름 | 저장 실패 안내에서 관리자용 기술 줄을 「자세히」(관리자)로 내리고, 작업자에게는 「저장이 안 됐습니다 — 저장 다시 하기를 누르세요. 계속되면 관리자에게」 한 줄(F-29) | P2 | 다음 판 | w9firstupd | — |
+| LM-14 | 바로잡기 | 설정의 「관리자 인증」(보호 관리자 코드)을 개인 관리자 PIN 하나로 합친다. 관리자 확인 수단이 둘이면 헷갈린다(F-54, DECISIONS :148) | P2 | 그 뒤 | w9firstupd | — |
+| LM-15 | 빼기 | 옛 판에서 저장된 현품표 교환 이어 하기·그 인쇄·재출력(F-62·F-63)을 뺀다. 현장 PC 는 새로 설치해서 저장된 교환이 없다. 빼기 전에 설치 원장의 PC 마다 그 저장 파일이 0 인지 읽는다 | P2 | 그 뒤 | w9firstupd | — |
+| LM-16 | 빼기 | 개발용 자동 시험 바코드(F-69)와 옛 GUI 업데이트 후보 확인(F-70)을 제품 코드에서 뺀다. 둘 다 현장에서는 꺼져 있다 | P2 | 그 뒤 | w9firstupd | — |
+| LM-17 | 바로잡기 | **새 현품표의 미달 완료를 막는다** — 회사 서버로 보내는 길과 「이 PC 에만 완료」 길 둘 다(w9mgrweb 02:28). 같은 현품표를 다시 찍으면 「새 현품표는 미달로 끝낼 수 없습니다 — 대체품으로 채우거나, 못 채우면 트레이를 따로 두고 관리자에게 알리세요」 한 줄을 보이고 트레이를 그대로 둔다. 옛 현품표의 미달 완료는 그대로. 웹은 포장 길의 미달 표시를 400 으로 거절하게 고친다(WEB-N4, 10/19 판). 모자란 상자를 실제 수량으로 다시 묶는 웹 화면은 지금 없다(WEB-N3, 다음 판) | P1 | 다음 판(UI 고침 한 바퀴, 일 10/11 18:00) | 고치는 중(w9firstupd) | ◆ |
+
+- 셈: P1 6(고침 LM-1·LM-2·LM-7·LM-17, 확인 LM-3·LM-4) · P2 11.
+
+## 8. 실제 PC 작동 확인 방법
+### 8-1. 설치
+- **목표: 관리자 SSH 숨김 설치·업데이트로 깔린다(현장 PC 화면에 설치 창·Windows 허용 창 0).**
+- **지금**: 숨김 설치 길이 없다. 키트는 작업자 일반 세션에서만 돌고, 상승은 제품 안 Windows 허용 창으로 한다 → LM-2.
+  - 그 전까지는 허용 창을 누를 사람이 있어야 한다. 「Parsec 서비스 방식」 은 허용 창까지 원격으로 누를 수 있다.
+- **설치 판**: v2.0.99 stock `W\w9setupprep\sub-471\stock\Label_Match-v2.0.99-55cab72-B.zip`(SHA256 `72d51c05…af09c`). 일요일 판은 자동 업데이트를 끈다(feed 끔).
+- **설치 전 확인**: 그 PC 의 옛 포장 판·자료 백업, 남의 관리자 PowerShell 0, 「옛 현품표 받기」 HKLM 값 readback.
+- **설치 뒤 확인**: 완료 화면, 판·build SHA, 로그온 자동 실행(HKCU Run) readback, 이 PC 등록·회사 서버 연결, 작업자 명단 받기.
+
+### 8-2. 주 흐름 한 바퀴 (실제 PC, 업무 밖)
+1. 작업자 고르기 → 옛 현품표 1 + 제품 4. 5번째에 저절로 끝나고 긴 소리가 나는지 본다.
+2. 화면 캡처로 §3-1 다섯 자리(N/5·다음·방금 결과·커서·바닥 줄)를 1366×768·125 % 에서 판정한다(LM-3).
+3. 기록 파일 한 줄, 그리고 회사 서버 포장 기록 파일 업로드 1건(nginx 2xx +1)을 본다.
+4. 새 현품표 1 트레이 → 회사 서버 포장 기록이 생기는지 본다(receipt). 랩 또는 시험 품목으로만 한다.
+5. 제품 교환 1번, 방금 스캔 되돌리기 1번, F1 1번, F2 1번.
+6. 네트워크를 끊고 1 트레이 → 바닥 줄이 주황이 되는지 → 다시 연결 → 보낼 것이 0 이 되는지 본다.
+7. 앱을 닫았다 켜서 하던 트레이가 이어지는지 본다.
+
+### 8-3. 업데이트 길 (지금 판 위에 다음 판 설치) — 필수
+- **길(코드)**:
+  1. 건강한 고정 판 A와 활성 판 B를 보존한다.
+  2. 다음 판 C를 `versions/C` 에 넣고 전환한다(`INSTALL_CANONICAL_PORTABLE.ps1:3606`, `auto_update.py:770`).
+  3. 또는 회사 feed(서명·양방향 쌍)로 준비하고 로그온 때 적용한다(`auto_update.py:365`·`:1913`·`:2375`). 업무 중에는 적용하지 않는다.
+- **막힘 조건**:
+  - 새 판이 자료를 연 뒤에는 옛 코드로 내리지 않는다(자료 세대 G, DECISIONS :33).
+  - 실패한 판은 같은 SHA 로 다시 시도하지 않는다(`failed_shas`, `auto_update.py:1978`).
+  - 판 표시가 없는 옛 stock 은 재설치 안내로 막는다.
+  - 현장 키트(`install-onsite.ps1`)의 옛 판 고정·재시도 막힘 규칙은 키트 쪽이다.
+- **증명**: 없음(코드·시험 정의만, 실제 PC UNPROVEN). 기준일 전에 랩에서 한 번 한다(LM-4):
+  1. v2.0.99 를 숨김 길로 설치한다.
+  2. 다음 판 후보를 같은 길로 덮어 깐다.
+  3. 판·자료 세대·등록·보낼 것·작업자 명단·「옛 현품표 받기」 값이 그대로인지 readback 한다.
+  4. 1 트레이를 처리한다.
+
+### 8-4. 되돌림
+- **설치 도중 실패**: 확정 전 단계를 하나씩 되돌리고, 원래 실패와 자료를 남긴다(`INSTALL_CANONICAL_PORTABLE.ps1:4170`·`:4285`). UNPROVEN.
+- **시험 시작 실패**: 자료 세대가 그대로면 앞 판으로 돌아가고, 올라갔으면 후보를 남긴다(`auto_update.py:255`). UNPROVEN.
+- **설치 성공 뒤 옛 포장 v2.0.5 로 돌아가기**: TEST1 포장 L7 에서 증명할 차례다(w9setupprep). 증명 전에는 실패하면 옛 포장으로 업무를 잇는 것이 대비다.
+
+## 옮긴 줄 목록 (주인 레인 가지 → 이 글)
+| 가지 · 머리 | 원래 줄 | 이 글 어디 |
+|---|---|---|
+| `postcut/firstupd-lm-w5` · 557f96a | README :314 「건별 관리자 동작은 기존 UI lane에서 … 복구 창이 닫혀도 이미 승인 중인 요청의 내구 적용은 계속」 | §3-3 둘째 줄(현장 말 요지). 기술 상세는 그 가지의 operations.md `#package-admin-pin-ui-lane` |
+| `postcut/firstupd-lm-w5` · 557f96a | BACKLOG :3 「LM-W5: 건별 복구의 관리자 PIN 요청…」 | BACKLOG 는 기존 줄을 지우지 않으므로 그 줄은 그대로 남는다. 이 가지의 새 절은 맨 위에 넣었고, 병합 때 둘 다 둔다 |
