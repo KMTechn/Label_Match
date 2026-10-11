@@ -26,6 +26,7 @@ writer 선언은 `python -B tools/refresh_admin_worker_declarations.py`, 확인�
 
 
 첫 업데이트 글자 층에서도 `writer_sink_inventory.derive_writer_sink_inventory`의 source digest와 Python/PowerShell writer pin을 함께 갱신한다. 82개 sink의 식별자·위치·guard는 유지하며, canonical 설치기의 `release_digest`로 변경된 네 파일의 후보 해시 40개를 재생성한다. 역사적 before 해시·허용 파일 목록·거절 조건은 바꾸지 않고 두 pin과 후보 선언을 읽기 전용으로 다시 검사한다.
+첫 업데이트 앱 바이트가 바뀌면 `writer_sink_inventory.derive_writer_sink_inventory`의 source digest와 Python/PowerShell writer pin을 함께 갱신한다. 82개 sink의 식별자·경로·guard는 유지하며, canonical 설치기의 `release_digest`로 변경된 파일의 후보 해시와 writer 전이 probe pin을 재생성한다. 역사적 before 해시·허용 파일 목록·거절 조건은 바꾸지 않고 두 pin과 후보 선언을 읽기 전용으로 다시 검사한다.
 
 <a id="onboarding-writer-admission"></a>
 
