@@ -168,6 +168,19 @@ def close_sqlite_connection(conn: sqlite3.Connection) -> None:
         conn.close()
 
 
+def checkpoint_sqlite_database(db_path: str | os.PathLike[str]) -> None:
+    """Clean an existing store after the final read-only connection closed."""
+    try:
+        path = Path(db_path).expanduser().resolve()
+        if not path.is_file():
+            return
+        with writer_admission("sqlite_wal_shutdown_cleanup", timeout_seconds=0):
+            conn = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=0)
+            close_sqlite_connection(conn)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("WAL shutdown cleanup failed (%s)", type(exc).__name__)
+
+
 def _connect(db_path: str | os.PathLike[str]) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), timeout=_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row

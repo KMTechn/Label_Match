@@ -1,12 +1,14 @@
 import json
 import sqlite3
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 import user_relay
-from producer_runtime_client import close_sqlite_connection
+from producer_runtime_client import checkpoint_sqlite_database, close_sqlite_connection
 from terminal_operation_lease import OperationLeaseStore
 from tests.test_f6_pointer_confirmation import app
 
@@ -187,3 +189,88 @@ def test_operation_lease_store_releases_connections_even_when_referenced(monkeyp
             conn.execute('SELECT 1')
     assert not database.with_suffix('.sqlite3-wal').exists()
     assert not database.with_suffix('.sqlite3-shm').exists()
+
+
+def test_gui_destroy_cleans_sidecars_recreated_by_last_readonly_connection(app, monkeypatch, tmp_path):
+    import direct_sync_push
+    import Label_Match as lm
+
+    root = tmp_path / 'direct-sync'
+    database = root / 'queue' / 'direct_sync_relay.sqlite3'
+    direct_sync_push.init_relay_queue_schema(database)
+    direct_sync_push.relay_queue_status(database)
+    assert database.with_suffix('.sqlite3-wal').exists()
+    app.direct_sync_bootstrap_context = {'program_data_root': str(root)}
+    app._stop_error_siren = Mock()
+    app._join_tk_shutdown_threads = Mock(return_value=[])
+    app._close_data_manager_before_tk_destroy = Mock(return_value=True)
+    monkeypatch.setattr(lm.tk.Tk, 'destroy', lambda _self: None)
+
+    app.destroy()
+
+    assert app._tk_destroy_complete is True
+    assert not database.with_suffix('.sqlite3-wal').exists()
+    assert not database.with_suffix('.sqlite3-shm').exists()
+
+
+def test_final_checkpoint_never_creates_a_missing_database(tmp_path):
+    database = tmp_path / 'missing.sqlite3'
+    checkpoint_sqlite_database(database)
+    assert not database.exists()
+
+
+def test_final_checkpoint_path_error_is_logged_without_raising(monkeypatch, caplog):
+    monkeypatch.setattr(Path, 'resolve', Mock(side_effect=OSError('injected')))
+    checkpoint_sqlite_database('unavailable.sqlite3')
+    assert 'WAL shutdown cleanup failed (OSError)' in caplog.text
+
+
+def test_gui_checkpoint_error_does_not_block_destroy(app, monkeypatch, caplog):
+    import Label_Match as lm
+
+    app._stop_error_siren = Mock()
+    app._join_tk_shutdown_threads = Mock(return_value=[])
+    app._close_data_manager_before_tk_destroy = Mock(return_value=True)
+    app._checkpoint_app_databases = Mock(side_effect=OSError('injected'))
+    monkeypatch.setattr(lm.tk.Tk, 'destroy', lambda _self: None)
+    app.destroy()
+    assert app._tk_destroy_complete is True
+    assert 'WAL shutdown cleanup failed (OSError)' in caplog.text
+
+
+def test_relay_stop_checkpoints_after_final_readonly_status(monkeypatch, tmp_path):
+    import direct_sync_push
+    from tests.test_direct_sync_relay_install_pack import _seal_generation_release_input
+
+    app_root = tmp_path / 'app'
+    (app_root / 'runtime').mkdir(parents=True)
+    (app_root / 'app').mkdir()
+    (app_root / 'runtime' / 'python.exe').write_bytes(b'runtime')
+    (app_root / 'app' / 'main.py').write_text('pass\n', encoding='utf-8')
+    revision = subprocess.check_output(['git', '-c', 'core.autocrlf=false', 'rev-parse', 'HEAD'], text=True).strip()
+    _seal_generation_release_input(app_root, revision)
+    root = tmp_path / 'direct-sync'
+    database = root / 'queue' / 'direct_sync_relay.sqlite3'
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    monkeypatch.setattr('logistics_runtime_profile.load_logistics_runtime_profile',
+                        lambda **_kwargs: SimpleNamespace(tls_ca_bundle_path=''))
+    released = []
+    def release():
+        assert not database.with_suffix('.sqlite3-wal').exists()
+        assert not database.with_suffix('.sqlite3-shm').exists()
+        released.append(True)
+    monkeypatch.setattr(user_relay, '_acquire_relay_lease', lambda _key: SimpleNamespace(close=release))
+    def cycle(command, _timeout_seconds):
+        direct_sync_push.init_relay_queue_schema(database)
+        direct_sync_push.relay_queue_status(database)
+        assert database.with_suffix('.sqlite3-wal').exists()
+        user_relay.request_app_stop(root)
+        status_path = Path(command[command.index('--runtime-status-path') + 1])
+        status_path.write_text('{"status":"idle"}\n', encoding='utf-8')
+        return {'status': 'PASS', 'returncode': 0}
+    monkeypatch.setattr(user_relay, '_run_command', cycle)
+
+    assert user_relay.main(['--app-root', str(app_root), '--direct-sync-root', str(root), '--once'],
+                           credential_input=object()) == 0
+    assert released == [True]
+    assert user_relay.user_relay_stop_path(root).is_file()

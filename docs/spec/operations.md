@@ -1355,3 +1355,5 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 ```
 
 GUI의 기존 5초 주기가 하던 트레이를 확인 창 없이 저장하고 정상 닫기를 접수한다. 요청 파일 삭제는 접수 증거이며 실제 프로세스 종료 증명은 아니다. relay의 `ABSENT`는 기존 lease 부재 증거이고 `UNKNOWN`이면 명령은 1을 반환한다. 키트는 기존 절차대로 앱·relay 프로세스 부재와 자료 DB의 WAL/SHM 부재를 별도로 확인한 뒤 읽기·되돌림을 진행한다. checkpoint가 BUSY이거나 다른 연결이 남으면 종료를 강제로 진행하거나 sidecar를 직접 지우지 않는다.
+
+GUI worker·로그 writer 정리 뒤와 relay lease 해제 직전에 기존 DB만 다시 열어 마지막 read-only 조회가 만든 sidecar도 TRUNCATE checkpoint로 정리한다. 없는 DB는 만들지 않으며 busy·경로·checkpoint 오류는 비밀값 없는 예외 종류만 기록하고 정상 종료를 계속한다.

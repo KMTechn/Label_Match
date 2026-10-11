@@ -8258,6 +8258,26 @@ class Label_Match(tk.Tk):
             print(f"Tk 종료 중 로그 writer 정리 오류: {exc}")
             return False
 
+    def _checkpoint_app_databases(self):
+        from producer_runtime_client import checkpoint_sqlite_database
+
+        paths = set()
+        for name, attribute in (
+            ("package_outbox", "db_path"),
+            ("package_cancellation_outbox", "db_path"),
+            ("package_operation_lease_store", "path"),
+            ("deferred_intent_capture", "db_path"),
+            ("sealed_transfer_exchange_store", "db_path"),
+        ):
+            path = getattr(self.__dict__.get(name), attribute, None)
+            if path:
+                paths.add(str(path))
+        context = self.__dict__.get("direct_sync_bootstrap_context") or {}
+        if context.get("program_data_root"):
+            paths.add(str(Path(context["program_data_root"]) / "queue" / "direct_sync_relay.sqlite3"))
+        for path in sorted(paths):
+            checkpoint_sqlite_database(path)
+
     def destroy(self):
         """Idempotently stop app-owned workers before destroying Tcl.
 
@@ -8314,6 +8334,11 @@ class Label_Match(tk.Tk):
                 except (TclError, RuntimeError):
                     state["_tk_destroy_retry_after_id"] = None
                 return None
+            try:
+                self._checkpoint_app_databases()
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("WAL shutdown cleanup failed (%s)", type(exc).__name__)
             if ui_lane is not None and ui_lane.state is not LaneState.CLOSED:
                 try:
                     ui_lane.close_idle()

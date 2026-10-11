@@ -1039,7 +1039,14 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
             },
         )
     finally:
-        lease.close()
+        try:
+            from producer_runtime_client import checkpoint_sqlite_database
+            checkpoint_sqlite_database(direct_sync_root / "queue" / "direct_sync_relay.sqlite3")
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("WAL shutdown cleanup failed (%s)", type(exc).__name__)
+        finally:
+            lease.close()
     last_status = str((result.get("last_cycle") or {}).get("status") or "UNKNOWN")
     return 1 if last_status in {"FAIL", "UNKNOWN", "runtime_error"} else 0
 
