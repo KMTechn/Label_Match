@@ -1335,3 +1335,13 @@ F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join
 ### Bootstrap relay 시작의 일시 admission 대기
 
 Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRITER_GATE_TIMEOUT`만 기존 240초 창에서 0.1초씩 쉬며 재시도한다. 각 시도는 기존 launch_version의 admission을 다시 얻으며 시도 사이에는 admission을 보유하지 않는다. 상한은 240초 + 마지막 admission 대기 최대 5초이며 마감 뒤에는 기존 실패 출구를 유지한다. fence 확정·버려진 소유권 등 다른 거절과 GUI 실행 자체의 timeout은 재시도하지 않는다. 포인터·trial claim·READY·CONFIRMED·G 허가·cohort·잠금 순서는 유지한다. bootstrap 밖의 relay launcher admission과 실제 로그온/pythonw 수용은 별도 범위다.
+
+
+<a id="worker-shortcuts"></a>
+## 작업자 바로 가기와 복원
+
+기계 설치기는 코드·입구 readback 뒤 공용 바탕화면·공용 시작 메뉴를 준비한다. 작업자 세션의 canonical 설치기는 최종 relay/Run 확인 뒤 개인 바탕화면·시작 메뉴의 옛 깨진 링크를 준비한다. 대상은 manifest의 current/launch-label-match.cmd, 이름은 새로 만들 때 「포장」, 아이콘은 current/app/assets/logo.ico, WindowStyle=7이다. 설치 루트 아래의 사라진 대상만 같은 자리에서 바꾸며 다른 앱·다른 루트·파일이 있는 대상은 그대로 둔다. 공용 각 자리에서 바꿀 링크가 없으면 새 링크를 만든다.
+
+설치 감사의 worker_shortcuts는 common_record_path와 user_record_path를 기록한다. 각 JSON은 원래 대상·인수·아이콘 등 속성과 .preimages/의 원본 링크·해시, 새 링크 해시를 보존한다. 실패한 설치의 코드 복원 뒤 canonical rollback이 개인과 공용 기록을 각각 소비한다. 지원 제거에서 기계 helper에 WorkerShortcutRecordPath·VerifiedWorkerShortcutHelperPath·ExpectedWorkerShortcutHelperSha256을 제공하면 같은 공용 복원 경계를 사용한다. 옛 앱 복귀를 수행하는 작업자 도구는 보존한 해시 검증 helper tools/label_worker_shortcuts.ps1에 -InstallRoot <current> -RecordPath <user JSON> -UserOnly -Rollback(또는 -Uninstall)을 넘겨 개인 링크를 복원한다. 이 바로 가기 명령은 코드·자료를 복원하는 설치 명령과 별개이며, 코드 복원 뒤 실행한다.
+
+바뀐 링크는 원본 바이트로 복원하고 새 링크는 삭제한다. 사용자가 이후 바꾼 링크·다른 대상·reparse·기록 경계 이탈·helper 변조는 거절한다. 관리자 직접 설치는 CommonOnly 경계를 사용하며 작업자 첫 시작 onboarding에 UserOnly 경계를 연결하는 일은 다음 가지 몫이다. 실제 Explorer 기동·아이콘 표시·콘솔 표시와 v2.0.5 복귀의 현장 확인은 이 headless 시험으로 증명하지 않는다.

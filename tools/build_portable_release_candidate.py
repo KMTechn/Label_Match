@@ -60,6 +60,7 @@ BOOTSTRAP_INTEGRITY_HELPER = Path("tools/bootstrap_integrity.ps1")
 WRITER_FENCE_HELPER = Path("tools/label_writer_fence.ps1")
 WRITER_FENCE_CONTRACT = Path("tools/label_writer_fence_contract.json")
 FAILURE_SINK_DATA = (Path("tools/failure_redaction.ps1"), Path("tools/failure_redaction_rules.json"))
+WORKER_SHORTCUT_HELPER = Path("tools/label_worker_shortcuts.ps1")
 SHARED_POWERSHELL_LEAF = Path("kmtech_shared/powershell/portable.ps1")
 DATA_GENERATION_POWERSHELL_LEAF = Path("kmtech_shared/powershell/data_generation.ps1")
 THIRD_PARTY = {
@@ -600,6 +601,7 @@ def build(
         shutil.copy2(writer_fence_source, writer_fence_target)
         for relative in FAILURE_SINK_DATA:
             shutil.copy2(repo_root / relative, output / relative)
+        shutil.copy2(repo_root / WORKER_SHORTCUT_HELPER, output / WORKER_SHORTCUT_HELPER)
         writer_fence_contract_source = repo_root / WRITER_FENCE_CONTRACT
         if not writer_fence_contract_source.is_file():
             raise PortableBuildError(

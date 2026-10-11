@@ -29,6 +29,10 @@ param(
     [string]$StartupUpdateRestoreSha256 = "",
     [string]$LegacyRelayTransition = "",
     [string]$LegacyRelayPreimageSha256 = "",
+    [string]$WorkerShortcutOperation = "",
+    [string]$WorkerShortcutRecordPath = "",
+    [string]$VerifiedWorkerShortcutHelperPath = "",
+    [string]$ExpectedWorkerShortcutHelperSha256 = "",
     [switch]$ReplaceExistingVerifiedPortable,
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$ApplyHardenedAclForTest,
@@ -239,6 +243,24 @@ function Assert-NoReparsePoint([string]$Path, [string]$Purpose) {
 
 function Get-FileSha256([string]$Path) {
     return Get-EarlyFileSha256 $Path
+}
+
+function Invoke-LabelWorkerShortcutOperation([string]$Root, [string]$Operation, [string]$RecordPath,
+    [string]$HelperPath, [string]$ExpectedSha256) {
+    if ($Operation -cnotin @('Install','Restore') -or $ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Worker shortcut operation/pin differs.'
+    }
+    Assert-NoReparsePoint $HelperPath 'worker shortcut helper'
+    $bytes = [IO.File]::ReadAllBytes($HelperPath)
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try { $actual = ([BitConverter]::ToString($digest.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $digest.Dispose() }
+    if ($actual -cne $ExpectedSha256) { throw 'Worker shortcut helper pin differs.' }
+    $helper = [scriptblock]::Create(([Text.Encoding]::UTF8.GetString($bytes) -replace '^\uFEFF', ''))
+    $arguments = @{InstallRoot=$Root;RecordPath=$RecordPath;CommonOnly=$true}
+    if ($Operation -ceq 'Install') { $arguments.Install = $true }
+    else { $arguments.Rollback = $true }
+    & $helper @arguments
 }
 
 function Install-CurrentUserTlsCaBootstrap([string]$SourcePath, [string]$LocalAppDataRoot) {
@@ -1823,7 +1845,7 @@ if ($LegacyRelayTransition -and
 }
 if (-not $DryRun.IsPresent -and -not $testOverride) {
     Assert-AlreadyElevated
-    if (-not $Uninstall.IsPresent -and -not $StartupUpdateRestorePreimage -and
+    if (-not $Uninstall.IsPresent -and -not $StartupUpdateRestorePreimage -and -not $WorkerShortcutOperation -and
         (-not $LegacyRelayTransition -or $LegacyRelayTransition -ceq 'Disable')) {
         try {
             Initialize-LabelProtectedInstallBase $installRootFull
@@ -1846,6 +1868,14 @@ if (-not $DryRun.IsPresent -and -not $testOverride) {
     Write-ElevationLog 'STARTED' 'Elevated Label code placement started.'
 }
 
+if ($WorkerShortcutOperation) {
+    if ($DryRun -or $Uninstall -or $LegacyRelayTransition -or $StartupUpdateRestorePreimage) {
+        throw 'Worker shortcut operation mode differs.'
+    }
+    Invoke-LabelWorkerShortcutOperation $installRootFull $WorkerShortcutOperation $WorkerShortcutRecordPath `
+        $VerifiedWorkerShortcutHelperPath $ExpectedWorkerShortcutHelperSha256
+    return
+}
 if ($LegacyRelayTransition -or $StartupUpdateRestorePreimage) {
     if ($LegacyRelayTransition) {
         Assert-ProtectedCodeAncestors (Split-Path -Parent $installRootFull)
@@ -1880,6 +1910,10 @@ if ($Uninstall.IsPresent) {
         if (-not $testOverride) { Assert-ProtectedCodeAncestors $application }
         $folder = $null
         if (-not $testOverride) { $scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\') }
+        if ($WorkerShortcutRecordPath) {
+            Invoke-LabelWorkerShortcutOperation $installRootFull 'Restore' $WorkerShortcutRecordPath `
+                $VerifiedWorkerShortcutHelperPath $ExpectedWorkerShortcutHelperSha256
+        }
         $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder
         'uninstall_status=PASS_CODE_REMOVED_STATE_PRESERVED'
         'application_root_status=RETAINED_FOR_EVIDENCE_AND_RETAINED_ITEMS'
@@ -2090,6 +2124,10 @@ try {
     $tlsCaBootstrap = Install-CurrentUserTlsCaBootstrap $TlsCaBundlePath $OperatorLocalAppDataRoot
     if ($null -eq $tlsCaBootstrap) { Write-Output "tls_ca_bootstrap_status=ABSENT" }
     else { Write-Output "tls_ca_bootstrap_status=PASS"; Write-Output "tls_ca_bootstrap_path=$tlsCaBootstrap" }
+    if ($WorkerShortcutRecordPath) {
+        Invoke-LabelWorkerShortcutOperation $installRootFull 'Install' $WorkerShortcutRecordPath `
+            $VerifiedWorkerShortcutHelperPath $ExpectedWorkerShortcutHelperSha256
+    }
     Write-Output "file_count=$($sourceInventory.Count)"
     Write-Output "aggregate_sha256=$sourceAggregate"
     Write-Output "identity_profile_created=false"

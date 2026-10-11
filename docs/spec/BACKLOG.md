@@ -3,6 +3,7 @@
 # Label_Match 진행·공백·추가 제안
 
 - w9firstupdsub63 10/11 1차 답 v0: 관리자 입구·기계 배치·PENDING·기존 첫 시작 연결 및 같은 SID 상승 SSH의 자기 프로필 준비 후보를 구현한다. relay/화면은 일반 세션까지 미루고 실패 시 새 공용 링크·PENDING을 회수한다. LM-2의 키트 관리자 가지 연결과 실제 VM 설치/첫 시작 전후 키트 Rollback 증명은 남는다. 아래의 기존 묶음 결정은 보존하며 이 후보의 승인·조립/출시는 1차와 키트 담당의 후속 판정이다.
+- 작업자 바로 가기: 공용 기계 단계와 현재 사용자 단계의 설치·기록·복원을 구현한다. PS5.1/7의 격리 .lnk 회귀로 대상·인수·아이콘·원본 바이트·다른 루트 보존을 확인한다. 관리자 직접 설치 뒤 작업자 개인 링크 처리는 첫 시작 onboarding에서 같은 UserOnly helper를 받을 후속 자리이며, 실제 Explorer·검은 창·아이콘·현장 복귀는 랩 확인 대상이다.
 
 ### 7-결정. 정해진 줄 (관리자 10/11 02:51–03:36 — 묶음 계획 FIRST-INSTALL-BUNDLE-1014 §3-7b·§3-7c·§3-8; archplan 이 명세 가지와 합칠 때 덮지 않음)
 | # | 정해진 것 |
@@ -117,7 +118,7 @@ sub-292 G 회귀에서 junction 등록 경로의 WriterFenceError도 공통 복�
 
 공식 legacy relay의 repetition_interval은 SCHEMA의 XmlConvert TimeSpan 왕복으로 정규화한다. 같은 기간의 다른 표기는 같은 13개 필드 지문을 유지하고 다른/무효 기간은 기존 소유권 오류로 상태 변경 전에 거절한다. 기존 정규 표기와 공유 기대값 지문은 불변이며 PS5.1·7 격리 회귀 10 PASS다.
 
-GUI/onboarding의 legacy readback·현재 사용자 task 제거와 source 판 확인 Git 호출은 CREATE_NO_WINDOW를 명시한다. source resident/autostart는 확인된 sibling pythonw.exe를 쓰며 없으면 기존 오류로 거절한다. one-shot console·packaged/portable·r4 bootstrap과 과거 task ownership 정의는 보존한다. GUI 바로가기·작업자 시작은 manifest.entrypoint의 runtime\pythonw.exe -I -B app\main.py 또는 관리 설치 bootstrap에 직접 연결한다. portable launch-label-match.cmd는 콘솔 전용이며 현장 작업자 GUI 시작에 쓰지 않는다. mock 회귀 22 PASS; 실제 Explorer·로그온·스캐너 포커스는 NOT TESTED다.
+GUI/onboarding의 legacy readback·현재 사용자 task 제거와 source 판 확인 Git 호출은 CREATE_NO_WINDOW를 명시한다. source resident/autostart는 확인된 sibling pythonw.exe를 쓰며 없으면 기존 오류로 거절한다. one-shot console·packaged/portable·r4 bootstrap과 과거 task ownership 정의는 보존한다. 앱 안 GUI 시작은 manifest.entrypoint의 runtime\pythonw.exe -I -B app\main.py 또는 관리 설치 bootstrap을 사용한다. 설치기가 만드는 작업자 링크는 manifest의 current/launch-label-match.cmd를 최소화 창(WindowStyle=7)으로 실행한다. 직접 콘솔 기동과 설치된 작업자 링크를 구별한다. mock 회귀 22 PASS; 실제 Explorer·로그온·스캐너 포커스는 NOT TESTED다.
 
 rollback 최종 예외와 원 설치 예외의 재전달은 기존 Get-LabelLaunchFailure의 공용 가림/마지막 줄(300자 이하)을 사용한다. 원 예외 chain/type과 가린 원인 전문/참조는 기존 감사·보호 evidence에 보존하며 raw message를 사용자 sink로 다시 연결하지 않는다.
 
