@@ -349,6 +349,7 @@ HTTPS 요청은 Bearer 및 logistics token 헤더, `X-Logistics-Source-Host-Id`,
 - API: `GET L/bundles/resolve`, `bundle_role=PACKAGE_SOURCE`, `input_tag_id`(ITG), 품목·scope, `input_tag_label_id`(LBL)와 `input_tag_hash_prefix`(HSH). 물리 label 표시 문자열을 독립 조회 권위로 사용하지 않는다.
 - 검증: LBL/HSH는 함께 공급하며 ITG가 필요하다. HSH는 16자리 hex다. 선택적인 barcode membership hash와 member count filter도 쌍으로 검증한다. 응답의 unit/barcode 매핑·membership hash·entity version·work-group topology가 현재 작업에 결속된다.
 - 효과/오류: ordinary PHS2 조회는 `PACKAGE_SOURCE`를 resolve하며 새 exclusive `CREATE_PACKAGE` lease를 발급하지 않는다. 재사용 가능한 같은 lease가 없을 때 ordinary F3가 발급받는다. 조회 자체는 포장 확정이 아니다. 잘못된 라벨·불완전 증거·구성 변화는 fail-closed; 최신 snapshot과 operation lease의 일치는 F3에서 다시 필요하다. 읽기 조회에 명령 receipt/cursor를 가정하지 않는다.
+- 저장된 PREFETCHED lease가 만료됐으면 스캔 조회에는 쓰지 않고 기존 lease 없는 source 조회를 한다. 원 행·발급 key·잠금은 그대로 보존해 완료 때 서버 판정을 받는다.
 - 양쪽 근거: [resolve_transfer_bundle/resolve_package_source_projection](../../package_logistics.py), [resolve_bundle](../../../WorkerAnalysisGUI-web/blueprints/logistics/api.py). [LM-03](README.md#lm-03), [LM-B05](BACKLOG.md#lm-b05).
 
 <a id="c-03"></a>
@@ -390,6 +391,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 - 복구 창의 관리자 재확인·보류·지원 인계·실물 조회·관리자 요청 재조회·변경 파일 복원은 기존 UI lane의 준비/적용 단계로 실행한다. 사람 입력은 UI 단계에서 받고 새 verify는 입력 뒤 실행한다. 기존 pending status/중앙 대상 조회 순서와 verify 뒤 intent prepare 순서를 유지한다. 같은 대상의 요청은 중복 접수하지 않으며 창 닫힘은 내구 적용을 취소하지 않는다. 표시만 UI terminal 단계에서 창·generation을 확인한다. 내구 효과가 확인된 빈 결과도 APPLIED로 끝내고 기존 fallback 안내·목록 갱신을 한 번 수행한다.
 
 포장 완료가 영구 거절한 operation lease는 기존 `OPERATOR_REVIEW` 행을 보고 대기 원천으로 쓴다. 영수증 재확인과 CREATE 뒤 남은 주기 예산에서 보고 HTTP를 최대 한 번 수행하며, 서버 응답 적용 전에 writer admission과 같은 전체 행을 다시 확인한다. 서명 시각 검증·업무 행·원 명령·리스 증거·로컬 완료는 보존하고 결과 코드만 기존 로그에 남긴다. 실제 관리자 해제·서버 수용은 별도 검증이다.
+
+저장된 ACTIVE/PREFETCHED lease를 완료에 재사용할 때만 로컬 만료 검사를 생략한다. 서명·단말/source binding·snapshot·fence·미래 발급 시각 검증은 유지하고 원 lease ID/token으로 전송한다. 새 발급 응답은 만료도 계속 검증한다. 같은 소유자·변하지 않은 자원의 늦은 완료 허용과 같은 명령/key의 영수증 재생은 서버가 판정한다. 서버 409는 기존 그 세트의 충돌·검토 길로 보내며, 만료 행을 지우거나 같은 자원에 새 lease를 발급해 우회하지 않는다.
 
 - [LM-3 완료 경계](operations.md#module-boundaries-lm3)는 기존 F3 handler·내구 commit signature와 호출 시점 전역/patch를 보존한다. 실패 뒤 원 작업·command, current-state→intent→CSV flush/fsync→marker→성공→중앙 ACK 순서는 불변이다.
 - LM-3 pane 구성은 기존 widget 생성·binding 순서와 disabled 초기 상태를 유지한다. notice Enter binding과 danger 취소 버튼 생성자는 owner에 두고 기존 snapshot adapter·action gate를 재사용한다.

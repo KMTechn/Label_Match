@@ -459,7 +459,7 @@ class PinnedOperationLeaseKeyring:
                     pass
         return incoming
 
-    def verify(self, token: str, *, expected: Mapping[str, Any], operation_snapshot: Mapping[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    def verify(self, token: str, *, expected: Mapping[str, Any], operation_snapshot: Mapping[str, Any], now: datetime | None = None, allow_expired: bool = False) -> dict[str, Any]:
         if not isinstance(expected, Mapping) or set(expected) != LEASE_BINDING_KEYS:
             raise _error("OPERATION_LEASE_BINDING_INVALID", "expected binding fields are invalid")
         if not isinstance(operation_snapshot, Mapping) or len(canonical_json_bytes(operation_snapshot)) > MAX_OPERATION_SNAPSHOT_BYTES:
@@ -500,7 +500,7 @@ class PinnedOperationLeaseKeyring:
             seconds=LEASE_CLOCK_SKEW_SECONDS
         ):
             raise _error("OPERATION_LEASE_NOT_YET_VALID", "lease is not yet valid")
-        if instant >= parse_utc(payload["expires_at"], field="expires_at"):
+        if not allow_expired and instant >= parse_utc(payload["expires_at"], field="expires_at"):
             raise _error("OPERATION_LEASE_EXPIRED", "lease has expired")
         if canonical_sha256(dict(operation_snapshot)) != payload["snapshot_hash"]:
             raise _error("OPERATION_LEASE_SNAPSHOT_MISMATCH", "operation snapshot hash differs")

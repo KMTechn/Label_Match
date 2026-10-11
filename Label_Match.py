@@ -12961,6 +12961,7 @@ class Label_Match(tk.Tk):
         persist_artifact=True,
         existing_row=None,
         expected_snapshot=None,
+        allow_expired=False,
     ):
         client = self.__dict__.get("package_logistics_client")
         lease_store = self.__dict__.get("package_operation_lease_store")
@@ -12987,6 +12988,7 @@ class Label_Match(tk.Tk):
             normalized["token"],
             expected=binding,
             operation_snapshot=response,
+            **({"allow_expired": True} if allow_expired and existing_row is not None else {}),
         )
         keyring_kids = {
             str(entry.get("kid") or "")
@@ -13072,7 +13074,10 @@ class Label_Match(tk.Tk):
         physical_qr,
         *,
         expected_snapshot=None,
+        allow_expired=True,
     ):
+        # Completion sends a stored lease for the server to adjudicate.
+        # The scan source lookup explicitly keeps the local expiry check.
         lease_store = self.__dict__.get("package_operation_lease_store")
         if lease_store is None:
             return None
@@ -13099,6 +13104,7 @@ class Label_Match(tk.Tk):
             authenticated_online=False,
             existing_row=row,
             expected_snapshot=expected_snapshot,
+            allow_expired=allow_expired,
         )
 
     def _acquire_operation_lease(
@@ -14606,7 +14612,14 @@ class Label_Match(tk.Tk):
             )
         issue_lease = getattr(client, "issue_operation_lease", None)
         if callable(issue_lease) and not force_central_read:
-            reusable = self._load_reusable_operation_lease(physical_qr)
+            try:
+                reusable = self._load_reusable_operation_lease(
+                    physical_qr, allow_expired=False,
+                )
+            except OperationLeaseError as exc:
+                if exc.code != "OPERATION_LEASE_EXPIRED":
+                    raise
+                reusable = None
             if reusable is not None:
                 return reusable
         provisional = {
