@@ -4163,7 +4163,7 @@ def _check_private_manifest_for_updates(*, tls_ca_bundle_path=""):
     _assert_https_update_url(manifest_url)
     if _is_github_hosted_update_url(manifest_url):
         raise ValueError("private_manifest updater manifest URL must not point to GitHub-hosted update storage")
-    request_kwargs = {"timeout": 5}
+    request_kwargs = {"timeout": 5, "headers": {"User-Agent": "KMTech-LabelMatch/1.0"}}
     selected_ca = str(tls_ca_bundle_path or "").strip()
     if selected_ca:
         request_kwargs["verify"] = selected_ca
@@ -6961,6 +6961,7 @@ class Label_Match(tk.Tk):
         self._roster_next_refresh = 0.0
         self._roster_poll_after_id = None
         self._roster_selection_window = None
+        self._roster_http_error_code = ""
         self._worker_identity_enabled = False
         self._worker_roster_stage_b = False
         self._worker_registration_dialog = None
@@ -7078,6 +7079,7 @@ class Label_Match(tk.Tk):
         pending = store.pending_requests()
         epoch = self.__dict__.get("_admin_pin_login_epoch", "")
         def fetch():
+            http_error = ""
             try:
                 capability = client.get_capabilities()
             except Exception:
@@ -7086,6 +7088,10 @@ class Label_Match(tk.Tk):
             stage_b = label_worker_roster.registration_enabled(capability)
             try:
                 result = query(scope, version)
+            except AdminPinError as exc:
+                result = None
+                if exc.code.startswith("HTTP_") and exc.code[5:].isdigit():
+                    http_error = exc.code
             except Exception:
                 result = None
             registrations = []
@@ -7113,7 +7119,7 @@ class Label_Match(tk.Tk):
                                 if code == "ROSTER_V2_REGISTER_DISABLED":
                                     stage_b = False
                                 break
-            results.put((serial, scope, result, enabled, stage_b, registrations, store, epoch))
+            results.put((serial, scope, result, enabled, stage_b, registrations, store, epoch, http_error))
         self._roster_next_refresh = time.monotonic() + 60
         self._roster_thread = threading.Thread(target=fetch, name="label-worker-roster", daemon=True)
         self._roster_thread.start()
@@ -7149,6 +7155,10 @@ class Label_Match(tk.Tk):
                 self._worker_identity_enabled = response[3] is True
             if len(response) >= 8:
                 self._worker_roster_stage_b = response[4] is True
+            self._roster_http_error_code = (response[8] if len(response) >= 9 else
+                                            response[4] if len(response) == 5 else "")
+            if result is None:
+                self._refresh_worker_roster_selection()
             if result is not None:
                 try:
                     self._apply_worker_roster_answer(serial, scope, result)
@@ -7195,7 +7205,13 @@ class Label_Match(tk.Tk):
                        if label_worker_roster.worker_choice_label(row) == previous] if store else []
             row = store.active_worker(worker_id=aliases[0]["worker_id"]) if len(aliases) == 1 else None
             self.worker_name_var.set(label_worker_roster.worker_choice_label(row) if row else "")
-        self._roster_choice_note.configure(text=(
+        code = self.__dict__.get("_roster_http_error_code", "")
+        http_note = ""
+        if code.startswith("HTTP_") and code[5:].isdigit():
+            status = int(code[5:])
+            reason = "회사 서버 오류" if status >= 500 else "회사 서버가 명단 요청을 거절했습니다"
+            http_note = f"{reason}(코드 {status}).\n"
+        self._roster_choice_note.configure(text=http_note + (
             "명단을 받지 못해 이 PC 에 저장된 이름을 씁니다\n"
             if label_worker_roster.uses_legacy_names(self.__dict__.get("_worker_roster")) and choices else ""
         ) + self._worker_roster_notice_text())

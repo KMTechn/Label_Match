@@ -671,7 +671,8 @@ def test_enrollment_uses_explicit_private_ca_bundle(monkeypatch, tmp_path, token
     assert result["status"] == "enrolled"
     assert observed["kwargs"]["verify"] == str(ca_bundle)
     assert observed["kwargs"]["headers"] == (
-        {"X-Producer-Enrollment-Token": token} if token else {}
+        {"User-Agent": "KMTech-LabelMatch/1.0",
+         **({"X-Producer-Enrollment-Token": token} if token else {})}
     )
     assert "enrollment_token" not in observed["kwargs"]["json"]
 
@@ -1116,8 +1117,9 @@ def test_admin_recovery_manifest_mismatch_stops_before_key_or_http(monkeypatch):
 
 @pytest.mark.parametrize("authorization_state", ["LOGISTICS_READY", "OPERATION_PENDING"])
 @pytest.mark.parametrize("token", ["", "test-normal-enrollment-token"])
+@pytest.mark.parametrize("edge_status", [200, 403, 503])
 def test_admin_recovery_executor_signs_exact_manifest_without_network(
-    tmp_path, monkeypatch, authorization_state, token
+    tmp_path, monkeypatch, authorization_state, token, edge_status
 ):
     module = load_registration_module()
     manifest, credential, possession_key, response_payload = _admin_recovery_contract(
@@ -1166,10 +1168,12 @@ def test_admin_recovery_executor_signs_exact_manifest_without_network(
             return b"s" * 64
 
     class Response:
-        status_code = 200
+        status_code = edge_status
 
         @staticmethod
         def json():
+            if edge_status != 200:
+                raise ValueError("HTML edge response")
             return response_payload
 
     class Session:
@@ -1214,6 +1218,17 @@ def test_admin_recovery_executor_signs_exact_manifest_without_network(
     )
     progress = module._AdminRecoveryProgress()
 
+    if edge_status != 200:
+        with module.EnrollmentMutex():
+            with pytest.raises(module.ProducerEnrollmentHTTPError) as caught:
+                module._admin_recover(args, manifest, credential, progress)
+        assert caught.value.status_code == edge_status
+        assert "회사 서버" in str(caught.value)
+        assert calls["post"]["headers"]["User-Agent"] == "KMTech-LabelMatch/1.0"
+        assert calls["closed"] is True
+        assert progress.server_credential_rotated is False
+        return
+
     with module.EnrollmentMutex():
         response, descriptor, token_source, returned_path, returned_authorization = (
             module._admin_recover(args, manifest, credential, progress)
@@ -1230,7 +1245,8 @@ def test_admin_recovery_executor_signs_exact_manifest_without_network(
     assert calls["post"]["url"].endswith(module.ADMIN_RECOVERY_PATH)
     assert calls["post"]["allow_redirects"] is False
     assert calls["post"]["headers"] == (
-        {"X-Producer-Enrollment-Token": token} if token else {}
+        {"User-Agent": "KMTech-LabelMatch/1.0",
+         **({"X-Producer-Enrollment-Token": token} if token else {})}
     )
     assert "enrollment_token" not in calls["post"]["json"]
     assert "token" not in calls["post"]["json"]

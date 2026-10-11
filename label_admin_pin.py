@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 import unicodedata
 import uuid
+import zlib
 from typing import Any, Mapping
 
 from direct_sync_push import SIGNATURE_VERSION
@@ -43,6 +44,12 @@ class AdminPinError(RuntimeError):
 
 
 def operator_message(code: str) -> str:
+    if code.startswith("HTTP_") and code[5:].isdigit():
+        status = int(code[5:])
+        if status >= 500:
+            return f"회사 서버 오류(코드 {status})가 발생했습니다. 이 건만 보류하고 잠시 뒤 다시 확인하세요."
+        if status >= 400:
+            return f"회사 서버가 요청을 거절했습니다(코드 {status}). 이 건만 보류하고 관리자에게 알리세요."
     if code in {"PIN_INVALID", "PROOF_INVALID", "PROOF_REVOKED"}:
         return FAILURE_MESSAGE
     if code == "TARGET_CHANGED":
@@ -163,6 +170,7 @@ class AdminPinClient:
                 secret_bytes, signed.encode("utf-8"), hashlib.sha256
             ).hexdigest(),
         }
+        status = 0
         try:
             if self.transport is not None:
                 status, raw = self.transport(path, body, headers)
@@ -176,19 +184,41 @@ class AdminPinClient:
                     response = exc
                 if response.geturl() != self.origin + path:
                     raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True)
-                status, raw = int(response.status), response.read(response_limit + 1)
+                status = int(response.status)
+                try:
+                    encoding = str((getattr(response, "headers", {}) or {}).get("Content-Encoding", "")).strip().lower()
+                    raw = response.read(response_limit + (65536 if encoding else 0) + 1)
+                    if encoding in {"gzip", "deflate"}:
+                        decoder = zlib.decompressobj(31 if encoding == "gzip" else 15)
+                        try:
+                            decoded = decoder.decompress(raw, response_limit + 1)
+                        except zlib.error:
+                            if encoding != "deflate":
+                                raise
+                            decoder = zlib.decompressobj(-15)
+                            decoded = decoder.decompress(raw, response_limit + 1)
+                        if len(decoded) > response_limit or not decoder.eof or decoder.unused_data:
+                            raise ValueError("invalid or oversized compressed response")
+                        raw = decoded
+                    elif encoding not in {"", "identity"}:
+                        raise ValueError("unsupported response encoding")
+                finally:
+                    close = getattr(response, "close", None)
+                    if close is not None:
+                        close()
         except AdminPinError:
             raise
         except Exception:
-            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True) from None
+            raise AdminPinError(f"HTTP_{status}" if status >= 400 else "VERIFY_UNAVAILABLE", unknown=True) from None
+        http_code = f"HTTP_{status}" if status >= 400 else "VERIFY_UNAVAILABLE"
         if len(raw) > response_limit:
-            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True)
+            raise AdminPinError(http_code, unknown=True)
         try:
             answer = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
         except (ValueError, UnicodeError):
-            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, status=status) from None
+            raise AdminPinError(http_code, unknown=True, status=status) from None
         if not isinstance(answer, dict):
-            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, status=status)
+            raise AdminPinError(http_code, unknown=True, status=status)
         error = answer.get("error")
         code = str(error.get("code") or "") if isinstance(error, dict) else ""
         if path.startswith("/api/worker-roster/v2/") and (
@@ -196,9 +226,9 @@ class AdminPinClient:
             raise AdminPinError(code or "VERIFY_UNAVAILABLE", unknown=status in {429, 503} or status >= 500 or not code,
                                 status=status)
         if status >= 500:
-            raise AdminPinError("PIN_BUSY" if code == "PIN_BUSY" else "VERIFY_UNAVAILABLE", unknown=True)
+            raise AdminPinError("PIN_BUSY" if code == "PIN_BUSY" else http_code, unknown=True)
         if not 200 <= status < 300 or answer.get("ok") is not True:
-            raise AdminPinError(code or "VERIFY_UNAVAILABLE", unknown=not code)
+            raise AdminPinError(code or http_code, unknown=not code)
         if expected_status is not None and status != expected_status:
             raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, status=status)
         return answer

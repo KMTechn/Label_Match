@@ -1943,10 +1943,12 @@ def prepare_feed_packet(app_root: Path) -> dict[str, Any]:
             check_user_data_open(app_root, (Path(profile.tls_ca_bundle_path).parent,))
         session.cookies.clear()
         headers = {"Authorization": "Bearer " + profile.bearer_token} if profile is not None and origin(urlsplit(url)) == origin(feed) else {}
+        headers["User-Agent"] = "KMTech-LabelMatch/1.0"
         response = session.get(url, headers=headers, timeout=10, stream=True, allow_redirects=False, verify=(profile.tls_ca_bundle_path or True) if profile is not None else True)
         if response.status_code != 200:
             response.close()
-            raise ValueError("update download HTTP status differs")
+            reason = "회사 서버 오류" if response.status_code >= 500 else "회사 서버가 업데이트 요청을 거절했습니다"
+            raise ValueError(f"{reason}(코드 {response.status_code}).")
         if response.url != url:
             response.close()
             raise ValueError("update download response URL differs")

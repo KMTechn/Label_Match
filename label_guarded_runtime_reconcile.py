@@ -64,9 +64,10 @@ _SERVER_PROCESS_SOURCE_FILES = _SERVER_SOURCE_FILES | {
 class GuardedRuntimeReconcileError(RuntimeError):
     """The exact guarded cutover could not be completed safely."""
 
-    def __init__(self, message: str, *, server_forward: bool = False) -> None:
+    def __init__(self, message: str, *, server_forward: bool = False, status_code: int = 0) -> None:
         super().__init__(message)
         self.server_forward = bool(server_forward)
+        self.status_code = status_code
 
 
 def _utc_now() -> str:
@@ -887,13 +888,15 @@ class _SourceCommitBoundSession:
         self.last_pre_dispatch_guard = dict(self._pre_dispatch_guard())
         if self.last_pre_dispatch_guard.get("status") != "PASS":
             raise GuardedRuntimeReconcileError("immediate pre-dispatch guard did not pass")
+        kwargs["headers"] = {**(kwargs.get("headers") or {}), "User-Agent": "KMTech-LabelMatch/1.0"}
         response = self._session.post(url, **kwargs)
         if (
             response.headers.get("X-KMTech-Source-Commit", "").strip().lower()
             != self._expected_source_commit
         ):
             raise GuardedRuntimeReconcileError(
-                "runtime acquire response lacks the pinned server source commit"
+                f"runtime acquire response lacks the pinned server source commit (HTTP {response.status_code})",
+                status_code=response.status_code,
             )
         after = dict(self._endpoint_validator(**self._endpoint_validator_kwargs))
         if after != self._expected_binding:

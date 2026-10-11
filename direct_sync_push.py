@@ -1266,8 +1266,11 @@ def _upload_response_result(
         retryable=retryable,
         receipt=safe_payload,
         retry_after_seconds=retry_after_seconds if retryable else None,
-        error_code=receipt_error_code or str(error.get("code") or ""),
-        error_message=receipt_error_message or str(error.get("message") or ""),
+        error_code=receipt_error_code or str(error.get("code") or (f"HTTP_{status_code}" if status_code >= 400 else "")),
+        error_message=receipt_error_message or str(error.get("message") or (
+            f"회사 서버 오류(코드 {status_code})가 발생했습니다." if status_code >= 500
+            else f"회사 서버가 요청을 거절했습니다(코드 {status_code})." if status_code >= 400 else ""
+        )),
         _runtime_lease=runtime_lease,
         _runtime_disposition=runtime_disposition,
         _runtime_token_unconsumed=(

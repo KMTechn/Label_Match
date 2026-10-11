@@ -241,8 +241,9 @@ def test_private_manifest_provider_returns_update_candidate(monkeypatch):
     monkeypatch.setenv("LABEL_MATCH_UPDATE_MANIFEST_PUBLIC_KEY", public_hex)
     monkeypatch.setenv("LABEL_MATCH_UPDATE_CHANNEL", "stable")
 
-    def fake_get(url, timeout=0):
+    def fake_get(url, timeout=0, headers=None):
         assert timeout == 5
+        assert headers == {"User-Agent": "KMTech-LabelMatch/1.0"}
         if url == "https://updates.example/label_match/latest.json":
             return FakeResponse(manifest)
         if url == "https://updates.example/label_match/latest.json.sig":

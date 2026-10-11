@@ -165,6 +165,7 @@ def test_refresh_uses_provisioned_logistics_profile_headers(
             catalog_url,
             2.0,
             {
+                "User-Agent": "KMTech-LabelMatch/1.0",
                 "Authorization": f"Bearer {SECRET_MARKER}",
                 "X-Logistics-Source-Host-Id": SOURCE_HOST_ID,
                 "X-Logistics-Device-Id": DEVICE_ID,
@@ -250,6 +251,7 @@ def test_runtime_profile_origin_drives_default_catalog_route(monkeypatch, tmp_pa
             2.0,
             False,
             {
+                "User-Agent": "KMTech-LabelMatch/1.0",
                 "Authorization": f"Bearer {SECRET_MARKER}",
                 "X-Logistics-Source-Host-Id": SOURCE_HOST_ID,
                 "X-Logistics-Device-Id": DEVICE_ID,
@@ -314,6 +316,7 @@ def test_production_profile_origin_still_allows_exact_catalog_route(
                 "timeout": 2.0,
                 "allow_redirects": False,
                 "headers": {
+                    "User-Agent": "KMTech-LabelMatch/1.0",
                     "Authorization": f"Bearer {SECRET_MARKER}",
                     "X-Logistics-Source-Host-Id": SOURCE_HOST_ID,
                     "X-Logistics-Device-Id": DEVICE_ID,
@@ -403,8 +406,9 @@ def test_absent_profile_preserves_unauthenticated_override(monkeypatch, tmp_path
         load_profile,
     )
 
-    def fake_get(url, timeout, allow_redirects):
+    def fake_get(url, timeout, allow_redirects, headers):
         assert allow_redirects is False
+        assert headers == {"User-Agent": "KMTech-LabelMatch/1.0"}
         calls.append((url, timeout))
         return FakeResponse(CATALOG)
 
@@ -494,6 +498,7 @@ def test_authenticated_request_failure_does_not_log_exception_message(
             PRODUCTION_CATALOG_URL,
             2.0,
             {
+                "User-Agent": "KMTech-LabelMatch/1.0",
                 "Authorization": f"Bearer {SECRET_MARKER}",
                 "X-Logistics-Source-Host-Id": SOURCE_HOST_ID,
                 "X-Logistics-Device-Id": DEVICE_ID,

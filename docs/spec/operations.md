@@ -78,6 +78,8 @@ SYSTEM 로그온 작업 XML은 `S-1-5-18`·HighestAvailable·기존 SID trigger/
 
 relay 업로드·runtime lease·package client·PIN client는 HTTP 동안 writer lease를 일시 반환한다. 설치/fence 변화로 재획득 또는 재검증이 거부되면 UNKNOWN을 확정하지 않고 저장된 원 요청을 배경 재대조한다. lease 획득·쓰기 guard는 계속 적용되며, 로컬 체크포인트/완료 CSV → 표시 → 배경 전송 순서를 유지한다. `tests/lock_remote_guard.py`는 앱 독립 원본이며 `tests/conftest.py`가 실제 mutex·outbox/전송기 lock과 HTTP를 등록한다.
 
+회사 서버가 HTML로 거절해도 명단/PIN·물류·등록/복구·업로드·업데이트에서 응답 코드를 확인할 수 있다. 403은 회사 서버 거절, 5xx는 서버 오류로 안내하며 PIN 창에서는 이 건만 보류하고 다른 작업을 계속할 수 있다. 명단 선택칸에도 코드를 표시하되 저장된 이름을 유지하고 지난 요청의 실패로 최신 안내를 덮지 않는다. POST 결과가 불명인 건은 완료로 보이지 않고 기존 같은 키의 서버 조회를 따른다. 압축 응답과 크기 제한은 [회사 서버 HTTP 계약](contracts.md#company-http), 호스트 격리 회귀는 `tests/test_company_http_edge.py`를 따른다. 회사 서버·Cloudflare 실제 연결과 실제 화면 확인은 별도 수용 범위다.
+
 실제 0.3·6·35초 전송 지연의 공개 스캔 입구와 fence 변화 뒤 같은 명령 영수증 복구는 `tests/test_scan_remote_lock.py`, 정상 완료 저장 중 FIFO 보존·순서·처리 1회는 `tests/test_label_completion_scan_queue.py`로 검사한다. headless 시험과 실제 Tk·스캐너·서버 수용은 구분한다. F5 관리 교환·옛 deferred validation의 busy 입력 및 FIFO의 재시작 내구화는 [후속 범위](BACKLOG.md#busy-scan-durable-fifo)다.
 
 claim 만료 뒤 옛 HTTP 성공/거부·retry·끊김·timeout의 적용과 receipt-only 재기동 복구는 `tests/test_package_late_results.py`로 검사한다. `package_receipt_rechecks`·`sealed_transfer_receipt_rechecks`는 같은 명령의 늦은 성공 증거와 완료 감사만 저장한다. pending 표식은 정상 POST claim에서 제외하며 조회만 반복한다. 보류·다른 명령·중앙 receipt 부재는 ACK로 바꾸지 않는다. F5의 `PHS_LABEL_JOURNAL_CHANGED`는 최신 원본을 유지하므로 현재 기록을 다시 읽어 복구하며 파일/DB를 수동 편집하지 않는다.

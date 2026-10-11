@@ -124,6 +124,36 @@ def test_query_failure_and_late_response_do_not_replace_cache(tmp_path):
         app._apply_worker_roster_answer(1, SCOPE, answer(2, disabled=True))
 
 
+@pytest.mark.parametrize("status", [403, 503])
+def test_background_http_refusal_shows_code_and_preserves_choices(tmp_path, status):
+    from label_admin_pin import AdminPinError
+    app = app_with_roster(tmp_path, response=answer(2))
+    before = Path(app._roster_cache_path).read_bytes()
+    notes = []
+    app._roster_selection_window = object()
+    app._roster_choice_widget = SimpleNamespace(configure=lambda **kwargs: None)
+    app._roster_choice_note = SimpleNamespace(configure=lambda **kwargs: notes.append(kwargs["text"]))
+    app.worker_name_var = SimpleNamespace(get=lambda: "", set=lambda value: None)
+    def query(*args):
+        raise AdminPinError(f"HTTP_{status}", unknown=True)
+    app._worker_roster_query = query
+    app._request_worker_roster_refresh()
+    app._roster_thread.join(2)
+    assert not app._roster_thread.is_alive()
+    app._poll_worker_roster(schedule=False)
+    assert notes and "회사 서버" in notes[-1] and str(status) in notes[-1]
+    assert Path(app._roster_cache_path).read_bytes() == before
+    assert app._worker_roster["version"] == 2
+
+
+def test_stale_roster_http_refusal_does_not_replace_current_notice(tmp_path):
+    app = app_with_roster(tmp_path, response=answer(2))
+    app._roster_request_serial = 1
+    app._roster_result_queue.put((0, SCOPE, None, False, "HTTP_403"))
+    app._poll_worker_roster(schedule=False)
+    assert app.__dict__.get("_roster_http_error_code", "") == ""
+
+
 def test_first_launch_does_not_treat_packaged_template_as_local_history(tmp_path, monkeypatch):
     template = tmp_path / "template.json"
     template.write_text(json.dumps({"worker_name": "template worker", "worker_history": ["Template"],

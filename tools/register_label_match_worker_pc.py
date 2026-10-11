@@ -809,6 +809,7 @@ def _enroll(
 ) -> dict[str, Any]:
     require_enrollment_mutex_owned()
     headers = {"X-Producer-Enrollment-Token": enrollment_token} if enrollment_token else {}
+    headers["User-Agent"] = "KMTech-LabelMatch/1.0"
     request_kwargs: dict[str, Any] = {
         "json": dict(payload),
         "headers": headers,
@@ -823,7 +824,10 @@ def _enroll(
     except ValueError as exc:
         if response.status_code >= 400:
             raise ProducerEnrollmentHTTPError(
-                response.status_code, str(response.status_code), "response is not JSON"
+                response.status_code, str(response.status_code),
+                (f"회사 서버 오류(코드 {response.status_code})가 발생했습니다." if response.status_code >= 500
+                 else f"회사 서버가 요청을 거절했습니다(코드 {response.status_code})."),
+                enrollment_token_supplied=bool(enrollment_token),
             ) from exc
         raise DirectSyncPushError(f"self-enroll response is not JSON: HTTP {response.status_code}") from exc
     if response.status_code >= 400:
@@ -1523,10 +1527,19 @@ def _partial_recovery_request(session: requests.Session, url: str, action: str,
         json={"contract_version": f"producer-admin-recovery-{action}-request-v1",
               "proof": proof, "signature": b64url_encode(key.sign_es256(canonical_json_bytes(proof))),
               **extra},
-        headers={"X-Producer-Enrollment-Token": token} if token else {},
+        headers={"User-Agent": "KMTech-LabelMatch/1.0",
+                 **({"X-Producer-Enrollment-Token": token} if token else {})},
         timeout=timeout, allow_redirects=False,
     )
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        if response.status_code != 200:
+            raise ProducerEnrollmentHTTPError(response.status_code, str(response.status_code),
+                (f"회사 서버 오류(코드 {response.status_code})가 발생했습니다." if response.status_code >= 500
+                 else f"회사 서버가 요청을 거절했습니다(코드 {response.status_code})."),
+                enrollment_token_supplied=bool(token)) from exc
+        raise DirectSyncPushError("부분 등록 복구 응답 형식이 다릅니다") from exc
     if response.status_code != 200:
         error = payload.get("error", {}) if isinstance(payload, dict) else {}
         raise ProducerEnrollmentHTTPError(response.status_code, str(error.get("code", response.status_code)),
@@ -1829,6 +1842,7 @@ def _admin_recover(
             possession_key_handle.sign_es256(canonical_json_bytes(proof))
         )
         headers = {"X-Producer-Enrollment-Token": token} if token else {}
+        headers["User-Agent"] = "KMTech-LabelMatch/1.0"
         session = _open_admin_recovery_session(configured_ca_bundle_path)
         try:
             response = session.post(
@@ -1853,6 +1867,11 @@ def _admin_recover(
     try:
         response_payload = response.json()
     except ValueError as exc:
+        if response.status_code != 200:
+            raise ProducerEnrollmentHTTPError(response.status_code, str(response.status_code),
+                (f"회사 서버 오류(코드 {response.status_code})가 발생했습니다." if response.status_code >= 500
+                 else f"회사 서버가 요청을 거절했습니다(코드 {response.status_code})."),
+                enrollment_token_supplied=bool(token)) from exc
         raise DirectSyncPushError(
             f"admin recovery response is not JSON: HTTP {response.status_code}"
         ) from exc

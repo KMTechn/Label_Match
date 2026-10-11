@@ -226,6 +226,7 @@ def _post_lease_request(
     signature = hmac.new(secret_bytes, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
     headers = {
         "Content-Type": CONTENT_TYPE,
+        "User-Agent": "KMTech-LabelMatch/1.0",
         "X-Producer-Id": str(credentials.producer_id),
         "X-Producer-Key-Id": str(credentials.key_id),
         "X-Producer-Timestamp": timestamp,
@@ -247,10 +248,17 @@ def _post_lease_request(
             **request_kwargs,
         )
     except Exception as exc:
+        status_code = getattr(exc, "status_code", 0)
+        status_code = status_code if type(status_code) is int and 400 <= status_code <= 599 else 0
         return None, RuntimePreparation(
+            status_code=status_code,
             retryable=True,
-            error_code="runtime_lease_transport_error",
-            error_message=f"runtime lease transport error: {exc.__class__.__name__}",
+            error_code=f"HTTP_{status_code}" if status_code else "runtime_lease_transport_error",
+            error_message=(
+                f"회사 서버 오류(코드 {status_code})가 발생했습니다." if status_code >= 500
+                else f"회사 서버가 요청을 거절했습니다(코드 {status_code})." if status_code
+                else f"runtime lease transport error: {exc.__class__.__name__}"
+            ),
         )
     status_code = int(getattr(response, "status_code", 0) or 0)
     payload = _response_payload(response)

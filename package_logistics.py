@@ -26,6 +26,7 @@ import ssl
 import threading
 from typing import Any, Callable, Iterable, Iterator, Mapping
 import unicodedata
+import zlib
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
@@ -1196,14 +1197,32 @@ Transport = Callable[[str, str, Mapping[str, str], bytes | None, float], Mapping
 
 
 def _read_http_body(response: Any) -> str:
+    maximum = 8 * 1024 * 1024
     try:
-        raw = response.read()
-    except (IncompleteRead, HTTPException, OSError) as exc:
+        encoding = str((getattr(response, "headers", {}) or {}).get("Content-Encoding", "")).strip().lower()
+        raw = response.read(maximum + 65537) if encoding in {"gzip", "deflate"} else response.read()
+        if not isinstance(raw, (bytes, bytearray)):
+            raise PackageTransportError("package API response body must be bytes")
+        if encoding in {"gzip", "deflate"}:
+            decoder = zlib.decompressobj(31 if encoding == "gzip" else 15)
+            try:
+                decoded = decoder.decompress(raw, maximum + 1)
+            except zlib.error:
+                if encoding != "deflate":
+                    raise
+                decoder = zlib.decompressobj(-15)
+                decoded = decoder.decompress(raw, maximum + 1)
+            if len(decoded) > maximum or not decoder.eof or decoder.unused_data:
+                raise PackageTransportError("package API compressed response is invalid or oversized")
+            raw = decoded
+        elif encoding not in {"", "identity"}:
+            raise PackageTransportError("package API response encoding is unsupported")
+        if len(raw) > maximum:
+            raise PackageTransportError("package API response body is oversized")
+    except (IncompleteRead, HTTPException, OSError, zlib.error) as exc:
         raise PackageTransportError(
             f"package API response body was incomplete: {exc.__class__.__name__}"
         ) from exc
-    if not isinstance(raw, (bytes, bytearray)):
-        raise PackageTransportError("package API response body must be bytes")
     try:
         return bytes(raw).decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -1237,7 +1256,12 @@ def _default_transport(
         with urlopen(request, **open_kwargs) as response:
             raw = _read_http_body(response)
     except HTTPError as exc:
-        raw = _read_http_body(exc)
+        try:
+            raw = _read_http_body(exc)
+        except PackageTransportError:
+            raw = ""
+        finally:
+            exc.close()
         try:
             value = json.loads(raw)
         except json.JSONDecodeError:
@@ -1260,7 +1284,10 @@ def _default_transport(
         raise PackageApiError(
             exc.code,
             str(error.get("code") or f"HTTP_{exc.code}"),
-            str(error.get("message") or "package API rejected the request"),
+            str(error.get("message") or (
+                f"회사 서버 오류(코드 {exc.code})가 발생했습니다." if exc.code >= 500
+                else f"회사 서버가 요청을 거절했습니다(코드 {exc.code})."
+            )),
             retryable=_first_optional_bool(
                 error.get("retryable") if "retryable" in error else None,
                 value.get("retryable") if isinstance(value, Mapping) else None,

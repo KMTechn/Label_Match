@@ -1054,9 +1054,11 @@ def refresh_item_catalog(
         request_kwargs: dict[str, object] = {
             "timeout": timeout_seconds,
             "allow_redirects": False,
+            "headers": {"User-Agent": "KMTech-LabelMatch/1.0"},
         }
         if profile is not None:
             request_kwargs["headers"] = {
+                "User-Agent": "KMTech-LabelMatch/1.0",
                 "Authorization": f"Bearer {profile.bearer_token}",
                 "X-Logistics-Source-Host-Id": profile.source_host_id,
                 "X-Logistics-Device-Id": profile.device_id,

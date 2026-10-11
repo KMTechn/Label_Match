@@ -255,6 +255,10 @@ def probe_authentication(
         "status_code": status_code,
         "injection": injection,
     }
+    if status_code >= 400:
+        evidence["http_error_code"] = f"HTTP_{status_code}"
+        reason = "회사 서버 오류" if status_code >= 500 else "회사 서버가 요청을 거절했습니다"
+        evidence["http_error_message"] = f"{reason}(코드 {status_code})."
     if not response_closed:
         return CanaryCheck(
             "authentication", "UNKNOWN", "AUTH_PROBE_UNAVAILABLE", evidence
