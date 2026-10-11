@@ -19716,6 +19716,7 @@ class Label_Match(tk.Tk):
         if not self._release_shortage_confirmation():
             return
         try:
+            self.data_manager.flush(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
             self.data_manager.close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
         except Exception as e:
             print(f"설정 변경 저장 기술 진단: {e}")

@@ -6653,6 +6653,10 @@ class _RecoverableCloseFailingDataManager:
     def log_event(self, event_type, details):
         self.events.append((event_type, details))
 
+    @staticmethod
+    def flush(timeout=None):
+        return True
+
     def close(self, timeout=None):
         self.closed = True
         self._close_requested = True

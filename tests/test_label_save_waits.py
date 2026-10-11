@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import csv
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -10,6 +14,113 @@ import label_data_manager
 from tests.test_label_match_core import (
     load_label_match_module, _CloseFailingDataManager, _FakeWindow)
 from tests.test_tk_serial_ui_lane import FakeTkRoot
+from tests.test_label_worker_roster import app_with_roster, answer
+
+
+@pytest.fixture
+def worker_change_app(tmp_path):
+    module = load_label_match_module()
+    response = answer()
+    current, requested = response["workers"][1], response["workers"][0]
+    app = app_with_roster(tmp_path, {
+        "worker_name": current["display_name"], "worker_id": current["worker_id"]}, response)
+    app.run_tests = False
+    app.is_running_simulation = app.is_generating_test_logs = False
+    app.save_directory, app.unique_id = str(tmp_path), current["worker_id"]
+    app._has_background_work = lambda: False
+    app._block_view_only_action = lambda *args, **kwargs: False
+    app._block_duplicate_history_load = lambda **kwargs: False
+    app._release_shortage_confirmation = lambda: True
+    app._save_app_settings, app._update_save_directory, app.title = Mock(), Mock(), Mock()
+    app._sync_worker_record_context = Mock()
+    app._destroy_modal_and_refocus = lambda window: window.destroy()
+    app.worker_name_var = Mock()
+    app.worker_name_var.get.return_value = requested["display_name"]
+    manager = module.DataManager(app.save_directory, app.Worker.PACKAGING, app.worker_name, app.unique_id)
+    app.data_manager = manager
+    try:
+        yield module, app, manager, current, requested, _FakeWindow()
+    finally:
+        for active in {manager, app.data_manager}:
+            active.close(timeout=2)
+
+
+def _record_scan(manager, event_type):
+    event = manager.prepare_audit_event(event_type, {"result": "UNKNOWN"})
+    manager.log_event(event["event_type"], event["details"])
+    return event
+
+
+def _has_scan(manager, event):
+    for path in Path(manager.save_directory).rglob("*.csv"):
+        with path.open(encoding="utf-8-sig", newline="") as stream:
+            for row in list(csv.reader(stream))[1:]:
+                if row[2] == event["event_type"] and json.loads(row[3])["scanner_audit"]["key"] == event["details"]["scanner_audit"]["key"]:
+                    return True
+    return False
+
+
+def test_worker_change_flush_timeout_keeps_manager_open_and_next_scan_durable(worker_change_app, monkeypatch):
+    module, app, manager, current, requested, window = worker_change_app
+    started, release = threading.Event(), threading.Event()
+    real_open, close = manager._open_file, manager.close
+    errors, fake_clock = [], [0.0]
+    def stalled_open(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return real_open(*args, **kwargs)
+    def advance(seconds):
+        fake_clock[0] += seconds
+    monkeypatch.setattr(manager, "_open_file", stalled_open)
+    monkeypatch.setattr(manager, "close", Mock(wraps=close))
+    monkeypatch.setattr(module.messagebox, "showerror", lambda *args, **kwargs: errors.append(args))
+    try:
+        _record_scan(manager, "SCAN_BEFORE_FLUSH_TIMEOUT")
+        assert started.wait(1)
+        with monkeypatch.context() as clock_patch:
+            clock_patch.setattr(label_data_manager, "time", SimpleNamespace(
+                monotonic=lambda: fake_clock[0], sleep=advance))
+            clock_patch.setattr(manager.log_thread, "join", lambda timeout=None: advance(timeout))
+            app._save_settings_and_close(window, requested["display_name"])
+        assert app.worker_name == current["display_name"] and app.worker_id == current["worker_id"]
+        assert app.data_manager is manager and manager.log_thread.is_alive()
+        app.worker_name_var.set.assert_called_once_with(module.display_operator_name(app.worker_name))
+        assert len(errors) == 1 and errors[0][0] == "저장 보류"
+        assert window.destroyed is False
+        assert module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS <= fake_clock[0] <= module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS + 0.02
+        following = _record_scan(manager, "SCAN_AFTER_FLUSH_TIMEOUT")
+        assert manager._close_requested is False
+        manager.close.assert_not_called()
+        app._save_app_settings.assert_not_called()
+        app._update_save_directory.assert_not_called()
+        root, heartbeats = FakeTkRoot(), []
+        root.after(0, lambda: heartbeats.append(True))
+        root.run_until(lambda: bool(heartbeats))
+        assert root.destroyed is False
+    finally:
+        release.set()
+    assert manager.flush(timeout=2)
+    assert _has_scan(manager, following)
+
+
+def test_worker_change_flush_success_preserves_normal_switch_and_next_scan(worker_change_app, monkeypatch):
+    module, app, manager, _current, requested, window = worker_change_app
+    previous = _record_scan(manager, "SCAN_BEFORE_WORKER_CHANGE")
+    monkeypatch.setattr(manager, "flush", Mock(wraps=manager.flush))
+    errors = []
+    monkeypatch.setattr(module.messagebox, "showerror", lambda *args, **kwargs: errors.append(args))
+    app._save_settings_and_close(window, requested["display_name"])
+    manager.flush.assert_called_once_with(timeout=module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
+    assert manager._close_requested is True and not manager.log_thread.is_alive()
+    assert _has_scan(manager, previous)
+    assert app.worker_name == requested["display_name"] and app.worker_id == requested["worker_id"]
+    assert app.data_manager is not manager and app.data_manager._close_requested is False
+    assert window.destroyed is True and errors == []
+    app._save_app_settings.assert_called_once()
+    app._update_save_directory.assert_called_once()
+    following = _record_scan(app.data_manager, "SCAN_AFTER_WORKER_CHANGE")
+    assert app.data_manager.flush(timeout=2)
+    assert _has_scan(app.data_manager, following)
 
 
 def test_worker_change_close_timeout_holds_request_and_keeps_screen_live(monkeypatch):
