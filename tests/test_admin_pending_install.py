@@ -297,7 +297,7 @@ def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, argum
     product = product.replace(caller, identity)
     # A missing worker must not resolve the host's real console profile.
     # Supply only that OS observation; keep the admission guards intact.
-    if scenario == "missing":
+    if arguments == "missing":
         start = product.index("function Get-LabelConsoleWorkerObservation {")
         finish = product.index("function Get-LabelConsoleWorker {", start)
         product = (product[:start] + "function Get-LabelConsoleWorkerObservation { throw 'No isolated console worker' }\n\n"
@@ -630,10 +630,18 @@ def test_machine_install_uses_pinned_helper_and_never_writes_profiles(tmp_path, 
         folder = tmp_path / name
         folder.mkdir()
         (folder / "preserve.dat").write_bytes(("untouched-" + name).encode())
+    (tmp_path / "worker/AppData").mkdir()
+    profile_members = {name: {p.relative_to(tmp_path / name) for p in (tmp_path / name).rglob("*")}
+                       for name in ("worker", "admin", "other", "legacy")}
     originals = {p: p.read_bytes() for p in tmp_path.rglob("*.dat")}
     result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "Assert-LabelMachineEvidencePath", "Save", "Save-LabelMachineMetadata", "ByteSha", "Same"], r'''
 $testMode=$true
 $program=Join-Path $env:LM_MACHINE_ROOT 'program';$env:PROGRAMDATA=$program
+[void][IO.Directory]::CreateDirectory($program)
+[IO.File]::SetAttributes($program,([IO.File]::GetAttributes($program) -bor [IO.FileAttributes]::Hidden))
+$fixtureAppData=Join-Path $env:LM_MACHINE_ROOT 'worker\AppData'
+[void][IO.Directory]::CreateDirectory($fixtureAppData)
+[IO.File]::SetAttributes($fixtureAppData,([IO.File]::GetAttributes($fixtureAppData) -bor [IO.FileAttributes]::Hidden))
 $EvidencePath=Join-Path $program 'KMTech\Label_Match\install-audit\machine-evidence.json'
 $install=Join-Path $env:LM_MACHINE_ROOT 'machine\current'
 $source=Join-Path $env:LM_MACHINE_ROOT 'source'
@@ -766,7 +774,8 @@ if($script:placed -ne 1 -or $script:released -ne 1 -or
     assert ("install_status=PASS_MACHINE_WORKER_PENDING" in result.stdout) == (outcome in {"pending", "reuse", "same-worker"})
     assert "install_status=PASS\n" not in result.stdout
     assert all(p.read_bytes() == before for p, before in originals.items())
-    assert all(sorted((tmp_path / name).iterdir()) == [tmp_path / name / "preserve.dat"] for name in ("worker", "admin", "other", "legacy"))
+    assert {name: {p.relative_to(tmp_path / name) for p in (tmp_path / name).rglob("*")}
+            for name in profile_members} == profile_members
     if outcome in {"switched-version-failure", "post-switch-census-failure"}:
         import auto_update
         import current_user_onboarding as onboarding
@@ -938,6 +947,8 @@ def test_admin_failure_diagnostics_and_child_temp_stay_in_machine_scope(tmp_path
     result = run_functions(tmp_path, INSTALLER, ["Initialize-LabelMachineDiagnostics"], r'''
 $testMode=$true
 $env:PROGRAMDATA=$env:LM_DIAGNOSTIC_ROOT
+[void][IO.Directory]::CreateDirectory($env:PROGRAMDATA)
+[IO.File]::SetAttributes($env:PROGRAMDATA,([IO.File]::GetAttributes($env:PROGRAMDATA) -bor [IO.FileAttributes]::Hidden))
 function Full($path,$purpose){return [IO.Path]::GetFullPath($path)}
 function Get-KmtechSinkEnvironment{return @{}}
 # ACL application requires an elevated token in production. Its exact principal

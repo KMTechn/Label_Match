@@ -1,5 +1,6 @@
 """Fresh installer admission must work before pinned shared code is imported."""
 
+import ctypes
 import hashlib
 import json
 import os
@@ -52,13 +53,21 @@ def test_pre_shared_load_call_graph_has_no_shared_only_dependency(tmp_path, engi
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 @pytest.mark.parametrize("caller", ["same-worker", "other-worker"])
-def test_explicit_worker_evidence_plan_only_in_fresh_process(tmp_path, engine, caller, host_program_data_guard):
+@pytest.mark.parametrize("hidden_programdata", [False, True], ids=["ordinary-programdata", "hidden-programdata"])
+def test_explicit_worker_evidence_plan_only_in_fresh_process(
+        tmp_path, engine, caller, hidden_programdata, host_program_data_guard):
     executable = shutil.which(engine)
     if not executable:
         pytest.skip(f"{engine} is required")
     packet = tmp_path / "portable"
     profile = tmp_path / "worker-profile"
     program_data = tmp_path / "program-data"
+    if hidden_programdata:
+        program_data.mkdir()
+        attributes = ctypes.windll.kernel32.GetFileAttributesW(str(program_data))
+        assert attributes != -1, "Isolated ProgramData attributes are unavailable"
+        assert ctypes.windll.kernel32.SetFileAttributesW(str(program_data), attributes | 2)
+        assert ctypes.windll.kernel32.GetFileAttributesW(str(program_data)) & 2
     local = profile / "AppData/Local"
     inventory = tmp_path / "inventory.json"
     evidence = program_data / "KMTech/Label_Match/install-audit/plan.json"
@@ -149,4 +158,4 @@ try{Assert-LabelMachineEvidencePath;$cause=''}catch{$cause=$_.Exception.GetBaseE
     assert "registry_changed=false" in result.stdout
     assert before == after, "PlanOnly changed the isolated files"
     assert directories_before == directories_after, "PlanOnly allocated a directory"
-    assert not profile.exists() and not program_data.exists() and not install.exists()
+    assert not profile.exists() and program_data.exists() == hidden_programdata and not install.exists()

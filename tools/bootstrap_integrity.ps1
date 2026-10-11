@@ -83,11 +83,11 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
                 $failure.Data['installation_preparation_exit_code']=61;throw $failure
             }
             $ancestor=Split-Path -Parent $path
-            $entry=Get-Item -LiteralPath $ancestor -ErrorAction Stop
+            $entry=Get-Item -Force -LiteralPath $ancestor -ErrorAction Stop
             if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { $reason='상위 폴더가 재분석 지점입니다' }
             else { [void][IO.Directory]::CreateDirectory($path) }
         }
-        $entry=Get-Item -LiteralPath $path -ErrorAction Stop
+        $entry=Get-Item -Force -LiteralPath $path -ErrorAction Stop
         if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { $reason='폴더가 재분석 지점입니다' }
         $acl=Get-Acl -LiteralPath $path -ErrorAction Stop
         $before=$acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access)
@@ -111,7 +111,7 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
     # Both existing shapes are admitted before the first ACL write.
     foreach($plan in $plans) {
         $path=$plan.path
-        $entry=Get-Item -LiteralPath $path -ErrorAction Stop
+        $entry=Get-Item -Force -LiteralPath $path -ErrorAction Stop
         if($entry.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Ancestor became a reparse point before protection.'}
         $fresh=Get-Acl -LiteralPath $path -ErrorAction Stop
         $freshSddl=$fresh.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access)
@@ -180,7 +180,7 @@ function Assert-LabelProtectedInstallPath([string]$Path,[switch]$AllowSupportedP
             $full -ieq 'C:\KMTech\Apps\Label_Match'){
             $full=[IO.Path]::GetDirectoryName($full);$leaf=$false;continue
         }
-        $entry=Get-Item -LiteralPath $full -ErrorAction Stop
+        $entry=Get-Item -Force -LiteralPath $full -ErrorAction Stop
         if($entry.Attributes -band [IO.FileAttributes]::ReparsePoint){
             $failure=[InvalidOperationException]::new('설치 경로 에 재분석 지점이 있습니다.')
             $failure.Data['installation_preparation_exit_code']=62;throw $failure

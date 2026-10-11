@@ -274,7 +274,7 @@ function Write-KmtechProtectedFailureSidecar {
     $root=[IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     $ancestor=$root
     while($ancestor){
-        $item=Get-Item -LiteralPath $ancestor -ErrorAction Stop
+        $item=Get-Item -Force -LiteralPath $ancestor -ErrorAction Stop
         if(-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){
             throw 'Diagnostic parent is not an ordinary directory.'
         }

@@ -536,7 +536,7 @@ function Initialize-NativeFreeOverrides {
         throw "Pure-Python charset-normalizer override already exists: $targetRoot"
     }
     [IO.Directory]::CreateDirectory($targetRoot) | Out-Null
-    foreach ($source in @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | Sort-Object FullName)) {
+    foreach ($source in @(Get-ChildItem -Force -LiteralPath $sourceRoot -Recurse -File | Sort-Object FullName)) {
         if ($source.Extension -cne ".py" -and $source.Name -cne "py.typed") { continue }
         $relative = $source.FullName.Substring($sourceRoot.Length + 1)
         $target = Join-Path $targetRoot $relative
@@ -549,7 +549,7 @@ function Initialize-NativeFreeOverrides {
         }
     }
     $nativeOverrideFiles = @(
-        Get-ChildItem -LiteralPath $overrideRoot -Recurse -File |
+        Get-ChildItem -Force -LiteralPath $overrideRoot -Recurse -File |
             Where-Object { $_.Extension -in @(".dll", ".exe", ".pyd") }
     )
     if ($nativeOverrideFiles.Count -ne 0) {
@@ -572,7 +572,7 @@ function Assert-LowRiskNativeFreePackage {
     $pillowPaths = @()
     $charsetNativePaths = @()
     $runtimeUnusedRpdsPaths = @()
-    foreach ($file in @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -File | Sort-Object FullName)) {
+    foreach ($file in @(Get-ChildItem -Force -LiteralPath $PackageRoot -Recurse -File | Sort-Object FullName)) {
         $relative = $file.FullName.Substring($PackageRoot.Length + 1).Replace("\", "/")
         $parts = @($relative.Split("/") | ForEach-Object { $_.ToLowerInvariant() })
         if (@($parts | Where-Object { $_ -eq "pygame" -or $_.StartsWith("pygame.") }).Count -gt 0) {

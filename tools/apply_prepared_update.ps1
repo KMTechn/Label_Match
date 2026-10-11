@@ -129,7 +129,7 @@ function Assert-Protected([string]$Path, [switch]$Recursive, [hashtable]$Verifie
     while ($full) {
         if (-not $Verified.ContainsKey($full) -or ($leaf -and -not $Verified[$full])) {
         $script:LabelStartupVerifyDiagnostic=[ordered]@{check='ACL';leaf=$leaf;observation='PENDING'}
-        $entry = Get-Item -LiteralPath $full -ErrorAction Stop
+        $entry = Get-Item -Force -LiteralPath $full -ErrorAction Stop
         if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point in update storage.' }
         $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
         $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
@@ -209,7 +209,7 @@ function Test-LabelStartupSamePath([string]$Left,[string]$Right) {
 function Assert-LabelStartupNoReparsePoint([string]$Path,[string]$Purpose) {
     for($item=[IO.Path]::GetFullPath($Path);$item;$item=[IO.Path]::GetDirectoryName($item)) {
         if((Test-Path -LiteralPath $item) -and
-            ((Get-Item -LiteralPath $item -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            ((Get-Item -Force -LiteralPath $item -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw "$Purpose contains a reparse point."
         }
     }

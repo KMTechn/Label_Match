@@ -547,13 +547,13 @@ function Assert-ProtectedCodeAncestors([string]$Path) {
         if($full -in @('C:\KMTech','C:\KMTech\Apps')) {
             # No installed/source helper is loaded at the standalone boundary.
             # Get-Item fails closed for missing/denied paths; admission is read-only.
-            $entry=Get-Item -LiteralPath $full -ErrorAction Stop
+            $entry=Get-Item -Force -LiteralPath $full -ErrorAction Stop
             $acl=Get-Acl -LiteralPath $full -ErrorAction Stop
             $state=Get-KmtechSharedAncestorAclState $acl $entry.Attributes -RequireProtected
             if($state.reason){throw "설치 폴더 권한을 확인하세요: $full ($($state.reason)). 지원 담당자에게 문의하세요."}
         }
         elseif (Test-Path -LiteralPath $full) {
-            $entry = Get-Item -LiteralPath $full -ErrorAction Stop
+            $entry = Get-Item -Force -LiteralPath $full -ErrorAction Stop
             if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe update path component.' }
             $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
             if (-not (Test-KmtechPrivilegedOwnerSid ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value))) {
@@ -1212,7 +1212,7 @@ function Assert-LabelOfficialLegacyTaskLauncher($Snapshot) {
         $launcher=[IO.Path]::GetFullPath($Matches[1].Trim('"'))
         if ([IO.Path]::GetExtension($launcher) -ine '.vbs') { throw 'Legacy launcher type differs.' }
         function Assert-OrdinaryLegacyLauncher([string]$Path) {
-            $item=Get-Item -LiteralPath $Path -ErrorAction Stop
+            $item=Get-Item -Force -LiteralPath $Path -ErrorAction Stop
             if ($item.PSIsContainer -or $item.Length -eq 0 -or $item.Length -gt 1048576) {
                 throw 'Legacy launcher is not a bounded ordinary file.'
             }

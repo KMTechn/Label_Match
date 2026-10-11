@@ -26,6 +26,9 @@ FILES = {
     "INSTALL_THIS_PC.ps1": "INSTALL_THIS_PC.ps1",
     "app/writer_session_fence.py": "writer_session_fence.py",
     "tools/label_writer_fence.ps1": "tools/label_writer_fence.ps1",
+    "tools/bootstrap_integrity.ps1": "tools/bootstrap_integrity.ps1",
+    "tools/apply_prepared_update.ps1": "tools/apply_prepared_update.ps1",
+    "tools/failure_redaction.ps1": "tools/failure_redaction.ps1",
 }
 BEGIN = "# ADMIN-WORKER-DECLARATIONS-BEGIN"
 END = "# ADMIN-WORKER-DECLARATIONS-END"

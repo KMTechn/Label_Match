@@ -172,9 +172,9 @@ function Assert-InstallerFailureEvidence($Reference) {
         (Split-Path -Leaf (Split-Path -Parent $path)) -cnotmatch '^label-embedded-diagnostic-[0-9a-f]{32}$' -or
         (Split-Path -Leaf $path) -cne 'trace.txt') { throw 'CHILD_FAILURE_EVIDENCE_PATH_INVALID' }
     foreach ($itemPath in @((Split-Path -Parent $path),$path)) {
-        if (((Get-Item -LiteralPath $itemPath).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'CHILD_FAILURE_EVIDENCE_LINK_INVALID' }
+        if (((Get-Item -Force -LiteralPath $itemPath).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'CHILD_FAILURE_EVIDENCE_LINK_INVALID' }
     }
-    if ((Get-Item -LiteralPath $path).Length -gt 65536 -or
+    if ((Get-Item -Force -LiteralPath $path).Length -gt 65536 -or
         (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string](Get-DiagnosticProperty $Reference 'sha256')) { throw 'CHILD_FAILURE_EVIDENCE_BYTES_DIFFER' }
 }
 
