@@ -208,6 +208,31 @@ def test_real_staged_producer_report_is_accepted_by_archive_consumer(tmp_path):
     consumer._validate_staged_installer(package)
 
 
+@pytest.mark.parametrize("location", ("before_functions", "before_registrations"))
+def test_registration_line_shifts_preserve_content_and_integrity_checks(tmp_path, location):
+    package = _package(tmp_path)
+    installer = package / "INSTALL_THIS_PC.ps1"
+    source = installer.read_text(encoding="utf-8")
+    if location == "before_functions":
+        source = "# Harmless source layout change.\n\n" + source
+    else:
+        source = source.replace(
+            "        Register-ScheduledTask -TaskName",
+            "        # Harmless source layout change.\n        Register-ScheduledTask -TaskName",
+        )
+    assert source != installer.read_text(encoding="utf-8")
+    installer.write_text(source, encoding="utf-8")
+    report = verifier.verify_staged_package(package)
+    _write_staged_report(package, report)
+    consumer = _archive_consumer()
+    consumer._validate_staged_installer(package)
+
+    # A report authenticates the exact file bytes, including harmless layout edits.
+    installer.write_text(source + "\n# Unreported source layout change.\n", encoding="utf-8")
+    with pytest.raises(consumer.ReleaseArchiveError):
+        consumer._validate_staged_installer(package)
+
+
 @pytest.mark.parametrize("damage", ("missing", "wrong"))
 def test_archive_consumer_refuses_missing_or_wrong_elevation_authority(tmp_path, damage):
     package = _package(tmp_path)

@@ -448,9 +448,11 @@ ConvertTo-Json -InputObject @{registrations=$rows;calls=$calls;bindings=$binding
             env=environment, capture_output=True, text=True,
             timeout=TIMEOUT_SECONDS, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        # Bind exact registration commands to their mutation owners. Harmless
+        # source layout edits may move their line numbers between releases.
         allowed = {
-            ("Restore-LabelStartupUpdatePreimage", 832): "Register-ScheduledTask -TaskName $name -Xml ([string]$saved.task.xml) -Force",
-            ("Initialize-LabelStartupUpdate", 964): "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
+            "Restore-LabelStartupUpdatePreimage": "Register-ScheduledTask -TaskName $name -Xml ([string]$saved.task.xml) -Force",
+            "Initialize-LabelStartupUpdate": "Register-ScheduledTask -TaskName $spec.name -Xml $spec.xml -Force",
         }
         try:
             parsed_source = json.loads(parsed.stdout)
@@ -469,9 +471,9 @@ ConvertTo-Json -InputObject @{registrations=$rows;calls=$calls;bindings=$binding
                      and len(parsed.stdout.encode()) <= OUTPUT_BOUND_BYTES
                      and isinstance(registrations, list)
                      and len(registrations) == len(allowed)
-                     and {(row["owner"], row["line"]) for row in registrations} == set(allowed)
+                     and {row["owner"] for row in registrations} == set(allowed)
                      and all(row["mutation"] is True
-                             and row["command"] == allowed[(row["owner"], row["line"])]
+                             and row["command"] == allowed[row["owner"]]
                              for row in registrations))
         except (ValueError, TypeError, KeyError):
             valid = False
