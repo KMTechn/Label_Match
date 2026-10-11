@@ -2,6 +2,19 @@
 
 PowerShell lifecycle 관측·고정 helper·새 SYSTEM 로그온 action과 옛 사용자 작업 조회·정리는 자식 인수에 `-ExecutionPolicy Bypass`를 명시한다. OS·레지스트리·GPO 정책은 변경하지 않는다. 설치·제거·관측은 정확한 이전 무정책 SYSTEM action과 새 action만 인정하며 원본 복원 XML을 보존한다. GPO 강제 및 실제 현장 실행은 별도 수용 항목이다.
 
+## 관리자 입구 후보 — w9firstupdsub63 (10/11 1차 답 v0)
+
+유효한 대상·inventory를 확인한 뒤에만 ProgramData 설치 감사 자리 아래 관리자 진단용 임시 폴더를 만든다. 설치기 프로세스와 자식의 임시 경로를 그 폴더로 지정하므로 실패 진단도 사용자 프로필에 쓰지 않는다. 영구 환경 설정은 바꾸지 않는다. 고정 current에서 첫 시작할 때는 active가 가리키는 versions의 manifest와 PENDING의 commit·판을 대조한다.
+
+키트의 새 관리자 가지가 상승한 canonical에 `-WorkerAccount <대상 SID 또는 DOMAIN\이름> -WorkerSurveyInventory <대상 작업자 세션의 READY inventory JSON 절대 경로>`를 넘긴다. 대상은 호출 관리자와 달라야 하며 ProfileList 경로와 inventory의 경로가 일치해야 한다. 누락/모호/불일치/파일·JSON 오류는 설치와 쓰기 0, 공개 실패 한 줄이다. 키트 없이 기존 인수로 직접 SSH 호출하는 꼴은 여전히 설치를 거절한다.
+
+관리자 성공은 `PASS_MACHINE_WORKER_PENDING`과 「작업자 준비 대기」다. ProgramData의 `KMTech\Label_Match\install-audit`에는 기존 설치 감사 schema와 code/startup preimage 참조를 남긴다. 공용 프로그램 메뉴의 `KMTech 포장.lnk`는 고정 `current/runtime/pythonw.exe -I -B "current/app/main.py"`를 가리킨다. 다른 대상의 동명 바로가기는 덮어쓰지 않는다. Legacy-Survey의 `Label_Match.exe` 대상 비교에는 새 링크가 옛 후보로 잡히지 않는다.
+
+지정 작업자의 첫 시작에서 기존 onboarding READY 후 HKCU 완료 기록을 되읽어 완료를 판정한다. 기계 PENDING 기록의 존재만으로 완료를 표시하지 않는다. 실패하면 그 작업자 문맥에서 기존 onboarding 복구를 사용한다. 지원 `INSTALL_THIS_PC.ps1 -Uninstall`은 기계 PENDING을 기존 control 기록과 함께 회수하고, 정확한 새 공용 바로가기만 제거 증거로 옮긴다. 작업자 자료·등록·HKCU 완료 기록은 보존한다. 옛 앱과 관리자 Rollback의 끝까지 검증은 키트/랩 VM 담당이다.
+
+writer 선언은 `python -B tools/refresh_admin_worker_declarations.py`, 확인은 같은 명령의 `--check`로 수행한다. 82개 sink의 membership을 유지하고 변경 파일의 source digest·줄 위치로 Python/PowerShell pin을 재생성한다. 기존 후보 해시와 정확한 `4550330 → 관리자 입구 후보` 선언을 갱신하며 역사적 before는 변경하지 않고 writer embedded probe의 고정 SHA도 함께 재생성한다. 기존 모든 다른 파일 검사와 역방향/변조 거절을 유지한다. 이 후보의 증거는 sub-63 RESULT와 로그이며 실제 UAC·Session 0·작업 등록·ACL·로그온·키트 Rollback은 별도 VM 검증이다.
+
+
 첫 업데이트 글자 층에서도 `writer_sink_inventory.derive_writer_sink_inventory`의 source digest와 Python/PowerShell writer pin을 함께 갱신한다. 82개 sink의 식별자·위치·guard는 유지하며, canonical 설치기의 `release_digest`로 변경된 네 파일의 후보 해시 40개를 재생성한다. 역사적 before 해시·허용 파일 목록·거절 조건은 바꾸지 않고 두 pin과 후보 선언을 읽기 전용으로 다시 검사한다.
 
 <a id="onboarding-writer-admission"></a>

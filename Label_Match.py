@@ -61,6 +61,7 @@ from current_user_onboarding import (
     LEGACY_DIRECT_SYNC_ROOT_ENV,
     ONBOARDING_EXIT_CODE,
     onboard_current_user,
+    validate_pending_worker_install,
     resolve_current_user_onboarding_paths,
 )
 from direct_sync_push import manifest_hash as direct_sync_manifest_hash
@@ -22913,6 +22914,7 @@ def main(argv=None):
         return hosted_result
     verify_factory_contract_startup()
     try:
+        validate_pending_worker_install(_label_match_runtime_app_root())
         check_user_data_open(_label_match_runtime_app_root())
         _label_match_startup_trace("main_enter")
         if _first_run_onboarding_enabled():
@@ -22957,6 +22959,9 @@ def main(argv=None):
         )
     except WriterFenceError as exc:
         _show_installation_recovery_required(exc)
+        return ONBOARDING_EXIT_CODE
+    except CurrentUserOnboardingError as exc:
+        _show_first_run_onboarding_error(exc)
         return ONBOARDING_EXIT_CODE
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)

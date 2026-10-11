@@ -4,6 +4,8 @@ param(
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
     [string]$EvidencePath = "",
     [string]$ServerBaseUrl = "",
+    [string]$WorkerAccount = "",
+    [string]$WorkerSurveyInventory = "",
     [string]$ResumeRollbackAuditPath = "",
     [string]$ExpectedRollbackAuditSha256 = "",
     [switch]$PlanOnly,
@@ -17,7 +19,11 @@ trap {
     if ($publicError.Exception.Data.Contains('installation_preparation_exit_code')) {
         $publicExit = [int]$publicError.Exception.Data['installation_preparation_exit_code']
     }
-    if ((Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) -and
+    if ($publicError.Exception.Data.Contains('worker_pending_failure')) {
+        # Input rejection never allocates private diagnostics, even if a kit
+        # caller has already loaded the redaction functions in this process.
+        $publicFailure = [ordered]@{status='FAILED';reason_code='PENDING_TARGET_INVALID';guidance='작업자 계정과 그 계정에서 확인한 READY 설치 목록을 확인하세요.'}
+    } elseif ((Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) -and
         (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue)) {
         $publicFailure = Get-LabelLaunchFailure $publicError 'forward'
     } else {
@@ -557,7 +563,7 @@ shared_replacements = {
         'bf7ccf44e5abd14b3211bbea9b1e22d3b4a53525b4d4bc760c1893ca2da63a69'),
     'INSTALL_THIS_PC.ps1': (
         '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
-        'bdc42c26a8b5464d8a65e880ba5474ef01a28c820997adcb5ddefa8daa9b022b'),
+        'a96bc70617fd203f7b1d8b7292c94276a321878dd3379a3f8a230b82b1881696'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
         '96101ce38befdf9dcca09ec42abd571aa441ad312f35bf3d14fd7effc97db963'),
@@ -631,7 +637,7 @@ integrity_order_transition = (
     release_digest(installed / integrity_order_path) ==
         'bfd59326ad76a400c70a62d78622b518a549e844c4bf4725f59eb7525c20a57f' and
     release_digest(source / integrity_order_path) ==
-        '93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd'
+        'a0359f18e8b76d2a50ce4f0f312dbc24c3ad25a7deb89bb1f16952c18408c2f8'
 )
 
 shared_transition = all(
@@ -650,11 +656,11 @@ shared_transition = all(
 # preimage ignores, so no data migration; downgrade is not admitted.
 legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
-                        '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9'),
+                        '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    '93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd'),
+                                    'a0359f18e8b76d2a50ce4f0f312dbc24c3ad25a7deb89bb1f16952c18408c2f8'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     'f1dc02ba1711847228945fe6a01c3881aef6e71441a85cbf5873dbf72700d72e'),
  'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
@@ -692,7 +698,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    '93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd')}
+                                    'a0359f18e8b76d2a50ce4f0f312dbc24c3ad25a7deb89bb1f16952c18408c2f8')}
 legacy_label_additions = {'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'}
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
@@ -713,11 +719,11 @@ legacy_label_transition = all(
 # initialize. Everything else stays checked and downgrade is not admitted.
 scan_input_path = 'app/Label_Match.py'
 scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9b1f1b5',
-  '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9'),
+  '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3'),
  ('78968d1946644a76542bb011bea5881403bcdb4f6482de1497b4f7c0921a261a',
-  '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9'),
+  '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3'),
  ('b30d80d46cddd039ca2475ddeb1be0465fe6e3b67479e7ed1c8e8f0c4451813d',
-  '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9')}
+  '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3')}
 scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -762,7 +768,7 @@ scan_input_transition = (
 # through the existing recovery schema. Downgrade is not admitted.
 nextfix_label_path = 'app/Label_Match.py'
 nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959e21d938',
- '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9')
+ '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3')
 nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '2ddd2129d6de99073f3cd51d8947a4792ea56e371205f3ea70445301317f4e56'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
@@ -795,7 +801,7 @@ nextfix_label_transition = (
 
 # a20cd01 -> this scanner source: exact forward-only source pair, the same
 # pinned companion deltas, and unchanged writer membership/runtime/contracts.
-scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9')
+scanner_label_pair = ('7324ab7b111d940762c4acb20cdc9348ed6f176d8d7e4f7e52bd3d9c9d50db57', '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3')
 scanner_transition = (
     (installed / nextfix_label_path).is_file() and
     (source / nextfix_label_path).is_file() and
@@ -810,7 +816,7 @@ current_user_profile_replacements = {
     'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '92419d83453e49cd225e79ccc1aa96230c7ba00636b7fd114ed02736e6c074e1'),
     'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', '7dde5875649e9ec9291a45e47191b9c6fcf6b32d66cafe70c0444390cefbab9e'),
     'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
-    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd'),
+    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', 'a0359f18e8b76d2a50ce4f0f312dbc24c3ad25a7deb89bb1f16952c18408c2f8'),
     'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', 'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'),
 }
 # Exact writer bytes from the same accepted profile/scan preimages; their
@@ -851,7 +857,7 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/user_relay.py': ({'07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7'},
                        '1015c0d1026d69745d70bbe1d69ab0f5a97cec52eaf8831ecc95d0356d8f4d3b'),
  'app/writer_session_fence.py': ({'7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', 'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', 'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50'},
-                                 'a43bf51c06caf667a0a0e98849553ca667aa8cd2640b546d357d918d95ec13bb')}
+                                 '58da1e232c7890f37f9ac8bca64c134267cc879148883fc9d65b3ca444dce5d8')}
 remote_transport_transition = (
     legacy_label_transition or scan_input_transition or nextfix_label_transition
     or scanner_transition or current_user_profile_transition
@@ -884,7 +890,7 @@ roster_additions = {'app/label_worker_roster.py': '63d8fef44564fa9666b4a5b749433
 # This feature's exact reviewed branch baseline is independent of the older
 # accepted release tables; never broaden their historical preimages.
 roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3505447bcd3ae86abd521640d0691d9ac3e962062',
-                        '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9'),
+                        '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3'),
  'app/label_admin_pin.py': ('159b7f0b79c6bb54d56857140d8601424e0c2ef386bd9d16e08c784a8545ebb8',
                             '9be9247c439a99c696cb472f0bee0eee85b2fe1a98ee2a25aabe6395aff7a617'),
  'app/writer_session_fence.py': ('8d7ae33010ffce1645868060c0bb049ca1f554781c37de03a678dd712e5d8dd6',
@@ -1186,7 +1192,7 @@ if candidate_sources != installed_sources and not (shutdown_notice_forward or sh
     raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 # Exact stage-one 0cf0414 to stage-two bytes; state and pending stay additive.
 worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f58eaf3f9f5841d9de2fbfd5a74a63c969e38c92',
-                        '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9'),
+                        '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3'),
  'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55',
                              'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'),
  'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec',
@@ -1215,7 +1221,7 @@ worker_record_transition = all(
 )
 # Exact 4b7630f shutdown repair; durable formats are unchanged.
 mainloop_exit_replacements = {'app/Label_Match.py': ('40d1367865b7cc0c85db8db6b3e6ab61932dc8ed14673d8a785279580d283e70',
-                        '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9'),
+                        '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3'),
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('bd007a223dda4e53195d9af3ed3c876b72fe6f7d49447d38ce30a830104c6ed8',
@@ -1230,7 +1236,7 @@ mainloop_exit_transition = all(
 )
 # Exact prior cleanup candidate -> corrected notice-and-wait policy.
 mainloop_exit_notice_replacements = {'app/Label_Match.py': ('75fdd2d1422825f52320d3373acd12366b244e8ca00aa531a052983c09694227',
-                        '43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9'),
+                        '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3'),
  'app/label_match_single_instance.py': ('2929ffe042131ccc8cc905dbbad084be0fbab0585d70100252d3ee682c66346b',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/writer_session_fence.py': ('5dc1377d481970f75c6a6330a2c2ea9987b016de4cea7f86f5788299a23b0f73',
@@ -1310,6 +1316,27 @@ def data_generation_before_allowed(relative):
                 return True
     return False
 
+# ADMIN-WORKER-DECLARATIONS-BEGIN
+admin_worker_replacements = {'INSTALL_THIS_PC.ps1': ('bdc42c26a8b5464d8a65e880ba5474ef01a28c820997adcb5ddefa8daa9b022b',
+                         'a96bc70617fd203f7b1d8b7292c94276a321878dd3379a3f8a230b82b1881696'),
+ 'app/Label_Match.py': ('43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9',
+                        '9c1dca06d29229cb02a62a11e8cb1ec03b5d5a47dc5ba7c1117717e3f613d4a3'),
+ 'app/current_user_onboarding.py': ('93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd',
+                                    'a0359f18e8b76d2a50ce4f0f312dbc24c3ad25a7deb89bb1f16952c18408c2f8'),
+ 'app/main.py': ('f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab',
+                 '1da8d54f90ad04b8685f7258721c083b9ca664a82126f1e14c9b2fb9a8b5cfbf'),
+ 'app/writer_session_fence.py': ('a43bf51c06caf667a0a0e98849553ca667aa8cd2640b546d357d918d95ec13bb',
+                                 '58da1e232c7890f37f9ac8bca64c134267cc879148883fc9d65b3ca444dce5d8'),
+ 'tools/label_writer_fence.ps1': ('1e30ba5b6098368319ea4175ce932cf7f9efd216ffeb76f464630abfc0f8319d',
+                                  'f0756d332a76f5eb5aed19b77890f41dd430000f13a609acb1b0487702cb5630')}
+# ADMIN-WORKER-DECLARATIONS-END
+admin_worker_transition = bool(admin_worker_replacements) and all(
+    (installed / relative).is_file() and (source / relative).is_file()
+    and release_digest(installed / relative) == before
+    and release_digest(source / relative) == after
+    for relative, (before, after) in admin_worker_replacements.items()
+)
+
 for directory in ('app', 'runtime'):
     left, right = files(source, directory), files(installed, directory)
     additions = set(data_generation_additions) if data_generation_transition and directory == 'app' else set()
@@ -1323,6 +1350,8 @@ for directory in ('app', 'runtime'):
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
     for relative in sorted(left, key=lambda path: (path != 'app/Label_Match.py', path)):
         path = left[relative]
+        if admin_worker_transition and relative in admin_worker_replacements:
+            continue
         if source_admission_transition and relative in source_admission_companions:
             continue
         if data_generation_pin_transition and relative in data_generation_pin_replacements:
@@ -1381,6 +1410,8 @@ for directory in ('app', 'runtime'):
                 continue
         raise ValueError('WRITER_TRANSITION_SEMANTICS_DIFFER: ' + relative)
 for relative in ('INSTALL_THIS_PC.ps1', 'launch-label-match.cmd', 'tools/bootstrap_integrity.ps1', 'tools/label_writer_fence_contract.json'):
+    if admin_worker_transition and relative in admin_worker_replacements:
+        continue
     if data_generation_reverse and relative in data_generation_replacements:
         continue
     if data_generation_transition and relative in data_generation_replacements:
@@ -1401,6 +1432,7 @@ if candidate_sources != installed_sources:
     ):
         raise ValueError('WRITER_TRANSITION_SOURCE_SET_DIFFERS')
 compatibility = ('SIGNED_COMPATIBLE_DATA_GENERATION_REVERSE' if data_generation_reverse else
+                 'PINNED_ADMIN_WORKER_PENDING' if admin_worker_transition else
                  'PINNED_DATA_GENERATION_G_CORRECTION' if (data_generation_correction_transition or data_generation_security_transition or data_generation_nested_transition or data_generation_pin_transition) else
                  'PINNED_MAINLOOP_EXIT_NOTICE' if mainloop_exit_notice_transition else
                  'PINNED_MAINLOOP_EXIT_CLEANUP' if mainloop_exit_transition else
@@ -2634,7 +2666,7 @@ $parameterNames = @(
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
-    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit','InstallerRunId','InstallerOwnerProcessId','InstallerOwnerProcessStartedAtFileTime','LegacyRelayTransition','LegacyRelayPreimageSha256')) }).Count -ne 0
+    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit','InstallerRunId','InstallerOwnerProcessId','InstallerOwnerProcessStartedAtFileTime','LegacyRelayTransition','LegacyRelayPreimageSha256','WorkerSid','OperatorLocalAppDataRoot')) }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
 $expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
 $expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
@@ -2666,7 +2698,7 @@ $invokeParameters = @{
     ReplaceExistingVerifiedPortable = Get-RequiredExternalBoolean $payload.parameters 'ReplaceExistingVerifiedPortable'
     DryRun = Get-RequiredExternalBoolean $payload.parameters 'DryRun'
 }
-foreach ($name in @('ExpectedActiveCommit','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','LegacyRelayTransition','LegacyRelayPreimageSha256')) {
+foreach ($name in @('ExpectedActiveCommit','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','LegacyRelayTransition','LegacyRelayPreimageSha256','WorkerSid','OperatorLocalAppDataRoot')) {
     $property = $payload.parameters.PSObject.Properties[$name]
     $invokeParameters[$name] = if ($null -eq $property) { '' } else { [string]$property.Value }
 }
@@ -4703,7 +4735,274 @@ function Invoke-LabelCanonicalRollback {
         if ($Script:LabelRollbackErrors.Count -gt 0) { throw $Script:LabelRollbackErrors[0] }
 }
 
+function Get-LabelInstallerCaller {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        return [pscustomobject]@{sid=$identity.User.Value;session_id=[Diagnostics.Process]::GetCurrentProcess().SessionId;
+            elevated=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)}
+    } finally { $identity.Dispose() }
+}
+
+function Resolve-LabelWorkerSid([string]$Account) {
+    if ($Account -match '^S-1-') { return ([Security.Principal.SecurityIdentifier]::new($Account)).Value }
+    return ([Security.Principal.NTAccount]::new($Account)).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
+function Get-LabelWorkerProfileRoot([string]$Sid) {
+    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $Sid)
+    if ($null -eq $key) { throw 'Worker profile is absent.' }
+    try { return [Environment]::ExpandEnvironmentVariables([string]$key.GetValue('ProfileImagePath')) }
+    finally { $key.Dispose() }
+}
+
+function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$InventoryPath) {
+    try {
+        if (-not $Caller.elevated -and $Caller.session_id -ne 0) {
+            if ($Account -or $InventoryPath) { throw 'Worker arguments require the administrator entry.' }
+            return $null
+        }
+        if (-not $Caller.elevated -or [string]::IsNullOrWhiteSpace($Account) -or
+            [string]::IsNullOrWhiteSpace($InventoryPath)) { throw 'Worker target and inventory are required.' }
+        $sid = Resolve-LabelWorkerSid $Account
+        if ($sid -cnotmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -or $sid -ceq [string]$Caller.sid) { throw 'Worker target is invalid.' }
+        if (-not [IO.Path]::IsPathRooted($InventoryPath)) { throw 'Inventory path must be absolute.' }
+        $file = Get-Item -LiteralPath $InventoryPath -ErrorAction Stop
+        if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $file.Length -le 0 -or $file.Length -gt 1048576) { throw 'Inventory must be a bounded ordinary file.' }
+        [byte[]]$bytes = [IO.File]::ReadAllBytes($file.FullName)
+        if ($bytes.Length -gt 1048576) { throw 'Inventory is oversized.' }
+        $inventory = (([Text.UTF8Encoding]::new($false,$true)).GetString($bytes) -replace '^\uFEFF','') | ConvertFrom-Json
+        if ($inventory.status -isnot [string] -or $inventory.status -cne 'READY' -or
+            $inventory.target_sid -isnot [string] -or $inventory.target_sid -cne $sid -or
+            $inventory.target_profile_root -isnot [string] -or
+            -not [IO.Path]::IsPathRooted($inventory.target_profile_root)) { throw 'Worker inventory binding differs.' }
+        $profile = Get-LabelWorkerProfileRoot $sid
+        if ([string]::IsNullOrWhiteSpace($profile) -or -not [IO.Path]::IsPathRooted($profile)) { throw 'Worker profile is invalid.' }
+        $profile = [IO.Path]::GetFullPath($profile).TrimEnd('\')
+        if (-not [StringComparer]::OrdinalIgnoreCase.Equals($profile,
+            [IO.Path]::GetFullPath($inventory.target_profile_root).TrimEnd('\')) -or
+            $profile -eq [IO.Path]::GetPathRoot($profile).TrimEnd('\')) { throw 'Worker profile differs.' }
+        return [pscustomobject]@{sid=$sid;profile_root=$profile;local_app_data=(Join-Path $profile 'AppData\Local');inventory_sha256=(ByteSha $bytes)}
+    } catch {
+        $failure = [InvalidOperationException]::new('Worker pending installation input is invalid.')
+        $failure.Data['worker_pending_failure'] = $true
+        throw $failure
+    }
+}
+
+function Initialize-LabelMachineDiagnostics {
+    # Only after target admission: child diagnostics must also avoid user profiles.
+    $programData = if ($testMode) { $env:PROGRAMDATA } else { [Environment]::GetFolderPath('CommonApplicationData') }
+    $root = Join-Path (Full $programData 'machine ProgramData') ('KMTech\Label_Match\install-audit\tmp-' + [Guid]::NewGuid().ToString('N'))
+    for ($ancestor = $root; $ancestor; $ancestor = [IO.Path]::GetDirectoryName($ancestor)) {
+        if (Test-Path -LiteralPath $ancestor) {
+            $item = Get-Item -LiteralPath $ancestor -ErrorAction Stop
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw 'Machine diagnostic parent is not an ordinary directory.'
+            }
+        }
+    }
+    [void](New-Item -ItemType Directory -Path $root -ErrorAction Stop)
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true,$false)
+    foreach ($sid in @('S-1-5-18','S-1-5-32-544')) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+    }
+    Set-Acl -LiteralPath $root -AclObject $acl -ErrorAction Stop
+    # This installer process exits after machine placement. Children inherit only
+    # these process settings; no persistent environment or security setting changes.
+    $env:TEMP = $root
+    $env:TMP = $root
+}
+
+function Install-LabelMachineWorkerShortcut([string]$Install, [string]$Menu) {
+    $path = Join-Path $Menu 'KMTech 포장.lnk'
+    $target = Join-Path $Install 'runtime\pythonw.exe'
+    $arguments = '-I -B "' + (Join-Path $Install 'app\main.py') + '"'
+    if (Test-Path -LiteralPath $path) {
+        $item = Get-Item -LiteralPath $path -ErrorAction Stop
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Common shortcut is not an ordinary file.' }
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($path)
+    if (Test-Path -LiteralPath $path) {
+        if (-not (Same $shortcut.TargetPath $target) -or $shortcut.Arguments -cne $arguments) {
+            throw 'Common shortcut belongs to another installation; preserve it for the kit.'
+        }
+    } else {
+        $shortcut.TargetPath = $target; $shortcut.Arguments = $arguments
+        $shortcut.WorkingDirectory = $Install
+        $shortcut.Save()
+    }
+    $accepted = $shell.CreateShortcut($path)
+    if (-not (Same $accepted.TargetPath $target) -or $accepted.Arguments -cne $arguments -or
+        -not (Same $accepted.WorkingDirectory $Install)) { throw 'Machine shortcut readback differs.' }
+    return [ordered]@{path=[string]$path;sha256=[string](Sha $path)}
+}
+
+function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Install, $SourceManifest, $Lifecycle = $null) {
+    # The existing pinned placement helper owns code, backups and startup state.
+    # This entry never opens the caller's Run key or executes a product user mode.
+    if ($SourceManifest.startup_update_protocol -ne 1) { throw 'Machine worker installation requires managed portable code.' }
+    if (@(UnquiescedProductWriters).Count) { throw 'Canonical product writers must exit before machine placement.' }
+    $receipt = PortableInventory $Source
+    $existing = Test-Path -LiteralPath $Install -PathType Container
+    $priorRoot = if ($null -ne $Lifecycle -and $Lifecycle.lifecycle_state -ceq 'INSTALLED') { [string]$Lifecycle.active_code_root } else { $Install }
+    if ($null -ne $Lifecycle -and $Lifecycle.lifecycle_state -ceq 'INSTALLED') {
+        $policy = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $Install) 'update-control\policy.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([string]$policy.operator_sid -cne $Worker.sid -or -not (Same ([string]$policy.operator_local_app_data) $Worker.local_app_data)) {
+            throw 'Supported machine update belongs to a different worker.'
+        }
+    }
+    $preimage = if ($existing) { PortableInventory $priorRoot } else { $null }
+    $transition = Assert-WriterTransition $Source $(if ($existing) { $priorRoot } else { $Source })
+    $backupsBefore = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Install) -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like '.current.rollback.*' } | ForEach-Object { $_.FullName })
+    $run = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ') + '-' + [Guid]::NewGuid().ToString('N')
+    $programData = if ($testMode) { $env:PROGRAMDATA } else { [Environment]::GetFolderPath('CommonApplicationData') }
+    $auditRoot = Join-Path (Full $programData 'machine ProgramData') 'KMTech\Label_Match\install-audit'
+    $auditFile = Join-Path $auditRoot ('canonical-portable-' + $run + '.json')
+    $frozen = FreezePlacementHelper $Source $auditRoot $run $receipt.critical_file_sha256
+    [byte[]]$integrityBytes = PinnedFileBytes (Join-Path $frozen.root 'tools\bootstrap_integrity.ps1') $frozen.integrity_sha256
+    . ([ScriptBlock]::Create((([Text.UTF8Encoding]::new($false,$true)).GetString($integrityBytes) -replace '^\uFEFF',''))) -SharedCodeRoot $frozen.root
+    . $frozen.writer_fence_path
+    $control = Join-Path $auditRoot ('machine-writer-' + $run)
+    $Script:LabelWriterFenceAdmissionProductionRoot = $control
+    $session = [Guid]::NewGuid().ToString('N'); $attempt = [Guid]::NewGuid().ToString('N'); $transaction = [Guid]::NewGuid().ToString('N')
+    $delegation = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
+    $orchestrator = Sha (Join-Path $Source 'INSTALL_CANONICAL_PORTABLE.ps1')
+    $contract = $frozen.writer_fence_sha256
+    if ($transition.candidate_inventory_sha256 -cne $Script:LabelWriterFenceInventorySha256) { throw 'Machine writer inventory differs.' }
+    $Script:LabelWriterFenceInstalledIdentity = [pscustomobject]@{session_id=$session;attempt_id=$attempt;replacement_transaction_id=$transaction;
+        orchestrator_sha256=$orchestrator;writer_contract_sha256=$contract;inventory_sha256=$transition.installed_inventory_sha256}
+    $audit = [ordered]@{schema='label-match-canonical-portable-install-v1';status='PREIMAGE_SAVED';run_id=$run;
+        captured_at=[DateTime]::UtcNow.ToString('o');install_root=$Install;source_commit=$SourceManifest.source_commit;
+        code_placement='PENDING';code_preimage=$(if($existing){'PRESENT'}else{'ABSENT'});worker_sid=$Worker.sid;worker_setup='PENDING';
+        preimage=[ordered]@{scope='WORKER_DEFERRED';captured=$false};writer_transition=[ordered]@{compatibility=$transition.compatibility;
+            installed_inventory_sha256=$transition.installed_inventory_sha256;candidate_inventory_sha256=$transition.candidate_inventory_sha256;
+            installed_portable_inventory_sha256=$(if($existing){$preimage.sha256}else{''});candidate_portable_inventory_sha256=$receipt.sha256};
+        rollback=[ordered]@{available=$true;applied=$false;runtime_restored=$false}}
+    Save $auditFile $audit
+    $authority = $null; $fenced = $false
+    $Script:LabelPlacementSessionRequested=$true
+    $Script:LabelPlacementSession=$null
+    $Script:LabelPlacementSessionLaunchAttempted=$false
+    try {
+        $authority = Enter-LabelWriterSessionAuthority -SessionId $session -AttemptId $attempt -OrchestratorSha256 $orchestrator `
+            -ReplacementTransactionId $transaction -WriterContractSha256 $contract
+        [void](Start-LabelWriterFence -ControlRoot $control -Status 'INSTALLING' -SessionId $session -AttemptId $attempt `
+            -ReplacementTransactionId $transaction -SessionStartedAtUtc ([DateTime]::UtcNow.ToString('o')) `
+            -OrchestratorSha256 $orchestrator -WriterContractSha256 $contract -AuthorityOwnedByCaller)
+        $fenced = $true
+        $audit.writer_fence=[ordered]@{status='INSTALLING';control_root=[string]$control;session_id=$session;attempt_id=$attempt;
+            replacement_transaction_id=$transaction;orchestrator_sha256=$orchestrator;writer_contract_sha256=$contract;
+            writer_inventory_sha256=$Script:LabelWriterFenceInventorySha256;token_recorded=$false}
+        $markers = @('KMTech\Label_Match\data\data-generation.json','KMTech\Label_Match\config\data-generation.json',
+            'KMTech\Logistics\profiles\Label_Match\data-generation.json','KMTech\Bootstrap\Label_Match\data-generation.json',
+            'KMTech\DirectSync\label_match\data-generation.json','KMTech\DirectSync\label_match\queue\data-generation.json',
+            ('KMTech\DirectSync\label_match\control\writer-session\data-generation\' + $Worker.sid + '.json')) |
+            ForEach-Object { Join-Path $Worker.local_app_data $_ }
+        [void](Set-LabelWriterFenceDelegation -ControlRoot $control -Status 'INSTALLING' -SessionId $session -AttemptId $attempt `
+            -ReplacementTransactionId $transaction -DelegationToken $delegation -LifetimeSeconds 600 `
+            -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage',
+                'auto_update_supported_lifecycle_transition','auto_update_persist_switch','auto_update_write_json_durable','auto_update_fixed_helper'))
+        $parameters = @{SourceRoot=$Source;InstallRoot=$Install;ElevationLogPath=(Join-Path $auditRoot ($run+'-elevated.jsonl'));
+            InstallerRunId=$run;InstallerOwnerProcessId=[int]$PID;InstallerOwnerProcessStartedAtFileTime=[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString();
+            ExpectedBootstrapScriptSha256=$frozen.helper_sha256;VerifiedBootstrapScriptPath=$frozen.helper_path;BootstrapIntegrityPreloaded=$true;
+            ExpectedSourceAggregateSha256=$receipt.bootstrap_aggregate_sha256;ExpectedSourceFileCount=[int]$receipt.file_count;ExpectedSourceByteCount=[uint64]$receipt.byte_count;
+            WriterFenceFunctionsPreloaded=$true;WriterFenceControlRoot=$control;WriterFenceSessionId=$session;WriterFenceAttemptId=$attempt;
+            WriterFenceReplacementTransactionId=$transaction;WriterFenceDelegationToken=$delegation;DataGenerationSubjectSid=$Worker.sid;DataGenerationMarkerPaths=@($markers);
+            WorkerSid=$Worker.sid;OperatorLocalAppDataRoot=$Worker.local_app_data;AllowNoncanonicalLayoutForTest=[bool]$testMode;ReplaceExistingVerifiedPortable=[bool]$existing;DryRun=$false}
+        if ($null -ne $Lifecycle -and $Lifecycle.lifecycle_state -ceq 'INSTALLED') { $parameters.ExpectedActiveCommit=[string]$Lifecycle.from_commit }
+        # Already elevated: the same launcher omits RunAs, preserving its pins and delegation.
+        $exit = InvokeFrozenPlacementHelper $frozen $parameters
+        if ($exit -ne 0) { throw 'Machine code placement failed.' }
+        $activeRoot = $Install
+        if ($null -ne $Lifecycle -and $Lifecycle.lifecycle_state -ceq 'INSTALLED') {
+            $accepted = Read-CanonicalStartupLifecycle $Source $Install
+            $activeRoot = [string]$accepted.active_code_root
+        }
+        $installed = PortableInventory $activeRoot
+        if ($installed.sha256 -cne $receipt.sha256) { throw 'Machine placement inventory differs.' }
+        $audit.code_placement='PASS'; $audit.code_state='PRESENT'
+        if ($existing -and $null -eq $Lifecycle -and $preimage.sha256 -cne $receipt.sha256) {
+            $audit.replacement_rollback_root = [string](ReplacementPreimage $Install $preimage $backupsBefore)
+        }
+        $parent = Split-Path -Parent $Install
+        $startupPreimage = Join-Path $parent ('.startup-update-install.'+$attempt)
+        if (Test-Path -LiteralPath (Join-Path $startupPreimage 'preimage.json')) {
+            $audit.startup_update_preimage=[ordered]@{path=[string]$startupPreimage;sha256=[string](Sha (Join-Path $startupPreimage 'preimage.json'))}
+        }
+        $audit.worker_pending=[ordered]@{install_id=$run;path=[string](Join-Path $parent 'update-control\worker-pending.json');
+            inventory_sha256=$Worker.inventory_sha256}
+        Save-LabelMachineMetadata $audit.worker_pending.path ([ordered]@{schema='label-match-machine-worker-pending-v1';install_id=$run;
+            target_sid=$Worker.sid;source_commit=$SourceManifest.source_commit;version=$SourceManifest.version;
+            installed_at=[DateTime]::UtcNow.ToString('o');inventory_sha256=$Worker.inventory_sha256})
+        $menu = if ($testMode) { Join-Path $programData 'StartMenu' } else { [Environment]::GetFolderPath('CommonPrograms') }
+        $audit.machine_shortcut = Install-LabelMachineWorkerShortcut $Install $menu
+        if ($null -ne $Script:LabelPlacementSession) {
+            if ((Invoke-LabelPlacementSessionCommand $Script:LabelPlacementSession '' -Verify) -ne 0) { throw 'PLACEMENT_WAIT_EXPIRED' }
+        }
+        [void](Stop-LabelWriterFence -ControlRoot $control -SessionId $session -AttemptId $attempt -ReplacementTransactionId $transaction)
+        $fenced=$false
+        $audit.writer_fence.status='RELEASED_MACHINE_WORKER_PENDING'
+        if ($null -ne $Script:LabelPlacementSession) { Close-LabelPlacementSession $Script:LabelPlacementSession 'CONFIRMED' }
+        $audit.status='PASS_MACHINE_WORKER_PENDING';$audit.completed_at=[DateTime]::UtcNow.ToString('o')
+        Save $auditFile $audit
+        if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+        'install_status=PASS_MACHINE_WORKER_PENDING'
+        '작업자 준비 대기 — 작업자 계정에서 처음 실행한 뒤 설치 완료를 확인하세요.'
+    } catch {
+        $originalFailure=$_
+        try {
+            $startupPreimage=Join-Path (Split-Path -Parent $Install) ('.startup-update-install.'+$attempt)
+            if (Test-Path -LiteralPath (Join-Path $startupPreimage 'preimage.json')) {
+                $audit.startup_update_preimage=[ordered]@{path=[string]$startupPreimage;sha256=[string](Sha (Join-Path $startupPreimage 'preimage.json'))}
+            }
+            if ($existing -and $null -eq $Lifecycle -and $preimage.sha256 -cne $receipt.sha256 -and
+                @(Get-ChildItem -LiteralPath (Split-Path -Parent $Install) -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -like '.current.rollback.*' -and $_.FullName -notin $backupsBefore }).Count) {
+                $audit.replacement_rollback_root=[string](ReplacementPreimage $Install $preimage $backupsBefore)
+            }
+        } catch { $audit.preimage_capture_failure=Get-LabelLaunchFailure $_ 'machine_preimage_capture' }
+        $audit.status='RECOVERY_REQUIRED';$audit.failure=Get-LabelLaunchFailure $originalFailure 'machine_placement'
+        if ($null -ne $Script:LabelPlacementSession -and $Script:LabelPlacementSession.child_exit_unproven) { $audit.code_state='UNKNOWN' }
+        Save $auditFile $audit
+        if ($EvidencePath) { Save (Full $EvidencePath 'EvidencePath') $audit }
+        throw $originalFailure
+    } finally {
+        try {
+            if ($null -ne $Script:LabelPlacementSession -and -not $Script:LabelPlacementSession.closed) {
+                try { Close-LabelPlacementSession $Script:LabelPlacementSession 'ATTENTION' }
+                catch {
+                    $audit.guardian_failure=Get-LabelLaunchFailure $_ 'guardian_close'
+                    try { Save $auditFile $audit } catch { }
+                }
+            }
+        } finally {
+            $Script:LabelPlacementSessionRequested=$false
+            # An unproven child keeps the orphan fence; never race it with a writer.
+            try {
+                if ($fenced -and ($null -eq $Script:LabelPlacementSession -or -not $Script:LabelPlacementSession.child_exit_unproven)) {
+                    [void](Stop-LabelWriterFence -ControlRoot $control -SessionId $session -AttemptId $attempt -ReplacementTransactionId $transaction)
+                }
+            } finally {
+                if ($null -ne $authority) { Exit-LabelWriterSessionAuthority $authority }
+                $Script:LabelWriterFenceInstalledIdentity=$null
+            }
+        }
+    }
+}
+
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
+# Resolve the administrator target before imports, evidence allocation or profile access.
+$machineWorker = $null
+if ($ResumeRollbackAuditPath) {
+    if ($WorkerAccount -or $WorkerSurveyInventory) { throw 'Rollback resume cannot be combined with worker installation.' }
+} else { $machineWorker = Resolve-LabelMachineWorker (Get-LabelInstallerCaller) $WorkerAccount $WorkerSurveyInventory }
+if ($null -ne $machineWorker -and -not $PlanOnly) { Initialize-LabelMachineDiagnostics }
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot)
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')
 $source = Full $SourceRoot 'SourceRoot'
@@ -4761,6 +5060,10 @@ if ($PlanOnly) {
     exit 0
 }
 
+if ($null -ne $machineWorker) {
+    Invoke-LabelMachineWorkerInstall $machineWorker $source $install $sourceManifest $startupLifecycle
+    exit 0
+}
 $lad = Full $env:LOCALAPPDATA 'LOCALAPPDATA'
 if (-not $testMode) {
     $profileLocal = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)

@@ -1,0 +1,660 @@
+"""Isolated admin admission, machine placement and first worker startup."""
+
+import os
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
+from tests.test_shared_ancestor_protection import run_functions
+from tests.test_writer_transition import portable_pair  # noqa: F401
+
+
+INSTALLER = Path(__file__).resolve().parents[1] / "INSTALL_CANONICAL_PORTABLE.ps1"
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_kit_admin_entry_accepts_explicit_worker_account(tmp_path, engine):
+    executable = shutil.which(engine)
+    if executable is None:
+        pytest.skip(f"{engine} is required")
+    driver = tmp_path / "bind-admin-entry.ps1"
+    driver.write_text(
+        r"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile(
+    $env:LM_ADMIN_ENTRY_SOURCE,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Installer parse failed'}
+# Only its real parameter block is loaded; the installer body never executes.
+$attributes=(@($ast.ParamBlock.Attributes | ForEach-Object {$_.Extent.Text}) -join "`n")
+$binding=[scriptblock]::Create($attributes + "`n" + $ast.ParamBlock.Extent.Text + "`n'BOUND'")
+$result=& $binding -WorkerAccount 'S-1-5-21-111-222-333-1001'
+if($result -cne 'BOUND'){throw 'Worker target was not accepted'}
+'PASS'
+""",
+        encoding="utf-8-sig",
+    )
+    environment = os.environ.copy()
+    environment["LM_ADMIN_ENTRY_SOURCE"] = str(INSTALLER)
+    result = subprocess.run(
+        [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(driver)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        encoding="utf-8",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        check=False,
+    )
+    (tmp_path / "binding-stdout.txt").write_text(result.stdout, encoding="utf-8")
+    (tmp_path / "binding-stderr.txt").write_text(result.stderr, encoding="utf-8")
+    assert result.returncode == 0, "canonical entry does not accept the kit worker target"
+    assert result.stdout.strip() == "PASS"
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("case", [
+    "sid", "account", "session-zero", "missing-account", "missing-inventory",
+    "absent-file", "invalid-json", "not-ready", "wrong-sid", "wrong-profile",
+    "same-admin", "ordinary-arguments", "ordinary-default", "unresolved-account", "absent-profile", "session-zero-not-elevated",
+])
+def test_worker_inventory_admission_precedes_every_write(tmp_path, engine, case):
+    profile = tmp_path / "worker"
+    inventory = tmp_path / "inventory.json"
+    payload = {"status": "READY", "target_sid": "S-1-5-21-111-222-333-1001",
+               "target_profile_root": str(profile)}
+    if case == "not-ready":
+        payload["status"] = "BLOCKED"
+    if case == "wrong-sid":
+        payload["target_sid"] = "S-1-5-21-111-222-333-1002"
+    if case == "wrong-profile":
+        payload["target_profile_root"] = str(tmp_path / "other")
+    if case == "same-admin":
+        payload["target_sid"] = "S-1-5-21-111-222-333-9999"
+    if case != "absent-file":
+        inventory.write_text("not JSON" if case == "invalid-json" else json.dumps(payload), encoding="utf-8")
+    before = {p.relative_to(tmp_path).as_posix(): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    result = run_functions(tmp_path, INSTALLER, ["ByteSha", "Resolve-LabelMachineWorker"], r'''
+$case=$env:LM_ADMIN_CASE
+$sid='S-1-5-21-111-222-333-1001'
+$caller=[pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$true;session_id=2}
+function Resolve-LabelWorkerSid {param($Account)
+ if($env:LM_ADMIN_CASE -ceq 'unresolved-account'){throw 'Synthetic account cannot be resolved'}
+ if($Account -ceq 'TEST\worker'){return 'S-1-5-21-111-222-333-1001'}
+ return $Account
+}
+function Get-LabelWorkerProfileRoot {param($Sid) if($env:LM_ADMIN_CASE -ceq 'absent-profile'){return ''}; return $env:LM_ADMIN_PROFILE}
+$account=$sid;$path=$env:LM_ADMIN_INVENTORY
+if($case -ceq 'account'){$account='TEST\worker'}
+if($case -ceq 'session-zero'){$caller.session_id=0}
+if($case -ceq 'session-zero-not-elevated'){$caller.session_id=0;$caller.elevated=$false}
+if($case -ceq 'same-admin'){$account=$caller.sid}
+if($case -ceq 'missing-account'){$account=''}
+if($case -ceq 'missing-inventory'){$path=''}
+if($case -like 'ordinary-*'){$caller.elevated=$false}
+if($case -ceq 'ordinary-default'){$account='';$path=''}
+$worker=$null;$failure=$null
+try{$worker=Resolve-LabelMachineWorker $caller $account $path}catch{$failure=$_}
+if($case -cin @('sid','account','session-zero')){
+ if($null -ne $failure){throw $failure}
+ if($worker.sid -cne $sid -or $worker.inventory_sha256 -cne $env:LM_ADMIN_INVENTORY_SHA){throw 'Worker inventory binding lost'}
+ if($worker.local_app_data -cne (Join-Path $env:LM_ADMIN_PROFILE 'AppData\Local')){throw 'Profile differs'}
+}elseif($case -ceq 'ordinary-default'){
+ if($null -ne $failure -or $null -ne $worker){throw 'Ordinary entry changed'}
+}else{
+ if($null -eq $failure -or $null -ne $worker -or $failure.Exception.Data['worker_pending_failure'] -ne $true){throw 'Invalid worker input accepted'}
+}
+'PASS'
+''', engine=engine, values={"LM_ADMIN_CASE": case, "LM_ADMIN_PROFILE": str(profile),
+                            "LM_ADMIN_INVENTORY": str(inventory),
+                            "LM_ADMIN_INVENTORY_SHA": hashlib.sha256(inventory.read_bytes()).hexdigest() if inventory.exists() else ""})
+    assert result.returncode == 0, "isolated worker admission failed; native evidence retained"
+    assert result.stdout.strip() == "PASS"
+    after = {p.relative_to(tmp_path).as_posix(): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert after.keys() == before.keys() | {"contract.ps1"}
+    assert all(after[p] == content for p, content in before.items())
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("arguments", ["missing", "invalid-json"])
+@pytest.mark.parametrize("preloaded", [False, True])
+def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, arguments, preloaded):
+    product = INSTALLER.read_text(encoding="utf-8-sig")
+    caller = "(Get-LabelInstallerCaller)"
+    assert product.count(caller) == 1
+    product = product.replace(caller, "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$true;session_id=0})")
+    driver = tmp_path / "actual-entry.ps1"
+    driver.write_text(product, encoding="utf-8-sig")
+    bad_inventory = tmp_path / "inventory.json"
+    bad_inventory.write_text("not JSON", encoding="utf-8")
+    command = [shutil.which(engine), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(driver)]
+    if preloaded:
+        parent = tmp_path / "preloaded-entry.ps1"
+        quote = lambda path: "'" + str(path).replace("'", "''") + "'"
+        parent.write_text(
+            "param([string]$WorkerAccount,[string]$WorkerSurveyInventory)\n"
+            + ". " + quote(INSTALLER.parent / "tools/failure_redaction.ps1") + "\n"
+            + "function Get-KmtechSinkEnvironment{return @{}}\n"
+            + "function Write-KmtechProtectedFailureSidecar {param($Text) "
+              "[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'unexpected-diagnostic.txt'),'synthetic');throw 'Unexpected input diagnostic'}\n"
+            + "$forward=@{};if($WorkerAccount){$forward.WorkerAccount=$WorkerAccount};"
+              "if($WorkerSurveyInventory){$forward.WorkerSurveyInventory=$WorkerSurveyInventory}\n"
+            + "& " + quote(driver) + " @forward\nexit $LASTEXITCODE\n", encoding="utf-8-sig")
+        command[-1] = str(parent)
+    before = {p: p.read_bytes() for p in tmp_path.iterdir()}
+    if arguments == "invalid-json":
+        command += ["-WorkerAccount", "S-1-5-21-111-222-333-1001", "-WorkerSurveyInventory", str(bad_inventory)]
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    assert result.returncode == 1
+    assert result.stdout == ""
+    lines = result.stderr.strip().splitlines()
+    assert len(lines) == 1 and lines[0].startswith("LABEL_MATCH_INSTALLER_FAILURE=")
+    assert json.loads(lines[0].split("=", 1)[1])["reason_code"] == "PENDING_TARGET_INVALID"
+    assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+@pytest.fixture
+def pending_install(tmp_path, monkeypatch):
+    import auto_update
+    import current_user_onboarding as onboarding
+    import sys
+    from types import SimpleNamespace
+    root = tmp_path / "machine" / "current"
+    root.mkdir(parents=True)
+    marker = root.parent / "update-control" / "worker-pending.json"
+    marker.parent.mkdir()
+    payload = {"schema": "label-match-machine-worker-pending-v1",
+               "install_id": "20261011T000000000Z-" + "1" * 32,
+               "target_sid": "S-1-5-21-111-222-333-1001", "source_commit": "a" * 40,
+               "version": "v2.0.99", "installed_at": "2026-10-11T00:00:00Z", "inventory_sha256": "b" * 64}
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    (root / "portable-manifest.json").write_text(json.dumps({"source_commit": "a" * 40, "version": "v2.0.99"}), encoding="utf-8")
+    monkeypatch.setattr(auto_update, "current_process_sid", lambda: payload["target_sid"])
+    store = {}
+    writes = []
+    class Key:
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+    def read(_key, name):
+        if name not in store:
+            raise FileNotFoundError
+        return store[name], 1
+    def write(_key, name, _reserved, kind, value):
+        assert kind == 1
+        writes.append(value)
+        store[name] = value
+    def open_key(hive, subkey, _reserved, _access):
+        assert hive == "isolated-HKCU" and subkey == r"Software\KMTech\Label_Match"
+        return Key()
+    monkeypatch.setitem(sys.modules, "winreg", SimpleNamespace(HKEY_CURRENT_USER="isolated-HKCU", KEY_QUERY_VALUE=1,
+        KEY_SET_VALUE=2, REG_SZ=1, OpenKey=open_key, CreateKeyEx=open_key, QueryValueEx=read, SetValueEx=write))
+    return root, marker, payload, store, writes
+
+
+def test_worker_completion_keeps_machine_marker_and_is_per_install_id(pending_install):
+    import current_user_onboarding as onboarding
+    root, marker, payload, store, writes = pending_install
+    original = marker.read_bytes()
+    pending = onboarding.validate_pending_worker_install(root)
+    onboarding._complete_worker_install(pending)
+    assert onboarding.validate_pending_worker_install(root) is None
+    assert len(writes) == 1
+    assert marker.read_bytes() == original
+    payload["install_id"] = "20261011T000000001Z-" + "2" * 32
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    assert onboarding.validate_pending_worker_install(root)["install_id"] == payload["install_id"]
+
+
+@pytest.mark.parametrize("case", ["wrong-sid", "wrong-release", "malformed", "changed-during-onboarding"])
+def test_pending_failure_cannot_complete_or_begin_onboarding(pending_install, monkeypatch, case):
+    import current_user_onboarding as onboarding
+    import auto_update
+    root, marker, payload, store, writes = pending_install
+    if case == "wrong-sid":
+        monkeypatch.setattr(auto_update, "current_process_sid", lambda: "S-1-5-21-111-222-333-1002")
+    elif case == "wrong-release":
+        payload["source_commit"] = "c" * 40
+        marker.write_text(json.dumps(payload), encoding="utf-8")
+    elif case == "malformed":
+        marker.write_text("not JSON", encoding="utf-8")
+    if case == "changed-during-onboarding":
+        pending = onboarding.validate_pending_worker_install(root)
+        marker.write_text(marker.read_text() + " ", encoding="utf-8")
+        with pytest.raises(ValueError, match="changed during"):
+            onboarding._complete_worker_install(pending)
+    else:
+        # Native lifecycle verification is covered separately; this incomplete
+        # machine fixture isolates the refusal before onboarding's first write.
+        from contextlib import nullcontext
+        import writer_session_fence
+        monkeypatch.setattr(writer_session_fence, "_onboarding_lifecycle_scope", lambda _root: nullcontext())
+        monkeypatch.setattr(onboarding, "prepare_current_user_data_open", lambda *_a, **_k: pytest.fail("pending refusal opened user state"))
+        with pytest.raises(onboarding.CurrentUserOnboardingError):
+            onboarding.onboard_current_user(root)
+    assert writes == [] and store == {}
+
+
+def test_pending_absence_preserves_normal_startup(tmp_path):
+    import current_user_onboarding as onboarding
+    assert onboarding.validate_pending_worker_install(tmp_path / "source") is None
+    assert onboarding.validate_pending_worker_install(tmp_path / "current") is None
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("collision", [False, True])
+def test_common_shortcut_is_portable_and_preserves_legacy_collision(tmp_path, engine, collision):
+    menu = tmp_path / "menu"
+    menu.mkdir()
+    result = run_functions(tmp_path, INSTALLER, ["Install-LabelMachineWorkerShortcut", "Arg", "ByteSha"], r'''
+function Same($a,$b){return [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($a),[IO.Path]::GetFullPath($b))}
+function Sha($p){return ByteSha ([IO.File]::ReadAllBytes($p))}
+$install=Join-Path $env:LM_SHORTCUT_ROOT 'current'
+$menu=Join-Path $env:LM_SHORTCUT_ROOT 'menu'
+$path=Join-Path $menu 'KMTech 포장.lnk'
+$shell=New-Object -ComObject WScript.Shell
+if($env:LM_SHORTCUT_COLLISION -ceq 'True'){
+ $old=$shell.CreateShortcut($path);$old.TargetPath=Join-Path $env:LM_SHORTCUT_ROOT 'legacy\Label_Match.exe';$old.Save()
+ $before=Sha $path;$refused=$false
+ try{[void](Install-LabelMachineWorkerShortcut $install $menu)}catch{$refused=$true}
+ if(-not $refused -or (Sha $path) -cne $before){throw 'Legacy shortcut was changed'}
+}else{
+ $record=Install-LabelMachineWorkerShortcut $install $menu
+ $link=$shell.CreateShortcut($record.path)
+ if([IO.Path]::GetFileName($link.TargetPath) -cne 'pythonw.exe' -or $link.Arguments -cne ('-I -B "'+(Join-Path $install 'app\main.py')+'"')){throw 'Shortcut differs'}
+ # Survey's legacy executable probe compares Label_Match.exe exactly.
+ if([IO.Path]::GetFileName($link.TargetPath) -ceq 'Label_Match.exe'){throw 'New common shortcut is a legacy candidate'}
+ $before=Sha $path;[void](Install-LabelMachineWorkerShortcut $install $menu)
+ if((Sha $path) -cne $before){throw 'Reusing shortcut changed its bytes'}
+}
+'PASS'
+''', engine=engine, values={"LM_SHORTCUT_ROOT": str(tmp_path), "LM_SHORTCUT_COLLISION": str(collision)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PASS"
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_existing_onboarding_completes_pending_only_after_ready(pending_install, monkeypatch, ready):
+    import current_user_onboarding as onboarding
+    from tests.test_current_user_onboarding import isolated_data_generation_release
+    from tests.test_supported_lifecycle import _canonical_user_setup, _resume_user
+    root, marker, payload, store, writes = pending_install
+    # Reuse the established managed lifecycle fixture; only native machine
+    # verification, HKCU and registration are isolated.
+    isolated_data_generation_release.__wrapped__(monkeypatch)
+    fixed, selected, environment, paths = _canonical_user_setup(root.parent.parent / "managed", monkeypatch, active=payload["source_commit"])
+    marker = fixed.parent / "update-control" / "worker-pending.json"
+    selected_manifest = json.loads((selected / "portable-manifest.json").read_text())
+    payload["version"] = selected_manifest["version"]
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    original = marker.read_bytes()
+    calls = []
+    complete = onboarding._complete_worker_install
+    def observe(pending):
+        report = json.loads(paths.onboarding_report_path.read_text(encoding="utf-8"))
+        assert report["status"] == "READY" and report["server_registration_verified"] is True
+        assert report["relay_start"]["status"] == "ALIVE"
+        calls.append("complete")
+        complete(pending)
+    monkeypatch.setattr(onboarding, "_complete_worker_install", observe)
+    if ready:
+        assert _resume_user(selected, environment)["status"] == "READY"
+        assert _resume_user(selected, environment)["status"] == "READY"
+        assert calls == ["complete"] and len(writes) == 1
+    else:
+        with pytest.raises(onboarding.CurrentUserOnboardingError):
+            _resume_user(selected, environment, launcher=lambda _root: {"status": "UNKNOWN"})
+        assert calls == [] and writes == []
+    assert marker.read_bytes() == original
+
+
+def test_wrong_worker_gui_stops_before_data_generation_or_onboarding(pending_install, monkeypatch):
+    import Label_Match as app
+    import auto_update
+    root, marker, payload, store, writes = pending_install
+    monkeypatch.setattr(auto_update, "current_process_sid", lambda: "S-1-5-21-111-222-333-1002")
+    monkeypatch.setattr(auto_update, "startup_gate", lambda *_a: None)
+    monkeypatch.setattr(app, "_label_match_runtime_app_root", lambda: str(root))
+    monkeypatch.setattr(app, "dispatch_product_mode", lambda *_a: None)
+    monkeypatch.setattr(app, "verify_factory_contract_startup", lambda: None)
+    monkeypatch.setattr(app, "check_user_data_open", lambda *_a: pytest.fail("wrong worker opened G"))
+    monkeypatch.setattr(app, "onboard_current_user", lambda *_a, **_k: pytest.fail("wrong worker onboards"))
+    errors = []
+    monkeypatch.setattr(app, "_show_first_run_onboarding_error", errors.append)
+    assert app.main([]) == app.ONBOARDING_EXIT_CODE
+    assert errors[0].cause_code == "PENDING_WORKER_SID_MISMATCH"
+    assert writes == [] and store == {}
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("worker_started", [False, True])
+def test_pending_machine_removal_before_and_after_worker_start(tmp_path, engine, worker_started):
+    from tests.test_supported_removal_convergence import _owned_artifact, REMOVAL_SCRIPT, REPO
+    root = tmp_path / "machine"
+    _owned_artifact(root, "current")
+    control = root / "update-control"
+    control.mkdir()
+    (control / "worker-pending.json").write_text(json.dumps({"schema": "label-match-machine-worker-pending-v1"}))
+    menu = tmp_path / "program" / "StartMenu"
+    menu.mkdir(parents=True)
+    setup = run_functions(tmp_path, INSTALLER, ["Install-LabelMachineWorkerShortcut", "Arg", "ByteSha"], r'''
+function Same($a,$b){return [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($a),[IO.Path]::GetFullPath($b))}
+function Sha($p){return ByteSha ([IO.File]::ReadAllBytes($p))}
+[void](Install-LabelMachineWorkerShortcut (Join-Path $env:LM_REMOVE_ROOT 'current') (Join-Path $env:PROGRAMDATA 'StartMenu'))
+''', engine=engine, values={"LM_REMOVE_ROOT": str(root), "PROGRAMDATA": str(menu.parent)})
+    assert setup.returncode == 0, setup.stderr
+    worker = tmp_path / "worker" / "HKCU-completion.json"
+    if worker_started:
+        worker.parent.mkdir()
+        worker.write_text('{"WorkerInstallCompleted":"synthetic-id:commit"}')
+    before = worker.read_bytes() if worker_started else None
+    script = tmp_path / "remove-machine.ps1"
+    script.write_text(REMOVAL_SCRIPT.replace("$ErrorActionPreference='Stop'",
+        "$ErrorActionPreference='Stop'\nfunction Get-LabelOfficialLegacyTaskSnapshot {return $null}"), encoding="utf-8-sig")
+    env = os.environ.copy()
+    env["PROGRAMDATA"] = str(menu.parent)
+    result = subprocess.run([shutil.which(engine), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script),
+        str(REPO), str(root), "", "False"], env=env, capture_output=True, text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "PASS"
+    assert not (control / "worker-pending.json").exists()
+    assert not (menu / "KMTech 포장.lnk").exists()
+    assert worker.read_bytes() == before if worker_started else not worker.exists()
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("outcome", ["pending", "reuse", "helper-unproven"])
+def test_machine_install_uses_pinned_helper_and_never_writes_profiles(tmp_path, engine, outcome):
+    for name in ("worker", "admin", "other", "legacy"):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "preserve.dat").write_bytes(("untouched-" + name).encode())
+    originals = {p: p.read_bytes() for p in tmp_path.rglob("*.dat")}
+    result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "Save", "Save-LabelMachineMetadata", "ByteSha"], r'''
+$testMode=$true;$EvidencePath=Join-Path $env:LM_MACHINE_ROOT 'machine-evidence.json'
+$program=Join-Path $env:LM_MACHINE_ROOT 'program';$env:PROGRAMDATA=$program
+$install=Join-Path $env:LM_MACHINE_ROOT 'machine\current'
+$source=Join-Path $env:LM_MACHINE_ROOT 'source'
+$script:placed=0;$script:released=0;$script:authorityReleased=0
+if($env:LM_MACHINE_OUTCOME -ceq 'reuse'){[void](New-Item -ItemType Directory -Path $install)}
+function Full($p,$purpose){return [IO.Path]::GetFullPath($p)}
+function Sha($p){return ('c'*64)}
+function UnquiescedProductWriters{return @()}
+function PortableInventory($root){return [pscustomobject]@{sha256=('a'*64);bootstrap_aggregate_sha256=('b'*64);file_count=1;byte_count=4;critical_file_sha256=@{}}}
+function Assert-WriterTransition($candidate,$installed){return [pscustomobject]@{compatibility='fixture';candidate_inventory_sha256=('d'*64);installed_inventory_sha256=('d'*64)}}
+function FreezePlacementHelper($root,$auditRoot,$run,$critical){
+ $frozen=Join-Path $auditRoot 'frozen';[void](New-Item -ItemType Directory -Path (Join-Path $frozen 'tools'))
+ [IO.File]::WriteAllText((Join-Path $frozen 'tools\bootstrap_integrity.ps1'),'param($SharedCodeRoot)')
+ [IO.File]::WriteAllText((Join-Path $frozen 'writer.ps1'),"`$Script:LabelWriterFenceInventorySha256='"+('d'*64)+"'")
+ return [pscustomobject]@{root=$frozen;helper_path=(Join-Path $frozen 'helper.ps1');helper_sha256=('e'*64);integrity_sha256=('f'*64);writer_fence_path=(Join-Path $frozen 'writer.ps1');writer_fence_sha256=('1'*64)}
+}
+function PinnedFileBytes($path,$digest){return ,[IO.File]::ReadAllBytes($path)}
+function Enter-LabelWriterSessionAuthority{param($SessionId,$AttemptId,$OrchestratorSha256,$ReplacementTransactionId,$WriterContractSha256) return [pscustomobject]@{fixture=$true}}
+function Exit-LabelWriterSessionAuthority($authority){if(-not $authority.fixture){throw 'Authority lost'};$script:authorityReleased++}
+function Get-LabelLaunchFailure($failure,$phase){return [ordered]@{status='FAILED';reason_code='HELPER_CHILD_UNPROVEN'}}
+function Start-LabelWriterFence{param($ControlRoot,$Status,$SessionId,$AttemptId,$ReplacementTransactionId,$SessionStartedAtUtc,$OrchestratorSha256,$WriterContractSha256,[switch]$AuthorityOwnedByCaller)
+ if($Status -cne 'INSTALLING' -or -not $AuthorityOwnedByCaller){throw 'Machine authority differs'}
+}
+function Set-LabelWriterFenceDelegation{param($ControlRoot,$Status,$SessionId,$AttemptId,$ReplacementTransactionId,$DelegationToken,$LifetimeSeconds,$DelegatedSources)
+ if('worker_enrollment_network' -in $DelegatedSources -or 'current_user_onboarding' -in $DelegatedSources){throw 'Machine entry delegated user writes'}
+}
+function Stop-LabelWriterFence{param($ControlRoot,$SessionId,$AttemptId,$ReplacementTransactionId) $script:released++}
+function Install-LabelMachineWorkerShortcut($root,$menu){return [ordered]@{path=(Join-Path $menu 'KMTech 포장.lnk');sha256=('2'*64)}}
+function InvokeFrozenPlacementHelper($frozen,$parameters){
+ $script:placed++
+ if($parameters.WorkerSid -cne 'S-1-5-21-111-222-333-1001' -or
+    $parameters.DataGenerationSubjectSid -cne $parameters.WorkerSid -or
+    $parameters.OperatorLocalAppDataRoot -cne (Join-Path $env:LM_MACHINE_ROOT 'worker\AppData\Local') -or
+    $parameters.ExpectedBootstrapScriptSha256 -cne $frozen.helper_sha256 -or
+    $parameters.VerifiedBootstrapScriptPath -cne $frozen.helper_path -or
+    -not $parameters.BootstrapIntegrityPreloaded -or -not $parameters.WriterFenceFunctionsPreloaded -or
+    -not $Script:LabelPlacementSessionRequested){throw 'Pinned machine helper contract differs'}
+ foreach($path in $parameters.DataGenerationMarkerPaths){
+  if(-not $path.StartsWith($parameters.OperatorLocalAppDataRoot+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Other profile marker selected'}
+ }
+ # Placement is the separately tested native helper boundary; this fixture
+ # checks orchestration without launching host installation or user modes.
+ if($env:LM_MACHINE_OUTCOME -ceq 'helper-unproven'){
+  $Script:LabelPlacementSession=[pscustomobject]@{closed=$true;child_exit_unproven=$true}
+  throw 'Synthetic unproven placement child'
+ }
+ if(-not (Test-Path -LiteralPath $parameters.InstallRoot)){[void](New-Item -ItemType Directory -Path $parameters.InstallRoot)}
+ return 0
+}
+function Snapshot{throw 'Administrator read HKCU Run'}
+function Restore{throw 'Administrator wrote HKCU Run'}
+function InvokeRaw{throw 'Administrator ran user onboarding'}
+function StartRaw{throw 'Administrator started worker GUI/relay'}
+$worker=[pscustomobject]@{sid='S-1-5-21-111-222-333-1001';local_app_data=(Join-Path $env:LM_MACHINE_ROOT 'worker\AppData\Local');inventory_sha256=('3'*64)}
+$manifest=[pscustomobject]@{startup_update_protocol=1;source_commit=('4'*40);version='v2.0.99'}
+$failed=$false
+try{Invoke-LabelMachineWorkerInstall $worker $source $install $manifest}catch{
+ if($env:LM_MACHINE_OUTCOME -cne 'helper-unproven'){throw}
+ $failed=$true
+}
+$audit=Get-Content -LiteralPath $EvidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
+if($env:LM_MACHINE_OUTCOME -ceq 'helper-unproven'){
+ if(-not $failed -or $audit.status -cne 'RECOVERY_REQUIRED' -or $audit.code_state -cne 'UNKNOWN' -or
+    $script:released -ne 0 -or $script:authorityReleased -ne 1 -or $Script:LabelPlacementSessionRequested -or
+    (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json'))){throw 'Unproven child custody lost'}
+ 'PASS';exit 0
+}
+$pending=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+if($script:placed -ne 1 -or $script:released -ne 1 -or
+ $audit.schema -cne 'label-match-canonical-portable-install-v1' -or $audit.status -cne 'PASS_MACHINE_WORKER_PENDING' -or
+ $audit.worker_setup -cne 'PENDING' -or $pending.target_sid -cne $worker.sid -or
+ $pending.inventory_sha256 -cne $worker.inventory_sha256 -or $pending.source_commit -cne $manifest.source_commit -or
+ $pending.install_id -cne $audit.run_id -or $audit.worker_pending.path -cne (Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json')){throw 'Machine pending evidence differs'}
+'PASS'
+''', engine=engine, values={"LM_MACHINE_ROOT": str(tmp_path), "LM_MACHINE_OUTCOME": outcome})
+    assert result.returncode == 0, result.stderr
+    assert ("install_status=PASS_MACHINE_WORKER_PENDING" in result.stdout) == (outcome != "helper-unproven")
+    assert "install_status=PASS\n" not in result.stdout
+    assert all(p.read_bytes() == before for p, before in originals.items())
+    assert all(sorted((tmp_path / name).iterdir()) == [tmp_path / name / "preserve.dat"] for name in ("worker", "admin", "other", "legacy"))
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("worker_started", [False, True])
+def test_existing_helper_replacement_restores_exact_code_preimage(tmp_path, engine, worker_started):
+    source = tmp_path / "source"
+    current = tmp_path / "machine" / "current"
+    for root, commit, content in ((source, "a" * 40, b"new-code"), (current, "b" * 40, b"prior-code")):
+        (root / "app").mkdir(parents=True)
+        (root / "app/main.py").write_bytes(content)
+        (root / "runtime").mkdir()
+        (root / "runtime/pythonw.exe").write_bytes(b"synthetic-runtime")
+        (root / "portable-manifest.json").write_text(json.dumps({"schema": "label-match-portable-tree-v1", "source_commit": commit}))
+    business = tmp_path / "worker" / "business.dat"
+    business.parent.mkdir()
+    business.write_bytes(b"new-user-ready" if worker_started else b"legacy-user-state")
+    result = run_functions(tmp_path, INSTALLER.parent / "INSTALL_THIS_PC.ps1", ["Get-StrictFullPath", "Test-SamePath", "Get-CodeInventory", "Get-InventoryAggregate"], r'''
+. (Join-Path (Split-Path -Parent $env:LM_CONTRACT_SOURCE) 'tools\bootstrap_integrity.ps1') -SharedCodeRoot (Split-Path -Parent $env:LM_CONTRACT_SOURCE)
+function Assert-AlreadyElevated{}
+$WorkerSid='S-1-5-21-111-222-333-1001';$DataGenerationSubjectSid=$WorkerSid
+$OperatorLocalAppDataRoot=Join-Path $env:LM_REPLACEMENT_ROOT 'worker\AppData\Local';$TlsCaBundlePath=''
+$identity=@($ast.EndBlock.Statements | Where-Object {
+ ($_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -ceq '$OperatorSid') -or
+ ($_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text.StartsWith('if ($WorkerSid) {'))
+})
+if($identity.Count -ne 2){throw 'Worker helper identity block differs'}
+foreach($statement in $identity){. ([scriptblock]::Create($statement.Extent.Text))}
+if($OperatorSid -cne $WorkerSid){throw 'Helper used administrator SID'}
+$IntegrityFileName='bootstrap-integrity.json';$IntegritySchema='label-match-bootstrap-integrity-v1'
+$sourceRootFull=Join-Path $env:LM_REPLACEMENT_ROOT 'source'
+$applicationParent=Join-Path $env:LM_REPLACEMENT_ROOT 'machine'
+$installRootFull=Join-Path $applicationParent 'current';$placementRoot=$installRootFull
+$stagingRoot=Join-Path $applicationParent '.current.bootstrap.fixture'
+$sourceInventory=@(Get-CodeInventory $sourceRootFull);$sourceAggregate=Get-InventoryAggregate $sourceInventory
+[void](Write-BootstrapIntegrityRecord -Root $installRootFull -CodeRoot $installRootFull)
+$before=(Get-InventoryAggregate @(Get-CodeInventory $installRootFull))
+$body=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.TryStatementAst] -and
+ $n.Body.Statements.Count -gt 0 -and $n.Body.Statements[0].Extent.Text -ceq 'Assert-PlacementDataDowngrade $sourceRootFull'},$true))
+if($body.Count -ne 1){throw 'Actual placement body differs'}
+$testOverride=$true;$applyHardenedAcl=$false;$aclReadbackStatus='NOT_TESTED'
+$versionedPlacement=$false;$ReplaceExistingVerifiedPortable=[switch]$true;$replacementApplied=$false
+$replacementRollbackRoot='';$writerFenceLease=$null;$releaseLayout='portable'
+$Script:StartupUpdatePreimage=$null
+function Assert-PlacementDataDowngrade($root){}
+function Install-CurrentUserTlsCaBootstrap{throw 'Injected machine readback failure'}
+function Initialize-LabelStartupUpdate($root){
+ if($OperatorSid -cne 'S-1-5-21-111-222-333-1001'){throw 'Machine task targets administrator'}
+}
+[void](New-Item -ItemType Directory -Path $stagingRoot)
+$refused=$false
+try{. ([scriptblock]::Create($body[0].Extent.Text))}catch{
+ if($_.Exception.Message -cne 'Verified replacement failed and the prior canonical tree was restored.'){throw}
+ $refused=$true
+}
+if(-not $refused -or (Get-InventoryAggregate @(Get-CodeInventory $installRootFull)) -cne $before){throw 'Existing helper failed exact code restore'}
+[void](Assert-BootstrapIntegrityRecord -Root $installRootFull)
+'RESTORE_PASS'
+''', engine=engine, values={"LM_REPLACEMENT_ROOT": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    assert "RESTORE_PASS" in result.stdout
+    assert (current / "app/main.py").read_bytes() == b"prior-code"
+    assert business.read_bytes() == (b"new-user-ready" if worker_started else b"legacy-user-state")
+
+
+@pytest.mark.parametrize("case", ["forward", "reverse", "one-byte", "other-before", "extra-writer"])
+def test_admin_writer_delta_accepts_only_exact_reviewed_direction(tmp_path, portable_pair, case):
+    from tests.test_writer_transition import _pin, _manifest
+    import sys
+    candidate = tmp_path / "reviewed-source"
+    shutil.copytree(portable_pair[0], candidate)
+    (candidate / "app/main.py").write_bytes((INSTALLER.parent / "portable/main.py").read_bytes())
+    _pin(candidate)
+    _manifest(candidate, "7" * 40)
+    installed = tmp_path / "installed"
+    shutil.copytree(candidate, installed)
+    for relative in ("app/main.py", "app/Label_Match.py", "app/current_user_onboarding.py", "app/writer_session_fence.py",
+                     "INSTALL_THIS_PC.ps1", "tools/label_writer_fence.ps1"):
+        local = "portable/main.py" if relative == "app/main.py" else relative.removeprefix("app/")
+        (installed / relative).write_bytes(subprocess.check_output([
+            "git", "-c", "core.autocrlf=false", "-C", str(INSTALLER.parent), "show", "4550330:" + local]))
+    _pin(installed)
+    _manifest(installed, "5" * 40)
+    source = candidate
+    if case == "reverse":
+        source, installed = installed, candidate
+    elif case in {"one-byte", "other-before", "extra-writer"}:
+        if case == "one-byte":
+            source = tmp_path / "candidate"
+            shutil.copytree(candidate, source)
+        modified = source if case == "one-byte" else installed
+        if case == "extra-writer":
+            (modified / "app/extra_writer.py").write_text("from writer_session_fence import writer_sink\n@writer_sink('unexpected_admin_writer')\ndef write(): pass\n")
+        else:
+            path = modified / "app/current_user_onboarding.py"
+            path.write_bytes(path.read_bytes() + b"\n")
+        _pin(modified)
+        _manifest(modified, "6" * 40)
+    # Execute the exact shipped read-only probe. The existing native launcher
+    # suite separately tests its attestation and child transport.
+    text = INSTALLER.read_text(encoding="utf-8-sig")
+    start = text.index("$probe = @'") + len("$probe = @'")
+    probe = text[start:text.index("\n'@", start)].lstrip()
+    result = subprocess.run([sys.executable, "-I", "-B", "-", str(source), str(installed)],
+        input=probe, capture_output=True, text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    (tmp_path / "writer-probe.stdout.log").write_text(result.stdout)
+    (tmp_path / "writer-probe.stderr.log").write_text(result.stderr)
+    if case == "forward":
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["compatibility"] == "PINNED_ADMIN_WORKER_PENDING"
+    else:
+        assert result.returncode != 0
+        assert "WRITER_TRANSITION_" in result.stderr
+
+
+def test_pending_fixed_bootstrap_checks_the_selected_version(pending_install):
+    import current_user_onboarding as onboarding
+    root, marker, payload, store, writes = pending_install
+    selected = root.parent / "versions" / payload["source_commit"]
+    selected.mkdir(parents=True)
+    (selected / "portable-manifest.json").write_bytes((root / "portable-manifest.json").read_bytes())
+    (root / "portable-manifest.json").write_text(json.dumps({"source_commit": "c" * 40, "version": payload["version"]}))
+    active = marker.parent / "active.json"
+    active.write_text(json.dumps({"sha": payload["source_commit"]}))
+    assert onboarding.validate_pending_worker_install(root)["source_commit"] == payload["source_commit"]
+    active.write_text(json.dumps({"sha": "d" * 40}))
+    with pytest.raises(onboarding.CurrentUserOnboardingError):
+        onboarding.validate_pending_worker_install(root)
+    assert writes == []
+
+
+def test_portable_bootstrap_shows_wrong_worker_before_startup_gate(pending_install, monkeypatch):
+    import importlib.util
+    import sys
+    import auto_update
+    import Label_Match as app
+    root, marker, payload, store, writes = pending_install
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    spec = importlib.util.spec_from_file_location("isolated_pending_bootstrap", INSTALLER.parent / "portable/main.py")
+    bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap)
+    monkeypatch.setattr(bootstrap, "APP_ROOT", root / "app")
+    monkeypatch.setattr(sys, "argv", ["main.py"])
+    monkeypatch.setattr(auto_update, "current_process_sid", lambda: "S-1-5-21-111-222-333-1002")
+    monkeypatch.setattr(auto_update, "startup_gate", lambda *_a, **_k: pytest.fail("wrong worker reached startup gate"))
+    errors = []
+    monkeypatch.setattr(app, "_show_first_run_onboarding_error", errors.append)
+    assert bootstrap.main() == app.ONBOARDING_EXIT_CODE
+    assert errors[0].cause_code == "PENDING_WORKER_SID_MISMATCH"
+    assert writes == [] and store == {}
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_admin_failure_diagnostics_and_child_temp_stay_in_machine_scope(tmp_path, engine):
+    # Keep this fixture under MAX_PATH for the real .NET Framework file stream.
+    program = tmp_path.parent / ("diag-" + engine.removesuffix(".exe"))
+    result = run_functions(tmp_path, INSTALLER, ["Initialize-LabelMachineDiagnostics"], r'''
+$testMode=$true
+$env:PROGRAMDATA=$env:LM_DIAGNOSTIC_ROOT
+function Full($path,$purpose){return [IO.Path]::GetFullPath($path)}
+function Get-KmtechSinkEnvironment{return @{}}
+# ACL application requires an elevated token in production. Its exact principal
+# set is checked here; file creation and inherited child TEMP remain native.
+function Set-Acl {
+ [CmdletBinding()]param($LiteralPath,$AclObject)
+ $rules=@($AclObject.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+ if((Split-Path -Leaf $LiteralPath) -like 'tmp-*' -and $rules.Count -eq 2){
+  foreach($rule in $rules){if($rule.IdentityReference.Value -notin @('S-1-5-18','S-1-5-32-544')){throw 'Unexpected diagnostic ACL'}}
+  if(-not $AclObject.AreAccessRulesProtected){throw 'Diagnostic ACL inherits'}
+ }
+}
+Initialize-LabelMachineDiagnostics
+$root=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+if(-not $root.StartsWith($env:PROGRAMDATA+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Diagnostic root escaped machine scope'}
+$reference=Write-KmtechProtectedFailureSidecar -Text 'Synthetic machine failure'
+if(-not ([string]$reference.path).StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Failure trace escaped machine scope'}
+$child=& $env:LM_DIAGNOSTIC_ENGINE -NoLogo -NoProfile -NonInteractive -Command "[IO.File]::WriteAllText((Join-Path ([IO.Path]::GetTempPath()) 'inherited.txt'),'machine'); 'CHILD_PASS'"
+if($LASTEXITCODE -ne 0 -or $child -cne 'CHILD_PASS' -or -not (Test-Path -LiteralPath (Join-Path $root 'inherited.txt'))){throw 'Child diagnostic temp differs'}
+'PASS'
+''', engine=engine, values={"LM_DIAGNOSTIC_ROOT": str(program), "LM_DIAGNOSTIC_ENGINE": shutil.which(engine) or engine})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PASS"
+    assert set(p.name for p in tmp_path.iterdir()) == {"contract.ps1"}
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_native_writer_probe_pin_matches_shipped_powershell_bytes(tmp_path, engine):
+    result = run_functions(tmp_path, INSTALLER, ["Assert-WriterTransition"], r'''
+$function=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-WriterTransition'},$true))
+if($function.Count -ne 1){throw 'Writer probe function differs'}
+$assignment=@($function[0].FindAll({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$probe'},$true))
+if($assignment.Count -ne 1){throw 'Writer probe assignment differs'}
+$literal=@($assignment[0].Right.FindAll({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.StringConstantType -eq 'SingleQuotedHereString'},$true))
+if($literal.Count -ne 1){throw 'Writer probe literal differs'}
+$declaration=[regex]::Match($function[0].Extent.Text,"-ProbeBytes \`$probeBytes -ExpectedSha256 '([0-9a-f]{64})'")
+if(-not $declaration.Success){throw 'Writer probe pin is absent'}
+$sha=[Security.Cryptography.SHA256]::Create()
+try{$actual=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($literal[0].Value.Replace("`r`n","`n"))))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
+if($actual -cne $declaration.Groups[1].Value){throw 'Shipped writer probe is rejected by its fixed pin'}
+'PASS'
+''', engine=engine)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PASS"

@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import stat
 import sys
@@ -1005,6 +1006,99 @@ def prepare_current_user_data_open(
     return paths, tls_ca_source, credential_input
 
 
+def _worker_install_completion() -> str:
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\KMTech\Label_Match", 0, winreg.KEY_QUERY_VALUE) as key:
+            value, kind = winreg.QueryValueEx(key, "WorkerInstallCompleted")
+    except FileNotFoundError:
+        return ""
+    if kind != winreg.REG_SZ or not isinstance(value, str):
+        raise ValueError("worker installation completion registry type differs")
+    return value
+
+
+def validate_pending_worker_install(app_root: str | os.PathLike[str]) -> dict[str, Any] | None:
+    """Read the machine marker before any business-data or current-user write."""
+    from auto_update import installation_root, current_process_sid
+    root = _resolved(app_root)
+    managed = installation_root(root)
+    if managed is None:
+        return None
+    path = managed / "update-control" / "worker-pending.json"
+    try:
+        assert_path_has_no_reparse_components(path, label="worker installation marker")
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            return None
+        if not 0 < size <= 65536:
+            raise ValueError("worker installation marker size differs")
+        with path.open("rb") as stream:
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("worker installation marker is oversized")
+        pending = json.loads(raw.decode("utf-8-sig"))
+        if not isinstance(pending, dict) or pending.get("schema") != "label-match-machine-worker-pending-v1":
+            raise ValueError("worker installation marker schema differs")
+        if pending.get("target_sid") != current_process_sid():
+            raise CurrentUserOnboardingError(
+                "설치할 때 지정한 작업자 계정으로 프로그램을 실행하세요.", report_path=path,
+                cause_code="PENDING_WORKER_SID_MISMATCH",
+            )
+        install_id, commit = pending.get("install_id"), pending.get("source_commit")
+        if (not isinstance(install_id, str) or not re.fullmatch(r"\d{8}T\d{9}Z-[0-9a-f]{32}", install_id)
+                or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit)
+                or not isinstance(pending.get("inventory_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", pending["inventory_sha256"])):
+            raise ValueError("worker installation marker identity differs")
+        completion = install_id + ":" + commit
+        if _worker_install_completion() == completion:
+            return None
+        if root.name.casefold() == "app":
+            root = root.parent
+        active_path = managed / "update-control" / "active.json"
+        if active_path.exists():
+            assert_path_has_no_reparse_components(active_path, label="worker installation active code")
+            active = _read_json(active_path, "worker installation active code")
+            if active.get("sha") != commit:
+                raise ValueError("worker installation active release differs")
+            if root == managed / "current" and (managed / "versions" / commit).is_dir():
+                root = managed / "versions" / commit
+        assert_path_has_no_reparse_components(root / "portable-manifest.json", label="worker installation manifest")
+        manifest = _read_json(root / "portable-manifest.json", "worker installation manifest")
+        if manifest.get("source_commit") != commit or manifest.get("version") != pending.get("version"):
+            raise ValueError("worker installation marker release differs")
+        pending["marker_path"] = path
+        pending["marker_sha256"] = hashlib.sha256(raw).hexdigest()
+        pending["completion"] = completion
+        return pending
+    except CurrentUserOnboardingError:
+        raise
+    except Exception as exc:
+        raise CurrentUserOnboardingError(
+            "작업자 설치 준비 기록을 확인하지 못했습니다. 관리자에게 설치 기록을 확인해 달라고 요청하세요.",
+            report_path=path, cause_code="PENDING_WORKER_INSTALL_INVALID",
+        ) from exc
+
+
+def _complete_worker_install(pending: Mapping[str, Any]) -> None:
+    # Called inside the existing onboarding admission, after READY report readback.
+    import winreg
+    path = Path(pending["marker_path"])
+    assert_path_has_no_reparse_components(path, label="worker installation marker")
+    with path.open("rb") as stream:
+        raw = stream.read(65537)
+    if hashlib.sha256(raw).hexdigest() != pending["marker_sha256"]:
+        raise ValueError("worker installation changed during onboarding")
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\KMTech\Label_Match", 0,
+                           winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as key:
+        winreg.SetValueEx(key, "WorkerInstallCompleted", 0, winreg.REG_SZ, pending["completion"])
+        value, kind = winreg.QueryValueEx(key, "WorkerInstallCompleted")
+        if value != pending["completion"] or kind != winreg.REG_SZ:
+            raise ValueError("worker installation completion readback differs")
+
+
 @writer_sink("current_user_onboarding", probe_only=True)
 def onboard_current_user(
     app_root: str | os.PathLike[str],
@@ -1035,6 +1129,7 @@ def onboard_current_user(
 ) -> dict[str, Any]:
     from auto_update import installation_root, assert_registration_storage
     from writer_session_fence import onboarding_lifecycle_context
+    pending_worker = validate_pending_worker_install(app_root)
     managed = installation_root(Path(app_root))
     setup_root = Path(app_root)
     if managed is not None and (managed / "update-control").exists():
@@ -1373,6 +1468,8 @@ def onboard_current_user(
                 }
             )
             _write_json_atomic(paths.onboarding_report_path, report)
+            if pending_worker is not None:
+                _complete_worker_install(pending_worker)
         return report
     except EnrollmentMutexError as exc:
         restore_stop_marker_fence()

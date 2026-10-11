@@ -60,6 +60,15 @@ def main() -> int:
         return lifecycle_context_main(sys.argv[2:])
     if "--zero-pe-portable-smoke" in sys.argv[1:]:
         return _portable_smoke()
+    if not sys.argv[1:]:
+        # Show the worker-account guidance before the existing startup SID gate.
+        from current_user_onboarding import CurrentUserOnboardingError, validate_pending_worker_install
+        try:
+            validate_pending_worker_install(APP_ROOT)
+        except CurrentUserOnboardingError as exc:
+            from Label_Match import ONBOARDING_EXIT_CODE, _show_first_run_onboarding_error
+            _show_first_run_onboarding_error(exc)
+            return ONBOARDING_EXIT_CODE
     from auto_update import startup_gate
     result = startup_gate(APP_ROOT, list(sys.argv[1:]))
     if result is not None:

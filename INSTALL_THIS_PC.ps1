@@ -6,6 +6,7 @@ param(
     [string]$InstallRoot = "C:\KMTech\Apps\Label_Match\current",
     [string]$TlsCaBundlePath = "",
     [string]$OperatorLocalAppDataRoot = "",
+    [string]$WorkerSid = "",
     [string]$ElevationLogPath = "",
     [string]$ExpectedBootstrapScriptSha256 = "",
     [string]$VerifiedBootstrapScriptPath = "",
@@ -1619,7 +1620,7 @@ function Get-LabelRemovalArtifacts([string]$ApplicationRoot, [string[]]$Retained
                     foreach ($path in $plan.metadata_roots.Keys) { $metadataRoots[$path] = $plan.metadata_roots[$path] }
                 } else { $retained += $child.FullName }
             } elseif (-not $child.PSIsContainer) {
-                if ($child.Name -cin @('policy.json','active.json','transition.json') -or
+                if ($child.Name -cin @('policy.json','active.json','transition.json','worker-pending.json') -or
                     $child.Name -cmatch '^(?:policy-before|failure)-[0-9a-f]{32}\.json$' -or
                     $child.Name -cmatch '^failed-[0-9a-f]{32}-(?:policy|active)\.json$') {
                     $artifacts += $child.FullName
@@ -1700,6 +1701,21 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
     New-Item -ItemType Directory -Path $evidence | Out-Null
     if ($null -eq $TaskFolder -and -not $testOverride) { throw 'REMOVAL_TASK_OBSERVATION_UNKNOWN' }
     if ($null -ne $TaskFolder) { Remove-LabelScheduledTasks $TaskFolder $evidence $current }
+    # The admin entry owns only the fixed portable shortcut. Preserve legacy
+    # or changed shortcuts and never inspect a worker's desktop or Run key.
+    if (Test-Path -LiteralPath (Join-Path $application 'update-control\worker-pending.json') -PathType Leaf) {
+        $menu = if ($testOverride) { Join-Path $env:PROGRAMDATA 'StartMenu' } else { [Environment]::GetFolderPath('CommonPrograms') }
+        $shortcutPath = Join-Path $menu 'KMTech 포장.lnk'
+        if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+            Assert-LabelRemovalBoundary $shortcutPath
+            $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+            $arguments = '-I -B "' + (Join-Path $current 'app\main.py') + '"'
+            if ((Test-SamePath $shortcut.TargetPath (Join-Path $current 'runtime\pythonw.exe')) -and
+                $shortcut.Arguments -ceq $arguments -and (Test-SamePath $shortcut.WorkingDirectory $current)) {
+                Move-Item -LiteralPath $shortcutPath -Destination (Join-Path $evidence 'machine-shortcut.lnk')
+            }
+        }
+    }
     Assert-LabelRemovalQuiescent $application $ExcludeProcessIds
     $plan = Get-LabelRemovalArtifacts $application
     if (Test-Path -LiteralPath $markerPath) { $plan.artifacts += $markerPath }
@@ -1754,6 +1770,14 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
 
 
 $OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+if ($WorkerSid) {
+    Assert-AlreadyElevated
+    if ($WorkerSid -cnotmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -or $WorkerSid -ceq $OperatorSid -or
+        $WorkerSid -cne $DataGenerationSubjectSid -or -not $OperatorLocalAppDataRoot -or $TlsCaBundlePath) {
+        throw 'Machine worker placement binding differs.'
+    }
+    $OperatorSid = $WorkerSid
+}
 $testOverride = $earlyTestOverride
 if ([string]::IsNullOrWhiteSpace($OperatorLocalAppDataRoot)) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "The invoking operator LOCALAPPDATA is unavailable." }
@@ -1944,7 +1968,7 @@ $stagingRoot = Join-Path $applicationParent ('.current.bootstrap.' + [Guid]::New
 $replacementRollbackRoot = ''
 $replacementApplied = $false
 $Script:StartupUpdatePreimage = $null
-$OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+# Keep the target SID selected above; ordinary placement still uses its caller.
 New-Item -ItemType Directory -Path $applicationParent -Force | Out-Null
 if ($applyHardenedAcl) {
     Set-HardenedCodeAcl $applicationParent

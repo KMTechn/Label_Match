@@ -1,5 +1,11 @@
 # Label_Match 데이터·통합 계약
 
+관리자 설치 입구(v0, w9firstupdsub63 1차 답)는 상승 또는 Session 0에서만 `-WorkerAccount <SID 또는 DOMAIN\이름>`·`-WorkerSurveyInventory <절대 JSON 경로>`를 받는다. 실제 상승과 두 인수가 필요하다. 제품은 `status == READY`, 해석한 작업자 SID와 같은 `target_sid`(호출 관리자 SID와 다름), 그 SID의 ProfileList와 같은 `target_profile_root`만 확인한다. 파일/JSON/필드/바인딩 실패는 import·감사·설치·프로필 쓰기 전 고정 실패 한 줄로 끝난다. 나머지 inventory 필드는 해석하지 않고 파일 SHA256만 기계 표지에 기록한다. 일반 작업자 세션에 이 인수가 있으면 거절한다.
+
+기계 배치는 기존 pinned helper·guardian·검증/백업·자료 세대 거절·startup policy/task를 사용한다. startup의 operator SID/LocalAppData는 지정 작업자를 가리킨다. 관리자 길은 HKCU Run·등록·TLS·업무 자료·옛 앱/바로가기 이전을 실행하지 않는다. `update-control/worker-pending.json`은 보호된 부모에 둔 읽기 전용 `label-match-machine-worker-pending-v1` 기록이며 설치 ID·대상 SID·source commit·판·inventory SHA256을 결속한다. `PASS_MACHINE_WORKER_PENDING`은 기계 몫의 성공과 작업자 준비 대기를 뜻한다.
+
+첫 GUI 시작은 자료 세대 쓰기 전 표지의 SID를 확인하고 기존 current-user onboarding을 사용한다. READY·등록·relay 확인 뒤 기존 admission 안에서 작업자 HKCU `Software\KMTech\Label_Match\WorkerInstallCompleted`(REG_SZ, `<install_id>:<source_commit>`)를 쓰고 되읽는다. 같은 ID의 완료는 멱등이며 기계 표지를 지우거나 다시 쓰지 않는다. 실패/다른 SID는 완료 기록을 만들지 않는다. 일반 시작의 기존 onboarding 검증은 유지한다. 옛 앱 백업·끄기·복원과 관리자 `-Rollback`은 키트 계약이며 제품 canonical에 Rollback 인수나 callback을 추가하지 않는다.
+
 onboarding과 `start_user_relay_process`는 정확히 승인된 probe sink이며 부모 writer lease도 시작·생존 확인 전에 해제한다. onboarding lifecycle 검증은 호출당 한 번 onboarding·부모 admission 밖에서 실행하며 그 호출의 thread-local 범위에만 결과를 보관한다. 각 쓰기 admission은 helper를 반복하지 않고 policy·active·transition 원 바이트의 digest와 delegation을 재확인하며 변경 시 `WRITER_LIFECYCLE_CHANGED`로 거절한다. 다른 source·스레드·다음 호출은 기존 검증을 유지한다. 디렉터리·TLS·등록·세대·원장·설정·Run·옛 작업·stop 표지·환경·보고서 쓰기는 각각 기존 source admission을 얻는다. READY는 relay 확인 뒤 새 admission에서 fence 재확인과 환경 적용을 마친 뒤 게시한다. canonical의 연기와 기존 실패 코드·stop 복원·지원 복구는 유지한다. 기존 G 기록 묶음·옛 작업 은퇴·fixed helper 자기 admission은 측정 P2로 컷 뒤에 남긴다(코디 승인; BACKLOG).
 
 등록·배치 자식의 종료 증명은 시작 시각 기준 하나의 30초 벽시계 마감을 공유한다. 모든 CIM 소유 관찰은 같은 프로세스의 읽기 전용 runspace에서 남은 시간만 기다리고 OperationTimeoutSec도 남은 초로 제한한다. 만료하면 BeginStop만 요청하고 관찰 결과·취소 완료를 기다리지 않으며 이후 새 종료 동작은 없다. 등록은 REGISTRATION_CHILD_UNPROVEN, 배치는 HELPER_CHILD_UNPROVEN으로 복원을 거절한다. 정상 기한 안의 live 부모 사슬·생성 시각·열린 process handle 검증은 유지한다.
