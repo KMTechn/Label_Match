@@ -243,6 +243,7 @@ from item_catalog_sync import (
     get_catalog_attempt_context_from_error,
     get_sanitized_catalog_attempt_context,
     get_verified_catalog_snapshot,
+    offline_catalog_startable,
     refresh_item_catalog,
     requires_verified_catalog_snapshot,
     write_item_catalog_failure_diagnostic,
@@ -23582,6 +23583,17 @@ def _first_run_onboarding_enabled():
 
 
 def _show_first_run_onboarding_error(failure):
+    if getattr(failure, "_startup_check_refusal", False):
+        try:
+            from startup_observation import observe_startup, onboarding_reason
+            reason = getattr(failure, "_startup_check_reason", None) or onboarding_reason(failure)
+            reasons = [reason]
+            if failure.status == "UNKNOWN":
+                reasons.append("UNKNOWN_DATA" if reason == "DATA_GENERATION_REFUSED" else "UNKNOWN_ACCOUNT")
+            observe_startup(reasons, refused=True)
+        except Exception:
+            pass
+        return
     parent = None
     try:
         message = FIRST_RUN_ONBOARDING_CAUSE_MESSAGES.get(
@@ -23622,6 +23634,10 @@ def _show_installation_recovery_required(error):
         status="BLOCKED",
         cause_code="INSTALLATION_RECOVERY_REQUIRED",
     )
+    failure._startup_check_refusal = True
+    code = str(getattr(error, "code", ""))
+    failure._startup_check_reason = ("UNKNOWN_FENCE" if "UNKNOWN" in code else
+                                    "MACHINE_DEPLOY_FENCE" if "MACHINE" in code else "ACTIVE_WRITER_FENCE")
     _label_match_startup_trace(
         "installation_recovery_required",
         guard_code=error.code,
@@ -23795,7 +23811,8 @@ def _run_label_match_application():
             _label_match_startup_trace(
                 "item_catalog_retry_available", cause_code=error.cause_code,
             )
-            if legacy_label_transition_enabled():
+            if offline_catalog_startable(authenticated=False, enrolled=True,
+                                         legacy=legacy_label_transition_enabled()):
                 _start_without_confirmed_item_catalog(error)
                 active_catalog_path, catalog_unconfirmed = None, True
                 break
@@ -23821,6 +23838,11 @@ def _run_label_match_application():
             and catalog_context.get("catalog_source") == "VERIFIED_CACHE"
         ):
             _show_item_catalog_cache_warning(catalog_context)
+    try:
+        from startup_observation import observe_startup
+        observe_startup()
+    except Exception:
+        pass
     app = Label_Match()
     from auto_update import trial_context, publish_gui_ready, trial_stop_requested, confirmed_trial
     _update_trial = trial_context(Path(__file__).resolve().parent) is not None
@@ -23866,10 +23888,11 @@ def _run_label_match_application():
 
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
+    startup_identity, identity_unknown = {}, False
     try:
-        release_identity(_label_match_runtime_app_root())
+        startup_identity = release_identity(_label_match_runtime_app_root())
     except Exception:
-        pass  # Existing G checks retry and deny failures in the normal flow.
+        identity_unknown = True  # Existing checks still retry and decide admission.
     from auto_update import startup_gate
     update_result = startup_gate(Path(__file__).resolve().parent, arguments)
     if update_result is not None:
@@ -23877,6 +23900,11 @@ def main(argv=None):
     hosted_result = dispatch_product_mode(arguments)
     if hosted_result is not None:
         return hosted_result
+    try:
+        from startup_observation import begin_startup, observe_startup
+        begin_startup(startup_identity, unknown=identity_unknown)
+    except Exception:
+        observe_startup = lambda *args, **kwargs: None
     verify_factory_contract_startup()
     try:
         validate_pending_worker_install(_label_match_runtime_app_root())
@@ -23912,6 +23940,7 @@ def main(argv=None):
                     status=exc.status,
                     report_path=str(exc.report_path),
                 )
+                exc._startup_check_refusal = True
                 _show_first_run_onboarding_error(exc)
                 return ONBOARDING_EXIT_CODE
         settings_path = _default_label_match_settings_path()
@@ -23927,10 +23956,19 @@ def main(argv=None):
         _show_installation_recovery_required(exc)
         return ONBOARDING_EXIT_CODE
     except CurrentUserOnboardingError as exc:
+        exc._startup_check_refusal = True
         _show_first_run_onboarding_error(exc)
         return ONBOARDING_EXIT_CODE
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)
+        try:
+            from label_data_generation import UNKNOWN_MESSAGE
+            reasons = ["DATA_GENERATION_REFUSED"]
+            if str(exc) == UNKNOWN_MESSAGE or exc.private_cause is not None or exc.__cause__ is not None:
+                reasons.append("UNKNOWN_DATA")
+            observe_startup(reasons, refused=True)
+        except Exception:
+            pass
         return ONBOARDING_EXIT_CODE
     except ItemCatalogSyncError as exc:
         catalog_context = get_catalog_attempt_context_from_error(exc)
@@ -23950,10 +23988,10 @@ def main(argv=None):
             http_status_code=catalog_context.get("http_status_code"),
             **_item_catalog_profile_trace_details(catalog_context),
         )
-        if not getattr(exc, "_catalog_retry_dialog_shown", False):
-            _show_item_catalog_startup_error(exc)
+        observe_startup(["CATALOG_OFFLINE_UNAVAILABLE"], refused=True)
         return ITEM_CATALOG_STARTUP_EXIT_CODE
     except Exception as exc:
+        observe_startup(["UNKNOWN_CHECK"])
         _label_match_startup_trace(
             "main_exception",
             error=repr(exc),

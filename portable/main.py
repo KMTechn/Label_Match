@@ -67,6 +67,7 @@ def main() -> int:
             validate_pending_worker_install(APP_ROOT)
         except CurrentUserOnboardingError as exc:
             from Label_Match import ONBOARDING_EXIT_CODE, _show_first_run_onboarding_error
+            exc._startup_check_refusal = True
             _show_first_run_onboarding_error(exc)
             return ONBOARDING_EXIT_CODE
     from auto_update import startup_gate

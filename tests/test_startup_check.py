@@ -46,7 +46,8 @@ def installed(tmp_path, monkeypatch, isolated_dpapi):
     (root / "runtime/pythonw.exe").write_bytes(b"runtime")
     source = Path(__file__).resolve().parents[1]
     for name in ("main.py", "startup_check.py", "label_data_generation.py", "auto_update.py",
-                 "current_user_onboarding.py", "logistics_runtime_profile.py", "item_catalog_sync.py", "writer_session_fence.py"):
+                 "current_user_onboarding.py", "logistics_runtime_profile.py", "item_catalog_sync.py", "writer_session_fence.py",
+                 "user_relay.py", "startup_observation.py"):
         (root / "app" / name).write_bytes((source / ("portable/main.py" if name == "main.py" else name)).read_bytes())
     (root / "app/assets/Item.csv").write_bytes(CATALOG)
     build = hashlib.sha1(uuid.uuid4().bytes).hexdigest()
@@ -251,3 +252,31 @@ raise SystemExit(check.main(['--json']))
                                                                   (False, True, True, True), (False, False, False, True)])
 def test_offline_transition_decision(authenticated, enrolled, legacy, expected):
     assert catalog.offline_catalog_startable(authenticated=authenticated, enrolled=enrolled, legacy=legacy) is expected
+
+
+def test_inventory_uses_the_existing_bootstrap_metadata_bound(installed):
+    path = installed.root / "bootstrap-integrity.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["padding"] = " " * (1024 * 1024)
+    write(path, record)
+    assert check.check_startup(installed.root)["startable"]
+
+
+def test_transition_switch_allows_no_saved_or_bundled_catalog(installed, monkeypatch):
+    installed.cache.unlink()
+    catalog._cache_recovery_path(installed.cache).unlink()
+    monkeypatch.setattr(catalog, "_is_valid_catalog", lambda path: False)
+    monkeypatch.setattr(logistics, "legacy_label_transition_enabled", lambda: True)
+    result = check.check_startup(installed.root)
+    assert result["startable"] and "CATALOG_OFFLINE" not in result["categories"]
+
+
+def test_unreadable_saved_catalog_is_unknown(installed, monkeypatch):
+    original = Path.open
+    def denied(path, *args, **kwargs):
+        if path == installed.cache:
+            raise PermissionError()
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", denied)
+    result = check.check_startup(installed.root)
+    assert not result["startable"] and "UNKNOWN_CATALOG" in result["reasons"]

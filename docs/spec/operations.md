@@ -1394,7 +1394,13 @@ GUI worker·로그 writer 정리 뒤와 relay lease 해제 직전에 기존 DB�
 
 작업자 계정에서 `<설치 루트>\runtime\python.exe -I -B <설치 루트>\app\startup_check.py --json`을 실행한다. 표준 출력 JSON 한 줄과 종료 코드 0·10·20으로 구별한다. 못 읽음이나 상한 초과는 UNKNOWN이며 READY로 바꾸지 않는다. 실행 목표는 HDD 10초 이내다. 큰 runtime 파일을 재해시하지 않고 설치 inventory·작은 시작 파일의 고정 hash를 대조한다. 전체 설치본 무결성 검사와 실제 GUI 건강 확인은 기존 지원 관문 몫이다.
 
-묶음은 UPDATE_PENDING / DEPLOY_FENCE / INSTALL_MISMATCH / DATA_GUARD / ACCOUNT_MISMATCH / CATALOG_OFFLINE / ALREADY_RUNNING / UNKNOWN이다. READY이면 `category=READY`; `categories`에는 실제로 겹친 묶음만 들어간다. ALREADY_RUNNING은 알림이며 거부가 아니다. 목록 확인은 같은 사용자 인증의 cache·복구 payload를 읽기만 하며 cache 복구 파일을 만들지 않는다. 품목 목록이 없어도 관리자가 켠 기존 과도기 스위치는 유지한다. 실제 시작·알림·원격 고침과 결과 폴더 ACL은 설치 키트 몫이다.
+묶음은 UPDATE_PENDING / DEPLOY_FENCE / INSTALL_MISMATCH / DATA_GUARD / ACCOUNT_MISMATCH / CATALOG_OFFLINE / ALREADY_RUNNING / UNKNOWN이다. READY이면 `category=READY`; `categories`에는 실제로 겹친 묶음만 들어간다. ALREADY_RUNNING은 알림이며 거부가 아니다. 목록 확인은 같은 사용자 인증의 cache·복구 payload를 읽기만 하며 cache 복구 파일을 만들지 않는다. 품목 목록이 없어도 관리자가 켠 기존 과도기 스위치는 유지한다. 알림·관리자 SSH 고침과 결과 폴더 ACL은 설치 키트 몫이다.
+
+제품 시작은 `check_startup()`을 다시 실행하지 않는다. 기존 업데이트·계정·자료·품목 목록·단일 인스턴스 관문의 결과와 이미 확인한 설치 신원을 받아 같은 JSON 꼴로 기록한다. 기록 위치는 `C:\ProgramData\KMTech\start-check\<YYYYMMDD>-LABEL.json`이다. 진단 writer `startup_check_result` 하나를 선언하며 이 함수만 업무 쓰기 허가를 얻지 않는다. 임시 파일을 닫은 뒤 `os.replace`로 결과 파일을 교체하고, 폴더 생성·ACL 변경·네트워크·추가 mutex는 없다. 폴더 없음이나 쓰기 실패는 조용히 넘어간다.
+
+G0: 기존 시작·경고·재시도·bootstrap 인계·기존 창 활성화와 종료 코드를 유지한다. 종료가 확정된 기존 거부에서는 한 문장과 닫기 단추만 보인다: 「이 PC 는 지금 새 프로그램을 열 수 없습니다. 관리자에게 알렸습니다. 다른 작업대로 옮겨 주세요.」 UPDATE_PENDING의 복구 인계를 막지 않는다. 새로운 기록 코드의 예외·10초 초과는 UNKNOWN으로 기록을 시도하고 기존 시작을 계속한다. 기존 자료 관문이 UNKNOWN으로 거부한 결론은 그대로 유지한다.
+
+`KMTECH_START_CHECK_TEST_CATEGORY`는 **시험 전용**이다. 위 고정 묶음 중 하나를 결과 JSON에 강제하며 실제 시작·종료 결정은 바꾸지 않는다. 기본은 꺼짐이다. 설치기·업데이트에서 설정하는 경로는 없다. 이 변수로 실제 거부 안내를 증명할 때도 기존 거부 조건을 함께 만든다.
 
 ## 첫 업데이트 묶음 선언 재생성
 

@@ -487,6 +487,10 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 출력은 `app_startup_check.v1` JSON 한 줄이다. `app=LABEL`, `version`, `build_sha`, `startable`, `reasons`, `status`, `category`, `categories`, `checked_at`만 담는다. 계정·경로·주소·인증 값과 예외 원문은 포함하지 않는다. 종료 코드는 READY 0 / 증명한 시작 불가 10 / 못 읽음·판정 예외·시간 상한 20이다. `ALREADY_RUNNING`은 시작 가능 상태를 바꾸지 않는다. 첫 거부 묶음과 겹치는 묶음을 함께 기록하며 까닭→묶음 정본은 `startup_check.REASON_CATEGORIES` 하나다. 품목 목록은 인증된 저장 목록 또는 기존 과도기 허용으로 서버 없이 시작할 수 있는지 판정한다.
 
+제품 시작에서는 이미 실행한 관문의 결과를 사용하며 CLI 전체 확인을 추가로 실행하지 않는다. G0는 새 거부 0이다. 기존 경고·재시도·bootstrap 인계·이미 열린 창 활성화와 종료 코드를 유지하고, 기존 관문이 종료를 확정한 경우에만 고정 한 문장과 닫기 단추로 안내한다. 새 결과 기록의 실패·예외·시간 초과는 기존 시작 결정을 바꾸지 않는다.
+
+진단 writer `startup_check_result`는 업무 쓰기 허가·네트워크·추가 mutex 없이 기존 결과를 `C:\ProgramData\KMTech\start-check\<YYYYMMDD>-LABEL.json` 한 줄로 원자 교체한다. 폴더가 없거나 쓰기 실패하면 조용히 계속하며 폴더·ACL은 설치 키트가 준비한다. `KMTECH_START_CHECK_TEST_CATEGORY`는 결과 묶음만 강제하는 시험 전용 입력이며 설치기·업데이트는 설정하지 않는다. 실제 시작 결정은 주입과 무관하다.
+
 D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
 SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
 늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.

@@ -1124,6 +1124,12 @@ def writer_sink(
 
         @wraps(function)
         def guarded(*args: P.args, **kwargs: P.kwargs) -> R:
+            # This fixed, best-effort startup report grants no business write.
+            # It must also report a refusal without acquiring writer ownership.
+            if (selected_source, sink_id) == (
+                "startup_check_result", "startup_observation.write_startup_result"
+            ):
+                return function(*args, **kwargs)
             # This exact sink is selected here instead of changing its deployed,
             # code-derived inventory source bytes and rotating the inventory pin.
             if approved_probe:

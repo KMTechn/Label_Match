@@ -2302,11 +2302,18 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
         return manual_lifecycle_gate(control, arguments[0])
     policy = load_policy(control)
     if not ordinary_user_context(policy["operator_sid"]):
+        if role == "gui":
+            try:
+                from startup_observation import observe_startup
+                observe_startup(["OPERATOR_ACCOUNT_MISMATCH"], identity={}, refused=True)
+            except Exception:
+                pass
         return 20
     with update_lock(control, policy["operator_sid"]):
         state = optional_record(control / "transition.json")
         active = read_json(control / "active.json")
-        sha = version_manifest(app_root.parent)["source_commit"]
+        release = version_manifest(app_root.parent)
+        sha = release["source_commit"]
         if sha == active["sha"] and state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
             if os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE") == state["nonce"] and ordinary_user_context():
                 claim = optional_record(Path(policy["staging_root"]) / "trial.json")
@@ -2321,8 +2328,15 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
             # runs before data access; this grants no pointer or trial authority.
             return None
         prepared = prepared_pending(control, policy, state)
-        if startup_bootstrap_reason(sha, active, state, prepared) is None:
+        reason = startup_bootstrap_reason(sha, active, state, prepared)
+        if reason is None:
             return None
+    if role == "gui":
+        try:
+            from startup_observation import observe_startup
+            observe_startup([reason], identity={"version": release.get("version", ""), "build_id": sha})
+        except Exception:
+            pass
     request_bootstrap(control, arguments, role=role)
     return 0
 

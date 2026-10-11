@@ -1146,7 +1146,7 @@ def refresh_item_catalog(
                 device_id=str(profile.device_id),
                 bearer_token=bearer_token,
             )
-            if cache_payload is not None:
+            if offline_catalog_startable(authenticated=cache_payload is not None, enrolled=True, legacy=False):
                 _remember_verified_catalog_snapshot(cache, cache_payload)
                 authenticated_cache = cache
             else:
@@ -1157,7 +1157,7 @@ def refresh_item_catalog(
                     device_id=str(profile.device_id),
                     bearer_token=bearer_token,
                 )
-            if authenticated_cache is not None:
+            if offline_catalog_startable(authenticated=authenticated_cache is not None, enrolled=True, legacy=False):
                 _update_cache_attempt_context(cache)
                 _mark_catalog_source(
                     authenticated_cache,

@@ -452,6 +452,11 @@ def run_guarded_entrypoint(
     lease = acquire(data_scope)
     if not lease.owner:
         result = activate()
+        try:
+            from startup_observation import observe_startup
+            observe_startup(["ALREADY_RUNNING"])
+        except Exception:
+            pass
         message = (
             "기존 Label Match 창을 표시했습니다."
             if result.found

@@ -267,6 +267,15 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
             pairs = assignment.value.elts if isinstance(assignment.value, ast.Set) else [assignment.value]
             for pair in pairs:
                 candidate_field(pair.elts[1], "app/Label_Match.py")
+        elif name == "integrity_order_transition":
+            for comparison in ast.walk(assignment.value):
+                if (isinstance(comparison, ast.Compare) and len(comparison.comparators) == 1
+                        and isinstance(comparison.left, ast.Call) and comparison.left.args
+                        and isinstance(comparison.left.args[0], ast.BinOp)
+                        and isinstance(comparison.left.args[0].left, ast.Name)
+                        and comparison.left.args[0].left.id == "source"):
+                    candidate_field(comparison.comparators[0], "app/current_user_onboarding.py")
+
     # The accepted scanner preimage also overrides two inline companion pairs.
     # Refresh their candidates while retaining the exact historical preimages.
     for node in ast.walk(tree):

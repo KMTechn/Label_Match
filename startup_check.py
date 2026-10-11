@@ -34,6 +34,11 @@ REASON_CATEGORIES = {code: category for category, codes in (
 
 
 def startup_result(reasons=(), *, version="", build_sha=""):
+    # Test-only observation override. Installers and updates never set this.
+    forced = next((code for code, category in REASON_CATEGORIES.items()
+                   if category == os.environ.get("KMTECH_START_CHECK_TEST_CATEGORY")), None)
+    if forced is not None:
+        reasons = (forced,)
     codes = list(dict.fromkeys(code if code in REASON_CATEGORIES else "UNKNOWN_CHECK" for code in reasons))
     blocking = [code for code in codes if REASON_CATEGORIES[code] != "ALREADY_RUNNING"]
     return {"schema": "app_startup_check.v1", "app": "LABEL",
@@ -65,10 +70,10 @@ def _read(path, *, maximum=1024 * 1024):
 
 
 def _installed_identity(root, deadline):
-    from current_user_onboarding import validate_portable_bootstrap_inventory
+    from current_user_onboarding import BOOTSTRAP_INTEGRITY_MAX_BYTES, validate_portable_bootstrap_inventory
     from label_data_generation import portable_release_identity
     from auto_update import _assert_no_reparse_components
-    record = _read(root / "bootstrap-integrity.json")
+    record = _read(root / "bootstrap-integrity.json", maximum=BOOTSTRAP_INTEGRITY_MAX_BYTES)
     rows = sorted(record["files"], key=lambda row: row["path"].encode("utf-16-be"))
     validate_portable_bootstrap_inventory(record, rows, root)
     files = {row["path"]: row for row in rows}
@@ -79,7 +84,8 @@ def _installed_identity(root, deadline):
     selected = ("portable-manifest.json", "app/main.py", "app/startup_check.py",
                 "app/label_data_generation.py", "app/auto_update.py",
                 "app/current_user_onboarding.py", "app/logistics_runtime_profile.py",
-                "app/item_catalog_sync.py", "app/writer_session_fence.py")
+                "app/item_catalog_sync.py", "app/writer_session_fence.py",
+                "app/user_relay.py", "app/startup_observation.py")
     manifest = None
     for name in selected:
         if time.monotonic() >= deadline:
@@ -109,6 +115,8 @@ def _bounded_inputs(paths):
         try:
             if path.stat().st_size > 1024 * 1024:
                 raise SlowCheck()
+            with path.open("rb") as stream:
+                stream.read(1)  # A swallowed cache-reader error must remain UNKNOWN.
         except FileNotFoundError:
             pass
 
@@ -251,14 +259,12 @@ def check_startup(app_root=None):
         authenticated = False
         if profile is not None:
             url = str(profile.base_url).rstrip("/") + catalog.CATALOG_PATH
-            if not catalog._is_trusted_authenticated_catalog_url(url, profile):
-                reasons.append("CATALOG_OFFLINE_UNAVAILABLE")
-                return
-            args = dict(url=url, source_host_id=str(profile.source_host_id), device_id=str(profile.device_id), bearer_token=str(profile.bearer_token).strip())
-            authenticated = catalog._read_authenticated_cache_payload(cache, **args) is not None or catalog._read_authenticated_recovery_payload(cache, **args) is not None
+            if catalog._is_trusted_authenticated_catalog_url(url, profile):
+                args = dict(url=url, source_host_id=str(profile.source_host_id), device_id=str(profile.device_id), bearer_token=str(profile.bearer_token).strip())
+                authenticated = catalog._read_authenticated_cache_payload(cache, **args) is not None or catalog._read_authenticated_recovery_payload(cache, **args) is not None
         legacy = legacy_label_transition_enabled()
         local = catalog._is_valid_catalog(cache) or catalog._is_valid_catalog(root / "app/assets/Item.csv")
-        if not catalog.offline_catalog_startable(authenticated=authenticated, enrolled=profile is not None, legacy=legacy) or not (authenticated or local):
+        if not catalog.offline_catalog_startable(authenticated=authenticated, enrolled=profile is not None, legacy=legacy) or not (authenticated or local or legacy):
             reasons.append("CATALOG_OFFLINE_UNAVAILABLE")
     probe("CATALOG", offline)
     probe("RELAY", lambda: reasons.append("RELAY_AUTOSTART_MISMATCH") if _registry_get() != user_relay_command_line(root) else None)
