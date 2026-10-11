@@ -567,15 +567,16 @@ class WorkerRoster:
         if error is not None:
             code, status = getattr(error, "code", "VERIFY_UNAVAILABLE"), getattr(error, "status", None)
             item["error"] = code
-            if status == 409 or code in {"REQUEST_CONFLICT", "TEMP_ID_CONFLICT"}:
+            if status == 400:
+                if code == "INVALID_REQUEST" and not getattr(error, "unknown", False):
+                    future = self._action_time(request["action_at"]) > (
+                        dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5))
+                    if not future:
+                        item["state"] = "REVIEW"
+            elif status == 409 or code in {"REQUEST_CONFLICT", "TEMP_ID_CONFLICT"}:
                 item["state"] = "REVIEW"
             elif request["mode"] == "return" and code in {"WORKER_DISABLED", "WORKER_NOT_FOUND"}:
                 item.update(state="TERMINAL", error_version=self.known_version)
-            elif status == 400:
-                future = self._action_time(request["action_at"]) > (
-                    dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5))
-                if code != "INVALID_REQUEST" or not future:
-                    item["state"] = "REVIEW"
         else:
             if (not isinstance(answer, dict) or answer.get("ok") is not True
                     or answer.get("contract_version") != CONTRACT_VERSION_V2

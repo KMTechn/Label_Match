@@ -629,7 +629,8 @@ def test_older_query_keeps_new_status_but_saves_immutable_temp_mapping(tmp_path)
 
 
 @pytest.mark.parametrize('future', [False, True])
-def test_invalid_request_is_item_review_except_future_action_at(tmp_path, future):
+@pytest.mark.parametrize('unknown', [False, True])
+def test_invalid_request_is_item_review_except_future_action_at(tmp_path, future, unknown):
     store = roster(tmp_path)
     if future:
         import datetime
@@ -643,6 +644,48 @@ def test_invalid_request_is_item_review_except_future_action_at(tmp_path, future
     else:
         store.register_local('tester')
     request, = store.pending_requests()
-    store.apply_registration(request, error=AdminPinError('INVALID_REQUEST', status=400))
-    assert bool(store.pending_requests()) is future
+    store.apply_registration(request, error=AdminPinError('INVALID_REQUEST', status=400, unknown=unknown))
+    assert bool(store.pending_requests()) is (future or unknown)
     assert store.local['requests'][0]['body'] == request
+
+
+@pytest.mark.parametrize('mode', ['create', 'return'])
+@pytest.mark.parametrize('response_kind', [
+    'empty_json', 'html', 'unrecognized_code', 'conflict_code', 'disabled_code',
+])
+def test_unverified_400_retries_original_registration_after_restart(tmp_path, monkeypatch, mode, response_kind):
+    original = worker()
+    store = roster(tmp_path, *([original] if mode == 'return' else []))
+    options = {'existing_worker_id': original['worker_id']} if mode == 'return' else {}
+    store.register_local('tester', **options)
+    body, = store.pending_requests()
+    original_body = copy.deepcopy(body)
+    first_response = {
+        'empty_json': b'{}',
+        'html': b'<html>Bad request</html>',
+        'unrecognized_code': b'{"ok":false,"error":{"code":"UNRECOGNIZED_ERROR"}}',
+        'conflict_code': b'{"ok":false,"error":{"code":"REQUEST_CONFLICT"}}',
+        'disabled_code': b'{"ok":false,"error":{"code":"WORKER_NOT_FOUND"}}',
+    }[response_kind]
+    sent = []
+    def transport(path, raw, headers):
+        sent.append(raw)
+        if len(sent) == 1:
+            return 400, first_response
+        return (201 if mode == 'create' else 200), json.dumps(acknowledgement(body)).encode()
+    client = make_client(monkeypatch, transport)
+    with pytest.raises(AdminPinError) as caught:
+        client.register_roster(body)
+    assert caught.value.status == 400
+    if response_kind in {'empty_json', 'html'}:
+        assert caught.value.unknown
+    store.apply_registration(body, error=caught.value)
+    assert store.pending_requests() == [original_body]
+    restarted = WorkerRoster(store.path, 'site-1')
+    retry, = restarted.pending_requests()
+    assert retry == original_body
+    restarted.apply_registration(retry, answer=client.register_roster(retry))
+    assert sent[0] == sent[1]
+    assert restarted.local['requests'][0]['body'] == original_body
+    assert restarted.local['requests'][0]['state'] == 'ACKED'
+    assert not restarted.pending_requests()
