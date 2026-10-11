@@ -10,7 +10,7 @@ PowerShell lifecycle 관측·고정 helper·새 SYSTEM 로그온 action과 옛 �
 
 일반 작업자 세션은 새 두 인수의 명시적 전달을 거절하며 빈 문자열 전달도 포함한다.
 
-관리자 길의 선택 인수 `-EvidencePath`는 같은 ProgramData 설치 감사 디렉터리 안의 일반 파일만 받는다. 프로필 경로와 reparse 경로는 첫 쓰기 전에 거절한다.
+관리자 길의 선택 인수 `-EvidencePath`는 같은 ProgramData 설치 감사 디렉터리 안의 일반 파일만 받는다. 프로필 경로와 reparse 경로는 첫 쓰기 전에 거절한다. 작업자 admission은 고정 공유 import보다 먼저 실행하므로 `Full`은 공유 leaf와 같은 로컬 경로 검사를 사용한다.
 
 유효한 대상·inventory를 확인한 뒤에만 ProgramData 설치 감사 자리 아래 관리자 진단용 임시 폴더를 만든다. 설치기 프로세스와 자식의 임시 경로를 그 폴더로 지정하므로 실패 진단도 사용자 프로필에 쓰지 않는다. 영구 환경 설정은 바꾸지 않는다. 고정 current에서 첫 시작할 때는 active가 가리키는 versions의 manifest와 PENDING의 commit·판을 대조한다.
 
@@ -203,7 +203,7 @@ F3 진입/action gate·성공음/이력·중앙 worker dispatch·재시도/자�
 
 **0.3.1 재채택:** reviewed 정본 `1555dea`의 5파일을 전부 재복사하고 독립 manifest pin·lock·bootstrap/전환 선언·vendor provenance를 갱신했다. 0.3.0의 PS5 `[manifest]`·PS7 `[[manifest]]` 두 FAIL 원본은 보존한다. 0.3.1은 singleton·2/3중 배열·빈/중첩빈 배열의 원본 수용·거부를 양 엔진에서 검사하며 PS7의 기존 singleton 수용은 유지한다. [R1/R2 결과·실패 이력](D:/KMTech/program-improvement-20260912/work/Label_Match/x13bfix/RESULT.md)을 따른다.
 
-`Sha`/`Full`, bootstrap strict/relative/aggregate와 Manifest의 required/reparse·parse·signature 블록만 고정 0.3.6 leaf에 위임한다. 기존 wrapper의 mandatory/type/default와 LM Manifest schema/hash 순서는 유지하며 LM inventory framing·critical 3파일·ordinal 정렬·task migration·receipt·복원 함수는 변경하지 않는다. `INSTALL_THIS_PC.ps1`의 변경은 기존 bootstrap 로드에 `-SharedCodeRoot $PSScriptRoot`를 전달하는 한 줄뿐이다.
+`Sha`, bootstrap strict/relative/aggregate와 Manifest의 required/reparse·parse·signature 블록만 고정 0.3.6 leaf에 위임한다. `Full`은 import 전 작업자 admission을 위해 같은 native 경로 검사를 로컬에 둔다. 기존 wrapper의 mandatory/type/default와 LM Manifest schema/hash 순서는 유지하며 LM inventory framing·critical 3파일·ordinal 정렬·task migration·receipt·복원 함수는 변경하지 않는다. `INSTALL_THIS_PC.ps1`의 변경은 기존 bootstrap 로드에 `-SharedCodeRoot $PSScriptRoot`를 전달하는 한 줄뿐이다.
 
 신뢰된 installer/helper의 로컬 bootstrap은 root/상위 경로/reparse → consumer lock의 고정 manifest pin → manifest bytes → leaf hash 순서로 검증한다. source/frozen은 `kmtech_shared/powershell/portable.ps1`, portable은 `app/kmtech_shared/powershell/portable.ps1`을 선택한다. UAC/복원 probe는 복사한 manifest/lock/leaf를 기존 helper ACL에 함께 결속하며, caller가 pinned in-memory integrity helper에 frozen root를 명시한다. 복원 probe의 짧은 child launcher는 Windows 명령줄 길이 제한 안에서 frozen helper bytes를 다시 hash 확인한 뒤 평가한다. 초기 `Get-BootstrapFileSha256`은 module auto-loading 없이 쓸 수 있도록 기존 native 구현을 유지한다.
 

@@ -153,7 +153,14 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot, [ValidateSet('portab
 }
 
 function Full([string]$Value, [string]$Purpose) {
-    return ConvertTo-KmtechFullPath $Value $Purpose
+    # Worker admission and diagnostics run before the pinned shared imports.
+    # Keep the shared canonical path contract available at that boundary.
+    if (-not [IO.Path]::IsPathRooted($Value) -or $Value.StartsWith('\\?\')) {
+        throw "$Purpose must be an ordinary absolute path."
+    }
+    $result = [IO.Path]::GetFullPath($Value).TrimEnd('\')
+    if ($result -eq [IO.Path]::GetPathRoot($result)) { throw "$Purpose is too broad." }
+    return $result
 }
 
 function Same([string]$Left, [string]$Right) {
@@ -1058,7 +1065,7 @@ if startup_changes is not None:
     if startup_scanner:
         startup_changes['app/Label_Match.py'] = scanner_label_pair
         # Exact e880 companions with the already accepted scanner preimage and recomputed pins.
-        startup_changes.update({'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '3c38179ee9f928f90d9f835db5ffe1c49aa7c33298c01722cdfeefda4eb55dde'), 'tools/label_writer_fence.ps1': ('6ee3e545a1b3d9bf6e4722a2802e57bca8276d92593fe480c8990501a8db7b8a', 'f9def3c211376ae1feff966e8efa662630adee737931231ef123b8fb67709382')})
+        startup_changes.update({'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', 'a553b2e1df66b440316b3b91e7df8fd775abf8d8c36ada019eee8c090edb0859'), 'tools/label_writer_fence.ps1': ('6ee3e545a1b3d9bf6e4722a2802e57bca8276d92593fe480c8990501a8db7b8a', '84ba2c85367e5712b51ceea89000292698b5e858a39feef5118a27e8b0d5a2da')})
     allowed_additions = dict(startup_release_additions[startup_from])
     settings_path=source/'app/auto-update-settings.json'
     settings_raw=settings_path.read_bytes()
@@ -1463,7 +1470,7 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
     # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
     $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
     $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
-        -ProbeBytes $probeBytes -ExpectedSha256 '530cc80d046bf77b13f8a3d09de28128c5e652e961175ec4deb49ff6a4efde03' `
+        -ProbeBytes $probeBytes -ExpectedSha256 '501d26ff4f3eb7349c68166a0e62776778edf0dc8c35b0a5d520aed582a86bac' `
         -ProbeArguments @($Source, $Installed, $generationReverse) -FailureMessage 'Installed writer transition is unsupported: '
     return $stdout | ConvertFrom-Json
 }

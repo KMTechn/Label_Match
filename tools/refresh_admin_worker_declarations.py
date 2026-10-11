@@ -117,6 +117,9 @@ def refresh(*, check=False):
     table = next(node for node in tree.body if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
                  and node.targets[0].id == "startup_release_replacements")
     releases = ast.literal_eval(table.value)
+    addition_table = next(node for node in tree.body if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                          and node.targets[0].id == "startup_release_additions")
+    additions = ast.literal_eval(addition_table.value)
     stock = subprocess.check_output(["git", "-c", "core.autocrlf=false", "-C", str(ROOT),
                                      "rev-parse", "55cab72"], text=True).strip()
     with tempfile.TemporaryDirectory(prefix="admin-pair-") as temporary:
@@ -128,6 +131,13 @@ def refresh(*, check=False):
         changed.update(FILES)
         for relative, path in changed.items():
             candidate = digest(staged.get(path, (ROOT / path).read_bytes()))
+            # An already approved addition has no historical file preimage.
+            # Refresh its candidate bytes without granting any new membership.
+            if relative in additions.get(stock, {}):
+                for release in additions.values():
+                    if relative in release:
+                        release[relative] = candidate
+                continue
             for release in releases.values():
                 if relative in release:
                     release[relative] = release[relative][0], candidate
@@ -138,9 +148,11 @@ def refresh(*, check=False):
                 raise ValueError("historical stock preimage changed")
             releases[stock][relative] = before, candidate
     lines = updated.splitlines(keepends=True)
-    updated = ("".join(lines[:table.lineno-1]) + "startup_release_replacements = "
-               + repr(releases) + "\n"
-               + "".join(lines[table.end_lineno:]))
+    for node, name, values in sorted(((table, "startup_release_replacements", releases),
+                                     (addition_table, "startup_release_additions", additions)),
+                                    key=lambda item: item[0].lineno, reverse=True):
+        lines[node.lineno-1:node.end_lineno] = [name + " = " + repr(values) + "\n"]
+    updated = "".join(lines)
     probe_sha = hashlib.sha256(updated.removeprefix("\n").encode("utf-8")).hexdigest()
     tail, count = re.subn(r"(-ProbeBytes \$probeBytes -ExpectedSha256 ')[0-9a-f]{64}(')",
                          lambda match: match[1] + probe_sha + match[2], text[finish:], count=1)

@@ -295,6 +295,13 @@ def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, argum
     assert product.count(caller) == 1
     identity = "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$false;session_id=2})" if arguments == "ordinary-empty" else "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$true;session_id=0})"
     product = product.replace(caller, identity)
+    # A missing worker must not resolve the host's real console profile.
+    # Supply only that OS observation; keep the admission guards intact.
+    if scenario == "missing":
+        start = product.index("function Get-LabelConsoleWorkerObservation {")
+        finish = product.index("function Get-LabelConsoleWorker {", start)
+        product = (product[:start] + "function Get-LabelConsoleWorkerObservation { throw 'No isolated console worker' }\n\n"
+                   + product[finish:])
     driver = tmp_path / "actual-entry.ps1"
     driver.write_text(product, encoding="utf-8-sig")
     bad_inventory = tmp_path / "inventory.json"
