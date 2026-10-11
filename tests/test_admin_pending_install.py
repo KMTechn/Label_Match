@@ -16,6 +16,74 @@ INSTALLER = Path(__file__).resolve().parents[1] / "INSTALL_CANONICAL_PORTABLE.ps
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("case", ["valid", "absent-folders", "other-worker", "missing-local", "relative-local", "wrong-local", "file-local", "link-local", "link-programs", "link-desktop"])
+def test_machine_worker_reads_profile_scope_before_plan_without_writing(tmp_path, engine, case):
+    result = run_functions(tmp_path, INSTALLER, ["Assert-LabelMachineWorkerReadScope"], r'''
+$testMode=$true
+$root=[IO.Path]::GetFullPath($env:LM_SCOPE_ROOT)
+$profile=Join-Path $root 'profile'
+$local=Join-Path $profile 'AppData\Local'
+$programs=Join-Path $profile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs'
+$desktop=Join-Path $profile 'Desktop'
+$target=Join-Path $root 'preserved-target'
+$case=$env:LM_SCOPE_CASE
+$directories=if($case -ceq 'absent-folders'){@($profile,$target)}else{@($local,$programs,$desktop,$target)}
+foreach($path in $directories){[void][IO.Directory]::CreateDirectory($path)}
+$witness=Join-Path $target 'witness.txt';[IO.File]::WriteAllText($witness,'preserved fixture')
+$worker=[pscustomobject]@{caller_is_worker=$true;profile_root=$profile;local_app_data=$local}
+$env:LOCALAPPDATA=$local
+$link=$null
+if($case -ceq 'other-worker'){$worker.caller_is_worker=$false;$env:LOCALAPPDATA=''}
+if($case -ceq 'missing-local'){$env:LOCALAPPDATA=''}
+if($case -ceq 'relative-local'){$env:LOCALAPPDATA='relative'}
+if($case -ceq 'wrong-local'){$env:LOCALAPPDATA=Join-Path $profile 'other-local'}
+if($case -ceq 'file-local'){[IO.Directory]::Delete($local);[IO.File]::WriteAllText($local,'fixture file')}
+if($case -like 'link-*'){
+ $link=switch($case){'link-local'{$local};'link-programs'{$programs};'link-desktop'{$desktop}}
+ foreach($checked in @($link,$target)){
+  if(-not [IO.Path]::GetFullPath($checked).StartsWith($root.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Fixture escaped its root'}
+ }
+ [IO.Directory]::Delete($link)
+ [void](New-Item -ItemType Junction -Path $link -Target $target -ErrorAction Stop)
+}
+$before=[IO.File]::ReadAllBytes($witness)
+$failure=$null
+try{Assert-LabelMachineWorkerReadScope $worker}catch{$failure=$_}
+finally{if($link){[IO.Directory]::Delete($link)}}
+if($case -in @('valid','absent-folders','other-worker')){
+ if($null -ne $failure){throw 'Valid or deferred worker scope was rejected'}
+}elseif($null -eq $failure){throw 'Invalid worker scope reached PlanOnly'}
+if(-not (Test-Path -LiteralPath $target -PathType Container) -or
+ [Convert]::ToBase64String([IO.File]::ReadAllBytes($witness)) -cne [Convert]::ToBase64String($before)){throw 'Scope read changed the fixture'}
+'PASS'
+''', engine=engine, values={"LM_SCOPE_ROOT":str(tmp_path), "LM_SCOPE_CASE":case})
+    assert result.returncode == 0, "worker scope read failed; isolated native evidence retained"
+    assert result.stdout.strip() == "PASS"
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_machine_worker_scope_call_precedes_plan_and_diagnostics_in_real_installer(tmp_path, engine):
+    result = run_functions(tmp_path, INSTALLER, ["Assert-LabelMachineWorkerReadScope"], r'''
+$calls=@($ast.EndBlock.Statements | Where-Object {
+ $_ -is [Management.Automation.Language.PipelineAst] -and
+ $_.PipelineElements[0] -is [Management.Automation.Language.CommandAst] -and
+ $_.PipelineElements[0].GetCommandName() -ceq 'Assert-LabelMachineWorkerReadScope'
+})
+$plans=@($ast.EndBlock.Statements | Where-Object {
+ $_ -is [Management.Automation.Language.IfStatementAst] -and $_.Clauses[0].Item1.Extent.Text -ceq '$PlanOnly'
+})
+$diagnostics=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.CommandAst] -and
+ $n.GetCommandName() -ceq 'Initialize-LabelMachineDiagnostics'},$true))
+if($calls.Count -ne 1 -or $plans.Count -ne 1 -or $diagnostics.Count -ne 1 -or
+ $calls[0].Extent.StartOffset -ge $plans[0].Extent.StartOffset -or
+ $calls[0].Extent.StartOffset -ge $diagnostics[0].Extent.StartOffset){throw 'Worker scope check occurs after planning or writes'}
+'PASS'
+''', engine=engine)
+    assert result.returncode == 0, "real installer scope order is invalid; native evidence retained"
+    assert result.stdout.strip() == "PASS"
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 def test_real_placement_helper_worker_binding_accepts_same_and_other_sid(tmp_path, engine):
     executable = shutil.which(engine)
     if executable is None:

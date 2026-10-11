@@ -4998,6 +4998,43 @@ function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$Inventor
     }
 }
 
+function Assert-LabelMachineWorkerReadScope($Worker) {
+    if ($null -eq $Worker -or -not $Worker.caller_is_worker) { return }
+    $local = [string]$env:LOCALAPPDATA
+    if ([string]::IsNullOrWhiteSpace($local) -or -not [IO.Path]::IsPathRooted($local) -or
+        -not [StringComparer]::OrdinalIgnoreCase.Equals(
+            [IO.Path]::GetFullPath($local).TrimEnd('\'), [IO.Path]::GetFullPath($Worker.local_app_data).TrimEnd('\'))) {
+        throw 'Current worker LOCALAPPDATA differs from the selected worker.'
+    }
+    if ($testMode) {
+        $programs = Join-Path $Worker.profile_root 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs'
+        $desktop = Join-Path $Worker.profile_root 'Desktop'
+    } else {
+        $knownLocal = [Environment]::GetFolderPath('LocalApplicationData', [Environment+SpecialFolderOption]::DoNotVerify)
+        if ([string]::IsNullOrWhiteSpace($knownLocal) -or -not [StringComparer]::OrdinalIgnoreCase.Equals(
+            [IO.Path]::GetFullPath($local).TrimEnd('\'), [IO.Path]::GetFullPath($knownLocal).TrimEnd('\'))) {
+            throw 'Current worker profile LOCALAPPDATA differs from the process environment.'
+        }
+        $programs = [Environment]::GetFolderPath('Programs', [Environment+SpecialFolderOption]::DoNotVerify)
+        $desktop = [Environment]::GetFolderPath('DesktopDirectory', [Environment+SpecialFolderOption]::DoNotVerify)
+    }
+    foreach ($path in @($local, $programs, $desktop)) {
+        if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathRooted($path)) {
+            throw 'Current worker folder scope is unavailable.'
+        }
+        for ($ancestor = [IO.Path]::GetFullPath($path); $ancestor; $ancestor = [IO.Path]::GetDirectoryName($ancestor)) {
+            $attributes = $null
+            try { $attributes = [IO.File]::GetAttributes($ancestor) }
+            catch [IO.FileNotFoundException] { }
+            catch [IO.DirectoryNotFoundException] { }
+            if ($null -ne $attributes -and (-not ($attributes -band [IO.FileAttributes]::Directory) -or
+                ($attributes -band [IO.FileAttributes]::ReparsePoint))) {
+                throw 'Current worker folder scope is not an ordinary directory.'
+            }
+        }
+    }
+}
+
 function Initialize-LabelMachineDiagnostics {
     # Only after target admission: child diagnostics must also avoid user profiles.
     $programData = if ($testMode) { $env:PROGRAMDATA } else { [Environment]::GetFolderPath('CommonApplicationData') }
@@ -5268,6 +5305,7 @@ $workerArgumentsSupplied = $PSBoundParameters.ContainsKey('WorkerAccount') -or $
 if ($ResumeRollbackAuditPath) {
     if ($workerArgumentsSupplied) { throw 'Rollback resume cannot be combined with worker installation.' }
 } else { $machineWorker = Resolve-LabelMachineWorker (Get-LabelInstallerCaller) $WorkerAccount $WorkerSurveyInventory $workerArgumentsSupplied }
+Assert-LabelMachineWorkerReadScope $machineWorker
 if ($null -ne $machineWorker -and -not $PlanOnly) { Initialize-LabelMachineDiagnostics }
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot)
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')
