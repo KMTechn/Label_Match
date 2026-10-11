@@ -325,6 +325,7 @@ def test_on_legacy_completion_cancels_locally(tmp_path, monkeypatch):
     module = load_label_match_module()
     app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
     shown = []
+    displayed = []
     monkeypatch.setattr(module.messagebox, "askyesno", lambda *a, **k: True)
     for kind in ("showinfo", "showwarning", "showerror"):
         monkeypatch.setattr(
@@ -333,11 +334,18 @@ def test_on_legacy_completion_cancels_locally(tmp_path, monkeypatch):
     try:
         for value in _legacy_set(3):
             _scan(module, app, value)
+        monkeypatch.setattr(
+            app, "update_big_display", lambda message, color: displayed.append((message, color))
+        )
         module.Label_Match._cancel_completed_tray_by_label(app, MASTER)
     finally:
         _close(app)
 
-    assert shown == ["showinfo"]
+    assert shown == []
+    assert len(displayed) == 1
+    message, color = displayed[0]
+    assert "취소" in message
+    assert color == "green"
     [(_row, cancelled)] = _events(tmp_path, "TRAY_COMPLETION_CANCELLED")
     assert "package_cancellation" not in cancelled
     assert app.set_details_map == {}
