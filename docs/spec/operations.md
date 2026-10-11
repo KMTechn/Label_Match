@@ -28,6 +28,8 @@ writer 선언은 `python -B tools/refresh_admin_worker_declarations.py`, 확인�
 첫 업데이트 글자 층에서도 `writer_sink_inventory.derive_writer_sink_inventory`의 source digest와 Python/PowerShell writer pin을 함께 갱신한다. 82개 sink의 식별자·위치·guard는 유지하며, canonical 설치기의 `release_digest`로 변경된 네 파일의 후보 해시 40개를 재생성한다. 역사적 before 해시·허용 파일 목록·거절 조건은 바꾸지 않고 두 pin과 후보 선언을 읽기 전용으로 다시 검사한다.
 첫 업데이트 앱 바이트가 바뀌면 `writer_sink_inventory.derive_writer_sink_inventory`의 source digest와 Python/PowerShell writer pin을 함께 갱신한다. 82개 sink의 식별자·경로·guard는 유지하며, canonical 설치기의 `release_digest`로 변경된 파일의 후보 해시와 writer 전이 probe pin을 재생성한다. 역사적 before 해시·허용 파일 목록·거절 조건은 바꾸지 않고 두 pin과 후보 선언을 읽기 전용으로 다시 검사한다.
 
+첫 업데이트의 writer 선언은 `writer_sink_inventory.derive_writer_sink_inventory`와 기존 `release_digest`로 재생성한다. 거절 보고 POST의 guarded sink 1개를 추가해 83개 sink이며, Python/PowerShell pin과 후보 파일 해시·embedded probe pin을 함께 갱신한다. 역사적 before 해시와 기존 거절 조건은 보존하고, stock `55cab72`의 정확한 갱신 쌍에는 실제 portable 공급 파일의 변경·추가만 선언한다.
+
 <a id="onboarding-writer-admission"></a>
 
 portable GUI는 매 시작에 onboarding을 실행한다. relay가 아직 없거나 오래된 상태를 갱신하는 동안 onboarding이 writer admission을 쥔 채 생존 증명을 기다리지 않는다. lifecycle Verify/Observe 검증은 onboarding 호출당 한 번 onboarding·부모 lease를 내려놓고 수행한다. 그 호출의 thread-local 검증 결과를 각 짧은 admission에서 digest·delegation만으로 재확인하며, policy·active·transition 바이트나 delegation이 바뀌면 `WRITER_LIFECYCLE_CHANGED`로 그 쓰기를 거절한다. READY·실패 보고와 stop 표지는 보호된 쓰기로 유지한다. 옛 예약 작업 은퇴·G 기록 묶음·fixed helper 자신의 admission은 코디 승인에 따라 기존 경계를 유지하고 측정 P2로 남긴다. 실제 Windows mutex/relay 자식의 지연 회귀는 headless 범위이며 새 PC 설치·첫 GUI·로그온 직후 GUI·실제 전송 수용은 랩에서 따로 확인한다.

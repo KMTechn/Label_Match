@@ -633,7 +633,7 @@ def test_installer_fences_then_quiesces_before_placement_and_restores() -> None:
     quiesce = source.index("Product $removalRoot '--remove-current-user-setup'", preimage)
     placement = source.index("$placementExitCode = InvokeFrozenPlacementHelper $frozenPlacement $helperParameters", preimage)
     restore = source.index("Product $productInstall '--onboard-current-user' @($onboardingArguments + '--defer-canonical-relay-start')", placement)
-    fence_stop = source.index("Stop-LabelWriterFence", restore)
+    confirmation = source.index("Confirm-LabelCanonicalPlacement $onboarding", restore)
     assert (
         preimage
         < fence_start
@@ -641,7 +641,16 @@ def test_installer_fences_then_quiesces_before_placement_and_restores() -> None:
         < quiesce
         < placement
         < restore
-        < fence_stop
+        < confirmation
+    )
+    helper_start = source.index("function Confirm-LabelCanonicalPlacement(")
+    helper_end = source.index("function InvokeFrozenPlacementHelper(", helper_start)
+    helper = source[helper_start:helper_end]
+    assert (
+        helper.index("CANONICAL_CONFIRMATION_READBACK_FAILED")
+        < helper.index("$Script:LabelCanonicalConfirmation='UNCERTAIN'")
+        < helper.index("Stop-LabelWriterFence")
+        < helper.index("$Script:LabelCanonicalConfirmation='CONFIRMED'")
     )
     assert "WriterFenceFunctionsPreloaded = $true" in source
     assert ("-DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage',`\n"
