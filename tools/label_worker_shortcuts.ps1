@@ -114,6 +114,7 @@ function Install-LabelWorkerShortcuts([string]$Root, $Manifest, [string]$Path, [
     if ($CommonOnly -and $UserOnly) { throw 'Shortcut scope is ambiguous.' }
     Assert-LabelShortcutPath $Root
     Assert-LabelShortcutPath $Path
+    $Path = [IO.Path]::GetFullPath($Path)
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
     if ([string]$Manifest.launcher -cne 'launch-label-match.cmd') { throw 'Worker launcher differs from the portable manifest.' }
     $launcher = Join-Path $rootFull ([string]$Manifest.launcher)
@@ -206,6 +207,7 @@ function Install-LabelWorkerShortcuts([string]$Root, $Manifest, [string]$Path, [
 
 function Restore-LabelWorkerShortcuts([string]$Root, [string]$Path, [switch]$CommonOnly, [switch]$UserOnly) {
     Assert-LabelShortcutPath $Path
+    $Path = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
     $record = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')

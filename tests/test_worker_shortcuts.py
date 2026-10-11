@@ -18,7 +18,7 @@ NAMES = [
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
-@pytest.mark.parametrize("case", ["broken", "absent", "collision", "write_failure", "drift", "record_scope", "record_path"])
+@pytest.mark.parametrize("case", ["broken", "broken_forward_path", "absent", "collision", "write_failure", "drift", "record_scope", "record_path"])
 def test_worker_shortcuts_roundtrip_and_ownership(tmp_path, engine, case):
     result = run_functions(tmp_path, HELPER, NAMES, r'''
 $root=$env:LM_SHORTCUT_ROOT;$case=$env:LM_SHORTCUT_CASE
@@ -30,6 +30,7 @@ function Get-FileHash {param($LiteralPath)
 }
 $install=Join-Path $root 'Apps/Label_Match/current'
 $record=Join-Path $root 'LOCALAPPDATA/install-audit/shortcuts.json'
+if($case -eq 'broken_forward_path'){$record=$record.Replace('\','/')}
 $script:fixtureFolderNames=@('Desktop','Programs','CommonDesktop','CommonPrograms')
 foreach($name in $script:fixtureFolderNames){[void][IO.Directory]::CreateDirectory((Join-Path $root $name))}
 function Get-LabelWorkerShortcutFolders {param([switch]$CommonOnly,[switch]$UserOnly)
@@ -58,7 +59,7 @@ Make-Link $otherRoot (Join-Path $root 'AnotherRoot/Label_Match/current/Label_Mat
 $healthyTarget=Join-Path $install 'existing/Label_Match.exe'
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $healthyTarget));[IO.File]::WriteAllText($healthyTarget,'old')
 $healthy=Join-Path $root 'Programs/healthy.lnk';Make-Link $healthy $healthyTarget ''
-if($case -eq 'broken' -or $case -eq 'drift'){
+if($case -in @('broken','broken_forward_path','drift')){
  foreach($name in $script:fixtureFolderNames){
   $path=Join-Path $root ($name+'/KMTech/submenu/old.lnk')
   if($name.EndsWith('Desktop')){$path=Join-Path $root ($name+'/old.lnk')}
@@ -86,7 +87,7 @@ if($case -in @('collision','write_failure')){
 }
 if($failed){throw $failure}
 $journal=Get-Content -LiteralPath $record -Raw -Encoding UTF8|ConvertFrom-Json
-$wantedCount=if($case -in @('broken','drift')){4}else{2}
+$wantedCount=if($case -in @('broken','broken_forward_path','drift')){4}else{2}
 if(@($journal.entries).Count -ne $wantedCount){throw 'Wrong owned link count'}
 foreach($entry in $journal.entries){
  $props=Get-LabelShortcutProperties $entry.path
