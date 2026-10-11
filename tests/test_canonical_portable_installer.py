@@ -1270,10 +1270,8 @@ def test_portable_main_imports_label_match_under_isolated_python(
     tmp_path: Path,
 ) -> None:
     app = tmp_path / "app"
-    app.mkdir()
-    (app / "main.py").write_bytes((ROOT / "portable" / "main.py").read_bytes())
-    for name in ("auto_update.py", "writer_session_fence.py"):
-        (app / name).write_bytes((ROOT / name).read_bytes())
+    # Use the shipped import closure, including the real pending-worker check.
+    portable_builder._copy_application(ROOT, app)
     (app / "Label_Match.py").write_text(
         "def main() -> int:\n    return 0\n",
         encoding="utf-8",

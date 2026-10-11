@@ -15,6 +15,25 @@ from tests.test_writer_transition import portable_pair  # noqa: F401
 INSTALLER = Path(__file__).resolve().parents[1] / "INSTALL_CANONICAL_PORTABLE.ps1"
 
 
+@pytest.mark.parametrize("replacement", ["Run", "Exec", "Save", "wrong-progid"])
+def test_staged_verifier_keeps_machine_shortcut_observation_bounded(tmp_path, replacement):
+    from tools.verify_staged_release_installer import (
+        StagedInstallerVerificationError, _assert_bootstrap_source,
+    )
+    original = INSTALLER.with_name("INSTALL_THIS_PC.ps1").read_text(encoding="utf-8-sig")
+    if replacement == "wrong-progid":
+        changed = original.replace("-ComObject WScript.Shell", "-ComObject Shell.Application", 1)
+    else:
+        changed = original.replace(".CreateShortcut($shortcutPath)", f".{replacement}($shortcutPath)", 1)
+    assert changed != original
+    installer = tmp_path / "INSTALL_THIS_PC.ps1"
+    installer.write_text(changed, encoding="utf-8-sig")
+    helper = INSTALLER.parent / "tools/bootstrap_integrity.ps1"
+    # Only parse these commands; no COM operation or installation executes.
+    with pytest.raises(StagedInstallerVerificationError):
+        _assert_bootstrap_source(installer, helper)
+
+
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 @pytest.mark.parametrize("case", ["valid", "absent-folders", "other-worker", "missing-local", "relative-local", "wrong-local", "file-local", "link-local", "link-programs", "link-desktop"])
 def test_machine_worker_reads_profile_scope_before_plan_without_writing(tmp_path, engine, case):

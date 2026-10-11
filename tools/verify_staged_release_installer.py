@@ -101,7 +101,7 @@ BOOTSTRAP_STATIC_SOURCE = {
     """.split(),
     'instance_methods': """
         add addaccessrule addnamespace addseconds clonenode compare computehash connect contains
-        containskey deletetask dispose endswith equals flush get_innertext get_innerxml
+        containskey createshortcut deletetask dispose endswith equals flush get_innertext get_innerxml
         getaccessrules getbaseexception getbinaryform getbytes getfolder getgroup getinstances
         getowner getsecuritydescriptor getsecuritydescriptorbinaryform
         getsecuritydescriptorsddlform getstring gettask gettype getvalue getvaluenames indexof
@@ -115,6 +115,7 @@ BOOTSTRAP_STATIC_SOURCE = {
         [array]::sort [bitconverter]::tostring [byte[]]::new
         [collections.generic.list[object]]::new [componentmodel.win32exception]::new
         [diagnostics.process]::getprocessbyid [environment]::expandenvironmentvariables
+        [environment]::getfolderpath
         [guid]::newguid [intptr]::new [invalidoperationexception]::new
         [io.directory]::createdirectory [io.file]::appendalltext [io.file]::getattributes
         [io.file]::open [io.file]::openread [io.file]::readallbytes [io.file]::readalltext
@@ -136,7 +137,7 @@ BOOTSTRAP_STATIC_SOURCE = {
     """.split(),
     'object_types': """
         io.filestream security.principal.windowsprincipal text.utf8encoding
-        xml.xmlnamespacemanager schedule.service
+        xml.xmlnamespacemanager schedule.service wscript.shell
     """.split(),
 }
 
