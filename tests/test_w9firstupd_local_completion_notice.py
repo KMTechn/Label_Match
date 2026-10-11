@@ -23,11 +23,13 @@ def row_values(app, result):
     return (1, MASTER, *("" for _ in range(app.TOTAL_SCAN_COUNT - 1)), result, "12:34:56")
 
 
-@pytest.mark.parametrize("registered,local_class", [
-    (False, None), (True, label_transition.LEGACY),
-    (True, label_transition.PHS2_LOCAL), (True, label_transition.PHS2_MALFORMED),
+@pytest.mark.parametrize("registered,local_class,notice_expected", [
+    (False, None, True), (True, label_transition.LEGACY, False),
+    (True, label_transition.PHS2_LOCAL, True), (True, label_transition.PHS2_MALFORMED, True),
 ], ids=["unregistered-local", "old-label-local", "new-label-local", "malformed-local"])
-def test_local_completion_notice_survives_history_reload(packaging, monkeypatch, registered, local_class):
+def test_local_completion_notice_survives_history_reload(
+    packaging, monkeypatch, registered, local_class, notice_expected,
+):
     app, dialogs = packaging
     if not registered:
         app.package_logistics_client = None
@@ -46,25 +48,25 @@ def test_local_completion_notice_survives_history_reload(packaging, monkeypatch,
     [(_row, details)] = completions(app)
     assert details["final_result"] == app.Results.PASS
     assert not (details.get("package_logistics") or {}).get("idempotency_key")
-    assert NOTICE in app.save_status_label.kwargs["text"], (
+    assert (NOTICE in app.save_status_label.kwargs["text"]) == notice_expected, (
         details["final_result"], (details.get("package_logistics") or {}).get("status"),
         bool((details.get("package_logistics") or {}).get("package_id")))
-    assert NOTICE in app.history_tree.item(identity, "values")[1 + app.TOTAL_SCAN_COUNT]
+    assert (NOTICE in app.history_tree.item(identity, "values")[1 + app.TOTAL_SCAN_COUNT]) == notice_expected
     assert app._history_result_value(app.history_tree.item(identity, "values")) == app.Results.PASS
-    assert NOTICE in app._barcode_inline_detail_text(details)
+    assert (NOTICE in app._barcode_inline_detail_text(details)) == notice_expected
     app._refresh_session_tree()
-    assert NOTICE in app.session_tree.item(f"session-{identity}", "values")[2]
+    assert (NOTICE in app.session_tree.item(f"session-{identity}", "values")[2]) == notice_expected
 
     restored = _load_history(label_module, app)
     app.history_row_details_map = restored["set_details_map"]
     app.history_tree = RowTree()
     for _ in app._history_display_steps(restored):
         pass
-    assert NOTICE in app.history_tree.item(identity, "values")[1 + app.TOTAL_SCAN_COUNT]
+    assert (NOTICE in app.history_tree.item(identity, "values")[1 + app.TOTAL_SCAN_COUNT]) == notice_expected
     app._refresh_session_tree()
-    assert NOTICE in app.session_tree.item(f"session-{identity}", "values")[2]
+    assert (NOTICE in app.session_tree.item(f"session-{identity}", "values")[2]) == notice_expected
     app._refresh_history_tree_display_values()
-    assert app.history_tree.item(identity, "values")[1 + app.TOTAL_SCAN_COUNT].count(NOTICE) == 1
+    assert app.history_tree.item(identity, "values")[1 + app.TOTAL_SCAN_COUNT].count(NOTICE) == int(notice_expected)
     assert app.history_row_details_map[identity]["final_result"] == app.Results.PASS
     assert app._history_result_value(app.history_tree.item(identity, "values")) == app.Results.PASS
     assert not app.blocks and dialogs == []
@@ -75,8 +77,13 @@ def test_local_completion_notice_survives_history_reload(packaging, monkeypatch,
     ("통과", {"status": "ACKED", "idempotency_key": "package-intent"}),
     ("통과", {"status": "CONFLICT", "idempotency_key": "package-intent"}),
     ("통과", {"status": "LOCAL_SHORT_CONFIRMATION"}),
+    ("통과", {"status": "LEGACY_DIRECT_SYNC_ONLY",
+              "transition_class": label_transition.LEGACY}),
+    ("통과", {"status": label_transition.LOCAL_ONLY_STATUS,
+              "transition_class": label_transition.LEGACY}),
     ("진행 중", {}), ("입력 오류", {}),
-], ids=["pending", "acked", "conflict", "shortage-grace", "unfinished", "failed"])
+], ids=["pending", "acked", "conflict", "shortage-grace", "legacy-direct-sync",
+        "legacy-package-metadata", "unfinished", "failed"])
 def test_delivery_and_unfinished_rows_keep_their_existing_status(result, metadata):
     app = object.__new__(label_module.Label_Match)
     app.current_set_info = {}

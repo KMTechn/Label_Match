@@ -1667,11 +1667,16 @@ def _label_match_tray_complete_passed(details):
 
 
 def _label_match_local_completion_notice(details):
-    if not details or not _label_match_tray_complete_passed(details):
+    if (
+        not details
+        or details.get("transition_class") == label_transition.LEGACY
+        or not _label_match_tray_complete_passed(details)
+    ):
         return ""
     package = details.get("package_logistics") or {}
     if (
         not isinstance(package, dict)
+        or package.get("transition_class") == label_transition.LEGACY
         or package.get("idempotency_key")
         or package.get("package_id")
         or package.get("status") not in (
