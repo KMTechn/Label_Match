@@ -8310,15 +8310,17 @@ class Label_Match(tk.Tk):
         return tuple(remaining_names)
 
     def _show_app_close_cleanup_delay(self):
+        if self.__dict__.get("_app_close_delay_noted"): return
+        self._app_close_delay_noted = True
+        message = "종료가 끝나지 않았습니다. 창을 그대로 두고 관리자에게 알리세요."
         if "big_display_label" in self.__dict__:
-            self.update_big_display("종료 정리 지연", "red")
+            self.update_big_display(message, "red")
         status_label = self.__dict__.get("status_label")
         if status_label is not None:
             try:
                 status_label.config(
                     text=(
-                        "종료 정리 지연 · 백그라운드 작업 정리를 "
-                        "기다리고 있습니다."
+                        message
                     ),
                     style="Error.TLabel",
                 )
@@ -8357,10 +8359,10 @@ class Label_Match(tk.Tk):
             self._app_close_drain_watchdog_after_id = None
             if not self.__dict__.get("_app_close_in_progress", False):
                 return
-            self._mark_app_close_stall()
+            self._show_app_close_cleanup_delay()
 
         self._app_close_drain_watchdog_after_id = self.after(
-            int(LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS * 1000),
+            60_000,
             expire_overdue_drain,
         )
 

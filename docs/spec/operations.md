@@ -110,7 +110,7 @@ DESIGN §1.2와 코디 추가 결정에 따라 품목 불일치·입력 오류�
 
 빈 작업대는 종료 확인 없이 기존 저장·lane drain·전송 정리를 실행한다. 현재 세트 raw·교환 단계·미달 UNDO 또는 현품표 교환 미완료 상태가 있을 때만 기존 강조 안내에서 종료를 묻고 마우스로 승인한다. Enter·Space·Y/N·스캔은 종료를 승인하지 않으며, 클릭할 때 현재 작업과 기존 종료 gate를 다시 확인한다. 내구 전송 대기열만 있는 것은 확인 사유가 아니다. 정상 화면의 F5 키·날짜 교환 단추·안내는 숨기며 저장된 교환은 `관리자 → 멈춘 작업 확인 (관리자) → 미완료 현품표 교환 복구`에서 같은 요청으로 재개한다.
 
-mainloop 예외/직접 반환도 기존 종료 callback을 같은 UI thread에서 펌프한다. 105초가 지나면 종료 지연을 표시하고 계속 기다린다. 유한 지연의 결과 적용·writer/lane 종료 뒤에만 Tk와 잠금을 해제한다. 일반 sink `gui_shutdown_stall_notice`가 데이터 루트의 `label_match_shutdown_stall.json`을 기록·삭제한다. 새 기동의 표시 삭제 실패는 시작을 막지 않으며, 중복 기동은 표시 PID의 생존·동일 executable을 확인했을 때 기존 출력에 PC 재시작 안내를 남긴다. 영구 정지는 자연 종료 성공이 아니다. 알려진 한계: 앱이 닫히고 다시 안 켜지면 PC 재시작. 실제 Tk·장비·서버 수용은 별도다.
+mainloop 예외/직접 반환도 기존 종료 callback을 같은 UI thread에서 펌프한다. 정상 종료 drain·join이 60초를 넘으면 안내를 한 번 표시하고 계속 기다린다. 기존 105초 지연 처리와 같은 안내는 중복하지 않는다. 유한 지연의 결과 적용·writer/lane 종료 뒤에만 Tk와 잠금을 해제한다. 일반 sink `gui_shutdown_stall_notice`가 데이터 루트의 `label_match_shutdown_stall.json`을 기록·삭제한다. 새 기동의 표시 삭제 실패는 시작을 막지 않으며, 중복 기동은 표시 PID의 생존·동일 executable을 확인했을 때 기존 출력에 PC 재시작 안내를 남긴다. 영구 정지는 자연 종료 성공이 아니다. 알려진 한계: 앱이 닫히고 다시 안 켜지면 PC 재시작. 실제 Tk·장비·서버 수용은 별도다.
 
 교환·일반 UNDO·미달 release·자동 source 검토 감사는 current-state의 scanner_audit_outbox에 업무 checkpoint와 함께 저장한다. 고정 key·원 시각·작업자·이벤트 내용을 보존하고 직후·다음 스캔 전·저장 재시도·기동 때 기존 CSV writer로 재생한다. 같은 key의 동일 CSV 행은 재append하지 않고 fsync하며, CSV와 outbox 제거 checkpoint가 모두 성공한 항목만 목록에서 지운다. CSV 실패는 입력을 막지 않고 pending을 유지한다; 업무 checkpoint 실패만 기존 차단한다. UNDO·reset·완료 후에도 미전송 감사는 보존하므로 교환과 그 UNDO가 모두 남는다. 목표 수량에 도달하지 않은 재시도를 PASS 완료하지 않는다. 기동·복구는 기존 DB 보류 snapshot과 검증된 archive의 pending 감사도 읽어서 같은 ID로 재생한다. 보류 원본·PIN에 결속된 현재 파일은 재작성하지 않고, 활성 파일이 없으면 만들지 않는다; 보류 감사의 재생 여부는 CSV readback으로 판정한다. 큰 감사 목록은 `_scanner_audit_outbox/<SHA256>.json`의 내구 조각을 먼저 저장한 뒤 `scanner_audit_segments` 참조와 업무 checkpoint를 원자 저장한다. 재기동은 SHA·스키마가 맞는 조각을 기록 순서대로 재생하며, 손상·소실 조각의 원본과 참조는 보존한 채 다른 감사와 입력을 계속한다. 이전 8MiB 초과 inline 감사도 업무 본문 검증 뒤 읽는다. 백업·보류 복원에는 checkpoint와 `_scanner_audit_outbox` 폴더를 함께 보존하며, 완료된 조각도 자동 삭제하지 않는다. CSV 재생은 prefix의 byte 수·행 수·SHA256·마지막 행 hash를 기존 current-state의 scanner_audit_csv_prefixes에 함께 저장한다. 재기동·파일 변화 때 전체 prefix와 전 행을 검증하고 같은 writer의 내구 append만 증분 색인하며 ACK 직전에 원 바이트를 재대조한다. 증명 손상·불일치는 기존 전 행 비교로 되돌아가며 업무 복구를 차단하지 않는다. 같은 key의 다른 내용만 기존처럼 거절하고 동일 중복·순서 변경·잘린 끝에 새 전역 오류를 추가하지 않는다. 행별 fsync·마지막 ACK checkpoint와 찢긴 쓰기 뒤 정확히 한 번 재생을 유지한다.
 
@@ -1381,6 +1381,7 @@ GUI 시작 전에 남은 요청은 삭제·무시하므로 앱이 꺼진 상태�
 GUI worker·로그 writer 정리 뒤와 relay lease 해제 직전에 기존 DB만 다시 열어 마지막 read-only 조회가 만든 sidecar도 TRUNCATE checkpoint로 정리한다. 없는 DB는 만들지 않으며 busy·경로·checkpoint 오류는 비밀값 없는 예외 종류만 기록하고 정상 종료를 계속한다.
 
 
+2026-10-12 flow 후속 C: 정상 종료 drain·join이 60초를 넘으면 「종료가 끝나지 않았습니다. 창을 그대로 두고 관리자에게 알리세요.」를 한 번 표시하고 계속 기다린다. 기존 지연 표시와 같은 안내를 중복하지 않는다. 강제 종료·자료 쓰기는 추가하지 않으며, 생성 선언·pin 갱신을 제외한 제품 변경은 +7/-5줄로 15줄 안이다.
 ## 첫 업데이트 묶음 선언 재생성
 
 관련 경로와 승인 행을 모두 조립한 뒤 `python -B tools/refresh_first_update_declarations.py --work-root E:/KMTech/w9firstupd-tmp/w9firstupdsub100/declarations`를 실행하고 같은 명령에 `--check`를 붙여 확인한다. 기본 깔린 판은 d9160b6와 sub-86의 89155f1이다. 뒤에 전달된 실제 설치 판은 `--installed-ref <전체 SHA>`로 함께 지정한다. 기존 깔린 판 목록은 보존한다.

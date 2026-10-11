@@ -2161,15 +2161,19 @@ def test_close_retries_manager_recovery_before_rolling_back(monkeypatch):
     _close_lane(app, root)
 
 
-def test_close_drain_deadline_keeps_finite_lane_and_shows_cleanup_delay():
+def test_close_drain_sixty_seconds_warns_once_and_keeps_finite_lane():
     app, root = _app_with_lane()
     active_gate = threading.Event()
     active_started = threading.Event()
     delays = []
+    status_messages = []
     applied = []
     app._app_close_in_progress = True
     app._app_close_drain_watchdog_after_id = None
-    app._show_app_close_cleanup_delay = lambda: delays.append(True)
+    app.big_display_label = object()
+    app.update_big_display = lambda message, _tone: delays.append(message)
+    app.status_label = SimpleNamespace(config=lambda **kwargs: status_messages.append(kwargs['text']))
+    app._mark_app_close_stall = lambda: pytest.fail("the 60-second notice must not persist a marker")
 
     class InjectedClock:
         def __init__(self):
@@ -2206,23 +2210,29 @@ def test_close_drain_deadline_keeps_finite_lane_and_shows_cleanup_delay():
         )
     )
     active_started.wait(timeout=1.0)
-    timeout_ms = int(
-        label_module.LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS * 1000
-    )
+    timeout_ms = 60_000
 
     try:
         app._arm_app_close_lane_drain_watchdog(app.ui_lane)
         clock.advance(timeout_ms - 1)
 
         assert app.ui_lane.state is LaneState.BUSY
+        assert delays == status_messages == []
 
         clock.advance(1)
 
-        # 2026-10-04 correction: the deadline displays delay and keeps the
-        # accepted result path alive until finite work completes.
+        # The notice changes neither the accepted result nor shutdown waiting.
         assert app.ui_lane.state is LaneState.BUSY
-        assert delays == [True]
+        message = "종료가 끝나지 않았습니다. 창을 그대로 두고 관리자에게 알리세요."
+        assert delays == status_messages == [message]
         assert applied == []
+        assert root.destroyed is False
+        clock.advance(45_000)
+        app._show_app_close_cleanup_delay()
+        app._arm_app_close_lane_drain_watchdog(app.ui_lane)
+        clock.advance(60_000)
+        assert delays == status_messages == [message]
+        assert app.ui_lane.state is LaneState.BUSY and root.destroyed is False
         active_gate.set()
         root.run_until(lambda: bool(applied))
         assert applied == [True]

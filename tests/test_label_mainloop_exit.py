@@ -52,6 +52,9 @@ def test_entrypoint_exit_releases_workers_and_replays_durable_state(tmp_path, mo
         if stage == "stall" or stage.startswith("finite_"):
             waiting = json.loads((root / f"{stage}-waiting.json").read_text(encoding="utf-8"))
             assert waiting["notice"] is True
+            assert waiting["notice_count"] == 1
+            if stage == "drain":
+                assert waiting["stall_marker"] is False
             assert waiting["guard_held"] is True
             assert waiting["destroyed"] is False
             assert waiting["main_returned"] is False
@@ -182,7 +185,9 @@ def _probe(mode, root):
             self._release_shortage_confirmation = lambda: True
             self._show_ui_lane_rejection = lambda *_: None
             self._save_app_settings = lambda: None
-            self._show_app_close_cleanup_delay = lambda: None
+            self.big_display_label = object()
+            self.delay_notices = []
+            self.update_big_display = lambda message, _tone: self.delay_notices.append(message)
             self._stop_error_siren = lambda: None
             self.guard_observations = [owns_guard()]
             self.direct_sync_bootstrap_context = {"scan_source_dir": str(root)}
@@ -190,6 +195,8 @@ def _probe(mode, root):
             app_ready.set()
 
         def after(self, delay, callback, *args):
+            if delay == 60_000:
+                delay = 100
             return self.root.after(delay, callback, *args)
 
         def after_cancel(self, job):
@@ -308,7 +315,8 @@ def _probe(mode, root):
     def record_waiting():
         app = apps[0]
         (root / f"{mode}-waiting.json").write_text(json.dumps({
-            "notice": (root / "label_match_shutdown_stall.json").is_file(),
+            "notice": bool(app.delay_notices), "notice_count": len(app.delay_notices),
+            "stall_marker": (root / "label_match_shutdown_stall.json").is_file(),
             "guard_held": owns_guard(), "destroyed": app.root.destroyed,
             "main_returned": main_returned.is_set(),
             "non_daemon_alive": app.ui_lane.worker_thread.is_alive(),
@@ -324,7 +332,7 @@ def _probe(mode, root):
         app_ready.wait()
         if mode == "stall":
             deadline = time.monotonic() + 2
-            while not (root / "label_match_shutdown_stall.json").is_file() and not main_returned.is_set():
+            while not apps[0].delay_notices and not main_returned.is_set():
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.005)
