@@ -1126,10 +1126,17 @@ def onboard_current_user(
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = start_user_relay_process,
     defer_canonical_relay_start: bool = False,
+    defer_machine_worker_relay_start: bool = False,
 ) -> dict[str, Any]:
     from auto_update import installation_root, assert_registration_storage
     from writer_session_fence import onboarding_lifecycle_context
     pending_worker = validate_pending_worker_install(app_root)
+    if defer_machine_worker_relay_start:
+        from auto_update import process_security
+        security = process_security(os.getpid())
+        if (pending_worker is None or security.get("elevated") is not True
+                or security.get("sid") != pending_worker["target_sid"]):
+            raise ValueError("deferred worker relay requires its elevated pending worker")
     managed = installation_root(Path(app_root))
     setup_root = Path(app_root)
     if managed is not None and (managed / "update-control").exists():
@@ -1438,8 +1445,8 @@ def onboard_current_user(
         else:
             release = {"status": "NOT_REQUIRED"}
         report["stop_marker_release"]["release"] = release
-        if defer_canonical_relay_start:
-            report["relay_start"] = {"status": "DEFERRED_CANONICAL_INSTALL"}
+        if defer_canonical_relay_start or defer_machine_worker_relay_start:
+            report["relay_start"] = {"status": "DEFERRED_WORKER_SESSION" if defer_machine_worker_relay_start else "DEFERRED_CANONICAL_INSTALL"}
         else:
             report["relay_start"] = dict(relay_launcher(paths.app_root))
         relay_start_status = str(report["relay_start"].get("status") or "")
@@ -1449,7 +1456,9 @@ def onboard_current_user(
                 report_path=paths.onboarding_report_path,
                 status="UNKNOWN",
             )
-        if relay_start_status != ("DEFERRED_CANONICAL_INSTALL" if defer_canonical_relay_start else "ALIVE"):
+        expected_relay_status = ("DEFERRED_WORKER_SESSION" if defer_machine_worker_relay_start else
+                                 "DEFERRED_CANONICAL_INSTALL" if defer_canonical_relay_start else "ALIVE")
+        if relay_start_status != expected_relay_status:
             raise ValueError("current-user relay survival was not proven")
         # Helpers, child launch and survival ran without admission. Reacquire
         # and recheck the fence before applying the environment or READY.
@@ -1457,7 +1466,7 @@ def onboard_current_user(
             apply_current_user_runtime_environment(paths, environ=environ)
             report.update(
                 {
-                    "status": "READY",
+                    "status": "WORKER_SESSION_PENDING" if defer_machine_worker_relay_start else "READY",
                     "state_readback": state,
                     "server_registration_verified": True,
                     "operation_lease_store": "AUTHORITATIVE_SNAPSHOT_PRESERVED",
@@ -1468,7 +1477,7 @@ def onboard_current_user(
                 }
             )
             _write_json_atomic(paths.onboarding_report_path, report)
-            if pending_worker is not None:
+            if pending_worker is not None and not defer_machine_worker_relay_start:
                 _complete_worker_install(pending_worker)
         return report
     except EnrollmentMutexError as exc:
@@ -1665,6 +1674,7 @@ def onboarding_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-data-generation-only", action="store_true")
     parser.add_argument("--installer-source-inventory-sha256", default=None, help=__import__('argparse').SUPPRESS)
     parser.add_argument("--defer-canonical-relay-start", action="store_true")
+    parser.add_argument("--defer-machine-worker-relay-start", action="store_true")
     args = parser.parse_args(argv)
     if args.installer_source_inventory_sha256 is not None and not args.check_data_generation_only:
         parser.error("source inventory is only accepted for read-only installation admission")
@@ -1677,6 +1687,7 @@ def onboarding_main(argv: list[str] | None = None) -> int:
         report = onboard_current_user(
             args.app_root,
             defer_canonical_relay_start=args.defer_canonical_relay_start,
+            defer_machine_worker_relay_start=args.defer_machine_worker_relay_start,
             server_base_url=args.server_base_url,
             require_bootstrap_integrity=requires_bootstrap_integrity(args.app_root),
         )

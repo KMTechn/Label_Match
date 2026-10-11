@@ -90,17 +90,18 @@ $account=$sid;$path=$env:LM_ADMIN_INVENTORY
 if($case -ceq 'account'){$account='TEST\worker'}
 if($case -ceq 'session-zero'){$caller.session_id=0}
 if($case -ceq 'session-zero-not-elevated'){$caller.session_id=0;$caller.elevated=$false}
-if($case -ceq 'same-admin'){$account=$caller.sid}
+if($case -ceq 'same-admin'){$account=$caller.sid;$sid=$caller.sid}
 if($case -ceq 'missing-account'){$account=''}
 if($case -ceq 'missing-inventory'){$path=''}
 if($case -like 'ordinary-*'){$caller.elevated=$false}
 if($case -in @('ordinary-default','ordinary-empty-arguments')){$account='';$path=''}
 $worker=$null;$failure=$null
 try{$worker=Resolve-LabelMachineWorker $caller $account $path ($case -ceq 'ordinary-empty-arguments')}catch{$failure=$_}
-if($case -cin @('sid','account','session-zero')){
+if($case -cin @('sid','account','session-zero','same-admin')){
  if($null -ne $failure){throw $failure}
  if($worker.sid -cne $sid -or $worker.inventory_sha256 -cne $env:LM_ADMIN_INVENTORY_SHA){throw 'Worker inventory binding lost'}
  if($worker.local_app_data -cne (Join-Path $env:LM_ADMIN_PROFILE 'AppData\Local')){throw 'Profile differs'}
+ if($worker.caller_is_worker -ne ($case -ceq 'same-admin')){throw 'Caller worker identity differs'}
 }elseif($case -ceq 'ordinary-default'){
  if($null -ne $failure -or $null -ne $worker){throw 'Ordinary entry changed'}
 }else{
@@ -313,6 +314,44 @@ def test_existing_onboarding_completes_pending_only_after_ready(pending_install,
     assert marker.read_bytes() == original
 
 
+@pytest.mark.parametrize("caller", ["same-elevated", "limited", "other-worker"])
+def test_same_worker_profile_preparation_leaves_interactive_completion_pending(pending_install, monkeypatch, caller):
+    import auto_update
+    import current_user_onboarding as onboarding
+    from tests.test_current_user_onboarding import isolated_data_generation_release
+    from tests.test_supported_lifecycle import _canonical_user_setup, _resume_user
+    root, _marker, payload, _store, writes = pending_install
+    isolated_data_generation_release.__wrapped__(monkeypatch)
+    fixed, selected, environment, paths = _canonical_user_setup(
+        root.parent.parent / "managed", monkeypatch, active=payload["source_commit"])
+    marker = fixed.parent / "update-control" / "worker-pending.json"
+    payload["version"] = json.loads((selected / "portable-manifest.json").read_text())["version"]
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    original_marker = marker.read_bytes()
+    monkeypatch.setattr(auto_update, "process_security", lambda _pid: {
+        "sid": payload["target_sid"] if caller != "other-worker" else "different-worker",
+        "elevated": caller != "limited", "session_id": 0})
+    original = onboarding.onboard_current_user
+    monkeypatch.setattr(onboarding, "onboard_current_user", lambda *args, **kwargs:
+        original(*args, **kwargs, defer_machine_worker_relay_start=True))
+    relay_calls = []
+    if caller == "same-elevated":
+        report = _resume_user(selected, environment, launcher=lambda _root: relay_calls.append("relay"))
+        assert report["status"] == "WORKER_SESSION_PENDING"
+        assert report["relay_autostart"]["status"] == "PASS"
+        assert report["ledger_status"] == "READY" and paths.ledger_path.is_file()
+        assert report["relay_start"]["status"] == "DEFERRED_WORKER_SESSION"
+        assert not writes and not relay_calls
+        monkeypatch.setattr(onboarding, "onboard_current_user", original)
+        assert _resume_user(selected, environment)["status"] == "READY"
+        assert len(writes) == 1
+    else:
+        with pytest.raises(ValueError, match="elevated pending worker"):
+            _resume_user(selected, environment)
+        assert not writes and not paths.onboarding_report_path.exists()
+    assert marker.read_bytes() == original_marker
+
+
 def test_wrong_worker_gui_stops_before_data_generation_or_onboarding(pending_install, monkeypatch):
     import Label_Match as app
     import auto_update
@@ -369,7 +408,7 @@ function Sha($p){return ByteSha ([IO.File]::ReadAllBytes($p))}
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
-@pytest.mark.parametrize("outcome", ["pending", "reuse", "helper-unproven"])
+@pytest.mark.parametrize("outcome", ["pending", "reuse", "helper-unproven", "same-worker", "shortcut-failure", "report-failure", "restore-existing"])
 def test_machine_install_uses_pinned_helper_and_never_writes_profiles(tmp_path, engine, outcome):
     for name in ("worker", "admin", "other", "legacy"):
         folder = tmp_path / name
@@ -383,6 +422,7 @@ $EvidencePath=Join-Path $program 'KMTech\Label_Match\install-audit\machine-evide
 $install=Join-Path $env:LM_MACHINE_ROOT 'machine\current'
 $source=Join-Path $env:LM_MACHINE_ROOT 'source'
 $script:placed=0;$script:released=0;$script:authorityReleased=0
+$script:userSetup=0;$serverBaseUrl=''
 if($env:LM_MACHINE_OUTCOME -ceq 'reuse'){[void](New-Item -ItemType Directory -Path $install)}
 function Full($p,$purpose){return [IO.Path]::GetFullPath($p)}
 function Sha($p){return ('c'*64)}
@@ -406,7 +446,21 @@ function Set-LabelWriterFenceDelegation{param($ControlRoot,$Status,$SessionId,$A
  if('worker_enrollment_network' -in $DelegatedSources -or 'current_user_onboarding' -in $DelegatedSources){throw 'Machine entry delegated user writes'}
 }
 function Stop-LabelWriterFence{param($ControlRoot,$SessionId,$AttemptId,$ReplacementTransactionId) $script:released++}
-function Install-LabelMachineWorkerShortcut($root,$menu){return [ordered]@{path=(Join-Path $menu 'KMTech 포장.lnk');sha256=('2'*64)}}
+function Install-LabelMachineWorkerShortcut($root,$menu){
+ [void](New-Item -ItemType Directory -Path $menu -ErrorAction SilentlyContinue)
+ $path=Join-Path $menu 'KMTech 포장.lnk'
+ [IO.File]::WriteAllText($path,'new shortcut')
+ if($env:LM_MACHINE_OUTCOME -in @('shortcut-failure','report-failure','restore-existing')){
+  if($env:LM_MACHINE_OUTCOME -ceq 'report-failure'){function script:Save($Path,$Value){throw 'Synthetic report failure'}}
+  throw 'Synthetic shortcut readback failure'
+ }
+ return [ordered]@{path=$path;sha256=('2'*64)}
+}
+function Product($Root,$Mode,$Arguments){
+ if($env:LM_MACHINE_OUTCOME -cne 'same-worker' -or $Mode -cne '--onboard-current-user' -or
+    '--defer-machine-worker-relay-start' -notin $Arguments -or $script:released -ne 1){throw 'Unexpected user setup'}
+ $script:userSetup++
+}
 function InvokeFrozenPlacementHelper($frozen,$parameters){
  $script:placed++
  if($parameters.WorkerSid -cne 'S-1-5-21-111-222-333-1001' -or
@@ -435,9 +489,24 @@ function StartRaw{throw 'Administrator started worker GUI/relay'}
 $worker=[pscustomobject]@{sid='S-1-5-21-111-222-333-1001';local_app_data=(Join-Path $env:LM_MACHINE_ROOT 'worker\AppData\Local');inventory_sha256=('3'*64)}
 $manifest=[pscustomobject]@{startup_update_protocol=1;source_commit=('4'*40);version='v2.0.99'}
 $failed=$false
-try{Invoke-LabelMachineWorkerInstall $worker $source $install $manifest}catch{
- if($env:LM_MACHINE_OUTCOME -cne 'helper-unproven'){throw}
+$pendingPath=Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json'
+$shortcutPath=Join-Path $program 'StartMenu\KMTech 포장.lnk'
+if($env:LM_MACHINE_OUTCOME -ceq 'restore-existing'){
+ [void](New-Item -ItemType Directory -Path (Split-Path -Parent $pendingPath))
+ [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shortcutPath))
+ [IO.File]::WriteAllText($pendingPath,'old marker');[IO.File]::WriteAllText($shortcutPath,'old shortcut')
+}
+try{Invoke-LabelMachineWorkerInstall $worker $source $install $manifest $null ($env:LM_MACHINE_OUTCOME -ceq 'same-worker')}catch{
+ if($env:LM_MACHINE_OUTCOME -notin @('helper-unproven','shortcut-failure','report-failure','restore-existing')){throw}
+ if($env:LM_MACHINE_OUTCOME -ceq 'report-failure' -and $_.Exception.Message -cne 'Synthetic shortcut readback failure'){throw 'Reporting hid original failure'}
  $failed=$true
+}
+if($env:LM_MACHINE_OUTCOME -in @('shortcut-failure','report-failure','restore-existing')){
+ if(-not $failed -or $script:authorityReleased -ne 1){throw 'Injected failure was lost'}
+ if($env:LM_MACHINE_OUTCOME -ceq 'restore-existing'){
+  if([IO.File]::ReadAllText($pendingPath) -cne 'old marker' -or [IO.File]::ReadAllText($shortcutPath) -cne 'old shortcut'){throw 'Worker artifact bytes not restored'}
+ }elseif((Test-Path -LiteralPath $pendingPath) -or (Test-Path -LiteralPath $shortcutPath)){throw 'New worker artifacts survived failure'}
+ 'PASS';exit 0
 }
 $audit=Get-Content -LiteralPath $EvidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
 if($env:LM_MACHINE_OUTCOME -ceq 'helper-unproven'){
@@ -449,13 +518,13 @@ if($env:LM_MACHINE_OUTCOME -ceq 'helper-unproven'){
 $pending=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if($script:placed -ne 1 -or $script:released -ne 1 -or
  $audit.schema -cne 'label-match-canonical-portable-install-v1' -or $audit.status -cne 'PASS_MACHINE_WORKER_PENDING' -or
- $audit.worker_setup -cne 'PENDING' -or $pending.target_sid -cne $worker.sid -or
+  $audit.worker_setup -cne $(if($env:LM_MACHINE_OUTCOME -ceq 'same-worker'){'PROFILE_READY_SESSION_PENDING'}else{'PENDING'}) -or $pending.target_sid -cne $worker.sid -or
  $pending.inventory_sha256 -cne $worker.inventory_sha256 -or $pending.source_commit -cne $manifest.source_commit -or
  $pending.install_id -cne $audit.run_id -or $audit.worker_pending.path -cne (Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json')){throw 'Machine pending evidence differs'}
 'PASS'
 ''', engine=engine, values={"LM_MACHINE_ROOT": str(tmp_path), "LM_MACHINE_OUTCOME": outcome})
     assert result.returncode == 0, result.stderr
-    assert ("install_status=PASS_MACHINE_WORKER_PENDING" in result.stdout) == (outcome != "helper-unproven")
+    assert ("install_status=PASS_MACHINE_WORKER_PENDING" in result.stdout) == (outcome in {"pending", "reuse", "same-worker"})
     assert "install_status=PASS\n" not in result.stdout
     assert all(p.read_bytes() == before for p, before in originals.items())
     assert all(sorted((tmp_path / name).iterdir()) == [tmp_path / name / "preserve.dat"] for name in ("worker", "admin", "other", "legacy"))

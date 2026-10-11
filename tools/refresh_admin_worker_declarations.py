@@ -14,6 +14,7 @@ import pprint
 import re
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "455033056f461492c3d4563d4663268f440b6090"
@@ -77,6 +78,15 @@ def refresh(*, check=False):
         offsets = [0]
         for line in lines: offsets.append(offsets[-1] + len(line))
         edits = []
+        candidate_digests = {relative: after for relative, (_before, after) in pairs.items()}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key, pair in zip(node.keys, node.values):
+                if (isinstance(key, ast.Constant) and key.value in candidate_digests
+                        and isinstance(pair, ast.Tuple) and len(pair.elts) == 2
+                        and isinstance(pair.elts[1], ast.Constant)):
+                    replacements[pair.elts[1].value] = candidate_digests[key.value]
         for node in ast.walk(tree):
             if not isinstance(node, ast.Constant) or node.value not in replacements:
                 continue
@@ -99,6 +109,37 @@ def refresh(*, check=False):
         return value
     declaration = BEGIN + "\nadmin_worker_replacements = " + pprint.pformat(pairs, sort_dicts=True, width=110) + "\n" + END
     updated = rewrite(probe[:declaration_start]) + declaration + rewrite(probe[declaration_end:])
+    # Derive the stock pair from the builder's real application members. Preserve
+    # all historical before values while refreshing candidates and missing leaves.
+    from tools.build_portable_release_candidate import _copy_application
+    tree = ast.parse(updated)
+    table = next(node for node in tree.body if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                 and node.targets[0].id == "startup_release_replacements")
+    releases = ast.literal_eval(table.value)
+    stock = subprocess.check_output(["git", "-c", "core.autocrlf=false", "-C", str(ROOT),
+                                     "rev-parse", "55cab72"], text=True).strip()
+    with tempfile.TemporaryDirectory(prefix="admin-pair-") as temporary:
+        app = Path(temporary) / "app"
+        _copy_application(ROOT, app)
+        changed_paths = subprocess.check_output(["git", "-c", "core.autocrlf=false", "-C", str(ROOT),
+                                                "diff", "--name-only", stock], text=True).splitlines()
+        changed = {"app/" + path: path for path in changed_paths if (app / path).is_file()}
+        changed.update(FILES)
+        for relative, path in changed.items():
+            candidate = digest(staged.get(path, (ROOT / path).read_bytes()))
+            for release in releases.values():
+                if relative in release:
+                    release[relative] = release[relative][0], candidate
+            original = subprocess.check_output(["git", "-c", "core.autocrlf=false", "-C", str(ROOT),
+                                                "show", stock + ":" + path])
+            before = digest(original)
+            if relative in releases[stock] and releases[stock][relative][0] != before:
+                raise ValueError("historical stock preimage changed")
+            releases[stock][relative] = before, candidate
+    lines = updated.splitlines(keepends=True)
+    updated = ("".join(lines[:table.lineno-1]) + "startup_release_replacements = "
+               + pprint.pformat(releases, sort_dicts=True, width=110) + "\n"
+               + "".join(lines[table.end_lineno:]))
     probe_sha = hashlib.sha256(updated.removeprefix("\n").encode("utf-8")).hexdigest()
     tail, count = re.subn(r"(-ProbeBytes \$probeBytes -ExpectedSha256 ')[0-9a-f]{64}(')",
                          lambda match: match[1] + probe_sha + match[2], text[finish:], count=1)
