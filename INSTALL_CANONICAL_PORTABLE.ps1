@@ -656,7 +656,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
                                     '93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
-                                    '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
+                                    'f1dc02ba1711847228945fe6a01c3881aef6e71441a85cbf5873dbf72700d72e'),
  'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
                              '7556f245d8724729d70e0639f6c5fcec06cc77e0f3e8b1f871278c585cd45666'),
  'app/label_completion.py': ('25fb17bff710478898ea1b16ab08538b2be74827d4aaac48ed7631364cfd7d3d',
@@ -722,7 +722,7 @@ scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
-                                    '970c6565a3f5f589f15d9cc2fb0ff1e5980e772d977976152b93f3c7e6e41dbd'),
+                                    'f1dc02ba1711847228945fe6a01c3881aef6e71441a85cbf5873dbf72700d72e'),
  'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8',
                              'ed37d0733e62e375fcd85f873b2459f5fd6a3e7d68ced48f36200cb5e871c0ac'),
  'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
@@ -851,7 +851,7 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/user_relay.py': ({'07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7'},
                        '1015c0d1026d69745d70bbe1d69ab0f5a97cec52eaf8831ecc95d0356d8f4d3b'),
  'app/writer_session_fence.py': ({'7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', 'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', 'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50'},
-                                 '3076b56b1dbf5c8023d4866942a91d782388845f3af5f83bae878fd2b72b0dab')}
+                                 '462f94717e0c30c8e97b84cba27b3c74f933b8ceb2fade45df60ed49de8b6d4e')}
 remote_transport_transition = (
     legacy_label_transition or scan_input_transition or nextfix_label_transition
     or scanner_transition or current_user_profile_transition

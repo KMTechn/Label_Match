@@ -1299,17 +1299,30 @@ def test_dpapi_or_seal_readback_failure_never_commits(tmp_path):
         assert _count(conn, "deferred_intents") == 0
 
 
-def test_quota_failure_does_not_prune_or_partially_capture(tmp_path):
+def test_pending_count_does_not_prune_or_refuse_capture(tmp_path):
     db_path, _outbox, store = _store(tmp_path, max_pending_intents=1)
-    first = _capture(store, set_id="SET-QUOTA-1")
-    with pytest.raises(DeferredIntentCaptureError) as failure:
-        _capture(store, set_id="SET-QUOTA-2")
-    assert failure.value.code == "CAPTURE_QUOTA_EXCEEDED"
+    first = _capture(store)
+    original = _row(db_path, first.intent_id)
+    second = _capture(store, set_id=first.intent_id)
+    assert first.intent_id != second.intent_id
     with sqlite3.connect(db_path) as conn:
-        assert _count(conn, "deferred_intents") == 1
-        assert conn.execute(
-            "SELECT intent_id FROM deferred_intents LIMIT 1"
-        ).fetchone()[0] == first.intent_id
+        assert _count(conn, "deferred_intents") == 2
+    assert _row(db_path, first.intent_id) == original
+
+
+def test_ten_thousand_pending_intents_accepts_another_without_pruning(tmp_path):
+    db_path, _outbox, store = _store(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        for index in range(10_000):
+            _insert_status_fixture(conn, index=index, state="CAPTURED_UNVERIFIED",
+                                   partition_key=str(index), partition_seq=1)
+        conn.commit()
+        original = conn.execute("SELECT * FROM deferred_intents ORDER BY intent_id").fetchall()
+    captured = _capture(store)
+    with sqlite3.connect(db_path) as conn:
+        assert _count(conn, "deferred_intents") == 10_001
+        assert conn.execute("SELECT * FROM deferred_intents WHERE intent_id<>? ORDER BY intent_id",
+                            (captured.intent_id,)).fetchall() == original
 
 
 def test_online_legacy_outbox_and_supersede_handoff_commit_together(tmp_path):

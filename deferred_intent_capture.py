@@ -1744,15 +1744,6 @@ class DeferredIntentCaptureStore:
                         "the same Label work identity was captured with different input",
                     )
 
-                pending_before = conn.execute(
-                    """SELECT COUNT(*) FROM deferred_intents
-                         WHERE state NOT IN ('COMPLETED','CANCELLED','SUPERSEDED')"""
-                ).fetchone()[0]
-                if int(pending_before) >= self.max_pending_intents:
-                    raise DeferredIntentCaptureError(
-                        "CAPTURE_QUOTA_EXCEEDED",
-                        "deferred intent capture quota is full",
-                    )
                 sequence = int(
                     conn.execute(
                         """SELECT COALESCE(MAX(partition_seq),0)+1
