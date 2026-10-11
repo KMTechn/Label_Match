@@ -123,4 +123,3 @@ def onboarding_reason(error):
         return cause
     return ("INSTALL_MANIFEST_MISMATCH" if cause == "BOOTSTRAP_INTEGRITY_INVALID"
             else "FIRST_RUN_SETUP_REQUIRED")
-

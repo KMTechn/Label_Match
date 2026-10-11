@@ -262,7 +262,12 @@ if($env:LM_412_OPEN_FAIL -ceq '1'){
         # This is the actual later GUI failure path, after the installer has
         # already returned PASS. Replace only Tk/window APIs; create no window.
         import Label_Match as app
+        import startup_observation as observation
         dialogs = []
+        startup_results = []
+        monkeypatch.setattr(observation, "write_startup_result", startup_results.append)
+        monkeypatch.setattr(observation, "show_startup_blocked_notice",
+                            lambda: dialogs.append(observation.STARTUP_BLOCKED_MESSAGE))
         parent = SimpleNamespace(**{name: (lambda *a, **kw: None) for name in
             ("withdraw", "title", "geometry", "attributes", "deiconify", "lift",
              "update", "focus_force", "destroy")})
@@ -277,9 +282,11 @@ if($env:LM_412_OPEN_FAIL -ceq '1'){
             raise caught.value
         monkeypatch.setattr(app, "onboard_current_user", failed_onboarding)
         assert app.main([]) == app.ONBOARDING_EXIT_CODE
-        assert len(dialogs) == 1 and "업무 자료를 열지 못해" in dialogs[0]
-        assert str(paths.onboarding_report_path) in dialogs[0]
-        assert caught.value.recovery_command in dialogs[0]
+        assert dialogs == [observation.STARTUP_BLOCKED_MESSAGE]
+        assert startup_results[-1]["category"] == "ACCOUNT_MISMATCH"
+        assert startup_results[-1]["startable"] is False
+        assert str(paths.onboarding_report_path) not in dialogs[0]
+        assert caught.value.recovery_command not in dialogs[0]
         # The published command uses this existing CLI mode. Exercise its real
         # parser and normal onboarding after the isolated disk failure is fixed.
         original_onboard = onboarding.onboard_current_user

@@ -280,6 +280,13 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
             if len(matches) != 1:
                 raise ValueError("integrity source declaration is ambiguous")
             candidate_field(matches[0].comparators[0], ast.literal_eval(assignments["integrity_order_path"].value))
+            for comparison in ast.walk(assignment.value):
+                if (isinstance(comparison, ast.Compare) and len(comparison.comparators) == 1
+                        and isinstance(comparison.left, ast.Call) and comparison.left.args
+                        and isinstance(comparison.left.args[0], ast.BinOp)
+                        and isinstance(comparison.left.args[0].left, ast.Name)
+                        and comparison.left.args[0].left.id == "source"):
+                    candidate_field(comparison.comparators[0], "app/current_user_onboarding.py")
     # The scanner override also preserves its installed preimages and refreshes
     # only candidate fields; it is nested outside the declaration assignments.
     scanner_updates = [node.args[0] for node in ast.walk(tree)
