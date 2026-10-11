@@ -14,7 +14,7 @@ import pytest
 import Label_Match as app_module
 import label_safe_path
 from direct_sync_push import canonical_request_string
-from label_admin_pin import AdminPinClient, AdminPinIntentStore, operator_local_id
+from label_admin_pin import AdminPinClient, AdminPinError, AdminPinIntentStore, operator_local_id
 from tests.test_w9nb_label_recovery import (
     SOURCE_A, SOURCE_B, _operation_key, _recovery_app, _storage_recovery_app,
 )
@@ -1611,3 +1611,34 @@ def test_operator_mapping_is_web_safe(name):
 
 def test_operator_mapping_normalizes_nfc():
     assert operator_local_id("가") == operator_local_id("\u1100\u1161")
+
+
+def test_network_requests_send_fixed_user_agent_not_urllib_default():
+    credentials = SimpleNamespace(
+        producer_id="producer-label", key_id="key-label", secret="test-secret",
+        endpoint_url="https://example.invalid/api/producer-ingest",
+    )
+    client = AdminPinClient(credentials)
+    seen = {}
+
+    class Response:
+        status = 200
+
+        def geturl(self):
+            return seen["url"]
+
+        def read(self, limit):
+            return b'{"ok":true}'
+
+    class Opener:
+        def open(self, request, timeout):
+            seen["url"] = request.full_url
+            seen["agent"] = request.get_header("User-agent")
+            return Response()
+
+    client.opener = Opener()
+    try:
+        client.post("verifications", {"pin": "x"})
+    except AdminPinError:
+        pass  # only the request headers matter here
+    assert seen["agent"] == "KMTech-LabelMatch-AdminPin/1.0"

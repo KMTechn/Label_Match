@@ -22,6 +22,9 @@ from writer_session_fence import remote_request, writer_sink
 
 
 CONTRACT_VERSION = "admin-pin.v1"
+# urllib's default "Python-urllib" agent is refused by the edge in front of the
+# company server (Cloudflare 1010) before the request reaches the web app.
+ADMIN_PIN_HTTP_USER_AGENT = "KMTech-LabelMatch-AdminPin/1.0"
 FAILURE_MESSAGE = (
     "관리자 확인에 실패했습니다. ID와 PIN을 확인하세요. "
     "잠긴 경우 최상위 관리자에게 해제를 요청하세요."
@@ -133,6 +136,7 @@ class AdminPinClient:
         secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
         headers = {
             "Content-Type": "application/json", "Accept": "application/json",
+            "User-Agent": ADMIN_PIN_HTTP_USER_AGENT,
             "X-Producer-Id": str(identity.producer_id),
             "X-Producer-Key-Id": str(identity.key_id),
             "X-Producer-Timestamp": timestamp,
