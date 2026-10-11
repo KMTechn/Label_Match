@@ -33,6 +33,12 @@ def digest(raw: bytes) -> str:
     return hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
 
 
+def encode_source(path: Path, source: str, original: bytes) -> bytes:
+    keep_bom = original.startswith(b"\xef\xbb\xbf")
+    require_bom = path.suffix.lower() == ".ps1" and any(ord(char) > 127 for char in source)
+    return source.encode("utf-8-sig" if keep_bom or require_bom else "utf-8")
+
+
 def snapshot(revision: str, target: Path) -> None:
     """Read attested Git blobs without checkout filters or a second worktree."""
     files = []
@@ -122,7 +128,7 @@ def historical_layout(revision: str, work: Path) -> dict[str, str]:
 
 def writer_probe(source: str):
     found = []
-    for match in re.finditer(r"@'\n(.*?)\n'@", source, re.S):
+    for match in re.finditer(r"@'\r?\n(.*?)\r?\n'@", source, re.S):
         code = match.group(1).lstrip()
         try:
             tree = ast.parse(code)
@@ -247,7 +253,7 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
     leading = len(match.group(1)) - len(match.group(1).lstrip())
     updated = source[:match.start(1) + leading] + encoded.decode() + source[match.end(1):]
     updated_match, _, _, _ = writer_probe(updated)
-    body = updated_match.group(1).encode("utf-8")
+    body = updated_match.group(1).replace("\r\n", "\n").encode("utf-8")
     tail = updated[updated_match.end():]
     pin_match = re.search(r"-ProbeBytes \$probeBytes -ExpectedSha256 '([0-9a-f]{64})'", tail)
     if pin_match is None:
@@ -255,7 +261,7 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
     pin_start = updated_match.end() + pin_match.start(1)
     pin_end = updated_match.end() + pin_match.end(1)
     updated = updated[:pin_start] + hashlib.sha256(body).hexdigest() + updated[pin_end:]
-    output = (b"\xef\xbb\xbf" if raw.startswith(b"\xef\xbb\xbf") else b"") + updated.encode()
+    output = encode_source(installer, updated, raw)
     if check and raw != output:
         raise ValueError("first-update declarations are stale")
     if not check:
