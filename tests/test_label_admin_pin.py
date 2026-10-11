@@ -18,6 +18,7 @@ from label_admin_pin import AdminPinClient, AdminPinError, AdminPinIntentStore, 
 from tests.test_w9nb_label_recovery import (
     SOURCE_A, SOURCE_B, _operation_key, _recovery_app, _storage_recovery_app,
 )
+from ui.workflow_view_state import WorkflowSnapshot, present_workflow
 
 
 PIN = "246813"
@@ -585,6 +586,173 @@ def test_offline_park_releases_active_set_and_linked_f5(tmp_path, monkeypatch, l
                             "WHERE operation_key=? AND action='PIN_ATTEMPT'",
                             (_intent(app)[0],)).fetchall()
     assert any(row[0] == "UNVERIFIED_HOLD_COMPLETE:PIN_UNAVAILABLE" for row in rows)
+
+
+PIN_HOLD_FAILURES = (
+    "PIN_LOCKED", "STEPUP_LOCKED", "DEVICE_LIMITED", "DEVICE_BLOCKED",
+    "PIN_INVALID", "PIN_RATE_LIMITED", "PIN_BUSY", "FUTURE_PIN_FAILURE",
+    "CENTRAL_ACTION_UNAVAILABLE", "VERIFY_UNAVAILABLE",
+)
+
+
+@pytest.mark.parametrize("code", PIN_HOLD_FAILURES)
+@pytest.mark.parametrize("linked", [False, True])
+def test_pin_refusal_park_preserves_original_and_enables_next_scan(
+        tmp_path, monkeypatch, code, linked):
+    app, journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=linked)
+    current_bytes = current.read_bytes()
+    journal_bytes = journal.path.read_bytes() if linked else None
+    selected = "F5:" + hashlib.sha256(journal_bytes).hexdigest() if linked else set_id
+    action = "LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD"
+    target, _ = app._package_pin_target(action, selected)
+    admin_id, _ = app._prompt_package_admin_pin()
+    operator = app._package_pin_operator()
+
+    def refuse(_path, _raw, _headers):
+        return 429, json.dumps({"ok": False, "error": {"code": code}}).encode()
+
+    app._admin_pin_client.transport = refuse
+    app_module.Label_Match._show_package_recovery_block(app, "관리자 확인 대기")
+    assert not present_workflow(WorkflowSnapshot(
+        blocking_notice=app._workflow_blocking_notice)).scan_input_enabled
+    assert app._run_package_pin_action(action, selected) is False
+    assert current.read_bytes() == current_bytes
+    assert app.package_outbox.get_workbench_hold(set_id) is None
+    target_id = target["id"]
+    pending = app._admin_pin_store.pending(target["kind"], target_id)
+    assert pending["state"] == "UNVERIFIED_OPERATOR_HOLD"
+    assert pending["error_code"] == code
+    assert pending["target_fingerprint"] == target["state_fingerprint"]
+    key = pending["operation_key"]
+    writer_name = "_hold_label_recovery" if linked else "_hold_package_recovery_set"
+    original_writer = getattr(app, writer_name)
+    writes = []
+
+    def audited_hold(*args, **kwargs):
+        writes.append(app.package_outbox.pin_effect_rows(key))
+        return original_writer(*args, **kwargs)
+
+    monkeypatch.setattr(app, writer_name, audited_hold)
+    assert app._park_unverified_pin_item(selected) is True
+    assert len(writes) == 1
+    rows = writes[0]
+    assert any(row["observed"] == code for row in rows)
+    assert any(row["observed"] == "UNVERIFIED_HOLD_REQUEST:PIN_UNAVAILABLE" for row in rows)
+    assert all(row["manager_id"] == admin_id and row["operator_id"] == operator["local_id"]
+               for row in rows)
+    assert not current.exists() and app.current_set_info["id"] is None
+    assert any(path.read_bytes() == current_bytes
+               for path in tmp_path.glob(current.name + ".held-*"))
+    if linked:
+        held = app.package_outbox.get_label_exchange_hold(target_id)
+        assert held["journal_bytes"] == journal_bytes
+        assert Path(held["archive_path"]).read_bytes() == journal_bytes
+    assert app._admin_pin_store.get(key)["target_fingerprint"] == target["state_fingerprint"]
+    source_fields = app_module._label_match_parse_compact_phs2(SOURCE_A)
+    assert (app._label_recovery_source_is_held(SOURCE_A)
+            or app.package_outbox.workbench_hold_for_source(SOURCE_A, source_fields["ITG"]))
+    other_fields = app_module._label_match_parse_compact_phs2(SOURCE_B)
+    assert not app._label_recovery_source_is_held(SOURCE_B)
+    assert app.package_outbox.workbench_hold_for_source(SOURCE_B, other_fields["ITG"]) is None
+    assert present_workflow(WorkflowSnapshot(
+        blocking_notice=app._workflow_blocking_notice)).scan_input_enabled
+    monkeypatch.setattr(app, writer_name, original_writer)
+    app._admin_pin_client.transport = server
+    assert app._run_package_pin_action(action, selected) is True
+    assert app._admin_pin_store.get(key)["state"] == "SUPERSEDED"
+    assert app.package_outbox.get_workbench_hold(set_id) is not None
+
+
+@pytest.mark.parametrize("code", ["TARGET_CHANGED", "AUDIT_UNAVAILABLE"])
+@pytest.mark.parametrize("linked", [False, True])
+def test_pin_hold_exclusions_preserve_original(tmp_path, monkeypatch, code, linked):
+    app, journal, current, _server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=linked)
+    original = current.read_bytes()
+    selected = "F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest() if linked else set_id
+    app._admin_pin_client.transport = lambda *_args: (
+        409, json.dumps({"ok": False, "error": {"code": code}}).encode())
+    assert app._run_package_pin_action("LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD", selected) is False
+    assert app._park_unverified_pin_item(selected) is False
+    assert current.read_bytes() == original and app.current_set_info["id"] == set_id
+    assert app.package_outbox.get_workbench_hold(set_id) is None
+
+
+@pytest.mark.parametrize("boundary", ["verification", "park"])
+def test_pin_refusal_audit_failure_cannot_park(tmp_path, monkeypatch, boundary):
+    from label_admin_pin import operator_message
+    app, _journal, current, _server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=False)
+    original = current.read_bytes()
+    app._admin_pin_client.transport = lambda *_args: (
+        401, json.dumps({"ok": False, "error": {"code": "PIN_INVALID"}}).encode())
+    audit = app.package_outbox.audit_pin_attempt
+
+    def unavailable(**_fields):
+        raise OSError("audit unavailable")
+
+    if boundary == "verification":
+        monkeypatch.setattr(app.package_outbox, "audit_pin_attempt", unavailable)
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
+    if boundary == "verification":
+        monkeypatch.setattr(app.package_outbox, "audit_pin_attempt", audit)
+    else:
+        monkeypatch.setattr(app.package_outbox, "audit_pin_attempt", unavailable)
+    assert app._park_unverified_pin_item(set_id) is False
+    assert app._admin_pin_last_message == operator_message("AUDIT_UNAVAILABLE")
+    assert current.read_bytes() == original and app.current_set_info["id"] == set_id
+    assert app.package_outbox.get_workbench_hold(set_id) is None
+
+
+@pytest.mark.parametrize("changed", ["target", "operator", "missing_operator"])
+@pytest.mark.parametrize("linked", [False, True])
+def test_pin_refusal_park_rechecks_target_and_operator(tmp_path, monkeypatch, changed, linked):
+    from label_admin_pin import operator_message
+    app, journal, current, _server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=linked)
+    selected = "F5:" + hashlib.sha256(journal.path.read_bytes()).hexdigest() if linked else set_id
+    app._admin_pin_client.transport = lambda *_args: (
+        401, json.dumps({"ok": False, "error": {"code": "PIN_INVALID"}}).encode())
+    assert app._run_package_pin_action("LABEL.F5_HOLD" if linked else "LABEL.SET_HOLD", selected) is False
+    if changed == "target":
+        if linked:
+            state = journal.load()
+            state["status"] = "PREPARED"
+            journal.save(state)
+        else:
+            state = json.loads(current.read_text(encoding="utf-8"))
+            state["current_set_info"]["recovery_operator_review"] = False
+            current.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    elif changed == "missing_operator":
+        app.worker_name = ""
+    else:
+        app.worker_name += " changed"
+    original = current.read_bytes()
+    assert app._park_unverified_pin_item(selected) is False
+    assert app._admin_pin_last_message == operator_message("TARGET_CHANGED")
+    assert current.read_bytes() == original and app.current_set_info["id"] == set_id
+    assert app.package_outbox.get_workbench_hold(set_id) is None
+
+
+@pytest.mark.parametrize("code", [*PIN_HOLD_FAILURES, "TARGET_CHANGED", "AUDIT_UNAVAILABLE",
+                                "PROOF_INVALID", "PROOF_REVOKED"])
+def test_pin_hold_guidance_matches_button_eligibility(code):
+    from label_admin_pin import operator_message, unverified_hold_allowed
+    assert ("이 건만 보류" in operator_message(code)) == unverified_hold_allowed(code)
+
+
+def test_malformed_pin_can_park_without_contacting_server(tmp_path, monkeypatch):
+    app, _journal, current, server, set_id = _active_set_pin_app(
+        tmp_path, monkeypatch, linked=False)
+    admin_id, _ = app._prompt_package_admin_pin()
+    app._prompt_package_admin_pin = lambda: (admin_id, PIN[:-1])
+    original = current.read_bytes()
+    assert app._run_package_pin_action("LABEL.SET_HOLD", set_id) is False
+    assert server.verify_calls == server.redeem_calls == 0
+    assert app._park_unverified_pin_item(set_id) is True
+    assert any(path.read_bytes() == original
+               for path in tmp_path.glob(current.name + ".held-*"))
 
 
 def test_offline_park_resumes_f5_after_hold_row(tmp_path, monkeypatch):

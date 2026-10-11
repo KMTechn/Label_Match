@@ -45,6 +45,10 @@ class AdminPinError(RuntimeError):
         super().__init__(code)
 
 
+def unverified_hold_allowed(code: str) -> bool:
+    return bool(code) and code not in {"TARGET_CHANGED", "AUDIT_UNAVAILABLE"}
+
+
 def operator_message(code: str, *, http_status: int = 0) -> str:
     if code == "VERIFY_UNAVAILABLE":
         if http_status >= 500:
@@ -55,11 +59,19 @@ def operator_message(code: str, *, http_status: int = 0) -> str:
         return FAILURE_MESSAGE
     if code == "TARGET_CHANGED":
         return "대상 또는 작업자가 바뀌었습니다. 다시 조회하세요."
-    if code == "CENTRAL_ACTION_UNAVAILABLE":
-        return "이 관리자 동작의 서버 확인을 사용할 수 없습니다. 이 건만 보류하고 다른 작업을 계속하세요."
-    if code in {"PIN_BUSY", "PIN_RATE_LIMITED"}:
-        return "관리자 확인이 바쁩니다. 잠시 뒤 다시 확인하세요. 이 건만 보류하고 다른 작업을 계속하세요."
-    return "관리자 확인 결과를 알 수 없습니다. 이 건만 보류하고 다른 작업을 계속하세요."
+    if code == "AUDIT_UNAVAILABLE":
+        return "관리자 확인 기록을 저장할 수 없습니다. 원본을 유지하고 저장 상태를 확인한 뒤 다시 시도하세요."
+    if code in {"PIN_INVALID", "PROOF_INVALID", "PROOF_REVOKED"}:
+        message = FAILURE_MESSAGE
+    elif code == "CENTRAL_ACTION_UNAVAILABLE":
+        message = "이 관리자 동작의 서버 확인을 사용할 수 없습니다."
+    elif code in {"PIN_BUSY", "PIN_RATE_LIMITED"}:
+        message = "관리자 확인이 바쁩니다. 잠시 뒤 다시 확인하세요."
+    else:
+        message = "관리자 확인 결과를 알 수 없습니다."
+    if unverified_hold_allowed(code):
+        message += " 이 건만 보류하고 다른 작업을 계속하세요."
+    return message
 
 
 def fingerprint(value: Mapping[str, Any]) -> str:

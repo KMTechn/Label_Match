@@ -92,7 +92,7 @@ from label_recovery_schema import require_recovery_record, valid_recovery_archiv
 from label_admin_pin import (
     AdminPinClient, AdminPinError, AdminPinIntentStore,
     active_pin_operation, fingerprint as admin_pin_fingerprint,
-    operator_message as admin_pin_message, operator_local_id,
+    operator_message as admin_pin_message, operator_local_id, unverified_hold_allowed,
 )
 from label_safe_path import (describe_entry, quarantine_entry, read_checked_bytes,
                              move_checked_matching_bytes, write_checked_bytes)
@@ -10822,24 +10822,20 @@ class Label_Match(tk.Tk):
         file_binding, target, source_sha, operator, closing = prepared
         store = self._admin_pin_store
         admin_id, pin = credentials
-        if not admin_id or not (len(pin) == 6 and pin.isascii() and pin.isdecimal()):
-            try:
-                self.package_outbox.audit_pin_attempt(
-                    set_id=set_id, pin_action=action, admin_id=admin_id,
-                    operator_id=operator["local_id"],
-                    operator_name=str(self.worker_name).strip(),
-                    verification_id="", operation_key="", result="PIN_INVALID",
-                )
-                code = "PIN_INVALID"
-            except Exception:
-                code = "AUDIT_UNAVAILABLE"
-            self._admin_pin_last_message = admin_pin_message(code)
-            return False
         request_id = str(uuid.uuid4())
         verification_id = ""
         operation_key = ""
         http_status = 0
+
+        def audit(**fields):
+            try:
+                self.package_outbox.audit_pin_attempt(**fields)
+            except Exception:
+                raise AdminPinError("AUDIT_UNAVAILABLE") from None
+
         try:
+            if not admin_id or not (len(pin) == 6 and pin.isascii() and pin.isdecimal()):
+                raise AdminPinError("PIN_INVALID")
             issued = self._package_pin_client().verify(
                 request_id=request_id, admin_id=admin_id, pin=pin,
                 action=action, target=target, operator=operator,
@@ -10851,7 +10847,7 @@ class Label_Match(tk.Tk):
                 action=action, target=target, operator=operator, admin_id=admin_id,
                 source_evidence_sha256=source_sha,
             )
-            self.package_outbox.audit_pin_attempt(
+            audit(
                 set_id=set_id, pin_action=action, admin_id=admin_id,
                 operator_id=operator["local_id"], operator_name=str(self.worker_name).strip(),
                 verification_id=verification_id,
@@ -10860,7 +10856,7 @@ class Label_Match(tk.Tk):
             if file_binding[0]:
                 if self._package_pin_current_file_binding(action, set_id) != file_binding:
                     raise AdminPinError("TARGET_CHANGED")
-                self.package_outbox.audit_pin_attempt(
+                audit(
                     set_id=file_binding[0], pin_action=action, admin_id=admin_id,
                     operator_id=operator["local_id"], operator_name=str(self.worker_name).strip(),
                     verification_id=verification_id, operation_key=operation_key,
@@ -10880,7 +10876,7 @@ class Label_Match(tk.Tk):
                     or self._package_pin_current_file_binding(action, set_id) != file_binding):
                 raise AdminPinError("TARGET_CHANGED")
             store.transition(operation_key, "AUTHORIZED")
-            self.package_outbox.audit_pin_attempt(
+            audit(
                 set_id=set_id, pin_action=action, admin_id=admin_id,
                 operator_id=operator["local_id"], operator_name=str(self.worker_name).strip(),
                 verification_id=verification_id,
@@ -10934,7 +10930,7 @@ class Label_Match(tk.Tk):
                     store.transition(operation_key, "UNVERIFIED_OPERATOR_HOLD", error_code=code)
             except Exception:
                 code = "AUDIT_UNAVAILABLE"
-        elif code == "VERIFY_UNAVAILABLE":
+        elif unverified_hold_allowed(code):
             # No proof was issued. Persist the failed item's target before an
             # explicit operator choice can quarantine it.
             try:
@@ -10948,7 +10944,7 @@ class Label_Match(tk.Tk):
             except Exception:
                 code = "AUDIT_UNAVAILABLE"
         try:
-            self.package_outbox.audit_pin_attempt(
+            audit(
                 set_id=set_id, pin_action=action, admin_id=admin_id,
                 operator_id=operator["local_id"], operator_name=str(self.worker_name).strip(),
                 verification_id=verification_id,
@@ -10956,6 +10952,11 @@ class Label_Match(tk.Tk):
             )
         except Exception:
             code = "AUDIT_UNAVAILABLE"
+            if operation_key:
+                try:
+                    store.transition(operation_key, "UNVERIFIED_OPERATOR_HOLD", error_code=code)
+                except Exception:
+                    pass
         self._admin_pin_last_message = admin_pin_message(code, http_status=http_status)
         return False
 
@@ -10966,12 +10967,16 @@ class Label_Match(tk.Tk):
             kind = "label_f5_recovery" if action == "LABEL.F5_HOLD" else "label_set_recovery"
             target_id = str(set_id)[3:] if action == "LABEL.F5_HOLD" else str(set_id)
             pending = self._admin_pin_store.pending(kind, target_id)
-            if (pending is None or pending["error_code"] != "VERIFY_UNAVAILABLE"):
-                self._admin_pin_last_message = (
-                    "이 단추는 관리자 PIN 확인을 할 수 없었던 건에만 씁니다. "
-                    "이 건은 '보류 후 계속'을 눌러 관리자 PIN으로 보류하세요."
-                )
+            if pending is None:
+                self._admin_pin_last_message = self.__dict__.get(
+                    "_admin_pin_last_message", "관리자 확인 다시 조회를 먼저 선택하세요.")
                 return False
+            if not unverified_hold_allowed(pending["error_code"]):
+                self._admin_pin_last_message = admin_pin_message(pending["error_code"])
+                return False
+            if (not str(self.worker_name or "").strip()
+                    or self._package_pin_operator()["local_id"] != pending["operator_id"]):
+                raise AdminPinError("TARGET_CHANGED")
             if not self._recover_package_pin_moves(pending):
                 raise AdminPinError("TARGET_CHANGED")
             target, _ = self._package_pin_target(pending["action"], set_id,
@@ -11052,10 +11057,11 @@ class Label_Match(tk.Tk):
                 "다른 작업을 계속할 수 있습니다. 나중에 관리자 PIN으로 다시 확인하세요."
             )
             return True
+        except AdminPinError as exc:
+            self._admin_pin_last_message = admin_pin_message(exc.code)
+            return False
         except Exception:
-            self._admin_pin_last_message = (
-                "이 건의 보류 기록을 검증하지 못했습니다. 원본을 유지하고 다시 확인하세요."
-            )
+            self._admin_pin_last_message = admin_pin_message("AUDIT_UNAVAILABLE")
             return False
 
     @writer_sink("gui_package_recovery_hold")
