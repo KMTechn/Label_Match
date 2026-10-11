@@ -483,7 +483,7 @@ def nextfix_archive_layouts(tmp_path_factory):
             target.parent.mkdir(exist_ok=True)
             origin = "portable/launch-label-match.cmd" if relative == "launch-label-match.cmd" else relative
             target.write_bytes((source / origin).read_bytes())
-        for relative in builder.FAILURE_SINK_DATA:
+        for relative in getattr(builder, "FAILURE_SINK_DATA", ()):
             target = layout / relative
             target.parent.mkdir(exist_ok=True)
             shutil.copyfile(source / relative, target)
