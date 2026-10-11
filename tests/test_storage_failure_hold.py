@@ -444,6 +444,65 @@ def test_all_auto_held_product_barcodes_are_duplicates_in_another_set(station, m
     assert len(completions(app)) == 1
 
 
+@pytest.mark.parametrize("held_reason,held_by,rejected", [
+    ("LABEL.SET_HOLD", "MANAGER_TEST", False),
+    ("LABEL.F5_HOLD", "SYSTEMATIC", False),
+    ("STORAGE_WRITE_FAILURE", "SYSTEM_STORAGE_CHECK", True),
+    ("처리 중 오류 · 관리자 확인 대기", "SYSTEM", True),
+    ("PROCESSING_ERROR", "SYSTEM_PROCESSING_CHECK", True),
+])
+@pytest.mark.parametrize("physical_label", [False, True])
+def test_held_products_and_labels_follow_hold_actor_after_restart(
+        station, monkeypatch, held_reason, held_by, rejected, physical_label):
+    app, _dialogs = station
+    master = PHS2_LABEL if physical_label else MASTER
+    values = [master, *products(prefix="HELD-ACTOR")]
+    for value in values[:4]:
+        scan(app, value)
+    app.data_manager.flush(timeout=5)
+    target = Path(app.save_directory) / app.FILES.CURRENT_STATE
+    original = target.read_bytes()
+    held_id = app.current_set_info["id"]
+    app.package_outbox.hold_workbench_set(set_id=held_id,
+        source_phs2=master, source_input_tag_id="", snapshot=app.data_manager.load_current_state(),
+        reason=held_reason, held_by=held_by)
+    _close(app)
+    restored = _app_for_recovery(lm, Path(app.save_directory), monkeypatch)
+    restored.entry = _FakeEntry("")
+    restored._render_operator_workbench = lambda: SimpleNamespace(scan_input_enabled=True)
+    try:
+        restored._load_current_set_state()
+        assert restored.current_set_info["id"] is None
+        assert restored.current_set_info["raw"] == []
+        assert not target.exists()
+        [archive] = list(target.parent.glob(target.name + ".held-*"))
+        assert archive.read_bytes() == original
+        assert restored._workflow_blocking_notice is None
+        scan(restored, master)
+        if rejected and physical_label:
+            assert restored.current_set_info["raw"] == []
+            scan(restored, MASTER)
+        if rejected:
+            before = copy.deepcopy(restored.current_set_info)
+            for value in values[1:4]:
+                scan(restored, value)
+                assert restored.current_set_info == before
+            assert completions(restored) == []
+            for value in products(prefix="NEW-ACTOR"):
+                scan(restored, value)
+        else:
+            assert restored.current_set_info["raw"] == [master]
+            for value in values[1:4]:
+                scan(restored, value)
+            assert restored.current_set_info["raw"] == values[:4]
+            assert completions(restored) == []
+            scan(restored, values[-1])
+        assert len(completions(restored)) == 1
+        assert restored.package_outbox.get_workbench_hold(held_id) is not None
+    finally:
+        _close(restored)
+
+
 def test_hold_without_readable_barcodes_does_not_break_other_set_input(station):
     app, _dialogs = station
     app.package_outbox.hold_workbench_set(set_id='unverified-hold',

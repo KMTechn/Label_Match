@@ -22329,6 +22329,9 @@ class Label_Match(tk.Tk):
             return set()
         keys = set()
         for held in list_holds():
+            held_by = str(held.get('held_by') or '')
+            if held_by != 'SYSTEM' and not held_by.startswith('SYSTEM_'):
+                continue
             current = json.loads(held['snapshot_json']).get('current_set_info') or {}
             raw = list(current.get('raw') or [])
             keys.update(self._sample_barcode(value) for value in raw[1:])
