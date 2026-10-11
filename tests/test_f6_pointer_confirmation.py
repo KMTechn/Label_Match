@@ -170,6 +170,28 @@ def test_pointer_approval_runs_once(app, place):
     assert approved(app, place) == 1
 
 
+@pytest.mark.parametrize("status", [None, "ACKED", "PENDING", "UNKNOWN", "CONFLICT"])
+def test_cancel_success_uses_status_line_after_target_approval(app, status):
+    cancellation = None if status is None else {
+        "status": status, "central_cancellation_acked": status == "ACKED",
+    }
+    app._queue_authoritative_package_cancellation.return_value = cancellation
+    label = next(iter(app.set_details_map.values()))["master_label_code"]
+    app._cancel_completed_tray_by_label(label)
+    app._commit_package_cancellation_local_event.assert_not_called()
+    click(app)
+    app._commit_package_cancellation_local_event.assert_called_once()
+    lm.messagebox.showinfo.assert_not_called()
+    if status in {None, "ACKED"}:
+        lm.messagebox.showwarning.assert_not_called()
+        app.update_big_display.assert_called_with(
+            app._package_cancellation_completion_message.return_value, "green")
+    else:
+        lm.messagebox.showwarning.assert_called_once()
+        assert not any(len(call.args) > 1 and call.args[1] == "green"
+                       for call in app.update_big_display.call_args_list)
+
+
 @pytest.mark.parametrize('place', ['delete', 'cancel', 'reprint', 'close'])
 def test_changed_target_cannot_use_old_approval(app, place):
     start(app, place)

@@ -18541,9 +18541,7 @@ class Label_Match(tk.Tk):
                         warning_title, completion_message, parent=self
                     )
                 else:
-                    messagebox.showinfo(
-                        "처리 완료", completion_message, parent=self
-                    )
+                    self.update_big_display(completion_message, "green")
 
         except Exception as e:
             print(f"취소 작업 기술 진단: {e}")
