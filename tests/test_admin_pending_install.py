@@ -617,7 +617,7 @@ function Sha($p){return ByteSha ([IO.File]::ReadAllBytes($p))}
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
-@pytest.mark.parametrize("outcome", ["pending", "reuse", "helper-unproven", "same-worker", "shortcut-failure", "report-failure", "restore-existing", "switched-version-failure"])
+@pytest.mark.parametrize("outcome", ["pending", "reuse", "helper-unproven", "same-worker", "shortcut-failure", "report-failure", "restore-existing", "switched-version-failure", "post-switch-census-failure"])
 def test_machine_install_uses_pinned_helper_and_never_writes_profiles(tmp_path, engine, outcome, monkeypatch):
     for name in ("worker", "admin", "other", "legacy"):
         folder = tmp_path / name
@@ -637,10 +637,13 @@ function Full($p,$purpose){return [IO.Path]::GetFullPath($p)}
 function Sha($p){return ('c'*64)}
 function UnquiescedProductWriters{return @()}
 function PortableInventory($root){
- $sha=if($env:LM_MACHINE_OUTCOME -ceq 'switched-version-failure' -and $root -ceq $install -and $script:placed -eq 0){'0'*64}else{'a'*64}
+ $sha=if($env:LM_MACHINE_OUTCOME -in @('switched-version-failure','post-switch-census-failure') -and $root -ceq $install -and $script:placed -eq 0){'0'*64}else{'a'*64}
  return [pscustomobject]@{sha256=$sha;bootstrap_aggregate_sha256=('b'*64);file_count=1;byte_count=4;critical_file_sha256=@{}}
 }
-function Read-CanonicalStartupLifecycle($source,$root){return [pscustomobject]@{active_code_root=$root}}
+function Read-CanonicalStartupLifecycle($source,$root){
+ if($env:LM_MACHINE_OUTCOME -ceq 'post-switch-census-failure'){throw 'Synthetic post-switch census failure'}
+ return [pscustomobject]@{active_code_root=$root}
+}
 function Assert-WriterTransition($candidate,$installed){return [pscustomobject]@{compatibility='fixture';candidate_inventory_sha256=('d'*64);installed_inventory_sha256=('d'*64)}}
 function FreezePlacementHelper($root,$auditRoot,$run,$critical){
  $frozen=Join-Path $auditRoot 'frozen';[void](New-Item -ItemType Directory -Path (Join-Path $frozen 'tools'))
@@ -693,7 +696,7 @@ function InvokeFrozenPlacementHelper($frozen,$parameters){
   throw 'Synthetic unproven placement child'
  }
   if(-not (Test-Path -LiteralPath $parameters.InstallRoot)){[void](New-Item -ItemType Directory -Path $parameters.InstallRoot)}
-  if($env:LM_MACHINE_OUTCOME -ceq 'switched-version-failure'){
+  if($env:LM_MACHINE_OUTCOME -in @('switched-version-failure','post-switch-census-failure')){
    if($parameters.ExpectedActiveCommit -cne ('5'*40)){throw 'Previous active identity was lost'}
    Save-LabelMachineMetadata (Join-Path $parameters.InstallRoot 'portable-manifest.json') $manifest
    Save-LabelMachineMetadata (Join-Path (Split-Path -Parent $parameters.InstallRoot) 'update-control\active.json') @{sha=$manifest.source_commit}
@@ -710,7 +713,7 @@ $failed=$false
 $pendingPath=Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json'
 $shortcutPath=Join-Path $program 'StartMenu\KMTech 포장.lnk'
 $lifecycle=$null
-if($env:LM_MACHINE_OUTCOME -ceq 'switched-version-failure'){
+if($env:LM_MACHINE_OUTCOME -in @('switched-version-failure','post-switch-census-failure')){
  [void](New-Item -ItemType Directory -Path $install)
  $lifecycle=[pscustomobject]@{lifecycle_state='INSTALLED';active_code_root=$install;from_commit=('5'*40)}
  Save-LabelMachineMetadata (Join-Path (Split-Path -Parent $install) 'update-control\policy.json') @{operator_sid=$worker.sid;operator_local_app_data=$worker.local_app_data}
@@ -724,11 +727,11 @@ if($env:LM_MACHINE_OUTCOME -ceq 'restore-existing'){
  [IO.File]::WriteAllText($pendingPath,'old marker');[IO.File]::WriteAllText($shortcutPath,'old shortcut')
 }
 try{Invoke-LabelMachineWorkerInstall $worker $source $install $manifest $lifecycle ($env:LM_MACHINE_OUTCOME -ceq 'same-worker')}catch{
-  if($env:LM_MACHINE_OUTCOME -notin @('helper-unproven','shortcut-failure','report-failure','restore-existing','switched-version-failure')){throw}
+  if($env:LM_MACHINE_OUTCOME -notin @('helper-unproven','shortcut-failure','report-failure','restore-existing','switched-version-failure','post-switch-census-failure')){throw}
  if($env:LM_MACHINE_OUTCOME -ceq 'report-failure' -and $_.Exception.Message -cne 'Synthetic shortcut readback failure'){throw 'Reporting hid original failure'}
  $failed=$true
 }
-if($env:LM_MACHINE_OUTCOME -in @('shortcut-failure','report-failure','restore-existing','switched-version-failure')){
+if($env:LM_MACHINE_OUTCOME -in @('shortcut-failure','report-failure','restore-existing','switched-version-failure','post-switch-census-failure')){
   if(-not $failed -or $script:authorityReleased -ne 1){throw 'Injected failure was lost'}
   $pending=Get-Content -LiteralPath $pendingPath -Raw -Encoding UTF8 | ConvertFrom-Json
   if($pending.source_commit -cne $manifest.source_commit -or $pending.target_sid -cne $worker.sid){throw 'Pending record does not describe retained code'}
@@ -757,7 +760,7 @@ if($script:placed -ne 1 -or $script:released -ne 1 -or
     assert "install_status=PASS\n" not in result.stdout
     assert all(p.read_bytes() == before for p, before in originals.items())
     assert all(sorted((tmp_path / name).iterdir()) == [tmp_path / name / "preserve.dat"] for name in ("worker", "admin", "other", "legacy"))
-    if outcome == "switched-version-failure":
+    if outcome in {"switched-version-failure", "post-switch-census-failure"}:
         import auto_update
         import current_user_onboarding as onboarding
         managed = tmp_path / "machine"

@@ -5014,6 +5014,11 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
         # Already elevated: the same launcher omits RunAs, preserving its pins and delegation.
         $exit = InvokeFrozenPlacementHelper $frozen $parameters
         if ($exit -ne 0) { throw 'Machine code placement failed.' }
+        # The pinned helper has completed its placement/readback. Later census,
+        # shortcut or profile failures must retain a marker for that release.
+        $workerPendingForPlacedCode = [ordered]@{schema='label-match-machine-worker-pending-v1';install_id=$run;
+            target_sid=$Worker.sid;source_commit=$SourceManifest.source_commit;version=$SourceManifest.version;
+            installed_at=[DateTime]::UtcNow.ToString('o');inventory_sha256=$Worker.inventory_sha256}
         $activeRoot = $Install
         if ($null -ne $Lifecycle -and $Lifecycle.lifecycle_state -ceq 'INSTALLED') {
             $accepted = Read-CanonicalStartupLifecycle $Source $Install
@@ -5022,11 +5027,6 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
         $installed = PortableInventory $activeRoot
         if ($installed.sha256 -cne $receipt.sha256) { throw 'Machine placement inventory differs.' }
         $audit.code_placement='PASS'; $audit.code_state='PRESENT'
-        # A verified switch is retained on later failure. Its pending record must
-        # describe that same release, even when an older incomplete install exists.
-        $workerPendingForPlacedCode = [ordered]@{schema='label-match-machine-worker-pending-v1';install_id=$run;
-            target_sid=$Worker.sid;source_commit=$SourceManifest.source_commit;version=$SourceManifest.version;
-            installed_at=[DateTime]::UtcNow.ToString('o');inventory_sha256=$Worker.inventory_sha256}
         if ($existing -and $null -eq $Lifecycle -and $preimage.sha256 -cne $receipt.sha256) {
             $audit.replacement_rollback_root = [string](ReplacementPreimage $Install $preimage $backupsBefore)
         }
