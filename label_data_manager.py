@@ -631,8 +631,9 @@ class DataManager:
                 if len(json.dumps(business, ensure_ascii=False, indent=4,
                                   cls=self._datetime_encoder()).encode('utf-8')) > RECOVERY_MAX_BYTES:
                     raise ValueError('current business state exceeds recovery size limit')
+                checkpoint_payload = encoded.encode('utf-8')
                 checkpoint_write = True
-                write_checked_bytes(state_path, encoded.encode('utf-8'),
+                write_checked_bytes(state_path, checkpoint_payload,
                                     allowed_root=self.save_directory)
                 self._audit_outbox = list(pending.values())
                 self._last_state_write_failure = None
@@ -647,7 +648,7 @@ class DataManager:
                         attempts = self._state_write_failure_attempts.get(set_id, 0) + 1
                         self._state_write_failure_attempts[set_id] = attempts
                         saved = json.loads(json.dumps(current, cls=self._datetime_encoder()))
-                        self._last_state_write_failure = (e, saved, attempts)
+                        self._last_state_write_failure = (e, saved, attempts, len(checkpoint_payload))
                 print(f"임시 상태 저장 실패: {e}")
                 return False
 
@@ -656,7 +657,7 @@ class DataManager:
         failure = self._last_state_write_failure
         if not failure or failure[2] < 2:
             return None
-        error, current, _attempts = failure
+        error, current, _attempts, checkpoint_bytes = failure
         set_id = str(current['id'])
         root = Path(self.save_directory).absolute()
         active = root / self._current_state_filename()
@@ -677,6 +678,7 @@ class DataManager:
                     'archive_path': archive, 'current_file_sha256': original['sha256'],
                     'storage_failure': {'outcome': 'UNKNOWN', 'file': str(active),
                         'error_type': type(error).__name__, 'error': str(error),
+                        'checkpoint_bytes': checkpoint_bytes,
                         'recorded_at': self._clock().now().isoformat(), 'scan_order': list(current.get('raw') or [])}}
         require_recovery_record('current', snapshot)
         if len(json.dumps(snapshot, ensure_ascii=False).encode('utf-8')) > 65536:
@@ -717,7 +719,7 @@ class DataManager:
                 if len(json.dumps(snapshot, ensure_ascii=False).encode('utf-8')) > 65536:
                     raise OSError('checkpoint hold exceeds the small writer admission bound')
             probe = root / ('._storage_probe_' + uuid.uuid4().hex)
-            payload = b'Label_Match storage check\n'
+            payload = os.urandom(min(failure[3], 65536))
             try:
                 write_checked_bytes(probe, payload, allowed_root=root, replace=False)
                 if read_checked_bytes(probe, allowed_root=root) != payload:
@@ -742,6 +744,45 @@ class DataManager:
                 quarantine_entry(active, archive, description=description,
                                  allowed_root=root)
             return held
+
+    def resume_storage_checkpoint_hold(self, outbox, held):
+        """Finish a recorded isolation before startup can restore its active file."""
+        if held.get('reason') != 'STORAGE_WRITE_FAILURE':
+            raise OSError('checkpoint is not held for a storage failure')
+        snapshot = json.loads(held['snapshot_json'])
+        require_recovery_record('current', snapshot)
+        root = Path(self.save_directory).absolute()
+        active = root / self._current_state_filename()
+        original = read_recovery_file(active, current_state=True)
+        if (not original['verified'] or original['sha256'] != snapshot['current_file_sha256']
+                or str(original['value']['current_set_info'].get('id') or '') != str(held['set_id'])
+                or snapshot['archive_path'] != str(active) + '.held-' + original['sha256']):
+            raise OSError('held checkpoint original cannot be verified for startup isolation')
+        description = describe_entry(active, allowed_root=root)
+        with self._state_lock:
+            pending = list(self._audit_outbox)
+        self._resume_storage_checkpoint_hold_rename(outbox, held, description, pending)
+        archive = snapshot['archive_path']
+        if hashlib.sha256(read_checked_bytes(archive, allowed_root=root)).hexdigest() != original['sha256']:
+            raise OSError('held checkpoint startup readback differs')
+        with self._state_lock:
+            if self._audit_outbox != pending:
+                raise OSError('checkpoint audit changed during startup isolation')
+            self._audit_outbox = []
+        return held
+
+    @writer_sink("data_manager_storage_failure_resume")
+    def _resume_storage_checkpoint_hold_rename(self, outbox, held, description, pending):
+        root = Path(self.save_directory).absolute()
+        active = root / self._current_state_filename()
+        with self._state_lock:
+            if (self._audit_outbox != pending or self._unverified_audit_segments
+                    or self.log_queue.unfinished_tasks
+                    or outbox.get_workbench_hold(str(held['set_id'])) != held
+                    or describe_entry(active, allowed_root=root) != description):
+                raise OSError('held checkpoint changed before startup isolation')
+            quarantine_entry(active, json.loads(held['snapshot_json'])['archive_path'],
+                             description=description, allowed_root=root)
 
     def _save_completed_worker_identity(self, current):
         """Archive a durable CSV completion, never an editable checkpoint."""

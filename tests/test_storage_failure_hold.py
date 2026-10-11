@@ -4,7 +4,7 @@ import copy
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -13,7 +13,7 @@ import label_data_manager as storage
 import writer_session_fence as fence
 from package_logistics import PackageOutbox
 from terminal_operation_lease import OperationLeaseError
-from tests.test_legacy_label_transition import MASTER, PHS2_LABEL
+from tests.test_legacy_label_transition import MASTER, PHS2_LABEL, _app_for_recovery, _close
 from tests.test_label_match_core import _FakeEntry
 from tests.test_w9scanonly_packaging import EXCHANGE, packaging, products, scan, completions  # noqa: F401
 
@@ -147,6 +147,7 @@ def test_fourth_distinct_set_stops_but_repeat_does_not_count_twice(station, monk
                 snapshot = json.loads(holds[-1]["snapshot_json"])
                 app.data_manager._last_state_write_failure = (
                     PermissionError("checkpoint write denied"), snapshot["current_set_info"], 2,
+                    snapshot['storage_failure']['checkpoint_bytes'],
                 )
                 repeated = app.data_manager.hold_failed_checkpoint(
                     app.package_outbox, source_phs2=holds[-1]["source_phs2"],
@@ -209,6 +210,120 @@ def test_retry_after_hold_record_does_not_complete_or_overwrite_the_original(sta
     assert Path(json.loads(held['snapshot_json'])['archive_path']).read_bytes() == original
     assert completions(app) == []
     assert 'test_pass' not in app.sounds
+
+
+@pytest.mark.parametrize('checkpoint_padding', [32768, 98304])
+def test_storage_probe_matches_failed_checkpoint_bytes_with_a_64_kib_cap(
+        station, monkeypatch, checkpoint_padding):
+    app, _dialogs = station
+    prepare_set(app)
+    manager = app.data_manager
+    target = Path(app.save_directory) / app.FILES.CURRENT_STATE
+    original = target.read_bytes()
+    state = manager.load_current_state()
+    state['probe_size_fixture'] = 'x' * checkpoint_padding
+    write = storage.write_checked_bytes
+    checkpoint_sizes, probe_sizes = [], []
+
+    def observe_write(path, payload, **kwargs):
+        if Path(path) == target:
+            checkpoint_sizes.append(len(payload))
+            raise PermissionError('injected checkpoint failure')
+        if Path(path).name.startswith('._storage_probe_'):
+            probe_sizes.append(len(payload))
+        return write(path, payload, **kwargs)
+
+    monkeypatch.setattr(storage, 'write_checked_bytes', observe_write)
+    for _ in range(2):
+        assert manager.save_current_state(state) is False
+    held = manager.hold_failed_checkpoint(app.package_outbox,
+        source_phs2=MASTER, source_input_tag_id='')
+    snapshot = json.loads(held['snapshot_json'])
+    assert checkpoint_sizes[-1] > checkpoint_padding
+    assert probe_sizes == [min(checkpoint_sizes[-1], 65536)]
+    assert Path(snapshot['archive_path']).read_bytes() == original
+    assert completions(app) == []
+
+
+@pytest.mark.parametrize('day_offset', [0, 1])
+@pytest.mark.parametrize('retry_archive_denied', [False, True])
+def test_startup_retries_storage_hold_archive_before_opening_or_replaying_the_set(
+        station, monkeypatch, day_offset, retry_archive_denied):
+    app, _dialogs = station
+    values = prepare_set(app)
+    target = Path(app.save_directory) / app.FILES.CURRENT_STATE
+    original = target.read_bytes()
+    set_id = app.current_set_info['id']
+
+    def denied(*args, **kwargs):
+        raise PermissionError('injected checkpoint archive failure')
+
+    with monkeypatch.context() as patch:
+        fail_checkpoint(app, patch)
+        patch.setattr(storage, 'quarantine_entry', denied)
+        scan(app, values[-1])
+        app._retry_blocked_submission()
+    held = app.package_outbox.get_workbench_hold(set_id)
+    archive = Path(json.loads(held['snapshot_json'])['archive_path'])
+    assert held['reason'] == 'STORAGE_WRITE_FAILURE'
+    assert target.read_bytes() == original and not archive.exists()
+    _close(app)
+    now = datetime.now() + timedelta(days=day_offset)
+
+    class RestartDay(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromtimestamp(now.timestamp(), tz)
+
+    monkeypatch.setattr(lm, 'datetime', RestartDay)
+    restored = _app_for_recovery(lm, Path(app.save_directory), monkeypatch)
+    restored.operator_workbench_ready = True
+    restored.entry = _FakeEntry('')
+    restored._publish_durable_commit_block = MethodType(
+        lm.Label_Match._publish_durable_commit_block, restored)
+    restored._render_operator_workbench = lambda: SimpleNamespace(scan_input_enabled=True)
+    replay = restored._replay_scanner_audits
+    replay_calls = []
+    read = storage.read_checked_bytes
+
+    def checked_read(path, **kwargs):
+        if Path(path) in (target, archive):
+            assert not getattr(fence._WRITER_LOCAL, 'depth', 0)
+        return read(path, **kwargs)
+
+    def checked_replay(**kwargs):
+        assert not target.exists()
+        assert restored.current_set_info['raw'] == []
+        replay_calls.append(True)
+        return replay(**kwargs)
+
+    monkeypatch.setattr(storage, 'read_checked_bytes', checked_read)
+    restored._replay_scanner_audits = checked_replay
+    try:
+        assert restored.data_manager._last_state_write_failure is None
+        with monkeypatch.context() as patch:
+            if retry_archive_denied:
+                patch.setattr(storage, 'quarantine_entry', denied)
+            restored._load_current_set_state()
+        assert restored.current_set_info['id'] is None
+        assert restored.current_set_info['raw'] == []
+        if retry_archive_denied:
+            assert target.read_bytes() == original and not archive.exists()
+            assert replay_calls == []
+            assert '이 PC에 저장할 수 없습니다' in restored._workflow_blocking_notice.message
+            assert restored._workflow_notice_action == restored._load_current_set_state
+            restored._workflow_notice_action()
+        assert not target.exists() and archive.read_bytes() == original
+        assert replay_calls
+        assert restored._workflow_blocking_notice is None
+        assert len(restored.package_outbox.list_workbench_holds()) == 1
+        assert completions(restored) == []
+        assert restored.sounds == []
+        scan(restored, MASTER)
+        assert restored.current_set_info['id'] != set_id
+        assert restored.current_set_info['raw'] == [MASTER]
+    finally:
+        _close(restored)
 
 
 def test_storage_held_physical_label_cannot_start_a_transition_local_set(station, monkeypatch):

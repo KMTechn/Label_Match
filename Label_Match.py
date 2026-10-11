@@ -11875,6 +11875,30 @@ class Label_Match(tk.Tk):
                 )
                 return
 
+        # A recorded storage hold owns this slot across every date boundary.
+        current_path = self._package_current_state_path()
+        if current_path and os.path.lexists(current_path):
+            evidence = self._read_package_recovery_file(current_path)
+            set_id = str(((evidence['value'] or {}).get('current_set_info') or {}).get('id') or '')
+            get_hold = getattr(self.__dict__.get('package_outbox'), 'get_workbench_hold', None)
+            held = get_hold(set_id) if evidence['verified'] and set_id and callable(get_hold) else None
+            if held and held.get('reason') == 'STORAGE_WRITE_FAILURE':
+                try:
+                    self.data_manager.resume_storage_checkpoint_hold(self.package_outbox, held)
+                    if not self._reset_current_set():
+                        raise OSError('held checkpoint did not release its startup slot')
+                    self._clear_workflow_completion()
+                    self._workflow_blocking_notice = None
+                    self._workflow_notice = WorkflowNotice('관리자 확인 대기',
+                        '이 세트를 따로 보관하고 다음 현품표를 계속하세요. 관리자에게 알리세요.',
+                        kind='scanner_notice', tone='warning')
+                    self._workflow_notice_action = None
+                    self._storage_root_failure = False
+                except Exception as exc:
+                    self._storage_root_failure = True
+                    self._publish_durable_commit_block(exc, retry_action=self._load_current_set_state)
+                    return
+
         self._replay_scanner_audits(include_holds=True)
 
         self._recover_pending_package_pin_moves()
