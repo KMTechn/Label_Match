@@ -267,6 +267,17 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
             pairs = assignment.value.elts if isinstance(assignment.value, ast.Set) else [assignment.value]
             for pair in pairs:
                 candidate_field(pair.elts[1], "app/Label_Match.py")
+    # The accepted scanner preimage also overrides two inline companion pairs.
+    # Refresh their candidates while retaining the exact historical preimages.
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "startup_changes" and node.func.attr == "update"
+                and len(node.args) == 1 and isinstance(node.args[0], ast.Dict)):
+            for key, pair in zip(node.args[0].keys, node.args[0].values):
+                if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                        and isinstance(pair, ast.Tuple) and len(pair.elts) == 2):
+                    candidate_field(pair.elts[1], key.value)
     for (start, end), replacement in sorted(edits.items(), reverse=True):
         encoded = encoded[:start] + replacement + encoded[end:]
     leading = len(match.group(1)) - len(match.group(1).lstrip())
