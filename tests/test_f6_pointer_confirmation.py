@@ -192,6 +192,29 @@ def test_cancel_success_uses_status_line_after_target_approval(app, status):
                        for call in app.update_big_display.call_args_list)
 
 
+@pytest.mark.parametrize("status", [None, "ACKED", "PENDING", "UNKNOWN", "CONFLICT"])
+def test_delete_success_uses_status_after_target_approval(app, status):
+    cancellation = None if status is None else {
+        "idempotency_key": status, "status": status,
+        "central_cancellation_acked": status == "ACKED",
+    }
+    app._queue_authoritative_package_cancellation.return_value = cancellation
+    app._start_package_outbox_drain = Mock()
+    app._delete_selected_row()
+    app._commit_package_cancellation_local_event.assert_not_called()
+    click(app)
+    app._commit_package_cancellation_local_event.assert_called_once()
+    assert app._commit_package_cancellation_local_event.call_args.kwargs["cancellation"] is cancellation
+    lm.messagebox.showinfo.assert_not_called()
+    if status in {None, "ACKED"}:
+        lm.messagebox.showwarning.assert_not_called()
+        assert app.update_big_display.call_args.args[1] == "green"
+        assert "1" in app.update_big_display.call_args.args[0]
+    else:
+        lm.messagebox.showwarning.assert_called_once()
+        assert not any(call.args[1:] == ("green",) for call in app.update_big_display.call_args_list)
+
+
 @pytest.mark.parametrize('place', ['delete', 'cancel', 'reprint', 'close'])
 def test_changed_target_cannot_use_old_approval(app, place):
     start(app, place)

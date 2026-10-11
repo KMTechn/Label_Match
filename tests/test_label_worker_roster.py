@@ -11,6 +11,7 @@ import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -467,6 +468,9 @@ def test_disabled_worker_finishes_actual_package_then_next_scan_requests_selecti
     assert len(completions(app)) == 1
     selected = []
     app.open_settings_window = lambda: selected.append(True)
+    app._show_scanner_notice = Mock()
     scan(app, MASTER)
+    app._show_scanner_notice.assert_called_once_with(
+        "작업자 선택", "이름을 고르거나 '새 이름 등록'에서 이름을 등록한 뒤 다시 스캔하세요.")
     assert app.current_set_info["raw"] == [] and selected == [True]
     assert len(completions(app)) == 1 and dialogs == []

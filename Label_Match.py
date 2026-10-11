@@ -14724,7 +14724,7 @@ class Label_Match(tk.Tk):
         if not self._roster_worker_allowed() and raw_input != "KMCMD:UNDO":
             consume_input()
             self._show_scanner_notice(
-                "작업자 선택", "작업자를 고른 뒤 다시 스캔하세요. 관리자에게 명단 등록을 요청하세요.")
+                "작업자 선택", "이름을 고르거나 '새 이름 등록'에서 이름을 등록한 뒤 다시 스캔하세요.")
             self.open_settings_window()
             return
         if self._sealed_transfer_exchange_blocks_local_action("다음 스캔"):
@@ -18209,16 +18209,12 @@ class Label_Match(tk.Tk):
                     parent=self,
                 )
             elif central_acked_count:
-                messagebox.showinfo(
-                    "삭제 완료",
-                    f"{deleted_count}개의 로컬 기록과 회사 서버 포장을 취소했습니다.",
-                    parent=self,
+                self.update_big_display(
+                    f"{deleted_count}개의 이 PC 기록과 회사 서버 포장을 취소했습니다.", "green"
                 )
             else:
-                messagebox.showinfo(
-                    "삭제 완료",
-                    f"{deleted_count}개의 기록이 삭제 처리되었습니다.",
-                    parent=self,
+                self.update_big_display(
+                    f"{deleted_count}개의 기록이 삭제 처리되었습니다.", "green"
                 )
 
     def _rebuild_global_scanned_set_from_details(self):
