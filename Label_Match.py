@@ -1866,6 +1866,10 @@ PHS_REPLACEMENT_REQUIRED_NOTICE = (
     "현재 현품표를 교체 대기로 분리해 주세요."
 )
 LEGACY_LABEL_TRANSITION_BANNER = "과도기 모드 — 옛 방식 포장 받음"
+LABEL_MATCH_SHORTAGE_NOTICE = (
+    "모자란 상자: 대체품으로 채워 정상 마감 — "
+    "못 채우면 마감하지 말고 따로 두고 관리자에게"
+)
 LEGACY_LABEL_TRANSITION_OFF_REJECT = (
     LEGACY_LABEL_TRANSITION_OFF_CAUSE
     + " 확인을 누른 뒤 새 현품표로 다시 시작하세요. 새 현품표 QR이 손상된 경우에만 "
@@ -1929,9 +1933,8 @@ LABEL_MATCH_PACKAGE_POLICY_NOTICES = {
         "관리자에게 알리세요.",
     ),
     "PACKAGE_MANUAL_COMPLETE_DISABLED": (
-        "F3 소량 완료 불가",
-        "이 PC는 중앙 포장 필수 모드라서 이 세트의 F3 소량 완료를 받지 않습니다. "
-        "현재 세트와 실물을 그대로 두고 관리자에게 알리세요.",
+        "모자란 상자",
+        LABEL_MATCH_SHORTAGE_NOTICE,
     ),
     "PACKAGE_CENTRAL_PROFILE_UNAVAILABLE": (
         "회사 서버 포장 연결 설정 확인 필요",
@@ -15131,6 +15134,22 @@ class Label_Match(tk.Tk):
             self.update_big_display("교환 기록됨 · 다음 제품을 스캔하세요.", "green")
 
     def _confirm_scanner_shortage(self):
+        current = self.current_set_info
+        raw = list(current.get("raw") or [])
+        shape, _reasons, _item = label_transition.classify_start_label(
+            raw[0] if raw else "",
+            parse_sealed=_label_match_parse_sealed_transfer_qr,
+        )
+        if shape != label_transition.SHAPE_LEGACY:
+            snapshot = current.get("package_source_snapshot") or {}
+            member_count = snapshot.get("member_count")
+            if type(member_count) is not int or member_count < 1:
+                self._show_scanner_notice(
+                    "모자란 상자", f"{LABEL_MATCH_SHORTAGE_NOTICE} · 서버 연결 뒤 마감")
+                return False
+            if not (1 <= len(raw) - 1 == member_count <= 3):
+                self._show_scanner_notice("모자란 상자", LABEL_MATCH_SHORTAGE_NOTICE)
+                return False
         previous = copy.deepcopy(self.current_set_info)
         self.current_set_info.setdefault("local_completed_at", datetime.now(timezone.utc).isoformat())
         self.current_set_info["shortage_confirmed_at"] = datetime.fromtimestamp(
@@ -17415,6 +17434,9 @@ class Label_Match(tk.Tk):
         *,
         _durable_completion=None,
     ):
+        if result == self.Results.PASS and is_manual_complete:
+            self._show_scanner_notice("모자란 상자", LABEL_MATCH_SHORTAGE_NOTICE)
+            return False
         frozen = (self.__dict__.get("_csv_completed_set") or {}).get("current_snapshot") or {}
         if frozen and str(frozen.get("id") or "") == str(self.current_set_info.get("id") or ""):
             self.current_set_info = copy.deepcopy(frozen)

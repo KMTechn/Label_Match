@@ -785,6 +785,8 @@ portable는 [기존 builder](../../tools/build_portable_release_candidate.py)의
 <a id="devices"></a>
 ## 스캔·포커스·사운드·출력
 
+옛 수동 마감(PARTIAL)은 LOCAL·ONLINE 모두 거절한다. 새 현품표 재스캔은 회사 서버에서 확인한 현재 작업군 멤버 수가 1–3이고 찍은 제품 수와 같을 때만 완료한다(원 TRANSFER 봉인 수와 구별). 멤버 수를 모르면 「서버 연결 뒤 마감」, 수가 다르면 「모자란 상자: 대체품으로 채워 정상 마감 — 못 채우면 마감하지 말고 따로 두고 관리자에게」를 보이고 현재 상자를 유지한다. 제품 4개 정상 완료와 옛 현품표의 재스캔 미달 완료·60초 되돌리기는 유지한다.
+
 | 관측 대상 | 현행 동작 | 아직 확인할 장비 조건 |
 | --- | --- | --- |
 | 제출·키보드 | 작업 입력은 Tk `<Return>` → `_handle_scan_enter/process_input`, 문자열 앞뒤 whitespace 제거. busy이면 입력칸을 비우지 않음. F1–F4는 버튼·키보드 공통 gate를 사용 | 스캐너 CR/LF/CRLF/Tab suffix, keyboard layout/IME, 연속 입력 간격, 중복 Enter, modal/오류 안내 후 포커스. Enter가 안내 확인으로 소비되는 경우 실제 다음 입력 확인 |

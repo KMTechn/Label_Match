@@ -233,7 +233,12 @@ def _queue_transition_package(
     PackageLogisticsError,
     persist_current_state=None,
 ):
-    """Accept every set; only a successful central flow enters the ledger."""
+    """Accept full sets; only a successful central flow enters the ledger."""
+
+    if is_manual_complete:
+        raise PackageLogisticsError(
+            "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
+        )
 
     decided, reasons, duplicate = _transition_completion(
         current, parse_sealed=parse_sealed,
@@ -246,16 +251,6 @@ def _queue_transition_package(
             )
         current.pop("deferred_intent_id", None)
         return _transition_local(decided, reasons, duplicate)
-    if is_manual_complete:
-        reasons = [*reasons, "PARTIAL_PACKAGE"]
-        if not _decide_transition_local(
-            self, current, label_transition.PHS2_LOCAL, reasons, duplicate,
-            persist_current_state=persist_current_state,
-        ):
-            raise PackageLogisticsError(
-                "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
-            )
-        return _transition_local(label_transition.PHS2_LOCAL, reasons, duplicate)
     try:
         queued = package()
     except errors as error:
@@ -306,6 +301,11 @@ def _queue_authoritative_package(
     _transition_errors=(),
     _transition_reason=str,
 ):
+    if is_manual_complete:
+        raise PackageLogisticsError(
+            "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
+        )
+
     def package():
         return _queue_package(
             self,
@@ -381,6 +381,10 @@ def _queue_package(
     _timezone,
     _restore_draft,
 ):
+    if is_manual_complete:
+        raise PackageLogisticsError(
+            "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
+        )
     required_mode = bool(
         self.__dict__.get("_logistics_authoritative_required", False)
     ) or logistics_runtime_required()
@@ -388,12 +392,6 @@ def _queue_package(
         self.__dict__.get("run_tests", False)
         or self.__dict__.get("is_running_simulation", False)
     ):
-        return None
-    if is_manual_complete:
-        if required_mode:
-            raise PackageLogisticsError(
-                "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled"
-            )
         return None
     current = (
         current_set_info

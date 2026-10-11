@@ -294,31 +294,31 @@ def test_on_registered_five_scan_set_completes_locally_without_outbox(tmp_path, 
     assert app.save_status_label.kwargs["text"].startswith("✓ 기록됨 · 과도기 옛 방식(포장 기록 제외)")
 
 
-def test_on_registered_partial_f3_completes_locally_without_outbox(tmp_path, monkeypatch):
+@pytest.mark.parametrize("master", [MASTER, BND_LABEL], ids=["old-label", "new-label"])
+def test_on_registered_partial_f3_is_refused_without_outbox(tmp_path, monkeypatch, master):
     module = load_label_match_module()
     app, _syncs = _packaging_app(module, tmp_path, monkeypatch, registered=True, transition=True)
     try:
-        for value in _legacy_set(2)[:3]:
+        values = [master, *_legacy_set(2)[1:]]
+        for value in values[:3]:
             _scan(module, app, value)
-        module.Label_Match._finalize_set(app, app.Results.PASS, is_manual_complete=True)
-        for value in [BND_LABEL, *_legacy_set(12)[1:3]]:
+        before = copy.deepcopy(app.current_set_info)
+        assert module.Label_Match._finalize_set(app, app.Results.PASS, is_manual_complete=True) is False
+        assert app.current_set_info == before
+        assert _events(tmp_path, "TRAY_COMPLETE") == []
+        assert _outbox_rows(tmp_path) == []
+        assert app._phs_label_guidance_notice.message == module.LABEL_MATCH_SHORTAGE_NOTICE
+        for value in values[3:]:
             _scan(module, app, value)
-        module.Label_Match._finalize_set(app, app.Results.PASS, is_manual_complete=True)
     finally:
         _close(app)
 
     assert app.blocks == []
-    [(_row, legacy), (_row2, structured)] = _events(tmp_path, "TRAY_COMPLETE")
-    assert legacy["package_logistics"]["status"] == LOCAL_STATUS
-    assert legacy["transition_class"] == "LEGACY"
-    assert legacy["is_partial_submission"] is True
-    assert legacy["packaging_set_count"] == 0
-    assert structured["package_logistics"]["status"] == LOCAL_STATUS
-    assert _transition(structured) == {
-        "transition_class": "PHS2_LOCAL", "transition_reasons": ["PARTIAL_PACKAGE"],
-        "transition_duplicate": False,
-    }
-    assert _outbox_rows(tmp_path) == []
+    [(_row, details)] = _events(tmp_path, "TRAY_COMPLETE")
+    assert details["is_partial_submission"] is False
+    assert details["scanned_product_barcodes"] == values
+    assert details["final_result"] == app.Results.PASS
+    assert _outbox_rows(tmp_path) == ([] if master == MASTER else [(details["set_id"],)])
 
 
 def test_on_legacy_completion_cancels_locally(tmp_path, monkeypatch):
@@ -982,7 +982,7 @@ def test_on_flush_retry_resends_the_one_completion_row_unchanged(tmp_path, monke
         ),
         (
             "AUTHORITATIVE_LOGISTICS_REQUIRED: manual packaging completion is disabled",
-            "5/5 유지 · F3 소량 완료 불가",
+            "5/5 유지 · 모자란 상자",
         ),
     ],
 )

@@ -3513,7 +3513,7 @@ def _work_group_seal(bundle_id, version, members, barcode_by_unit, *, suffix):
     }
 
 
-def _work_group_response(*, split=False):
+def _work_group_response(*, split=False, split_size=2):
     item_id = "ITEM000000001"
     group_id = "PHSG-WORK-PACKAGE"
     label_id = "LBL-WORK-PACKAGE"
@@ -3523,7 +3523,7 @@ def _work_group_response(*, split=False):
     )
     barcode_by_unit = dict(zip(UNITS, BARCODES, strict=True))
     if split:
-        selected = UNITS[:2]
+        selected = UNITS[:split_size]
         source_specs = [
             {
                 "bundle_id": "TRANSFER-WORK-A",
@@ -3551,6 +3551,7 @@ def _work_group_response(*, split=False):
                 "session": "ITG-WORK-TWO",
             },
         ]
+    source_specs = [spec for spec in source_specs if spec["members"]]
     covers = []
     sources = []
     for index, spec in enumerate(source_specs):
@@ -3611,7 +3612,7 @@ def _work_group_response(*, split=False):
             }
         )
     if split:
-        remainder = UNITS[2:]
+        remainder = UNITS[split_size:]
         covers = [
             {
                 "group_id": "PHSG-WORK-COVER",

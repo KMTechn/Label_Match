@@ -13,6 +13,20 @@ from tests.test_deferred_lease_clock_retry import clock_case  # noqa: F401
 from tests.test_w9scanonly_short_tray import scanner_clock  # noqa: F401
 
 
+@pytest.fixture(autouse=True)
+def _single_member_work_group(monkeypatch):
+    # The timeout contract follows a valid complete small group, not one
+    # sampled product from a larger group that would overstate shipment.
+    from tests import test_deferred_lease_clock_retry as lease_tests
+    from tests import test_package_logistics as source_tests
+
+    monkeypatch.setattr(source_tests, "UNITS", source_tests.UNITS[:2])
+    monkeypatch.setattr(source_tests, "BARCODES", source_tests.BARCODES[:2])
+    original = source_tests._work_group_response
+    monkeypatch.setattr(lease_tests, "_work_group_response", lambda **kwargs:
+        original(split=True, split_size=1))
+
+
 @pytest.fixture
 def shortage(central, scanner_clock, monkeypatch, request):
     app, dialogs, case, root, _releases = central
