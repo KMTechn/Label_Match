@@ -28,7 +28,8 @@ from protected_admin import (
 from storage_policy import label_match_local_events_dir
 from label_recovery_schema import require_recovery_record
 from label_safe_path import (describe_entry, entry_digest, read_checked_bytes,
-                             unlink_checked, write_checked_bytes)
+                             quarantine_entry, unlink_checked, write_checked_bytes)
+from writer_session_fence import writer_sink
 
 
 RECOVERY_MAX_BYTES = 8 * 1024 * 1024
@@ -148,6 +149,8 @@ class DataManager:
         self._archived_audit_outbox = []
         self._audit_csv_lock = threading.RLock()
         self._audit_csv_indexes = {}
+        self._last_state_write_failure = None
+        self._state_write_failure_attempts = {}
         evidence = read_recovery_file(
             os.path.join(save_dir, self._current_state_filename()), current_state=True)
         self._audit_outbox = list((evidence['value'] or {}).get('scanner_audit_outbox', [])) if evidence['verified'] else []
@@ -547,6 +550,7 @@ class DataManager:
     def save_current_state(self, state_data, *, _completed_audit_keys=()):
         with self._state_lock:
             state_path = os.path.join(self.save_directory, self._current_state_filename())
+            checkpoint_write = False
             try:
                 state_data_with_worker = sanitize_persistent_value(dict(state_data or {}))
                 with self._audit_csv_lock:
@@ -627,13 +631,118 @@ class DataManager:
                 if len(json.dumps(business, ensure_ascii=False, indent=4,
                                   cls=self._datetime_encoder()).encode('utf-8')) > RECOVERY_MAX_BYTES:
                     raise ValueError('current business state exceeds recovery size limit')
+                checkpoint_write = True
                 write_checked_bytes(state_path, encoded.encode('utf-8'),
                                     allowed_root=self.save_directory)
                 self._audit_outbox = list(pending.values())
+                self._last_state_write_failure = None
+                self._state_write_failure_attempts.pop(str(current.get('id') or ''), None)
                 return True
             except Exception as e:
+                self._last_state_write_failure = None
+                if checkpoint_write and isinstance(e, OSError):
+                    current = (state_data or {}).get('current_set_info') or {}
+                    set_id = str(current.get('id') or '')
+                    if set_id:
+                        attempts = self._state_write_failure_attempts.get(set_id, 0) + 1
+                        self._state_write_failure_attempts[set_id] = attempts
+                        saved = json.loads(json.dumps(current, cls=self._datetime_encoder()))
+                        self._last_state_write_failure = (e, saved, attempts)
                 print(f"임시 상태 저장 실패: {e}")
                 return False
+
+    def hold_failed_checkpoint(self, outbox, *, source_phs2, source_input_tag_id):
+        """Keep a failed checkpoint UNKNOWN; never replay its uncommitted audits."""
+        failure = self._last_state_write_failure
+        if not failure or failure[2] < 2:
+            return None
+        error, current, _attempts = failure
+        set_id = str(current['id'])
+        root = Path(self.save_directory).absolute()
+        active = root / self._current_state_filename()
+        original = read_recovery_file(active, current_state=True)
+        if original['reason'] != 'missing' and not original['verified']:
+            raise OSError('checkpoint original cannot be verified for isolation')
+        original_id = str(((original['value'] or {}).get('current_set_info') or {}).get('id') or '')
+        if original_id and original_id != set_id:
+            raise OSError('another set owns the current checkpoint')
+        description = describe_entry(active, allowed_root=root) if os.path.lexists(active) else None
+        revision = outbox.workbench_hold_revision()
+        recent = [json.loads(row['snapshot_json'])['storage_failure']['recorded_at']
+                  for row in outbox.list_workbench_holds() if row.get('reason') == 'STORAGE_WRITE_FAILURE']
+        with self._state_lock:
+            pending = list(self._audit_outbox)
+        archive = str(active) + '.held-' + original['sha256'] if original['raw'] is not None else ''
+        snapshot = {'current_set_info': current, 'scanner_audit_outbox': pending,
+                    'archive_path': archive, 'current_file_sha256': original['sha256'],
+                    'storage_failure': {'outcome': 'UNKNOWN', 'file': str(active),
+                        'error_type': type(error).__name__, 'error': str(error),
+                        'recorded_at': self._clock().now().isoformat(), 'scan_order': list(current.get('raw') or [])}}
+        require_recovery_record('current', snapshot)
+        if len(json.dumps(snapshot, ensure_ascii=False).encode('utf-8')) > 65536:
+            raise OSError('checkpoint hold exceeds the small writer admission bound')
+        held = self._isolate_failed_checkpoint(outbox, failure, snapshot, original, description,
+            revision, recent, source_phs2=source_phs2, source_input_tag_id=source_input_tag_id)
+        saved = json.loads(held['snapshot_json'])
+        archive = saved['archive_path']
+        if archive and hashlib.sha256(read_checked_bytes(archive, allowed_root=root)).hexdigest() != saved['current_file_sha256']:
+            raise OSError('held checkpoint readback differs')
+        with self._state_lock:
+            if self._last_state_write_failure is not failure or self._audit_outbox != pending:
+                raise OSError('checkpoint audit changed while isolation was verified')
+            self._audit_outbox = []
+        return held
+
+    @writer_sink("data_manager_storage_failure_hold")
+    def _isolate_failed_checkpoint(self, outbox, failure, snapshot, original, description,
+                                  revision, recent, *, source_phs2, source_input_tag_id):
+        root = Path(self.save_directory).absolute()
+        active = root / self._current_state_filename()
+        set_id = str(snapshot['current_set_info']['id'])
+        with self._state_lock:
+            if (self._last_state_write_failure is not failure
+                    or self._audit_outbox != snapshot['scanner_audit_outbox']
+                    or self._unverified_audit_segments or self.log_queue.unfinished_tasks
+                    or outbox.workbench_hold_revision() != revision):
+                raise OSError('checkpoint or hold history changed before isolation')
+            held = outbox.get_workbench_hold(set_id)
+            if held and held.get('reason') != 'STORAGE_WRITE_FAILURE':
+                raise OSError('another hold already owns this checkpoint')
+            if not held:
+                now = self._clock().now()
+                if sum(0 <= now.timestamp() - self._clock().fromisoformat(value).timestamp() <= 600
+                       for value in recent) >= 3:
+                    raise OSError('four distinct checkpoint failures within ten minutes')
+                snapshot['storage_failure']['recorded_at'] = now.isoformat()
+                if len(json.dumps(snapshot, ensure_ascii=False).encode('utf-8')) > 65536:
+                    raise OSError('checkpoint hold exceeds the small writer admission bound')
+            probe = root / ('._storage_probe_' + uuid.uuid4().hex)
+            payload = b'Label_Match storage check\n'
+            try:
+                write_checked_bytes(probe, payload, allowed_root=root, replace=False)
+                if read_checked_bytes(probe, allowed_root=root) != payload:
+                    raise OSError('storage probe readback differs')
+            finally:
+                if os.path.lexists(probe):
+                    unlink_checked(probe, allowed_root=root)
+            saved = json.loads(held['snapshot_json']) if held else snapshot
+            if os.path.lexists(active):
+                if (original['sha256'] != saved['current_file_sha256']
+                        or describe_entry(active, allowed_root=root) != description):
+                    raise OSError('checkpoint changed after isolation was prepared')
+            elif description is not None:
+                raise OSError('checkpoint disappeared before isolation')
+            if not held:
+                held = outbox.hold_workbench_set(set_id=set_id, source_phs2=source_phs2,
+                    source_input_tag_id=source_input_tag_id, snapshot=snapshot,
+                    reason='STORAGE_WRITE_FAILURE', held_by='SYSTEM_STORAGE_CHECK')
+            snapshot = json.loads(held['snapshot_json'])
+            archive = snapshot['archive_path']
+            if os.path.lexists(active):
+                quarantine_entry(active, archive, description=description,
+                                 allowed_root=root)
+            return held
+
     def _save_completed_worker_identity(self, current):
         """Archive a durable CSV completion, never an editable checkpoint."""
         with self._state_lock:

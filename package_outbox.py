@@ -971,6 +971,13 @@ class PackageOutbox:
             raise PackageLogisticsError("held source binding readback failed")
         return held
 
+    def workbench_hold_revision(self) -> int:
+        """An immutable audit cursor for revalidating a prepared hold history."""
+        with self._connect() as conn:
+            return int(conn.execute(
+                "SELECT COALESCE(MAX(rowid),0) FROM package_workbench_hold_audit"
+            ).fetchone()[0])
+
     def list_workbench_holds(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

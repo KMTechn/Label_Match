@@ -8866,6 +8866,8 @@ class Label_Match(tk.Tk):
                 print(f'보류 감사 목록 조회 대기: {type(error).__name__}')
                 holds = []
             for held in holds:
+                if held['reason'] == 'STORAGE_WRITE_FAILURE':
+                    continue  # These audits stay UNKNOWN until administrator reconciliation.
                 try:
                     snapshot = json.loads(held['snapshot_json'])
                     if snapshot.get('scanner_audit_outbox'):
@@ -15280,6 +15282,12 @@ class Label_Match(tk.Tk):
                 pass
 
         if scan_pos == 1:
+            held_keys = self._storage_held_duplicate_keys()
+            if (_label_match_unique_master_index_keys(raw_input)
+                    | _label_match_unique_master_index_keys(processed_input)) & held_keys:
+                consume_input()
+                self._show_scanner_notice('관리자 확인 대기', '이 현품표는 저장 확인 대기 중입니다. 다른 세트를 계속하세요.')
+                return
             transition_shape, transition_reasons = "", ()
             if self._transition_mode_active():
                 transition_shape, transition_reasons, transition_item = (
@@ -15371,6 +15379,10 @@ class Label_Match(tk.Tk):
                     return
                 if held or label_hold:
                     consume_input()
+                    if held and held.get('reason') == 'STORAGE_WRITE_FAILURE':
+                        self._show_scanner_notice('관리자 확인 대기',
+                            '이 현품표는 저장 확인 대기 중입니다. 따로 두고 다음 트레이를 계속하세요.')
+                        return
                     if self._transition_mode_active():
                         return self._transition_start_local(
                             raw_input,
@@ -15568,7 +15580,8 @@ class Label_Match(tk.Tk):
             if raw_input in self.current_set_info['raw']:
                 self._ignore_product_scan(raw_input, "세트 내 중복 스캔입니다. 다른 제품을 스캔하세요.")
                 return
-            if raw_input in self.global_scanned_set:
+            if (raw_input in self.global_scanned_set
+                    or self._sample_barcode(raw_input) in self._storage_held_duplicate_keys()):
                 self._ignore_product_scan(raw_input, "이미 다른 세트에서 처리된 제품입니다. 새 제품을 스캔하세요.")
                 return
             known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"),
@@ -15717,7 +15730,8 @@ class Label_Match(tk.Tk):
             or (source_members is not None and normalized in source_members)
             or any(normalized in {row["target_barcode"], row["replacement_barcode"]}
                    for row in current.get("scanner_exchanges", []))
-            or value in self.global_scanned_set):
+            or value in self.global_scanned_set
+            or normalized in self._storage_held_duplicate_keys()):
             return self._ignore_product_scan(value, "다른 품목·중복·이미 포장된 제품은 교환할 수 없습니다.")
         # Refuse a known bad or downstream product; unavailable knowledge is checked by delivery.
         product_state = self.__dict__.get("known_product_states", {}).get(normalized, {})
@@ -17615,10 +17629,14 @@ class Label_Match(tk.Tk):
                 prepare_durable_state(self.current_set_info)
             if not self._save_current_set_state():
                 raise PackageLogisticsError("current packaging state could not be saved")
-        except Exception:
+        except Exception as error:
             active_current_set.clear()
             active_current_set.update(previous_current_set)
             self.current_set_info = active_current_set
+            if (isinstance(error, PackageLogisticsError)
+                    and str(error) == 'current packaging state could not be saved'
+                    and getattr(self.data_manager, '_last_state_write_failure', None)):
+                return self._publish_durable_commit_block(error)
             raise
 
         self._clear_scanner_notice()
@@ -22279,6 +22297,62 @@ class Label_Match(tk.Tk):
         self._workflow_last_normal_override = None
         self._workflow_item_snapshot = None
 
+    def _storage_held_duplicate_keys(self):
+        outbox = self.__dict__.get('package_outbox')
+        list_holds = getattr(outbox, 'list_workbench_holds', None)
+        if not callable(list_holds):
+            return set()
+        keys = set()
+        for held in list_holds():
+            if held.get('reason') != 'STORAGE_WRITE_FAILURE':
+                continue
+            current = json.loads(held['snapshot_json'])['current_set_info']
+            raw = list(current.get('raw') or [])
+            keys.update(self._sample_barcode(value) for value in raw[1:])
+            if (_label_match_first_scan_is_unique_master(dict(current, scanned_product_barcodes=raw))
+                    and not _label_match_reusable_input_master_label(raw[0])):
+                keys.update(_label_match_unique_master_index_keys(raw[0]))
+        return keys
+
+    def _hold_storage_checkpoint_failure(self, error):
+        manager = self.__dict__.get('data_manager')
+        failure = getattr(manager, '_last_state_write_failure', None)
+        self._storage_root_failure = bool(failure and failure[2] >= 2 and self.__dict__.get('_storage_root_failure'))
+        current = self.current_set_info
+        if (not failure or failure[2] < 2 or not current.get('id')
+                or str(failure[1].get('id') or '') != str(current['id'])
+                or str(current.get('completion_identity') or current['id']) != str(current['id'])
+                or not (isinstance(error, OSError) or 'sav' in str(error).lower()
+                        or 'checkpoint' in str(error).lower())):
+            return False
+        try:
+            # The potentially large CSV proof runs before the small admitted writes.
+            manager.flush(timeout=5)
+            if _label_match_local_completion_event_exists(manager,
+                    str(current.get('completion_identity') or current['id'])):
+                return False
+            source = str((current.get('raw') or [''])[0])
+            fields = _label_match_parse_new_format_fields(source) or {}
+            held = manager.hold_failed_checkpoint(self.package_outbox,
+                source_phs2=source, source_input_tag_id=str(fields.get('ITG') or ''))
+            if held is None or not self._reset_current_set():
+                raise OSError('held checkpoint did not release its current slot')
+            self._clear_workflow_completion()
+            self._workflow_blocking_notice = None
+            self._workflow_notice = WorkflowNotice('관리자 확인 대기',
+                '이 세트를 따로 보관하고 다음 현품표를 계속하세요. 관리자에게 알리세요.',
+                kind='scanner_notice', tone='warning')
+            self._workflow_notice_action = None
+            self._workflow_notice_action_text = '확인'
+            self._storage_root_failure = False
+            self._render_operator_workbench()
+            return True
+        except Exception as hold_error:
+            print(f'저장 확인·격리 실패: {type(hold_error).__name__}')
+            self.current_set_info = current
+            self._storage_root_failure = True
+            return False
+
     def _publish_durable_commit_block(self, error, *, retry_action=None):
         """Hard-block the worker surface without exposing storage internals."""
 
@@ -22294,6 +22368,11 @@ class Label_Match(tk.Tk):
         policy_notice = LABEL_MATCH_PACKAGE_POLICY_NOTICES.get(
             _label_match_package_policy_block_code(error)
         )
+        frozen = (self.__dict__.get('_csv_completed_set') or {}).get('current_snapshot') or {}
+        csv_completed = bool(frozen and str(frozen.get('id') or '') == str(self.current_set_info.get('id') or ''))
+        if (not lease_failure and not policy_notice and not csv_completed
+                and retry_action is None and self._hold_storage_checkpoint_failure(error)):
+            return False
         clock_behind = lease_failure and any(
             getattr(item, "code", "") == "OPERATION_LEASE_NOT_YET_VALID"
             for item in (error, getattr(error, "__cause__", None))
@@ -22322,6 +22401,9 @@ class Label_Match(tk.Tk):
             )
         )
         scans = tuple(self.current_set_info.get("raw") or ())
+        if self.__dict__.get('_storage_root_failure') and not lease_failure and not policy_notice:
+            message = ('이 PC에 저장할 수 없습니다. 지금 세트 실물을 그대로 두고 '
+                       '다른 작업대로 옮겨 계속하세요. 관리자에게 알리세요.')
         total = max(1, int(self._workflow_total_scan_count()))
         completed = min(total, len(scans))
         frozen = (self.__dict__.get("_csv_completed_set") or {}).get("current_snapshot") or {}
@@ -22401,6 +22483,11 @@ class Label_Match(tk.Tk):
         return False
 
     def _retry_blocked_submission(self):
+        current_id = str(self.current_set_info.get('id') or '')
+        get_hold = getattr(self.__dict__.get('package_outbox'), 'get_workbench_hold', None)
+        held = get_hold(current_id) if current_id and callable(get_hold) else None
+        if held and held.get('reason') == 'STORAGE_WRITE_FAILURE':
+            return self._publish_durable_commit_block(OSError('held checkpoint isolation retry'))
         self._workflow_blocking_notice = None
         self._workflow_notice = None
         self._workflow_notice_action = None
