@@ -602,7 +602,7 @@ def test_first_update_stock_pair_accepts_candidate_and_refuses_changed_app_files
     for index, relative in enumerate(sorted(app_files)):
         changed_candidate = _tree(candidate, tmp_path / f"candidate-change-{index}", [relative])
         with (changed_candidate / relative).open("a", encoding="utf-8") as stream:
-            stream.write(CHANGED_LINE)
+            stream.write("\n" if relative.endswith(".json") else "\n# unreviewed source byte change\n")
         _pin(changed_candidate)
         result = _nextfix_probe(tmp_path, changed_candidate, installed)
         assert result.returncode != 0, relative
