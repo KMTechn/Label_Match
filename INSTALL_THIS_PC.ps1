@@ -1772,7 +1772,7 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
 $OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($WorkerSid) {
     Assert-AlreadyElevated
-    if ($WorkerSid -cnotmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -or $WorkerSid -ceq $OperatorSid -or
+    if ($WorkerSid -cnotmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -or
         $WorkerSid -cne $DataGenerationSubjectSid -or -not $OperatorLocalAppDataRoot -or $TlsCaBundlePath) {
         throw 'Machine worker placement binding differs.'
     }

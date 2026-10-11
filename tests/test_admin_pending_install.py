@@ -16,6 +16,69 @@ INSTALLER = Path(__file__).resolve().parents[1] / "INSTALL_CANONICAL_PORTABLE.ps
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_real_placement_helper_worker_binding_accepts_same_and_other_sid(tmp_path, engine):
+    executable = shutil.which(engine)
+    if executable is None:
+        pytest.skip(f"{engine} is required")
+    helper = INSTALLER.with_name("INSTALL_THIS_PC.ps1")
+    driver = tmp_path / "worker-binding.ps1"
+    driver.write_text(r'''
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile(
+    $env:LM_WORKER_BINDING_SOURCE,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Helper parse failed'}
+# Extract the real top-level binding block. No placement/helper body executes.
+$blocks=@($ast.EndBlock.Statements | Where-Object {
+    $_ -is [Management.Automation.Language.IfStatementAst] -and
+    $_.Extent.Text -match '^if\s*\(\$WorkerSid\)\s*\{'
+})
+if($blocks.Count -ne 1){throw 'Worker binding block is ambiguous'}
+$binding=[scriptblock]::Create($blocks[0].Extent.Text)
+function Assert-AlreadyElevated {
+    $script:elevationChecks++
+    if(-not $script:elevated){throw 'Synthetic caller is not elevated'}
+}
+foreach($case in @('same','other','invalid-sid','wrong-subject','missing-profile','tls','limited')){
+    $OperatorSid='S-1-5-21-101-202-303-404'
+    $originalOperator=$OperatorSid
+    $WorkerSid=if($case -ceq 'other'){'S-1-5-21-101-202-303-505'}else{$OperatorSid}
+    if($case -ceq 'invalid-sid'){$WorkerSid='invalid'}
+    $DataGenerationSubjectSid=$WorkerSid
+    if($case -ceq 'wrong-subject'){$DataGenerationSubjectSid='S-1-5-21-101-202-303-606'}
+    $OperatorLocalAppDataRoot=$env:LM_WORKER_BINDING_PROFILE
+    if($case -ceq 'missing-profile'){$OperatorLocalAppDataRoot=''}
+    $TlsCaBundlePath=if($case -ceq 'tls'){'unapproved-ca'}else{''}
+    $script:elevationChecks=0
+    $script:elevated=($case -cne 'limited')
+    $failure=$null
+    try{. $binding}catch{$failure=$_}
+    if($script:elevationChecks -ne 1){throw 'Elevation guard was bypassed'}
+    if($case -cin @('same','other')){
+        if($null -ne $failure){throw 'Valid worker binding was rejected'}
+        if($OperatorSid -cne $WorkerSid){throw 'Worker subject binding was lost'}
+    }else{
+        if($null -eq $failure -or $OperatorSid -cne $originalOperator){throw 'Invalid worker binding was accepted'}
+    }
+}
+'PASS'
+''', encoding="utf-8-sig")
+    environment = os.environ.copy()
+    environment["LM_WORKER_BINDING_SOURCE"] = str(helper)
+    environment["LM_WORKER_BINDING_PROFILE"] = str(tmp_path / "profile")
+    result = subprocess.run(
+        [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(driver)],
+        cwd=tmp_path, env=environment, capture_output=True, encoding="utf-8",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False,
+    )
+    (tmp_path / "binding-stdout.txt").write_text(result.stdout, encoding="utf-8")
+    (tmp_path / "binding-stderr.txt").write_text(result.stderr, encoding="utf-8")
+    assert result.returncode == 0, "real helper worker binding failed; native evidence retained"
+    assert result.stdout.strip() == "PASS"
+    assert not (tmp_path / "profile").exists()
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 def test_kit_admin_entry_accepts_explicit_worker_account(tmp_path, engine):
     executable = shutil.which(engine)
     if executable is None:
