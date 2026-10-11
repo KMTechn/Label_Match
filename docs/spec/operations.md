@@ -1367,3 +1367,12 @@ GUI의 기존 5초 주기가 하던 트레이를 확인 창 없이 저장하고 
 GUI 시작 전에 남은 요청은 삭제·무시하므로 앱이 꺼진 상태의 요청으로 다음 실행이 닫히지 않는다. 시간대 없는 requested_at은 무시한다. CLI는 UTC aware 시각의 마이크로초도 보존하여 같은 초 안의 시작 뒤 요청을 정상 처리한다.
 
 GUI worker·로그 writer 정리 뒤와 relay lease 해제 직전에 기존 DB만 다시 열어 마지막 read-only 조회가 만든 sidecar도 TRUNCATE checkpoint로 정리한다. 없는 DB는 만들지 않으며 busy·경로·checkpoint 오류는 비밀값 없는 예외 종류만 기록하고 정상 종료를 계속한다.
+
+
+## 첫 업데이트 묶음 선언 재생성
+
+관련 경로와 승인 행을 모두 조립한 뒤 `python -B tools/refresh_first_update_declarations.py --work-root E:/KMTech/w9firstupd-tmp/w9firstupdsub100/declarations`를 실행하고 같은 명령에 `--check`를 붙여 확인한다. 기본 깔린 판은 d9160b6와 sub-86의 89155f1이다. 뒤에 전달된 실제 설치 판은 `--installed-ref <전체 SHA>`로 함께 지정한다. 기존 깔린 판 목록은 보존한다.
+
+생성기는 각 역사적 Git 판의 자체 stock builder로 app 구성과 portable 진입점을 읽어 정확한 before를 확인하고, 묶음에서 바뀐 배포 파일의 replacement/addition과 후보 digest를 만든다. 기존 before가 실제 stock과 다르면 중단한다. writer inventory와 실행 probe pin도 재생성하며, 선언 갱신은 거절 조건을 바꾸지 않는다. 중간 자료는 지정 work-root에만 저장한다.
+
+PowerShell 원문은 byte I/O로 BOM과 줄 끝을 보존한다. 비ASCII PowerShell은 UTF-8 BOM으로 저장한다. `python -B tools/check_powershell_source_encoding.py --baseline d9160b6 --report E:/KMTech/w9firstupd-tmp/w9firstupdsub100/ps1-encoding-final.json`은 추적 PowerShell 전부의 BOM과 바탕 줄 끝을 읽기 전용으로 검사한다. stock 패킷의 canonical SHA와 Git 바이트 대조는 최종 묶음 검증에서 별도로 수행한다.
