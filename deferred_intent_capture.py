@@ -4066,15 +4066,23 @@ class DeferredIntentCaptureStore:
             finally:
                 close_sqlite_connection(conn)
 
+    @staticmethod
+    def _workbench_hold_filter(conn):
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='package_workbench_holds'").fetchone():
+            return ""
+        return ("AND NOT EXISTS (SELECT 1 FROM package_workbench_holds AS hold "
+                "WHERE hold.set_id=candidate.local_work_identity)")
+
     def next_materialization_candidate(self) -> str | None:
         """Return the oldest FIFO row whose validation awaits local materialization."""
 
         conn = self._connect()
         try:
             row = conn.execute(
-                """SELECT candidate.intent_id
-                     FROM deferred_intents AS candidate
-                    WHERE candidate.state='VALIDATED'
+                f"""SELECT candidate.intent_id
+                      FROM deferred_intents AS candidate
+                     WHERE candidate.state='VALIDATED'
+                       {self._workbench_hold_filter(conn)}
                       AND NOT EXISTS (
                           SELECT 1 FROM deferred_intents AS predecessor
                            WHERE predecessor.app_id=candidate.app_id
@@ -4174,8 +4182,8 @@ class DeferredIntentCaptureStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                """SELECT candidate.intent_id
-                     FROM deferred_intents AS candidate
+                f"""SELECT candidate.intent_id
+                      FROM deferred_intents AS candidate
                     WHERE (
                           candidate.state IN (
                               'CAPTURED_UNVERIFIED','RETRY_WAIT_VALIDATION'
@@ -4204,7 +4212,8 @@ class DeferredIntentCaptureStore:
                                  'COMPLETED','CANCELLED','SUPERSEDED'
                              )
                       )
-                    ORDER BY candidate.created_at,candidate.intent_id LIMIT 1""",
+                       {self._workbench_hold_filter(conn)}
+                     ORDER BY candidate.created_at,candidate.intent_id LIMIT 1""",
                 (observed_at, observed_at),
             ).fetchone()
             return str(row[0]) if row else None

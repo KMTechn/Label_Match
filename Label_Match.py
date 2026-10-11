@@ -5319,6 +5319,7 @@ class Label_Match(tk.Tk):
             or lane.state in {
                 LaneState.DRAINING,
                 LaneState.BROKEN,
+                LaneState.CLOSED,
             }
         )
 
@@ -5567,6 +5568,11 @@ class Label_Match(tk.Tk):
         self._ui_lane_busy_task = ""
         self._ui_lane_busy_label = ""
         self._clear_package_pin_requests()
+        try:
+            if self._resume_broken_ui_lane(error):
+                return
+        except Exception as exc:
+            print(f"처리 오류 보관 실패: {type(exc).__name__}")
         print(
             "Label Tk UI lane technical diagnostic: "
             f"{self._ui_lane_diagnostic_text(error)}"
@@ -5585,8 +5591,85 @@ class Label_Match(tk.Tk):
                 status_label.grid()
             except (TclError, AttributeError):
                 pass
-        if self.__dict__.get("_scans_behind_completion"):
-            self._refuse_scans_behind_completion("broken")
+
+    def _resume_broken_ui_lane(self, error):
+        lane = self.__dict__.get("ui_lane")
+        if lane is None or lane.state is not LaneState.BROKEN:
+            return False
+        request = copy.deepcopy(self.__dict__.get("_ui_lane_request") or
+                                {"current_set_info": self.__dict__.get("current_set_info") or {}})
+        request = json.loads(json.dumps(request, default=lambda value: value.isoformat()))
+        current = request["current_set_info"]
+        task = lane.fault_task
+        set_id = str(current.get("id") or f"UI-LANE:{time.time_ns()}")
+        fault = {"at": datetime.now(timezone.utc).isoformat(), "result": "UNKNOWN",
+                 "task": task.name if task else "", "set_id": set_id,
+                 "generation": task.generation if task else self.__dict__.get("_ui_lane_generation", 0),
+                 "barcodes": list(current.get("raw") or []), "diagnostic": self._ui_lane_diagnostic_text(error)}
+        self._audit_package_recovery_action(set_id, "UI_LANE_FAULT", "SYSTEM",
+                                            json.dumps(fault, ensure_ascii=False))
+        if task and (task.name == "deferred-validation" or task.generation != self.__dict__.get("_ui_lane_generation", 0)
+                     or current.get("id") != (self.__dict__.get("current_set_info") or {}).get("id")):
+            return False
+        if not current.get("id") or not current.get("raw"):
+            return False  # No identified original to quarantine safely.
+        now = time.monotonic()
+        faults = [(at, identity) for at, identity in self.__dict__.get("_ui_lane_faults", [])
+                  if now - at < 600]
+        faults.append((now, set_id))
+        self._ui_lane_faults = faults
+        path = self._package_current_state_path()
+        archive = self._package_pin_current_archive_path(f"ui-lane:{set_id}:{fault['generation']}")
+        request.update(ui_lane_fault=fault, archive_path=str(archive),
+                       held_scans=list(self.__dict__.get("_scans_behind_completion") or []))
+        entry = self.__dict__.get("entry")
+        request["entry_input"] = entry.get() if entry is not None else ""
+        self.package_outbox.hold_workbench_set(
+            set_id=set_id, source_phs2=current["raw"][0], source_input_tag_id="",
+            snapshot=request, reason="처리 중 오류 · 관리자 확인 대기", held_by="SYSTEM")
+        if (len(faults) >= 3 or sum(identity == set_id for _, identity in faults) >= 2
+                or self.__dict__.get("_app_close_in_progress", False)):
+            return False
+        lane.close_idle()  # The existing STOP/join releases admission before waiting.
+        if lane.state is not LaneState.CLOSED or lane.worker_thread.is_alive():
+            return False
+        if path and os.path.lexists(path):
+            evidence = self._read_package_recovery_file(path)
+            saved = (evidence["value"] or {}).get("current_set_info") or {}
+            if evidence["raw"] is None or str(saved.get("id") or "") != set_id:
+                return False
+            with writer_admission("gui_ui_lane_quarantine"):
+                if not self._move_package_pin_file(path, archive, evidence["raw"],
+                                                  allowed_root=Path(self.data_manager.save_directory)):
+                    return False
+        self._scans_behind_completion = []
+        for name in ("_workflow_blocking_notice", "_workflow_notice", "_workflow_notice_action",
+                     "_scans_behind_completion_work", "_completed_set_behind_scans", "_deferred_label_materialization",
+                     "_pending_workflow_error", "_workflow_pending_error", "_package_recovery_state_data"):
+            self.__dict__.pop(name, None)
+        self._clear_workflow_completion()
+        if not self._reset_current_set():
+            return False
+        if entry is not None:
+            entry.delete(0, tk.END)
+        self.ui_lane = TkSerialUiLane(
+            self, generation_provider=lambda: int(self.__dict__.get("_ui_lane_generation", 0)),
+            on_runner_fault=self._handle_ui_lane_fault)
+        if self.ui_lane.state is not LaneState.IDLE:
+            return False
+        self._deferred_validation_worker_in_progress = False
+        self._deferred_validation_lane_trigger = CoalescingTrigger(
+            self.ui_lane, self._build_deferred_validation_lane_task,
+            on_admitted=self._on_deferred_validation_lane_admitted,
+            submit_task=self._submit_deferred_validation_lane_task)
+        count = len(self.package_outbox.list_workbench_holds())
+        self._ui_lane_review_notice = WorkflowNotice(
+            f"관리자 확인 {count}건", "처리 중 오류로 이 세트를 따로 보관했습니다. "
+            "관리자 확인 대기 — 다음 세트를 계속하세요.", tone="warning")
+        if self.__dict__.get("operator_workbench_ready"):
+            self._render_operator_workbench()
+        self._focus_scan_entry_if_available()
+        return True
 
     def _submit_ui_lane_task(
         self,
@@ -5648,6 +5731,9 @@ class Label_Match(tk.Tk):
             if task_name == LABEL_MATCH_COMPLETION_LANE_TASK:
                 self._schedule_scans_behind_completion()
 
+        if getattr(lane, "state", None) is LaneState.IDLE and not lane.is_busy():
+            self._ui_lane_request = {"current_set_info": copy.deepcopy(
+                self.__dict__.get("current_set_info") or {})}
         admission = lane.submit(
             LaneTask(
                 name=task_name,
@@ -21926,6 +22012,8 @@ class Label_Match(tk.Tk):
             "_package_cancellation_review_notice"
         ) or self.__dict__.get(
             "_phs_label_guidance_notice"
+        ) or self.__dict__.get(
+            "_ui_lane_review_notice"
         )
         self._set_workflow_notice_ui(
             display_notice,

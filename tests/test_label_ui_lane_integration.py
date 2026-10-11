@@ -591,12 +591,8 @@ def _b1_local_lease(db_path, physical_qr, snapshot, *, lease_id, item_id, label_
     class ClosingLeaseStore(OperationLeaseStore):
         @contextmanager
         def _connect(self):
-            conn = super()._connect()
-            try:
-                with conn:
-                    yield conn
-            finally:
-                conn.close()
+            with super()._connect() as conn:
+                yield conn
 
     store = ClosingLeaseStore(db_path)
     lease = {

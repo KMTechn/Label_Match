@@ -238,6 +238,8 @@ class TkSerialUiLane:
         self._sequence_lock = threading.Lock()
         self._state = LaneState.IDLE
         self._active: Optional[_TaskEnvelope] = None
+        self._last_task: Optional[LaneTask] = None
+        self.fault_task: Optional[LaneTask] = None
         self._idle_barrier = False
         self._fault_presented = False
         self._last_result_sequence = 0
@@ -317,6 +319,7 @@ class TkSerialUiLane:
                 task=task,
             )
             self._active = envelope
+            self._last_task = task
             self._state = LaneState.BUSY
         try:
             self._task_queue.put_nowait(envelope)
@@ -588,6 +591,8 @@ class TkSerialUiLane:
         return int(self._generation_provider()) == int(generation)
 
     def _apply_result(self, envelope: _ResultEnvelope) -> None:
+        if self.state in {LaneState.BROKEN, LaneState.CLOSED}:
+            return  # A quarantined request cannot settle or render late results.
         if envelope.kind == "runner_fault":
             self._break_lane(
                 envelope.error or RuntimeError("Tk UI lane worker fault")
@@ -661,6 +666,7 @@ class TkSerialUiLane:
 
     def _break_lane(self, exc: BaseException) -> None:
         with self._state_lock:
+            self.fault_task = self._active.task if self._active else self._last_task
             self._state = LaneState.BROKEN
             self._active = None
             self._idle_barrier = False
