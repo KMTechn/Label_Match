@@ -31,6 +31,7 @@ from producer_runtime_client import (
     OPERATOR_REVIEW_CODES as RUNTIME_OPERATOR_REVIEW_CODES,
     apply_runtime_receipt_in_transaction,
     client_runtime_lease_mode,
+    close_sqlite_connection,
     disable_runtime_authority_in_transaction,
     expire_dead_fence_authority_in_transaction,
     init_runtime_schema,
@@ -1487,7 +1488,7 @@ def init_relay_queue_schema(db_path: str | os.PathLike[str]) -> None:
             conn.rollback()
         raise
     finally:
-        conn.close()
+        close_sqlite_connection(conn)
 
 
 def _ensure_relay_queue_columns(conn: sqlite3.Connection) -> None:
@@ -2119,7 +2120,7 @@ def enqueue_source_file_for_relay(
                 pass
         raise
     finally:
-        conn.close()
+        close_sqlite_connection(conn)
 
 
 @writer_sink("relay_stale_lease_reset")
@@ -2148,7 +2149,7 @@ def reset_stale_relay_leases(
         conn.commit()
         return int(cursor.rowcount)
     finally:
-        conn.close()
+        close_sqlite_connection(conn)
 
 
 @writer_sink("relay_batch_claim")
@@ -2224,7 +2225,7 @@ def claim_next_relay_batch(
         ).fetchone()
         return _relay_row(claimed)
     finally:
-        conn.close()
+        close_sqlite_connection(conn)
 
 
 def _set_relay_status(
@@ -2401,7 +2402,7 @@ def _set_relay_status(
             conn.rollback()
         raise
     finally:
-        conn.close()
+        close_sqlite_connection(conn)
 
 
 def _retry_after_seconds(attempt_count: int, base_seconds: int, jitter_key: str = "") -> int:
@@ -2471,7 +2472,7 @@ def _persist_legacy_exact_replay_before_source_post(
             )
         conn.commit()
     finally:
-        conn.close()
+        close_sqlite_connection(conn)
 
 
 def _relay_credentials_issue(row: RelayQueueRow, credentials: ProducerCredentials) -> tuple[str, str]:

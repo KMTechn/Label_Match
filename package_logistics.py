@@ -7,6 +7,7 @@ TRANSFER bundle, or supplied as a separate full exact rescan.
 
 from __future__ import annotations
 
+from producer_runtime_client import close_sqlite_connection
 import sys
 
 from contextlib import contextmanager
@@ -626,7 +627,7 @@ class PackageCancellationOutbox:
             with conn:
                 yield conn
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
     def initialize(self) -> None:
         with self._connect() as conn:

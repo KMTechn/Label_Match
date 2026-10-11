@@ -9,6 +9,7 @@ outbox in the same SQLite transaction; no captured row is deleted.
 
 from __future__ import annotations
 
+from producer_runtime_client import close_sqlite_connection
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import base64
@@ -1494,7 +1495,7 @@ class DeferredIntentCaptureStore:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
     def _load_or_create_seal_key(self) -> bytes:
         path = self.seal_key_path
@@ -1875,7 +1876,7 @@ class DeferredIntentCaptureStore:
                 ) from exc
             finally:
                 if conn is not None:
-                    conn.close()
+                    close_sqlite_connection(conn)
 
     def _load_existing_seal_key(self) -> bytes:
         try:
@@ -2180,7 +2181,7 @@ class DeferredIntentCaptureStore:
                     "the deferred validation claim could not be committed",
                 ) from exc
             finally:
-                conn.close()
+                close_sqlite_connection(conn)
 
     def verify_local_integrity(
         self,
@@ -2450,7 +2451,7 @@ class DeferredIntentCaptureStore:
                     "the local integrity gate could not be committed",
                 ) from exc
             finally:
-                conn.close()
+                close_sqlite_connection(conn)
 
     def plan_label_validation(
         self,
@@ -2632,7 +2633,7 @@ class DeferredIntentCaptureStore:
                     "the Label validation plan could not be persisted",
                 ) from exc
             finally:
-                conn.close()
+                close_sqlite_connection(conn)
 
     def record_validation_mutation_attempt(
         self,
@@ -2754,7 +2755,7 @@ class DeferredIntentCaptureStore:
                     "the mutating validation attempt could not be committed",
                 ) from exc
             finally:
-                conn.close()
+                close_sqlite_connection(conn)
 
     @staticmethod
     def _canonical_validation_evidence(evidence: Mapping[str, Any]) -> tuple[str, str]:
@@ -3112,7 +3113,7 @@ class DeferredIntentCaptureStore:
                     "the validation step evidence could not be persisted",
                 ) from exc
             finally:
-                conn.close()
+                close_sqlite_connection(conn)
 
     def finish_validation(
         self,
@@ -3412,7 +3413,7 @@ class DeferredIntentCaptureStore:
                     "the typed validation result could not be persisted",
                 ) from exc
             finally:
-                conn.close()
+                close_sqlite_connection(conn)
 
     def status_readback(
         self,
@@ -3813,7 +3814,7 @@ class DeferredIntentCaptureStore:
                 auto_prune_enabled=False,
             )
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
     def validation_status(
         self,
@@ -3870,7 +3871,7 @@ class DeferredIntentCaptureStore:
                 oldest_age_seconds=age,
             )
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
     def _owned_capture_row(self, row, *, local_work_identity, physical_qr_payload):
         if row is None:
@@ -4063,7 +4064,7 @@ class DeferredIntentCaptureStore:
                 conn.rollback()
                 raise DeferredIntentCaptureError("CANCEL_CAPTURE_FAILED", "local capture cancellation could not be committed") from exc
             finally:
-                conn.close()
+                close_sqlite_connection(conn)
 
     def next_materialization_candidate(self) -> str | None:
         """Return the oldest FIFO row whose validation awaits local materialization."""
@@ -4091,7 +4092,7 @@ class DeferredIntentCaptureStore:
             ).fetchone()
             return str(row[0]) if row else None
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
     def requeue_validated_for_materialization(
         self,
@@ -4164,7 +4165,7 @@ class DeferredIntentCaptureStore:
                     "the validated intent could not be safely requeued",
                 ) from exc
             finally:
-                conn.close()
+                close_sqlite_connection(conn)
 
     def next_validation_candidate(self, *, now: str | None = None) -> str | None:
         """Return the oldest eligible or expired-claim FIFO validation row."""
@@ -4208,7 +4209,7 @@ class DeferredIntentCaptureStore:
             ).fetchone()
             return str(row[0]) if row else None
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
     def open_label_capture(self, physical_qr_payload: str) -> dict[str, Any] | None:
         """The earliest unfinished capture of this physical label, if any, with
@@ -4226,7 +4227,7 @@ class DeferredIntentCaptureStore:
                  label_partition_key(physical_qr_payload), *sorted(_TERMINAL_STATES)),
             ).fetchone()
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
         if row is None:
             return None
         payload = json.loads(self._unprotect_label_owned_payload(dict(row)))
@@ -4251,7 +4252,7 @@ class DeferredIntentCaptureStore:
                  LABEL_PARTITION_KEY, *sorted(_TERMINAL_STATES)),
             )]
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
     def get(self, intent_id: str) -> dict[str, Any] | None:
         conn = self._connect()
@@ -4262,7 +4263,7 @@ class DeferredIntentCaptureStore:
             ).fetchone()
             return dict(row) if row else None
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
 
 __all__ = [

@@ -16,9 +16,12 @@ import secrets
 import sqlite3
 import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
+
+from producer_runtime_client import close_sqlite_connection
 
 from kmtech_zero_pe import (
     jwk_thumbprint as _cng_jwk_thumbprint,
@@ -518,12 +521,17 @@ class OperationLeaseStore:
         self._lock = threading.RLock()
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         conn = sqlite3.connect(self.path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=FULL")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=FULL")
+            with conn:
+                yield conn
+        finally:
+            close_sqlite_connection(conn)
 
     def _initialize(self) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)

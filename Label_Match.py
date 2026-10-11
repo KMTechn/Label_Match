@@ -83,7 +83,7 @@ from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_pat
 from label_match_product_host import (
     _default_product_root, dispatch_product_mode, requires_bootstrap_integrity,
 )
-from writer_session_fence import WriterFenceError, writer_sink
+from writer_session_fence import WriterFenceError, writer_admission, writer_sink
 from label_data_manager import DataManager as _DataManager, read_recovery_file
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 from label_admin_pin import (
@@ -6577,9 +6577,43 @@ class Label_Match(tk.Tk):
         self._refresh_relay_screen_status()
         return None
 
+    def _process_app_stop_request(self):
+        from user_relay import APP_STOP_SCHEMA, app_stop_request_path
+
+        context = self.__dict__.get("direct_sync_bootstrap_context") or {}
+        root = context.get("program_data_root")
+        if not root:
+            return False
+        path = app_stop_request_path(root)
+        try:
+            if not path.is_file() or path.stat().st_size > 4096:
+                return False
+            payload = _label_match_json_file(path)
+            request_id = str(payload.get("request_id") or "")
+            if (payload.get("schema_version") != APP_STOP_SCHEMA
+                    or re.fullmatch(r"[0-9a-f]{32}", request_id) is None):
+                return False
+        except OSError:
+            return False
+        # This path saves unfinished input and drains accepted work without
+        # the local pointer-confirmation step.
+        self.on_closing(_confirmed=True)
+        accepted = bool(self.__dict__.get("_app_close_in_progress", False)
+                        or self.__dict__.get("_tk_destroy_complete", False))
+        if accepted:
+            try:
+                with writer_admission("app_stop_acknowledge"):
+                    if _label_match_json_file(path).get("request_id") == request_id:
+                        path.unlink(missing_ok=True)
+            except Exception as exc:
+                print(f"앱 멈춤 요청 정리 실패: {type(exc).__name__}")
+        return accepted
+
     def _refresh_relay_screen_status(self):
         self._relay_screen_status_after_id = None
         if self.__dict__.get("_app_close_in_progress", False):
+            return None
+        if self._process_app_stop_request():
             return None
         context = self.__dict__.get("direct_sync_bootstrap_context") or {}
         path = str(context.get("runtime_status_path") or "")

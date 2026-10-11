@@ -505,3 +505,9 @@ SYSTEM/설치 사용자 공용 update/trial mutex는 일반 사용자에게 부�
 ### Bootstrap relay 시작의 일시 admission 대기
 
 Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRITER_GATE_TIMEOUT`만 기존 240초 창에서 0.1초씩 쉬며 재시도한다. 각 시도는 기존 launch_version의 admission을 다시 얻으며 시도 사이에는 admission을 보유하지 않는다. 상한은 240초 + 마지막 admission 대기 최대 5초이며 마감 뒤에는 기존 실패 출구를 유지한다. fence 확정·버려진 소유권 등 다른 거절과 GUI 실행 자체의 timeout은 재시도하지 않는다. 포인터·trial claim·READY·CONFIRMED·G 허가·cohort·잠금 순서는 유지한다. bootstrap 밖의 relay launcher admission과 실제 로그온/pythonw 수용은 별도 범위다.
+
+### 원격 앱 멈춤과 SQLite 연결 정리
+
+`user_relay.py --request-app-stop`은 같은 설치 소유자의 relay root `control/label_match_app.stop.json`에 작은 요청을 원자 저장하고 기존 relay stop을 요청한다. GUI는 기존 5초 상태 갱신에서 요청을 읽어 `on_closing(_confirmed=True)`로 현재 입력 저장과 승인된 작업 정리를 진행한다. 정상 닫기를 접수한 뒤 같은 요청만 지우며 닫기 거절·후속 요청은 보존한다. CLI의 `REQUESTED`는 GUI 종료 증명이 아니고 relay의 `UNKNOWN`은 종료 확인 실패다.
+
+앱·relay의 쓰기용 SQLite 연결은 기존 commit/rollback 뒤 `wal_checkpoint(TRUNCATE)`를 시도하고 닫는다. checkpoint의 대기 시간은 0이며 BUSY·오류·쓰기 허가 거절은 유형만 기록하고 close를 계속한다. 읽기 전용 relay 연결에는 checkpoint를 하지 않는다. 정상 종료 뒤 다른 연결이 없으면 WAL/SHM이 사라지며, 남아 있으면 종료·되돌림의 성공 근거로 삼지 않는다.

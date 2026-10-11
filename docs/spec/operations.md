@@ -1345,3 +1345,13 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 설치 감사의 worker_shortcuts는 common_record_path와 user_record_path를 기록한다. 각 JSON은 원래 대상·인수·아이콘 등 속성과 .preimages/의 원본 링크·해시, 새 링크 해시를 보존한다. 실패한 설치의 코드 복원 뒤 canonical rollback이 개인과 공용 기록을 각각 소비한다. 지원 제거에서 기계 helper에 WorkerShortcutRecordPath·VerifiedWorkerShortcutHelperPath·ExpectedWorkerShortcutHelperSha256을 제공하면 같은 공용 복원 경계를 사용한다. 옛 앱 복귀를 수행하는 작업자 도구는 보존한 해시 검증 helper tools/label_worker_shortcuts.ps1에 -InstallRoot <current> -RecordPath <user JSON> -UserOnly -Rollback(또는 -Uninstall)을 넘겨 개인 링크를 복원한다. 이 바로 가기 명령은 코드·자료를 복원하는 설치 명령과 별개이며, 코드 복원 뒤 실행한다.
 
 바뀐 링크는 원본 바이트로 복원하고 새 링크는 삭제한다. 사용자가 이후 바꾼 링크·다른 대상·reparse·기록 경계 이탈·helper 변조는 거절한다. 관리자 직접 설치는 CommonOnly 경계를 사용하며 작업자 첫 시작 onboarding에 UserOnly 경계를 연결하는 일은 다음 가지 몫이다. 실제 Explorer 기동·아이콘 표시·콘솔 표시와 v2.0.5 복귀의 현장 확인은 이 headless 시험으로 증명하지 않는다.
+<a id="remote-app-stop"></a>
+### 원격 정상 멈춤
+
+업무 밖에 설치 소유자의 실제 relay root를 지정하여 기존 설치의 콘솔 Python으로 요청한다. 이 관리 명령은 GUI·relay 기동, 등록, 자격 준비를 수행하지 않는다.
+
+```powershell
+& '<설치>/current/runtime/python.exe' -B '<설치>/current/app/user_relay.py' --request-app-stop --app-root '<설치>/current' --direct-sync-root '<설치 소유자의 relay root>'
+```
+
+GUI의 기존 5초 주기가 하던 트레이를 확인 창 없이 저장하고 정상 닫기를 접수한다. 요청 파일 삭제는 접수 증거이며 실제 프로세스 종료 증명은 아니다. relay의 `ABSENT`는 기존 lease 부재 증거이고 `UNKNOWN`이면 명령은 1을 반환한다. 키트는 기존 절차대로 앱·relay 프로세스 부재와 자료 DB의 WAL/SHM 부재를 별도로 확인한 뒤 읽기·되돌림을 진행한다. checkpoint가 BUSY이거나 다른 연결이 남으면 종료를 강제로 진행하거나 sidecar를 직접 지우지 않는다.

@@ -32,6 +32,8 @@ DEFAULT_RETRY_INTERVAL_SECONDS = 30
 MAX_RETRY_INTERVAL_SECONDS = 60
 USER_RELAY_STATUS_NAME = "label_match_user_relay.json"
 USER_RELAY_STOP_NAME = "label_match_user_relay.stop.json"
+APP_STOP_NAME = "label_match_app.stop.json"
+APP_STOP_SCHEMA = "label-match-app-stop-v1"
 LABEL_MATCH_SOURCE_GLOB = "포장실작업이벤트로그_*.csv"
 LABEL_MATCH_WORKER_ID = "direct-sync-relay-label-match-current-user"
 
@@ -106,6 +108,28 @@ def user_relay_stop_path(direct_sync_root: str | os.PathLike[str]) -> Path:
     return (
         Path(direct_sync_root).expanduser().resolve() / "control" / USER_RELAY_STOP_NAME
     )
+
+
+def app_stop_request_path(direct_sync_root: str | os.PathLike[str]) -> Path:
+    return Path(direct_sync_root).expanduser().resolve() / "control" / APP_STOP_NAME
+
+
+def request_app_stop(direct_sync_root: str | os.PathLike[str]) -> dict[str, Any]:
+    """Request the existing preserving GUI close and stop the persistent relay."""
+    root = Path(direct_sync_root).expanduser().resolve()
+    path = app_stop_request_path(root)
+    payload = {
+        "schema_version": APP_STOP_SCHEMA,
+        "request_id": uuid.uuid4().hex,
+        "requested_at": _now(),
+    }
+    with writer_admission("app_stop_request"):
+        _write_machine_json_atomic(path, payload)
+        if _read_json(path) != payload:
+            raise UserRelayError("app stop request readback differs")
+    # Do not retain the app-request admission while waiting for relay absence.
+    relay = request_user_relay_stop(root)
+    return {"status": "REQUESTED", "app_stop_request_path": str(path), "relay": relay}
 
 
 def _application_command(
@@ -892,6 +916,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_RETRY_INTERVAL_SECONDS,
     )
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--request-app-stop", action="store_true")
     return parser
 
 
@@ -913,6 +938,15 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
         .expanduser()
         .resolve()
     )
+    if args.request_app_stop:
+        if args.direct_sync_root:
+            direct_sync_root = Path(args.direct_sync_root)
+        else:
+            from current_user_onboarding import resolve_current_user_onboarding_paths
+            direct_sync_root = resolve_current_user_onboarding_paths(app_root).direct_sync_root
+        report = request_app_stop(direct_sync_root)
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        return 0 if report["relay"]["status"] == "ABSENT" else 1
     try:
         from label_data_generation import release_identity
         release_identity(app_root)

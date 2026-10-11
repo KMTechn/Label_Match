@@ -16,6 +16,7 @@ from pathlib import Path
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -27,7 +28,7 @@ from typing import Any, Dict, Mapping
 from urllib.parse import urlparse, urlunparse
 
 from kmtech_shared import runtime as _runtime_core
-from writer_session_fence import remote_request, writer_sink
+from writer_session_fence import remote_request, writer_admission, writer_sink
 
 from kmtech_zero_pe import (
     generate_public_jwk,
@@ -151,6 +152,20 @@ def _runtime_endpoint(endpoint_url: str) -> str:
 
 def init_runtime_schema(conn: sqlite3.Connection) -> None:
     return _runtime_core.init_runtime_schema(conn)
+
+
+def close_sqlite_connection(conn: sqlite3.Connection) -> None:
+    """Best-effort, nonblocking WAL cleanup; always close the owned connection."""
+    try:
+        with writer_admission("sqlite_wal_checkpoint", timeout_seconds=0):
+            conn.execute("PRAGMA busy_timeout=0")
+            result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if result and result[0]:
+                logging.getLogger(__name__).warning("WAL checkpoint busy; closing connection")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("WAL checkpoint failed (%s); closing connection", type(exc).__name__)
+    finally:
+        conn.close()
 
 
 def _connect(db_path: str | os.PathLike[str]) -> sqlite3.Connection:
@@ -556,7 +571,7 @@ def ensure_runtime_authority(
                 error_message=f"runtime authority state is invalid: {exc.__class__.__name__}",
             )
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
         grant, request_error = _post_lease_request(
             request_value=request_value,
@@ -580,7 +595,7 @@ def ensure_runtime_authority(
                     )
                     conn.commit()
                 finally:
-                    conn.close()
+                    close_sqlite_connection(conn)
             if (
                 request_error.error_code == DEAD_RENEWAL_CODE
                 and "runtime_fence" in request_value
@@ -656,7 +671,7 @@ def ensure_runtime_authority(
             conn.rollback()
             time.sleep(0.01)
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
     return RuntimePreparation(
         retryable=True,
         retry_after_seconds=1,
@@ -894,7 +909,7 @@ def prepare_runtime_metadata(
                 error_message=f"runtime authority state is invalid: {exc.__class__.__name__}",
             )
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
         grant, request_error = _post_lease_request(
             request_value=request_value,
@@ -918,7 +933,7 @@ def prepare_runtime_metadata(
                     )
                     conn.commit()
                 finally:
-                    conn.close()
+                    close_sqlite_connection(conn)
             if (
                 request_error.error_code == DEAD_RENEWAL_CODE
                 and "runtime_fence" in request_value
@@ -985,7 +1000,7 @@ def prepare_runtime_metadata(
             if cursor.rowcount != 1:
                 time.sleep(0.01)
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
     return RuntimePreparation(
         retryable=True,
         retry_after_seconds=1,

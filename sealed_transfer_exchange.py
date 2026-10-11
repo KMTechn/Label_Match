@@ -8,6 +8,7 @@ local Label_Match state update.
 
 from __future__ import annotations
 
+from producer_runtime_client import close_sqlite_connection
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -375,7 +376,7 @@ class SealedTransferExchangeStore:
         try:
             yield conn
         finally:
-            conn.close()
+            close_sqlite_connection(conn)
 
     def _initialize(self) -> None:
         with self._connect() as conn:
