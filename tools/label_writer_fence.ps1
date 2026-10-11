@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 
 $Script:LabelWriterFenceActiveSchema = 'label-match-all-writer-fence-active-v1'
 $Script:LabelWriterFenceAppId = 'label_match'
@@ -6,7 +6,7 @@ $Script:LabelWriterFenceTupleVersion = 'label-match-deployment-session-authority
 $Script:LabelWriterFenceSessionMutexPrefix = 'Local\KMTech.LabelMatch.DeploymentSession.'
 $Script:LabelWriterFenceAdmissionMutexName = 'Local\KMTech.LabelMatch.WriterAdmission.v1'
 $Script:LabelWriterFenceAdmissionProductionRoot = ''
-$Script:LabelWriterFenceInventorySha256 = 'c2f0d0a1c10720e17452d54a10878d48c122637adb9d898aad2d1d0b5be10966'
+$Script:LabelWriterFenceInventorySha256 = 'da57650e93a58be5cf534610c55484c4ed8facd616b5e81d499cee9b8c76b7a7'
 $Script:LabelWriterFenceInstalledIdentity = $null
 $Script:LabelWriterFenceMaximumBytes = 262144
 $Script:LabelWriterFenceActiveFields = @(
