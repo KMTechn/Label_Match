@@ -11875,16 +11875,17 @@ class Label_Match(tk.Tk):
                 )
                 return
 
-        # A recorded storage hold owns this slot across every date boundary.
+        # A recorded hold owns this slot across every date boundary and reason.
         current_path = self._package_current_state_path()
         if current_path and os.path.lexists(current_path):
             evidence = self._read_package_recovery_file(current_path)
             set_id = str(((evidence['value'] or {}).get('current_set_info') or {}).get('id') or '')
             get_hold = getattr(self.__dict__.get('package_outbox'), 'get_workbench_hold', None)
             held = get_hold(set_id) if evidence['verified'] and set_id and callable(get_hold) else None
-            if held and held.get('reason') == 'STORAGE_WRITE_FAILURE':
+            resume_hold = getattr(self.__dict__.get('data_manager'), 'resume_storage_checkpoint_hold', None)
+            if held and callable(resume_hold):
                 try:
-                    self.data_manager.resume_storage_checkpoint_hold(self.package_outbox, held)
+                    resume_hold(self.package_outbox, held)
                     if not self._reset_current_set():
                         raise OSError('held checkpoint did not release its startup slot')
                     self._clear_workflow_completion()
@@ -22328,12 +22329,10 @@ class Label_Match(tk.Tk):
             return set()
         keys = set()
         for held in list_holds():
-            if held.get('reason') != 'STORAGE_WRITE_FAILURE':
-                continue
-            current = json.loads(held['snapshot_json'])['current_set_info']
+            current = json.loads(held['snapshot_json']).get('current_set_info') or {}
             raw = list(current.get('raw') or [])
             keys.update(self._sample_barcode(value) for value in raw[1:])
-            if (_label_match_first_scan_is_unique_master(dict(current, scanned_product_barcodes=raw))
+            if (raw and _label_match_first_scan_is_unique_master(dict(current, scanned_product_barcodes=raw))
                     and not _label_match_reusable_input_master_label(raw[0])):
                 keys.update(_label_match_unique_master_index_keys(raw[0]))
         return keys

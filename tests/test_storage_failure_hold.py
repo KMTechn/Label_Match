@@ -247,8 +247,9 @@ def test_storage_probe_matches_failed_checkpoint_bytes_with_a_64_kib_cap(
 
 @pytest.mark.parametrize('day_offset', [0, 1])
 @pytest.mark.parametrize('retry_archive_denied', [False, True])
+@pytest.mark.parametrize('held_reason', ['STORAGE_WRITE_FAILURE', 'PROCESSING_ERROR'])
 def test_startup_retries_storage_hold_archive_before_opening_or_replaying_the_set(
-        station, monkeypatch, day_offset, retry_archive_denied):
+        station, monkeypatch, day_offset, retry_archive_denied, held_reason):
     app, _dialogs = station
     values = prepare_set(app)
     target = Path(app.save_directory) / app.FILES.CURRENT_STATE
@@ -259,13 +260,20 @@ def test_startup_retries_storage_hold_archive_before_opening_or_replaying_the_se
         raise PermissionError('injected checkpoint archive failure')
 
     with monkeypatch.context() as patch:
+        hold = app.package_outbox.hold_workbench_set
+
+        def hold_with_reason(**kwargs):
+            kwargs['reason'] = held_reason
+            return hold(**kwargs)
+
+        patch.setattr(app.package_outbox, 'hold_workbench_set', hold_with_reason)
         fail_checkpoint(app, patch)
         patch.setattr(storage, 'quarantine_entry', denied)
         scan(app, values[-1])
         app._retry_blocked_submission()
     held = app.package_outbox.get_workbench_hold(set_id)
     archive = Path(json.loads(held['snapshot_json'])['archive_path'])
-    assert held['reason'] == 'STORAGE_WRITE_FAILURE'
+    assert held['reason'] == held_reason
     assert target.read_bytes() == original and not archive.exists()
     _close(app)
     now = datetime.now() + timedelta(days=day_offset)
@@ -326,7 +334,8 @@ def test_startup_retries_storage_hold_archive_before_opening_or_replaying_the_se
         _close(restored)
 
 
-def test_storage_held_physical_label_cannot_start_a_transition_local_set(station, monkeypatch):
+@pytest.mark.parametrize('held_reason', ['STORAGE_WRITE_FAILURE', 'PROCESSING_ERROR'])
+def test_storage_held_physical_label_cannot_start_a_transition_local_set(station, monkeypatch, held_reason):
     app, _dialogs = station
     app._transition_start_local(PHS2_LABEL, MASTER, lm.label_transition.PHS2_LOCAL)
     values = products()
@@ -334,6 +343,13 @@ def test_storage_held_physical_label_cannot_start_a_transition_local_set(station
         scan(app, value)
     app.data_manager.flush(timeout=5)
     with monkeypatch.context() as patch:
+        hold = app.package_outbox.hold_workbench_set
+
+        def hold_with_reason(**kwargs):
+            kwargs['reason'] = held_reason
+            return hold(**kwargs)
+
+        patch.setattr(app.package_outbox, 'hold_workbench_set', hold_with_reason)
         fail_checkpoint(app, patch)
         scan(app, values[-1])
         app._retry_blocked_submission()
@@ -374,10 +390,18 @@ def test_hold_and_duplicate_evidence_survive_restart_across_midnight(station, mo
     assert completions(app) == []
 
 
-def test_storage_held_product_cannot_be_used_as_exchange_replacement(station, monkeypatch):
+@pytest.mark.parametrize('held_reason', ['STORAGE_WRITE_FAILURE', 'PROCESSING_ERROR'])
+def test_storage_held_product_cannot_be_used_as_exchange_replacement(station, monkeypatch, held_reason):
     app, dialogs = station
     values = prepare_set(app)
     with monkeypatch.context() as patch:
+        hold = app.package_outbox.hold_workbench_set
+
+        def hold_with_reason(**kwargs):
+            kwargs['reason'] = held_reason
+            return hold(**kwargs)
+
+        patch.setattr(app.package_outbox, 'hold_workbench_set', hold_with_reason)
         fail_checkpoint(app, patch)
         scan(app, values[-1])
         app._retry_blocked_submission()
@@ -391,6 +415,71 @@ def test_storage_held_product_cannot_be_used_as_exchange_replacement(station, mo
     assert app.current_set_info['raw'] == [MASTER, replacement]
     assert completions(app) == []
     assert dialogs == []
+
+
+@pytest.mark.parametrize('held_reason', ['PROCESSING_ERROR', '처리 중 오류 · 관리자 확인 대기', ''])
+def test_all_auto_held_product_barcodes_are_duplicates_in_another_set(station, monkeypatch, held_reason):
+    app, _dialogs = station
+    values = prepare_set(app)
+    with monkeypatch.context() as patch:
+        hold = app.package_outbox.hold_workbench_set
+
+        def hold_with_reason(**kwargs):
+            kwargs['reason'] = held_reason
+            return hold(**kwargs)
+
+        patch.setattr(app.package_outbox, 'hold_workbench_set', hold_with_reason)
+        fail_checkpoint(app, patch)
+        scan(app, values[-1])
+        app._retry_blocked_submission()
+    assert app._workflow_blocking_notice is None
+    scan(app, MASTER)
+    before = copy.deepcopy(app.current_set_info)
+    for value in values[1:4]:
+        scan(app, value)
+        assert app.current_set_info == before
+    assert completions(app) == []
+    for value in products(prefix='OTHER'):
+        scan(app, value)
+    assert len(completions(app)) == 1
+
+
+def test_hold_without_readable_barcodes_does_not_break_other_set_input(station):
+    app, _dialogs = station
+    app.package_outbox.hold_workbench_set(set_id='unverified-hold',
+        source_phs2='', source_input_tag_id='', snapshot={'status': 'UNVERIFIED'},
+        reason='TARGET_CHANGED_DURING_HOLD', held_by='SYSTEM_PIN_UNVERIFIED')
+    scan(app, MASTER)
+    assert app.current_set_info['raw'] == [MASTER]
+    assert app.__dict__.get('_workflow_blocking_notice') is None
+
+
+def test_other_reason_current_snapshot_is_archived_before_startup_without_storage_metadata(
+        station, monkeypatch):
+    app, _dialogs = station
+    prepare_set(app)
+    target = Path(app.save_directory) / app.FILES.CURRENT_STATE
+    original = target.read_bytes()
+    snapshot = app.data_manager.load_current_state()
+    app.package_outbox.hold_workbench_set(set_id=app.current_set_info['id'],
+        source_phs2=MASTER, source_input_tag_id='', snapshot=snapshot,
+        reason='PROCESSING_ERROR', held_by='SYSTEM_PROCESSING_CHECK')
+    _close(app)
+    restored = _app_for_recovery(lm, Path(app.save_directory), monkeypatch)
+    restored.entry = _FakeEntry('')
+    restored._render_operator_workbench = lambda: SimpleNamespace(scan_input_enabled=True)
+    try:
+        restored._load_current_set_state()
+        assert restored.current_set_info['id'] is None
+        assert restored.current_set_info['raw'] == []
+        assert not target.exists()
+        [archive] = list(target.parent.glob(target.name + '.held-*'))
+        assert archive.read_bytes() == original
+        assert restored._workflow_blocking_notice is None
+        scan(restored, MASTER)
+        assert restored.current_set_info['raw'] == [MASTER]
+    finally:
+        _close(restored)
 
 
 def test_first_failure_after_storage_recovery_does_not_reuse_the_old_root_warning(station, monkeypatch):
