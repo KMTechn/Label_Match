@@ -182,6 +182,111 @@ if($case -cin @('sid','account','session-zero','same-admin')){
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("case", ["same-console", "ssh-same", "ssh-other", "no-console", "ambiguous", "changed", "invalid-profile", "test-layout", "plan-only", "explicit-empty"])
+def test_implicit_admin_entry_binds_one_stable_console_worker(tmp_path, engine, case):
+    result = run_functions(tmp_path, INSTALLER,
+        ["ByteSha", "Get-LabelConsoleWorker", "Resolve-LabelMachineWorker", "Assert-LabelMachineEvidencePath"], r'''
+$case=$env:LM_CONSOLE_CASE
+$workerSid='S-1-5-21-'+(@(101,202,303,404)-join '-')
+$otherSid='S-1-5-21-'+(@(101,202,303,505)-join '-')
+$caller=[pscustomobject]@{sid=$workerSid;elevated=$true;session_id=7}
+if($case -in @('ssh-same','ssh-other')){$caller.session_id=0}
+if($case -ceq 'ssh-other'){$caller.sid=$otherSid}
+$testMode=($case -ceq 'test-layout');$PlanOnly=($case -ceq 'plan-only');$EvidencePath=''
+$script:observations=0
+function Resolve-LabelWorkerSid($account){if($account -cne 'console-worker'){throw 'Unexpected account'};return $workerSid}
+function Get-LabelWorkerProfileRoot($sid){
+ if($sid -cne $workerSid){throw 'Unexpected profile subject'}
+ if($case -ceq 'invalid-profile'){return [IO.Path]::GetPathRoot($env:LM_CONSOLE_PROFILE)}
+ return $env:LM_CONSOLE_PROFILE
+}
+function Get-LabelConsoleWorkerObservation {
+ $script:observations++
+ if($case -in @('test-layout','plan-only','explicit-empty')){throw 'Unexpected native console observation'}
+ if($case -ceq 'no-console'){throw 'Console is absent'}
+ $account=if($case -ceq 'changed' -and $script:observations -eq 2){'changed-worker'}else{'console-worker'}
+ $row=[pscustomobject]@{session_id=7;account=$account}
+ if($case -ceq 'ambiguous'){return @($row,$row)}
+ return $row
+}
+$worker=$null;$failure=$null
+try{$worker=Resolve-LabelMachineWorker $caller '' '' ($case -ceq 'explicit-empty')}catch{$failure=$_}
+if($case -in @('same-console','test-layout','plan-only')){
+ if($null -ne $failure -or $null -ne $worker){throw 'Legacy current worker entry changed'}
+ if($script:observations -ne $(if($case -ceq 'same-console'){2}else{0})){throw 'Console observation count differs'}
+}elseif($case -in @('ssh-same','ssh-other')){
+ if($null -ne $failure -or $worker.sid -cne $workerSid -or $worker.target_source -cne 'ACTIVE_CONSOLE' -or
+    $worker.profile_root -cne $env:LM_CONSOLE_PROFILE -or $worker.inventory_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    $worker.caller_is_worker -ne ($case -ceq 'ssh-same') -or $script:observations -ne 2){throw 'Implicit worker binding differs'}
+}else{
+ if($null -eq $failure -or $failure.Exception.Data['worker_pending_failure'] -ne $true -or $null -ne $worker){throw 'Ambiguous worker was accepted'}
+}
+'PASS'
+''', engine=engine, values={"LM_CONSOLE_CASE":case, "LM_CONSOLE_PROFILE":str(tmp_path/"console-profile")})
+    assert result.returncode == 0, "implicit console admission failed; native evidence retained"
+    assert result.stdout.strip() == "PASS"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["contract.ps1"]
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_console_native_observer_compiles_without_observing_the_host(tmp_path, engine):
+    result = run_functions(tmp_path, INSTALLER, ["Get-LabelConsoleWorkerObservation"], r'''
+$definitions=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and
+ $n.Name -ceq 'Get-LabelConsoleWorkerObservation'},$true))
+if($definitions.Count -ne 1){throw 'Console observer definition differs'}
+$commands=@($definitions[0].FindAll({param($n)$n -is [Management.Automation.Language.CommandAst] -and
+ $n.GetCommandName() -ceq 'Add-Type'},$true))
+if($commands.Count -ne 1){throw 'Console native type definition differs'}
+. ([scriptblock]::Create($commands[0].Extent.Text))
+if(-not ('KMTechLabelConsoleWorker' -as [type])){throw 'Console native type is absent'}
+'PASS'
+''', engine=engine)
+    assert result.returncode == 0, "console observer type did not compile; host observation was not called"
+    assert result.stdout.strip() == "PASS"
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_product_powershell_process_stops_force_one_explicit_pid(tmp_path, engine):
+    root = INSTALLER.parent
+    paths = [root / name for name in subprocess.check_output(
+        ["git", "-c", "core.autocrlf=false", "ls-files", "*.ps1"], cwd=root,
+        text=True).splitlines() if not name.startswith("tests/")]
+    inputs = tmp_path / "powershell-members.json"
+    inputs.write_text(json.dumps([str(path) for path in paths]), encoding="utf-8")
+    result = run_functions(tmp_path, INSTALLER, ["Get-LabelConsoleWorkerObservation"], r'''
+$paths=Get-Content -LiteralPath $env:LM_STOP_AST_MEMBERS -Raw -Encoding UTF8 | ConvertFrom-Json
+$count=0
+foreach($path in $paths){
+ $tokens=$null;$errors=$null
+ $sourceAst=[Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
+ if($errors.Count){throw 'Product PowerShell parse failed'}
+ foreach($command in @($sourceAst.FindAll({param($n)$n -is [Management.Automation.Language.CommandAst] -and
+  $n.GetCommandName() -match '(^|\\)(Stop-Process|spps|kill)$'},$true))){
+  $count++
+  $parameters=@($command.CommandElements | Where-Object {$_ -is [Management.Automation.Language.CommandParameterAst]})
+  $force=@($parameters | Where-Object {$_.ParameterName -ieq 'Force'})
+  $ids=@($parameters | Where-Object {$_.ParameterName -ieq 'Id'})
+  if($force.Count -ne 1 -or $null -ne $force[0].Argument -or $ids.Count -ne 1 -or
+     @($parameters | Where-Object {$_.ParameterName -imatch '^(Name|InputObject)$'}).Count){throw 'Process stop is not an unconditional forced PID stop'}
+  $index=[Array]::IndexOf([object[]]@($command.CommandElements),$ids[0])
+  $argument=if($null -ne $ids[0].Argument){$ids[0].Argument}else{$command.CommandElements[$index+1]}
+  if($argument.Extent.Text -notmatch '^\(?\s*\[int\]\s*\$[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*\s*\)?$'){
+   throw 'Process stop does not name one scalar integer PID'
+  }
+ }
+}
+@{scripts=@($paths).Count;stop_process_calls=$count;unsafe_calls=0}|ConvertTo-Json -Compress|
+ Set-Content -LiteralPath $env:LM_STOP_AST_RESULT -Encoding UTF8
+'PASS'
+''', engine=engine, values={"LM_STOP_AST_MEMBERS":str(inputs),
+                             "LM_STOP_AST_RESULT":str(tmp_path / "stop-process-audit.json")})
+    assert result.returncode == 0, "product process stop AST contract failed; native evidence retained"
+    assert result.stdout.strip() == "PASS"
+    audit = json.loads((tmp_path / "stop-process-audit.json").read_text(encoding="utf-8-sig"))
+    assert audit["scripts"] == len(paths) and audit["unsafe_calls"] == 0
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 @pytest.mark.parametrize("arguments", ["missing", "invalid-json", "ordinary-empty"])
 @pytest.mark.parametrize("preloaded", [False, True])
 def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, arguments, preloaded):
@@ -377,6 +482,41 @@ def test_existing_onboarding_completes_pending_only_after_ready(pending_install,
     assert marker.read_bytes() == original
 
 
+def test_canonical_reinstall_does_not_complete_pending_before_relay_proof(pending_install, monkeypatch):
+    import current_user_onboarding as onboarding
+    import writer_session_fence as fence
+    from tests.test_current_user_onboarding import isolated_data_generation_release
+    from tests.test_supported_lifecycle import _canonical_user_setup, _resume_user
+    root, _marker, payload, _store, writes = pending_install
+    isolated_data_generation_release.__wrapped__(monkeypatch)
+    fixed, selected, environment, _paths = _canonical_user_setup(
+        root.parent.parent / "canonical-reinstall", monkeypatch, active=payload["source_commit"])
+    marker = fixed.parent / "update-control/worker-pending.json"
+    payload["version"] = json.loads((selected / "portable-manifest.json").read_text())["version"]
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    original_marker = marker.read_bytes()
+    original = onboarding.onboard_current_user
+    # The existing isolated lifecycle fixture owns storage/registration. Supply
+    # its canonical authority observation while running real onboarding logic.
+    original_control_root = fence.canonical_control_root
+    monkeypatch.setattr(fence, "canonical_control_root", lambda values=None:
+                        marker.parent / "writer-session" if values is environment else original_control_root(values))
+    monkeypatch.setattr(fence, "active_fence", lambda *_args, **kwargs:
+                        {"fixture": "canonical-owner"} if kwargs.get("environ") is environment else None)
+    monkeypatch.setattr(fence, "_delegation_matches", lambda _fence, *, source, environ:
+                        source == "current_user_onboarding" and environ is environment)
+    monkeypatch.setattr(onboarding, "onboard_current_user", lambda *args, **kwargs:
+                        original(*args, **kwargs, defer_canonical_relay_start=True))
+    relay_calls = []
+    report = _resume_user(selected, environment, launcher=lambda _root: relay_calls.append("relay"))
+    assert report["relay_start"]["status"] == "DEFERRED_CANONICAL_INSTALL"
+    assert not relay_calls and not writes
+    assert marker.read_bytes() == original_marker
+    monkeypatch.setattr(onboarding, "onboard_current_user", original)
+    assert _resume_user(selected, environment)["relay_start"]["status"] == "ALIVE"
+    assert len(writes) == 1 and marker.read_bytes() == original_marker
+
+
 @pytest.mark.parametrize("caller", ["same-elevated", "limited", "other-worker"])
 def test_same_worker_profile_preparation_leaves_interactive_completion_pending(pending_install, monkeypatch, caller):
     import auto_update
@@ -477,14 +617,14 @@ function Sha($p){return ByteSha ([IO.File]::ReadAllBytes($p))}
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
-@pytest.mark.parametrize("outcome", ["pending", "reuse", "helper-unproven", "same-worker", "shortcut-failure", "report-failure", "restore-existing"])
-def test_machine_install_uses_pinned_helper_and_never_writes_profiles(tmp_path, engine, outcome):
+@pytest.mark.parametrize("outcome", ["pending", "reuse", "helper-unproven", "same-worker", "shortcut-failure", "report-failure", "restore-existing", "switched-version-failure"])
+def test_machine_install_uses_pinned_helper_and_never_writes_profiles(tmp_path, engine, outcome, monkeypatch):
     for name in ("worker", "admin", "other", "legacy"):
         folder = tmp_path / name
         folder.mkdir()
         (folder / "preserve.dat").write_bytes(("untouched-" + name).encode())
     originals = {p: p.read_bytes() for p in tmp_path.rglob("*.dat")}
-    result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "Assert-LabelMachineEvidencePath", "Save", "Save-LabelMachineMetadata", "ByteSha"], r'''
+    result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "Assert-LabelMachineEvidencePath", "Save", "Save-LabelMachineMetadata", "ByteSha", "Same"], r'''
 $testMode=$true
 $program=Join-Path $env:LM_MACHINE_ROOT 'program';$env:PROGRAMDATA=$program
 $EvidencePath=Join-Path $program 'KMTech\Label_Match\install-audit\machine-evidence.json'
@@ -496,7 +636,11 @@ if($env:LM_MACHINE_OUTCOME -ceq 'reuse'){[void](New-Item -ItemType Directory -Pa
 function Full($p,$purpose){return [IO.Path]::GetFullPath($p)}
 function Sha($p){return ('c'*64)}
 function UnquiescedProductWriters{return @()}
-function PortableInventory($root){return [pscustomobject]@{sha256=('a'*64);bootstrap_aggregate_sha256=('b'*64);file_count=1;byte_count=4;critical_file_sha256=@{}}}
+function PortableInventory($root){
+ $sha=if($env:LM_MACHINE_OUTCOME -ceq 'switched-version-failure' -and $root -ceq $install -and $script:placed -eq 0){'0'*64}else{'a'*64}
+ return [pscustomobject]@{sha256=$sha;bootstrap_aggregate_sha256=('b'*64);file_count=1;byte_count=4;critical_file_sha256=@{}}
+}
+function Read-CanonicalStartupLifecycle($source,$root){return [pscustomobject]@{active_code_root=$root}}
 function Assert-WriterTransition($candidate,$installed){return [pscustomobject]@{compatibility='fixture';candidate_inventory_sha256=('d'*64);installed_inventory_sha256=('d'*64)}}
 function FreezePlacementHelper($root,$auditRoot,$run,$critical){
  $frozen=Join-Path $auditRoot 'frozen';[void](New-Item -ItemType Directory -Path (Join-Path $frozen 'tools'))
@@ -519,7 +663,7 @@ function Install-LabelMachineWorkerShortcut($root,$menu){
  [void](New-Item -ItemType Directory -Path $menu -ErrorAction SilentlyContinue)
  $path=Join-Path $menu 'KMTech 포장.lnk'
  [IO.File]::WriteAllText($path,'new shortcut')
- if($env:LM_MACHINE_OUTCOME -in @('shortcut-failure','report-failure','restore-existing')){
+  if($env:LM_MACHINE_OUTCOME -in @('shortcut-failure','report-failure','restore-existing','switched-version-failure')){
   if($env:LM_MACHINE_OUTCOME -ceq 'report-failure'){function script:Save($Path,$Value){throw 'Synthetic report failure'}}
   throw 'Synthetic shortcut readback failure'
  }
@@ -548,8 +692,13 @@ function InvokeFrozenPlacementHelper($frozen,$parameters){
   $Script:LabelPlacementSession=[pscustomobject]@{closed=$true;child_exit_unproven=$true}
   throw 'Synthetic unproven placement child'
  }
- if(-not (Test-Path -LiteralPath $parameters.InstallRoot)){[void](New-Item -ItemType Directory -Path $parameters.InstallRoot)}
- return 0
+  if(-not (Test-Path -LiteralPath $parameters.InstallRoot)){[void](New-Item -ItemType Directory -Path $parameters.InstallRoot)}
+  if($env:LM_MACHINE_OUTCOME -ceq 'switched-version-failure'){
+   if($parameters.ExpectedActiveCommit -cne ('5'*40)){throw 'Previous active identity was lost'}
+   Save-LabelMachineMetadata (Join-Path $parameters.InstallRoot 'portable-manifest.json') $manifest
+   Save-LabelMachineMetadata (Join-Path (Split-Path -Parent $parameters.InstallRoot) 'update-control\active.json') @{sha=$manifest.source_commit}
+  }
+  return 0
 }
 function Snapshot{throw 'Administrator read HKCU Run'}
 function Restore{throw 'Administrator wrote HKCU Run'}
@@ -560,21 +709,32 @@ $manifest=[pscustomobject]@{startup_update_protocol=1;source_commit=('4'*40);ver
 $failed=$false
 $pendingPath=Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json'
 $shortcutPath=Join-Path $program 'StartMenu\KMTech 포장.lnk'
+$lifecycle=$null
+if($env:LM_MACHINE_OUTCOME -ceq 'switched-version-failure'){
+ [void](New-Item -ItemType Directory -Path $install)
+ $lifecycle=[pscustomobject]@{lifecycle_state='INSTALLED';active_code_root=$install;from_commit=('5'*40)}
+ Save-LabelMachineMetadata (Join-Path (Split-Path -Parent $install) 'update-control\policy.json') @{operator_sid=$worker.sid;operator_local_app_data=$worker.local_app_data}
+ Save-LabelMachineMetadata (Join-Path (Split-Path -Parent $install) 'update-control\active.json') @{sha=$lifecycle.from_commit}
+ Save-LabelMachineMetadata (Join-Path $install 'portable-manifest.json') @{source_commit=$lifecycle.from_commit;version='v2.0.99'}
+ Save-LabelMachineMetadata $pendingPath @{schema='label-match-machine-worker-pending-v1';install_id=('20261011T000000000Z-'+('a'*32));source_commit=$lifecycle.from_commit;version='v2.0.99';target_sid=$worker.sid;inventory_sha256=('3'*64)}
+}
 if($env:LM_MACHINE_OUTCOME -ceq 'restore-existing'){
  [void](New-Item -ItemType Directory -Path (Split-Path -Parent $pendingPath))
  [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shortcutPath))
  [IO.File]::WriteAllText($pendingPath,'old marker');[IO.File]::WriteAllText($shortcutPath,'old shortcut')
 }
-try{Invoke-LabelMachineWorkerInstall $worker $source $install $manifest $null ($env:LM_MACHINE_OUTCOME -ceq 'same-worker')}catch{
- if($env:LM_MACHINE_OUTCOME -notin @('helper-unproven','shortcut-failure','report-failure','restore-existing')){throw}
+try{Invoke-LabelMachineWorkerInstall $worker $source $install $manifest $lifecycle ($env:LM_MACHINE_OUTCOME -ceq 'same-worker')}catch{
+  if($env:LM_MACHINE_OUTCOME -notin @('helper-unproven','shortcut-failure','report-failure','restore-existing','switched-version-failure')){throw}
  if($env:LM_MACHINE_OUTCOME -ceq 'report-failure' -and $_.Exception.Message -cne 'Synthetic shortcut readback failure'){throw 'Reporting hid original failure'}
  $failed=$true
 }
-if($env:LM_MACHINE_OUTCOME -in @('shortcut-failure','report-failure','restore-existing')){
- if(-not $failed -or $script:authorityReleased -ne 1){throw 'Injected failure was lost'}
- if($env:LM_MACHINE_OUTCOME -ceq 'restore-existing'){
-  if([IO.File]::ReadAllText($pendingPath) -cne 'old marker' -or [IO.File]::ReadAllText($shortcutPath) -cne 'old shortcut'){throw 'Worker artifact bytes not restored'}
- }elseif((Test-Path -LiteralPath $pendingPath) -or (Test-Path -LiteralPath $shortcutPath)){throw 'New worker artifacts survived failure'}
+if($env:LM_MACHINE_OUTCOME -in @('shortcut-failure','report-failure','restore-existing','switched-version-failure')){
+  if(-not $failed -or $script:authorityReleased -ne 1){throw 'Injected failure was lost'}
+  $pending=Get-Content -LiteralPath $pendingPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if($pending.source_commit -cne $manifest.source_commit -or $pending.target_sid -cne $worker.sid){throw 'Pending record does not describe retained code'}
+  if($env:LM_MACHINE_OUTCOME -ceq 'restore-existing'){
+   if([IO.File]::ReadAllText($shortcutPath) -cne 'old shortcut'){throw 'Worker shortcut bytes not restored'}
+  }elseif(Test-Path -LiteralPath $shortcutPath){throw 'New worker shortcut survived failure'}
  'PASS';exit 0
 }
 $audit=Get-Content -LiteralPath $EvidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -597,6 +757,18 @@ if($script:placed -ne 1 -or $script:released -ne 1 -or
     assert "install_status=PASS\n" not in result.stdout
     assert all(p.read_bytes() == before for p, before in originals.items())
     assert all(sorted((tmp_path / name).iterdir()) == [tmp_path / name / "preserve.dat"] for name in ("worker", "admin", "other", "legacy"))
+    if outcome == "switched-version-failure":
+        import auto_update
+        import current_user_onboarding as onboarding
+        managed = tmp_path / "machine"
+        pending = json.loads((managed / "update-control/worker-pending.json").read_text(encoding="utf-8-sig"))
+        active = json.loads((managed / "update-control/active.json").read_text(encoding="utf-8-sig"))
+        manifest = json.loads((managed / "current/portable-manifest.json").read_text(encoding="utf-8-sig"))
+        assert pending["source_commit"] == active["sha"] == manifest["source_commit"]
+        monkeypatch.setattr(auto_update, "installation_root", lambda _root: managed)
+        monkeypatch.setattr(auto_update, "current_process_sid", lambda: pending["target_sid"])
+        monkeypatch.setattr(onboarding, "_worker_install_completion", lambda: "")
+        assert onboarding.validate_pending_worker_install(managed / "current")["source_commit"] == active["sha"]
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])

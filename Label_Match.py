@@ -22575,6 +22575,14 @@ INSTALLATION_RECOVERY_REQUIRED_MESSAGE = (
     "자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
 )
 FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
+    "PENDING_WORKER_SID_MISMATCH": (
+        "설치할 때 지정한 작업자 계정으로 다시 실행하세요.\n\n"
+        "어떤 계정인지 모르면 관리자에게 아래 설치 기록 경로를 전달하세요."
+    ),
+    "PENDING_WORKER_INSTALL_INVALID": (
+        "작업자 설치 준비 기록과 설치된 판을 확인하지 못해 시작을 멈췄습니다.\n\n"
+        "관리자에게 아래 설치 기록 경로를 전달해 설치된 판과 작업자 설정을 확인받으세요."
+    ),
     "BUSINESS_DATA_OPEN_FAILED": (
         "업무 자료를 열지 못해 프로그램 시작을 중단했습니다. 새 판과 자료는 보존됩니다.\n\n"
         "아래 보고서의 원인을 해결한 뒤 같은 Windows 사용자의 PowerShell에서 "

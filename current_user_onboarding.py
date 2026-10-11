@@ -1477,7 +1477,7 @@ def onboard_current_user(
                 }
             )
             _write_json_atomic(paths.onboarding_report_path, report)
-            if pending_worker is not None and not defer_machine_worker_relay_start:
+            if pending_worker is not None and not (defer_machine_worker_relay_start or defer_canonical_relay_start):
                 _complete_worker_install(pending_worker)
         return report
     except EnrollmentMutexError as exc:
