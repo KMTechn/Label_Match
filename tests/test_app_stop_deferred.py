@@ -122,6 +122,37 @@ def test_deferred_notice_survives_renders_and_scanner_enter_without_stealing_foc
     assert path.is_file()
 
 
+@pytest.mark.parametrize("keysym", ["Return", "KP_Enter"])
+@pytest.mark.parametrize("work_finished", [False, True])
+def test_deferred_stop_keyboard_enter_never_requests_close(recovery_app, tmp_path, keysym, work_finished):
+    instance, _root, typing = recovery_app
+    instance._save_current_set_state = Mock(return_value=True)
+    instance.on_closing = Mock()
+    instance.workflow_notice_action_button = FakeWidget()
+    path = _request(instance, tmp_path)
+    assert instance._process_app_stop_request() is False
+    deferred = instance._app_stop_deferred
+    if work_finished:
+        instance.current_set_info["raw"] = []
+        instance.current_set_info["parsed"] = []
+    assert not instance.__dict__.get("_pending_workflow_error")
+    assert not instance.__dict__.get("_workflow_pending_error")
+    assert not instance.__dict__.get("_workflow_notice_action")
+    event = SimpleNamespace(keysym=keysym, widget=instance.workflow_notice_action_button)
+    assert instance._pointer_confirmation_key(event) == "break"
+    assert instance._acknowledge_workflow_notice(event) == "break"
+    typing[0] = ""
+    instance.process_input = Mock()
+    event.widget = instance.entry
+    instance._handle_scan_enter(event)
+    instance.process_input.assert_called_once_with(event)
+    instance.on_closing.assert_not_called()
+    assert instance._app_stop_deferred == deferred and path.is_file()
+    # The button command still begins the existing local consent flow.
+    instance._acknowledge_workflow_notice()
+    instance.on_closing.assert_called_once_with()
+
+
 def test_existing_notice_action_keeps_priority_over_exit_and_preserves_pointer_identity(recovery_app, tmp_path):
     instance, _root, _typing = recovery_app
     instance._save_current_set_state = Mock(return_value=True)

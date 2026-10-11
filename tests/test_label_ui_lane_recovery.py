@@ -79,6 +79,7 @@ def test_fault_quarantines_original_before_new_lane_and_accepts_next_scan(recove
     audit_text = []
     audit, reset = app._audit_package_recovery_action, app._reset_current_set
     old = app.ui_lane
+    close, hold = old.close_idle, app.package_outbox.hold_workbench_set
     def record(*args):
         audit(*args)
         audit_text.append(args[-1])
@@ -88,8 +89,19 @@ def test_fault_quarantines_original_before_new_lane_and_accepts_next_scan(recove
         assert app.package_outbox.get_workbench_hold(original["id"])
         sequence.append("stopped-and-held")
         return reset()
+    def close_old():
+        assert app.package_outbox.get_workbench_hold(original["id"]) is None
+        close()
+        assert old.state is LaneState.CLOSED and not old.worker_thread.is_alive()
+        sequence.append("close")
+    def hold_original(**values):
+        assert old.state is LaneState.CLOSED and not old.worker_thread.is_alive()
+        sequence.append("hold")
+        return hold(**values)
     monkeypatch.setattr(app, "_audit_package_recovery_action", record)
     monkeypatch.setattr(app, "_reset_current_set", clear)
+    monkeypatch.setattr(old, "close_idle", close_old)
+    monkeypatch.setattr(app.package_outbox, "hold_workbench_set", hold_original)
     old = _finish_fault(app, root)
 
     assert "격리된 체크포인트가 비교 원본" in app._ui_lane_review_notice.message
@@ -110,7 +122,7 @@ def test_fault_quarantines_original_before_new_lane_and_accepts_next_scan(recove
     assert app.package_outbox.has_workbench_audit(set_id=original["id"], action="UI_LANE_FAULT",
         observed=audit_text[0])
     assert json.loads(audit_text[0]) == saved["ui_lane_fault"]
-    assert sequence == ["recorded", "stopped-and-held"]
+    assert sequence == ['recorded', 'close', 'hold', 'stopped-and-held']
     assert saved["held_scans"] == ["held scan"] and saved["entry_input"] == "queued scan"
     from pathlib import Path
     assert Path(saved["archive_path"]).read_bytes() == raw and not path.exists()
@@ -143,12 +155,19 @@ def test_old_broken_result_cannot_settle_or_render_after_recovery(recovery_app):
     settled.assert_not_called()
 
 
-def test_live_old_worker_prevents_restart_but_original_and_unknown_hold_remain(recovery_app):
+def test_live_old_worker_prevents_restart_and_hold_but_keeps_original_and_audit(recovery_app, monkeypatch):
     app, root, _typing = recovery_app
     path, raw = _checkpoint(app)
+    set_id = app.current_set_info["id"]
     old = app.ui_lane
     old._worker_join_timeout = 0.1
     gate = threading.Event()
+    audit_calls = []
+    audit = app._audit_package_recovery_action
+    def record(*args):
+        audit(*args)
+        audit_calls.append(args)
+    monkeypatch.setattr(app, "_audit_package_recovery_action", record)
     assert app._submit_ui_lane_task(name="held-writer", busy_text="처리 중",
         work=lambda: gate.wait(5), finish=lambda _value: None, fail=pytest.fail).accepted
     try:
@@ -156,8 +175,11 @@ def test_live_old_worker_prevents_restart_but_original_and_unknown_hold_remain(r
         assert app.ui_lane is old and old.state is LaneState.BROKEN
         assert old.worker_thread.is_alive() and app._ui_lane_generation == 0
         assert path.read_bytes() == raw
-        hold = app.package_outbox.get_workbench_hold("lane-flow-1")
-        assert json.loads(hold["snapshot_json"])["ui_lane_fault"]["result"] == "UNKNOWN"
+        assert app.package_outbox.get_workbench_hold(set_id) is None
+        assert len(audit_calls) == 1
+        assert json.loads(audit_calls[0][-1])["result"] == "UNKNOWN"
+        assert app.package_outbox.has_workbench_audit(
+            set_id=set_id, action=audit_calls[0][1], observed=audit_calls[0][-1])
         app._render_operator_workbench()
         assert app.entry.options["state"] == "disabled"
     finally:
@@ -192,15 +214,32 @@ def test_repeat_faults_stop_at_third_in_ten_minutes_or_second_same_set(recovery_
     for number in range(stop_at):
         app.current_set_info = {"id": "lane-flow-1" if same_set else f"lane-flow-{number}",
                                 "raw": [f"MASTER-{number}"], "parsed": ["ITEM"]}
-        _checkpoint(app)
+        path, raw = _checkpoint(app)
+        held_before = deepcopy(app.package_outbox.get_workbench_hold(app.current_set_info["id"]))
         old = _finish_fault(app, root)
         if number + 1 < stop_at:
             assert app.ui_lane is not old
         else:
             assert app.ui_lane is old and old.state is LaneState.BROKEN
+            assert path.read_bytes() == raw
+            assert app.package_outbox.get_workbench_hold(app.current_set_info["id"]) == held_before
     assert len(app._ui_lane_faults) == stop_at
     app._render_operator_workbench()
     assert app.entry.options["state"] == "disabled"
+
+
+def test_closing_fault_creates_no_hold_and_preserves_current_checkpoint(recovery_app):
+    app, root, _typing = recovery_app
+    path, raw = _checkpoint(app)
+    current = deepcopy(app.current_set_info)
+    try:
+        old = _finish_fault(app, root, work=lambda: setattr(app, "_app_close_in_progress", True))
+        assert app.ui_lane is old and old.state is LaneState.BROKEN
+        assert app._ui_lane_generation == 0
+        assert app.current_set_info == current and path.read_bytes() == raw
+        assert app.package_outbox.get_workbench_hold(current["id"]) is None
+    finally:
+        app._app_close_in_progress = False
 
 
 def test_expired_faults_do_not_prevent_a_single_recovery(recovery_app):

@@ -5624,15 +5624,15 @@ class Label_Match(tk.Tk):
                        held_scans=list(self.__dict__.get("_scans_behind_completion") or []))
         entry = self.__dict__.get("entry")
         request["entry_input"] = entry.get() if entry is not None else ""
-        self.package_outbox.hold_workbench_set(
-            set_id=set_id, source_phs2=current["raw"][0], source_input_tag_id="",
-            snapshot=request, reason="처리 중 오류 · 관리자 확인 대기", held_by="SYSTEM")
         if (len(faults) >= 3 or sum(identity == set_id for _, identity in faults) >= 2
                 or self.__dict__.get("_app_close_in_progress", False)):
             return False
         lane.close_idle()  # The existing STOP/join releases admission before waiting.
         if lane.state is not LaneState.CLOSED or lane.worker_thread.is_alive():
             return False
+        self.package_outbox.hold_workbench_set(
+            set_id=set_id, source_phs2=current["raw"][0], source_input_tag_id="",
+            snapshot=request, reason="처리 중 오류 · 관리자 확인 대기", held_by="SYSTEM")
         if path and os.path.lexists(path):
             evidence = self._read_package_recovery_file(path)
             saved = (evidence["value"] or {}).get("current_set_info") or {}
@@ -22391,7 +22391,8 @@ class Label_Match(tk.Tk):
             action()
             return "break"
         if self.__dict__.get("_app_stop_deferred"):
-            self.on_closing()
+            if event is None:
+                self.on_closing()
             return "break"
         self._workflow_blocking_notice = None
         self._workflow_notice = None
