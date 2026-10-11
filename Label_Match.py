@@ -11823,6 +11823,55 @@ class Label_Match(tk.Tk):
     def _load_current_set_state_checked(self):
         self._sync_worker_record_context()
         completion_sync_error = None
+        dayend_restore = False
+        dayend_saved = None
+        package_outbox = self.__dict__.get("package_outbox")
+        current_path = self._package_current_state_path()
+        if current_path and os.path.lexists(current_path):
+            unchecked = {}
+            try:
+                raw = read_checked_bytes(current_path, allowed_root=self.data_manager.save_directory)
+                bad_timestamp = False
+                try:
+                    unchecked = json.loads(raw.decode("utf-8"))
+                except (ValueError, UnicodeError, RecursionError):
+                    unchecked = {}
+                current = unchecked.get("current_set_info") if isinstance(unchecked, dict) else None
+                current = current if isinstance(current, dict) else {}
+                scans = current.get("raw") or []
+                identity = current.get("completion_identity") or current.get("id")
+                get_row = getattr(package_outbox, "get_by_set_id", None)
+                row = get_row(str(identity)) if callable(get_row) and identity else None
+                transition = (isinstance(current.get("transition_class"), str)
+                              and current["transition_class"] in label_transition.CLASSES)
+                durable = bool(current.get("central_inherit_all") or row is not None
+                    or (isinstance(scans, list) and scans and isinstance(scans[0], str)
+                        and _label_match_has_central_source_identity(scans[0])
+                        and (not transition or current["transition_class"] not in label_transition.LOCAL_CLASSES)))
+                stamp = unchecked.get("timestamp") if isinstance(unchecked, dict) else None
+                try:
+                    saved_day = (datetime.fromisoformat(stamp).date() if stamp else
+                                 datetime.fromtimestamp(os.stat(current_path).st_mtime).date())
+                except (ValueError, TypeError):
+                    saved_day, bad_timestamp = None, True
+                if not durable and (bad_timestamp or (not transition and saved_day != datetime.now().date())):
+                    digest = hashlib.sha256(raw).hexdigest()
+                    backup = Path(current_path).with_name(Path(current_path).name + ".resume-" + digest)
+                    if not os.path.lexists(backup):
+                        write_checked_bytes(backup, raw, allowed_root=self.data_manager.save_directory,
+                                            replace=False)
+                    if read_checked_bytes(backup, allowed_root=self.data_manager.save_directory) != raw:
+                        raise OSError("saved tray backup readback differs")
+                    dayend_saved = (raw, digest, bad_timestamp)
+                    dayend_restore = not bad_timestamp
+            except Exception as exc:
+                print(f"이전 세트 보관 기술 진단: {type(exc).__name__}")
+                self._package_recovery_state_data = unchecked if isinstance(unchecked, dict) else {}
+                self._show_package_recovery_block(
+                    "하던 세트를 안전하게 보관하지 못했습니다. 관리자 메뉴 「멈춘 작업 확인」에서 확인하세요.",
+                    retry_action=self._show_package_recovery_workbench,
+                )
+                return
 
         self._replay_scanner_audits(include_holds=True)
 
@@ -11832,18 +11881,45 @@ class Label_Match(tk.Tk):
         current_path = self._package_current_state_path()
         if current_path and os.path.lexists(current_path):
             evidence = self._read_package_recovery_file(current_path)
-            if not evidence["verified"]:
+            if not evidence["verified"] or (dayend_saved and dayend_saved[2]):
                 if (self._package_pin_changed_move_pending(current_path)
                         or self._package_pin_changed_restored_active(current_path)):
                     self._show_package_pin_changed_notice(
                         restored=self._package_pin_changed_restored_active(current_path))
                     return
+                if dayend_saved:
+                    try:
+                        raw, digest, bad_timestamp = dayend_saved
+                        if evidence["raw"] != raw:
+                            raise OSError("saved tray changed before hold")
+                        archive = Path(current_path).with_name(Path(current_path).name + ".held-" + digest)
+                        package_outbox.hold_workbench_set(
+                            set_id="CURRENT:" + digest, source_phs2="", source_input_tag_id="",
+                            snapshot={"current_file_sha256": digest,
+                                      "raw_base64": base64.b64encode(raw).decode("ascii"),
+                                      "archive_path": str(archive), "status": "UNVERIFIED",
+                                      "file_reason": "ValueError" if bad_timestamp else evidence["reason"]},
+                            reason="관리자 확인 대기", held_by="SYSTEM_STARTUP",
+                        )
+                        if not self._move_package_pin_file(current_path, archive, raw,
+                                allowed_root=Path(self.data_manager.save_directory)):
+                            raise OSError("saved tray hold move did not complete")
+                        self._workflow_blocking_notice = None
+                        self._workflow_notice = self._workflow_notice_action = None
+                        self._package_pin_ui(self._show_scanner_notice, "이전 세트 확인 대기",
+                            "어제 하던 세트를 확인 대기로 두었습니다. 관리자에게 알리세요.")
+                        return
+                    except Exception as exc:
+                        print(f"이전 세트 보류 기술 진단: {type(exc).__name__}")
                 self._show_package_recovery_block(
                     "현재 작업 파일을 확인할 수 없습니다. 관리자 메뉴 「멈춘 작업 확인」에서 신원 미확인 보류 후 다른 작업을 계속하세요.",
                     retry_action=self._show_package_recovery_workbench,
                 )
                 return
-        package_outbox = self.__dict__.get("package_outbox")
+            if dayend_saved:
+                self._workflow_blocking_notice = None
+                self._workflow_notice = self._workflow_notice_action = None
+                self._package_recovery_state_data = None
         reconcile_superseded = getattr(
             package_outbox,
             "dismiss_superseded_recoverable_prewrite_conflicts",
@@ -12139,10 +12215,7 @@ class Label_Match(tk.Tk):
                     and not durable_central_state
                     and not transition_state
                 ):
-                    if not self.run_tests:
-                        self._package_pin_ui(self._show_scanner_notice, "이전 작업 만료", "어제 완료되지 않은 작업 데이터는 자동으로 삭제됩니다.")
-                    self.data_manager.delete_current_state()
-                    return
+                    dayend_restore = True
         except (ValueError, TypeError) as e:
             if durable_central_state:
                 print(f"중앙 작업 타임스탬프 오류: {type(e).__name__}. 원본 복구 상태를 보존합니다.")
@@ -12164,8 +12237,11 @@ class Label_Match(tk.Tk):
                 self._workflow_notice_action_text = LABEL_MATCH_PACKAGE_RECOVERY_TEXT
                 self._package_pin_ui(self._render_operator_workbench)
                 return
-            print(f"저장된 타임스탬프 파싱 오류: {e}. 이전 작업을 무시합니다.")
-            self.data_manager.delete_current_state()
+            self._package_recovery_state_data = state_data
+            self._show_package_recovery_block(
+                "하던 세트의 작업 시각을 확인하지 못했습니다. 관리자 메뉴 「멈춘 작업 확인」에서 확인하세요.",
+                retry_action=self._show_package_recovery_workbench,
+            )
             return
 
         saved_set_info = self._migrate_restored_central_package_state(
@@ -12179,14 +12255,19 @@ class Label_Match(tk.Tk):
             state_data['worker_name'] = saved_worker_name
             self._package_pin_ui(self._show_scanner_notice,
                 "이전 작업 복구",
-                "이전에 완료되지 않은 세트를 복구했습니다. "
+                ("어제 하던 세트를 이어서 엽니다 — "
+                 + str(saved_set_info.get("item_name_override") or
+                       self.__dict__.get("items_data", {}).get(
+                           (saved_set_info.get("parsed") or [""])[0], {}).get("Item Name") or "이전 세트")
+                 + f"·남은 {max(0, self._workflow_total_scan_count() - len(saved_set_info.get('raw') or []))}개"
+                 if dayend_restore else "이전에 완료되지 않은 세트를 복구했습니다. "
                 "계속 스캔하거나 현재 트레이를 취소하세요."
                 + (f" 이전 작업자: {display_operator_name(saved_worker_name)}."
                     if saved_worker_name and (
                         saved_set_info.get('worker_id') != self.__dict__.get('worker_id')
                         if saved_set_info.get('worker_id') else
                         saved_worker_name != persistent_operator_name(self.worker_name))
-                   else ""))
+                   else "")))
             self.current_set_info.update(saved_set_info)
 
             if self.current_set_info.get("recovery_operator_review"):
@@ -15010,6 +15091,11 @@ class Label_Match(tk.Tk):
         return True
 
     def process_input(self, event=None, *, _scan_behind_completion=None):
+        notice = self.__dict__.get("_workflow_blocking_notice")
+        if (notice is not None and notice.kind == "submission_blocked"
+                and self.__dict__.get("_workflow_notice_action") == self._show_package_recovery_workbench):
+            self._package_pin_ui(self._render_operator_workbench)
+            return
         if self.__dict__.get("_startup_update_pending", False):
             return
         if self.__dict__.get("_app_close_in_progress", False):

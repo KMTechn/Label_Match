@@ -2099,11 +2099,11 @@ def test_current_state_timestamp_failure_preserves_central_recovery_cache(tmp_pa
     app._reconcile_active_package_submission = lambda: None
     app._load_current_set_state()
 
+    assert deleted == []
+    assert (path.read_bytes() if path.exists() else None) == original
     if case == "legacy-invalid":
-        assert deleted == [True] and not path.exists()
-    else:
-        assert deleted == []
-        assert (path.read_bytes() if path.exists() else None) == original
+        assert app._workflow_blocking_notice.kind == "submission_blocked"
+        assert app.current_set_info == {}
     if case in ("invalid", "invalid-type"):
         notice = app._workflow_blocking_notice
         assert notice.kind == "submission_blocked"

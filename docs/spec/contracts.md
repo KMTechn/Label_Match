@@ -297,6 +297,8 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 
 `DataManager.log_event`는 timezone 없는 로컬 `datetime.now().isoformat()`을 기록한다. 서버 Label transport 시간대는 `Asia/Seoul`이며 lease `operation_completed_at`은 UTC `Z`다. 생산일, 포장 업무일, event 발생, 수신, projection, 화면 조회 시각은 별개다. 날짜 변경은 outbox 만료 기준이 아니다. 근거: [DataManager/lease](../../Label_Match.py), [서버 시간대·포장-출고 집계](../../../WorkerAnalysisGUI-web/common_projection.py). PC 시계차 허용치·업무일 cutoff·표시 지연 목표는 [LM-B02](BACKLOG.md#lm-b02)의 미정 요구다.
 
+로컬 미완료 세트도 날짜만으로 삭제하지 않는다. 이전 날짜의 current-state 원 바이트를 SHA256 사본으로 먼저 보존한 뒤 같은 날의 기존 검증으로 복원한다. 세트 ID·원 스캔의 일련번호/현품표 날짜·시작 시각은 보존하며 오늘 집계는 기존 완료 event 날짜를 따른다. 검증 실패나 비중앙 timestamp 해석 오류는 기존 UNVERIFIED 보류 snapshot과 별도 원본 파일에 내구 저장·readback한 뒤에만 current-state 자리를 비운다. 보관 실패는 기존 복구 잠금으로 새 저장을 막는다. 중앙 내구·과도기 예외와 완료/원장/전송 계약은 유지한다.
+
 로컬 emitter CSV는 UTF-8 BOM(`utf-8-sig`), 헤더 `timestamp,worker_name,event,details`이며 details는 JSON이다. 완료 등 durable event에 flush/fsync를 적용하고 writer 오류를 `flush/close`에서 반환한다. 현재 세트 JSON은 임시 파일 flush/fsync 후 `os.replace`한다. 이 파일과 SQLite outbox·lease가 하나의 파일 transaction인 것은 아니므로 복구 절차로 경계를 조정한다([DataManager](../../Label_Match.py), [완료 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md)). 일부 fixture의 `event_type/detail` 헤더는 emitter 원본 byte가 아니다. 서버 decoder의 alias 호환과 실제 emitter 동일성을 분리한다.
 
 `event_stream_policy.LOCAL_ONLY_EVENT_TYPES`는 별도 로컬 이벤트 파일로 나뉜다. `PHS_LABEL_ACTIVE_RESOLVED`, `EXACT_RESCAN_STARTED/OK/COMPLETED` 같은 로컬 전용 event를 원격 실적으로 가정하지 않는다. `CONTRACT_CANDIDATE_EVENT_TYPES`의 이름만으로 전체 전송 계약 수용을 증명하지 않는다([이벤트 정책](../../event_stream_policy.py), [DataManager._get_log_filepath_for_item](../../Label_Match.py)).
