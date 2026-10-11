@@ -76,7 +76,7 @@ def test_worker_inventory_admission_precedes_every_write(tmp_path, engine, case)
     if case != "absent-file":
         inventory.write_text("not JSON" if case == "invalid-json" else json.dumps(payload), encoding="utf-8")
     before = {p.relative_to(tmp_path).as_posix(): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    result = run_functions(tmp_path, INSTALLER, ["ByteSha", "Resolve-LabelMachineWorker"], r'''
+    result = run_functions(tmp_path, INSTALLER, ["ByteSha", "Assert-LabelMachineEvidencePath", "Resolve-LabelMachineWorker"], r'''
 $case=$env:LM_ADMIN_CASE
 $sid='S-1-5-21-111-222-333-1001'
 $caller=[pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$true;session_id=2}
@@ -373,9 +373,10 @@ def test_machine_install_uses_pinned_helper_and_never_writes_profiles(tmp_path, 
         folder.mkdir()
         (folder / "preserve.dat").write_bytes(("untouched-" + name).encode())
     originals = {p: p.read_bytes() for p in tmp_path.rglob("*.dat")}
-    result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "Save", "Save-LabelMachineMetadata", "ByteSha"], r'''
-$testMode=$true;$EvidencePath=Join-Path $env:LM_MACHINE_ROOT 'machine-evidence.json'
+    result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "Assert-LabelMachineEvidencePath", "Save", "Save-LabelMachineMetadata", "ByteSha"], r'''
+$testMode=$true
 $program=Join-Path $env:LM_MACHINE_ROOT 'program';$env:PROGRAMDATA=$program
+$EvidencePath=Join-Path $program 'KMTech\Label_Match\install-audit\machine-evidence.json'
 $install=Join-Path $env:LM_MACHINE_ROOT 'machine\current'
 $source=Join-Path $env:LM_MACHINE_ROOT 'source'
 $script:placed=0;$script:released=0;$script:authorityReleased=0
@@ -656,5 +657,63 @@ try{$actual=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.Get
 if($actual -cne $declaration.Groups[1].Value){throw 'Shipped writer probe is rejected by its fixed pin'}
 'PASS'
 ''', engine=engine)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PASS"
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("linked", [False, True])
+def test_machine_evidence_refuses_profile_and_reparse_paths_before_writing(tmp_path, engine, linked):
+    result = run_functions(tmp_path, INSTALLER, ["Assert-LabelMachineEvidencePath"], r'''
+$testMode=$true;$env:PROGRAMDATA=Join-Path $env:LM_EVIDENCE_ROOT 'program'
+function Full($path,$purpose){return [IO.Path]::GetFullPath($path)}
+$profile=Join-Path $env:LM_EVIDENCE_ROOT 'worker'
+[void](New-Item -ItemType Directory -Path $profile)
+$preserved=Join-Path $profile 'preserve.dat';[IO.File]::WriteAllText($preserved,'preserved-worker-data')
+$EvidencePath=Join-Path $profile 'evidence.json'
+if($env:LM_EVIDENCE_LINKED -ceq 'True'){
+ $parent=Join-Path $env:PROGRAMDATA 'KMTech\Label_Match'
+ [void](New-Item -ItemType Directory -Path $parent)
+ [void](New-Item -ItemType Junction -Path (Join-Path $parent 'install-audit') -Target $profile)
+ $EvidencePath=Join-Path $parent 'install-audit\evidence.json'
+}
+$refused=$false
+try{Assert-LabelMachineEvidencePath}catch{$refused=$true}
+if(-not $refused -or (Test-Path -LiteralPath (Join-Path $profile 'evidence.json')) -or
+   [IO.File]::ReadAllText($preserved) -cne 'preserved-worker-data'){throw 'Machine evidence wrote a worker profile'}
+'PASS'
+''', engine=engine, values={"LM_EVIDENCE_ROOT": str(tmp_path), "LM_EVIDENCE_LINKED": str(linked)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PASS"
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_next_kit_survey_does_not_collect_the_new_common_shortcut(tmp_path, engine):
+    survey = Path("D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-478/lab-wrapper/Legacy-Survey.ps1")
+    if not survey.is_file():
+        pytest.skip("read-only kit survey evidence is unavailable")
+    result = run_functions(tmp_path, INSTALLER, ["Install-LabelMachineWorkerShortcut", "ByteSha"], r'''
+function Same($a,$b){return [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($a),[IO.Path]::GetFullPath($b))}
+function Sha($path){return ByteSha ([IO.File]::ReadAllBytes($path))}
+function Resolve-KmtechLegacyPath($path){return [IO.Path]::GetFullPath($path)}
+function Assert-KmtechOrdinaryPath($path){if((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Fixture path is linked'};return $path}
+$survey=[Management.Automation.Language.Parser]::ParseFile($env:LM_KIT_SURVEY,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Read-only kit survey parse failed'}
+foreach($name in @('Get-KmtechLegacySurveyCandidates','Read-KmtechLegacySurveyCandidate')){
+ $definitions=@($survey.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name},$true))
+ if($definitions.Count -ne 1){throw 'Kit survey boundary differs'}
+ . ([scriptblock]::Create($definitions[0].Extent.Text))
+}
+$install=Join-Path $env:LM_SURVEY_ROOT 'current';$menu=Join-Path $env:LM_SURVEY_ROOT 'menu'
+[void](New-Item -ItemType Directory -Path (Join-Path $install 'runtime'))
+[void](New-Item -ItemType Directory -Path $menu)
+$target=Join-Path $install 'runtime\pythonw.exe';[IO.File]::WriteAllText($target,'synthetic-portable-runtime')
+$record=Install-LabelMachineWorkerShortcut $install $menu
+$shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($record.path)
+if(@(Get-KmtechLegacySurveyCandidates @($menu,$install)).Count){throw 'Next survey collected a new portable candidate'}
+$refused=$false;try{Read-KmtechLegacySurveyCandidate $shortcut.TargetPath 'shortcut'}catch{$refused=$true}
+if(-not $refused){throw 'Next survey accepted portable shortcut as legacy'}
+'PASS'
+''', engine=engine, values={"LM_KIT_SURVEY": str(survey), "LM_SURVEY_ROOT": str(tmp_path)})
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "PASS"

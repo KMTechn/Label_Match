@@ -4756,6 +4756,26 @@ function Get-LabelWorkerProfileRoot([string]$Sid) {
     finally { $key.Dispose() }
 }
 
+function Assert-LabelMachineEvidencePath {
+    if (-not $EvidencePath) { return }
+    $programData = if ($testMode) { $env:PROGRAMDATA } else { [Environment]::GetFolderPath('CommonApplicationData') }
+    $auditRoot = Join-Path (Full $programData 'machine ProgramData') 'KMTech\Label_Match\install-audit'
+    $path = Full $EvidencePath 'EvidencePath'
+    if (-not $path.StartsWith($auditRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Machine evidence must stay in the machine install audit directory.'
+    }
+    for ($ancestor = $path; $ancestor; $ancestor = [IO.Path]::GetDirectoryName($ancestor)) {
+        if (Test-Path -LiteralPath $ancestor) {
+            $item = Get-Item -LiteralPath $ancestor -ErrorAction Stop
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                ($ancestor -eq $path -and $item.PSIsContainer) -or
+                ($ancestor -ne $path -and -not $item.PSIsContainer)) {
+                throw 'Machine evidence is not an ordinary audit file.'
+            }
+        }
+    }
+}
+
 function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$InventoryPath) {
     try {
         if (-not $Caller.elevated -and $Caller.session_id -ne 0) {
@@ -4783,6 +4803,7 @@ function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$Inventor
         if (-not [StringComparer]::OrdinalIgnoreCase.Equals($profile,
             [IO.Path]::GetFullPath($inventory.target_profile_root).TrimEnd('\')) -or
             $profile -eq [IO.Path]::GetPathRoot($profile).TrimEnd('\')) { throw 'Worker profile differs.' }
+        Assert-LabelMachineEvidencePath
         return [pscustomobject]@{sid=$sid;profile_root=$profile;local_app_data=(Join-Path $profile 'AppData\Local');inventory_sha256=(ByteSha $bytes)}
     } catch {
         $failure = [InvalidOperationException]::new('Worker pending installation input is invalid.')
@@ -4845,6 +4866,7 @@ function Install-LabelMachineWorkerShortcut([string]$Install, [string]$Menu) {
 function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Install, $SourceManifest, $Lifecycle = $null) {
     # The existing pinned placement helper owns code, backups and startup state.
     # This entry never opens the caller's Run key or executes a product user mode.
+    Assert-LabelMachineEvidencePath
     if ($SourceManifest.startup_update_protocol -ne 1) { throw 'Machine worker installation requires managed portable code.' }
     if (@(UnquiescedProductWriters).Count) { throw 'Canonical product writers must exit before machine placement.' }
     $receipt = PortableInventory $Source

@@ -4,6 +4,8 @@ PowerShell lifecycle 관측·고정 helper·새 SYSTEM 로그온 action과 옛 �
 
 ## 관리자 입구 후보 — w9firstupdsub63 (10/11 1차 답 v0)
 
+관리자 길의 선택 인수 `-EvidencePath`는 같은 ProgramData 설치 감사 디렉터리 안의 일반 파일만 받는다. 프로필 경로와 reparse 경로는 첫 쓰기 전에 거절한다.
+
 유효한 대상·inventory를 확인한 뒤에만 ProgramData 설치 감사 자리 아래 관리자 진단용 임시 폴더를 만든다. 설치기 프로세스와 자식의 임시 경로를 그 폴더로 지정하므로 실패 진단도 사용자 프로필에 쓰지 않는다. 영구 환경 설정은 바꾸지 않는다. 고정 current에서 첫 시작할 때는 active가 가리키는 versions의 manifest와 PENDING의 commit·판을 대조한다.
 
 키트의 새 관리자 가지가 상승한 canonical에 `-WorkerAccount <대상 SID 또는 DOMAIN\이름> -WorkerSurveyInventory <대상 작업자 세션의 READY inventory JSON 절대 경로>`를 넘긴다. 대상은 호출 관리자와 달라야 하며 ProfileList 경로와 inventory의 경로가 일치해야 한다. 누락/모호/불일치/파일·JSON 오류는 설치와 쓰기 0, 공개 실패 한 줄이다. 키트 없이 기존 인수로 직접 SSH 호출하는 꼴은 여전히 설치를 거절한다.
