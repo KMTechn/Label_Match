@@ -395,7 +395,7 @@ def read_legacy_system_task_quiescence(
         "-NoProfile",
         "-NonInteractive",
         "-ExecutionPolicy",
-        "RemoteSigned",
+        "Bypass",
         "-Command",
         _LEGACY_TASK_READBACK_POWERSHELL,
     ]
@@ -456,7 +456,7 @@ def _run_task_removal(
         "-NoProfile",
         "-NonInteractive",
         "-ExecutionPolicy",
-        "RemoteSigned",
+        "Bypass",
         "-EncodedCommand",
         encoded,
     ]

@@ -670,7 +670,7 @@ def lifecycle_task_observation(root: Path) -> dict[str, Any]:
     import subprocess
     helper = Path(__file__).resolve().parent.parent / "tools/apply_prepared_update.ps1"
     completed = subprocess.run([system_executable("WindowsPowerShell/v1.0/powershell.exe"),
-        "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-File", str(helper),
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", str(helper),
         "-InstallRoot", str(root / "current"), "-Mode", "ObserveLifecycle", "-SupportedLifecycle"],
         capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if completed.returncode:
@@ -865,7 +865,7 @@ def logon_task_xml(*, app_root: Path, operator_sid: str) -> str:
     root = str(app_root.absolute())
     if any(character in root for character in ('"', "\r", "\n")):
         raise ValueError("update install path is unsafe")
-    arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + root + '\\tools\\apply_prepared_update.ps1" -InstallRoot "' + root + '"'
+    arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + root + '\\tools\\apply_prepared_update.ps1" -InstallRoot "' + root + '"'
     executable = system_executable("WindowsPowerShell/v1.0/powershell.exe")
     return (
         '<?xml version="1.0" encoding="UTF-16"?>'
@@ -966,7 +966,7 @@ def fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> 
 
     root = control.parent / "current"
     executable = system_executable("WindowsPowerShell/v1.0/powershell.exe")
-    arguments = [str(executable), "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-File", str(root / "tools/apply_prepared_update.ps1"), "-InstallRoot", str(root), "-Mode", mode]
+    arguments = [str(executable), "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", str(root / "tools/apply_prepared_update.ps1"), "-InstallRoot", str(root), "-Mode", mode]
     if code_root is not None:
         arguments.extend(["-CodeRoot", str(code_root)])
     completed = subprocess.run(arguments, capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

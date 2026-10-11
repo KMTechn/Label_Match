@@ -1,5 +1,7 @@
 # Label_Match 운영·복구·검증
 
+PowerShell lifecycle 관측·고정 helper·새 SYSTEM 로그온 action과 옛 사용자 작업 조회·정리는 자식 인수에 `-ExecutionPolicy Bypass`를 명시한다. OS·레지스트리·GPO 정책은 변경하지 않는다. 설치·제거·관측은 정확한 이전 무정책 SYSTEM action과 새 action만 인정하며 원본 복원 XML을 보존한다. GPO 강제 및 실제 현장 실행은 별도 수용 항목이다.
+
 첫 업데이트 글자 층에서도 `writer_sink_inventory.derive_writer_sink_inventory`의 source digest와 Python/PowerShell writer pin을 함께 갱신한다. 82개 sink의 식별자·위치·guard는 유지하며, canonical 설치기의 `release_digest`로 변경된 네 파일의 후보 해시 40개를 재생성한다. 역사적 before 해시·허용 파일 목록·거절 조건은 바꾸지 않고 두 pin과 후보 선언을 읽기 전용으로 다시 검사한다.
 
 <a id="onboarding-writer-admission"></a>

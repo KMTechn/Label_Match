@@ -677,6 +677,15 @@ function Assert-LabelStartupUpdateTaskDefinition([xml]$Actual, [xml]$Expected) {
     }
     $namespace=New-Object Xml.XmlNamespaceManager($Actual.NameTable)
     $namespace.AddNamespace('t','http://schemas.microsoft.com/windows/2004/02/mit/task')
+    $actualArguments=@($Actual.SelectNodes('/t:Task/t:Actions/t:Exec/t:Arguments',$namespace))
+    $expectedArguments=@($Expected.SelectNodes('/t:Task/t:Actions/t:Exec/t:Arguments',$namespace))
+    if ($actualArguments.Count -eq 1 -and $expectedArguments.Count -eq 1 -and
+        $actualArguments[0].ChildNodes.Count -eq 1 -and $actualArguments[0].FirstChild.NodeType -eq [Xml.XmlNodeType]::Text) {
+        $previousArguments=([string]$expectedArguments[0].get_InnerText()) -creplace '^(-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden) -ExecutionPolicy Bypass(?= -File ")','$1'
+        if ([string]$actualArguments[0].get_InnerText() -ceq $previousArguments) {
+            $actualArguments[0].set_InnerText([string]$expectedArguments[0].get_InnerText())
+        }
+    }
     foreach ($pair in @(@('/t:Task/t:Actions/*',1),@('/t:Task/t:Triggers/*',1),@('/t:Task/t:Principals/*',1))) {
         if ($Actual.SelectNodes([string]$pair[0],$namespace).Count -ne [int]$pair[1]) { throw 'STARTUP_UPDATE_OWNED_TASK_DIFFERS' }
     }
@@ -1429,13 +1438,14 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
         if ([string]$task.TaskName -cne $expectedName) { throw 'SUPPORTED_TASK_NAME_DIFFERS' }
         $expectedCommand = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
         $helper = Join-Path $full 'tools\apply_prepared_update.ps1'
-        $expectedArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + $helper + '" -InstallRoot "' + $full + '"'
+        $expectedArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $helper + '" -InstallRoot "' + $full + '"'
+        $previousArguments = $expectedArguments -creplace '^(-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden) -ExecutionPolicy Bypass(?= -File ")','$1'
         if ([string]$task.TaskPath -cne '\' -or
             (ConvertTo-LabelTaskSid ([string]$task.Principal.UserId)) -cne 'S-1-5-18' -or
             [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
             [string]$task.Principal.RunLevel -cne 'Highest' -or
             -not ([string]$actions[0].Execute).Equals($expectedCommand,[StringComparison]::OrdinalIgnoreCase) -or
-            [string]$actions[0].Arguments -cne $expectedArguments -or
+            ([string]$actions[0].Arguments -cne $expectedArguments -and [string]$actions[0].Arguments -cne $previousArguments) -or
             -not [string]::IsNullOrEmpty([string]$actions[0].WorkingDirectory)) {
             throw 'SUPPORTED_TASK_ACTION_DIFFERS'
         }

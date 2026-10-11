@@ -4,6 +4,25 @@ import pytest
 import auto_update as updates
 
 
+@pytest.mark.parametrize("launch", ["helper", "lifecycle"])
+def test_powershell_children_use_process_bypass(tmp_path, monkeypatch, launch):
+    import subprocess
+    from types import SimpleNamespace
+
+    commands = []
+    def capture(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout='{"status":"PASS"}', stderr="")
+    monkeypatch.setattr(subprocess, "run", capture)
+    if launch == "helper":
+        assert updates.fixed_helper(tmp_path / "update-control", "Observe") == '{"status":"PASS"}'
+    else:
+        assert updates.lifecycle_task_observation(tmp_path) == {"status": "PASS"}
+    command, = commands
+    assert command[command.index("-ExecutionPolicy"):command.index("-ExecutionPolicy") + 2] == ["-ExecutionPolicy", "Bypass"]
+    assert command.index("-ExecutionPolicy") < command.index("-File")
+
+
 def test_installer_logon_task_child_runs_as_an_isolated_script(tmp_path):
     from pathlib import Path
     import re
@@ -26,7 +45,9 @@ def test_installer_logon_task_child_runs_as_an_isolated_script(tmp_path):
     ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
     assert task.find("t:Triggers/t:LogonTrigger/t:UserId", ns).text == sid
     assert task.find("t:Actions/t:Exec/t:Command", ns).text.lower().endswith("powershell.exe")
-    assert "apply_prepared_update.ps1" in task.find("t:Actions/t:Exec/t:Arguments", ns).text
+    arguments = task.find("t:Actions/t:Exec/t:Arguments", ns).text
+    assert "-ExecutionPolicy Bypass -File" in arguments
+    assert "apply_prepared_update.ps1" in arguments
     assert not install_root.exists()
 
 

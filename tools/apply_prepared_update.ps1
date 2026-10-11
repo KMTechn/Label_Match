@@ -91,13 +91,14 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
         if ([string]$task.TaskName -cne $expectedName) { throw 'SUPPORTED_TASK_NAME_DIFFERS' }
         $expectedCommand = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
         $helper = Join-Path $full 'tools\apply_prepared_update.ps1'
-        $expectedArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + $helper + '" -InstallRoot "' + $full + '"'
+        $expectedArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $helper + '" -InstallRoot "' + $full + '"'
+        $previousArguments = $expectedArguments -creplace '^(-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden) -ExecutionPolicy Bypass(?= -File ")','$1'
         if ([string]$task.TaskPath -cne '\' -or
             (ConvertTo-LabelTaskSid ([string]$task.Principal.UserId)) -cne 'S-1-5-18' -or
             [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
             [string]$task.Principal.RunLevel -cne 'Highest' -or
             -not ([string]$actions[0].Execute).Equals($expectedCommand,[StringComparison]::OrdinalIgnoreCase) -or
-            [string]$actions[0].Arguments -cne $expectedArguments -or
+            ([string]$actions[0].Arguments -cne $expectedArguments -and [string]$actions[0].Arguments -cne $previousArguments) -or
             -not [string]::IsNullOrEmpty([string]$actions[0].WorkingDirectory)) {
             throw 'SUPPORTED_TASK_ACTION_DIFFERS'
         }

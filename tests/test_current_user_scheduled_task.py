@@ -123,6 +123,7 @@ def test_task_operation_sends_script_as_encoded_command(monkeypatch, tmp_path):
     scheduled_task.remove_current_user_scheduled_task(root, runner=runner)
 
     command = captured["command"]
+    assert command[command.index("-ExecutionPolicy") + 1] == "Bypass"
     assert "-EncodedCommand" in command
     assert command[command.index("-EncodedCommand") + 1]
     assert captured["input"] in (None, "")
@@ -173,6 +174,7 @@ def test_legacy_task_quiescence_is_fail_closed(snapshot, status, reason):
 
 def test_legacy_task_readback_uses_only_read_commands_and_rejects_enabled_task():
     def runner(command, **kwargs):
+        assert command[command.index("-ExecutionPolicy") + 1] == "Bypass"
         source = command[-1]
         assert "Get-ScheduledTask" in source
         assert "input" not in kwargs
