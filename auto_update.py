@@ -2257,6 +2257,19 @@ def manual_lifecycle_gate(control: Path, mode: str) -> int | None:
     return 20
 
 
+def startup_bootstrap_reason(sha: str, active: Mapping[str, Any], state, prepared: bool) -> str | None:
+    """The ordinary-start decision, without locks, writes or bootstrap launch."""
+    if prepared:
+        return "UPDATE_PREPARED"
+    if state and state.get("recovery_pending") is True:
+        return "UPDATE_RECOVERY"
+    if state and state["phase"] not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
+        return "UPDATE_PHASE"
+    if sha != active["sha"]:
+        return "ACTIVE_BUILD_MISMATCH"
+    return None
+
+
 def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> int | None:
     if arguments[:1] in (["--label-match-user-relay"], ["--label-match-direct-sync-relay"]):
         role = "relay"
@@ -2308,7 +2321,7 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
             # runs before data access; this grants no pointer or trial authority.
             return None
         prepared = prepared_pending(control, policy, state)
-        if not prepared and not (state and state.get("recovery_pending") is True) and (not state or state["phase"] in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}) and sha == active["sha"]:
+        if startup_bootstrap_reason(sha, active, state, prepared) is None:
             return None
     request_bootstrap(control, arguments, role=role)
     return 0

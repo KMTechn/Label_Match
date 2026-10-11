@@ -483,6 +483,10 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 자동 시작의 update mutex busy는 최초 native 대기 5초 뒤 기존 bootstrap 240초 창에서 재시도한다(마지막 native 대기 최대 5초). 한도 뒤에는 현재 G ALLOW·active/runtime·ordinary cohort 증명을 유지한 현재 판 시작과 UPDATE_APPLY_NO_PROGRESS/0 기록을 사용한다. abandoned 및 현재 판 자체의 거절은 유지한다. 실패한 prepared 원문 네 개는 보호 packet 폴더에 보존하며 같은 판/같은 손상 표지는 실패·claim·transition을 다시 쓰지 않는다. 자동 onboarding만 허가 밖의 update lock 아래 한 번 재관측하고, transition의 JSON 뜻이 같으면 통과한다. 미해결 변경은 기존 일반/trial 쓰기 증명을 확인한 뒤 UNKNOWN/0으로 등록을 미루고 GUI guard를 계속한다. 수동 등록·설치의 엄격한 거절은 유지한다.
 
+`app/startup_check.py --json`은 GUI 본체를 import하지 않는 별도 읽기 전용 입구다. 기존 bootstrap 인계 판정, 배포 담장 파일 판정, 설치 inventory 검증, 자료 세대 판정과 현재 사용자 준비 판정을 공유한다. 파일·SQLite·네트워크·mutex·자식 프로세스·화면을 만들지 않는다. 설치 inventory의 기존 고정값과 작은 시작 파일만 대조하며 전체 runtime 재해시는 수행하지 않는다. 같은 판의 build 불일치·자료 하한·손상 표지는 실제 자료 admission과 같은 입력으로 판정한다.
+
+출력은 `app_startup_check.v1` JSON 한 줄이다. `app=LABEL`, `version`, `build_sha`, `startable`, `reasons`, `status`, `category`, `categories`, `checked_at`만 담는다. 계정·경로·주소·인증 값과 예외 원문은 포함하지 않는다. 종료 코드는 READY 0 / 증명한 시작 불가 10 / 못 읽음·판정 예외·시간 상한 20이다. `ALREADY_RUNNING`은 시작 가능 상태를 바꾸지 않는다. 첫 거부 묶음과 겹치는 묶음을 함께 기록하며 까닭→묶음 정본은 `startup_check.REASON_CATEGORIES` 하나다. 품목 목록은 인증된 저장 목록 또는 기존 과도기 허용으로 서버 없이 시작할 수 있는지 판정한다.
+
 D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
 SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
 늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.

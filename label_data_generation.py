@@ -29,6 +29,17 @@ class DataGenerationError(RuntimeError):
         self.private_cause = private_cause
 
 
+def portable_release_identity(manifest: Mapping[str, object]) -> dict[str, object]:
+    """Validate the installed version/build using the ordinary startup contract."""
+    commit = manifest.get("source_commit")
+    if (manifest.get("schema") != "label-match-portable-tree-v1"
+            or manifest.get("version") != CURRENT_VERSION
+            or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit)):
+        raise DataGenerationError(UNKNOWN_MESSAGE)
+    return {"version": CURRENT_VERSION, "build_id": commit,
+            "data_compatible_min_version": CURRENT_VERSION, "compatibility_verified": False}
+
+
 def release_identity(app_root: Path) -> dict[str, object]:
     """Use the existing code-root verifier, never a user-supplied build string."""
     root = Path(app_root).expanduser().resolve()
@@ -56,8 +67,8 @@ def release_identity(app_root: Path) -> dict[str, object]:
             if manifest_path.stat().st_size > 65536:
                 raise DataGenerationError(UNKNOWN_MESSAGE)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            valid = (manifest.get("schema") == "label-match-portable-tree-v1"
-                     and manifest.get("version") == CURRENT_VERSION)
+            portable_release_identity(manifest)
+            valid = True
         else:
             # The frozen builder already packages this exact factory identity;
             # the existing code-root verifier above binds its onedir bytes.

@@ -1388,6 +1388,14 @@ GUI worker·로그 writer 정리 뒤와 relay lease 해제 직전에 기존 DB�
 
 
 2026-10-12 flow 후속 C: 정상 종료 drain·join이 60초를 넘으면 「종료가 끝나지 않았습니다. 창을 그대로 두고 관리자에게 알리세요.」를 한 번 표시하고 계속 기다린다. 기존 지연 표시와 같은 안내를 중복하지 않는다. 강제 종료·자료 쓰기는 추가하지 않으며, 생성 선언·pin 갱신을 제외한 제품 변경은 +7/-5줄로 15줄 안이다.
+
+<a id="startup-check"></a>
+## 읽기 전용 시작 확인
+
+작업자 계정에서 `<설치 루트>\runtime\python.exe -I -B <설치 루트>\app\startup_check.py --json`을 실행한다. 표준 출력 JSON 한 줄과 종료 코드 0·10·20으로 구별한다. 못 읽음이나 상한 초과는 UNKNOWN이며 READY로 바꾸지 않는다. 실행 목표는 HDD 10초 이내다. 큰 runtime 파일을 재해시하지 않고 설치 inventory·작은 시작 파일의 고정 hash를 대조한다. 전체 설치본 무결성 검사와 실제 GUI 건강 확인은 기존 지원 관문 몫이다.
+
+묶음은 UPDATE_PENDING / DEPLOY_FENCE / INSTALL_MISMATCH / DATA_GUARD / ACCOUNT_MISMATCH / CATALOG_OFFLINE / ALREADY_RUNNING / UNKNOWN이다. READY이면 `category=READY`; `categories`에는 실제로 겹친 묶음만 들어간다. ALREADY_RUNNING은 알림이며 거부가 아니다. 목록 확인은 같은 사용자 인증의 cache·복구 payload를 읽기만 하며 cache 복구 파일을 만들지 않는다. 품목 목록이 없어도 관리자가 켠 기존 과도기 스위치는 유지한다. 실제 시작·알림·원격 고침과 결과 폴더 ACL은 설치 키트 몫이다.
+
 ## 첫 업데이트 묶음 선언 재생성
 
 관련 경로와 승인 행을 모두 조립한 뒤 `python -B tools/refresh_first_update_declarations.py --work-root E:/KMTech/w9firstupd-tmp/w9firstupdsub100/declarations`를 실행하고 같은 명령에 `--check`를 붙여 확인한다. 기본 깔린 판은 d9160b6와 sub-86의 89155f1이다. 뒤에 전달된 실제 설치 판은 `--installed-ref <전체 SHA>`로 함께 지정한다. 기존 깔린 판 목록은 보존한다.

@@ -578,6 +578,8 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 ## LM-StartupUpdate1 · 로그온 자동 코드 적용의 실기 수용
 
+- 숨김 `startup_check.py --json`은 시작 판정 부품을 공유하는 읽기 전용 CLI다. 격리 입력의 파일 무변경·부작용 0 및 까닭 묶음은 headless 검증한다. HDD 실제 설치본 시간, 작업자 계정의 실행기 연결·결과 폴더 ACL·GUI 건강 표지는 화 낮 실물 검증 몫이다.
+
 - sub-458: 기존 설치기/진단 fixture 실패는 최종 동일 시험 본문의 clean 기준·후보에서 단언 AST·예외 형식·오류 코드가 일치한 경우만 상속으로 기록한다. fixture 정리는 컷 뒤이며 원 출력과 분류는 `D:/KMTech/program-improvement-20260912/work/program/w9scanonly/sub-458/INHERITED-FAILURES.md`에 보존한다.
 
 D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.

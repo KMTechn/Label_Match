@@ -691,7 +691,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8',
                                     '30743e22b77939bed5d79b1e490c6df76ab577a242327a2d281f164c93ef1ca5'),
  'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f',
-                                      'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'),
+                                      '7d5bb9ba3e0a101910d6f26385f3ca05ab79d3491159974d189e47eceb918b96'),
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',

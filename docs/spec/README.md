@@ -7,6 +7,7 @@
 - 옛 명세(55cab72 판 README, 기술 이력 포함)는 git 이력에 그대로 있다.
 - 기술 계약은 [contracts.md](contracts.md), 운영은 [operations.md](operations.md), 설치·업데이트 설계는 [LIFECYCLE-DESIGN.md](LIFECYCLE-DESIGN.md)·[PAIR-RULE-CONTRACT.md](PAIR-RULE-CONTRACT.md) 가 정본이다.
 - 회사 서버 연결의 고정 요청 식별·압축 응답·거절 코드는 [회사 서버 HTTP 계약](contracts.md#company-http)을 따른다.
+- 업무 전 숨김 시작 확인은 [읽기 전용 시작 확인](operations.md#startup-check)을 따른다. 화면 없이 설치·계정·자료·저장 품목 목록 상태를 확인한다.
 - 근거:
   - 지금 상태 조사표: `D:\KMTech\program-improvement-20260912\work\program\w9archplan\sub-27\INVENTORY.md`. 정적 조사이며, 기능 ID F-01–F-74 가 그 표의 ID 다.
   - 현장 사실: 사용자 확인분.

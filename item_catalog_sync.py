@@ -863,6 +863,11 @@ def _read_authenticated_cache_payload(
     return payload
 
 
+def offline_catalog_startable(*, authenticated: bool, enrolled: bool, legacy: bool) -> bool:
+    """A saved central catalog or the existing legacy transition permits offline use."""
+    return authenticated or not enrolled or legacy
+
+
 def _is_valid_authenticated_payload(
     payload: bytes,
     authority: object,

@@ -698,6 +698,7 @@ def load_logistics_runtime_profile(
     *,
     environ: Mapping[str, str] | None = None,
     decryptor: Callable[[bytes], str] | None = None,
+    data_admission: Callable[..., object] | None = None,
 ) -> LogisticsRuntimeProfile | None:
     values = _runtime_environment(environ)
     if (
@@ -726,8 +727,9 @@ def load_logistics_runtime_profile(
         label="runtime profile",
     )
     from label_data_generation import check_user_data_open
+    admit = data_admission or check_user_data_open
     app_root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-    check_user_data_open(app_root, (path.parent,), environ=values)
+    admit(app_root, (path.parent,), environ=values)
     if not path.exists():
         if required_value or explicit_path:
             raise LogisticsRuntimeConfigurationError("machine logistics profile is missing")
@@ -744,7 +746,7 @@ def load_logistics_runtime_profile(
     protected_roots = (secret_path.parent,)
     if selected_ca:
         protected_roots += (Path(selected_ca).parent,)
-    check_user_data_open(app_root, protected_roots, environ=values)
+    admit(app_root, protected_roots, environ=values)
     try:
         encrypted = secret_path.read_bytes()
     except OSError as exc:

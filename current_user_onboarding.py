@@ -616,6 +616,25 @@ def _calculate_code_root_hash(
     return len(canonical_entries), digest.hexdigest(), main_executable_present
 
 
+def validate_portable_bootstrap_inventory(record, rows, app_root: Path) -> dict[str, Any]:
+    """Validate the installer's inventory; callers choose which bytes to observe."""
+    aggregate = _verified_bootstrap_inventory_aggregate(record, rows)
+    names = {row["path"].casefold() for row in rows}
+    portable_layout = {"runtime/pythonw.exe", "app/main.py"} <= names
+    code_root = str(record.get("code_root") or "").strip()
+    resolved = app_root if code_root == "." else _resolved(code_root)
+    if (record.get("schema_version") != PORTABLE_BOOTSTRAP_INTEGRITY_VERSION
+            or record.get("status") != "PASS" or resolved != app_root
+            or type(record.get("file_count")) is not int or record["file_count"] != len(rows)
+            or aggregate is None or record.get("identity_profile_created") is not False
+            or record.get("state_scope") != "current_user_first_run"
+            or ("label_match.exe" in names) == portable_layout):
+        raise ValueError("bootstrap inventory integrity record is invalid")
+    return {"status": "PASS", "schema_version": PORTABLE_BOOTSTRAP_INTEGRITY_VERSION,
+            "code_root": str(app_root), "file_count": len(rows), "aggregate_sha256": aggregate,
+            "package_layout": "portable_cpython" if portable_layout else "onedir"}
+
+
 def verify_bootstrap_integrity(
     paths: CurrentUserOnboardingPaths,
     *,
@@ -643,9 +662,6 @@ def verify_bootstrap_integrity(
     )
     if record.get("schema_version") == PORTABLE_BOOTSTRAP_INTEGRITY_VERSION:
         rows: list[dict[str, Any]] = []
-        frozen_main_present = False
-        portable_pythonw_present = False
-        portable_main_present = False
         for candidate in sorted(
             paths.app_root.rglob("*"),
             # Ordering contract: tools/bootstrap_integrity.ps1. Big-endian UTF-16
@@ -676,38 +692,8 @@ def verify_bootstrap_integrity(
                     "sha256": content_hash,
                 }
             )
-            folded = relative_path.casefold()
-            frozen_main_present = frozen_main_present or folded == "label_match.exe"
-            portable_pythonw_present = (
-                portable_pythonw_present or folded == "runtime/pythonw.exe"
-            )
-            portable_main_present = portable_main_present or folded == "app/main.py"
-        aggregate = _verified_bootstrap_inventory_aggregate(record, rows)
-        code_root = str(record.get("code_root") or "").strip()
-        resolved_code_root = (
-            paths.app_root if code_root == "." else _resolved(code_root)
-        )
-        portable_layout = portable_pythonw_present and portable_main_present
-        if (
-            record.get("status") != "PASS"
-            or resolved_code_root != paths.app_root
-            or type(record.get("file_count")) is not int
-            or record.get("file_count") != len(rows)
-            or aggregate is None
-            or record.get("identity_profile_created") is not False
-            or record.get("state_scope") != "current_user_first_run"
-            or frozen_main_present == portable_layout
-        ):
-            raise ValueError("bootstrap inventory integrity record is invalid")
-        return {
-            "status": "PASS",
-            "schema_version": PORTABLE_BOOTSTRAP_INTEGRITY_VERSION,
-            "record_path": str(paths.bootstrap_integrity_path),
-            "code_root": str(paths.app_root),
-            "file_count": len(rows),
-            "aggregate_sha256": aggregate,
-            "package_layout": "onedir" if frozen_main_present else "portable_cpython",
-        }
+        return {**validate_portable_bootstrap_inventory(record, rows, paths.app_root),
+                "record_path": str(paths.bootstrap_integrity_path)}
     if record.get("schema_version") != BOOTSTRAP_INTEGRITY_VERSION:
         raise ValueError("bootstrap integrity record schema is invalid")
     if record.get("status") != "PASS":
