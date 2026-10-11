@@ -106,6 +106,8 @@ def test_pin_compressed_json_refusal_preserves_contract_code():
     with pytest.raises(pin.AdminPinError) as caught:
         client.post("redemptions", {})
     assert caught.value.code == "PIN_INVALID" and not caught.value.unknown
+    assert caught.value.http_status == 403
+    assert pin.operator_message(caught.value.code, http_status=403) == pin.FAILURE_MESSAGE
 
 
 def test_pin_html_after_redemption_recovers_same_key_receipt():
@@ -144,11 +146,45 @@ def test_pin_html_has_operator_http_cause_and_keeps_post_unknown(status):
     client = pin_client(UrllibResponse(HTML, status=status))
     with pytest.raises(pin.AdminPinError) as caught:
         client.post("redemptions", {})
-    assert caught.value.code == f"HTTP_{status}"
+    assert caught.value.code == "VERIFY_UNAVAILABLE"
+    assert caught.value.http_status == status
     assert caught.value.unknown  # An edge response cannot prove POST application.
-    message = pin.operator_message(caught.value.code)
+    message = pin.operator_message(caught.value.code, http_status=caught.value.http_status)
     assert "회사 서버" in message and str(status) in message
     assert "알 수 없" not in message
+
+
+@pytest.mark.parametrize("status", [403, 503])
+def test_pin_html_refusal_records_hold_and_allows_explicit_park(tmp_path, monkeypatch, status):
+    import hashlib
+    from tests.test_label_admin_pin import _pin_app, SOURCE_A, SOURCE_B
+
+    app, journal, _ = _pin_app(tmp_path, monkeypatch)
+    requests_seen = []
+    def refuse(request, **kwargs):
+        requests_seen.append(request.full_url)
+        response = UrllibResponse(HTML, status=status, url=request.full_url)
+        raise urllib.error.HTTPError(request.full_url, status, "edge refusal", response.headers, response)
+    app._admin_pin_client.transport = None
+    app._admin_pin_client.opener = SimpleNamespace(open=refuse)
+    digest = hashlib.sha256(journal.path.read_bytes()).hexdigest()
+    item = "F5:" + digest
+
+    assert app._run_package_pin_action("LABEL.F5_HOLD", item) is False
+    assert len(requests_seen) == 2  # The existing unknown verification retry remains.
+    pending = app._admin_pin_store.pending("label_f5_recovery", digest)
+    assert pending is not None and pending["state"] == "UNVERIFIED_OPERATOR_HOLD"
+    assert pending["error_code"] == "VERIFY_UNAVAILABLE" and pending["verification_id"] == ""
+    reason = "회사 서버 거절" if status == 403 else "회사 서버 오류"
+    assert f"{reason}({status})" in app._admin_pin_last_message
+    assert journal.path.exists() and app.package_outbox.get_label_exchange_hold(digest) is None
+
+    assert app._park_unverified_pin_item(item) is True
+    assert len(requests_seen) == 2  # Explicit unverified parking needs no new PIN request.
+    assert not journal.path.exists()
+    assert app._label_recovery_source_is_held(SOURCE_A) is True
+    assert app._label_recovery_source_is_held(SOURCE_B) is False
+    assert app._active_label_recovery_state() == {}
 
 
 @pytest.mark.parametrize("encoding", ["", "gzip", "deflate", "raw-deflate"])

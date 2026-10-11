@@ -135,7 +135,7 @@ def test_background_http_refusal_shows_code_and_preserves_choices(tmp_path, stat
     app._roster_choice_note = SimpleNamespace(configure=lambda **kwargs: notes.append(kwargs["text"]))
     app.worker_name_var = SimpleNamespace(get=lambda: "", set=lambda value: None)
     def query(*args):
-        raise AdminPinError(f"HTTP_{status}", unknown=True)
+        raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, http_status=status)
     app._worker_roster_query = query
     app._request_worker_roster_refresh()
     app._roster_thread.join(2)
@@ -149,9 +149,9 @@ def test_background_http_refusal_shows_code_and_preserves_choices(tmp_path, stat
 def test_stale_roster_http_refusal_does_not_replace_current_notice(tmp_path):
     app = app_with_roster(tmp_path, response=answer(2))
     app._roster_request_serial = 1
-    app._roster_result_queue.put((0, SCOPE, None, False, "HTTP_403"))
+    app._roster_result_queue.put((0, SCOPE, None, False, 403))
     app._poll_worker_roster(schedule=False)
-    assert app.__dict__.get("_roster_http_error_code", "") == ""
+    assert app.__dict__.get("_roster_http_status", 0) == 0
 
 
 def test_first_launch_does_not_treat_packaged_template_as_local_history(tmp_path, monkeypatch):

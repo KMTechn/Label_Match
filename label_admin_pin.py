@@ -36,20 +36,21 @@ active_pin_operation: ContextVar[tuple[str, str, str, str, str, str, str] | None
 
 
 class AdminPinError(RuntimeError):
-    def __init__(self, code: str, *, unknown: bool = False, status: int | None = None):
+    def __init__(self, code: str, *, unknown: bool = False, status: int | None = None,
+                 http_status: int = 0):
         self.code = code
         self.unknown = unknown
-        self.status = status
+        self.status = status if status is not None else http_status or None
+        self.http_status = http_status or status or 0
         super().__init__(code)
 
 
-def operator_message(code: str) -> str:
-    if code.startswith("HTTP_") and code[5:].isdigit():
-        status = int(code[5:])
-        if status >= 500:
-            return f"회사 서버 오류(코드 {status})가 발생했습니다. 이 건만 보류하고 잠시 뒤 다시 확인하세요."
-        if status >= 400:
-            return f"회사 서버가 요청을 거절했습니다(코드 {status}). 이 건만 보류하고 관리자에게 알리세요."
+def operator_message(code: str, *, http_status: int = 0) -> str:
+    if code == "VERIFY_UNAVAILABLE":
+        if http_status >= 500:
+            return f"회사 서버 오류({http_status})가 발생했습니다. 이 건만 보류하고 잠시 뒤 다시 확인하세요."
+        if http_status >= 400:
+            return f"회사 서버 거절({http_status})로 관리자 확인을 받지 못했습니다. 이 건만 보류하고 관리자에게 알리세요."
     if code in {"PIN_INVALID", "PROOF_INVALID", "PROOF_REVOKED"}:
         return FAILURE_MESSAGE
     if code == "TARGET_CHANGED":
@@ -209,16 +210,15 @@ class AdminPinClient:
         except AdminPinError:
             raise
         except Exception:
-            raise AdminPinError(f"HTTP_{status}" if status >= 400 else "VERIFY_UNAVAILABLE", unknown=True) from None
-        http_code = f"HTTP_{status}" if status >= 400 else "VERIFY_UNAVAILABLE"
+            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, http_status=status) from None
         if len(raw) > response_limit:
-            raise AdminPinError(http_code, unknown=True)
+            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, http_status=status)
         try:
             answer = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
         except (ValueError, UnicodeError):
-            raise AdminPinError(http_code, unknown=True, status=status) from None
+            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, status=status) from None
         if not isinstance(answer, dict):
-            raise AdminPinError(http_code, unknown=True, status=status)
+            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, status=status)
         error = answer.get("error")
         code = str(error.get("code") or "") if isinstance(error, dict) else ""
         if path.startswith("/api/worker-roster/v2/") and (
@@ -226,9 +226,10 @@ class AdminPinClient:
             raise AdminPinError(code or "VERIFY_UNAVAILABLE", unknown=status in {429, 503} or status >= 500 or not code,
                                 status=status)
         if status >= 500:
-            raise AdminPinError("PIN_BUSY" if code == "PIN_BUSY" else http_code, unknown=True)
+            raise AdminPinError("PIN_BUSY" if code == "PIN_BUSY" else "VERIFY_UNAVAILABLE",
+                                unknown=True, http_status=status)
         if not 200 <= status < 300 or answer.get("ok") is not True:
-            raise AdminPinError(code or http_code, unknown=not code)
+            raise AdminPinError(code or "VERIFY_UNAVAILABLE", unknown=not code, http_status=status)
         if expected_status is not None and status != expected_status:
             raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, status=status)
         return answer

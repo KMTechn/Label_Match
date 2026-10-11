@@ -6961,7 +6961,7 @@ class Label_Match(tk.Tk):
         self._roster_next_refresh = 0.0
         self._roster_poll_after_id = None
         self._roster_selection_window = None
-        self._roster_http_error_code = ""
+        self._roster_http_status = 0
         self._worker_identity_enabled = False
         self._worker_roster_stage_b = False
         self._worker_registration_dialog = None
@@ -7079,7 +7079,7 @@ class Label_Match(tk.Tk):
         pending = store.pending_requests()
         epoch = self.__dict__.get("_admin_pin_login_epoch", "")
         def fetch():
-            http_error = ""
+            http_status = 0
             try:
                 capability = client.get_capabilities()
             except Exception:
@@ -7090,8 +7090,7 @@ class Label_Match(tk.Tk):
                 result = query(scope, version)
             except AdminPinError as exc:
                 result = None
-                if exc.code.startswith("HTTP_") and exc.code[5:].isdigit():
-                    http_error = exc.code
+                http_status = exc.http_status
             except Exception:
                 result = None
             registrations = []
@@ -7119,7 +7118,7 @@ class Label_Match(tk.Tk):
                                 if code == "ROSTER_V2_REGISTER_DISABLED":
                                     stage_b = False
                                 break
-            results.put((serial, scope, result, enabled, stage_b, registrations, store, epoch, http_error))
+            results.put((serial, scope, result, enabled, stage_b, registrations, store, epoch, http_status))
         self._roster_next_refresh = time.monotonic() + 60
         self._roster_thread = threading.Thread(target=fetch, name="label-worker-roster", daemon=True)
         self._roster_thread.start()
@@ -7155,8 +7154,8 @@ class Label_Match(tk.Tk):
                 self._worker_identity_enabled = response[3] is True
             if len(response) >= 8:
                 self._worker_roster_stage_b = response[4] is True
-            self._roster_http_error_code = (response[8] if len(response) >= 9 else
-                                            response[4] if len(response) == 5 else "")
+            self._roster_http_status = (response[8] if len(response) >= 9 else
+                                       response[4] if len(response) == 5 else 0)
             if result is None:
                 self._refresh_worker_roster_selection()
             if result is not None:
@@ -7205,10 +7204,9 @@ class Label_Match(tk.Tk):
                        if label_worker_roster.worker_choice_label(row) == previous] if store else []
             row = store.active_worker(worker_id=aliases[0]["worker_id"]) if len(aliases) == 1 else None
             self.worker_name_var.set(label_worker_roster.worker_choice_label(row) if row else "")
-        code = self.__dict__.get("_roster_http_error_code", "")
+        status = self.__dict__.get("_roster_http_status", 0)
         http_note = ""
-        if code.startswith("HTTP_") and code[5:].isdigit():
-            status = int(code[5:])
+        if status >= 400:
             reason = "회사 서버 오류" if status >= 500 else "회사 서버가 명단 요청을 거절했습니다"
             http_note = f"{reason}(코드 {status}).\n"
         self._roster_choice_note.configure(text=http_note + (
@@ -10263,7 +10261,7 @@ class Label_Match(tk.Tk):
         try:
             status = self._package_pin_client().status(pending["verification_id"], key)
         except AdminPinError as exc:
-            return admin_pin_message(exc.code)
+            return admin_pin_message(exc.code, http_status=exc.http_status)
         if self._package_pin_effect(pending):
             self._admin_pin_store.transition(key, "APPLIED")
             return "같은 요청의 적용 효과를 확인했습니다. 지원 인계는 필요하지 않습니다."
@@ -10278,7 +10276,7 @@ class Label_Match(tk.Tk):
                         handoff["verification_id"], handoff["operation_key"]
                     )
                 except AdminPinError as exc:
-                    return admin_pin_message(exc.code)
+                    return admin_pin_message(exc.code, http_status=exc.http_status)
                 if handoff_status != "CONSUMED" or not self._package_pin_effect(handoff):
                     return admin_pin_message("VERIFY_UNAVAILABLE")
                 self._admin_pin_store.transition(handoff["operation_key"], "APPLIED")
@@ -10312,7 +10310,7 @@ class Label_Match(tk.Tk):
             status = self._package_pin_client().status(pending["verification_id"], key)
         except AdminPinError as exc:
             store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code=exc.code)
-            return admin_pin_message(exc.code)
+            return admin_pin_message(exc.code, http_status=exc.http_status)
         if self._package_pin_effect(pending):
             store.transition(key, "APPLIED")
             return "같은 관리자 요청의 로컬 효과를 확인했습니다."
@@ -10355,7 +10353,7 @@ class Label_Match(tk.Tk):
             store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="EFFECT_UNVERIFIED")
         except AdminPinError as exc:
             store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code=exc.code)
-            return admin_pin_message(exc.code)
+            return admin_pin_message(exc.code, http_status=exc.http_status)
         except Exception:
             store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="EFFECT_UNVERIFIED")
         return admin_pin_message("VERIFY_UNAVAILABLE")
@@ -10430,6 +10428,7 @@ class Label_Match(tk.Tk):
         request_id = str(uuid.uuid4())
         verification_id = ""
         operation_key = ""
+        http_status = 0
         try:
             issued = self._package_pin_client().verify(
                 request_id=request_id, admin_id=admin_id, pin=pin,
@@ -10498,6 +10497,7 @@ class Label_Match(tk.Tk):
             raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
         except AdminPinError as exc:
             code = exc.code
+            http_status = exc.http_status
         except Exception:
             code = "VERIFY_UNAVAILABLE"
         if operation_key:
@@ -10545,7 +10545,7 @@ class Label_Match(tk.Tk):
             )
         except Exception:
             code = "AUDIT_UNAVAILABLE"
-        self._admin_pin_last_message = admin_pin_message(code)
+        self._admin_pin_last_message = admin_pin_message(code, http_status=http_status)
         return False
 
     def _park_unverified_pin_item(self, set_id):
