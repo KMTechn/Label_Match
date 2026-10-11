@@ -4776,10 +4776,10 @@ function Assert-LabelMachineEvidencePath {
     }
 }
 
-function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$InventoryPath) {
+function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$InventoryPath, [bool]$ArgumentsSupplied = $false) {
     try {
         if (-not $Caller.elevated -and $Caller.session_id -ne 0) {
-            if ($Account -or $InventoryPath) { throw 'Worker arguments require the administrator entry.' }
+            if ($ArgumentsSupplied -or $Account -or $InventoryPath) { throw 'Worker arguments require the administrator entry.' }
             return $null
         }
         if (-not $Caller.elevated -or [string]::IsNullOrWhiteSpace($Account) -or
@@ -5021,9 +5021,10 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
 if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }
 # Resolve the administrator target before imports, evidence allocation or profile access.
 $machineWorker = $null
+$workerArgumentsSupplied = $PSBoundParameters.ContainsKey('WorkerAccount') -or $PSBoundParameters.ContainsKey('WorkerSurveyInventory')
 if ($ResumeRollbackAuditPath) {
-    if ($WorkerAccount -or $WorkerSurveyInventory) { throw 'Rollback resume cannot be combined with worker installation.' }
-} else { $machineWorker = Resolve-LabelMachineWorker (Get-LabelInstallerCaller) $WorkerAccount $WorkerSurveyInventory }
+    if ($workerArgumentsSupplied) { throw 'Rollback resume cannot be combined with worker installation.' }
+} else { $machineWorker = Resolve-LabelMachineWorker (Get-LabelInstallerCaller) $WorkerAccount $WorkerSurveyInventory $workerArgumentsSupplied }
 if ($null -ne $machineWorker -and -not $PlanOnly) { Initialize-LabelMachineDiagnostics }
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot)
 . (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')

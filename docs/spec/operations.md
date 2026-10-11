@@ -4,6 +4,8 @@ PowerShell lifecycle 관측·고정 helper·새 SYSTEM 로그온 action과 옛 �
 
 ## 관리자 입구 후보 — w9firstupdsub63 (10/11 1차 답 v0)
 
+일반 작업자 세션은 새 두 인수의 명시적 전달을 거절하며 빈 문자열 전달도 포함한다.
+
 관리자 길의 선택 인수 `-EvidencePath`는 같은 ProgramData 설치 감사 디렉터리 안의 일반 파일만 받는다. 프로필 경로와 reparse 경로는 첫 쓰기 전에 거절한다.
 
 유효한 대상·inventory를 확인한 뒤에만 ProgramData 설치 감사 자리 아래 관리자 진단용 임시 폴더를 만든다. 설치기 프로세스와 자식의 임시 경로를 그 폴더로 지정하므로 실패 진단도 사용자 프로필에 쓰지 않는다. 영구 환경 설정은 바꾸지 않는다. 고정 current에서 첫 시작할 때는 active가 가리키는 versions의 manifest와 PENDING의 commit·판을 대조한다.

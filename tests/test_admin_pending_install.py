@@ -58,7 +58,7 @@ if($result -cne 'BOUND'){throw 'Worker target was not accepted'}
 @pytest.mark.parametrize("case", [
     "sid", "account", "session-zero", "missing-account", "missing-inventory",
     "absent-file", "invalid-json", "not-ready", "wrong-sid", "wrong-profile",
-    "same-admin", "ordinary-arguments", "ordinary-default", "unresolved-account", "absent-profile", "session-zero-not-elevated",
+    "same-admin", "ordinary-arguments", "ordinary-default", "ordinary-empty-arguments", "unresolved-account", "absent-profile", "session-zero-not-elevated",
 ])
 def test_worker_inventory_admission_precedes_every_write(tmp_path, engine, case):
     profile = tmp_path / "worker"
@@ -94,9 +94,9 @@ if($case -ceq 'same-admin'){$account=$caller.sid}
 if($case -ceq 'missing-account'){$account=''}
 if($case -ceq 'missing-inventory'){$path=''}
 if($case -like 'ordinary-*'){$caller.elevated=$false}
-if($case -ceq 'ordinary-default'){$account='';$path=''}
+if($case -in @('ordinary-default','ordinary-empty-arguments')){$account='';$path=''}
 $worker=$null;$failure=$null
-try{$worker=Resolve-LabelMachineWorker $caller $account $path}catch{$failure=$_}
+try{$worker=Resolve-LabelMachineWorker $caller $account $path ($case -ceq 'ordinary-empty-arguments')}catch{$failure=$_}
 if($case -cin @('sid','account','session-zero')){
  if($null -ne $failure){throw $failure}
  if($worker.sid -cne $sid -or $worker.inventory_sha256 -cne $env:LM_ADMIN_INVENTORY_SHA){throw 'Worker inventory binding lost'}
@@ -118,13 +118,14 @@ if($case -cin @('sid','account','session-zero')){
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
-@pytest.mark.parametrize("arguments", ["missing", "invalid-json"])
+@pytest.mark.parametrize("arguments", ["missing", "invalid-json", "ordinary-empty"])
 @pytest.mark.parametrize("preloaded", [False, True])
 def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, arguments, preloaded):
     product = INSTALLER.read_text(encoding="utf-8-sig")
     caller = "(Get-LabelInstallerCaller)"
     assert product.count(caller) == 1
-    product = product.replace(caller, "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$true;session_id=0})")
+    identity = "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$false;session_id=2})" if arguments == "ordinary-empty" else "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$true;session_id=0})"
+    product = product.replace(caller, identity)
     driver = tmp_path / "actual-entry.ps1"
     driver.write_text(product, encoding="utf-8-sig")
     bad_inventory = tmp_path / "inventory.json"
@@ -139,13 +140,15 @@ def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, argum
             + "function Get-KmtechSinkEnvironment{return @{}}\n"
             + "function Write-KmtechProtectedFailureSidecar {param($Text) "
               "[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'unexpected-diagnostic.txt'),'synthetic');throw 'Unexpected input diagnostic'}\n"
-            + "$forward=@{};if($WorkerAccount){$forward.WorkerAccount=$WorkerAccount};"
-              "if($WorkerSurveyInventory){$forward.WorkerSurveyInventory=$WorkerSurveyInventory}\n"
+            + "$forward=@{};if($PSBoundParameters.ContainsKey('WorkerAccount')){$forward.WorkerAccount=$WorkerAccount};"
+              "if($PSBoundParameters.ContainsKey('WorkerSurveyInventory')){$forward.WorkerSurveyInventory=$WorkerSurveyInventory}\n"
             + "& " + quote(driver) + " @forward\nexit $LASTEXITCODE\n", encoding="utf-8-sig")
         command[-1] = str(parent)
     before = {p: p.read_bytes() for p in tmp_path.iterdir()}
     if arguments == "invalid-json":
         command += ["-WorkerAccount", "S-1-5-21-111-222-333-1001", "-WorkerSurveyInventory", str(bad_inventory)]
+    elif arguments == "ordinary-empty":
+        command += ["-WorkerAccount", ""]
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert result.returncode == 1
