@@ -4,6 +4,8 @@
 
 ## 설치·등록
 
+자동 GUI 시작의 onboarding은 transition JSON의 뜻이 같은 다시 쓰기를 허용한다. 관측 변경/진행 중 phase는 writer 허가 밖에서 update lock 아래 한 번 다시 읽고, 미해결이면 현재 판의 기존 ordinary/trial 허가를 재검증하여 UNKNOWN으로 등록을 미룬다. 자동 경합은 재설치 안내 없이 GUI 데이터 guard로 이어지며 수동 설치·등록의 판정과 거절은 그대로다.
+
 설치는 첫/제거 상태 또는 정상 설치 상태에서만 진행한다. 정상은 고정 current owner A, 실제 active A/B, 보호 helper로 검증한 두 stock, 일치하는 pointer/안정 phase, 실제 소유 startup task와 재관측 결과로 판정한다. C는 `versions/<C>`에 배치하고 실제 B를 expected-from으로 다시 확인한 뒤 보호 포인터만 전환한다. 고정 owner A와 키·설정은 보존한다. 중간/손상/불명확 상태는 자료·등록·대기 전송을 보존하고 한국어로 지원 제거 후 재설치를 안내한다.
 
 제거 뒤 current에 파일·directory·reparse 등 항목이 남으면 설치가 이를 덮지 않으며 경로를 알려 멈춘다. 남긴 미상 version/packet은 제거 표식과 보존 경로를 이용해 식별하며 새 C 목적지의 충돌은 별도로 거절한다. 기존 옛 포장 위 첫 등록의 정확한 code/data 부재 판정과 배포 위임 경계를 유지한다.

@@ -421,16 +421,24 @@ def test_e8_unknown_generation_does_not_begin_a_trial(endpoint, monkeypatch):
 
 @pytest.mark.parametrize("mutex_condition", ["busy", "abandoned"])
 def test_e1_busy_update_lock_reports_fixed_progress_guidance(endpoint, monkeypatch, capsys, mutex_condition):
-    control, _, _, _, _, _ = endpoint
+    control, stage, _, _, _, _ = endpoint
     @contextlib.contextmanager
     def busy(*a, **k):
         raise RuntimeError("update mutex ownership was abandoned" if mutex_condition == "abandoned" else "update mutex ownership is busy")
         yield
     monkeypatch.setattr(updates, "update_lock", busy)
-    assert updates.bootstrap(control.parent / "current/app", [], role="gui") == 20
+    if mutex_condition == "busy":
+        assert_ordinary(endpoint, NEW)
+    else:
+        assert updates.bootstrap(control.parent / "current/app", [], role="gui") == 20
     report = json.loads(capsys.readouterr().out)
-    assert report["reason_code"] == "UPDATE_IN_PROGRESS"
-    assert report["guidance"] in __import__("failure_redaction").RULES["safe_messages"]
+    if mutex_condition == "busy":
+        assert report["reason_code"] == "UPDATE_APPLY_NO_PROGRESS"
+        assert report["exit_code"] == 0
+        assert updates.read_json(stage / "startup-support.json")["exit_code"] == 0
+    else:
+        assert report["reason_code"] == "UPDATE_IN_PROGRESS"
+        assert report["guidance"] in __import__("failure_redaction").RULES["safe_messages"]
 
 
 @pytest.mark.parametrize("failure", ["task", "no_progress"])

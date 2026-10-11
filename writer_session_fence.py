@@ -682,15 +682,19 @@ def _lifecycle_digests(control: Path | None) -> dict[Path, bytes | None]:
         for name in ("policy.json", "active.json", "transition.json"):
             path = control / name
             if path.is_file():
-                with path.open("rb") as handle:
-                    observed[path] = hashlib.file_digest(handle, "sha256").digest()
+                if name == "transition.json":
+                    from auto_update import read_json
+                    observed[path] = hashlib.sha256(json.dumps(read_json(path), sort_keys=True).encode("utf-8")).digest()
+                else:
+                    with path.open("rb") as handle:
+                        observed[path] = hashlib.file_digest(handle, "sha256").digest()
             else:
                 observed[path] = None
     return observed
 
 
 @contextmanager
-def _onboarding_lifecycle_scope(app_root: Any) -> Iterator[None]:
+def _onboarding_lifecycle_scope(app_root: Any, *, recheck: bool = False) -> Iterator[None]:
     """Validate once outside admission, only for this thread's current call."""
     from auto_update import assert_version_writer, control_root, installation_root, resolve_lifecycle_context
 
@@ -717,7 +721,13 @@ def _onboarding_lifecycle_scope(app_root: Any) -> Iterator[None]:
         observed = _lifecycle_digests(observed_control)
         context = None
         if control is not None:
-            context = resolve_lifecycle_context(managed, operation="register")
+            if recheck:
+                from auto_update import load_policy, update_lock
+                with update_lock(control, load_policy(control)["operator_sid"]):
+                    context = resolve_lifecycle_context(managed, operation="register")
+                    observed = _lifecycle_digests(observed_control)
+            else:
+                context = resolve_lifecycle_context(managed, operation="register")
         else:
             assert_version_writer(source_root, source="current_user_onboarding", environ=values)
         _WRITER_LOCAL.onboarding_lifecycle = {
@@ -982,10 +992,38 @@ def _probe_then_call(
     def call() -> R:
         if source == "current_user_onboarding":
             app_root = args[0] if args else kwargs["app_root"]
-            with _onboarding_lifecycle_scope(app_root):
-                with writer_admission(source):
-                    pass
-                return function(*args, **kwargs)
+            from auto_update import now_utc
+            started_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT") or now_utc()
+            for attempt in range(2):
+                try:
+                    with _onboarding_lifecycle_scope(app_root, recheck=bool(attempt)):
+                        with writer_admission(source):
+                            pass
+                        return function(*args, **kwargs)
+                except Exception as error:
+                    cause = error
+                    while (cause is not None and getattr(cause, "code", None) != "WRITER_LIFECYCLE_CHANGED"
+                           and str(cause) not in {"supported lifecycle changed during observation", "supported transition requires removal and reinstall", "update mutex ownership is busy"}):
+                        cause = cause.__cause__
+                    if not kwargs.get("_startup") or cause is None:
+                        raise
+            from auto_update import (assert_version_writer, assert_ordinary_recovery, control_root,
+                                     emit_support_record, load_policy, optional_record, read_json)
+            root = canonical_control_root()
+            _admitted_writer_sources(root, source=source, environ=os.environ)
+            source_root = Path(__file__).resolve().parent
+            control = control_root(source_root)
+            if control is None:
+                raise WriterFencedError("WRITER_LIFECYCLE_CHANGED", "startup installation context is unobservable")
+            state = optional_record(control / "transition.json")
+            trial = (state or {}).get("phase") in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"} and os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE") and os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE") == state.get("nonce")
+            if state and state.get("phase") in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"} and not trial:
+                assert_ordinary_recovery(control, load_policy(control), read_json(control / "active.json")["sha"], started_at)
+                os.environ["KMTECH_LM_UPDATE_DEFERRED_AT"] = started_at
+            assert_version_writer(source_root, source="gui_settings_save", environ=os.environ)
+            report = {"status": "UNKNOWN", "reason_code": "UPDATE_SUPERVISION_UNAVAILABLE", "exit_code": 0}
+            emit_support_record(report, stage="update_apply", policy=load_policy(control))
+            return report
         return function(*args, **kwargs)
 
     if source != "current_user_onboarding" or outer_depth:

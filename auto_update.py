@@ -33,6 +33,7 @@ READY_CHECKS = (
 
 
 APPLY_PROGRESS_TIMEOUT = 60
+STARTUP_WAIT_SECONDS = 240
 STARTUP_PROGRESS_MESSAGE = "업데이트가 진행 중입니다. 잠시 후 다시 실행하세요."
 
 
@@ -41,8 +42,14 @@ def support_record(fields=None, *, stage):
     return public_record({**dict(fields or {}), "stage": stage})
 
 
-def emit_support_record(fields, *, stage):
-    print(json.dumps(support_record(fields, stage=stage), ensure_ascii=False, sort_keys=True))
+def emit_support_record(fields, *, stage, policy=None):
+    report = support_record(fields, stage=stage)
+    if policy is not None and policy.get("staging_root"):
+        try:
+            write_json_durable(Path(policy["staging_root"]) / "startup-support.json", report)
+        except (OSError, ValueError, TypeError, WriterFenceError):
+            emit_support_record({"reason_code": "REPORT_UNAVAILABLE"}, stage=stage)
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
 
 
 def _sha(value: Any, *, length: int = 40) -> str:
@@ -909,6 +916,18 @@ def optional_record(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def prepared_marker_sha256(policy: Mapping[str, Any] | None) -> str | None:
+    if not policy or not policy.get("staging_root"):
+        return None
+    try:
+        path = Path(policy["staging_root"]) / "prepared.json"
+        _assert_no_reparse_components(path)
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+    except (OSError, ValueError, WriterFenceError):
+        return None
+
+
 @contextmanager
 def update_lock(control: Path, operator_sid: str, *, trial: bool = False):
     """One cross-session mutex shared by SYSTEM and the installed operator SID."""
@@ -1149,6 +1168,17 @@ def apply_prepared(control: Path) -> int:
                        "phase": "DEFERRED" if not_applied else "UNKNOWN",
                        "deferred_at": now_utc(), "reason_code": "UPDATE_PREPARATION_FAILED",
                        "reason": type(error).__name__, "launch_failure_details": launch_failure_details(error, include_original=True)}
+            marker_sha256 = prepared_marker_sha256(policy)
+            if not_applied and marker_sha256:
+                if (state or {}).get("failed_prepared_sha256") == marker_sha256 and (state or {}).get("phase") == "DEFERRED":
+                    return 0
+                failure["failed_prepared_sha256"] = marker_sha256
+                try:
+                    marker = read_json(Path(policy["staging_root"]) / "prepared.json")
+                    failed_sha = _sha(marker.get("source_commit"))
+                    failure["failed_shas"] = sorted(set(failure.get("failed_shas", [])) | {failed_sha})
+                except (OSError, ValueError, TypeError):
+                    pass  # Malformed hints are quarantined by their exact bytes.
             write_json_durable(control / ("failure-" + uuid.uuid4().hex + ".json"), failure)
             write_json_durable(control / "transition.json", failure)
         return 0 if not_applied else 20
@@ -1209,8 +1239,13 @@ def _apply_prepared(control: Path) -> int:
     os.environ["LOCALAPPDATA"] = policy["operator_local_app_data"]
     stage = Path(policy["staging_root"])
     with update_lock(control, policy["operator_sid"]):
-        write_json_durable(control / "apply-claim.json", new_apply_claim())
         state = optional_record(control / "transition.json")
+        if (state and state.get("phase") == "DEFERRED" and state.get("reason_code") == "UPDATE_PREPARATION_FAILED"
+                and not state.get("recovery_pending") and not prepared_pending(control, policy, state)):
+            active_sha = read_json(control / "active.json")["sha"]
+            if not state.get("retained_candidate") or recovery_sha(state, pointer_sha=active_sha) == active_sha:
+                return 0
+        write_json_durable(control / "apply-claim.json", new_apply_claim())
         if state and state["phase"] == "CONFIRMED":
             state = record_confirmed_transition(control, state)
         if state and state.get("recovery_pending") is True:
@@ -1261,7 +1296,7 @@ def _apply_prepared(control: Path) -> int:
             # executable or command supplied by the prepared marker is executed.
             protected = control / ("packet-" + uuid.uuid4().hex)
             create_protected_stage(protected)
-            for name in ("manifest.json", "manifest.sig", "packet.zip"):
+            for name in ("manifest.json", "manifest.sig", "packet.zip", "prepared.json"):
                 copy_prepared_file(stage / name, protected / name, expected_owner_sid=policy["operator_sid"])
             manifest, candidate = verify_prepared_packet(protected, key_config=key, current_version=current["version"], channel=policy["channel"])
             sha = manifest["source_commit"]
@@ -1902,6 +1937,9 @@ def prepared_pending(control: Path, policy: Mapping[str, Any], state: Mapping[st
     if not policy.get("feed_url"):
         return False
     path = Path(policy["staging_root"]) / "prepared.json"
+    if (state and state.get("phase") == "DEFERRED" and state.get("failed_prepared_sha256")
+            and state["failed_prepared_sha256"] == prepared_marker_sha256(policy)):
+        return False
     try:
         marker = optional_record(path)
     except (OSError, ValueError):
@@ -2220,6 +2258,26 @@ def manual_lifecycle_gate(control: Path, mode: str) -> int | None:
 
 
 def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> int | None:
+    if arguments[:1] in (["--label-match-user-relay"], ["--label-match-direct-sync-relay"]):
+        role = "relay"
+    try:
+        return _startup_gate(app_root, arguments, role=role)
+    except RuntimeError as error:
+        if str(error) != "update mutex ownership is busy":
+            raise
+        control = control_root(app_root)
+        deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
+        state = optional_record(control / "transition.json") if control is not None else None
+        if deferred_at and control is not None and (not state or state.get("phase") in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}):
+            policy = load_policy(control)
+            assert_ordinary_recovery(control, policy, version_manifest(app_root.parent)["source_commit"], deferred_at)
+            assert_version_writer(app_root, source="gui_settings_save", environ=os.environ)
+            emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS", "exit_code": 0}, stage="update_apply", policy=policy)
+            return None
+        return bootstrap(app_root, arguments, role=role)
+
+
+def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | None:
     if arguments[:1] == ["--remove-current-user-setup"]:
         return None
     if arguments[:1] in (["--label-match-user-relay"], ["--label-match-direct-sync-relay"]):
@@ -2394,7 +2452,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
     progress_deadline = None
     saw_trial = False
     apply_started = False
-    deadline = time.monotonic() + 240
+    deadline = time.monotonic() + STARTUP_WAIT_SECONDS
     while time.monotonic() < deadline:
         try:
             with update_lock(control, policy["operator_sid"]):
@@ -2510,7 +2568,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
         except RuntimeError as error:
             if str(error) not in {'update mutex ownership was abandoned', 'update mutex ownership is busy'}:
                 raise
-            if apply_claim_status(control) not in {"LIVE", "UNKNOWN"}:
+            if str(error) == "update mutex ownership was abandoned":
                 raise
         time.sleep(0.1)
     if apply_claim_status(control) == "UNKNOWN":
@@ -2530,8 +2588,15 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
         except RuntimeError as error:
             if str(error) not in {'update mutex ownership was abandoned', 'update mutex ownership is busy'}:
                 raise
-    emit_progress_guidance()
-    return 20
+    active = read_json(control / "active.json")
+    if current_generation_status(control, policy, active["sha"]) != "ALLOW":
+        emit_progress_guidance()
+        return 20
+    assert_ordinary_recovery(control, policy, active["sha"], now_utc())
+    result = start_current(control, policy, optional_record(control / "transition.json"), active,
+                           arguments, code="UPDATE_APPLY_NO_PROGRESS", deadline=deadline)
+    emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS", "exit_code": result}, stage="update_apply", policy=policy)
+    return result
 
 
 def main(arguments: list[str] | None = None) -> int:

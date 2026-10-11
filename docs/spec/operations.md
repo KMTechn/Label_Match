@@ -1208,6 +1208,8 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 
 ## StartupUpdate1 · 자동 업데이트 준비·시작·복구
 
+자동 시작 중 update mutex busy는 최초 대기 5초 뒤 bootstrap 창 240초와 마지막 native 대기 최대 5초까지 기다린다. 이후 현재 판 시작이 안전하면 UPDATE_APPLY_NO_PROGRESS/0을 기록하고 업무를 시작한다. prepared 검증 실패는 원문·보호 사본을 보존하고 같은 판의 재시도에서 상태 파일을 덮지 않는다. 자동 onboarding 관측 변경은 writer 허가 밖에서 update lock으로 한 번 재확인한다. 미해결이면 UNKNOWN/0을 남기고 기존 GUI 데이터 guard를 거친다. 이 경합에 대한 재설치/지원 제거 안내는 사용하지 않으며 수동 설치·등록과 실제 손상의 기존 거절은 유지한다.
+
 일반 사용자 relay는 매 주기 feed 준비를 `persistent_relay_cycle` 허가 전에 수행한다. 내려받기 결과와 원 예외를 주기로 넘겨 기존 `auto_update` 상태 모양을 유지하고, 실패 증거와 주기 상태는 허가 안에서 저장한다. feed OFF·DEFERRED와 direct sync 순서는 유지한다.
 
 내려받기 생성·조각과 검증된 임시 사본 복사는 시작 probe 후 허가 밖에서 쓰고 fsync한다. 세 사본이 완성된 뒤 일반 게시 sink가 고정 이름 세 개를 교체하고 `prepared.json`은 기존 내구 sink로 저장한다. staging probe는 바깥 허가를 물려받으면 거절한다. 시도 전체의 probe 본문은 성공·실패 끝에 자기 UUID 시도 폴더와 임시 사본만 정리하며 reparse·이름 충돌은 보존한다. 본문 도중 시작된 fence는 현재 조각/복사를 취소하지 못하지만 다음 조각·게시를 거절한다. 정지 주체는 feed packet staging을 소비하지 않고 SYSTEM은 앱 writer가 살아 있으면 새 prepared packet 소비를 보류한다.

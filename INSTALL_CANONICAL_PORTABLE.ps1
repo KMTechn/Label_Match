@@ -677,7 +677,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
                                   '3690500795de424c928570593debb4afcfc50d1175f2ccba77f44fb56c97979b'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    '5c66f864d5b8e78ac26bdb3b446f4708220fc627dbbe250ba4e614ad7c13dcad'),
+                                    '64a49ce4376cfab99115a719b8f6c9732f1ee2087ff2a9927659f18383ea0fba'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     'ca2396f6868856b6a5af63ce4b497509e327eae1c4a37066469a3b47c1f0dde6'),
  'app/direct_sync_push.py': ('21bf3ba0500879209d543f64d2c7c63d74a17a0874e3508dfdf75f8f586290c7',
@@ -715,7 +715,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
-                                    '5c66f864d5b8e78ac26bdb3b446f4708220fc627dbbe250ba4e614ad7c13dcad')}
+                                    '64a49ce4376cfab99115a719b8f6c9732f1ee2087ff2a9927659f18383ea0fba')}
 legacy_label_additions = {'app/label_transition.py': '27c5952d804558211c7db05ac3489e4bd0422599a259af6b287fec5863f09279'}
 legacy_label_transition = all(
     (installed / relative).is_file() and (source / relative).is_file() and
@@ -833,7 +833,7 @@ current_user_profile_replacements = {
     'app/writer_session_fence.py': ('825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '56f807002f4085d8159f46a3afab3e5275d764fe44052dde3d4ce9cc5fcc7819'),
     'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', '7dde5875649e9ec9291a45e47191b9c6fcf6b32d66cafe70c0444390cefbab9e'),
     'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee'),
-    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '5c66f864d5b8e78ac26bdb3b446f4708220fc627dbbe250ba4e614ad7c13dcad'),
+    'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', '64a49ce4376cfab99115a719b8f6c9732f1ee2087ff2a9927659f18383ea0fba'),
     'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', 'db92068a17237e47d3025bece8d8f479fbe5eca46fde86e90666e3cac49fab72'),
 }
 # Exact writer bytes from the same accepted profile/scan preimages; their
@@ -1339,7 +1339,7 @@ admin_worker_replacements = {'INSTALL_THIS_PC.ps1': ('bdc42c26a8b5464d8a65e880ba
  'app/Label_Match.py': ('43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9',
                         '941071d8b1228e020404464dddd1212f5237a918b9f0307e06eada2ce1323e47'),
  'app/current_user_onboarding.py': ('93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd',
-                                    '5c66f864d5b8e78ac26bdb3b446f4708220fc627dbbe250ba4e614ad7c13dcad'),
+                                    '64a49ce4376cfab99115a719b8f6c9732f1ee2087ff2a9927659f18383ea0fba'),
  'app/label_admin_pin.py': ('0c2818a8667bf680a2eb3b44f7b460732f0b25f6828ea151bb49dea5e814ad89',
                             'ed4848d356b06745046c4beeffdc607e31981f4c5969ba58be6c9f1ec15b5b12'),
  'app/main.py': ('f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab',

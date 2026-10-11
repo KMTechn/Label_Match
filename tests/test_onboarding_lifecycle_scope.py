@@ -131,9 +131,13 @@ def test_each_write_denies_changed_lifecycle_without_another_helper(managed_onbo
         if name == "delegation":
             delegation[0] = {"delegated_sources": ["current_user_onboarding"]}
         else:
-            # Even a parse-equivalent edit invalidates the observation.
             path = control / name
-            path.write_bytes(path.read_bytes() + b"\n")
+            if name == "transition.json":
+                changed = json.loads(path.read_text(encoding="utf-8"))
+                changed["phase"] = "UNKNOWN"
+                path.write_text(json.dumps(changed), encoding="utf-8")
+            else:
+                path.write_bytes(path.read_bytes() + b"\n")
         return {"status": "ALIVE", "process_id": 77}
 
     with pytest.raises(onboarding.CurrentUserOnboardingError) as caught:

@@ -1127,6 +1127,7 @@ def onboard_current_user(
     ] = start_user_relay_process,
     defer_canonical_relay_start: bool = False,
     defer_machine_worker_relay_start: bool = False,
+    _startup: bool = False,
 ) -> dict[str, Any]:
     from auto_update import installation_root, assert_registration_storage
     from writer_session_fence import onboarding_lifecycle_context

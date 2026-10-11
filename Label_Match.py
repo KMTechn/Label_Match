@@ -23893,6 +23893,7 @@ def main(argv=None):
                     ).strip()
                     or LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
                     require_bootstrap_integrity=requires_bootstrap_integrity(app_root),
+                    _startup=True,
                 )
                 if (
                     (onboarding_report.get("bootstrap_integrity") or {}).get(

@@ -699,6 +699,8 @@ B1–B5 headless 실제 자식/반대 guard 회귀는 sub-470 RESULT에 결속�
 
 ### Bootstrap relay 시작의 일시 admission 대기
 
+자동 시작/update 경합(sub-126): headless 실제 다른 프로세스의 시험 전용 native mutex 6초·30초 대기와 한도 뒤 실제 현재 판 자식, 손상 prepared 두 번째 상태 불변, onboarding 관측 회귀를 검증한다. 기존 실패와의 정확한 비교·생성 선언/핀 결과는 sub-126 RESULT에 결속한다. 실제 SYSTEM↔사용자·pythonw 로그온·GUI·stock/서명 패킷 수용은 랩 NOT TESTED다.
+
 Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRITER_GATE_TIMEOUT`만 기존 240초 창에서 0.1초씩 쉬며 재시도한다. 각 시도는 기존 launch_version의 admission을 다시 얻으며 시도 사이에는 admission을 보유하지 않는다. 상한은 240초 + 마지막 admission 대기 최대 5초이며 마감 뒤에는 기존 실패 출구를 유지한다. fence 확정·버려진 소유권 등 다른 거절과 GUI 실행 자체의 timeout은 재시도하지 않는다. 포인터·trial claim·READY·CONFIRMED·G 허가·cohort·잠금 순서는 유지한다. bootstrap 밖의 relay launcher admission과 실제 로그온/pythonw 수용은 별도 범위다.
 
 - P2(코디 msg_c06cdb448ab5·msg_3efe0acd3297 범위 제외): 예약 작업 퇴역 native helper의 ABSENT 길을 소유 합성 작업 이름 둘로 대응해 측정하니 PowerShell 시작 포함 writer admission 8.890초(5초 초과)였다. 호스트 scheduler 변경 0; 기존 제품 작업 존재 시 거절 길 2.047초. 실제 제품 이름 ABSENT 길은 NOT VERIFIED(랩 첫 GUI 재실행). 다음 수정에서 helper/퇴역 대기를 admission 밖으로 나누고 쓰기 직전 재확인한다.
