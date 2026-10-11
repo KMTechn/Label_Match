@@ -740,13 +740,13 @@ scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '818f97727c492146cec5ca91204dbff6a69178a93b51fa2fa29180af627be640'),
+                              '2d7b9f9f4bda9d96b2972442e41447580e48c082391b4653680150e91cbb0df2'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            '642cc68e8da356f602e5fc5e011b2123959fe8c47a8add10d482c9d4892b2459'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
                                      '40c5a27a6c361470fb50fcbc3c03bdff67a41c037a7d4493f46e46d6db4a2888'),
  'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2',
-                                     'b7e0bc0bbf14c0f1fb593014154eba7f9fdac0c6ee679bfe9aef41444399fe15'),
+                                     'c020d4ea7c4a31620d58e5dc96d8beb11d0b56f2c6a18ef9fb3c9dcd566713ed'),
  'app/terminal_operation_lease.py': ('4e30d014f82a2dea766ef735c39a3b9c0f4b9e4c521ce76b25c9ac8cfb3927b7',
                                      '116ccf2980b710b3164a6caf10b367977449db841115e0547ccefc8b415ba893'),
  'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a',
@@ -783,13 +783,13 @@ nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1d
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   '8144882b47008ee3e2c35cbd62bdf70637d34d89a5e1ade7620ef405cc7423ac'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '818f97727c492146cec5ca91204dbff6a69178a93b51fa2fa29180af627be640'),
+                              '2d7b9f9f4bda9d96b2972442e41447580e48c082391b4653680150e91cbb0df2'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            '642cc68e8da356f602e5fc5e011b2123959fe8c47a8add10d482c9d4892b2459'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
                                      '40c5a27a6c361470fb50fcbc3c03bdff67a41c037a7d4493f46e46d6db4a2888'),
  'app/sealed_transfer_exchange.py': ('f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2',
-                                     'b7e0bc0bbf14c0f1fb593014154eba7f9fdac0c6ee679bfe9aef41444399fe15'),
+                                     'c020d4ea7c4a31620d58e5dc96d8beb11d0b56f2c6a18ef9fb3c9dcd566713ed'),
  'app/ui/workflow_view_state.py': ('45066b34a856ca47c3aa7f10b44f72e948a2db5827a8f6da948eeb7d6a8a5e0a',
                                    'ca42f4a1a106b60a39fe07ee74f78b3fdc4b3935986ecd6b23140c7f4c768a68')}
 nextfix_label_transition = (
@@ -909,7 +909,7 @@ roster_baseline_companions = {'app/label_completion.py': ('7650944f6d9f7431d8089
  'app/package_outbox_processor.py': ('b7dc5263d0d41715b82c3e8c54e95951007eedbefcb9a4a90900aa3a7407a0e3',
                                      '40c5a27a6c361470fb50fcbc3c03bdff67a41c037a7d4493f46e46d6db4a2888'),
  'app/sealed_transfer_exchange.py': ('74c5d2c126537b316b2f9d8d5127853c1e4217448fe3a2656f551eaafe529d1c',
-                                     'b7e0bc0bbf14c0f1fb593014154eba7f9fdac0c6ee679bfe9aef41444399fe15'),
+                                     'c020d4ea7c4a31620d58e5dc96d8beb11d0b56f2c6a18ef9fb3c9dcd566713ed'),
  'app/label_match_single_instance.py': ('64040b936adb201d21ecbf55d47536b545a8c10048200a4337635f0a7b00bb02',
                                         'f16db6f775d66233f96e274ea9b75260b6694800f60152e4a9edb133e9de93ee')}
 roster_baseline_transition = all(
@@ -1461,7 +1461,7 @@ print(json.dumps(dict(installed_inventory_sha256=installed_pin, candidate_invent
     # LF-normalized UTF-8 is the fixed probe identity on PS5.1 and PS7.
     $probeBytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n", "`n"))
     $stdout = Invoke-LabelPinnedProbe -Python (Join-Path $Source 'runtime\python.exe') `
-        -ProbeBytes $probeBytes -ExpectedSha256 '2285dc7af8cbc2ec897af3d31641547e951efaca81ec562f0c6ec946e5c298fe' `
+        -ProbeBytes $probeBytes -ExpectedSha256 '321eec82b6fd2a4357ca5ea57e0af12d253d6ff1731c543c47928ef88cab5ac1' `
         -ProbeArguments @($Source, $Installed, $generationReverse) -FailureMessage 'Installed writer transition is unsupported: '
     return $stdout | ConvertFrom-Json
 }
