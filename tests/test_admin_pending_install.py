@@ -335,13 +335,19 @@ def test_same_worker_profile_preparation_leaves_interactive_completion_pending(p
     monkeypatch.setattr(onboarding, "onboard_current_user", lambda *args, **kwargs:
         original(*args, **kwargs, defer_machine_worker_relay_start=True))
     relay_calls = []
+    autostart_calls = []
     if caller == "same-elevated":
-        report = _resume_user(selected, environment, launcher=lambda _root: relay_calls.append("relay"))
+        def prepare_autostart(app_root):
+            autostart_calls.append(app_root)
+            return {"status": "PASS"}
+        report = _resume_user(selected, environment, launcher=lambda _root: relay_calls.append("relay"),
+                              autostart=prepare_autostart)
         assert report["status"] == "WORKER_SESSION_PENDING"
         assert report["relay_autostart"]["status"] == "PASS"
         assert report["ledger_status"] == "READY" and paths.ledger_path.is_file()
         assert report["relay_start"]["status"] == "DEFERRED_WORKER_SESSION"
         assert not writes and not relay_calls
+        assert autostart_calls == [fixed]
         monkeypatch.setattr(onboarding, "onboard_current_user", original)
         assert _resume_user(selected, environment)["status"] == "READY"
         assert len(writes) == 1
@@ -603,7 +609,7 @@ def test_admin_writer_delta_accepts_only_exact_reviewed_direction(tmp_path, port
     _manifest(candidate, "7" * 40)
     installed = tmp_path / "installed"
     shutil.copytree(candidate, installed)
-    for relative in ("app/main.py", "app/Label_Match.py", "app/current_user_onboarding.py", "app/writer_session_fence.py",
+    for relative in ("app/main.py", "app/Label_Match.py", "app/label_admin_pin.py", "app/current_user_onboarding.py", "app/writer_session_fence.py",
                      "INSTALL_THIS_PC.ps1", "tools/label_writer_fence.ps1"):
         local = "portable/main.py" if relative == "app/main.py" else relative.removeprefix("app/")
         (installed / relative).write_bytes(subprocess.check_output([

@@ -21,6 +21,7 @@ BASE = "455033056f461492c3d4563d4663268f440b6090"
 FILES = {
     "app/main.py": "portable/main.py",
     "app/Label_Match.py": "Label_Match.py",
+    "app/label_admin_pin.py": "label_admin_pin.py",
     "app/current_user_onboarding.py": "current_user_onboarding.py",
     "INSTALL_THIS_PC.ps1": "INSTALL_THIS_PC.ps1",
     "app/writer_session_fence.py": "writer_session_fence.py",
@@ -138,7 +139,7 @@ def refresh(*, check=False):
             releases[stock][relative] = before, candidate
     lines = updated.splitlines(keepends=True)
     updated = ("".join(lines[:table.lineno-1]) + "startup_release_replacements = "
-               + pprint.pformat(releases, sort_dicts=True, width=110) + "\n"
+               + repr(releases) + "\n"
                + "".join(lines[table.end_lineno:]))
     probe_sha = hashlib.sha256(updated.removeprefix("\n").encode("utf-8")).hexdigest()
     tail, count = re.subn(r"(-ProbeBytes \$probeBytes -ExpectedSha256 ')[0-9a-f]{64}(')",
