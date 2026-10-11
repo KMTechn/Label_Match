@@ -1029,13 +1029,36 @@ def test_refused_lease_terminal_rejection_is_code_only_and_not_retried(
     def transport(*_args):
         calls.append(1)
         raise PackageApiError(status, code, "sensitive evidence must never be logged", retryable=True)
-    processor = PackageOutboxProcessor(outbox, _refusal_client(transport))
-    processor.drain(limit=1)
-    processor.drain(limit=1)
+    client = _refusal_client(transport)
+    processor = PackageOutboxProcessor(outbox, client)
+    assert processor.drain(limit=1) == {'acked': 0, 'retry': 0, 'conflict': 0}
+    assert processor.drain(limit=1) == {'acked': 0, 'retry': 0, 'conflict': 0}
     assert len(calls) == 1
     assert _business_bytes(tmp_path / "refused.sqlite3") == before
     assert caplog.records[-1].getMessage() == "package_operation_lease_refusal result=" + code
     assert "sensitive evidence" not in caplog.text
+
+    # A terminal refusal must release the drain and allow the next ordinary
+    # package to finish. Receipt contents have their own contract regressions.
+    ordinary = lease_draft(
+        set_id='following-package', operation_lease_id='',
+        operation_lease_token='', operation_lease_fence=0,
+        operation_lease_snapshot_hash='', operation_lease_completed_at='',
+    )
+    queued = outbox.enqueue(ordinary)
+    outbox.mark_local_completion_committed(queued['idempotency_key'])
+    created = []
+    monkeypatch.setattr(client, 'build_create_package_command',
+        lambda _draft, *, idempotency_key: (
+            'following-source', {'authority_scope_id': 'scope-a',
+                                 'idempotency_key': idempotency_key}))
+    monkeypatch.setattr(client, 'create_package',
+        lambda command: created.append(command['idempotency_key']) or {})
+    monkeypatch.setattr(processor, '_validate_receipt', lambda *_args, **_kwargs: None)
+    assert processor.drain(limit=1) == {'acked': 1, 'retry': 0, 'conflict': 0}
+    assert created == [queued['idempotency_key']]
+    assert outbox.get_by_set_id(ordinary.set_id)['status'] == 'ACKED'
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("failure", ["connection", "timeout", 503, 429])

@@ -180,6 +180,7 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
     replacements = ast.literal_eval(assignments["startup_release_replacements"].value)
     additions = ast.literal_eval(assignments["startup_release_additions"].value)
     historical = {revision: dict(pairs) for revision, pairs in replacements.items()}
+    unsupplied = []
     for ref in installed_refs:
         revision = git("rev-parse", ref + "^{commit}").decode().strip()
         replacements.setdefault(revision, {})
@@ -187,13 +188,24 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
     for revision, pairs in replacements.items():
         before = historical_layout(revision, work)
         extra = additions.setdefault(revision, {})
-        for relative, pair in pairs.items():
+        for relative, pair in list(pairs.items()):
+            if relative not in candidate and relative not in before:
+                # Older feature declarations also listed development helpers
+                # absent from both real stock packages. They have no upgrade
+                # preimage; retain only the builder's actual supply contract.
+                unsupplied.append({"revision": revision, "path": relative, "kind": "replacement"})
+                del pairs[relative]
+                continue
             if relative not in candidate or relative not in before:
                 raise ValueError("reviewed replacement is outside stock layout: " + relative)
             if before[relative] != pair[0]:
                 raise ValueError("historical stock preimage differs: " + relative)
             pairs[relative] = pair[0], candidate[relative]
-        for relative in extra:
+        for relative in list(extra):
+            if relative not in candidate and relative not in before:
+                unsupplied.append({"revision": revision, "path": relative, "kind": "addition"})
+                del extra[relative]
+                continue
             if relative not in candidate or relative in before:
                 raise ValueError("reviewed addition is outside stock delta: " + relative)
             extra[relative] = candidate[relative]
@@ -205,6 +217,8 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
                 extra[relative] = after
     for revision, pairs in historical.items():
         for relative, pair in pairs.items():
+            if relative not in replacements[revision]:
+                continue  # Proven absent from both immutable builder layouts.
             if replacements[revision][relative][0] != pair[0]:
                 raise ValueError("historical preimage changed")
 
@@ -233,6 +247,11 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
             value = replacements if name.endswith("replacements") else additions
             if ast.literal_eval(assignment.value) != value:
                 edit(assignment.value, repr(value))
+        elif name == "startup_candidate_membership":
+            membership = [(row.source, row.source_path, row.qualified_name, row.guard_kind)
+                          for row in rows]
+            if ast.literal_eval(assignment.value) != membership:
+                edit(assignment.value, repr(membership))
         elif name.endswith(("_replacements", "_additions", "_companions")):
             for node in ast.walk(assignment.value):
                 if not isinstance(node, ast.Dict):
@@ -268,8 +287,12 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
         installer.write_bytes(output)
     receipt = {"mode": "check" if check else "write", "sinks": len(rows),
                "releases": len(replacements), "historical_before_changes": 0,
+               "unsupplied_declarations_removed": len(unsupplied),
                "replacement_pairs": sum(map(len, replacements.values())),
-               "additions": sum(map(len, additions.values())), "candidate_fields_refreshed": refreshed}
+                "additions": sum(map(len, additions.values())), "candidate_fields_refreshed": refreshed}
+    if unsupplied:
+        (work / "unsupplied-declarations-removed.json").write_text(
+            json.dumps(unsupplied, sort_keys=True, indent=2), encoding="utf-8")
     (work / ("first-update-declarations-" + receipt["mode"] + ".json")).write_text(
         json.dumps(receipt, indent=2), encoding="utf-8")
     print(json.dumps(receipt))
