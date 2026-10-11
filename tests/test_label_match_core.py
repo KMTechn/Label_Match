@@ -3605,7 +3605,7 @@ def test_history_reload_requires_complete_read_before_replacing_active_indexes(
     app.scan_count, app.global_scanned_set, app.set_details_map = previous
     app._set_summary_date_label = lambda **_kwargs: None
     app._apply_adaptive_header_fitting = lambda: None
-    app._history_values_for_display = lambda values: values
+    app._history_values_for_display = lambda values, *, details=None: values
     app._render_summary_tree = lambda counts: None
     app._apply_history_view_mode = lambda: None
     app._refresh_session_tree = lambda: None

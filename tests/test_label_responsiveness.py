@@ -128,7 +128,7 @@ def history_app(row_count=5000, summary_count=0):
     app.history_active_load_pending = True
     app.run_tests = True
     app.history_queue = queue.Queue()
-    app._history_values_for_display = tuple
+    app._history_values_for_display = lambda values, *, details=None: tuple(values)
     app._apply_history_view_mode = lambda: None
     app._render_history_detail = lambda: None
     app._refresh_session_tree = lambda: None

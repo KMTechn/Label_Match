@@ -1666,6 +1666,21 @@ def _label_match_tray_complete_passed(details):
     return _label_match_tray_complete_result(details) == LABEL_MATCH_RESULT_PASS
 
 
+def _label_match_local_completion_notice(details):
+    if not details or not _label_match_tray_complete_passed(details):
+        return ""
+    package = details.get("package_logistics") or {}
+    if (
+        not isinstance(package, dict)
+        or package.get("idempotency_key")
+        or package.get("package_id")
+        or package.get("status") not in (
+            None, "", label_transition.LOCAL_ONLY_STATUS, "LEGACY_DIRECT_SYNC_ONLY")
+    ):
+        return ""
+    return LABEL_MATCH_LOCAL_COMPLETION_NOTICE
+
+
 def _label_match_local_completion_event_exists(data_manager, set_id, *, expected_results=None):
     """Synchronize a matching TRAY_COMPLETE before reusing its completion."""
 
@@ -1870,6 +1885,7 @@ LABEL_MATCH_SHORTAGE_NOTICE = (
     "모자란 상자: 대체품으로 채워 정상 마감 — "
     "못 채우면 마감하지 말고 따로 두고 관리자에게"
 )
+LABEL_MATCH_LOCAL_COMPLETION_NOTICE = "출고 전 관리자 보충 필요"
 LEGACY_LABEL_TRANSITION_OFF_REJECT = (
     LEGACY_LABEL_TRANSITION_OFF_CAUSE
     + " 확인을 누른 뒤 새 현품표로 다시 시작하세요. 새 현품표 QR이 손상된 경우에만 "
@@ -11944,7 +11960,9 @@ class Label_Match(tk.Tk):
                 values = list(data['values'])
                 values[0] = index
                 self.history_tree.insert("", "end", iid=str(set_id),
-                                         values=self._history_values_for_display(values), tags=data['tags'])
+                                         values=self._history_values_for_display(
+                                             values, details=self._history_details_for_iid(set_id)),
+                                         tags=data['tags'])
             yield
         if not self.__dict__.get('initialized_successfully', False):
             return
@@ -17651,7 +17669,7 @@ class Label_Match(tk.Tk):
                 result,
                 final_timestamp,
             )
-            values_to_update = self._history_values_for_display(values_to_update)
+            values_to_update = self._history_values_for_display(values_to_update, details=details)
 
             self.history_tree.item(set_id_for_log, values=values_to_update, tags=("success" if result == self.Results.PASS else "error",))
             self._render_history_detail(set_id_for_log)
@@ -17666,6 +17684,9 @@ class Label_Match(tk.Tk):
         transition_name = LABEL_TRANSITION_CLASS_NAMES.get(details.get("transition_class"))
         if transition_name and details["transition_class"] != label_transition.PHS2_CENTRAL:
             saved_text = f"기록됨 · 과도기 {transition_name}(포장 기록 제외)"
+        local_notice = _label_match_local_completion_notice(details)
+        if local_notice:
+            saved_text = f"{saved_text} · {local_notice}"
         self.save_status_label.config(text=f"✓ {saved_text} ({datetime.now().strftime('%H:%M:%S')})")
         self.after(3000, lambda: self.save_status_label.config(text=""))
         self._update_summary_tree()
@@ -18728,7 +18749,7 @@ class Label_Match(tk.Tk):
             details['end_time'].strftime('%H:%M:%S')
         )
         self.__dict__.setdefault("history_row_details_map", {})[set_id] = details
-        values_to_display = self._history_values_for_display(values_to_display)
+        values_to_display = self._history_values_for_display(values_to_display, details=details)
         self.history_tree.insert("", "end", iid=set_id, values=values_to_display, tags=("success",))
         self.history_tree.yview_moveto(1.0)
 
@@ -19465,11 +19486,15 @@ class Label_Match(tk.Tk):
         }
         if len(values) > result_index:
             result = values[result_index]
+            if result == f"{cls.Results.PASS} · {LABEL_MATCH_LOCAL_COMPLETION_NOTICE}":
+                return cls.Results.PASS
             if result in result_labels:
                 return result
         legacy_result_index = 6
         if len(values) > legacy_result_index:
             result = values[legacy_result_index]
+            if result == f"{cls.Results.PASS} · {LABEL_MATCH_LOCAL_COMPLETION_NOTICE}":
+                return cls.Results.PASS
             if result in result_labels:
                 return result
         if len(values) > result_index:
@@ -19481,7 +19506,7 @@ class Label_Match(tk.Tk):
             return "현품표 1장 스캔"
         return f"1/{self.TOTAL_SCAN_COUNT} 현품표 스캔 (레거시)"
 
-    def _history_values_for_display(self, values):
+    def _history_values_for_display(self, values, *, details=None):
         values = list(values or [])
         expected_len = 1 + self.TOTAL_SCAN_COUNT + 2
         while len(values) < expected_len:
@@ -19494,7 +19519,11 @@ class Label_Match(tk.Tk):
         ]
         result_index = 1 + self.TOTAL_SCAN_COUNT
         timestamp_index = result_index + 1
-        return (display_id, *scans, values[result_index], values[timestamp_index])
+        result = values[result_index]
+        local_notice = _label_match_local_completion_notice(details)
+        if local_notice and local_notice not in str(result):
+            result = f"{result} · {local_notice}"
+        return (display_id, *scans, result, values[timestamp_index])
 
     def _refresh_summary_tree_display_values(self):
         raw_rows = self.__dict__.get("summary_row_raw_values", {})
@@ -19538,7 +19567,8 @@ class Label_Match(tk.Tk):
                 current_values = self.history_tree.item(iid, "values")
                 source_values = self._history_values_from_details(iid, current_values)
                 if source_values:
-                    self.history_tree.item(iid, values=self._history_values_for_display(source_values))
+                    self.history_tree.item(iid, values=self._history_values_for_display(
+                        source_values, details=self._history_details_for_iid(iid)))
         except Exception as e:
             print(f"기록 표시값 갱신 오류: {e}")
 
@@ -19573,6 +19603,9 @@ class Label_Match(tk.Tk):
             f"결과: {_label_match_tray_complete_result(details)}",
             f"트레이 ID: {details.get('set_id') or '-'}",
         ]
+        local_notice = _label_match_local_completion_notice(details)
+        if local_notice:
+            lines.insert(1, local_notice)
         production_date = details.get("production_date")
         phase = details.get("phase") or "-"
         if production_date or phase != "-":
@@ -19597,7 +19630,8 @@ class Label_Match(tk.Tk):
             return "기록을 선택하면 현품표와 제품 바코드 원문이 여기에 표시됩니다."
         raw_scans = list(details.get("scanned_product_barcodes") or [])
         parsed_scans = list(details.get("parsed_product_barcodes") or [])
-        lines = []
+        local_notice = _label_match_local_completion_notice(details)
+        lines = [local_notice] if local_notice else []
         for index, role in enumerate(self.STEP_NAMES):
             value = ""
             if index < len(parsed_scans) and parsed_scans[index]:
