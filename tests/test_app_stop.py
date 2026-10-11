@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -116,6 +117,48 @@ def test_close_does_not_delete_a_successor_app_request(app, tmp_path):
 
     assert app._process_app_stop_request() is True
     assert user_relay.app_stop_request_path(root).is_file()
+
+
+@pytest.mark.parametrize('after_start', [False, True], ids=['before-start', 'after-start'])
+def test_app_stop_only_closes_the_process_started_before_request(app, tmp_path, monkeypatch, after_start):
+    import Label_Match as lm
+
+    started_at = datetime(2026, 10, 11, 12, 0, 0, 500000, tzinfo=timezone.utc)
+    requested_at = started_at + timedelta(microseconds=100 if after_start else -100)
+    class RequestClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return requested_at.astimezone(tz)
+    monkeypatch.setattr(user_relay, 'datetime', RequestClock)
+    monkeypatch.setattr(lm, '_APP_PROCESS_STARTED_AT', started_at, raising=False)
+    root = tmp_path / 'direct-sync'
+    user_relay.request_app_stop(root)
+    request_path = user_relay.app_stop_request_path(root)
+    payload = json.loads(request_path.read_text(encoding='utf-8'))
+    app.direct_sync_bootstrap_context = {'program_data_root': str(root)}
+    app.on_closing = Mock(side_effect=lambda **_kwargs: setattr(app, '_app_close_in_progress', True))
+
+    assert app._process_app_stop_request() is after_start
+    assert app.on_closing.call_count == int(after_start)
+    assert not request_path.exists()
+    assert datetime.fromisoformat(payload['requested_at']) == requested_at
+    assert datetime.fromisoformat(payload['requested_at']).utcoffset() == timedelta(0)
+
+
+@pytest.mark.parametrize('requested_at', [None, 123, 'not-a-date', '2026-10-11T12:00:00.500100'])
+def test_app_stop_without_aware_timestamp_is_ignored(app, tmp_path, requested_at):
+    root = tmp_path / 'direct-sync'
+    user_relay.request_app_stop(root)
+    request_path = user_relay.app_stop_request_path(root)
+    payload = json.loads(request_path.read_text(encoding='utf-8'))
+    payload['requested_at'] = requested_at
+    request_path.write_text(json.dumps(payload), encoding='utf-8')
+    app.direct_sync_bootstrap_context = {'program_data_root': str(root)}
+    app.on_closing = Mock(side_effect=lambda **_kwargs: setattr(app, '_app_close_in_progress', True))
+
+    assert app._process_app_stop_request() is False
+    app.on_closing.assert_not_called()
+    assert request_path.exists()
 
 
 def test_checkpoint_and_close_preserves_rows_and_removes_sidecars(tmp_path):

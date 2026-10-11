@@ -121,7 +121,7 @@ def request_app_stop(direct_sync_root: str | os.PathLike[str]) -> dict[str, Any]
     payload = {
         "schema_version": APP_STOP_SCHEMA,
         "request_id": uuid.uuid4().hex,
-        "requested_at": _now(),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
     }
     with writer_admission("app_stop_request"):
         _write_machine_json_atomic(path, payload)

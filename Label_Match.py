@@ -5,6 +5,10 @@ import base64
 import traceback
 import unicodedata
 import wave
+from datetime import datetime, date, timezone
+
+# Capture this process's start before application imports and startup work.
+_APP_PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 _STARTUP_WORKFLOW_NOTICES = []
 
@@ -20,7 +24,6 @@ import label_workbench_scan
 from label_history import _label_match_summary_date
 from collections.abc import Mapping
 from collections import namedtuple
-from datetime import datetime, date, timezone
 from pathlib import Path
 
 
@@ -6593,14 +6596,22 @@ class Label_Match(tk.Tk):
             if (payload.get("schema_version") != APP_STOP_SCHEMA
                     or re.fullmatch(r"[0-9a-f]{32}", request_id) is None):
                 return False
-        except OSError:
+            requested_at = datetime.fromisoformat(payload.get("requested_at"))
+            if requested_at.tzinfo is None or requested_at.utcoffset() is None:
+                return False
+        except (OSError, TypeError, ValueError):
             return False
-        # This path saves unfinished input and drains accepted work without
-        # the local pointer-confirmation step.
-        self.on_closing(_confirmed=True)
-        accepted = bool(self.__dict__.get("_app_close_in_progress", False)
-                        or self.__dict__.get("_tk_destroy_complete", False))
-        if accepted:
+        stale = requested_at < _APP_PROCESS_STARTED_AT
+        accepted = False
+        if stale:
+            print("앱 시작 전 멈춤 요청을 무시했습니다.")
+        else:
+            # Save unfinished input and drain accepted work without the local
+            # pointer-confirmation step.
+            self.on_closing(_confirmed=True)
+            accepted = bool(self.__dict__.get("_app_close_in_progress", False)
+                            or self.__dict__.get("_tk_destroy_complete", False))
+        if stale or accepted:
             try:
                 with writer_admission("app_stop_acknowledge"):
                     if _label_match_json_file(path).get("request_id") == request_id:

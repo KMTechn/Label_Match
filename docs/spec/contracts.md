@@ -510,4 +510,6 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 
 `user_relay.py --request-app-stop`은 같은 설치 소유자의 relay root `control/label_match_app.stop.json`에 작은 요청을 원자 저장하고 기존 relay stop을 요청한다. GUI는 기존 5초 상태 갱신에서 요청을 읽어 `on_closing(_confirmed=True)`로 현재 입력 저장과 승인된 작업 정리를 진행한다. 정상 닫기를 접수한 뒤 같은 요청만 지우며 닫기 거절·후속 요청은 보존한다. CLI의 `REQUESTED`는 GUI 종료 증명이 아니고 relay의 `UNKNOWN`은 종료 확인 실패다.
 
+CLI의 요청 시각은 마이크로초를 유지한 UTC aware 값이다. GUI는 application import 전에 기록한 자기 프로세스 시작 시각보다 앞선 요청을 같은 ID 확인 뒤 삭제하고 무시한다. 시작 뒤 요청만 정상 닫기로 넘기며, 시간대 없는 시각·잘못된 시각은 요청을 접수하지 않는다. 앱이 꺼져 있을 때 남은 요청이 다음 실행을 닫지 않는다.
+
 앱·relay의 쓰기용 SQLite 연결은 기존 commit/rollback 뒤 `wal_checkpoint(TRUNCATE)`를 시도하고 닫는다. checkpoint의 대기 시간은 0이며 BUSY·오류·쓰기 허가 거절은 유형만 기록하고 close를 계속한다. 읽기 전용 relay 연결에는 checkpoint를 하지 않는다. GUI worker·로그 writer 정리 뒤와 relay lease 해제 전에 기존 DB만 쓰기 연결로 다시 열어 마지막 읽기가 만든 sidecar를 정리한다. 없는 DB는 만들지 않는다. 정상 종료 뒤 다른 연결이 없으면 WAL/SHM이 사라지며, 남아 있으면 종료·되돌림의 성공 근거로 삼지 않는다.
