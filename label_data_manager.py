@@ -5,7 +5,7 @@ event projection and file names; this module does not import the Tk application.
 """
 
 import csv
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import hashlib
 import io
 import json
@@ -34,6 +34,7 @@ from writer_session_fence import writer_sink
 
 RECOVERY_MAX_BYTES = 8 * 1024 * 1024
 AUDIT_SEGMENT_BYTES = 1024 * 1024
+STATE_SAVE_LOCK_TIMEOUT_SECONDS = 10.0
 
 
 def read_recovery_file(path, *, journal_schema=None, current_state=False, expected_bytes=None):
@@ -547,13 +548,22 @@ class DataManager:
         if any(id(error) not in self._recovered_audit_errors for error in self._writer_errors):
             raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
         return True
+    @contextmanager
+    def _bounded_save_lock(self, lock):
+        if not lock.acquire(timeout=STATE_SAVE_LOCK_TIMEOUT_SECONDS):
+            raise TimeoutError("저장 잠금 대기 상한")
+        try:
+            yield
+        finally:
+            lock.release()
+
     def save_current_state(self, state_data, *, _completed_audit_keys=()):
-        with self._state_lock:
-            state_path = os.path.join(self.save_directory, self._current_state_filename())
-            checkpoint_write = False
-            try:
+        checkpoint_write = False
+        try:
+            with self._bounded_save_lock(self._state_lock):
+                state_path = os.path.join(self.save_directory, self._current_state_filename())
                 state_data_with_worker = sanitize_persistent_value(dict(state_data or {}))
-                with self._audit_csv_lock:
+                with self._bounded_save_lock(self._audit_csv_lock):
                     if self._audit_csv_prefixes:
                         state_data_with_worker['scanner_audit_csv_prefixes'] = dict(self._audit_csv_prefixes)
                 pending = {item['details']['scanner_audit']['key']: item for item in self._audit_outbox}
@@ -639,18 +649,18 @@ class DataManager:
                 self._last_state_write_failure = None
                 self._state_write_failure_attempts.pop(str(current.get('id') or ''), None)
                 return True
-            except Exception as e:
-                self._last_state_write_failure = None
-                if checkpoint_write and isinstance(e, OSError):
-                    current = (state_data or {}).get('current_set_info') or {}
-                    set_id = str(current.get('id') or '')
-                    if set_id:
-                        attempts = self._state_write_failure_attempts.get(set_id, 0) + 1
-                        self._state_write_failure_attempts[set_id] = attempts
-                        saved = json.loads(json.dumps(current, cls=self._datetime_encoder()))
-                        self._last_state_write_failure = (e, saved, attempts, len(checkpoint_payload))
-                print(f"임시 상태 저장 실패: {e}")
-                return False
+        except Exception as e:
+            self._last_state_write_failure = None
+            if checkpoint_write and isinstance(e, OSError):
+                current = (state_data or {}).get('current_set_info') or {}
+                set_id = str(current.get('id') or '')
+                if set_id:
+                    attempts = self._state_write_failure_attempts.get(set_id, 0) + 1
+                    self._state_write_failure_attempts[set_id] = attempts
+                    saved = json.loads(json.dumps(current, cls=self._datetime_encoder()))
+                    self._last_state_write_failure = (e, saved, attempts, len(checkpoint_payload))
+            print(f"임시 상태 저장 실패: {e}")
+            return False
 
     def hold_failed_checkpoint(self, outbox, *, source_phs2, source_input_tag_id):
         """Keep a failed checkpoint UNKNOWN; never replay its uncommitted audits."""
