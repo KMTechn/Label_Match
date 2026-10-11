@@ -14,7 +14,8 @@ from terminal_operation_lease import OperationLeaseStore
 from tests.test_f6_pointer_confirmation import app
 
 
-def test_request_reuses_relay_stop_and_current_close_preserves_unfinished_input(app, tmp_path):
+def test_idle_request_reuses_relay_stop_and_normal_close(app, tmp_path):
+    app.current_set_info["raw"] = []
     root = tmp_path / 'direct-sync'
     app.direct_sync_bootstrap_context = {'program_data_root': str(root), 'runtime_status_path': ''}
     app.after = Mock()
@@ -32,7 +33,7 @@ def test_request_reuses_relay_stop_and_current_close_preserves_unfinished_input(
 
     app._refresh_relay_screen_status()
 
-    assert saved == [['MASTER', 'PRODUCT']]
+    assert saved == [[]]
     app.data_manager.close.assert_called_once()
     app._begin_app_close_direct_sync.assert_called_once()
     app._request_pointer_confirmation.assert_not_called()
@@ -97,16 +98,19 @@ def test_invalid_app_stop_does_not_close(app, tmp_path, payload):
 
 
 def test_rejected_close_keeps_request_for_retry(app, tmp_path):
+    app.current_set_info["raw"] = []
     root = tmp_path / 'direct-sync'
     user_relay.request_app_stop(root)
     app.direct_sync_bootstrap_context = {'program_data_root': str(root)}
     app.on_closing = Mock()
 
     assert app._process_app_stop_request() is False
+    app.on_closing.assert_called_once_with(_confirmed=True)
     assert user_relay.app_stop_request_path(root).is_file()
 
 
 def test_close_does_not_delete_a_successor_app_request(app, tmp_path):
+    app.current_set_info["raw"] = []
     root = tmp_path / 'direct-sync'
     user_relay.request_app_stop(root)
     app.direct_sync_bootstrap_context = {'program_data_root': str(root)}
@@ -121,6 +125,7 @@ def test_close_does_not_delete_a_successor_app_request(app, tmp_path):
 
 @pytest.mark.parametrize('after_start', [False, True], ids=['before-start', 'after-start'])
 def test_app_stop_only_closes_the_process_started_before_request(app, tmp_path, monkeypatch, after_start):
+    app.current_set_info["raw"] = []
     import Label_Match as lm
 
     started_at = datetime(2026, 10, 11, 12, 0, 0, 500000, tzinfo=timezone.utc)

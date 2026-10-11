@@ -6673,7 +6673,7 @@ class Label_Match(tk.Tk):
         self._refresh_relay_screen_status()
         return None
 
-    def _process_app_stop_request(self):
+    def _process_app_stop_request(self, *, _closed=False):
         from user_relay import APP_STOP_SCHEMA, app_stop_request_path
 
         context = self.__dict__.get("direct_sync_bootstrap_context") or {}
@@ -6694,10 +6694,26 @@ class Label_Match(tk.Tk):
                 return False
         except (OSError, TypeError, ValueError):
             return False
+        if _closed and request_id != self.__dict__.get("_app_stop_deferred"):
+            return False
         stale = requested_at < _APP_PROCESS_STARTED_AT
         accepted = False
         if stale:
             print("앱 시작 전 멈춤 요청을 무시했습니다.")
+        elif request_id == self.__dict__.get("_app_stop_deferred"):
+            accepted = bool(self.__dict__.get("_tk_destroy_complete", False))
+        elif (self._app_close_needs_confirmation() or self._ui_lane_is_busy()
+              or self._has_background_work()
+              or self.__dict__.get("_scans_behind_completion") or active_pin_operation.get()):
+            self._app_stop_deferred = request_id
+            try:
+                self.data_manager.log_event("멈춤 요청 미룸", {"request_id": request_id})
+                self._save_current_set_state()
+            except Exception as exc:
+                print(f"종료 요청 기록 실패: {type(exc).__name__}")
+            if self.__dict__.get("operator_workbench_ready"):
+                self._render_operator_workbench()
+            return False
         else:
             # Save unfinished input and drain accepted work without the local
             # pointer-confirmation step.
@@ -8489,6 +8505,8 @@ class Label_Match(tk.Tk):
                 if state.get("_app_close_stall_noted") and state.get("save_directory"):
                     _try_update_shutdown_stall_notice(state["save_directory"], stalled=False)
             state["_tk_destroy_in_progress"] = False
+            if destroy_completed and state.get("_app_stop_deferred"):
+                self._process_app_stop_request(_closed=True)
 
     def _finish_after_mainloop(self):
         """Finish the existing close callbacks while still owning the guard."""
@@ -21453,6 +21471,9 @@ class Label_Match(tk.Tk):
                 "danger": (self.colors.get("danger", "#B91C1C"), "#FEF2F2", "#DC2626"),
             }
             foreground, background, border = palette.get(tone, palette["danger"])
+        if self.__dict__.get("_app_stop_deferred"):
+            title = "종료 요청 · " + title
+            message = "관리자가 프로그램 종료를 요청했습니다. 지금 트레이를 마친 뒤 [종료] 를 누르세요.\n" + message
         try:
             frame.configure(bg=background, highlightbackground=border)
             title_label.configure(text=title, bg=background, fg=foreground)
@@ -21476,17 +21497,21 @@ class Label_Match(tk.Tk):
             or self.__dict__.get("_workflow_pending_error")
             or callable(self.__dict__.get("_workflow_notice_action"))
         )
+        stop_exit = bool(self.__dict__.get("_app_stop_deferred") and not show_action)
+        show_action = show_action or stop_exit
         try:
             if show_action:
                 action_text = str(
                     self.__dict__.get("_workflow_notice_action_text") or "확인"
                 )
+                if stop_exit:
+                    action_text = "종료"
                 action_button.configure(
                     text=action_text,
                     width=(max(4, len(action_text)) if pointer_active
                            else 10 if action_text == "제출 재시도"
                            else len(action_text) if action_text == LABEL_MATCH_PACKAGE_RECOVERY_TEXT else 4),
-                    takefocus=not pointer_active,
+                    takefocus=not (pointer_active or stop_exit),
                 )
                 compact = bool(
                     self.__dict__.get("_operator_compact_large_text", False)
@@ -21496,7 +21521,7 @@ class Label_Match(tk.Tk):
                     pady=4 if compact else 7,
                 )
                 action_button.grid()
-                if not pointer_active:
+                if not (pointer_active or stop_exit):
                     action_button.focus_set()
             else:
                 action_button.grid_remove()
@@ -22361,6 +22386,9 @@ class Label_Match(tk.Tk):
         action = self.__dict__.get("_workflow_notice_action")
         if callable(action):
             action()
+            return "break"
+        if self.__dict__.get("_app_stop_deferred"):
+            self.on_closing()
             return "break"
         self._workflow_blocking_notice = None
         self._workflow_notice = None

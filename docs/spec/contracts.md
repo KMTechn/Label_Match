@@ -527,7 +527,7 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 
 ### 원격 앱 멈춤과 SQLite 연결 정리
 
-`user_relay.py --request-app-stop`은 같은 설치 소유자의 relay root `control/label_match_app.stop.json`에 작은 요청을 원자 저장하고 기존 relay stop을 요청한다. GUI는 기존 5초 상태 갱신에서 요청을 읽어 `on_closing(_confirmed=True)`로 현재 입력 저장과 승인된 작업 정리를 진행한다. 정상 닫기를 접수한 뒤 같은 요청만 지우며 닫기 거절·후속 요청은 보존한다. CLI의 `REQUESTED`는 GUI 종료 증명이 아니고 relay의 `UNKNOWN`은 종료 확인 실패다.
+`user_relay.py --request-app-stop`은 같은 설치 소유자의 relay root `control/label_match_app.stop.json`에 작은 요청을 원자 저장하고 기존 relay stop을 요청한다. GUI는 기존 5초 상태 갱신에서 요청을 읽고 활성 입력·저장 대기·보류 처리·관리자 작업이 없으면 기존 `on_closing(_confirmed=True)`로 정상 닫기를 진행한다. 작업 중에는 요청 ID별로 이벤트 `멈춤 요청 미룸`과 현재 상태 checkpoint를 기록하고 종료 안내를 계속 표시하며 스캔을 유지한다. 기록 실패도 입력을 막지 않는다. 작업이 끝나도 자동 종료하지 않으며 현장 `[종료]`가 평소 닫기를 호출한다. 미룬 요청은 실제 Tk 종료 뒤 같은 ID만 정리하고 닫기 거절·후속 요청은 보존한다. 기존 확인 동작과 포인터 동의가 우선하며 종료 버튼은 스캐너 초점을 가져가지 않는다. CLI의 `REQUESTED`는 GUI 종료 증명이 아니고 relay의 `UNKNOWN`은 종료 확인 실패다.
 
 CLI의 요청 시각은 마이크로초를 유지한 UTC aware 값이다. GUI는 application import 전에 기록한 자기 프로세스 시작 시각보다 앞선 요청을 같은 ID 확인 뒤 삭제하고 무시한다. 시작 뒤 요청만 정상 닫기로 넘기며, 시간대 없는 시각·잘못된 시각은 요청을 접수하지 않는다. 앱이 꺼져 있을 때 남은 요청이 다음 실행을 닫지 않는다.
 

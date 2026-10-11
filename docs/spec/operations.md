@@ -1374,7 +1374,7 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 & '<설치>/current/runtime/python.exe' -B '<설치>/current/app/user_relay.py' --request-app-stop --app-root '<설치>/current' --direct-sync-root '<설치 소유자의 relay root>'
 ```
 
-GUI의 기존 5초 주기가 하던 트레이를 확인 창 없이 저장하고 정상 닫기를 접수한다. 요청 파일 삭제는 접수 증거이며 실제 프로세스 종료 증명은 아니다. relay의 `ABSENT`는 기존 lease 부재 증거이고 `UNKNOWN`이면 명령은 1을 반환한다. 키트는 기존 절차대로 앱·relay 프로세스 부재와 자료 DB의 WAL/SHM 부재를 별도로 확인한 뒤 읽기·되돌림을 진행한다. checkpoint가 BUSY이거나 다른 연결이 남으면 종료를 강제로 진행하거나 sidecar를 직접 지우지 않는다.
+GUI의 기존 5초 주기는 작업이 없을 때 바로 정상 닫기를 진행한다. 작업 중에는 `멈춤 요청 미룸`과 checkpoint를 한 번 기록하고 「관리자가 프로그램 종료를 요청했습니다. 지금 트레이를 마친 뒤 [종료] 를 누르세요.」를 계속 표시한다. 스캔을 계속 받아 트레이를 마친 뒤 현장의 `[종료]`를 누른다. 작업 완료만으로 자동 종료하지 않으며 기존 확인이 있으면 그 동작을 먼저 마친다. 미룬 요청 파일은 실제 Tk 종료 뒤 같은 ID만 정리한다. 요청 파일 삭제는 실제 프로세스 종료 증명이 아니다. relay의 `ABSENT`는 기존 lease 부재 증거이고 `UNKNOWN`이면 명령은 1을 반환한다. 키트는 기존 절차대로 앱·relay 프로세스 부재와 자료 DB의 WAL/SHM 부재를 별도로 확인한 뒤 읽기·되돌림을 진행한다. checkpoint가 BUSY이거나 다른 연결이 남으면 종료를 강제로 진행하거나 sidecar를 직접 지우지 않는다.
 
 GUI 시작 전에 남은 요청은 삭제·무시하므로 앱이 꺼진 상태의 요청으로 다음 실행이 닫히지 않는다. 시간대 없는 requested_at은 무시한다. CLI는 UTC aware 시각의 마이크로초도 보존하여 같은 초 안의 시작 뒤 요청을 정상 처리한다.
 
