@@ -553,6 +553,56 @@ def test_candidate_archive_fresh_install_uses_same_tree(tmp_path, nextfix_archiv
             for path in candidate.rglob("*") if path.is_file()} == before
 
 
+def test_first_update_stock_pair_accepts_candidate_and_refuses_changed_app_files(
+    tmp_path, nextfix_archive_layouts,
+):
+    legacy, candidate = nextfix_archive_layouts
+    result = _nextfix_probe(tmp_path, candidate, legacy)
+    assert result.returncode == 0, result.stdout + result.stderr
+    installed_revision = subprocess.check_output(
+        ["git", "-c", "core.autocrlf=false", "-C", str(ROOT), "rev-parse", "55cab72"],
+        text=True,
+    ).strip()
+    replacements = _declared_current_user_profile_pairs("startup_release_replacements")
+    additions = _declared_current_user_profile_pairs("startup_release_additions")
+    pairs = replacements[installed_revision]
+    assert additions[installed_revision] == {}
+    changed = subprocess.check_output(
+        ["git", "-c", "core.autocrlf=false", "-C", str(ROOT),
+         "diff", "--name-only", installed_revision, "HEAD"], text=True,
+    ).splitlines()
+    app_files = {
+        "app/" + relative for relative in changed
+        if (candidate / "app" / relative).is_file()
+    }
+    assert app_files
+    assert app_files <= pairs.keys()
+
+    installed = _tree(candidate, tmp_path / "installed-stock", [*pairs, "portable-manifest.json"])
+    for relative, (before, after) in pairs.items():
+        original = subprocess.check_output(
+            ["git", "-c", "core.autocrlf=false", "-C", str(ROOT), "show",
+             installed_revision + ":" + relative.removeprefix("app/")],
+        )
+        assert _release_digest(original) == before
+        assert _release_digest((candidate / relative).read_bytes()) == after
+        (installed / relative).write_bytes(original)
+    (installed / "portable-manifest.json").write_text(
+        json.dumps({"source_commit": installed_revision}), encoding="utf-8",
+    )
+    _pin(installed)
+    result = _nextfix_probe(tmp_path, candidate, installed)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    for index, relative in enumerate(sorted(app_files)):
+        changed_candidate = _tree(candidate, tmp_path / f"changed-app-{index}", [relative])
+        with (changed_candidate / relative).open("a", encoding="utf-8") as stream:
+            stream.write(CHANGED_LINE)
+        _pin(changed_candidate)
+        result = _nextfix_probe(tmp_path, changed_candidate, installed)
+        assert result.returncode != 0, relative
+
+
 def test_reviewed_current_user_pair_preserves_e88011c_upgrade(tmp_path, nextfix_archive_layouts):
     old, candidate = nextfix_archive_layouts
     for relative, (before, after) in _declared_current_user_profile_pairs().items():
