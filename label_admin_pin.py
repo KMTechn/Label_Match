@@ -35,9 +35,10 @@ active_pin_operation: ContextVar[tuple[str, str, str, str, str, str, str] | None
 
 
 class AdminPinError(RuntimeError):
-    def __init__(self, code: str, *, unknown: bool = False):
+    def __init__(self, code: str, *, unknown: bool = False, status: int | None = None):
         self.code = code
         self.unknown = unknown
+        self.status = status
         super().__init__(code)
 
 
@@ -118,9 +119,26 @@ class AdminPinClient:
             "authority_scope_id": authority_scope_id, "known_version": known_version,
         }, response_limit=262144)
 
+    def query_roster_v2(self, authority_scope_id: str):
+        return self._post_path("/api/worker-roster/v2/query", {
+            "authority_scope_id": authority_scope_id,
+        }, response_limit=262144, expected_status=200)
+
+    def register_roster(self, payload: Mapping[str, Any]):
+        from label_worker_roster import normalize_registration_name
+        mode = payload.get("mode")
+        fields = {"mode", "authority_scope_id", "request_id", "display_name", "action_at",
+                  "temp_uuid" if mode == "create" else "existing_worker_id"}
+        if (mode not in {"create", "return"} or set(payload) != fields
+                or normalize_registration_name(payload["display_name"]) != payload["display_name"]):
+            raise AdminPinError("INVALID_REQUEST", status=400)
+        return self._post_path("/api/worker-roster/v2/register", payload, response_limit=262144,
+                               expected_status=201 if mode == "create" else 200)
+
     @writer_sink("label_admin_pin_request")
     @remote_request()
-    def _post_path(self, path: str, payload: Mapping[str, Any], *, response_limit: int = 8192) -> dict[str, Any]:
+    def _post_path(self, path: str, payload: Mapping[str, Any], *, response_limit: int = 8192,
+                   expected_status: int | None = None) -> dict[str, Any]:
         body = canonical_json(payload).encode("utf-8")
         if len(body) > 8192:
             raise AdminPinError("REQUEST_TOO_LARGE")
@@ -168,15 +186,21 @@ class AdminPinClient:
         try:
             answer = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
         except (ValueError, UnicodeError):
-            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True) from None
+            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, status=status) from None
         if not isinstance(answer, dict):
-            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True)
+            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, status=status)
         error = answer.get("error")
         code = str(error.get("code") or "") if isinstance(error, dict) else ""
+        if path.startswith("/api/worker-roster/v2/") and (
+                not 200 <= status < 300 or answer.get("ok") is not True):
+            raise AdminPinError(code or "VERIFY_UNAVAILABLE", unknown=status in {429, 503} or status >= 500 or not code,
+                                status=status)
         if status >= 500:
             raise AdminPinError("PIN_BUSY" if code == "PIN_BUSY" else "VERIFY_UNAVAILABLE", unknown=True)
         if not 200 <= status < 300 or answer.get("ok") is not True:
             raise AdminPinError(code or "VERIFY_UNAVAILABLE", unknown=not code)
+        if expected_status is not None and status != expected_status:
+            raise AdminPinError("VERIFY_UNAVAILABLE", unknown=True, status=status)
         return answer
 
     def verify(self, *, request_id: str, admin_id: str, pin: str, action: str,

@@ -269,6 +269,9 @@ def test_worker_ui_has_only_readonly_selection():
                and k.value.value == "readonly" for k in combos[0].keywords)
     assert not any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                    and n.func.attr == "Entry" for n in ast.walk(method))
+    assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+               and n.func.attr == "Button" and any(k.arg == "text" and isinstance(k.value, ast.Constant)
+                   and k.value.value == "새 이름 등록" for k in n.keywords) for n in ast.walk(method))
 
 
 def test_headless_selector_refreshes_active_choices_and_offline_notice(tmp_path, monkeypatch):
@@ -382,7 +385,7 @@ def test_nonempty_unusable_roster_never_allows_local_fallback(tmp_path, restart,
     app._roster_choice_note = SimpleNamespace(configure=lambda **values: notes.update(values))
     app.worker_name_var = SimpleNamespace(get=lambda: "김철", set=lambda value: None)
     app._refresh_worker_roster_selection()
-    assert notes["text"] == "관리자에게 명단 등록을 요청하세요"
+    assert notes["text"] == "이름을 고르거나 새 이름을 등록하세요."
 
 
 def test_dropped_name_does_not_hide_duplicate_identity_or_cache_damage(tmp_path):

@@ -83,7 +83,7 @@ class PackageOutboxProcessor:
                         )
                         if draft.worker_identity:
                             import label_worker_roster
-                            if label_worker_roster.query_identity_capability(self.client):
+                            if label_worker_roster.query_identity_capability(self.client, draft.worker_identity):
                                 command['payload']['worker_identity'] = dict(draft.worker_identity)
                         if draft.scanner_only:
                             command["payload"].update(

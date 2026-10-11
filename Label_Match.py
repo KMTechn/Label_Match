@@ -6947,7 +6947,11 @@ class Label_Match(tk.Tk):
         config = getattr(self.__dict__.get("package_logistics_client"), "config", None)
         self._roster_scope = str(getattr(config, "authority_scope_id", "") or "")
         self._roster_cache_path = os.path.join(os.path.dirname(self.app_settings_path), "roster.json")
-        self._worker_roster = label_worker_roster.load_cache(self._roster_cache_path, self._roster_scope)
+        self._roster_b = label_worker_roster.WorkerRoster(self._roster_cache_path, self._roster_scope)
+        client = self.__dict__.get("package_logistics_client")
+        if client is not None:
+            client._label_roster_b = self._roster_b
+        self._worker_roster = self._roster_b.snapshot
         self.worker_id = self.app_settings.get("worker_id")
         self._bind_remembered_roster_worker()
         self._roster_request_serial = 0
@@ -6958,6 +6962,8 @@ class Label_Match(tk.Tk):
         self._roster_poll_after_id = None
         self._roster_selection_window = None
         self._worker_identity_enabled = False
+        self._worker_roster_stage_b = False
+        self._worker_registration_dialog = None
         self._sync_worker_record_context()
 
     def _sync_worker_record_context(self):
@@ -6967,16 +6973,22 @@ class Label_Match(tk.Tk):
 
     def _worker_record_context(self):
         current = self.__dict__.get("current_set_info") or {}
-        return (label_worker_roster.record_identity(current.get('shortage_undo_snapshot') or current),
-                self.__dict__.get("_worker_identity_enabled", False) is True)
+        identity = label_worker_roster.record_identity(current.get('shortage_undo_snapshot') or current)
+        enabled = self.__dict__.get("_worker_identity_enabled", False) is True
+        store = self.__dict__.get("_roster_b")
+        if store and any(row["worker_id"] == identity.get("worker_id") for row in store.local["workers"]):
+            enabled = self.__dict__.get("_worker_roster_stage_b", False) is True
+        return identity, enabled
 
     def _bind_current_worker_record(self):
         current = self.current_set_info
         if "worker_name_snapshot" not in current:
-            roster = self.__dict__.get("_worker_roster")
-            current.update(worker_id=(self.__dict__.get("worker_id")
-                if not label_worker_roster.uses_legacy_names(roster) else None),
-                worker_name_snapshot=persistent_operator_name(self.worker_name))
+            store = self.__dict__.get("_roster_b")
+            selected = store.active_worker(worker_id=self.__dict__.get("worker_id")) if store and self.__dict__.get("worker_id") else None
+            identity = selected["worker_id"] if selected else (self.__dict__.get("worker_id")
+                if not label_worker_roster.uses_legacy_names(self.__dict__.get("_worker_roster")) else None)
+            name = selected["display_name"] if selected else persistent_operator_name(self.worker_name)
+            current.update(worker_id=identity, worker_name_snapshot=name)
         self._sync_worker_record_context()
 
     def _worker_roster_choices(self):
@@ -6985,8 +6997,21 @@ class Label_Match(tk.Tk):
         identity = self.__dict__.get("worker_id")
         if not recent and type(identity) is str:
             recent = [identity]
-        return label_worker_roster.choices(
-            self.__dict__.get("_worker_roster"), recent, self._recent_worker_names())
+        snapshot = self.__dict__.get("_worker_roster")
+        store = self.__dict__.get("_roster_b")
+        if store is None:
+            return label_worker_roster.choices(snapshot, recent, self._recent_worker_names())
+        store.snapshot = snapshot
+        rows = store.active_workers()
+        if label_worker_roster.uses_legacy_names(snapshot):
+            represented = {row["display_name"] for row in rows + store.local["workers"]}
+            represented.update(item["body"]["display_name"] for item in store.local["requests"]
+                               if item["body"] and item["state"] == "TERMINAL")
+            rows += [row for row in label_worker_roster.choices(None, recent, self._recent_worker_names())
+                     if row["display_name"] not in represented]
+        recent = list(dict.fromkeys(value for value in recent if type(value) is str))
+        order = {store.resolved_id(value): index for index, value in enumerate(recent)}
+        return sorted(rows, key=lambda row: (order.get(row["worker_id"], len(order)), row["display_name"]))
 
     def _bind_remembered_roster_worker(self):
         if self.__dict__.get("worker_id") is not None:
@@ -7007,24 +7032,26 @@ class Label_Match(tk.Tk):
             return True
         name = str(self.__dict__.get("worker_name", "") or "")
         roster = self.__dict__.get("_worker_roster")
-        if label_worker_roster.uses_legacy_names(roster):
-            return label_worker_roster.valid_name(name)
         identity = self.__dict__.get("worker_id")
+        store = self.__dict__.get("_roster_b")
+        if label_worker_roster.uses_legacy_names(roster) and identity is None:
+            return any(row["display_name"] == name for row in self._worker_roster_choices())
         matches = [worker for worker in self._worker_roster_choices()
-                   if worker["display_name"] == name
-                   and (identity is None or worker["worker_id"] == identity)]
+                   if (worker["display_name"] == name or (store and identity in store.local["temp_links"]
+                       and store.same_person(worker["worker_id"], identity)))
+                   and (identity is None or worker["worker_id"] == identity
+                        or self._roster_b.same_person(worker["worker_id"], identity))]
         return len(matches) == 1
 
     def _apply_worker_roster_answer(self, serial, scope, answer):
         if (serial != self._roster_request_serial or scope != self._roster_scope
                 or self.__dict__.get("_tk_shutdown_requested", False)):
             return False
-        previous = self.__dict__.get("_worker_roster")
-        accepted = label_worker_roster.apply_response(answer, previous, scope)
-        if accepted is not previous:
-            self._worker_roster = label_worker_roster.save_cache(
-                self._roster_cache_path, accepted, scope)
-            self._bind_remembered_roster_worker()
+        store = self._roster_b
+        store.snapshot = self.__dict__.get("_worker_roster")
+        store.apply(answer, requested_version=store.known_version)
+        self._worker_roster = store.snapshot
+        self._bind_remembered_roster_worker()
         self._refresh_worker_roster_selection()
         if (self.__dict__.get("initialized_successfully", False)
                 and not self._roster_worker_allowed()):
@@ -7047,13 +7074,46 @@ class Label_Match(tk.Tk):
         results = self._roster_result_queue
         query = self._worker_roster_query
         client = self.__dict__.get("package_logistics_client")
+        store = self._roster_b
+        pending = store.pending_requests()
+        epoch = self.__dict__.get("_admin_pin_login_epoch", "")
         def fetch():
+            try:
+                capability = client.get_capabilities()
+            except Exception:
+                capability = None
+            enabled = label_worker_roster.identity_capability_enabled(capability)
+            stage_b = label_worker_roster.registration_enabled(capability)
             try:
                 result = query(scope, version)
             except Exception:
                 result = None
-            enabled = label_worker_roster.query_identity_capability(client)
-            results.put((serial, scope, result, enabled))
+            registrations = []
+            if stage_b and pending:
+                try:
+                    pin_client = self._package_pin_client()
+                    disabled = set()
+                    if isinstance(result, dict) and (version is None or result.get("version", -1) >= version):
+                        checked = store._validate(result)
+                        disabled = {row["worker_id"] for row in checked["workers"] if row["status"] == "DISABLED"}
+                except Exception:
+                    pin_client = None
+                if pin_client is not None:
+                    for request in pending:
+                        if serial != self._roster_request_serial or epoch != self.__dict__.get("_admin_pin_login_epoch", ""):
+                            break
+                        try:
+                            if request.get("existing_worker_id") in disabled:
+                                raise AdminPinError("WORKER_DISABLED", status=403)
+                            registrations.append((request, pin_client.register_roster(request), None))
+                        except Exception as exc:
+                            registrations.append((request, None, exc))
+                            status, code = getattr(exc, "status", None), getattr(exc, "code", "")
+                            if status in {401, 429, 503} or status is None or (status == 403 and code != "WORKER_DISABLED"):
+                                if code == "ROSTER_V2_REGISTER_DISABLED":
+                                    stage_b = False
+                                break
+            results.put((serial, scope, result, enabled, stage_b, registrations, store, epoch))
         self._roster_next_refresh = time.monotonic() + 60
         self._roster_thread = threading.Thread(target=fetch, name="label-worker-roster", daemon=True)
         self._roster_thread.start()
@@ -7061,7 +7121,13 @@ class Label_Match(tk.Tk):
     def _worker_roster_query(self, scope, known_version):
         if not scope:
             raise ValueError("roster scope unavailable")
-        return self._package_pin_client().query_roster(scope, known_version)
+        client = self._package_pin_client()
+        try:
+            return client.query_roster_v2(scope)
+        except AdminPinError as exc:
+            if exc.status not in {404, 405}:
+                raise
+            return client.query_roster(scope, known_version)
 
     def _poll_worker_roster(self, *, schedule=True):
         self._roster_poll_after_id = None
@@ -7074,14 +7140,28 @@ class Label_Match(tk.Tk):
                 serial, scope, result = response[:3]
             except queue.Empty:
                 break
-            if (len(response) == 4 and serial == self._roster_request_serial
-                    and scope == self._roster_scope):
+            current = (serial == self._roster_request_serial and scope == self._roster_scope
+                       and (len(response) < 8 or (response[6] is self._roster_b
+                            and response[7] == self.__dict__.get("_admin_pin_login_epoch", ""))))
+            if not current:
+                continue
+            if len(response) >= 4:
                 self._worker_identity_enabled = response[3] is True
+            if len(response) >= 8:
+                self._worker_roster_stage_b = response[4] is True
             if result is not None:
                 try:
                     self._apply_worker_roster_answer(serial, scope, result)
-                except (ValueError, TypeError, OSError):
+                except (ValueError, TypeError, OSError, WriterFenceError):
                     pass  # Failed fetches never empty the verified cache.
+            if len(response) >= 8:
+                for request, answer, error in response[5]:
+                    try:
+                        self._roster_b.apply_registration(request, answer, error)
+                        self._worker_roster = self._roster_b.snapshot
+                    except (ValueError, TypeError, KeyError, OSError, WriterFenceError):
+                        pass  # Original request survives an unsaved or invalid ACK.
+                self._refresh_worker_roster_selection()
         if schedule:
             running = self.__dict__.get("_roster_thread")
             if (time.monotonic() >= self._roster_next_refresh
@@ -7090,19 +7170,123 @@ class Label_Match(tk.Tk):
                 self._request_worker_roster_refresh()
             self._roster_poll_after_id = self.after(250, self._poll_worker_roster)
 
+    def _worker_roster_notice_text(self):
+        store = self.__dict__.get("_roster_b")
+        if store is not None:
+            if store.local_blocked:
+                return "이름 등록 기록 확인 필요 · 기존 이름으로 작업하고 관리자에게 알리세요."
+            if any(item["state"] == "REVIEW" for item in store.local["requests"]):
+                return "이 PC에서 이름을 쓸 수 있습니다 · 회사 서버의 이름은 관리자 확인 필요."
+            if any(item["state"] == "PENDING" for item in store.local["requests"]):
+                return "이 PC에 저장됨 · 이름은 바로 쓸 수 있습니다. 회사 서버로는 나중에 보냅니다."
+        return "이름을 고르거나 새 이름을 등록하세요."
+
     def _refresh_worker_roster_selection(self):
         window = self.__dict__.get("_roster_selection_window")
         if window is None:
             return
         choices = self._worker_roster_choices()
-        names = [worker["display_name"] for worker in choices]
-        self._roster_choice_widget.configure(values=names)
-        if self.worker_name_var.get() not in names:
-            self.worker_name_var.set("")
+        labels = [label_worker_roster.worker_choice_label(row) for row in choices]
+        self._roster_choice_widget.configure(values=labels)
+        if self.worker_name_var.get() not in labels:
+            store = self.__dict__.get("_roster_b")
+            previous = self.worker_name_var.get()
+            aliases = [row for row in store.local["workers"]
+                       if label_worker_roster.worker_choice_label(row) == previous] if store else []
+            row = store.active_worker(worker_id=aliases[0]["worker_id"]) if len(aliases) == 1 else None
+            self.worker_name_var.set(label_worker_roster.worker_choice_label(row) if row else "")
         self._roster_choice_note.configure(text=(
             "명단을 받지 못해 이 PC 에 저장된 이름을 씁니다\n"
             if label_worker_roster.uses_legacy_names(self.__dict__.get("_worker_roster")) and choices else ""
-        ) + "관리자에게 명단 등록을 요청하세요")
+        ) + self._worker_roster_notice_text())
+
+    def _register_worker_name(self, name, *, existing_worker_id=""):
+        store = self._roster_b
+        row = store.register_local(name, existing_worker_id=existing_worker_id)
+        self._worker_roster = store.snapshot
+        self._refresh_worker_roster_selection()
+        variable = self.__dict__.get("worker_name_var")
+        if variable is not None:
+            variable.set(label_worker_roster.worker_choice_label(row))
+        self._request_worker_roster_refresh()
+        return row
+
+    def _open_worker_registration(self):
+        previous = getattr(self, "_worker_registration_dialog", None)
+        if previous is not None:
+            try:
+                if previous.winfo_exists():
+                    previous.lift()
+                    return
+            except tk.TclError:
+                pass
+        dialog = tk.Toplevel(self._roster_selection_window or self)
+        self._worker_registration_dialog = dialog
+        dialog.bind("<Destroy>", lambda event: self.__dict__.update(_worker_registration_dialog=None)
+                    if event.widget is dialog else None)
+        dialog.title("새 이름 등록")
+        dialog.transient(self._roster_selection_window or self)
+        dialog.grab_set()
+        frame = ttk.Frame(dialog, padding=16)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="이름만 적어 주세요. 저장한 뒤 바로 작업할 수 있습니다.").pack()
+        value = tk.StringVar()
+        entry = ttk.Entry(frame, textvariable=value, width=28)
+        entry.pack(pady=8)
+        notice = ttk.Label(frame, text="")
+        notice.pack()
+        candidates = ttk.Combobox(frame, state='readonly', width=28)
+        choices = []
+        question_name = [None]
+        different_from = [None]
+        decision = ttk.Frame(frame)
+        def save(existing_worker_id=""):
+            try:
+                name = label_worker_roster.normalize_registration_name(value.get())
+                if different_from[0] == name:
+                    raise ValueError("다른 분이면 구분할 이름을 적어 주세요. 예: 이름B")
+                roster = self.__dict__.get("_roster_b")
+                duplicates = roster.duplicate_workers(name) if roster is not None else []
+                if duplicates and not existing_worker_id:
+                    question_name[0] = name
+                    choices[:] = duplicates
+                    labels = [label_worker_roster.worker_choice_label(row) for row in choices]
+                    candidates.configure(values=labels)
+                    candidates.set(labels[0])
+                    candidates.pack(pady=4)
+                    decision.pack()
+                    notice.configure(text="같은 이름이 있습니다. 같은 분인가요?")
+                    return
+                self._register_worker_name(name, existing_worker_id=existing_worker_id)
+            except (OSError, ValueError, WriterFenceError) as exc:
+                notice.configure(text=str(exc) if isinstance(exc, ValueError) else
+                                 "이름을 저장하지 못했습니다. 입력은 남아 있습니다. 다시 등록하세요.")
+                return
+            dialog.destroy()
+        def same():
+            selected = next((row for row in choices if label_worker_roster.worker_choice_label(row) == candidates.get()), None)
+            if selected is not None:
+                roster = self.__dict__.get("_roster_b")
+                try:
+                    current = roster.duplicate_workers(value.get()) if roster is not None else []
+                except ValueError:
+                    current = []
+                if any(roster.same_person(row["worker_id"], selected["worker_id"]) for row in current):
+                    save(selected["worker_id"])
+                else:
+                    notice.configure(text="이름이 바뀌었습니다. 등록 단추를 다시 눌러 주세요.")
+        def different():
+            different_from[0] = question_name[0]
+            candidates.pack_forget()
+            decision.pack_forget()
+            notice.configure(text="다른 분이면 구분할 이름을 적어 주세요. 예: 이름B")
+            entry.focus_set()
+        ttk.Button(decision, text="같은 사람", command=same).pack(side=tk.LEFT)
+        ttk.Button(decision, text="다른 사람", command=different).pack(side=tk.LEFT)
+        ttk.Button(frame, text="등록", command=save).pack(pady=8)
+        ttk.Button(frame, text="취소", command=dialog.destroy).pack()
+        entry.bind('<Return>', lambda event: save())
+        entry.focus_set()
 
     def _remember_worker_name(self, worker_name):
         name = str(worker_name or "").strip()
@@ -18820,8 +19004,9 @@ class Label_Match(tk.Tk):
         main_frame.grid_columnconfigure(1, weight=1)
         ttk.Label(main_frame, text="작업자 이름", font=(self.default_font_name, 12, "bold")).grid(row=0, column=0, sticky='w', pady=(8,5), padx=(0, 10))
         ttk.Label(main_frame, text="작업이 끝나고 설정을 저장하면 다음 작업부터 로그 작업자명이 변경됩니다.", style="Status.TLabel").grid(row=1, column=0, columnspan=3, sticky='w', pady=(0, 10))
-        names = [worker["display_name"] for worker in self._worker_roster_choices()]
-        current_name = display_operator_name(self.worker_name)
+        names = [label_worker_roster.worker_choice_label(worker) for worker in self._worker_roster_choices()]
+        current_name = next((label_worker_roster.worker_choice_label(row) for row in self._worker_roster_choices()
+                             if row["worker_id"] == self.__dict__.get("worker_id")), display_operator_name(self.worker_name))
         self.worker_name_var = tk.StringVar(value=current_name if current_name in names else "")
         worker_entry = ttk.Combobox(
             main_frame,
@@ -18832,8 +19017,10 @@ class Label_Match(tk.Tk):
         )
         worker_entry.grid(row=2, column=0, columnspan=3, sticky='ew')
         self._roster_choice_widget = worker_entry
+        ttk.Button(main_frame, text="새 이름 등록", command=self._open_worker_registration).grid(
+            row=3, column=2, sticky="e", pady=(8, 0))
         self._roster_choice_note = ttk.Label(main_frame, style="Status.TLabel")
-        self._roster_choice_note.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self._roster_choice_note.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self._refresh_worker_roster_selection()
         button_frame = ttk.Frame(main_frame, padding=(0, 20, 0, 0), style="TFrame")
         button_frame.grid(row=4, column=0, columnspan=3, sticky='e', pady=(20,0))
@@ -18875,7 +19062,7 @@ class Label_Match(tk.Tk):
         selected_worker = None
         if managed_choice:
             matches = [worker for worker in self._worker_roster_choices()
-                       if worker["display_name"] == new_worker_name]
+                       if label_worker_roster.worker_choice_label(worker) == new_worker_name]
             if len(matches) != 1:
                 self._refresh_worker_roster_selection()
                 return

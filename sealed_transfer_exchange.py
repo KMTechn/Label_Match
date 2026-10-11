@@ -941,7 +941,7 @@ class SealedTransferExchangeCoordinator:
                     "new_barcodes": [pair["replacement_barcode"]], "target_barcodes": list(target["barcodes"])} }
             import label_worker_roster
             identity = saved.get('worker_identity')
-            if identity and label_worker_roster.query_identity_capability(self.client):
+            if identity and label_worker_roster.query_identity_capability(self.client, identity):
                 command['payload']['worker_identity'] = dict(identity)
             row = self.store.bind_command(row["intent_id"], command, expected_state=row)
         if row["status"] == "ACKED":
