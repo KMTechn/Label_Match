@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLED_REFS = ("d9160b6", "89155f17233fb1c8b5bae2a9e470832772a4d785")
@@ -72,9 +73,31 @@ def application_layout(source: Path, target: Path) -> dict[str, str]:
         file.relative_to(target).as_posix(): digest(file.read_bytes())
         for file in (target / "app").rglob("*") if file.is_file()
     }
-    # These bootstrap files already participate in reviewed startup declarations.
-    for name in ("INSTALL_THIS_PC.ps1", "tools/label_writer_fence.ps1"):
+    build_tree = ast.parse(builder_path.read_text(encoding="utf-8-sig"))
+    build_node = next(n for n in build_tree.body if isinstance(n, ast.FunctionDef) and n.name == "build")
+    build_names = {n.id for n in ast.walk(build_node) if isinstance(n, ast.Name)}
+    build_strings = {n.value for n in ast.walk(build_node) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    bootstrap = {"INSTALL_THIS_PC.ps1"}
+    for constant in ("BOOTSTRAP_INTEGRITY_HELPER", "WRITER_FENCE_HELPER", "WRITER_FENCE_CONTRACT",
+                     "WORKER_SHORTCUT_HELPER", "FAILURE_SINK_DATA"):
+        if constant not in build_names:
+            continue
+        values = getattr(builder, constant)
+        if not isinstance(values, (tuple, list)):
+            values = [values]
+        bootstrap.update(Path(value).as_posix() for value in values)
+    if "tools/apply_prepared_update.ps1" in build_strings:
+        bootstrap.add("tools/apply_prepared_update.ps1")
+    for name in bootstrap:
         result[name] = digest((source / name).read_bytes())
+    if "auto-update-settings.json" in build_strings:
+        policy_tree = ast.parse((source / "auto_update.py").read_text(encoding="utf-8-sig"))
+        policy = next(n for n in policy_tree.body if isinstance(n, ast.FunctionDef) and n.name == "policy_from_settings")
+        namespace = {"Mapping": Mapping, "Any": Any, "re": re}
+        exec(compile(ast.Module(body=[policy], type_ignores=[]), "<stock policy>", "exec"), namespace)
+        result["app/auto-update-settings.json"] = digest(
+            (json.dumps(namespace["policy_from_settings"]({}), sort_keys=True, indent=2) + "\n").encode()
+        )
     return result
 
 
