@@ -25,6 +25,14 @@ trap {
         # Input rejection never allocates private diagnostics, even if a kit
         # caller has already loaded the redaction functions in this process.
         $publicFailure = [ordered]@{status='FAILED';reason_code='PENDING_TARGET_INVALID';guidance='작업자 계정과 그 계정에서 확인한 READY 설치 목록을 확인하세요.'}
+        $workerReason = [string]$publicError.Exception.Data['worker_pending_reason']
+        if ($workerReason -cnotin @('WORKER_ARGS_REQUIRE_ADMIN','WORKER_ARGS_INCOMPLETE',
+            'WORKER_ACCOUNT_UNRESOLVED','WORKER_SID_UNSUPPORTED','INVENTORY_PATH_INVALID',
+            'INVENTORY_FILE_INVALID','INVENTORY_DECODE_INVALID','INVENTORY_BINDING_DIFFERS',
+            'WORKER_PROFILE_ABSENT','WORKER_PROFILE_DIFFERS','CONSOLE_WORKER_ABSENT',
+            'CONSOLE_WORKER_AMBIGUOUS','EVIDENCE_PATH_INVALID','UNCLASSIFIED')) { $workerReason = 'UNCLASSIFIED' }
+        $publicFailure['reason'] = $workerReason
+        $publicFailure['summary'] = 'PENDING_TARGET_INVALID reason=' + $workerReason
     } elseif ((Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) -and
         (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue)) {
         $publicFailure = Get-LabelLaunchFailure $publicError 'forward'
@@ -4899,33 +4907,51 @@ public static class KMTechLabelConsoleWorker {
 }
 
 function Get-LabelConsoleWorker {
-    $before = @(Get-LabelConsoleWorkerObservation)
-    if ($before.Count -ne 1 -or $before[0].session_id -isnot [int] -or $before[0].session_id -le 0 -or
-        $before[0].account -isnot [string] -or [string]::IsNullOrWhiteSpace($before[0].account)) { throw 'Console worker is ambiguous.' }
-    $sid = Resolve-LabelWorkerSid $before[0].account
-    $profile = Get-LabelWorkerProfileRoot $sid
-    $after = @(Get-LabelConsoleWorkerObservation)
-    if ($after.Count -ne 1 -or $after[0].session_id -cne $before[0].session_id -or
-        $after[0].account -cne $before[0].account) { throw 'Console worker changed during observation.' }
-    return [pscustomobject]@{sid=$sid;profile_root=$profile;session_id=$before[0].session_id}
+    $reason = 'CONSOLE_WORKER_ABSENT'
+    try {
+        $before = @(Get-LabelConsoleWorkerObservation)
+        if ($before.Count -ne 1 -or $before[0].session_id -isnot [int] -or $before[0].session_id -le 0 -or
+        $before[0].account -isnot [string] -or [string]::IsNullOrWhiteSpace($before[0].account)) { $reason = if ($before.Count -eq 0) { 'CONSOLE_WORKER_ABSENT' } else { 'CONSOLE_WORKER_AMBIGUOUS' }; throw 'Console worker is ambiguous.' }
+        $reason = 'WORKER_ACCOUNT_UNRESOLVED'
+        $sid = Resolve-LabelWorkerSid $before[0].account
+        $reason = 'WORKER_PROFILE_ABSENT'
+        $profile = Get-LabelWorkerProfileRoot $sid
+        $reason = 'CONSOLE_WORKER_ABSENT'
+        $after = @(Get-LabelConsoleWorkerObservation)
+        if ($after.Count -ne 1 -or $after[0].session_id -cne $before[0].session_id -or
+        $after[0].account -cne $before[0].account) { $reason = 'CONSOLE_WORKER_AMBIGUOUS'; throw 'Console worker changed during observation.' }
+        return [pscustomobject]@{sid=$sid;profile_root=$profile;session_id=$before[0].session_id}
+    } catch {
+        $_.Exception.Data['worker_pending_reason'] = $reason
+        throw
+    }
 }
 
 function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$InventoryPath, [bool]$ArgumentsSupplied = $false) {
+    $reason = 'UNCLASSIFIED'
     try {
         if (-not $Caller.elevated -and $Caller.session_id -ne 0) {
-            if ($ArgumentsSupplied -or $Account -or $InventoryPath) { throw 'Worker arguments require the administrator entry.' }
+            if ($ArgumentsSupplied -or $Account -or $InventoryPath) { $reason = 'WORKER_ARGS_REQUIRE_ADMIN'; throw 'Worker arguments require the administrator entry.' }
             return $null
         }
         if ($Caller.elevated -and -not $ArgumentsSupplied -and -not $Account -and -not $InventoryPath) {
             # Read-only planning and guarded legacy harnesses do not install a worker.
             if ($PlanOnly -or ($testMode -and $Caller.session_id -ne 0)) { return $null }
+            $reason = 'CONSOLE_WORKER_ABSENT'
             $console = Get-LabelConsoleWorker
             if ($console.sid -isnot [string] -or $console.sid -cnotmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -or
-                $console.profile_root -isnot [string] -or -not [IO.Path]::IsPathRooted($console.profile_root)) { throw 'Console worker binding is invalid.' }
+                $console.profile_root -isnot [string] -or -not [IO.Path]::IsPathRooted($console.profile_root)) {
+                $reason = 'WORKER_SID_UNSUPPORTED'
+                if ($console.sid -is [string] -and $console.sid -cmatch '^S-1-5-21-(\d+-){3}\d+$') { $reason = 'WORKER_PROFILE_DIFFERS' }
+                throw 'Console worker binding is invalid.'
+            }
+            $reason = 'WORKER_PROFILE_DIFFERS'
             $profile = [IO.Path]::GetFullPath($console.profile_root).TrimEnd('\')
             if ($profile -eq [IO.Path]::GetPathRoot($profile).TrimEnd('\')) { throw 'Console worker profile is invalid.' }
             if ($Caller.session_id -eq $console.session_id -and [string]$Caller.sid -ceq $console.sid) { return $null }
+            $reason = 'EVIDENCE_PATH_INVALID'
             Assert-LabelMachineEvidencePath
+            $reason = 'UNCLASSIFIED'
             $observation = [ordered]@{status='READY';target_sid=$console.sid;target_profile_root=$profile;
                 console_session_id=$console.session_id;target_source='ACTIVE_CONSOLE'}
             $bytes = [Text.Encoding]::UTF8.GetBytes(($observation | ConvertTo-Json -Compress))
@@ -4933,31 +4959,41 @@ function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$Inventor
                 inventory_sha256=(ByteSha $bytes);caller_is_worker=([string]$Caller.sid -ceq $console.sid);target_source='ACTIVE_CONSOLE'}
         }
         if (-not $Caller.elevated -or [string]::IsNullOrWhiteSpace($Account) -or
-            [string]::IsNullOrWhiteSpace($InventoryPath)) { throw 'Worker target and inventory are required.' }
+            [string]::IsNullOrWhiteSpace($InventoryPath)) { $reason = if (-not $Caller.elevated) { 'WORKER_ARGS_REQUIRE_ADMIN' } else { 'WORKER_ARGS_INCOMPLETE' }; throw 'Worker target and inventory are required.' }
+        $reason = 'WORKER_ACCOUNT_UNRESOLVED'
         $sid = Resolve-LabelWorkerSid $Account
-        if ($sid -cnotmatch '^S-1-5-21-\d+-\d+-\d+-\d+$') { throw 'Worker target is invalid.' }
-        if (-not [IO.Path]::IsPathRooted($InventoryPath)) { throw 'Inventory path must be absolute.' }
+        if ($sid -cnotmatch '^S-1-5-21-\d+-\d+-\d+-\d+$') { $reason = 'WORKER_SID_UNSUPPORTED'; throw 'Worker target is invalid.' }
+        if (-not [IO.Path]::IsPathRooted($InventoryPath)) { $reason = 'INVENTORY_PATH_INVALID'; throw 'Inventory path must be absolute.' }
+        $reason = 'INVENTORY_FILE_INVALID'
         $file = Get-Item -Force -LiteralPath $InventoryPath -ErrorAction Stop
         if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
             $file.Length -le 0 -or $file.Length -gt 1048576) { throw 'Inventory must be a bounded ordinary file.' }
         [byte[]]$bytes = [IO.File]::ReadAllBytes($file.FullName)
         if ($bytes.Length -gt 1048576) { throw 'Inventory is oversized.' }
+        $reason = 'INVENTORY_DECODE_INVALID'
         $inventory = (([Text.UTF8Encoding]::new($false,$true)).GetString($bytes) -replace '^\uFEFF','') | ConvertFrom-Json
+        $reason = 'INVENTORY_BINDING_DIFFERS'
         if ($inventory.status -isnot [string] -or $inventory.status -cne 'READY' -or
             $inventory.target_sid -isnot [string] -or $inventory.target_sid -cne $sid -or
             $inventory.target_profile_root -isnot [string] -or
             -not [IO.Path]::IsPathRooted($inventory.target_profile_root)) { throw 'Worker inventory binding differs.' }
+        $reason = 'WORKER_PROFILE_ABSENT'
         $profile = Get-LabelWorkerProfileRoot $sid
+        $reason = 'WORKER_PROFILE_DIFFERS'
         if ([string]::IsNullOrWhiteSpace($profile) -or -not [IO.Path]::IsPathRooted($profile)) { throw 'Worker profile is invalid.' }
         $profile = [IO.Path]::GetFullPath($profile).TrimEnd('\')
         if (-not [StringComparer]::OrdinalIgnoreCase.Equals($profile,
             [IO.Path]::GetFullPath($inventory.target_profile_root).TrimEnd('\')) -or
             $profile -eq [IO.Path]::GetPathRoot($profile).TrimEnd('\')) { throw 'Worker profile differs.' }
+        $reason = 'EVIDENCE_PATH_INVALID'
         Assert-LabelMachineEvidencePath
+        $reason = 'UNCLASSIFIED'
         return [pscustomobject]@{sid=$sid;profile_root=$profile;local_app_data=(Join-Path $profile 'AppData\Local');inventory_sha256=(ByteSha $bytes);caller_is_worker=($sid -ceq [string]$Caller.sid)}
     } catch {
+        if ($_.Exception.Data.Contains('worker_pending_reason')) { $reason = [string]$_.Exception.Data['worker_pending_reason'] }
         $failure = [InvalidOperationException]::new('Worker pending installation input is invalid.')
         $failure.Data['worker_pending_failure'] = $true
+        $failure.Data['worker_pending_reason'] = $reason
         throw $failure
     }
 }

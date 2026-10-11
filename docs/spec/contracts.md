@@ -2,6 +2,8 @@
 
 설치기와 배포 helper의 조상·검증 대상 조회 및 패키지 자식 열거는 숨김 속성이 있는 ProgramData·AppData·설치 경로도 검사한다. 읽기 `-Force`는 숨김 항목만 포함하며 reparse·파일 종류·바인딩 거절과 삭제 조건은 유지한다.
 
+작업자 대상 거절은 기존 `PENDING_TARGET_INVALID`·종료 코드 1·공개 JSON 한 줄을 유지하며 `reason`과 `summary`를 덧붙인다. `summary`는 `PENDING_TARGET_INVALID reason=<고정 코드>`이며 계정·SID·경로·예외 원문을 포함하지 않는다. 인수·계정 해석·SID 종류·inventory 경로/파일/해독/바인딩·프로필·콘솔·감사 경로의 까닭을 구분하고 미분류 또는 허용 목록 밖 값은 `UNCLASSIFIED`로 공개한다.
+
 관리자 설치 입구(v0, w9firstupdsub63 1차 답)는 상승 또는 Session 0에서만 `-WorkerAccount <SID 또는 DOMAIN\이름>`·`-WorkerSurveyInventory <절대 JSON 경로>`를 받는다. 실제 상승과 두 인수가 필요하다. 제품은 `status == READY`, 해석한 작업자 SID와 같은 `target_sid`(상승 호출자와 같은 SID도 허용), 그 SID의 ProfileList와 같은 `target_profile_root`만 확인한다. 파일/JSON/필드/바인딩 실패는 import·감사·설치·프로필 쓰기 전 고정 실패 한 줄로 끝난다. 나머지 inventory 필드는 해석하지 않고 파일 SHA256만 기계 표지에 기록한다. 일반 작업자 세션에 이 인수가 있으면 거절한다.
 
 기계 배치는 기존 pinned helper·guardian·검증/백업·자료 세대 거절·startup policy/task를 사용한다. startup의 operator SID/LocalAppData는 지정 작업자를 가리킨다. 다른 SID 관리자 길은 HKCU Run·등록·TLS·업무 자료를 실행하지 않는다. 같은 SID는 기계 fence 해제 뒤 기존 onboarding으로 자기 등록·자료·Run을 준비하며 relay·화면을 실행하지 않고 WORKER_SESSION_PENDING을 남긴다. 전용 deferral은 유효한 자기 PENDING과 실제 상승 SID를 요구하며 첫 일반 세션 READY 전 HKCU 완료를 쓰지 않는다. 옛 앱 이전은 키트 몫이다. 실패하면 새 공용 링크·PENDING을 제거하고 기존 두 파일은 원 바이트로 복원한다. 감사 기록 실패도 두 복원 시도를 막지 않는다. `update-control/worker-pending.json`은 보호된 부모에 둔 읽기 전용 `label-match-machine-worker-pending-v1` 기록이며 설치 ID·대상 SID·source commit·판·inventory SHA256을 결속한다. `PASS_MACHINE_WORKER_PENDING`은 기계 몫의 성공과 작업자 준비 대기를 뜻한다.
