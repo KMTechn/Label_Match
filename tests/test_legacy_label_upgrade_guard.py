@@ -507,6 +507,8 @@ def nextfix_archive_layouts(tmp_path_factory):
         (layout / "portable-manifest.json").write_text(json.dumps({"source_commit":
             subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", revision], text=True).strip()}), encoding="utf-8")
         if name == "candidate":
+            for relative in builder.FAILURE_SINK_DATA:
+                shutil.copyfile(source / relative, layout / relative)
             (layout / "app/auto-update-settings.json").write_text(json.dumps({"feed_url":"", "channel":"stable",
                 "apply_during_work":False, "profile_auth":False}, sort_keys=True, indent=2)+"\n", encoding="utf-8", newline="\n")
             public=json.loads((source / "config/update-manifest-key-config.json").read_text(encoding="utf-8-sig"))
