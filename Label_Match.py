@@ -12483,6 +12483,27 @@ class Label_Match(tk.Tk):
                 self._package_pin_ui(self._render_operator_workbench)
             self._reconcile_pending_sealed_transfer_exchanges(prompt_operator=True)
             self._package_pin_ui(self._reconcile_active_package_submission, on_closed=True)
+            if dayend_saved and not self.__dict__.get("_workflow_blocking_notice"):
+                try:
+                    prefix = Path(current_path).name + ".resume-"
+                    copies = []
+                    for entry in Path(current_path).parent.glob(prefix + "*"):
+                        digest = entry.name[len(prefix):]
+                        if (not re.fullmatch(r"[0-9a-f]{64}", digest) or os.path.lexists(
+                                entry.with_name(Path(current_path).name + ".held-" + digest))):
+                            continue
+                        raw = read_checked_bytes(entry, allowed_root=self.data_manager.save_directory)
+                        archived = json.loads(raw.decode("utf-8"))
+                        info = archived.get("current_set_info") if isinstance(archived, dict) else None
+                        if (not isinstance(info, dict) or str(info.get("id") or info.get("set_id") or "").strip() != saved_set_id
+                                or hashlib.sha256(raw).hexdigest() != digest):
+                            continue
+                        copies.append((digest == dayend_saved[1], entry.stat().st_mtime_ns, entry))
+                    copies.sort(key=lambda row: (row[0], row[1], row[2].name), reverse=True)
+                    for _current, _stamp, entry in copies[3:]:
+                        entry.unlink()
+                except (OSError, ValueError, TypeError, RecursionError) as exc:
+                    print(f"[resume archive cleanup] {type(exc).__name__}")
 
     def _discard_declined_saved_set(self, saved_set_info):
         """Delete a saved set the operator declined to restore (see below)."""

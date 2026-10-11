@@ -90,6 +90,52 @@ def test_previous_day_tray_restores_then_accepts_the_next_product(dayend_case, d
     assert archives[0].read_bytes() == original
 
 
+@pytest.mark.parametrize("cycles", [3, 5])
+def test_repeated_dayend_resume_keeps_three_copies_and_preserves_held_work(dayend_case, monkeypatch, cycles):
+    module, app, path, save = dayend_case
+    save()
+    path.write_bytes(b"{")
+    previous = (datetime(2026, 10, 12, 8) - timedelta(days=1)).timestamp()
+    os.utime(path, (previous, previous))
+    app._load_current_set_state()
+    held = list(path.parent.glob(path.name + ".held-*"))
+    assert held and not path.exists()
+    protected = {entry: (entry.read_bytes(), entry.stat().st_mtime_ns)
+                 for entry in held + list(path.parent.glob(path.name + ".resume-*"))}
+    saved = json.loads(save())["current_set_info"]
+    originals = []
+    for day in range(cycles):
+        today = datetime(2026, 10, 12) + timedelta(days=day)
+
+        class DayClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = cls(today.year, today.month, today.day, 8)
+                return value if tz is None else value.replace(tzinfo=tz)
+
+        monkeypatch.setattr(module, "datetime", DayClock)
+        assert app.data_manager.save_current_state({"current_set_info": saved,
+            "timestamp": (DayClock.now() - timedelta(days=1)).isoformat()})
+        persisted = json.loads(path.read_bytes())
+        persisted["timestamp"] = (DayClock.now() - timedelta(days=1)).isoformat()
+        path.write_bytes(json.dumps(persisted, ensure_ascii=False).encode("utf-8"))
+        original = path.read_bytes()
+        assert original not in originals
+        originals.append(original)
+        app.current_set_info = _fresh_set()
+        app._load_current_set_state()
+        assert app.current_set_info["id"] == saved["id"]
+        assert app.__dict__.get("_workflow_blocking_notice") is None
+        copies = [entry for entry in path.parent.glob(path.name + ".resume-*")
+                  if entry not in protected
+                  and json.loads(entry.read_bytes())["current_set_info"]["id"] == saved["id"]]
+        assert len(copies) <= 3
+        assert {entry.read_bytes() for entry in copies} == set(originals[-3:])
+        assert path.read_bytes() == original
+        for entry, (raw, stamp) in protected.items():
+            assert entry.read_bytes() == raw and entry.stat().st_mtime_ns == stamp
+
+
 def test_previous_day_bytes_are_copied_before_the_existing_validator(dayend_case, monkeypatch):
     _module, app, path, save = dayend_case
     original = save()

@@ -134,6 +134,8 @@ TEST1의 `e88011c`에서 이 수정 판으로의 제자리 업그레이드는 �
 <a id="test-audit-w9"></a>
 ## W9 · 기존 21개 시험 실패 감사
 
+포장 호스트 시험은 native known-folder 호출을 시험 스크립트 주입 자리에서 E: 경로로 바꾸고 Python의 호스트 저장 쓰기를 차단한다. [시험 감시 도구](../../tests/_host_storage_guard.py)는 C:/ProgramData/KMTech의 전후 파일 메타데이터·자료 세대 파일 SHA와 재귀 변경 이벤트를 함께 대조한다. 읽을 수 없는 보호 하위 폴더는 재귀 감시로 덮으며 권한은 바꾸지 않는다. 새 항목·변경·삭제·감시 오류가 생기면 하네스가 실패한다. 로그와 감시 증거는 지정 E: 임시에 보존한다.
+
 `350d5be`의 보존된 전체 결과는 3044 PASS/21 FAIL/5 SKIP이며 보이는 GUI 5개를 제외했다. 실패 원인은 낡은 fixture/API 16개와 합성 onboarding 상태를 상속한 저장 루트 환경 의존 5개다. bootstrap 시험은 검증된 shared helper를 로드하고, F4 취소 시험은 대상 수량을 제공하며 live reseal 시험은 실제 앱의 typed QR parser를 사용한다. relay 시험은 기존 child exit·수신 barcode에 durable ACK status와 queue 검사를 함께 사용한다.
 
 review API inventory의 추가 네 소비자는 업무 fixture의 수동 drain과 restored-F4의 불변 snapshot 세 시험이다. 세 화면 시험은 render 중 동기 store accessor가 호출되지 않음과 상태 보존을 확인하며, 기존 Thread/snapshot inventory의 exact 비교를 유지한다. standalone 기본 경로 시험은 LOCALAPPDATA와 direct-sync root를 시험별 임시 경로로 지정한다.
@@ -865,7 +867,7 @@ GUI·relay·등록·writer의 Python mutex 생성은 `CreateMutexExW`의 `SYNCHR
 | 관리자 경고 조회 실패 | 생성·취소 경고와 마지막 확인 목록을 보존하며 `조회 실패 · 오래됨` 표시. 실물 구분·반출 보류 안내를 계속 따른다 | 정상 조회로 현재 상태를 확인한다. 확인된 빈 목록만 경고를 해제하며 DB 오류를 사건 종결로 간주하지 않음 |
 | 로컬 완료 후 전송 대기 | `로컬 완료 저장됨 · 중앙 전송 대기`는 marker=1 로컬 완료이며 due 재시도; 다음 준비 작업 가능. ACK 유실은 저장 명령의 receipt부터 조회 | `중앙 확정`은 중앙 COMMITTED receipt와 원래 명령 identity 검증 뒤의 상태. 오래된 pending 실물 인계 기준은 [LM-B02](BACKLOG.md#lm-b02) |
 | 중앙 충돌/다중 PC 경합 | marker=1 conflict는 로컬 완료를 보존하고 검토 사건으로 격리. marker=0을 완료로 승격하지 않음 | 작업자는 원본 PHS2·실물 구분을 유지하고 리더/지원 담당이 set/key·중앙 결과·원인을 대조. 사건 종결 권한·실물 처리 기준은 미확정([LM-B06](BACKLOG.md#lm-b06)) |
-| 자정·재시작 | 로컬 미완료 세트도 원 바이트 사본 후 기존 검증으로 자동 복원. 위 상태 줄의 「어제 하던 세트를 이어서 엽니다 — 세트 이름·남은 N개」를 보고 그대로 이어 함. 확인 창·단추 없음 | ID·일련번호·현품표 날짜·시작 시각 보존; 완료는 오늘 event로 집계. 중앙 내구·과도기 예외 유지 |
+| 자정·재시작 | 로컬 미완료 세트도 원 바이트 사본 후 기존 검증으로 자동 복원. 위 상태 줄의 「어제 하던 세트를 이어서 엽니다 — 세트 이름·남은 N개」를 보고 그대로 이어 함. 확인 창·단추 없음 | ID·일련번호·현품표 날짜·시작 시각 보존; 완료는 오늘 event로 집계. 복원 성공 뒤 같은 세트의 검증된 `.resume` 사본은 이번 사본 포함 3개, 보류/`.held`는 보존. 중앙 내구·과도기 예외 유지 |
 | 미리 받은 잠금의 밤사이 만료 | 스캔은 기존 잠금 없는 원천 조회로 진행하고 저장된 잠금을 보존. 완료는 원 잠금으로 보내 회사 서버가 허용 여부를 판정 | 새 발급의 만료 검증 유지. 서버 거절은 그 세트만 충돌·관리자 확인 대기; 만료 행 삭제·새 발급으로 우회하지 않음 |
 | 이전 세트 읽기 실패 | 비중앙 timestamp 오류도 기존 「멈춘 작업」 보류 snapshot과 별도 원본 파일에 내구 보관·SHA readback 후 새 세트 시작. 「어제 하던 세트를 확인 대기로 두었습니다. 관리자에게 알리세요.」 | 보관 실패면 원본/current-state를 유지하고 새 저장을 막음. 관리자 메뉴 「멈춘 작업 확인」에서 확인. 중앙 캐시 timestamp 오류는 기존 복구 잠금 유지 |
 | F1/F2 | F1은 gate가 허용하는 미완료 초기화. F2 취소는 CREATE ACK dependency와 별도 취소 key 사용 | 취소·중복 요청이 원래 PACKAGE에 연결되고 SHIPPING-WAIT 재고 유지. 실물 해체·재고 반환으로 해석하지 않음([C-06](contracts.md#c-06)) |
