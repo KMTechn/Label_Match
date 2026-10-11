@@ -143,7 +143,10 @@ def test_existing_notice_action_keeps_priority_over_exit_and_preserves_pointer_i
 
 
 def test_local_exit_keeps_request_until_normal_destroy_and_same_id_cleanup(app, tmp_path, monkeypatch):
+    stop_path = Mock(wraps=user_relay.app_stop_request_path)
+    monkeypatch.setattr(user_relay, "app_stop_request_path", stop_path)
     path = _request(app, tmp_path)
+    stop_path.reset_mock()
     assert app._process_app_stop_request() is False
     app._acknowledge_workflow_notice()
     assert app._pointer_confirmation is not None
@@ -160,6 +163,28 @@ def test_local_exit_keeps_request_until_normal_destroy_and_same_id_cleanup(app, 
     app.destroy()
     assert app._tk_destroy_complete is True
     assert not path.exists()
+    assert stop_path.call_count >= 2
+    assert all(call.args == (app.direct_sync_bootstrap_context["program_data_root"],)
+               for call in stop_path.call_args_list)
+
+
+@pytest.mark.parametrize("status", ["PRINT_PENDING", "PREPARE_PENDING"])
+def test_exchange_journal_without_raw_scans_defers_using_shared_close_predicate(app, tmp_path, status):
+    from phs_label_workflow import PHSLabelExchangeCoordinator
+
+    app.current_set_info["raw"] = []
+    app.current_set_info["id"] = "exchange-in-progress"
+    coordinator = PHSLabelExchangeCoordinator.__new__(PHSLabelExchangeCoordinator)
+    coordinator.journal = SimpleNamespace(load=lambda: {
+        "status": status, "set_id": app.current_set_info["id"],
+        "canonical_input_tag_qr": ""})
+    app.phs_label_exchange_coordinator = coordinator
+    assert app._app_close_needs_confirmation()
+    path = _request(app, tmp_path)
+    assert app._process_app_stop_request() is False
+    app._save_current_set_state.assert_called_once()
+    app.data_manager.close.assert_not_called()
+    assert path.is_file()
 
 
 @pytest.mark.parametrize("destroy_error", [False, True])

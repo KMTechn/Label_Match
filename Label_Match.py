@@ -5665,7 +5665,8 @@ class Label_Match(tk.Tk):
         count = len(self.package_outbox.list_workbench_holds())
         self._ui_lane_review_notice = WorkflowNotice(
             f"관리자 확인 {count}건", "처리 중 오류로 이 세트를 따로 보관했습니다. "
-            "관리자 확인 대기 — 다음 세트를 계속하세요.", tone="warning")
+            "관리자 확인 대기 — 다음 세트를 계속하세요. "
+            "격리된 체크포인트가 비교 원본입니다(parked 상태는 작업 제출 때 스냅숏).", tone="warning")
         if self.__dict__.get("operator_workbench_ready"):
             self._render_operator_workbench()
         self._focus_scan_entry_if_available()

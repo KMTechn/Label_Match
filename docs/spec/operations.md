@@ -1390,6 +1390,8 @@ GUI worker·로그 writer 정리 뒤와 relay lease 해제 직전에 기존 DB�
 PowerShell 원문은 byte I/O로 BOM과 줄 끝을 보존한다. 비ASCII PowerShell은 UTF-8 BOM으로 저장한다. `python -B tools/check_powershell_source_encoding.py --baseline d9160b6 --report E:/KMTech/w9firstupd-tmp/w9firstupdsub100/ps1-encoding-final.json`은 추적 PowerShell 전부의 BOM과 바탕 줄 끝을 읽기 전용으로 검사한다. stock 패킷의 canonical SHA와 Git 바이트 대조는 최종 묶음 검증에서 별도로 수행한다.
 ### 처리 오류로 따로 보관된 세트
 
+격리된 체크포인트가 관리자 대조의 비교 원본이다. parked 상태는 작업을 처리 줄에 제출할 때의 스냅숏이며, 고장 이후 화면 상태와 혼동하지 않는다.
+
 “처리 중 오류로 이 세트를 따로 보관했습니다. 관리자 확인 대기 — 다음 세트를 계속하세요.”가 보이면 해당 실물 세트를 따로 두고 다음 현품표를 스캔한다. 보류된 현품표는 관리자 확인 전 다시 처리하지 않는다. 관리자는 기존 건별 복구 메뉴에서 보류 요청·격리 원본·고장 감사 기록을 대조한다. “처리 상태 확인 필요”가 계속 보이면 추가 스캔을 멈추고 기존 관리자 지원 절차를 따른다. 원본이나 UNKNOWN을 지우거나 성공·실패로 바꾸어 작업을 재개하지 않는다.
 
 요청 세대 또는 세트 ID가 현재 입력과 다르거나 화면 밖의 보류 검증 작업이면 자동 재개하지 않는다. 고장 기록 뒤 현재 입력을 그대로 두고 기존 관리자 안내로 멈춘다.
