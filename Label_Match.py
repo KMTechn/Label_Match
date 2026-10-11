@@ -17279,7 +17279,7 @@ class Label_Match(tk.Tk):
                     else "현품표 출력 재시도 필요"
                 ),
                 message=(
-                    "현품표 교체를 완료했습니다. 새 현품표별 작업을 "
+                    getattr(result, "operator_message", "") or ("현품표 교체를 완료했습니다. 새 현품표별 작업을 "
                     "확인할 때까지 현재 포장 상태를 유지합니다."
                     if result.success
                     and working.get("phs_label_topology_refresh_required")
@@ -17291,7 +17291,7 @@ class Label_Match(tk.Tk):
                             "현품표 출력에 실패했습니다. 출력 상태를 "
                             "확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요."
                         )
-                    )
+                    ))
                 ),
                 kind="phs_label_exchange",
                 tone="success" if result.success else "danger",
@@ -17501,9 +17501,9 @@ class Label_Match(tk.Tk):
                     else "현품표 실제 출력 실패"
                 ),
                 message=(
-                    "현품표 날짜 교환을 완료했습니다. 포장 수량과 진행 상태는 유지됩니다."
+                    getattr(result, "operator_message", "") or ("현품표 날짜 교환을 완료했습니다. 포장 수량과 진행 상태는 유지됩니다."
                     if result.success
-                    else "현품표 출력에 실패했습니다. 출력 상태를 확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요."
+                    else "현품표 출력에 실패했습니다. 출력 상태를 확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요.")
                 ),
                 kind="phs_label_exchange",
                 tone="success" if result.success else "danger",
