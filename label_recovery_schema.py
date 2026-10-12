@@ -102,6 +102,8 @@ RECOVERY_SCHEMAS = {
             "transition_class": _TEXT,
             "transition_reasons": _TEXT_LIST,
             "transition_duplicate": _BOOLEAN,
+            "top_scan_count": _INTEGER,
+            "packing_settings_version": _INTEGER,
         },
     },
     "draft": {
@@ -120,6 +122,8 @@ RECOVERY_SCHEMAS = {
             "expected_plane_epoch": _INTEGER,
             "expected_seal_revision": _INTEGER,
             "operation_lease_fence": _INTEGER,
+            "top_scan_count": _INTEGER,
+            "packing_settings_version": _INTEGER,
             "sample_barcodes": _TEXT_LIST,
             "scanner_only": _BOOLEAN,
             "exact_rescan_barcodes": _TEXT_LIST,

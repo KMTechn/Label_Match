@@ -704,6 +704,60 @@ class PackageOutbox:
             conn.commit()
             return cursor.rowcount == 1
 
+    def replace_packing_settings_version(
+        self, key: str, version: int, error: Exception, *, expected_claim
+    ) -> bool:
+        """Keep a refused confirm and queue it again with a re-read version.
+
+        Only for 400 PACKING_SETTINGS_VERSION_INVALID: the server validated the
+        field before any receipt, so the same idempotency key is resent with
+        the corrected version in both the saved command and its draft.
+        """
+        if type(version) is not int or version < 0:
+            raise PackageLogisticsError("packing settings version is invalid")
+        cas, parameters = _sending_claim_cas("package_command_outbox", expected_claim)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT command_json,draft_json FROM package_command_outbox"
+                " WHERE idempotency_key=? AND status='SENDING'" + cas,
+                (key, *parameters),
+            ).fetchone()
+            if row is None or not row["command_json"]:
+                conn.rollback()
+                return False
+            command = json.loads(row["command_json"])
+            payload = command.get("payload") if isinstance(command, dict) else None
+            if not isinstance(payload, dict) or "packing_settings_version" not in payload:
+                conn.rollback()
+                return False
+            payload["packing_settings_version"] = version
+            draft = PackageCommandDraft.from_dict(json.loads(row["draft_json"]))
+            values = draft.to_dict()
+            values.update(top_scan_count=draft.top_scan_count, packing_settings_version=version)
+            corrected = PackageCommandDraft.from_dict(values).to_dict()
+            require_recovery_record("draft", corrected)
+            cursor = conn.execute(
+                """UPDATE package_command_outbox
+                       SET command_json=?,draft_json=?,status='PENDING',last_error_code=?,
+                           last_error_message=?,retry_after_at=NULL,updated_at=?
+                     WHERE idempotency_key=? AND status='SENDING'""" + cas,
+                (
+                    json.dumps(command, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    json.dumps(corrected, ensure_ascii=False, sort_keys=True),
+                    str(getattr(error, "code", error.__class__.__name__)),
+                    str(error),
+                    self._utc_now(),
+                    key,
+                    *parameters,
+                ),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
+
     def mark_conflict(
         self,
         key: str,

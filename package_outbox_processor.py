@@ -32,6 +32,9 @@ from package_errors import (
 )
 from terminal_operation_lease import OperationLeaseError, parse_utc
 
+# The one server refusal of a confirm's top-scan setting version (contract v1.1).
+PACKING_SETTINGS_VERSION_INVALID = "PACKING_SETTINGS_VERSION_INVALID"
+
 if TYPE_CHECKING:
     from package_logistics import PackageLogisticsClient, PackageOutbox
 
@@ -41,12 +44,16 @@ class PackageOutboxProcessor:
         outbox: PackageOutbox,
         client: PackageLogisticsClient,
         *, prepare_scanner_delivery=None,
+        read_packing_settings_version=None,
     ):
         self.outbox = outbox
         self.client = client
         self._drain_lock = threading.Lock()
         self._draining = False
         self.prepare_scanner_delivery = prepare_scanner_delivery
+        # Reads the web top-scan setting again when the server refuses a
+        # confirm's packing_settings_version (this worker thread, not Tk).
+        self.read_packing_settings_version = read_packing_settings_version
         self._settled_refused_leases: set[str] = set()
         self._refused_lease_retry_after: dict[str, str] = {}
         self._receipt_recheck_attempts = 0
@@ -103,7 +110,8 @@ class PackageOutboxProcessor:
                                 scan_payload=draft.scan_payload,
                                 local_completion_id=draft.set_id, local_completed_at=draft.local_completed_at,
                                 deferred_reflection=True, short_confirmed=draft.short_confirmed,
-                                exchange_idempotency_keys=[row["idempotency_key"] for row in draft.scanner_exchanges])
+                                exchange_idempotency_keys=[row["idempotency_key"] for row in draft.scanner_exchanges],
+                                packing_settings_version=draft.packing_settings_version)
                             saved = self.outbox.save_command(key, source_id, command, delivery_draft=draft, expected_claim=row)
                         else:
                             saved = self.outbox.save_command(key, source_id, command, expected_claim=row)
@@ -130,7 +138,20 @@ class PackageOutboxProcessor:
                     if not applied:
                         self.outbox.request_receipt_recheck(row, receipt)
                 except PackageApiError as exc:
-                    if exc.committed is True:
+                    if (
+                        exc.status_code == 400
+                        and exc.code == PACKING_SETTINGS_VERSION_INVALID
+                        and exc.committed is not True
+                        and draft is not None
+                        and draft.scanner_only
+                        and row.get("command_json")
+                    ):
+                        # Only this refusal: keep the confirm, read the setting
+                        # again and send the same confirm with that version.
+                        counts["retry"] += int(
+                            self._resend_with_fresh_packing_settings(key, row, exc)
+                        )
+                    elif exc.committed is True:
                         applied = self.outbox.mark_conflict(
                             key,
                             exc,
@@ -179,6 +200,18 @@ class PackageOutboxProcessor:
             with self._drain_lock:
                 self._draining = False
         return counts
+
+    def _resend_with_fresh_packing_settings(self, key, row, error) -> bool:
+        reader = self.read_packing_settings_version
+        try:
+            version = reader() if callable(reader) else 0
+        except Exception:  # noqa: BLE001 - the confirm is still resent
+            version = 0
+        if type(version) is not int or version < 0:
+            version = 0
+        return self.outbox.replace_packing_settings_version(
+            key, version, error, expected_claim=row
+        )
 
     def _report_refused_operation_leases(self, rows) -> None:
         http_attempted = False
@@ -398,7 +431,8 @@ class PackageOutboxProcessor:
                 scan_payload=draft.scan_payload, local_completion_id=draft.set_id,
                 local_completed_at=draft.local_completed_at, deferred_reflection=True,
                 short_confirmed=draft.short_confirmed,
-                exchange_idempotency_keys=[pair["idempotency_key"] for pair in draft.scanner_exchanges])
+                exchange_idempotency_keys=[pair["idempotency_key"] for pair in draft.scanner_exchanges],
+                packing_settings_version=draft.packing_settings_version)
         if (
             not group_id
             or source_identity != group_id

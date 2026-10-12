@@ -13,6 +13,9 @@ import carrier_identity_port as carrier_identity
 import label_worker_roster
 from package_errors import PackageLogisticsError
 
+# The web packing top-scan count meaning of an absent value (today's flow).
+DEFAULT_TOP_SCAN_COUNT = 4
+
 PACKAGE_CONTRACT_VERSION = "logistics-v1"
 
 
@@ -211,6 +214,9 @@ class PackageCommandDraft:
     short_confirmed: bool = False
     scanner_exchanges: tuple[Mapping[str, Any], ...] = ()
     worker_identity: Mapping[str, Any] = field(default_factory=dict)
+    # The web top-scan count N and its version, frozen when the set opened.
+    top_scan_count: int = DEFAULT_TOP_SCAN_COUNT
+    packing_settings_version: int = 0
 
     @classmethod
     def build(
@@ -261,6 +267,8 @@ class PackageCommandDraft:
         short_confirmed: bool = False,
         scanner_exchanges: Iterable[Mapping[str, Any]] = (),
         worker_identity: Mapping[str, Any] | None = None,
+        top_scan_count: int = DEFAULT_TOP_SCAN_COUNT,
+        packing_settings_version: int = 0,
     ) -> "PackageCommandDraft":
         identity = _json_clone_mapping(worker_identity or {}, field_name='worker_identity')
         if identity:
@@ -300,6 +308,13 @@ class PackageCommandDraft:
         lease_fence = int(operation_lease_fence or 0)
         lease_snapshot_hash = str(operation_lease_snapshot_hash or "").strip().lower()
         lease_completed_at = str(operation_lease_completed_at or "").strip()
+        if (
+            type(top_scan_count) is not int
+            or not 1 <= top_scan_count <= 6
+            or type(packing_settings_version) is not int
+            or packing_settings_version < 0
+        ):
+            raise PackageLogisticsError("packing top scan setting is invalid")
         raw_samples = tuple(_normalize_barcode(value) for value in sample_barcodes)
         raw_exact = tuple(_normalize_barcode(value) for value in exact_rescan_barcodes)
         if not normalized_set_id or not normalized_item or not final_label:
@@ -378,10 +393,16 @@ class PackageCommandDraft:
         if mode not in MEMBERSHIP_MODES:
             raise PackageLogisticsError("membership_mode must be INHERIT_ALL or EXACT_RESCAN")
         sample_error = (
-            "scanner package requires four unique samples, or one to three confirmed short samples"
+            (
+                "scanner package requires four unique samples, or one to three confirmed short samples"
+                if top_scan_count == DEFAULT_TOP_SCAN_COUNT
+                else f"scanner package requires {top_scan_count} unique samples, "
+                f"or one to {top_scan_count - 1} confirmed short samples"
+            )
             if scanner_only and (not raw_samples or any(not value for value in raw_samples)
                 or len(set(raw_samples)) != len(raw_samples)
-                or (not 1 <= len(raw_samples) <= 3 if short_confirmed else len(raw_samples) != 4))
+                or (not 1 <= len(raw_samples) <= top_scan_count - 1 if short_confirmed
+                    else len(raw_samples) != top_scan_count))
             else None if scanner_only
             else carrier_identity.legacy_qa_sample_error(raw_samples)
         )
@@ -436,6 +457,8 @@ class PackageCommandDraft:
             short_confirmed=bool(short_confirmed),
             scanner_exchanges=tuple(_json_clone_mapping(row, field_name="scanner_exchange") for row in scanner_exchanges),
             worker_identity=identity,
+            top_scan_count=top_scan_count,
+            packing_settings_version=packing_settings_version,
             source_input_tag_label_id=source_input_tag_label,
             source_input_tag_hash_prefix=source_input_tag_hash,
             source_canonical_input_tag_qr=canonical_input_tag_qr,
@@ -541,6 +564,10 @@ class PackageCommandDraft:
             data.update(scanner_only=True, scan_payload=self.scan_payload, local_completed_at=self.local_completed_at,
                         short_confirmed=self.short_confirmed,
                         scanner_exchanges=[dict(row) for row in self.scanner_exchanges])
+        # Absent means 4 / version 0, so today's saved drafts keep their bytes.
+        if (self.top_scan_count, self.packing_settings_version) != (DEFAULT_TOP_SCAN_COUNT, 0):
+            data.update(top_scan_count=self.top_scan_count,
+                        packing_settings_version=self.packing_settings_version)
         if self.worker_identity:
             data['worker_identity'] = dict(self.worker_identity)
         return data
