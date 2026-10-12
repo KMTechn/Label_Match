@@ -3668,7 +3668,7 @@ from label_data_generation import (
 APP_VERSION = "v2.0.99"
 LABEL_MATCH_NEW_SCREEN_ARGUMENT = "--new-screen"
 # Set by label_match_screen before the app is built: the Tk root starts hidden.
-LABEL_MATCH_SCREEN_HOST = {"active": False}
+LABEL_MATCH_SCREEN_HOST = {"requested": False, "active": False, "run": None}
 if APP_VERSION != CURRENT_VERSION:
     raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
 
@@ -22366,13 +22366,13 @@ class Label_Match(tk.Tk):
                 # and closing get process_input's notice; any other gate
                 # keeps its own notice and adds the warning sound.
                 if self._ui_lane_is_busy() or self.__dict__.get("_app_close_in_progress", False):
-                    self.process_input(event, raw=raw)
+                    self.process_input(event) if raw is None else self.process_input(event, raw=raw)
                 else:
                     if view is not None and view.notice is None and "big_display_label" in self.__dict__:
                         self.update_big_display(f"스캔 안 받음 · {view.next_action}", "red")
                     self._play_sound("fail")
                 return "break"
-        return self.process_input(event, raw=raw)
+        return self.process_input(event) if raw is None else self.process_input(event, raw=raw)
 
     def _handle_workflow_shortcut(self, action, event=None):
         """Apply the same presenter gate to keyboard and button actions."""
@@ -23824,13 +23824,14 @@ def _start_without_confirmed_item_catalog(error):
     return notice
 
 
-def _create_label_match_application():
-    """Prepare the item catalog and build the application object.
+def _run_label_match_application():
+    """Start the stateful application after single-instance ownership."""
 
-    Shared by the Tk runner below and the new screen runner (label_match_screen):
-    the same startup steps, then each runs its own loop.
-    """
-
+    if LABEL_MATCH_SCREEN_HOST["requested"] and not LABEL_MATCH_SCREEN_HOST["active"]:
+        # New screen: the shell window owns the main thread and runs this same
+        # function again on its owner thread (label_match_screen).
+        from label_match_screen import screen_runner
+        return screen_runner(sys.modules[__name__])()
     catalog_unconfirmed = False
     while True:
         try:
@@ -23897,13 +23898,8 @@ def _create_label_match_application():
             app.after(200, _update_readback)
         app.after(0, _update_readback)
     app._item_catalog_unconfirmed = catalog_unconfirmed
-    return app
-
-
-def _run_label_match_application():
-    """Start the stateful application after single-instance ownership."""
-
-    app = _create_label_match_application()
+    if LABEL_MATCH_SCREEN_HOST["active"]:
+        return LABEL_MATCH_SCREEN_HOST["run"](app)
     _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
     _label_match_startup_trace("mainloop_enter")
     try:
@@ -23988,13 +23984,9 @@ def main(argv=None):
             settings_path=settings_path,
             settings_template_path=resource_path(os.path.join("config", "app_settings.json")),
         )
-        if new_screen:
-            from label_match_screen import screen_runner
-            runner = screen_runner(sys.modules[__name__])
-        else:
-            runner = _run_label_match_application
+        LABEL_MATCH_SCREEN_HOST["requested"] = new_screen
         return run_guarded_entrypoint(
-            runner,
+            _run_label_match_application,
             data_scope=data_scope,
         )
     except WriterFenceError as exc:

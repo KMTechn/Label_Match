@@ -30,8 +30,12 @@ def owner_main_for(module):
     from label_screen_bridge import LabelMatchScreenProcessor
 
     def owner_main(bridge):
-        module.LABEL_MATCH_SCREEN_HOST["active"] = True
-        app = module._create_label_match_application()
+        host = module.LABEL_MATCH_SCREEN_HOST
+        host["active"] = True
+        host["run"] = lambda app: run_on_owner(app, bridge)
+        return module._run_label_match_application()  # 지금 시작 길 그대로 앱을 만든 뒤 run_on_owner 로
+
+    def run_on_owner(app, bridge):
         bridge.attach_owner(LabelMatchScreenProcessor(app, bridge))
 
         def pump():

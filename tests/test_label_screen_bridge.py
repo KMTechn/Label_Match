@@ -369,7 +369,7 @@ def door(entry_text=""):
 def test_tk_entry_and_screen_text_share_one_scan_door():
     tk_self = door(" A110 ")
     Label_Match.Label_Match._handle_scan_enter(tk_self)
-    tk_self.process_input.assert_called_once_with(None, raw=None)  # 입력 칸 길: process_input 이 지금처럼 Entry 를 읽음
+    tk_self.process_input.assert_called_once_with(None)  # 입력 칸 길: 지금 부름 그대로(raw 없음) — process_input 이 Entry 를 읽음
     screen_self = door()
     screen_self.intake_scan("A110", event=None)
     screen_self.process_input.assert_called_once_with(None, raw="A110")
@@ -406,7 +406,7 @@ def test_admin_prompt_returns_the_screen_pair_once():
 
 
 def test_new_screen_flag_is_off_by_default():
-    assert Label_Match.LABEL_MATCH_SCREEN_HOST == {"active": False}
+    assert Label_Match.LABEL_MATCH_SCREEN_HOST == {"requested": False, "active": False, "run": None}
     assert Label_Match.LABEL_MATCH_NEW_SCREEN_ARGUMENT == "--new-screen"
 
 
