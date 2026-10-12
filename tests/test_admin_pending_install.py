@@ -944,7 +944,7 @@ def test_admin_writer_delta_accepts_only_exact_reviewed_direction(tmp_path, port
     candidate = tmp_path / "reviewed-source"
     shutil.copytree(portable_pair[0], candidate)
     (candidate / "app/main.py").write_bytes((INSTALLER.parent / "portable/main.py").read_bytes())
-    for relative in ("tools/apply_prepared_update.ps1", "tools/failure_redaction.ps1",
+    for relative in ("INSTALL_THIS_PC.ps1", "tools/apply_prepared_update.ps1", "tools/failure_redaction.ps1",
                      "tools/failure_redaction_rules.json"):
         shutil.copyfile(INSTALLER.parent / relative, candidate / relative)
     _pin(candidate)
