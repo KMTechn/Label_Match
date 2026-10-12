@@ -16,6 +16,8 @@ managed 등록은 actual active code를 사용한다. 새 자료·설정·direct
 
 ## 내용으로 증명한 제거
 
+설치 기록이 없는 지원 packet으로 사용자 제거·되돌림을 실행할 때 논리 app-root는 설치 packet이다. 설치 기록 PASS와 source/설치의 전체 inventory·판·build 일치로만 읽기 전용 자료 세대 검사를 허용한다. 전체 증명과 마지막 대조는 쓰기 허가 밖에서 하고, 허가를 다시 얻은 뒤 자료 세대를 다시 확인한다. 불일치·위조·미증명은 UNKNOWN으로 거절하며 일반 시작·설치 packet 제거와 기존 REFUSE는 유지한다.
+
 지원 제거는 현재·판·packet의 readable 목록이 선언한 상대 경로와 SHA가 같은 일반 파일만 개별 이동한다. current/version/packet 디렉터리 통째 이동은 금지한다. 읽을 수 없는 목록·이름만 같은 다른 내용·미상 파일·reparse는 보존하며 하위 reparse를 따라가지 않는다. incoming packet은 manifest의 artifact SHA로만 증명하고 해시가 없는 signature는 보존한다.
 
 목록 메타데이터는 원문 SHA를 기록하고 가장 마지막에 직전 대조 후 이동한다. 선언 파일의 SHA를 읽을 수 없으면 미확정이므로 제거 미완을 알리고 목록과 완료 표식을 유지한다. 이동 전/후에는 SHA와 원 경로 부재를 확인한다. 제거 도중 중단 뒤 다시 실행하면 같은 규칙으로 수렴하며 제거한 code/task를 보상으로 되살리지 않는다.

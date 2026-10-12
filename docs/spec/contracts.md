@@ -114,6 +114,8 @@ LOCAL 완료 안내(LM-1): PC 안에서만 끝나 PACKAGE가 없는 새 현품�
 
 ## 고정 PowerShell leaf와 bootstrap 신뢰
 
+설치 기록이 없는 지원 source의 사용자 제거·되돌림은 설치 packet의 bootstrap PASS와 양쪽 전체 inventory·판·build 일치로만 자료 세대를 검사한다. 증명·최종 inventory 대조는 쓰기 허가 밖에서 수행하고, 복귀한 허가 아래 자료 세대를 다시 확인한다. 이 증명은 해당 제거 검사에만 유효하며 일반 시작의 required 기록·REFUSE·서명·같은 SID·writer delegation 계약은 유지한다.
+
 설치 packet의 `release_identity`는 기존 전체 verifier와 판·build 검증을 통과한 PASS만 해석된 제품 루트·진입점별로 기억하고 사본을 반환한다. 실패·예외와 개발 source의 clean-Git 확인은 기억하지 않는다. 각 입구는 첫 writer admission 전에 미리 확인하고 실패는 기존 G 흐름에서 다시 판정한다. G 판단·마커 기록·sink·허가 구조와 onboarding의 별도 직접 무결성 확인은 유지한다.
 
 canonical 배치 launcher는 현재 access token의 관리자 역할을 확인한다. 이미 상승된 SSH 관리자/셸에서는 같은 pinned helper를 `RunAs` 없이 직접 실행하여 승인 창을 요구하지 않고, 필터링된 관리자/일반 토큰에서는 기존 `RunAs` 경로를 사용한다. 계정의 그룹 소속만으로 상승을 가정하지 않으며 payload·helper pin·delegation·자료 세대 검증은 유지한다.

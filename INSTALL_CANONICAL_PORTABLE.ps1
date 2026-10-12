@@ -6038,7 +6038,7 @@ try {
                 [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
             }
             $removalStarted = [DateTime]::UtcNow
-            Product $removalRoot '--remove-current-user-setup'
+            Product $removalRoot '--remove-current-user-setup' -LogicalAppRoot $install
             $removal = Get-Content $removalPath -Raw -Encoding UTF8 | ConvertFrom-Json
             if (
                 (Snapshot).exists -or

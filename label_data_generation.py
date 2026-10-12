@@ -1,6 +1,7 @@
 """Record the release that actually opens this user's business data."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import hashlib
 import os
@@ -278,6 +279,83 @@ def _installer_source_identity(app_root: Path, *, source_inventory_sha256=None) 
         return _installed_identity(root)
     return {"version": version, "build_id": commit,
             "data_compatible_min_version": version, "compatibility_verified": False}
+
+
+@contextmanager
+def _authenticated_support_removal_source(app_root: Path):
+    """Prove a record-free support packet against this removal target only."""
+    source_app = Path(__file__).absolute().parent
+    source_root = source_app.parent
+    target = Path(app_root).expanduser().resolve()
+    if target.name.casefold() == "app" and (target.parent / "portable-manifest.json").is_file():
+        target = target.parent
+    if (getattr(sys, "frozen", False) or source_app.name.casefold() != "app"
+            or not (source_root / "portable-manifest.json").is_file()
+            or (source_root / "bootstrap-integrity.json").exists()
+            or source_root.resolve() == target):
+        yield None
+        return
+
+    from current_user_onboarding import verify_bootstrap_integrity, BOOTSTRAP_INTEGRITY_MAX_BYTES
+    from label_exact_clone_resolution import portable_inventory_binding
+    from writer_session_fence import remote_request
+
+    # Keep full inventories outside the spanning removal admission. Its normal
+    # resume checks still validate the SID, fence and delegation before writes.
+    with remote_request():
+        try:
+            source_root = resolve_data_path(source_root)
+            installed_root = resolve_data_path(app_root)
+            if installed_root.name.casefold() == "app":
+                installed_root = installed_root.parent
+            if installed_root != target:
+                raise DataGenerationError(UNKNOWN_MESSAGE)
+            record_path = installed_root / "bootstrap-integrity.json"
+            if record_path.stat().st_size > BOOTSTRAP_INTEGRITY_MAX_BYTES:
+                raise DataGenerationError(UNKNOWN_MESSAGE)
+            record_bytes = record_path.read_bytes()
+            detail = verify_bootstrap_integrity(SimpleNamespace(
+                app_root=installed_root, bootstrap_integrity_path=record_path), required=True)
+            if (detail.get("status") != "PASS"
+                    or detail.get("package_layout") != "portable_cpython"
+                    or record_path.read_bytes() != record_bytes):
+                raise DataGenerationError(UNKNOWN_MESSAGE)
+            inventory = portable_inventory_binding(installed_root)["sha256"]
+            identity = _installer_source_identity(source_root, source_inventory_sha256=inventory)
+        except (OSError, ValueError, TypeError, RuntimeError) as exc:
+            if isinstance(exc, DataGenerationError):
+                raise
+            raise DataGenerationError(UNKNOWN_MESSAGE) from exc
+
+    last_probe = None
+    def check(root, data_roots=(), *, environ=None):
+        nonlocal last_probe
+        selected = resolve_data_path(root)
+        if selected.name.casefold() == "app":
+            selected = selected.parent
+        if selected != installed_root:
+            raise DataGenerationError(UNKNOWN_MESSAGE)
+        last_probe = (root, tuple(data_roots), environ)
+        return _check_user_data_open(root, last_probe[1], environ=environ,
+                                    identity_resolver=lambda _root: identity.copy())
+
+    yield check
+    with remote_request():
+        try:
+            if ((source_root / "bootstrap-integrity.json").exists()
+                    or record_path.read_bytes() != record_bytes
+                    or portable_inventory_binding(installed_root)["sha256"] != inventory
+                    or portable_inventory_binding(source_root)["sha256"] != inventory):
+                raise DataGenerationError(UNKNOWN_MESSAGE)
+        except (OSError, ValueError, TypeError, RuntimeError) as exc:
+            if isinstance(exc, DataGenerationError):
+                raise
+            raise DataGenerationError(UNKNOWN_MESSAGE) from exc
+    # Another admitted writer may have advanced a generation during final
+    # inventory IO. Recheck its markers under the resumed admission, without
+    # repeating any release hashing or retaining this proof after removal.
+    if last_probe is not None:
+        check(last_probe[0], last_probe[1], environ=last_probe[2])
 
 
 def check_user_data_open(app_root: Path, data_roots=(), *, environ=None):

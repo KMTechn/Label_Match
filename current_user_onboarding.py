@@ -1550,17 +1550,18 @@ def remove_current_user_setup(
         # User removal must work even when machine control cannot be decoded.
         # Its report and persistence belong to the stable owner, not active B.
         app_root = managed / "current"
+    from label_data_generation import _authenticated_support_removal_source
+    paths = None
     try:
-        check_user_data_open(Path(app_root), environ=environ)
+        with _authenticated_support_removal_source(Path(app_root)) as support_check:
+            admit = support_check or check_user_data_open
+            admit(Path(app_root), environ=environ)
+            paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
+            admit(paths.app_root, (paths.data_root, paths.ledger_path.parent,
+                paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent), environ=environ)
     except DataGenerationError as exc:
-        raise CurrentUserOnboardingError(str(exc), report_path=Path(app_root),
-            status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
-    paths = resolve_current_user_onboarding_paths(app_root, environ=environ)
-    try:
-        check_user_data_open(paths.app_root, (paths.data_root, paths.ledger_path.parent,
-            paths.direct_sync_root, paths.queue_dir, paths.logistics_profile_path.parent), environ=environ)
-    except DataGenerationError as exc:
-        raise CurrentUserOnboardingError(str(exc), report_path=paths.removal_report_path,
+        raise CurrentUserOnboardingError(str(exc),
+            report_path=paths.removal_report_path if paths is not None else Path(app_root),
             status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
     paths.status_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {

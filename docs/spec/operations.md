@@ -903,6 +903,8 @@ canonical 설치·기존 코드 교체·실패 복원의 배치 helper는 짧은
 <a id="release-identity-admission"></a>
 ### 설치 packet의 프로세스별 무결성 확인
 
+지원 source packet에 설치 기록이 없으면 사용자 제거·되돌림만 설치 packet의 PASS 기록과 두 packet의 전체 inventory·판·build 일치로 증명한다. source에 기록을 만들지 않는다. 증명·최종 대조는 쓰기 허가 밖에서 수행하고, 허가 복귀 뒤 자료 세대를 재확인하며 증명 실패는 UNKNOWN으로 보존한다. 일반 시작의 required 설치 기록과 자료 세대 REFUSE는 그대로다.
+
 raw relay 실행기는 decorated `main`을 부르기 전 `__main__`에서, 상주 relay는 `main`의 시작에서, GUI는 초기 `__main__`과 import된 `main`에서 release identity를 미리 확인한다. hosted wrapper의 기존 허가 밖 G 확인도 유지한다. 해석된 제품 루트·진입점별 PASS만 프로세스 안에 기억하며 반환값은 사본이다. 실패는 기억하지 않고 기존 G가 다시 확인·거절한다. 개발 source의 clean-Git 확인, verifier 자체와 자료 열기마다의 G 판단·기록·허가 구조는 그대로다. 설치 코드 변경은 새 프로세스에서 다시 전체 확인한다.
 
 GUI onboarding의 직접 전체 확인은 별도 시작 1회 비용으로 남는다. relay 반복 주기 비용과 구분해 계수·stock 시간을 보고한다. probe_only·짧은 admission 변경이 합쳐진 통합 머리에서 이 직접 확인의 허가 안/밖 위치는 통합 I5 표로 다시 확인한다. HDD 첫 시작·실제 GUI 수용은 별도 측정 범위다.
