@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+sys.dont_write_bytecode = True
 import sqlite3
 import shutil
 import subprocess

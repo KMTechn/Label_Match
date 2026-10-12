@@ -43,7 +43,7 @@ def test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, sta
     environment = os.environ.copy()
     environment["KMTECH_DATA_GENERATION_ENTRY_KIND"] = entry
     completed = subprocess.run([
-        sys.executable, "-B", str(repo / "tests/_data_generation_direct_child.py"),
+        sys.executable, "-B", "-B", str(repo / "tests/_data_generation_direct_child.py"),
         str(repo), str(tmp_path / "isolated-user"), ENTRIES[entry], state, str(output),
     ], env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace",
        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
