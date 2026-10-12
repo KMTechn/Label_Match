@@ -122,7 +122,17 @@ window.AppFrame = (() => {
   function paint() {
     drawFrame(current || {}, ui);
     if (current) app.render(current, ui);
-    if (window.AppSheet) window.AppSheet.render(ui.sheet || (current && current.sheet) || null);
+    if (window.AppSheet) window.AppSheet.render(shownSheet());
+  }
+  function shownSheet() { // 처리 층 판에 modal 이 있으면 그것이 먼저(화면 판 위 — 처리 층이 묻는 확인 · 값 넣기), 아니면 화면 판 → 처리 층 판
+    const own = current && current.sheet;
+    return own && own.modal ? own : ui.sheet || own || null;
+  }
+  const fromProcess = () => !!current && !!current.sheet && shownSheet() === current.sheet;
+  function closeSheet() { // 닫기 · Esc · 그만두기: 처리 층 판은 cancel 명령을 보내고(다음 state 가 판을 걷음), 화면 판은 그냥 닫음
+    const sheet = shownSheet();
+    if (sheet && fromProcess()) { if (sheet.cancel) go(`command:${sheet.cancel}`); return; }
+    open(null);
   }
   function take(s) {
     if (!s || typeof s !== 'object') return;
@@ -172,18 +182,19 @@ window.AppFrame = (() => {
   }
   function go(value) { // 단추의 data-go: close · retry(PIN 다시) · open:<판>[:<대상 id>] · command:<이름>[:<대상 id>] → command(이름, {id})
     const [kind, rest = ''] = String(value).split(/:(.*)/);
-    if (kind === 'close') open(null);
+    if (kind === 'close') closeSheet();
     else if (kind === 'retry' && ui.sheet) { ui.sheet = { ...ui.sheet, pin: 'enter', result: undefined }; paint(); }
     else if (kind === 'dismiss') { ui.notices = ui.notices.filter((_, i) => String(i) !== rest); paint(); }
     else if (kind === 'open') { const [sheet, id] = rest.split(/:(.*)/); open(sheet, id); }
     else if (kind === 'command') {
       const [name, id] = rest.split(/:(.*)/);
-      if (ui.sheet || ui.admin_open) open(null);
+      if (!fromProcess() && (ui.sheet || ui.admin_open)) open(null); // 처리 층 판의 단추는 밑의 화면 판을 건드리지 않음
       bridge('command', name, id === undefined ? {} : { id }).then(answer, () => refresh().catch(() => {}));
     }
   }
   function submitPin() {
     const sheet = ui.sheet;
+    if (sheet !== shownSheet()) return; // 처리 층 modal 판이 위에 있으면 밑의 PIN 판은 안 보냄
     if (!sheet || sheet.kind !== 'pin' || sheet.pin !== 'enter') return;
     const box = $('[data-sheet-body]');
     const pin = box.querySelector('[data-pin]');
@@ -206,13 +217,17 @@ window.AppFrame = (() => {
     }, () => done({ ok: false, result: { kind: 'warn', text: 'PIN 을 확인하지 못했습니다', sub: '잠시 뒤 다시 넣으세요 — 작업은 계속할 수 있습니다' } }));
   }
   function submitForm() { // PIN 없는 글 칸 판 → command(sheet.command || 판 이름, {칸: 값}) — 답 ok+sheet 면 그 판, ok 면 result 를 보이거나 닫힘,
-    const sheet = ui.sheet; //   아니면 넣은 값 그대로 오류 한 줄(password 칸 값은 판에 남기지 않음)
+    const sheet = shownSheet(); //   아니면 넣은 값 그대로 오류 한 줄(password 칸 값은 판에 남기지 않음)
     if (!sheet || sheet.kind !== 'form' || sheet.sending) return;
     const values = {}, kept = {};
     for (const input of $('[data-sheet-body]').querySelectorAll('[data-field]')) {
       values[input.dataset.field] = input.type === 'password' ? input.value : input.value.trim();
       if (input.type !== 'password') kept[input.dataset.field] = values[input.dataset.field];
       if (input.type === 'password') input.value = '';
+    }
+    if (fromProcess()) { // 처리 층 판: 판은 처리 층 것 — 보내고 다음 state 를 그림
+      bridge('command', sheet.command || sheet.name, values).then(answer, () => refresh().catch(() => {}));
+      return;
     }
     ui.sheet = { ...sheet, sending: true, values: kept, error: '' };
     paint();
@@ -277,6 +292,8 @@ window.AppFrame = (() => {
       });
     }
     document.addEventListener('click', (event) => {
+      const shown = shownSheet();
+      if (shown && shown.modal && fromProcess() && !event.target.closest('[data-sheet]')) return; // 처리 층 modal 판 밑(관리자 ▾ · 위 줄 · 작업 단추)은 안 먹음
       const target = event.target.closest('button');
       if (ui.admin_open && !event.target.closest('[data-admin], [data-admin-btn]')) open(null); // 메뉴 밖을 누르면 닫힘
       if (!target) return;
@@ -290,22 +307,24 @@ window.AppFrame = (() => {
     // scan.js 는 그대로(빈 Enter 는 지금처럼 버림), 판정은 처리 층(keys.Enter 의 명령).
     window.addEventListener('keydown', (event) => {
       if (!app.keys || !app.keys.Enter || event.repeat || event.isComposing || (event.code !== 'Enter' && event.code !== 'NumpadEnter')) return;
-      if (ui.sheet || ui.admin_open || !window.AppScan || window.AppScan.editable(document.activeElement)) return;
+      if (shownSheet() || ui.admin_open || !window.AppScan || window.AppScan.editable(document.activeElement)) return;
       const sink = window.AppScan.state();
       if (!sink.buffer && !sink.queued) go(app.keys.Enter);
     }, true);
     document.addEventListener('keydown', (event) => { // 글 키 · Enter · Tab · F12 는 스캔 받이(scan.js) 몫 — 여기는 PIN 칸 Enter · Esc · 앱 기능 키(app.keys)만
       if (event.key === 'Enter' && event.target.closest('[data-sheet-body] input')) {
         event.preventDefault();
-        if (ui.sheet && ui.sheet.kind === 'form') submitForm(); else submitPin();
+        const shown = shownSheet();
+        if (shown && shown.kind === 'form') submitForm(); else submitPin();
         return;
       }
-      if (event.key === 'Escape' && (ui.sheet || ui.admin_open)) { open(null); return; }
+      if (event.key === 'Escape' && ui.admin_open) { open(null); return; } // Esc 차례: 관리자 메뉴 → 판(처리 층 판은 cancel)
+      if (event.key === 'Escape' && shownSheet()) { closeSheet(); return; }
       // Ctrl+글자는 scan.js 가 글로 안 먹는다(Ctrl+V 붙여넣기만 받이 몫) — 이름은 자판 자리로(Ctrl+N), 한글 입력 상태와 상관없이
       const name = event.ctrlKey && !event.altKey && /^Key[A-Z]$/.test(event.code) && event.code !== 'KeyV' ? `Ctrl+${event.code.slice(3)}` : event.key;
       const action = app.keys && FN_KEY.test(name) && app.keys[name];
       if (action && name.startsWith('Ctrl+')) event.preventDefault();
-      if (action && !event.repeat && !ui.sheet && !event.target.closest('input, textarea')) go(action);
+      if (action && !event.repeat && !shownSheet() && !event.target.closest('input, textarea')) go(action);
     });
     tick();
     setInterval(tick, 15000);

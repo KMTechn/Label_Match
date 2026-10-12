@@ -1,7 +1,7 @@
 // 현장 앱 판 그리기(주인 w9webnewui1014 — 10/13 이적 레인 apps-mock/lane-sheet.js 에서 올림, .ca- 뗌) — 관리자 ▾ 항목 · 되돌릴 수 없는 확인.
 // 판 = {name, tag?, kind: pin|form|result|info|list|confirm, title, load?(열 때 부를 명령 — 답의 sheet 를 덮음), lead?(글 또는 [글, 굵은 글]), facts?:[[이름, 값]], result?:{kind, text, sub?},
-//   fields?:[{name, label, placeholder?}](PIN 앞에 더 받을 칸 · form 의 칸), pin?: enter|checking|done|denied, go?(확인 단추 글), command?(confirm · form 이 부를 명령),
-//   rows?:[{title, text, actions:[단추]}], actions?:[단추], note?}. 단추 = {text, go?: close|retry|open:<판>|command:<이름>, quiet?, danger?}.
+//   fields?:[{name, label, placeholder?, type?, value?(form 처음 값)}](PIN 앞에 더 받을 칸 · form 의 칸), pin?: enter|checking|done|denied, go?(확인 단추 글), command?(confirm · form 이 부를 명령),
+//   rows?:[{title, text, actions:[단추]}], actions?:[단추], note?, modal?(처리 층 state.sheet — 화면 판 위에 먼저), cancel?(처리 층 판을 닫을 때 보낼 명령)}. 단추 = {text, go?: close|retry|open:<판>|command:<이름>, quiet?, danger?}.
 // 그리기만 한다 — 누름 · PIN 보내기는 frame.js(AppFrame.start), PIN 값은 처리 층이 받고 화면에 남기지 않는다(웹 PIN 상자와 같은 꼴 + 관리자 ID).
 'use strict';
 window.AppSheet = (() => {
@@ -45,8 +45,8 @@ window.AppSheet = (() => {
     if (sheet.actions) body.push(buttons(sheet.actions));
     const box = $('[data-sheet-body]');
     box.replaceChildren(...body);
-    const empty = [...box.querySelectorAll('input:not(:disabled)')].find((input) => !input.value);
-    (empty || box.querySelector('button:not(:disabled)') || $('[data-sheet] .link')).focus(); // 넣을 칸이 있으면 빈 첫 칸, 없으면 첫 단추
+    const inputs = [...box.querySelectorAll('input:not(:disabled)')];
+    (inputs.find((input) => !input.value) || inputs[0] || box.querySelector('button:not(:disabled)') || $('[data-sheet] .link')).focus(); // 빈 첫 칸 → 첫 칸(처음 값을 고칠 때) → 첫 단추
   }
   function resultNode(result) {
     const node = el('div', 'result');
@@ -83,7 +83,7 @@ window.AppSheet = (() => {
     const form = el('div', 'pinform');
     for (const f of sheet.fields || []) { // type: text · number · password(로컬 관리자 코드 — 값은 판에 남기지 않음)
       const secret = f.type === 'password';
-      const value = sheet.values && !secret ? sheet.values[f.name] || '' : '';
+      const value = secret ? '' : sheet.values ? sheet.values[f.name] || '' : f.value || ''; // 처음 값은 처리 층이 준 것(password 칸은 늘 빈 칸)
       form.append(label(f.label, input({ type: secret ? 'password' : 'text', inputMode: f.type === 'number' ? 'numeric' : 'text', autocomplete: secret ? 'one-time-code' : 'off',
         placeholder: f.placeholder || '', disabled: !!sheet.sending, value }, { field: f.name })));
     }

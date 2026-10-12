@@ -34,7 +34,11 @@ window.AppScan = (() => {
     return null;
   }
   function logKey(event) {
-    if (event.editing) { keys.push({type:event.type,code:event.code,t:stamp(event)}); return; }
+    // 입력 칸 안 키는 종류 · 시각만 남긴다 — 물리 코드(Digit1…)를 남기면 PIN · password 칸 값이 기록에서 되살아남(검사 sub-8, 10/13)
+    if (event.editing) { // 제어 키(Enter · Escape · Tab)만 이름을 남김
+      keys.push(['Enter','Escape','Tab'].includes(event.key) ? {type:event.type,editing:true,key:event.key,t:stamp(event)} : {type:event.type,editing:true,t:stamp(event)});
+      return;
+    }
     keys.push({type:event.type,key:event.key,code:event.code,keyCode:event.keyCode,
       shift:event.shiftKey,caps:mod(event,'CapsLock'),numlock:mod(event,'NumLock'),alt:event.altKey,
       ctrl:event.ctrlKey,meta:event.metaKey,isComposing:event.isComposing,repeat:event.repeat,t:stamp(event)});
