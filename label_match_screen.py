@@ -32,11 +32,24 @@ def owner_main_for(module):
     def owner_main(bridge):
         host = module.LABEL_MATCH_SCREEN_HOST
         host["active"] = True
-        host["run"] = lambda app: run_on_owner(app, bridge)
-        return module._run_label_match_application()  # 지금 시작 길 그대로 앱을 만든 뒤 run_on_owner 로
+        attached = []
+        host["run"] = lambda app: run_on_owner(app, bridge, attached)
+        try:
+            return module._run_label_match_application()  # 지금 시작 길 그대로 앱을 만든 뒤 run_on_owner 로
+        except BaseException as error:
+            if attached:
+                raise
+            bridge.fail_owner(error)  # 처리 층을 못 만듦 — 창 0, run_app 이 이 오류를 다시 던짐(셸 v3.11)
+        finally:
+            if not attached:
+                try:
+                    bridge.fail_owner(RuntimeError("Label_Match screen owner ended before attach"))
+                except RuntimeError:
+                    pass  # 이미 끝남(위 fail_owner)
 
-    def run_on_owner(app, bridge):
+    def run_on_owner(app, bridge, attached):
         bridge.attach_owner(LabelMatchScreenProcessor(app, bridge))
+        attached.append(True)
 
         def pump():
             if app.__dict__.get("_tk_destroy_complete") or app.__dict__.get("_tk_shutdown_requested"):

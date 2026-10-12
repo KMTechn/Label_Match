@@ -31,7 +31,8 @@ window.KMScanSink = (() => {
     return null;
   }
   function logKey(event) {
-    if (event.editing) { keys.push({type:event.type,code:event.code,t:stamp(event)}); return; }
+    // Editable fields (PIN/password included): never log code/key of characters — only Enter/Escape/Tab names (same rule as frame scan.js 071f2f7e).
+    if (event.editing) { keys.push({type:event.type,t:stamp(event),editing:true,...(['Enter','Escape','Tab'].includes(event.key) ? {key:event.key} : {})}); return; }
     keys.push({type:event.type,key:event.key,code:event.code,keyCode:event.keyCode,
       shift:event.shiftKey,caps:mod(event,'CapsLock'),numlock:mod(event,'NumLock'),alt:event.altKey,
       ctrl:event.ctrlKey,meta:event.metaKey,isComposing:event.isComposing,repeat:event.repeat,t:stamp(event)});

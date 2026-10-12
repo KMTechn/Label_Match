@@ -267,6 +267,22 @@ class NativeHost:
         else:
             callback()
 
+    def pick_file(self, title, kinds=None):
+        # pywebview 6.2.1 has no title argument for create_file_dialog.
+        # Only return the path; never open/stat/read the selected file.
+        import webview
+        path = None
+        def choose():
+            nonlocal path
+            form = self.window.native
+            if self._closed or self.bridge._closed or self.bridge._exit_requested or form is None or form.IsDisposed: return
+            file_types = tuple(f'{description} ({patterns})' for description, patterns in (kinds or ()))
+            selected = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False, file_types=file_types)
+            if selected and not self._closed and not self.bridge._closed and not self.bridge._exit_requested:
+                path = selected[0]
+        self.ui(choose)
+        return path
+
     def page_signal(self, name, value):
         with self._page_lock: self._signals.append((name, value))
         self._flush_signals()
@@ -468,8 +484,28 @@ def main(argv=None):
                    browser_preset_name=args.browser_preset, test_control=args.test_control)
 
 
+class OwnerExited(RuntimeError):
+    """owner_main returned/failed before attach_owner or fail_owner."""
+
+
+def wait_owner_start(bridge, owner_thread, timeout=None, poll=0.5):
+    """Wait (no window) until the app's owner attaches or reports failure. Default: no time
+    limit — an HDD field PC may build its app slowly, and giving up would cut the daemon owner
+    thread mid-write when the process exits. Ends early only if the owner thread is gone."""
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        wait = poll if deadline is None else max(0, min(poll, deadline - time.monotonic()))
+        try: return bridge.wait_owner(wait)
+        except TimeoutError:
+            if not owner_thread.is_alive():
+                # attach/fail may have landed right before the thread ended
+                if bridge._initialized.done(): return bridge.wait_owner(0)
+                raise OwnerExited('owner thread ended before attach_owner/fail_owner')
+            if deadline is not None and time.monotonic() >= deadline: raise
+
+
 def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, processor_factory=None,
-            owner_main=None, browser_preset_name='none', test_control=None, owner_timeout=30, root=None):
+            owner_main=None, browser_preset_name='none', test_control=None, owner_timeout=None, root=None):
     """App entry (HOST-USE.md). Call on the main thread; returns when the window closes.
     profile 'rw'|'iw' = scan framing; data = this app's shell folder (events/journal/sounds);
     page = the app's index.html (default = shell test page); root = folder served as the local
@@ -490,7 +526,7 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
     if owner_main:
         owner_thread = threading.Thread(target=owner_main, args=(bridge,), name='app-owner', daemon=True)
         owner_thread.start()
-        try: bridge.wait_owner(owner_timeout)
+        try: wait_owner_start(bridge, owner_thread, owner_timeout)
         except Exception as error:
             bridge.events.record('py', 'owner_start_failed', error=type(error).__name__)
             bridge.close()
@@ -511,7 +547,23 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
     window.events.loaded += native.loaded
     bridge.set_notifier(native.notify_push)
     bridge.set_exit_handler(window.destroy)
-    window.events.closing += lambda: bridge.ask_closing()  # False cancels the X (pywebview 6.2.1 winforms on_closing)
+    picker_closed = threading.Event()
+    def picker(title, kinds=None):
+        if picker_closed.is_set(): return None
+        path = native.pick_file(title, kinds)
+        return None if picker_closed.is_set() else path
+    def shown():
+        if not picker_closed.is_set(): bridge.set_file_picker(picker)
+    def detach_picker():
+        picker_closed.set()
+        bridge.set_file_picker(None)
+    def closing():
+        allowed = bridge.ask_closing()
+        if allowed: detach_picker()
+        return allowed
+    window.events.shown += shown
+    window.events.closing += closing  # False cancels the X (pywebview 6.2.1 winforms on_closing).
+    window.events.closed += detach_picker
     native.pause_page()
     stop = threading.Event()
     window.events.closed += stop.set
@@ -544,6 +596,7 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
         raise
     finally:
         stop.set()
+        detach_picker()
         native.close()
         bridge.close()
         if owner_thread: owner_thread.join(5)

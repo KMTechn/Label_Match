@@ -35,6 +35,8 @@ class Bridge:
         self._closed = False
         self._owner_done = False
         self._exit_handler, self._exit_requested = None, False
+        self._file_picker = None
+        self._file_pick_lock = threading.Lock()
         self._publisher_stop = threading.Event()
         self._initialized = Future()
         self._owner = None if self._external else threading.Thread(target=self._run, name='shell-owner', daemon=True)
@@ -53,6 +55,12 @@ class Bridge:
             self._initialized.set_exception(error)
             raise
         self._initialized.set_result(True)
+
+    def fail_owner(self, error):
+        """External owner only: the app could not build its processor (e.g. a startup gate inside
+        app construction failed). Ends run_app's start wait with this error; no window is created."""
+        if not self._external or self._initialized.done(): raise RuntimeError('fail_owner: external owner only, before attach')
+        self._initialized.set_exception(error if isinstance(error, BaseException) else RuntimeError(str(error)))
 
     def wait_owner(self, timeout=None):
         return self._initialized.result(timeout)
@@ -74,6 +82,27 @@ class Bridge:
 
     def set_exit_handler(self, handler):
         self._exit_handler = handler
+
+    def set_file_picker(self, picker):
+        """Host binds after shown; None detaches before closing. No UI dependency."""
+        if picker is not None and not callable(picker): raise TypeError('picker must be callable or None')
+        self._file_picker = picker
+
+    def pick_file(self, title, kinds=None) -> str | None:
+        """Blocking owner operation. Reserve before queueing so a second caller
+        returns busy immediately instead of opening another dialog afterwards."""
+        if not self._file_pick_lock.acquire(blocking=False):
+            self.events.record(self.src, 'pick_file', result='busy')
+            return None
+        try:
+            if self._file_picker is None or self._closed or self._exit_requested:
+                self.events.record(self.src, 'pick_file', result='unavailable')
+                return None
+            try: return self._call('pick_file', (title, copy.deepcopy(kinds)))
+            except Exception:
+                self.events.record(self.src, 'pick_file', result='unavailable')
+                return None
+        finally: self._file_pick_lock.release()
 
     def request_exit(self):
         """Any thread (usually the owner after the app drained its work): close the
@@ -195,6 +224,18 @@ class Bridge:
         return old
 
     def _handle(self, op, value):
+        if op == 'pick_file':
+            picker, path, result = self._file_picker, None, 'unavailable'
+            if picker is not None and not self._closed and not self._exit_requested:
+                try: path = picker(*value)
+                except Exception: pass  # Never log exception text: it may contain a path/title.
+                else:
+                    if self._closed or self._exit_requested or self._file_picker is not picker:
+                        path = None
+                    elif isinstance(path, str) and path: result = 'chosen'
+                    elif path is None or path == '': result = 'cancelled'
+            self.events.record(self.src, 'pick_file', result=result)
+            return path if result == 'chosen' else None
         if op == 'state': return self._snapshot()
         if op == 'ready':
             self.events.record(self.src, 'ready', js=value)
@@ -409,7 +450,7 @@ class Bridge:
             future = Future(); self._tasks.put(('close', None, future))
         if self._external:
             if threading.get_ident() == self.owner_thread_id: self.pump()
-            elif self._initialized.done():
+            elif self._initialized.done() and self._initialized.exception() is None:
                 # An external owner that already stopped pumping must not hang shutdown.
                 try: future.result(5)
                 except Exception as error: self.events.record(self.src, 'owner_close_timeout', error=type(error).__name__)
