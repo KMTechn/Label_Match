@@ -382,13 +382,11 @@ def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, argum
     assert product.count(caller) == 1
     identity = "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$false;session_id=2})" if arguments == "ordinary-empty" else "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$true;session_id=0})"
     product = product.replace(caller, identity)
-    # A missing worker must not resolve the host's real console profile.
-    # Supply only that OS observation; keep the admission guards intact.
-    if arguments == "missing":
-        start = product.index("function Get-LabelConsoleWorkerObservation {")
-        finish = product.index("function Get-LabelConsoleWorker {", start)
-        product = (product[:start] + "function Get-LabelConsoleWorkerObservation { throw 'No isolated console worker' }\n\n"
-                   + product[finish:])
+    # Missing explicit input also requires an absent console candidate. Keep the
+    # real entry and its rejection path while avoiding observation of the host.
+    observer = "function Get-LabelConsoleWorkerObservation {"
+    assert product.count(observer) == 1
+    product = product.replace(observer, observer + "\n    throw 'Synthetic console worker absent.'")
     driver = tmp_path / "actual-entry.ps1"
     driver.write_text(product, encoding="utf-8-sig")
     bad_inventory = tmp_path / "inventory.json"
@@ -951,7 +949,8 @@ def test_admin_writer_delta_accepts_only_exact_reviewed_direction(tmp_path, port
     installed = tmp_path / "installed"
     shutil.copytree(candidate, installed)
     for relative in ("app/main.py", "app/Label_Match.py", "app/label_admin_pin.py", "app/current_user_onboarding.py", "app/writer_session_fence.py",
-                     "INSTALL_THIS_PC.ps1", "tools/label_writer_fence.ps1"):
+                     "INSTALL_THIS_PC.ps1", "tools/label_writer_fence.ps1",
+                     "tools/bootstrap_integrity.ps1", "tools/apply_prepared_update.ps1", "tools/failure_redaction.ps1"):
         local = "portable/main.py" if relative == "app/main.py" else relative.removeprefix("app/")
         (installed / relative).write_bytes(subprocess.check_output([
             "git", "-c", "core.autocrlf=false", "-C", str(INSTALLER.parent), "show", "4550330:" + local]))
