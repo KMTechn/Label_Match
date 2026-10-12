@@ -1810,3 +1810,28 @@ def test_network_requests_send_fixed_user_agent_not_urllib_default():
     except AdminPinError:
         pass  # only the request headers matter here
     assert seen["agent"] == "KMTech-LabelMatch-AdminPin/1.0"
+
+
+def test_changed_target_state_survives_final_pin_audit_failure(tmp_path, monkeypatch):
+    app, journal, _server = _pin_app(tmp_path, monkeypatch)
+    original_bytes = journal.path.read_bytes()
+    original_audit = app.package_outbox.audit_pin_attempt
+
+    def changed_target(*_args):
+        operation_key = app_module.active_pin_operation.get()[0]
+        app._admin_pin_store.transition(operation_key, "QUARANTINED_CHANGED",
+                                        error_code="TARGET_CHANGED")
+        raise AdminPinError("TARGET_CHANGED")
+
+    def final_audit(**fields):
+        if fields["result"] == "TARGET_CHANGED":
+            raise OSError("final audit unavailable")
+        return original_audit(**fields)
+
+    monkeypatch.setattr(app, "_package_pin_apply", changed_target)
+    monkeypatch.setattr(app.package_outbox, "audit_pin_attempt", final_audit)
+    digest = hashlib.sha256(original_bytes).hexdigest()
+    assert app._run_package_pin_action("LABEL.F5_HOLD", "F5:" + digest) is False
+    assert _intent(app)[2:] == ("QUARANTINED_CHANGED", "TARGET_CHANGED")
+    assert journal.path.read_bytes() == original_bytes
+    assert app.package_outbox.get_label_exchange_hold(digest) is None

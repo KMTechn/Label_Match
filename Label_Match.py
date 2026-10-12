@@ -10954,7 +10954,8 @@ class Label_Match(tk.Tk):
             code = "AUDIT_UNAVAILABLE"
             if operation_key:
                 try:
-                    store.transition(operation_key, "UNVERIFIED_OPERATOR_HOLD", error_code=code)
+                    if store.get(operation_key)["state"] != "QUARANTINED_CHANGED":
+                        store.transition(operation_key, "UNVERIFIED_OPERATOR_HOLD", error_code=code)
                 except Exception:
                     pass
         self._admin_pin_last_message = admin_pin_message(code, http_status=http_status)
