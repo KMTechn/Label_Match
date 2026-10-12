@@ -1,10 +1,10 @@
 {
  "schema": "ui-parts/1",
  "source": "WorkerAnalysisGUI-web",
- "commit": "e26b656c0f41fac562f83ba809e8b73d6da817b5",
+ "commit": "82a723adb0e27e68ce3861db1fbf6248e16a2429",
  "dirty": false,
  "app": "lm",
- "parts_fingerprint": "32f6228032a43187",
+ "parts_fingerprint": "b01e0001fc8574a3",
  "files": [
   {
    "path": "app/frame.css",
@@ -14,9 +14,9 @@
   },
   {
    "path": "app/frame.js",
-   "sha256": "f6af866996e3dc88db860d57978f88989c50c67ae4d8b13d42578d9865a99a2a",
-   "bytes": 21248,
-   "gzip": 7921
+   "sha256": "4c7df20231dd7c3fb2a079aacf24edb60456099a77c9d8dfcb8c2003cb7d3ba8",
+   "bytes": 21545,
+   "gzip": 7999
   },
   {
    "path": "app/lm/contract.json",
@@ -278,9 +278,9 @@
   },
   {
    "path": "app/sheet.js",
-   "sha256": "8bad2c3a2a1d90c848769502ef004530f056b048d94494c675d63494eaedd491",
-   "bytes": 7148,
-   "gzip": 2738
+   "sha256": "e9bc3a2ebf40d9b1f867fad1ca5a05563a60e384c559e4dab11093138942f798",
+   "bytes": 7224,
+   "gzip": 2777
   },
   {
    "path": "app/transport.js",

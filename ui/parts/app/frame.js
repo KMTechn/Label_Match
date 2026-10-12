@@ -131,7 +131,8 @@ window.AppFrame = (() => {
   const fromProcess = () => !!current && !!current.sheet && shownSheet() === current.sheet;
   function closeSheet() { // 닫기 · Esc · 그만두기: 처리 층 판은 cancel 명령을 보내고(다음 state 가 판을 걷음), 화면 판은 그냥 닫음
     const sheet = shownSheet();
-    if (sheet && fromProcess()) { if (sheet.cancel) go(`command:${sheet.cancel}`); return; }
+    if (sheet && sheet.cancel) { go(`command:${sheet.cancel}`); return; } // 화면 판이든 처리 층 판이든 cancel 이 있으면 보냄(화면 판은 go 가 닫음)
+    if (sheet && fromProcess()) return;
     open(null);
   }
   function take(s) {
@@ -142,6 +143,7 @@ window.AppFrame = (() => {
       shown = seq;
     }
     current = s;
+    if (ui.sheet && ui.sheet.pending && s.sheet && !s.sheet.modal) ui.sheet = null; // 받는 중 판(pending) 뒤 처리 층 결과 판이 오면 그 판이 자리를 잇는다
     if (!scanning && window.AppScan) { // 스캔 받이는 첫 state 뒤 한 번(번호는 처리 층 마지막 번호 다음부터)
       scanning = true;
       window.AppScan.start(s.profile || s.app, typeof seq === 'number' ? seq : 0, { recovery: s.recovery });
