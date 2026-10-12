@@ -1,10 +1,10 @@
 {
  "schema": "ui-parts/1",
  "source": "WorkerAnalysisGUI-web",
- "commit": "a0e616adde7fa66f92e8c91b21ab18211693b94d",
+ "commit": "e26b656c0f41fac562f83ba809e8b73d6da817b5",
  "dirty": false,
  "app": "lm",
- "parts_fingerprint": "004337d9cf44a4da",
+ "parts_fingerprint": "32f6228032a43187",
  "files": [
   {
    "path": "app/frame.css",
@@ -272,9 +272,9 @@
   },
   {
    "path": "app/scan.js",
-   "sha256": "4a6be9cbd7f547c06f695db80a19d2eea0d3ebf4b535118bae076fd4002044d2",
-   "bytes": 12682,
-   "gzip": 4606
+   "sha256": "e661ef5b71fe390ca55a55a76656d89d776bf8166af9bbe42b208f5a6ec861b5",
+   "bytes": 12544,
+   "gzip": 4514
   },
   {
    "path": "app/sheet.js",

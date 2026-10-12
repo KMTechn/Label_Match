@@ -1,5 +1,5 @@
 'use strict';
-// 현장 앱 스캔 받이(주인 w9appshell1012 셸 레인 — 10/13 넘김: shell/web/sink.js 셸 v3.5 READY sha256 8f01b70d…, 이름만 KMScanSink → AppScan).
+// 현장 앱 스캔 받이(주인 w9appshell1012 셸 레인 — 10/13 넘김: shell/web/sink.js 셸 v3.10 sha256 bc572234…, 이름만 KMScanSink → AppScan).
 // 키 조립 · F12 판정 증거(v2.0.152 사건 순서, F12-V152-RULES.md)는 여기서만 — 앱 화면 JS 에 keydown 조립 0(APP-SCREENS 불변식 4).
 // 판정 규칙 · meta 꼴은 처리 층(bridge.py · event_order.py)이 읽으므로 셸 레인과 함께만 고친다. 붙이기 = frame.js(AppFrame.start)가 첫 state 뒤 start 한 번.
 // Framing correction: IW components_v2.py:665,765–833 @a211ea4;
@@ -34,11 +34,8 @@ window.AppScan = (() => {
     return null;
   }
   function logKey(event) {
-    // 입력 칸 안 키는 종류 · 시각만 남긴다 — 물리 코드(Digit1…)를 남기면 PIN · password 칸 값이 기록에서 되살아남(검사 sub-8, 10/13)
-    if (event.editing) { // 제어 키(Enter · Escape · Tab)만 이름을 남김
-      keys.push(['Enter','Escape','Tab'].includes(event.key) ? {type:event.type,editing:true,key:event.key,t:stamp(event)} : {type:event.type,editing:true,t:stamp(event)});
-      return;
-    }
+    // Editable fields (PIN/password included): never log code/key of characters — only Enter/Escape/Tab names (same rule as frame scan.js 071f2f7e).
+    if (event.editing) { keys.push({type:event.type,t:stamp(event),editing:true,...(['Enter','Escape','Tab'].includes(event.key) ? {key:event.key} : {})}); return; }
     keys.push({type:event.type,key:event.key,code:event.code,keyCode:event.keyCode,
       shift:event.shiftKey,caps:mod(event,'CapsLock'),numlock:mod(event,'NumLock'),alt:event.altKey,
       ctrl:event.ctrlKey,meta:event.metaKey,isComposing:event.isComposing,repeat:event.repeat,t:stamp(event)});
