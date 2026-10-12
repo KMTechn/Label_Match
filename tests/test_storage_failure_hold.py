@@ -322,6 +322,7 @@ def test_startup_retries_storage_hold_archive_before_opening_or_replaying_the_se
             assert restored._workflow_notice_action == restored._load_current_set_state
             restored._workflow_notice_action()
         assert not target.exists() and archive.read_bytes() == original
+        assert not list(target.parent.glob(target.name + ".resume-*"))
         assert replay_calls
         assert restored._workflow_blocking_notice is None
         assert len(restored.package_outbox.list_workbench_holds()) == 1
@@ -582,3 +583,27 @@ def test_lease_refusal_and_existing_csv_completion_are_never_storage_holds(stati
     app._publish_durable_commit_block(OSError("save failed"))
     assert app.package_outbox.list_workbench_holds() == []
     assert app.current_set_info["raw"]
+
+
+def test_checkpoint_lock_timeout_does_not_count_as_a_storage_write_failure(station, monkeypatch):
+    app, _dialogs = station
+    prepare_set(app)
+    manager = app.data_manager
+    target = Path(app.save_directory) / app.FILES.CURRENT_STATE
+    original = target.read_bytes()
+    set_id = app.current_set_info["id"]
+
+    class UnavailableLock:
+        def acquire(self, *, timeout):
+            return False
+
+        def release(self):
+            raise AssertionError("unacquired lock must not be released")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(manager, "_state_lock", UnavailableLock())
+        assert manager.save_current_state(json.loads(original)) is False
+    assert manager._last_state_write_failure is None
+    assert manager._state_write_failure_attempts.get(set_id, 0) == 0
+    assert target.read_bytes() == original
+    assert app.package_outbox.get_workbench_hold(set_id) is None
