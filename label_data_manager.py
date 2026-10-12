@@ -649,6 +649,13 @@ class DataManager:
                 self._last_state_write_failure = None
                 self._state_write_failure_attempts.pop(str(current.get('id') or ''), None)
                 return True
+        except TimeoutError as e:
+            self._last_state_write_failure = None
+            if checkpoint_write:
+                # Writer admission waits do not prove a checkpoint IO failure.
+                raise
+            print(f"임시 상태 저장 실패: {e}")
+            return False
         except Exception as e:
             self._last_state_write_failure = None
             if checkpoint_write and isinstance(e, OSError):

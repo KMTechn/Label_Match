@@ -617,3 +617,42 @@ def test_checkpoint_lock_timeout_does_not_count_as_a_storage_write_failure(stati
     assert manager._state_write_failure_attempts.get(set_id, 0) == 0
     assert target.read_bytes() == original
     assert app.package_outbox.get_workbench_hold(set_id) is None
+
+
+@pytest.mark.parametrize("error_type", [TimeoutError, OSError])
+def test_checkpoint_writer_wait_timeout_preserves_storage_failure_classification(
+    station, monkeypatch, error_type,
+):
+    app, _dialogs = station
+    prepare_set(app)
+    manager = app.data_manager
+    target = Path(app.save_directory) / app.FILES.CURRENT_STATE
+    original = target.read_bytes()
+    set_id = app.current_set_info["id"]
+    error = error_type("checkpoint admission unavailable")
+    write = storage.write_checked_bytes
+
+    def unavailable(path, payload, **kwargs):
+        if Path(path) == target:
+            raise error
+        return write(path, payload, **kwargs)
+
+    monkeypatch.setattr(storage, "write_checked_bytes", unavailable)
+    for attempt in (1, 2):
+        if error_type is TimeoutError:
+            with pytest.raises(TimeoutError) as caught:
+                manager.save_current_state(json.loads(original))
+            assert caught.value is error
+            assert manager._last_state_write_failure is None
+            assert manager._state_write_failure_attempts.get(set_id, 0) == 0
+        else:
+            assert manager.save_current_state(json.loads(original)) is False
+            assert manager._last_state_write_failure[2] == attempt
+            assert manager._state_write_failure_attempts[set_id] == attempt
+        assert target.read_bytes() == original
+        app._publish_durable_commit_block(error)
+
+    held = app.package_outbox.get_workbench_hold(set_id)
+    assert (held is None) is (error_type is TimeoutError)
+    assert completions(app) == []
+    assert "pass" not in app.sounds
