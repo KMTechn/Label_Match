@@ -55,8 +55,6 @@ def operator_message(code: str, *, http_status: int = 0) -> str:
             return f"회사 서버 오류({http_status})가 발생했습니다. 이 건만 보류하고 잠시 뒤 다시 확인하세요."
         if http_status >= 400:
             return f"회사 서버 거절({http_status})로 관리자 확인을 받지 못했습니다. 이 건만 보류하고 관리자에게 알리세요."
-    if code in {"PIN_INVALID", "PROOF_INVALID", "PROOF_REVOKED"}:
-        return FAILURE_MESSAGE
     if code == "TARGET_CHANGED":
         return "대상 또는 작업자가 바뀌었습니다. 다시 조회하세요."
     if code == "AUDIT_UNAVAILABLE":
