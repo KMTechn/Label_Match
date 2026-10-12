@@ -1,0 +1,190 @@
+/* 글꼴: Pretendard 부분 글꼴(KS X 1001 한글 + 라틴, SIL OFL 1.1 — fonts/Pretendard-OFL.txt), pretendard@1.3.9
+   dist/web/static/woff2-subset 그대로(배포처 SHA-256 대조). 주소의 v = 파일 내용 SHA-256 앞 16자 — 정적 파일 1년 고정 캐시 규칙과 같다
+   (tests/ui/test_core_shell.py 가 맞는지 본다). 없는 글자는 다음 글꼴(맑은 고딕)로, 받는 동안은 그 글꼴로 먼저 그린다(swap). */
+@font-face { font-family: "Pretendard"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/Pretendard-Regular.subset.woff2?v=01dd73155fdfab7c") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/Pretendard-SemiBold.subset.woff2?v=4247dc5e260b9264") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/Pretendard-Bold.subset.woff2?v=78eb71c33101ee7d") format("woff2"); }
+
+/* 새 현장 웹 화면 토큰 — 색·면·단계 색·범주 색·그림자·움직임·크기의 값은 이 파일에만 둔다.
+   다른 CSS·JS·템플릿은 var(--이름)만 쓴다(FLOWVIZ-LINK §6.9 V1·V2).
+   정본: specs/DESIGN-DIRECTION-1009.md · DESIGN-NATURAL-OPUS55.md · work/program/w9webux1008/FLOWVIZ-LINK.md §6
+   · VISUAL-V3.md §9 · 웹 시안 HH4b(10/09 마지막 판)의 :root. 이번 판은 밝은 테마만(w9mgrui M2). */
+:root {
+  color-scheme: light;
+
+  /* 면 */
+  --paper: #F7F7F4;
+  --bg: var(--paper);
+  --surface: #FFFFFF;
+  --sunk: #F0EFEB;
+
+  /* 글(먹색은 글자에만) */
+  --ink: #1A1A18;
+  --ink-2: #57534E;
+  --ink-3: #6F6863;
+  --dash: #8F8A84;
+  --ctx: #C9C6BF;
+  --line: rgba(26, 26, 24, .07);
+  --line-2: rgba(26, 26, 24, .12);
+  --tint: rgba(26, 26, 24, .04);
+  --tint-2: rgba(26, 26, 24, .07);
+
+  /* 주 색 = 짙은 비취(누를 것·지금) */
+  --pri-fill: #2F9E78;
+  --pri: #1C8160;
+  --pri-strong: #14694C;
+  --pri-deep: #0F5A41;
+  --on-pri: #FFFFFF;
+  --pri-soft: color-mix(in srgb, var(--pri-fill) 12%, transparent);
+
+  /* 뜻 색: 앰버 = 볼 곳, 주홍 = 불량·위험, 비취 체크 = 완료 */
+  --amber: #F59E0B;
+  --amber-text: #9A4708;
+  --amber-soft: color-mix(in srgb, var(--amber) 14%, transparent);
+  --amber-strong-soft: color-mix(in srgb, var(--amber) 26%, transparent);
+  --on-amber: #1A1A18;
+  --red: #D9432F;
+  --red-text: #B42318;
+  --red-soft: color-mix(in srgb, var(--red) 10%, transparent);
+  --ok: var(--pri);
+  --ok-text: var(--pri-strong);
+  --kraft: #B98A5A;
+  --card-warn: color-mix(in srgb, var(--amber) 7%, var(--surface));
+  --stain: color-mix(in srgb, var(--amber) 8%, transparent);
+
+  /* 단계 색 — 웹·현황보기·현품표에서 같은 단계 = 같은 색, 늘 단계 이름 글과 함께 */
+  --st-inbound: #9A948C;
+  --st-disasm: #6E3E69;
+  --st-inspect: #C25F7F;
+  --st-transfer: #5F7A22;
+  --st-pack: #8DB79C;
+  --st-ship: #14694C;
+
+  /* 범주 색 순서(고객사·품목·작업자·여러 줄 그래프), 6개를 넘으면 「그 밖」 */
+  --cat-1: var(--pri);
+  --cat-2: var(--st-disasm);
+  --cat-3: var(--st-transfer);
+  --cat-4: var(--st-inspect);
+  --cat-5: var(--st-pack);
+  --cat-6: var(--st-inbound);
+
+  /* 깊이: 바닥 = 그림자 없음·선만, 떠 있는 것 = 깊이 2 하나(따뜻한 갈색 잉크 두 겹 — VISUAL-V3 §9) */
+  --elev-1: 0 0 0 0 transparent;
+  --elev-2: 0 1px 2px rgba(43, 33, 24, .10), 0 16px 32px -8px rgba(43, 33, 24, .10);
+  --scrim: rgba(26, 26, 24, .24);
+  --edge-hi: inset 0 1px 0 rgba(255, 255, 255, .75);
+
+  /* 모서리: 알약 금지(w9mgrui M3) — 칩·배지·단추 6–8 px */
+  --r-card: 10px;
+  --r-ctl: 6px;
+  --r-plate: 6px;
+  --r-sheet: 14px;
+
+  /* 글꼴·크기(여섯 단계, 핵심 숫자 하나만 40) */
+  --f-text: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  --f-num: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  --s1: 11.5px;
+  --s2: 12.5px;
+  --s3: 14px;
+  --s4: 17px;
+  --s5: 22px;
+  --s6: 40px;
+  --s-phone: 16px;
+
+  /* 틀 크기 */
+  --hdr-h: 56px;
+  --nav-w: 208px;
+  --insp-w: 400px;
+  --tabs-h: 56px;
+  --ctl-h: 36px;
+  --ctl-h-lg: 40px;
+  --ctl-h-phone: 52px;
+  --tap-min: 44px;
+  --gutter: 16px;
+  --page-max: 1440px;
+
+  /* 움직임(FLOWVIZ-LINK §6.7 · VISUAL-V3 §9 — 화면 코드는 이름만) */
+  --ease-standard: cubic-bezier(.2, 0, .38, .9);
+  --ease-out: cubic-bezier(.22, 1, .36, 1);
+  --ease-decel: cubic-bezier(.2, .7, .2, 1);
+  --ease-exit: cubic-bezier(.2, 0, 1, .9);
+  --ease-move: cubic-bezier(.3, 1.12, .5, 1);
+  --ease-attn: cubic-bezier(.33, 0, .67, 1);
+  --ease-breath: cubic-bezier(.45, 0, .55, 1);
+  --ease-travel: cubic-bezier(.3, .1, .7, .9);
+  --dur-press: 120ms;
+  --dur-exit: 180ms;
+  --dur-fade: 200ms;
+  --dur-tint: 240ms;
+  --dur-check: 250ms;
+  --dur-move: 380ms;
+  --dur-attn: 400ms;
+  --dur-enter: 420ms;
+  --dur-value: 360ms;
+  --dur-pulse: 700ms;
+  --dur-grow: 1100ms;
+  --dur-stain: 1600ms;
+  --dur-breath: 2800ms;
+  --stagger-step: 35ms;
+  --stagger-max: 500ms;
+  --hold-resolved: 1400ms;
+  --cam-min: 500ms;
+  --cam-max: 900ms;
+  --travel-min: 700ms;
+  --travel-max: 3000ms;
+  --toast-hold: 4000ms;
+
+  /* 폰 카메라 칸(시안 폰 출고 — w9uiphone1014 부탁 [라]) */
+  --cam-bg: #1F1E1C;
+  --cam-ink: #E8E6E1;
+  --cam-mark: rgba(255, 255, 255, .8);
+  --cam-ok: #6EE7B7;
+
+  /* 흐름 관찰 모형 재질(시안 r24 head.html 그대로 — w9uiflow1014 SHARED-MODULES §5-4) */
+  --table: var(--sunk);
+  --model: #FFFFFF;
+  --model-l: #ECEAE5;
+  --model-r: #DDDAD3;
+  --wall: #F6F5F2;
+  --wood: #A77E55;
+  --mat-white: #F2F0EB;
+  --mat-dark: #57534E;
+  --floor-ink: rgba(26, 26, 24, .12);
+  --grid: rgba(26, 26, 24, .05);
+  --shadow: rgba(26, 26, 24, .14);
+  --shade-ink: #2B2118;
+  --mover: var(--pri);
+  --focus: var(--pri);
+  --flow: var(--pri);
+  --chart: var(--pri);
+  --canvas-cap: 4000000;
+}
+
+/* 움직임 줄이기: 위치 움직임 없이 투명도만(--dur-fade 는 남김) */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-press: 0ms; --dur-exit: 0ms; --dur-tint: 0ms; --dur-check: 0ms; --dur-move: 0ms; --dur-attn: 0ms;
+    --dur-enter: 0ms; --dur-value: 0ms; --dur-pulse: 0ms; --dur-grow: 0ms; --dur-stain: 0ms;
+    --stagger-step: 0ms; --cam-min: 0ms; --cam-max: 0ms;
+  }
+}
+
+/* 어둠 값 — 이번 판은 연결하지 않는다(M2). 이 속성을 붙이는 코드는 없다. */
+:root[data-ui-theme="dark"] {
+  color-scheme: dark;
+  --paper: #131412; --surface: #1C1D1A; --sunk: #262724;
+  --ink: #EDEDE8; --ink-2: #BAB6AE; --ink-3: #9A958D; --dash: #77726C; --ctx: #4A4844;
+  --line: rgba(237, 237, 232, .08); --line-2: rgba(237, 237, 232, .14);
+  --tint: rgba(237, 237, 232, .05); --tint-2: rgba(237, 237, 232, .09);
+  --pri: #4FBF95; --pri-strong: #4FBF95; --pri-deep: #7ED3B0; --on-pri: #0B1F17;
+  --pri-soft: color-mix(in srgb, var(--pri) 14%, transparent);
+  --amber: #F0A040; --amber-text: #F3B566; --on-amber: #131412;
+  --amber-soft: color-mix(in srgb, var(--amber) 16%, transparent);
+  --red: #F07B6B; --red-text: #F49A8C; --kraft: #C99D70;
+  --card-warn: color-mix(in srgb, var(--amber) 9%, var(--surface));
+  --stain: color-mix(in srgb, var(--amber) 7%, transparent);
+  --st-inbound: #A8A29B; --st-disasm: #C48DBB; --st-inspect: #E597AE; --st-transfer: #A7BF5C; --st-pack: #BFD9C7; --st-ship: #2E9C73;
+  --elev-2: 0 1px 2px rgba(11, 8, 6, .45), 0 18px 36px -8px rgba(11, 8, 6, .40);
+  --scrim: rgba(0, 0, 0, .5);
+  --edge-hi: inset 0 1px 0 rgba(255, 255, 255, .05);
+}

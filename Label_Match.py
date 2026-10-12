@@ -3666,6 +3666,9 @@ from label_data_generation import (
     record_user_data_open, release_identity,
 )
 APP_VERSION = "v2.0.99"
+LABEL_MATCH_NEW_SCREEN_ARGUMENT = "--new-screen"
+# Set by label_match_screen before the app is built: the Tk root starts hidden.
+LABEL_MATCH_SCREEN_HOST = {"active": False}
 if APP_VERSION != CURRENT_VERSION:
     raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
 
@@ -5000,6 +5003,9 @@ class Label_Match(tk.Tk):
             else None
         )
         super().__init__()
+        if LABEL_MATCH_SCREEN_HOST["active"]:
+            # The new screen draws the work; this root keeps processing, hidden.
+            self.withdraw()
         # Every exit path, including constructor failures and capture helpers
         # that call ``destroy()`` directly, must pass through one Tk-thread
         # teardown guard.  Worker callbacks observe this before touching Tcl.
@@ -5233,7 +5239,7 @@ class Label_Match(tk.Tk):
                 tk_geometry=self._capture_startup_placement["tk_geometry"],
                 state=self.state(),
             )
-        else:
+        elif not LABEL_MATCH_SCREEN_HOST["active"]:
             self.state('zoomed')
             _label_match_startup_trace("app_init_after_zoomed", state=self.state())
         self.configure(bg=self.colors.get("background", "#ECEFF1"))
@@ -9934,6 +9940,11 @@ class Label_Match(tk.Tk):
 
     def _prompt_package_admin_pin(self):
         """One masked dialog shared by every administrator recovery action."""
+        # The new screen's PIN sheet already asked (admin(name, {admin_id, pin})):
+        # the same (ID, PIN) pair, once, and no Tk dialog.
+        screen_credentials = self.__dict__.pop("_screen_admin_credentials", None)
+        if screen_credentials is not None:
+            return screen_credentials
         if self.run_tests:
             return None
         window = tk.Toplevel(self)
@@ -15266,7 +15277,7 @@ class Label_Match(tk.Tk):
         self.after(100, poll)
         return True
 
-    def process_input(self, event=None, *, _scan_behind_completion=None):
+    def process_input(self, event=None, *, _scan_behind_completion=None, raw=None):
         notice = self.__dict__.get("_workflow_blocking_notice")
         if (notice is not None and notice.kind == "submission_blocked"
                 and self.__dict__.get("_workflow_notice_action") == self._show_package_recovery_workbench):
@@ -15281,11 +15292,14 @@ class Label_Match(tk.Tk):
             return
         # A held scan (B) is no longer in the entry: nothing there is its.
         held_scan = _scan_behind_completion is not None
+        # The new screen hands its scan as text (intake_scan): the entry is not its.
+        screen_scan = raw is not None and not held_scan
         raw_input = (
             str(_scan_behind_completion).strip() if held_scan
+            else str(raw).strip() if screen_scan
             else self.entry.get().strip()
         )
-        input_consumed = held_scan
+        input_consumed = held_scan or screen_scan
 
         def consume_input():
             nonlocal input_consumed
@@ -22320,13 +22334,24 @@ class Label_Match(tk.Tk):
         self._deferred_observability_auto_selected = True
 
     def _handle_scan_enter(self, event=None):
-        self._last_scan_enter_at = time.monotonic()
-        self._clear_scanner_notice()
         entry = self.__dict__.get("entry")
         try:
             entered_scan = entry.get().strip() if entry is not None else ""
         except (TclError, AttributeError):
             entered_scan = ""
+        return self.intake_scan(entered_scan, event=event, from_entry=True)
+
+    def intake_scan(self, text, *, event=None, from_entry=False):
+        """One scan door for the Tk entry and the new screen (APP-SCREENS-1013).
+
+        The entry path passes what the entry holds and process_input still reads
+        and consumes the entry; the screen passes its scan text, which is never
+        placed in the entry.
+        """
+        raw = None if from_entry else str(text or "")
+        entered_scan = str(text or "").strip()
+        self._last_scan_enter_at = time.monotonic()
+        self._clear_scanner_notice()
         if self.__dict__.get("operator_workbench_ready") and entered_scan:
             self._return_to_scanner_workbench()
         if self.__dict__.get("_pending_workflow_error") or self.__dict__.get(
@@ -22341,13 +22366,13 @@ class Label_Match(tk.Tk):
                 # and closing get process_input's notice; any other gate
                 # keeps its own notice and adds the warning sound.
                 if self._ui_lane_is_busy() or self.__dict__.get("_app_close_in_progress", False):
-                    self.process_input(event)
+                    self.process_input(event, raw=raw)
                 else:
                     if view is not None and view.notice is None and "big_display_label" in self.__dict__:
                         self.update_big_display(f"스캔 안 받음 · {view.next_action}", "red")
                     self._play_sound("fail")
                 return "break"
-        return self.process_input(event)
+        return self.process_input(event, raw=raw)
 
     def _handle_workflow_shortcut(self, action, event=None):
         """Apply the same presenter gate to keyboard and button actions."""
@@ -23799,8 +23824,12 @@ def _start_without_confirmed_item_catalog(error):
     return notice
 
 
-def _run_label_match_application():
-    """Start the stateful application after single-instance ownership."""
+def _create_label_match_application():
+    """Prepare the item catalog and build the application object.
+
+    Shared by the Tk runner below and the new screen runner (label_match_screen):
+    the same startup steps, then each runs its own loop.
+    """
 
     catalog_unconfirmed = False
     while True:
@@ -23868,6 +23897,13 @@ def _run_label_match_application():
             app.after(200, _update_readback)
         app.after(0, _update_readback)
     app._item_catalog_unconfirmed = catalog_unconfirmed
+    return app
+
+
+def _run_label_match_application():
+    """Start the stateful application after single-instance ownership."""
+
+    app = _create_label_match_application()
     _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
     _label_match_startup_trace("mainloop_enter")
     try:
@@ -23888,6 +23924,10 @@ def _run_label_match_application():
 
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
+    # The new screen (pywebview shell, label_match_screen) runs the same startup and
+    # processing; without the flag the Tk screen runs exactly as before.
+    new_screen = LABEL_MATCH_NEW_SCREEN_ARGUMENT in arguments
+    arguments = [value for value in arguments if value != LABEL_MATCH_NEW_SCREEN_ARGUMENT]
     startup_identity, identity_unknown = {}, False
     try:
         startup_identity = release_identity(_label_match_runtime_app_root())
@@ -23948,8 +23988,13 @@ def main(argv=None):
             settings_path=settings_path,
             settings_template_path=resource_path(os.path.join("config", "app_settings.json")),
         )
+        if new_screen:
+            from label_match_screen import screen_runner
+            runner = screen_runner(sys.modules[__name__])
+        else:
+            runner = _run_label_match_application
         return run_guarded_entrypoint(
-            _run_label_match_application,
+            runner,
             data_scope=data_scope,
         )
     except WriterFenceError as exc:

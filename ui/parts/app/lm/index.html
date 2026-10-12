@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:">
+<title>포장</title>
+<!-- 포장(Label_Match) 작업 화면 — w9uiphone1014(APP-SCREENS-1013), 시안 w9uiout1014 apps/mock/lm-work.*.
+     그리기 = lm.js render(state) 하나 · 부르기 = KMShell.call(frame.js) · 스캔 = ../scan.js · 소리는 처리 층(화면은 이름만) · 바깥 주소 0.
+     꼴 = contract.json(lm-state/1), 상태마다 fixtures/<상태>.json. 되돌릴 수 없는 일의 승인은 [data-approval] 판 — 마우스로만(lm.js). -->
+<link rel="stylesheet" href="../../core/tokens.css">
+<link rel="stylesheet" href="../frame.css">
+<link rel="stylesheet" href="lm.css">
+<script src="../transport.js" defer></script>
+<script src="../frame.js" defer></script>
+<script src="../sheet.js" defer></script>
+<script src="../scan.js" defer></script>
+<script src="lm.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="top__who">
+    <strong class="top__app">포장</strong>
+    <span class="top__worker" data-worker></span>
+  </div>
+  <div class="top__tag" data-tag></div>
+  <span class="top__legacy" data-legacy hidden></span>
+  <nav class="top__nav" aria-label="한 단계 안">
+    <button type="button" class="link" data-open="history">오늘 기록</button>
+    <button type="button" class="link" data-open="progress">진행 현황</button>
+    <button type="button" class="link" data-open="settings">설정</button>
+    <button type="button" class="link link--admin" data-admin-btn aria-expanded="false" aria-controls="admin-menu">관리자 ▾</button>
+  </nav>
+  <div class="admin" id="admin-menu" data-admin hidden>
+    <p class="admin__fact" data-top-setting></p>
+    <p class="admin__note">동작마다 관리자 ID 와 PIN 6자리를 묻습니다</p>
+    <button type="button" data-open="recovery">멈춘 작업 확인 <span class="admin__pin">PIN</span></button>
+    <button type="button" data-open="LABEL.PHS_LOOKUP">실물 현품표 조회 <span class="admin__pin">PIN</span></button>
+    <button type="button" data-open="pending">대기 현황</button>
+    <button type="button" data-open="raw">바코드 원문 보기 · 복사</button>
+    <button type="button" data-open="about">정보</button>
+  </div>
+</header>
+
+<div class="bands" data-bands></div>
+
+<main class="work" data-work>
+  <section class="next area-next" aria-label="다음에 찍을 것">
+    <p class="next__label">다음에 찍을 것</p>
+    <p class="next__text" data-next></p>
+    <p class="next__sub" data-next-sub></p>
+  </section>
+
+  <section class="count-card area-count" data-count-card aria-label="현재 트레이">
+    <p class="count-card__label">현재 트레이<span class="lm-badges" data-badges></span></p>
+    <p class="count-card__n" data-count></p>
+    <p class="count-card__left" data-count-left></p>
+    <p class="lm-nextset" data-next-set hidden></p>
+  </section>
+
+  <div class="result area-result" data-result aria-live="polite"></div>
+
+  <ol class="lm-steps area-list" data-steps aria-label="이 트레이 스캔"></ol>
+
+  <div class="lm-actions area-actions" aria-label="작업 단추">
+    <button type="button" class="act" data-act="undo" data-go="command:undo">방금 스캔 되돌리기</button>
+    <button type="button" class="act" data-act="exchange" data-go="command:exchange">제품 교환</button>
+    <button type="button" class="act act--danger" data-act="f1" data-go="command:cancel_current">현재 트레이 취소 (F1)</button>
+    <button type="button" class="act act--danger" data-act="f2" data-open="cancel_completed">완료 트레이 취소 (F2)</button>
+  </div>
+
+  <section class="lm-start" data-start aria-live="polite" hidden>
+    <h1 class="lm-start__title" data-start-title></h1>
+    <p class="lm-start__text" data-start-text></p>
+    <button type="button" class="act" data-start-retry data-go="command:start_retry" hidden>다시 시도</button>
+  </section>
+</main>
+
+<footer class="status" data-status>
+  <span class="status__server" data-server></span>
+  <span class="status__update" data-update hidden></span>
+  <span class="status__scan" data-scan></span>
+  <span class="status__clock" data-clock></span>
+</footer>
+
+<div class="scrim" data-sheet-scrim hidden></div>
+<section class="sheet" data-sheet role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+  <div class="sheet__head">
+    <span class="sheet__tag" data-sheet-tag></span>
+    <h2 class="sheet__title" id="sheet-title" data-sheet-title></h2>
+    <button type="button" class="link" data-go="close">닫기 (Esc)</button>
+  </div>
+  <div class="sheet__body" data-sheet-body></div>
+</section>
+
+<div class="scrim" data-approval-scrim hidden></div>
+<section class="sheet lm-approval" data-approval role="alertdialog" aria-modal="true" aria-labelledby="approval-title" aria-describedby="approval-text" hidden>
+  <div class="sheet__head">
+    <span class="sheet__tag">마우스로 승인</span>
+    <h2 class="sheet__title" id="approval-title" data-approval-title></h2>
+  </div>
+  <div class="sheet__body">
+    <p class="sheet__lead" id="approval-text" data-approval-text></p>
+    <div class="sheet__btns">
+      <button type="button" class="act act--quiet" data-approval-no></button>
+      <button type="button" class="act act--danger-solid" data-approval-go></button>
+      <button type="button" data-approval-send hidden tabindex="-1"></button>
+    </div>
+    <p class="sheet__note">스캔 · Enter 로는 승인되지 않습니다 — 단추를 마우스로 누르세요</p>
+  </div>
+</section>
+</body>
+</html>

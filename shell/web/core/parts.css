@@ -1,0 +1,197 @@
+/* 새 현장 웹 화면 공용 부품 — 이름(클래스)이 영역 레인과의 약속이다. 값은 tokens.css 이름만.
+   부품 견본: /ui/parts. 알약 금지(모서리 6–8 px), 큰 숫자 타일은 「오늘 출고」 한 곳만, 한쪽 굵은 띠 없음. */
+
+/* 쪽·제목 줄·판 */
+.km-page { max-width: var(--page-max); }
+.km-page--narrow { max-width: 720px; }
+.km-titlerow { display: flex; align-items: flex-end; gap: 8px 12px; flex-wrap: wrap; min-height: 44px; margin-bottom: 12px; }
+.km-titlerow h1 { margin: 0; font-size: var(--s5); font-weight: 600; letter-spacing: -.01em; }
+.km-when { color: var(--ink-3); font-size: var(--s2); padding-bottom: 3px; }
+.km-titlerow__acts { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.km-lead { margin: 0 0 14px; color: var(--ink-2); }
+.km-panel { background: var(--surface); border-radius: var(--r-card); box-shadow: inset 0 0 0 1px var(--line); padding: 20px 22px; min-width: 0; }
+.km-panel__title { margin: 0 0 12px; font-size: var(--s3); font-weight: 600; }
+.km-grid { display: grid; gap: 16px; }
+.km-grid--parts { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.km-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+body.km--phone .km-panel { padding: 14px 16px; }
+
+/* 단추(C4) — 한 화면 주 단추 하나, 단추 글이 결과를 말한다 */
+.km-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--ctl-h); padding: 0 14px; border: 0; border-radius: var(--r-ctl); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); color: var(--ink) !important; text-decoration: none !important; font-size: var(--s3); font-weight: 500; white-space: nowrap; cursor: pointer; transition: transform var(--dur-press) var(--ease-standard), background-color var(--dur-press) var(--ease-standard); }
+.km-btn:hover { background: var(--tint); }
+.km-btn:active { transform: scale(.985); }
+.km-btn--primary { background: var(--pri-strong); box-shadow: none; color: var(--on-pri) !important; }
+.km-btn--primary:hover { background: var(--pri-deep); }
+.km-btn--text { background: none; box-shadow: none; color: var(--pri-strong) !important; padding: 0 6px; text-decoration: underline !important; text-decoration-color: color-mix(in srgb, var(--pri) 45%, transparent) !important; text-underline-offset: 3px; }
+.km-btn--text:hover { background: none; }
+.km-btn--lg { height: var(--ctl-h-lg); }
+body.km--phone .km-btn--main { width: 100%; height: var(--ctl-h-phone); font-size: var(--s-phone); border-radius: var(--r-card); }
+.km-btn[disabled], .km-btn[aria-disabled="true"] { opacity: .5; cursor: default; transform: none; }
+@media (prefers-reduced-motion: reduce) { .km-btn:active { transform: none; } }
+
+/* 판정 칩(C11)·개수 배지 */
+.km-chip { display: inline-flex; align-items: center; gap: 6px; font-size: var(--s2); font-weight: 650; padding: 4px 10px 4px 8px; border-radius: var(--r-plate); white-space: nowrap; }
+.km-chip::before { content: ""; width: 6px; height: 6px; border-radius: 1px; background: currentColor; flex: none; }
+.km-chip--ok { color: var(--pri-strong); background: var(--pri-soft); }
+.km-chip--tight { color: var(--amber-text); background: var(--amber-soft); }
+.km-chip--bad { color: var(--amber-text); background: var(--amber-strong-soft); box-shadow: inset 0 0 0 1px var(--amber); }
+.km-chip--past { color: var(--ink-2); background: var(--tint-2); }
+.km-chip--past::before { background: var(--ink-3); }
+.km-chip--danger { color: var(--red-text); background: var(--red-soft); }
+
+/* 입력(C5)·품목 고르기(C6) */
+.km-field { display: grid; gap: 6px; margin-bottom: 16px; min-width: 0; }
+.km-field > label, .km-field__label { font-size: var(--s2); font-weight: 600; color: var(--ink-2); }
+.km-hint { font-size: var(--s1); color: var(--ink-3); }
+.km-field__error { font-size: var(--s2); color: var(--red-text); }
+.km-inp { display: flex; align-items: center; gap: 8px; height: var(--ctl-h-lg); padding: 0 12px; border: 1px solid var(--line-2); border-radius: var(--r-ctl); background: var(--surface); min-width: 0; transition: border-color var(--dur-press) var(--ease-standard); }
+.km-inp:focus-within { border-color: var(--pri-strong); box-shadow: 0 0 0 3px var(--pri-soft); }
+.km-inp input, .km-inp select { border: 0; outline: 0; background: none; flex: 1; min-width: 0; height: 100%; }
+.km-inp--invalid { border-color: var(--red); }
+.km-stepper { display: inline-flex; align-items: center; height: var(--ctl-h-lg); border: 1px solid var(--line-2); border-radius: var(--r-ctl); background: var(--surface); }
+.km-stepper button { width: 40px; height: 100%; border: 0; background: none; cursor: pointer; font-size: var(--s4); color: var(--ink-2); }
+.km-stepper output, .km-stepper input { min-width: 56px; width: 64px; border: 0; background: none; text-align: center; font: 600 var(--s4)/1 var(--f-num); }
+.km-picked { display: flex; align-items: center; gap: 10px; min-height: var(--ctl-h-lg); padding: 6px 12px; border-radius: var(--r-ctl); background: var(--pri-soft); box-shadow: inset 0 0 0 1px var(--pri); }
+.km-picked__code { font: 600 var(--s3)/1 var(--f-num); }
+.km-picked__x { margin-left: auto; border: 0; background: none; color: var(--ink-2); cursor: pointer; }
+.km-picker { position: relative; }
+.km-picker__list { position: absolute; z-index: 9; left: 0; right: 0; top: calc(100% + 4px); list-style: none; margin: 0; padding: 6px; border-radius: var(--r-card); background: var(--surface); box-shadow: var(--elev-2); max-height: 280px; overflow: auto; }
+.km-picker__opt { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; padding: 8px 10px; border-radius: var(--r-ctl); cursor: pointer; }
+.km-picker__opt[aria-selected="true"], .km-picker__opt:hover { background: var(--pri-soft); }
+
+/* 거르기 칩·날짜 넘기기(C7) */
+.km-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.km-fchip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 0; border-radius: var(--r-ctl); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); cursor: pointer; font-size: var(--s2); color: var(--ink-2); }
+.km-fchip[aria-pressed="true"] { background: var(--pri-strong); box-shadow: none; color: var(--on-pri); }
+.km-fchip .num { font-weight: 600; }
+.km-datenav { display: inline-flex; align-items: center; height: 32px; border-radius: var(--r-ctl); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); }
+.km-datenav button { width: 32px; height: 100%; border: 0; background: none; cursor: pointer; color: var(--ink-2); }
+.km-datenav__label { padding: 0 8px; font-size: var(--s2); font-weight: 600; }
+.km-sep { width: 1px; height: 20px; background: var(--line-2); margin: 0 4px; }
+
+/* 쪽 안 탭(한 메뉴 안 구역) */
+.km-pagetabs { display: flex; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.km-pagetabs [role="tab"] { height: 40px; padding: 0 14px; border: 0; background: none; color: var(--ink-2); cursor: pointer; font-size: var(--s3); white-space: nowrap; box-shadow: inset 0 -2px 0 transparent; }
+.km-pagetabs [role="tab"][aria-selected="true"] { color: var(--pri-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--pri-strong); }
+
+/* 요약 줄·사실 줄 */
+.km-summary { display: flex; flex-wrap: wrap; gap: 6px 28px; align-items: baseline; margin: 0 0 12px; }
+.km-summary > div { font-size: var(--s2); color: var(--ink-2); }
+.km-summary b { font: 600 var(--s4)/1 var(--f-num); color: var(--ink); margin-right: 3px; }
+.km-summary .km-summary--warn b { color: var(--amber-text); }
+.km-facts { display: grid; grid-template-columns: minmax(0, 1fr) auto; margin: 0; border-top: 1px solid var(--line); }
+.km-facts dt, .km-facts dd { padding: 7px 0; border-bottom: 1px solid var(--line); margin: 0; }
+.km-facts dt { font-size: var(--s2); color: var(--ink-2); }
+.km-facts dd { text-align: right; font: 600 var(--s3)/1.5 var(--f-num); }
+
+/* 표(C9) — 고른 줄·보류 줄(빗금)·결과 확인 중 줄 */
+.km-table-wrap { overflow-x: auto; background: var(--surface); border-radius: var(--r-card); box-shadow: inset 0 0 0 1px var(--line); }
+.km-table { width: 100%; border-collapse: collapse; font-size: var(--s3); }
+.km-table th { position: sticky; top: 0; padding: 8px 12px; border-bottom: 1px solid var(--line-2); background: var(--surface); font-size: var(--s2); font-weight: 600; color: var(--ink-2); text-align: left; white-space: nowrap; }
+.km-table td { height: 40px; padding: 0 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.km-table .r { text-align: right; }
+.km-table tbody tr[data-km-row] { cursor: pointer; }
+.km-table tbody tr[data-km-row]:hover td { background: var(--paper); }
+.km-table tbody tr[aria-selected="true"] td { background: var(--pri-soft); }
+.km-table tr.km-row--held td { background: repeating-linear-gradient(135deg, transparent 0 6px, var(--tint-2) 6px 9px); }
+.km-table tr.km-row--error td { background: var(--red-soft); }
+.km-st { display: inline-flex; align-items: center; gap: 6px; font-size: var(--s2); color: var(--ink-2); }
+.km-st::before { content: ""; width: 6px; height: 6px; border-radius: 1px; background: var(--ink-3); flex: none; }
+.km-st--go::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--pri); }
+.km-st--ok::before { background: var(--pri); }
+.km-st--warn { color: var(--amber-text); }
+.km-st--warn::before { background: var(--amber); }
+.km-st--bad { color: var(--red-text); }
+.km-st--bad::before { background: var(--red); }
+
+/* 입력 표(줄 더하기·줄별 오류·줄 안 품목 고르기) */
+.km-rows td { height: auto; padding: 6px 8px; vertical-align: top; }
+.km-rows .km-inp { height: var(--ctl-h); }
+.km-rows .km-inp input { width: 0; }
+.km-rows__err td { padding: 0 8px 8px; font-size: var(--s2); color: var(--red-text); border-bottom: 1px solid var(--line); }
+.km-rows__add { padding: 8px; }
+
+/* 경보 카드(C12)·알림 띠(C18)·확인 띠(C17) — 제목 앞 6×6 네모 점(한쪽 굵은 띠 없음) */
+.km-warn { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; gap: 1px 9px; padding: 10px 12px 10px 11px; border: 0; border-radius: var(--r-card); background: var(--card-warn); text-align: left; width: 100%; cursor: pointer; }
+.km-warn__dot { grid-row: 1; align-self: center; width: 6px; height: 6px; border-radius: 1px; background: var(--amber); }
+.km-warn--short .km-warn__dot { background: repeating-linear-gradient(135deg, var(--amber) 0 1.5px, transparent 1.5px 3px); box-shadow: inset 0 0 0 1px var(--amber); }
+.km-warn--off .km-warn__dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.km-warn--resolved .km-warn__dot { background: var(--ok); }
+.km-warn__title { min-width: 0; font-size: var(--s3); font-weight: 650; color: var(--amber-text); }
+.km-warn--off .km-warn__title { color: var(--ink); }
+.km-warn__time { font: 500 var(--s2)/1.4 var(--f-num); color: var(--ink-3); white-space: nowrap; }
+.km-warn__sub { grid-column: 2 / -1; min-width: 0; font-size: var(--s2); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.km-alertband { display: grid; grid-template-columns: 6px minmax(0, 1fr); gap: 2px 9px; padding: 10px 12px 10px 11px; border-radius: var(--r-card); background: var(--amber-soft); margin-bottom: 12px; }
+.km-alertband::before { content: ""; grid-row: 1; align-self: center; width: 6px; height: 6px; border-radius: 1px; background: var(--amber); }
+.km-alertband__title { font-weight: 650; color: var(--amber-text); }
+.km-alertband__text { grid-column: 2; font-size: var(--s2); color: var(--ink-2); }
+.km-done { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; padding: 10px 14px; border-radius: var(--r-card); background: var(--pri-soft); color: var(--pri-strong); font-weight: 600; }
+.km-done .km-ic { width: 16px; height: 16px; }
+
+/* 미리보기 → 확정(C27): 창 없이 그 자리에서 바뀐 것 전/후 + 확정 단추 */
+.km-confirm { display: grid; gap: 12px; padding: 16px 18px; border-radius: var(--r-card); background: var(--surface); box-shadow: inset 0 0 0 1px var(--pri); }
+.km-confirm__title { margin: 0; font-size: var(--s3); font-weight: 600; }
+.km-confirm__diff { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 16px; margin: 0; font-size: var(--s2); }
+.km-confirm__before { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-3); }
+.km-confirm__after { font-weight: 600; }
+.km-confirm__acts { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* 상태 꼴(C21) */
+.km-state { display: grid; justify-items: start; gap: 6px; padding: 14px 4px; }
+.km-state p { margin: 0; }
+.km-state__what { font-weight: 600; color: var(--ink); }
+.km-state__why, .km-state__how { font-size: var(--s2); color: var(--ink-2); }
+.km-state__code { font-size: var(--s1); color: var(--ink-3); }
+.km-state--error { padding: 12px 14px; border-radius: var(--r-card); background: var(--paper); box-shadow: inset 0 0 0 1px var(--line-2); }
+.km-state--unknown .km-state__what, .km-state--offline .km-state__what { color: var(--amber-text); display: flex; align-items: center; gap: 6px; }
+.km-state--ended { padding: 12px 14px; border-radius: var(--r-card); background: var(--amber-soft); }
+.km-skel { display: block; width: 70%; height: 14px; margin: 4px 0; border-radius: var(--r-plate); background: var(--sunk); }
+.km-skel--wide { width: 100%; }
+
+/* 짧은 알림 */
+.km-toast { pointer-events: auto; max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: var(--r-card); background: var(--ink); color: var(--surface); font-size: var(--s2); box-shadow: var(--elev-2); }
+.km-toast--warn { background: var(--amber); color: var(--on-amber); }
+
+/* 현품표 카드(C13)·단계 자취 — 단계 색은 늘 단계 이름과 함께 */
+.km-tagcard { position: relative; max-width: 360px; border-radius: var(--r-card); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-2); overflow: hidden; }
+.km-tagcard__band { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--ink); color: var(--surface); }
+.km-tagcard__code { font: 700 var(--s4)/1 var(--f-num); }
+.km-tagcard__name { font-size: var(--s2); opacity: .85; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.km-tagcard__no { margin-left: auto; font: 600 var(--s2)/1 var(--f-num); opacity: .85; }
+.km-tagcard__body { padding: 12px 14px 10px; }
+.km-tagcard__qty { font: 700 44px/1 var(--f-num); letter-spacing: -.02em; }
+.km-tagcard__meta { font-size: var(--s2); color: var(--ink-2); margin-top: 6px; }
+.km-trail { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-top: 1px solid var(--line); font-size: var(--s1); letter-spacing: -.02em; text-align: center; overflow: hidden; }
+.km-trail > span { display: grid; place-items: center; padding: 6px 1px; color: var(--ink-3); line-height: 1.2; word-break: keep-all; }
+.km-trail > .km-trail--past { color: var(--ink-2); background: color-mix(in srgb, var(--stc, transparent) 14%, transparent); box-shadow: inset 0 2px 0 var(--stc, transparent); }
+.km-trail > .km-trail--now { background: var(--pri-strong); color: var(--on-pri); font-weight: 600; }
+.km-stc-inbound { --stc: var(--st-inbound); } .km-stc-disasm { --stc: var(--st-disasm); } .km-stc-inspect { --stc: var(--st-inspect); }
+.km-stc-transfer { --stc: var(--st-transfer); } .km-stc-pack { --stc: var(--st-pack); } .km-stc-ship { --stc: var(--st-ship); }
+
+/* 스캔 줄 + 스캔 확인(폰) */
+.km-scanlist { display: grid; gap: 6px; }
+.km-scanrow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 48px; padding: 6px 12px; border-radius: var(--r-card); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.km-scanrow--held { background: repeating-linear-gradient(135deg, var(--surface) 0 6px, var(--tint-2) 6px 9px); }
+.km-scanrow--bad { box-shadow: inset 0 0 0 1.5px var(--red); }
+.km-scanrow--unknown { box-shadow: inset 0 0 0 1.5px var(--amber); }
+.km-scanok { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--r-card); background: var(--pri-soft); color: var(--pri-strong); font-weight: 600; }
+.km-check { animation: km-check-in var(--dur-check) var(--ease-out); }
+@keyframes km-check-in { from { opacity: 0; transform: scale(.6); } }
+.km-tagcard__qty small { font: 500 var(--s3)/1 var(--f-text); color: var(--ink-2); letter-spacing: 0; }
+.km-find-dialog__opt { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; padding: 10px; border: 0; border-radius: var(--r-ctl); background: none; text-align: left; cursor: pointer; }
+.km-find-dialog__opt:hover, .km-find-dialog__opt[aria-selected="true"] { background: var(--pri-soft); }
+.km-find-dialog__kind { font-size: var(--s1); color: var(--ink-3); }
+.km-find-dialog__note { padding: 12px 10px; font-size: var(--s2); color: var(--ink-2); }
+.km-hist { list-style: none; margin: 0; padding: 0; font-size: var(--s2); }
+.km-hist li { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.km-hist__time { font-family: var(--f-num); color: var(--ink-3); }
+.km-insp__section { margin: 18px 0 6px; font-size: var(--s2); font-weight: 600; color: var(--ink-2); }
+
+/* 인쇄 틀(C29) — 종이 내용은 그대로 끼우고(M10) 화면 틀만 인쇄에서 뺀다 */
+.km-print { background: var(--surface); border-radius: var(--r-card); box-shadow: inset 0 0 0 1px var(--line); padding: 16px; }
+@media print {
+  .km-hdr, .km-nav, .km-tabs, .km-insp, .km-toasts, .km-skip, [data-km-noprint] { display: none !important; }
+  .km-app { display: block; }
+  .km-main { padding: 0; overflow: visible; }
+  .km-print { box-shadow: none; padding: 0; border-radius: 0; }
+}
