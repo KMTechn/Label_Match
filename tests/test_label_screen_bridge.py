@@ -416,7 +416,8 @@ def test_admin_prompt_returns_the_screen_pair_once():
 
 
 def test_new_screen_flag_is_off_by_default():
-    assert Label_Match.LABEL_MATCH_SCREEN_HOST == {"requested": False, "active": False, "run": None}
+    assert Label_Match.LABEL_MATCH_SCREEN_HOST == {"requested": False, "active": False, "run": None,
+                                               "catalog_unconfirmed": False}
     assert Label_Match.LABEL_MATCH_NEW_SCREEN_ARGUMENT == "--new-screen"
 
 
@@ -432,3 +433,33 @@ def test_screen_page_and_every_part_it_loads_sit_under_the_http_root():
     for ref in refs:
         target = (page.parent / ref).resolve()
         assert target.is_file() and root in target.parents, ref
+
+
+def _start_gate(monkeypatch, *, catalog):
+    calls = []
+    screen = types.ModuleType("label_match_screen")
+    screen.screen_runner = lambda module: (lambda: calls.append("window") or 0)
+    monkeypatch.setitem(sys.modules, "label_match_screen", screen)
+    monkeypatch.setitem(Label_Match.LABEL_MATCH_SCREEN_HOST, "requested", True)
+    monkeypatch.setattr(Label_Match, "prepare_startup_item_catalog", catalog)
+    monkeypatch.setattr(Label_Match, "offline_catalog_startable", lambda **_kwargs: False)
+    monkeypatch.setattr(Label_Match, "_offer_item_catalog_startup_retry", lambda error: calls.append("retry offered") and False)
+    monkeypatch.setattr(Label_Match, "legacy_label_transition_enabled", lambda: False)
+    monkeypatch.setattr(Label_Match, "_label_match_startup_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(Label_Match, "Label_Match", lambda: calls.append("tk app") or pytest.fail("Tk app on the main thread"))
+    return calls
+
+
+def test_new_screen_window_opens_only_after_the_catalog_gate_fails_closed(monkeypatch):
+    def refused():
+        raise Label_Match.ItemCatalogSyncError("catalog unavailable", cause_code=Label_Match.SNAPSHOT_UNAVAILABLE_AFTER_VERIFY)
+    calls = _start_gate(monkeypatch, catalog=refused)
+    with pytest.raises(Label_Match.ItemCatalogSyncError):  # main() 이 지금 안내 · 종료 코드 그대로
+        Label_Match._run_label_match_application()
+    assert calls == ["retry offered"]  # 창 0 · Tk 앱 0
+
+
+def test_new_screen_window_opens_once_after_the_gates_pass(monkeypatch):
+    calls = _start_gate(monkeypatch, catalog=lambda: None)
+    assert Label_Match._run_label_match_application() == 0
+    assert calls == ["window"]

@@ -3668,7 +3668,7 @@ from label_data_generation import (
 APP_VERSION = "v2.0.99"
 LABEL_MATCH_NEW_SCREEN_ARGUMENT = "--new-screen"
 # Set by label_match_screen before the app is built: the Tk root starts hidden.
-LABEL_MATCH_SCREEN_HOST = {"requested": False, "active": False, "run": None}
+LABEL_MATCH_SCREEN_HOST = {"requested": False, "active": False, "run": None, "catalog_unconfirmed": False}
 if APP_VERSION != CURRENT_VERSION:
     raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
 
@@ -23827,13 +23827,10 @@ def _start_without_confirmed_item_catalog(error):
 def _run_label_match_application():
     """Start the stateful application after single-instance ownership."""
 
-    if LABEL_MATCH_SCREEN_HOST["requested"] and not LABEL_MATCH_SCREEN_HOST["active"]:
-        # New screen: the shell window owns the main thread and runs this same
-        # function again on its owner thread (label_match_screen).
-        from label_match_screen import screen_runner
-        return screen_runner(sys.modules[__name__])()
-    catalog_unconfirmed = False
-    while True:
+    # New screen owner thread: the start gates below already passed on the main thread.
+    catalog_unconfirmed = LABEL_MATCH_SCREEN_HOST["catalog_unconfirmed"]
+    active_catalog_path = None
+    while not LABEL_MATCH_SCREEN_HOST["active"]:
         try:
             active_catalog_path = prepare_startup_item_catalog()
             break
@@ -23868,6 +23865,12 @@ def _run_label_match_application():
             and catalog_context.get("catalog_source") == "VERIFIED_CACHE"
         ):
             _show_item_catalog_cache_warning(catalog_context)
+    if LABEL_MATCH_SCREEN_HOST["requested"] and not LABEL_MATCH_SCREEN_HOST["active"]:
+        # New screen: only after every start gate the shell window opens; its owner
+        # thread runs this same function again from here (label_match_screen).
+        LABEL_MATCH_SCREEN_HOST["catalog_unconfirmed"] = catalog_unconfirmed
+        from label_match_screen import screen_runner
+        return screen_runner(sys.modules[__name__])()
     try:
         from startup_observation import observe_startup
         observe_startup()
