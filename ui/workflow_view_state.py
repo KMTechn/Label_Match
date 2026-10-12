@@ -26,7 +26,25 @@ CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS = (
     ("product_3", "제품3"),
     ("final_label", "제품4"),
 )
+DEFAULT_TOP_SCAN_COUNT = 4
+MAX_TOP_SCAN_COUNT = 6
+SLOT_ROLES = {"master_label": "master_label", "final_label": "last_product"}
 COMPLETION_KINDS = frozenset({"full", "partial", "failed"})
+
+
+def slot_definitions_for(top_scan_count: int) -> tuple[tuple[str, str], ...]:
+    """Master label, products 1..N-1, then the last product (key final_label)."""
+
+    count = int(top_scan_count)
+    if not 1 <= count <= MAX_TOP_SCAN_COUNT:
+        raise ValueError("top_scan_count must be 1-6")
+    if count == DEFAULT_TOP_SCAN_COUNT:
+        return SLOT_DEFINITIONS
+    return (
+        ("master_label", "현품표"),
+        *((f"product_{index}", f"제품{index}") for index in range(1, count)),
+        ("final_label", f"제품{count}"),
+    )
 LEGACY_LABEL_TRANSITION_OFF_CAUSE = (
     "이 현품표는 새 포장 이력(PHS2)이 없는 옛 방식입니다. 과도기 모드가 꺼져 있어 "
     "이 PC에서는 제품을 이어서 스캔할 수 없습니다."
@@ -135,6 +153,30 @@ class WorkflowSnapshot:
     exact_rescan_target: int = 0
     exact_rescan_barcodes: tuple[str, ...] = ()
     legacy_label_blocked: bool = False
+    top_scan_count: int = DEFAULT_TOP_SCAN_COUNT
+    top_scan_setting: "TopScanSettingView | None" = None
+    next_set_top_scan_count: int | None = None
+    alerts: tuple["WorkflowAlert", ...] = ()
+
+
+@dataclass(frozen=True)
+class TopScanSettingView:
+    """Read-only web setting for the admin view (no change path in the app)."""
+
+    value: int
+    source: str
+    version: int
+    updated_at: str | None = None
+    fetched_at: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowAlert:
+    """A warning band row; it never blocks work and plays no error sound."""
+
+    kind: str
+    code: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -145,6 +187,7 @@ class ScanSlotView:
     value: str
     filled: bool
     state: str
+    role: str = ""
 
 
 @dataclass(frozen=True)
@@ -180,6 +223,13 @@ class WorkflowViewState:
     cancel_current_enabled: bool
     cancel_completed_enabled: bool
     completion_kind: str | None
+    top_scan_count: int = DEFAULT_TOP_SCAN_COUNT
+    scan_total: int = DEFAULT_TOP_SCAN_COUNT + 1
+    scan_done: int = 0
+    top_scan_setting: TopScanSettingView | None = None
+    next_set_top_scan_count: int | None = None
+    alerts: tuple[WorkflowAlert, ...] = ()
+    manual_complete_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -195,8 +245,12 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     """Return the complete, immutable operator presentation for ``snapshot``."""
 
     scans = tuple(str(value or "") for value in snapshot.qa_scans)
-    if len(scans) > QA_TOTAL:
-        raise ValueError(f"qa_scans cannot contain more than {QA_TOTAL} entries")
+    top_scan_count = int(snapshot.top_scan_count)
+    set_definitions = slot_definitions_for(top_scan_count)
+    if len(scans) > len(set_definitions):
+        raise ValueError(
+            f"qa_scans cannot contain more than {len(set_definitions)} entries"
+        )
 
     exact_members = tuple(str(value or "") for value in snapshot.exact_rescan_barcodes)
     exact_target = max(int(snapshot.exact_rescan_target or 0), 0)
@@ -204,8 +258,8 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
     qa_completed = len(scans)
     slot_definitions = (
         CENTRAL_INHERIT_ALL_SLOT_DEFINITIONS
-        if snapshot.central_inherit_all
-        else SLOT_DEFINITIONS
+        if snapshot.central_inherit_all and top_scan_count == DEFAULT_TOP_SCAN_COUNT
+        else set_definitions
     )
     qa_total = len(slot_definitions)
     if qa_completed > qa_total:
@@ -241,6 +295,7 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
                   and not snapshot.exact_rescan_active and not snapshot.exact_rescan_complete)
     f4_hint = _f4_hint(
         qa_completed=qa_completed,
+        qa_total=qa_total,
         sealed_transfer=snapshot.sealed_transfer,
         central_inherit_all=snapshot.central_inherit_all,
         exact_rescan_active=snapshot.exact_rescan_active,
@@ -325,6 +380,17 @@ def present_workflow(snapshot: WorkflowSnapshot) -> WorkflowViewState:
         cancel_current_enabled=cancel_current_enabled,
         cancel_completed_enabled=cancel_completed_enabled,
         completion_kind=completion_kind,
+        top_scan_count=top_scan_count,
+        scan_total=qa_total,
+        scan_done=qa_completed,
+        top_scan_setting=snapshot.top_scan_setting,
+        next_set_top_scan_count=(
+            snapshot.next_set_top_scan_count
+            if snapshot.next_set_top_scan_count not in (None, top_scan_count)
+            else None
+        ),
+        alerts=tuple(snapshot.alerts),
+        manual_complete_hint=f3_hint,
     )
 
 
@@ -359,6 +425,7 @@ def _slot_views(
                 value=value,
                 filled=filled,
                 state=state,
+                role=SLOT_ROLES.get(key, "product"),
             )
         )
     return tuple(rows)
@@ -438,6 +505,7 @@ def _primary_view(
         return _completion_view(
             completion_kind,
             central_inherit_all=snapshot.central_inherit_all,
+            qa_total=qa_total,
         )
     if exact_rescan.status == "active":
         return _PrimaryView(
@@ -490,6 +558,7 @@ def _completion_view(
     completion_kind: str,
     *,
     central_inherit_all: bool = False,
+    qa_total: int = QA_TOTAL,
 ) -> _PrimaryView:
     if completion_kind == "full":
         notice = WorkflowNotice(
@@ -497,7 +566,7 @@ def _completion_view(
             (
                 "서버 전체 멤버십 상속 포장을 기록했습니다."
                 if central_inherit_all
-                else "정상 5단계를 기록했습니다."
+                else f"정상 {qa_total}단계를 기록했습니다."
             ),
             kind="completion_full",
             tone="success",
@@ -701,14 +770,15 @@ def _f3_hint(
         return "PHS2 스캔 후 가능"
     if qa_completed < 2:
         return "제품 1개 이상 스캔 후 가능"
-    if qa_completed >= QA_TOTAL:
-        return f"이미 {QA_TOTAL}개 완료됨"
+    if qa_completed >= qa_total:
+        return f"이미 {qa_total}개 완료됨"
     return "F3 소량 완료 가능"
 
 
 def _f4_hint(
     *,
     qa_completed: int,
+    qa_total: int = QA_TOTAL,
     sealed_transfer: bool,
     central_inherit_all: bool,
     exact_rescan_active: bool,
@@ -722,7 +792,7 @@ def _f4_hint(
             return "포장 확정 전 제품 1~2개 교체"
         return "PHS2 스캔 후 가능"
     if sealed_transfer:
-        if 1 <= qa_completed < QA_TOTAL:
+        if 1 <= qa_completed < qa_total:
             return "포장 확정 전 제품 1~2개 교체"
         return "포장 확정 후에는 교체 불가"
     if exact_rescan_active:
@@ -742,8 +812,11 @@ __all__ = [
     "QA_TOTAL",
     "SLOT_DEFINITIONS",
     "ScanSlotView",
+    "TopScanSettingView",
+    "WorkflowAlert",
     "WorkflowSnapshot",
     "WorkflowNotice",
     "WorkflowViewState",
     "present_workflow",
+    "slot_definitions_for",
 ]

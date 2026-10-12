@@ -5,6 +5,7 @@ success presentation and worker dispatch. Storage APIs and transaction order
 remain unchanged.
 """
 
+import label_packing_settings
 import label_transition
 import label_worker_roster
 
@@ -413,7 +414,7 @@ def _queue_package(
     required_scan_count = (
         _central_scan_count()
         if central_inherit_all
-        else self.TOTAL_SCAN_COUNT
+        else label_packing_settings.set_count(current) + 1
     )
     if len(raw) != required_scan_count:
         return None
