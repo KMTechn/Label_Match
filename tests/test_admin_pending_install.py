@@ -494,7 +494,8 @@ def test_pending_failure_cannot_complete_or_begin_onboarding(pending_install, mo
         # machine fixture isolates the refusal before onboarding's first write.
         from contextlib import nullcontext
         import writer_session_fence
-        monkeypatch.setattr(writer_session_fence, "_onboarding_lifecycle_scope", lambda _root: nullcontext())
+        monkeypatch.setattr(writer_session_fence, "_onboarding_lifecycle_scope",
+                            lambda _root, *, recheck=False: nullcontext())
         monkeypatch.setattr(onboarding, "prepare_current_user_data_open", lambda *_a, **_k: pytest.fail("pending refusal opened user state"))
         with pytest.raises(onboarding.CurrentUserOnboardingError):
             onboarding.onboard_current_user(root)
