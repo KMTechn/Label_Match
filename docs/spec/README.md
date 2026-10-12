@@ -253,7 +253,7 @@
 ### 8-1. 설치
 - 설치기는 고정 `kmtech_shared` 0.3.6 PowerShell leaf를 manifest/leaf pin 확인 뒤 호출한다([X13-B](operations.md#shared-powershell-x13b)). 런타임 PowerShell 파일과 생성 템플릿은 OS 모듈의 절대 경로 import 두 줄로 PS7 상속 경로 오염을 막는다. 자료 세대 UNKNOWN 원인은 비공개 속성으로 보존하며 진단 로그 잎은 공급만 하고 앱에 연결하지 않는다([고정 shared core](operations.md#shared-core-x04b)).
 - **목표: 관리자 SSH 숨김 설치·업데이트로 깔린다(현장 PC 화면에 설치 창·Windows 허용 창 0).**
-- **제품 후보(w9firstupdsub63, 10/11 1차 답)**: 상승/Session 0 입구는 키트가 넘긴 작업자 계정과 그 작업자의 READY inventory를 먼저 확인한다. 기계 몫을 배치한 뒤 `PASS_MACHINE_WORKER_PENDING`으로 작업자 첫 시작을 기다린다. 지정 작업자의 기존 onboarding이 READY를 확인해야 작업자 HKCU에 완료가 기록된다.
+- **제품 후보(w9firstupdsub63)**: 상승/Session 0 입구는 키트가 넘긴 작업자 계정과 그 작업자의 READY inventory를 먼저 확인한다. 작업자 인수를 생략한 상승 SSH 호출은 안정된 활성 콘솔 작업자를 확인한다. 기계 몫을 배치한 뒤 `PASS_MACHINE_WORKER_PENDING`으로 작업자 첫 시작을 기다리며, 호출자와 작업자 SID가 같아도 상승 SSH에서 사용자 프로필·등록·Run을 준비하지 않는다. 지정 작업자의 기존 일반 세션 onboarding이 READY를 확인해야 작업자 HKCU에 완료가 기록된다.
   - 키트 관리자 가지 연결·실제 Windows 설치/되돌림은 아직 미증명이다(LM-2). 현장 일반 세션 설치는 기존 Windows 허용 창 승인을 사용한다.
 - **설치 판**: v2.0.99 stock `W\w9setupprep\sub-471\stock\Label_Match-v2.0.99-55cab72-B.zip`(SHA256 `72d51c05…af09c`). 일요일 판은 자동 업데이트를 끈다(feed 끔).
 - **설치 전 확인**: 그 PC 의 옛 포장 판·자료 백업, 남의 관리자 PowerShell 0, 「옛 현품표 받기」 HKLM 값 readback.

@@ -16,9 +16,9 @@ PowerShell lifecycle 관측·고정 helper·새 SYSTEM 로그온 action과 옛 �
 
 유효한 대상·inventory를 확인한 뒤에만 ProgramData 설치 감사 자리 아래 관리자 진단용 임시 폴더를 만든다. 설치기 프로세스와 자식의 임시 경로를 그 폴더로 지정하므로 실패 진단도 사용자 프로필에 쓰지 않는다. 영구 환경 설정은 바꾸지 않는다. 고정 current에서 첫 시작할 때는 active가 가리키는 versions의 manifest와 PENDING의 commit·판을 대조한다.
 
-키트의 새 관리자 가지가 상승한 canonical에 `-WorkerAccount <대상 SID 또는 DOMAIN\이름> -WorkerSurveyInventory <대상 작업자 세션의 READY inventory JSON 절대 경로>`를 넘긴다. 대상은 상승 호출자와 같은 SID도 받으며 ProfileList 경로와 inventory의 경로가 일치해야 한다. 누락/모호/불일치/파일·JSON 오류는 설치와 쓰기 0, 공개 실패 한 줄이다. 키트 없이 기존 인수로 직접 SSH 호출하는 꼴은 여전히 설치를 거절한다.
+키트의 새 관리자 가지가 상승한 canonical에 `-WorkerAccount <대상 SID 또는 DOMAIN\이름> -WorkerSurveyInventory <대상 작업자 세션의 READY inventory JSON 절대 경로>`를 넘긴다. 대상은 상승 호출자와 같은 SID도 받으며 ProfileList 경로와 inventory의 경로가 일치해야 한다. 누락/모호/불일치/파일·JSON 오류는 설치와 쓰기 0, 공개 실패 한 줄이다. 작업자 인수를 생략한 상승 SSH 호출은 안정된 활성 콘솔 작업자를 읽기 전용으로 확인해 기계 배치 대상으로 삼는다. 같은 세션·같은 SID의 상승 콘솔 호출은 기존 설치 길을 사용한다.
 
-같은 SID의 상승 SSH 호출은 기계 몫 뒤 기존 onboarding을 `--defer-machine-worker-relay-start`로 실행해 자기 자료·등록·Run만 준비한다. relay·화면은 첫 일반 작업자 세션/다음 로그온에서 시작하며 그때까지 보호 PENDING과 미완료 상태를 유지한다. 중간 실패는 공용 링크·PENDING의 원래 없음/원 바이트를 복원하고 원 실패를 보존한다.
+상승 SSH 또는 Session 0의 기계 설치 호출은 작업자와 같은 SID여도 자기 자료·등록·HKCU Run·개인 바로 가기 준비를 첫 일반 작업자 시작까지 미룬다. 기계 배치와 공용 바로 가기 뒤 `PASS_MACHINE_WORKER_PENDING`을 남기며 보호 PENDING과 미완료 상태를 유지한다. 첫 일반 세션의 기존 onboarding이 등록·Run·relay와 완료 확인을 수행한다. 중간 실패는 공용 링크·PENDING의 원래 없음/원 바이트를 복원하고 원 실패를 보존한다.
 
 관리자 성공은 `PASS_MACHINE_WORKER_PENDING`과 「작업자 준비 대기」다. ProgramData의 `KMTech\Label_Match\install-audit`에는 기존 설치 감사 schema와 code/startup preimage 참조를 남긴다. 공용 프로그램 메뉴의 `KMTech 포장.lnk`는 고정 `current/runtime/pythonw.exe -I -B "current/app/main.py"`를 가리킨다. 다른 대상의 동명 바로가기는 덮어쓰지 않는다. Legacy-Survey의 `Label_Match.exe` 대상 비교에는 새 링크가 옛 후보로 잡히지 않는다.
 

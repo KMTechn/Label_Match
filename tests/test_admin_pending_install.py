@@ -211,6 +211,7 @@ if($result -cne 'BOUND'){throw 'Worker target was not accepted'}
     "same-admin", "ordinary-arguments", "ordinary-default", "ordinary-empty-arguments", "unresolved-account", "absent-profile", "session-zero-not-elevated",
 ])
 def test_worker_inventory_admission_precedes_every_write(tmp_path, engine, case):
+    # Elevated callers sharing the worker SID defer profile setup to the ordinary session.
     profile = tmp_path / "worker"
     inventory = tmp_path / "inventory.json"
     payload = {"status": "READY", "target_sid": "S-1-5-21-111-222-333-1001",
@@ -251,7 +252,7 @@ if($case -cin @('sid','account','session-zero','same-admin')){
  if($null -ne $failure){throw $failure}
  if($worker.sid -cne $sid -or $worker.inventory_sha256 -cne $env:LM_ADMIN_INVENTORY_SHA){throw 'Worker inventory binding lost'}
  if($worker.local_app_data -cne (Join-Path $env:LM_ADMIN_PROFILE 'AppData\Local')){throw 'Profile differs'}
- if($worker.caller_is_worker -ne ($case -ceq 'same-admin')){throw 'Caller worker identity differs'}
+ if($worker.caller_is_worker -ne $false){throw 'Caller worker identity differs'}
 }elseif($case -ceq 'ordinary-default'){
  if($null -ne $failure -or $null -ne $worker){throw 'Ordinary entry changed'}
 }else{
@@ -271,6 +272,7 @@ if($case -cin @('sid','account','session-zero','same-admin')){
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 @pytest.mark.parametrize("case", ["same-console", "ssh-same", "ssh-other", "no-console", "ambiguous", "changed", "invalid-profile", "test-layout", "plan-only", "explicit-empty"])
 def test_implicit_admin_entry_binds_one_stable_console_worker(tmp_path, engine, case):
+    # Elevated callers sharing the worker SID defer profile setup to the ordinary session.
     result = run_functions(tmp_path, INSTALLER,
         ["ByteSha", "Get-LabelConsoleWorker", "Resolve-LabelMachineWorker", "Assert-LabelMachineEvidencePath"], r'''
 $case=$env:LM_CONSOLE_CASE
@@ -304,7 +306,7 @@ if($case -in @('same-console','test-layout','plan-only')){
 }elseif($case -in @('ssh-same','ssh-other')){
  if($null -ne $failure -or $worker.sid -cne $workerSid -or $worker.target_source -cne 'ACTIVE_CONSOLE' -or
     $worker.profile_root -cne $env:LM_CONSOLE_PROFILE -or $worker.inventory_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-    $worker.caller_is_worker -ne ($case -ceq 'ssh-same') -or $script:observations -ne 2){throw 'Implicit worker binding differs'}
+    $worker.caller_is_worker -ne $false -or $script:observations -ne 2){throw 'Implicit worker binding differs'}
 }else{
  if($null -eq $failure -or $failure.Exception.Data['worker_pending_failure'] -ne $true -or $null -ne $worker){throw 'Ambiguous worker was accepted'}
 }

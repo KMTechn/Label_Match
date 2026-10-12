@@ -4956,7 +4956,7 @@ function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$Inventor
                 console_session_id=$console.session_id;target_source='ACTIVE_CONSOLE'}
             $bytes = [Text.Encoding]::UTF8.GetBytes(($observation | ConvertTo-Json -Compress))
             return [pscustomobject]@{sid=$console.sid;profile_root=$profile;local_app_data=(Join-Path $profile 'AppData\Local');
-                inventory_sha256=(ByteSha $bytes);caller_is_worker=([string]$Caller.sid -ceq $console.sid);target_source='ACTIVE_CONSOLE'}
+                inventory_sha256=(ByteSha $bytes);caller_is_worker=([string]$Caller.sid -ceq $console.sid -and -not $Caller.elevated);target_source='ACTIVE_CONSOLE'}
         }
         if (-not $Caller.elevated -or [string]::IsNullOrWhiteSpace($Account) -or
             [string]::IsNullOrWhiteSpace($InventoryPath)) { $reason = if (-not $Caller.elevated) { 'WORKER_ARGS_REQUIRE_ADMIN' } else { 'WORKER_ARGS_INCOMPLETE' }; throw 'Worker target and inventory are required.' }
@@ -4988,7 +4988,7 @@ function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$Inventor
         $reason = 'EVIDENCE_PATH_INVALID'
         Assert-LabelMachineEvidencePath
         $reason = 'UNCLASSIFIED'
-        return [pscustomobject]@{sid=$sid;profile_root=$profile;local_app_data=(Join-Path $profile 'AppData\Local');inventory_sha256=(ByteSha $bytes);caller_is_worker=($sid -ceq [string]$Caller.sid)}
+        return [pscustomobject]@{sid=$sid;profile_root=$profile;local_app_data=(Join-Path $profile 'AppData\Local');inventory_sha256=(ByteSha $bytes);caller_is_worker=($sid -ceq [string]$Caller.sid -and -not $Caller.elevated)}
     } catch {
         if ($_.Exception.Data.Contains('worker_pending_reason')) { $reason = [string]$_.Exception.Data['worker_pending_reason'] }
         $failure = [InvalidOperationException]::new('Worker pending installation input is invalid.')
@@ -5088,7 +5088,7 @@ function Install-LabelMachineWorkerShortcut([string]$Install, [string]$Menu) {
 
 function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Install, $SourceManifest, $Lifecycle = $null, [bool]$SetupCurrentUser = $false) {
     # The existing pinned placement helper owns code, backups and startup state.
-    # Another SID is deferred entirely; the same SID can prepare its own profile.
+    # Only a non-elevated same-SID caller can prepare its own profile.
     Assert-LabelMachineEvidencePath
     if ($SourceManifest.startup_update_protocol -ne 1) { throw 'Machine worker installation requires managed portable code.' }
     if (@(UnquiescedProductWriters).Count) { throw 'Canonical product writers must exit before machine placement.' }
