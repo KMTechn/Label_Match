@@ -205,6 +205,69 @@ function Enter-LabelCanonicalPlacement([int]$TimeoutMilliseconds = 5000) {
         -TimeoutMilliseconds $TimeoutMilliseconds
 }
 
+function Invoke-LabelPlacementLifecycleChild([scriptblock]$Action, [switch]$Activate) {
+    # A delegated child still needs the native admission mutex. Keep the session
+    # fence while lending only this call's sources, then restore the exact grant.
+    if ($null -eq $script:writerFenceLease -or -not $script:writerFenceLease.acquired) {
+        throw 'LABEL_PLACEMENT_CHILD_ADMISSION_MISSING'
+    }
+    $before = Assert-LabelWriterFenceOwner -ControlRoot $WriterFenceControlRoot `
+        -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId `
+        -ReplacementTransactionId $WriterFenceReplacementTransactionId `
+        -DelegationToken $WriterFenceDelegationToken -Source 'canonical_placement'
+    $names = @('KMTECH_LABEL_WRITER_DELEGATION_TOKEN','KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID',
+        'KMTECH_LABEL_WRITER_DELEGATION_ATTEMPT_ID','KMTECH_LABEL_WRITER_DELEGATION_TRANSACTION_ID')
+    $environmentBefore = New-Object object[] $names.Count
+    for ($index = 0; $index -lt $names.Count; $index++) {
+        $environmentBefore[$index] = [Environment]::GetEnvironmentVariable($names[$index], 'Process')
+    }
+    $sources = @('auto_update_fixed_helper')
+    if ($Activate) {
+        $sources += @('canonical_placement','auto_update_supported_lifecycle_transition',
+            'auto_update_persist_switch','auto_update_write_json_durable')
+    }
+    $childToken = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
+    $scoped = $null; $released = $false; $childExitCode = $null
+    try {
+        $scoped = Set-LabelWriterFenceDelegation -ControlRoot $WriterFenceControlRoot `
+            -Status ([string]$before.status) -SessionId $WriterFenceSessionId `
+            -AttemptId $WriterFenceAttemptId -ReplacementTransactionId $WriterFenceReplacementTransactionId `
+            -DelegationToken $childToken -DelegatedSources $sources -LifetimeSeconds 120
+        $values = @($childToken,$WriterFenceSessionId,$WriterFenceAttemptId,$WriterFenceReplacementTransactionId)
+        for ($index = 0; $index -lt $names.Count; $index++) {
+            [Environment]::SetEnvironmentVariable($names[$index], $values[$index], 'Process')
+        }
+        Exit-LabelWriterAdmission $script:writerFenceLease
+        $script:writerFenceLease = $null; $released = $true
+        $output = @(& $Action)
+        $childExitCode = $LASTEXITCODE
+        return $output
+    }
+    finally {
+        try {
+            if ($released) {
+                $script:writerFenceLease = Enter-LabelWriterAdmission -ControlRoot $WriterFenceControlRoot `
+                    -TimeoutMilliseconds 15000
+            }
+            if ($null -ne $scoped) {
+                $active = Assert-LabelWriterFenceOwner -ControlRoot $WriterFenceControlRoot `
+                    -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId `
+                    -ReplacementTransactionId $WriterFenceReplacementTransactionId
+                if (($active | ConvertTo-Json -Depth 20 -Compress) -cne ($scoped | ConvertTo-Json -Depth 20 -Compress)) {
+                    throw 'LABEL_PLACEMENT_CHILD_FENCE_CHANGED'
+                }
+                [void](Write-LabelWriterFenceAtomic $WriterFenceControlRoot $before)
+            }
+        }
+        finally {
+            for ($index = 0; $index -lt $names.Count; $index++) {
+                [Environment]::SetEnvironmentVariable($names[$index], $environmentBefore[$index], 'Process')
+            }
+            if ($null -ne $childExitCode) { $global:LASTEXITCODE = $childExitCode }
+        }
+    }
+}
+
 function Get-StrictFullPath([string]$Path, [string]$Purpose) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
         throw "$Purpose must be an absolute path."
@@ -1979,9 +2042,9 @@ $applicationParent = Split-Path -Parent $installRootFull
 $supportedContext = $null
 if (-not $testOverride -and ((Test-Path -LiteralPath (Join-Path $applicationParent 'update-control')) -or
     (Test-Path -LiteralPath (Join-Path $applicationParent 'removed.json')))) {
-    $healthOutput = @(& (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
+    $healthOutput = @(Invoke-LabelPlacementLifecycleChild -Action { & (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
         (Join-Path $sourceRootFull 'app\main.py') --label-match-lifecycle-context `
-        --install-root $applicationParent --operation install)
+        --install-root $applicationParent --operation install })
     if ($LASTEXITCODE -ne 0) { throw ('자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요. ' + ($healthOutput -join "`n")) }
     $supportedContext = ($healthOutput -join "`n") | ConvertFrom-Json
     if ([string]$supportedContext.status -cne 'PASS') { throw 'SUPPORTED_REMOVAL_REQUIRED' }
@@ -2117,10 +2180,10 @@ try {
     Write-Output "release_layout=$releaseLayout"
     Write-Output "integrity_record=$(Join-Path $placementRoot $IntegrityFileName)"
     if ($versionedPlacement) {
-        $activation = @(& (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
+        $activation = @(Invoke-LabelPlacementLifecycleChild -Activate -Action { & (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
             (Join-Path $sourceRootFull 'app\main.py') --label-match-lifecycle-context `
             --install-root $applicationParent --expected-from-commit $ExpectedActiveCommit `
-            --activate-supported-commit $nextCommit)
+            --activate-supported-commit $nextCommit })
         if ($LASTEXITCODE -ne 0) { throw ('SUPPORTED_ACTIVATION_FAILED:' + ($activation -join "`n")) }
     } else { Initialize-LabelStartupUpdate $placementRoot }
     $tlsCaBootstrap = Install-CurrentUserTlsCaBootstrap $TlsCaBundlePath $OperatorLocalAppDataRoot

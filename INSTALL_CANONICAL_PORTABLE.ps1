@@ -580,7 +580,7 @@ shared_replacements = {
         'a8913f64c305ac9f571fef289aa95bc0bb8234d0d33098fa6882c787e6203956'),
     'INSTALL_THIS_PC.ps1': (
         '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
-        'a7a7533511384145ad3db6b3b56575a29b7e51c99764391978c0fefa0a2d9cfa'),
+        '4a71c5c5d75b1c54be153f8bcd0f3267cc29113d2ec2b19ae6d7f9b9b631d95b'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
         'e2e6ab97bf9e983389e6a4a01d93a2b2032009aad23a2879b429b28427c6648c'),
@@ -1335,7 +1335,7 @@ def data_generation_before_allowed(relative):
 
 # ADMIN-WORKER-DECLARATIONS-BEGIN
 admin_worker_replacements = {'INSTALL_THIS_PC.ps1': ('bdc42c26a8b5464d8a65e880ba5474ef01a28c820997adcb5ddefa8daa9b022b',
-                         'a7a7533511384145ad3db6b3b56575a29b7e51c99764391978c0fefa0a2d9cfa'),
+                         '4a71c5c5d75b1c54be153f8bcd0f3267cc29113d2ec2b19ae6d7f9b9b631d95b'),
  'app/Label_Match.py': ('43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9',
                         'a7520d2a527811a5a2613ab30d36bf258c209230399a701b63a9dd20867d9663'),
  'app/current_user_onboarding.py': ('93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd',

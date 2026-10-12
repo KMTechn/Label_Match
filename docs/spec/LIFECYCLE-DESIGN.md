@@ -8,6 +8,8 @@
 
 설치는 첫/제거 상태 또는 정상 설치 상태에서만 진행한다. 정상은 고정 current owner A, 실제 active A/B, 보호 helper로 검증한 두 stock, 일치하는 pointer/안정 phase, 실제 소유 startup task와 재관측 결과로 판정한다. C는 `versions/<C>`에 배치하고 실제 B를 expected-from으로 다시 확인한 뒤 보호 포인터만 전환한다. 고정 owner A와 키·설정은 보존한다. 중간/손상/불명확 상태는 자료·등록·대기 전송을 보존하고 한국어로 지원 제거 후 재설치를 안내한다.
 
+배치 중 Python 수명주기 분류·활성화 자식은 호출마다 새 120초 위임을 받는다. 분류는 고정 helper만, 활성화는 기존 전환·포인터 저장 sink와 canonical 검증만 허용한다. 부모는 session authority와 fence를 유지하고 자식 실행 동안 admission만 내려놓는다. 종료·실패 뒤 admission을 다시 얻어 위임 기록 전체가 같은지 확인하고 원래 위임·환경을 복원한다. 다른 writer는 계속 거절하며 기록이 바뀌면 덮어 복원하지 않고 멈춘다.
+
 제거 뒤 current에 파일·directory·reparse 등 항목이 남으면 설치가 이를 덮지 않으며 경로를 알려 멈춘다. 남긴 미상 version/packet은 제거 표식과 보존 경로를 이용해 식별하며 새 C 목적지의 충돌은 별도로 거절한다. 기존 옛 포장 위 첫 등록의 정확한 code/data 부재 판정과 배포 위임 경계를 유지한다.
 
 managed 등록은 actual active code를 사용한다. 새 자료·설정·direct-sync·profile·ledger 및 직접 등록 도구의 출력 경로는 current/versions/update-control/removal-evidence/removed.json과 모든 깊이에서 겹칠 수 없다. 기본 사용자 onboarding 자료는 LOCALAPPDATA/KMTech/Label_Match/data이며 standalone 등록의 ProgramData 자료와 DirectSync 기본 경로는 코드 바깥이다. 사용자 제거는 자기 Run/relay 정지만 수행하고 machine control을 해석하지 않으며 신원·profile·원장·대기 전송을 보존한다.
