@@ -280,18 +280,19 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
             if len(matches) != 1:
                 raise ValueError("integrity source declaration is ambiguous")
             candidate_field(matches[0].comparators[0], ast.literal_eval(assignments["integrity_order_path"].value))
-
-    # The accepted scanner preimage also overrides two inline companion pairs.
-    # Refresh their candidates while retaining the exact historical preimages.
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "startup_changes" and node.func.attr == "update"
-                and len(node.args) == 1 and isinstance(node.args[0], ast.Dict)):
-            for key, pair in zip(node.args[0].keys, node.args[0].values):
-                if (isinstance(key, ast.Constant) and isinstance(key.value, str)
-                        and isinstance(pair, ast.Tuple) and len(pair.elts) == 2):
-                    candidate_field(pair.elts[1], key.value)
+    # The scanner override also preserves its installed preimages and refreshes
+    # only candidate fields; it is nested outside the declaration assignments.
+    scanner_updates = [node.args[0] for node in ast.walk(tree)
+                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                       and isinstance(node.func.value, ast.Name) and node.func.value.id == "startup_changes"
+                       and node.func.attr == "update" and len(node.args) == 1
+                       and isinstance(node.args[0], ast.Dict)]
+    if len(scanner_updates) != 1:
+        raise ValueError("scanner source declaration is ambiguous")
+    for key, value in zip(scanner_updates[0].keys, scanner_updates[0].values):
+        if not isinstance(key, ast.Constant) or not isinstance(value, ast.Tuple) or len(value.elts) != 2:
+            raise ValueError("scanner source pair is invalid")
+        candidate_field(value.elts[1], key.value)
 
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq)
