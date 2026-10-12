@@ -291,7 +291,6 @@ def _authenticated_support_removal_source(app_root: Path):
         target = target.parent
     if (getattr(sys, "frozen", False) or source_app.name.casefold() != "app"
             or not (source_root / "portable-manifest.json").is_file()
-            or (source_root / "bootstrap-integrity.json").exists()
             or source_root.resolve() == target):
         yield None
         return
@@ -305,6 +304,8 @@ def _authenticated_support_removal_source(app_root: Path):
     with remote_request():
         try:
             source_root = resolve_data_path(source_root)
+            if (source_root / "bootstrap-integrity.json").exists():
+                raise DataGenerationError(UNKNOWN_MESSAGE)
             installed_root = resolve_data_path(app_root)
             if installed_root.name.casefold() == "app":
                 installed_root = installed_root.parent

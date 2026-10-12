@@ -131,7 +131,7 @@ def test_unproven_support_packet_refuses_before_removal(packets, mutation):
         record_path.write_text(json.dumps(record), encoding="utf-8")
     calls = []
     with pytest.raises(onboarding.CurrentUserOnboardingError) as caught:
-        _remove(source if mutation == "source-record-forged" else installed, environment, calls)
+        _remove(installed, environment, calls)
     assert caught.value.status == "UNKNOWN"
     assert caught.value.cause_code == "DATA_GENERATION_REFUSED"
     assert not calls
