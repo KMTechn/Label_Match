@@ -278,7 +278,22 @@ def test_stock_3f4574a_guard_still_refuses_everything_else(tmp_path, legacy_labe
     env = _environment(tmp_path)
     result = _ps(tmp_path, _definitions() + f"\nAssert-WriterTransition {_quote(source)} {_quote(installed)}", env)
     assert result.returncode != 0, result.stdout
-    assert reason in result.stderr, result.stdout + result.stderr
+    public_lines = result.stderr.strip().splitlines()
+    assert len(public_lines) == 1
+    prefix, separator, payload = public_lines[0].partition("=")
+    assert prefix == "LABEL_MATCH_INSTALLER_FAILURE" and separator == "="
+    failure = json.loads(payload)
+    assert failure["status"] == "FAILED"
+    assert failure["reason_code"] == "CHILD_NONZERO_EXIT"
+    assert failure["exception_type"] == "ValueError"
+    assert failure["exit_code"] == result.returncode
+    assert "WRITER_TRANSITION_" not in result.stderr
+    report = Path(failure["report_path"]).resolve()
+    assert report.is_relative_to(tmp_path.resolve())
+    assert report.is_file() and 0 < report.stat().st_size <= 1024 * 1024
+    private_report = report.read_bytes()
+    assert hashlib.sha256(private_report).hexdigest() == failure["report_sha256"]
+    assert reason in private_report.decode("utf-8-sig")
 
 
 @pytest.fixture(scope='module')
