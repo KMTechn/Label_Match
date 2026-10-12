@@ -268,13 +268,18 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
             for pair in pairs:
                 candidate_field(pair.elts[1], "app/Label_Match.py")
         elif name == "integrity_order_transition":
-            for comparison in ast.walk(assignment.value):
-                if (isinstance(comparison, ast.Compare) and len(comparison.comparators) == 1
-                        and isinstance(comparison.left, ast.Call) and comparison.left.args
-                        and isinstance(comparison.left.args[0], ast.BinOp)
-                        and isinstance(comparison.left.args[0].left, ast.Name)
-                        and comparison.left.args[0].left.id == "source"):
-                    candidate_field(comparison.comparators[0], "app/current_user_onboarding.py")
+            # This historical predicate keeps its installed preimage fixed and
+            # binds the source side directly, outside the replacement tables.
+            matches = [node for node in ast.walk(assignment.value)
+                       if isinstance(node, ast.Compare) and isinstance(node.left, ast.Call)
+                       and isinstance(node.left.func, ast.Name) and node.left.func.id == "release_digest"
+                       and len(node.left.args) == 1 and isinstance(node.left.args[0], ast.BinOp)
+                       and isinstance(node.left.args[0].left, ast.Name) and node.left.args[0].left.id == "source"
+                       and isinstance(node.left.args[0].right, ast.Name) and node.left.args[0].right.id == "integrity_order_path"
+                       and len(node.comparators) == 1]
+            if len(matches) != 1:
+                raise ValueError("integrity source declaration is ambiguous")
+            candidate_field(matches[0].comparators[0], ast.literal_eval(assignments["integrity_order_path"].value))
 
     # The accepted scanner preimage also overrides two inline companion pairs.
     # Refresh their candidates while retaining the exact historical preimages.
