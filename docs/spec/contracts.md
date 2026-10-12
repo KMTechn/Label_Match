@@ -114,7 +114,7 @@ LOCAL 완료 안내(LM-1): PC 안에서만 끝나 PACKAGE가 없는 새 현품�
 
 ## 고정 PowerShell leaf와 bootstrap 신뢰
 
-설치 기록이 없는 지원 source의 사용자 제거·되돌림은 설치 packet의 bootstrap PASS와 양쪽 전체 inventory·판·build 일치로만 자료 세대를 검사한다. 증명·최종 inventory 대조는 쓰기 허가 밖에서 수행하고, 복귀한 허가 아래 자료 세대를 다시 확인한다. 이 증명은 해당 제거 검사에만 유효하며 일반 시작의 required 기록·REFUSE·서명·같은 SID·writer delegation 계약은 유지한다.
+지원 source의 사용자 제거·되돌림은 먼저 고정 current의 bootstrap을 검증한다. 관리 기록이 있으면 완전한 policy·active·transition, 단계별 SHA 관계, versions/<sha> bootstrap·build·고정 신뢰 키 일치를 증명한 활성 판 inventory에 실행 source 전체 bytes와 판/build를 결속한다. 초기 설치 DEFERRED 상태에는 거래 ID가 없으므로 pointer/state ID 동등성을 요구하지 않는다. 검증된 활성 host가 고정 A logical root를 정리할 때도 해당 활성 판 identity를 사용한다. 옛 A packet은 UNKNOWN, 고정 A host의 B 자료 접근은 REFUSE를 유지한다. 증명·최종 inventory 대조는 쓰기 허가 밖에서 수행하고, 복귀한 허가 아래 자료 세대를 다시 확인한다. 이 증명은 해당 제거 검사에만 유효하며 일반 시작의 required 기록·REFUSE·서명·같은 SID·writer delegation 계약은 유지한다.
 
 설치 packet의 `release_identity`는 기존 전체 verifier와 판·build 검증을 통과한 PASS만 해석된 제품 루트·진입점별로 기억하고 사본을 반환한다. 실패·예외와 개발 source의 clean-Git 확인은 기억하지 않는다. 각 입구는 첫 writer admission 전에 미리 확인하고 실패는 기존 G 흐름에서 다시 판정한다. G 판단·마커 기록·sink·허가 구조와 onboarding의 별도 직접 무결성 확인은 유지한다.
 
