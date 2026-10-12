@@ -2,6 +2,7 @@
 
 import copy
 from datetime import datetime, timedelta
+import hashlib
 import json
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -276,7 +277,7 @@ def test_startup_retries_storage_hold_archive_before_opening_or_replaying_the_se
     archive = Path(json.loads(held['snapshot_json'])['archive_path'])
     assert held['reason'] == held_reason
     assert target.read_bytes() == original and not archive.exists()
-    resume = target.with_name(target.name + '.resume-existing')
+    resume = target.with_name(target.name + '.resume-' + hashlib.sha256(original).hexdigest())
     if existing_resume:
         resume.write_bytes(original)
     _close(app)
