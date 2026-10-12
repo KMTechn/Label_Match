@@ -278,6 +278,20 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
                 if (isinstance(key, ast.Constant) and isinstance(key.value, str)
                         and isinstance(pair, ast.Tuple) and len(pair.elts) == 2):
                     candidate_field(pair.elts[1], key.value)
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq)
+                and isinstance(node.left, ast.Call) and isinstance(node.left.func, ast.Name)
+                and node.left.func.id == "release_digest" and len(node.left.args) == 1):
+            continue
+        path = node.left.args[0]
+        if not (isinstance(path, ast.BinOp) and isinstance(path.op, ast.Div)
+                and isinstance(path.left, ast.Name) and path.left.id == "source"
+                and isinstance(path.right, ast.Name) and path.right.id in assignments):
+            continue
+        relative = assignments[path.right.id].value
+        if isinstance(relative, ast.Constant) and isinstance(relative.value, str):
+            candidate_field(node.comparators[0], relative.value)
     for (start, end), replacement in sorted(edits.items(), reverse=True):
         encoded = encoded[:start] + replacement + encoded[end:]
     leading = len(match.group(1)) - len(match.group(1).lstrip())
