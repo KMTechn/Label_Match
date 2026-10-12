@@ -376,6 +376,16 @@ def test_tk_entry_and_screen_text_share_one_scan_door():
     screen_self.entry.get.assert_not_called()
 
 
+def test_both_doors_stamp_the_enter_time_and_clear_the_notice_once():
+    # 바탕: Enter 시각 · 안내 지우기가 입력 칸 읽기보다 먼저 — 이음은 읽기 뒤 intake_scan 에서(차이 0 확인)
+    for self, enter in ((door(" A110 "), lambda s: Label_Match.Label_Match._handle_scan_enter(s)),
+                        (door(), lambda s: s.intake_scan("A110"))):
+        self._last_scan_enter_at = None
+        enter(self)
+        assert isinstance(self._last_scan_enter_at, float)
+        self._clear_scanner_notice.assert_called_once_with()
+        self.process_input.assert_called_once()
+
 def test_pending_error_is_acknowledged_by_either_door():
     self = door()
     self._pending_workflow_error = {"result": "FAIL"}
