@@ -1004,6 +1004,19 @@ def _worker_install_completion() -> str:
     return value
 
 
+_PENDING_SERVER_ORIGIN = re.compile(
+    r"https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::([1-9][0-9]{0,4}))?",
+    re.IGNORECASE | re.ASCII,  # case-insensitive like the installer -match, ASCII only
+)
+
+
+def _pending_server_origin(value: Any) -> bool:
+    # Mirrors the installer ServerBaseUrlOrigin result: credential-free https://host[:port].
+    match = _PENDING_SERVER_ORIGIN.fullmatch(value) if isinstance(value, str) else None
+    return match is not None and (match.group(1) is None or int(match.group(1)) <= 65535)
+
+
 def validate_pending_worker_install(app_root: str | os.PathLike[str]) -> dict[str, Any] | None:
     """Read the machine marker before any business-data or current-user write."""
     from auto_update import installation_root, current_process_sid
@@ -1038,6 +1051,10 @@ def validate_pending_worker_install(app_root: str | os.PathLike[str]) -> dict[st
                 or not isinstance(pending.get("inventory_sha256"), str)
                 or not re.fullmatch(r"[0-9a-f]{64}", pending["inventory_sha256"])):
             raise ValueError("worker installation marker identity differs")
+        # An installer -ServerBaseUrl travels here; a malformed one refuses rather
+        # than falling back to the production default.
+        if "server_base_url" in pending and not _pending_server_origin(pending["server_base_url"]):
+            raise ValueError("worker installation marker server origin differs")
         completion = install_id + ":" + commit
         if _worker_install_completion() == completion:
             return None

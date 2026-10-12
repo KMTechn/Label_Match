@@ -23886,6 +23886,16 @@ def _run_label_match_application():
     return 0
 
 
+def _first_run_server_base_url(pending_worker):
+    # Environment override > machine installer origin (validated marker) > product default.
+    configured = os.environ.get(LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV, "").strip()
+    if configured:
+        return configured
+    if pending_worker and pending_worker.get("server_base_url"):
+        return pending_worker["server_base_url"]
+    return LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL
+
+
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     startup_identity, identity_unknown = {}, False
@@ -23907,7 +23917,7 @@ def main(argv=None):
         observe_startup = lambda *args, **kwargs: None
     verify_factory_contract_startup()
     try:
-        validate_pending_worker_install(_label_match_runtime_app_root())
+        pending_worker = validate_pending_worker_install(_label_match_runtime_app_root())
         check_user_data_open(_label_match_runtime_app_root())
         _label_match_startup_trace("main_enter")
         if _first_run_onboarding_enabled():
@@ -23915,11 +23925,7 @@ def main(argv=None):
             try:
                 onboarding_report = onboard_current_user(
                     app_root,
-                    server_base_url=os.environ.get(
-                        LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV,
-                        LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
-                    ).strip()
-                    or LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
+                    server_base_url=_first_run_server_base_url(pending_worker),
                     require_bootstrap_integrity=requires_bootstrap_integrity(app_root),
                     _startup=True,
                 )
