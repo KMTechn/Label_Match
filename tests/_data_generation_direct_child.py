@@ -1,6 +1,7 @@
 """Run one real Python process with synthetic identity and lifecycle stand-ins."""
 import contextlib
 import importlib
+import importlib.util
 import io
 import json
 import os
@@ -17,6 +18,12 @@ external_mode = state.startswith("external-")
 kind = os.environ["KMTECH_DATA_GENERATION_ENTRY_KIND"]
 external = root / "home" / "external"
 sys.path.insert(0, str(repo))
+# Load explicitly before every product import: -I/-E bypass sitecustomize.
+headless_spec = importlib.util.spec_from_file_location(
+    "_direct_headless", repo / "tests" / "_headless_direct_child.py")
+headless = importlib.util.module_from_spec(headless_spec)
+headless_spec.loader.exec_module(headless)
+headless_guard = headless.install()
 for name, relative in {"LOCALAPPDATA": "local", "APPDATA": "roaming", "PROGRAMDATA": "program",
                        "LABEL_MATCH_SAVE_DIR": "data", "LABEL_MATCH_DIRECT_SYNC_ROOT": "relay",
                        "KMTECH_LABEL_WRITER_CONTROL_ROOT": "control"}.items():
@@ -110,6 +117,8 @@ def observed_connect(*args, **kwargs):
 sqlite3.connect = observed_connect
 module_name, function_name = entry.rsplit(":", 1)
 module = importlib.import_module(module_name)
+if hasattr(module, "_show_first_run_onboarding_error"):
+    module._show_first_run_onboarding_error = lambda *_args, **_kwargs: None
 common = ["--app-root", str(repo)]
 argv = {
     "registrar": ["--apply", "--sync-dir", str(root / "data"), "--data-dir", str(root / "relay"),
@@ -276,5 +285,6 @@ result = {"entry": kind, "state": state, **events, "exit_code": exit_code,
           "passed": events == {"identity_reads": 0, "data_reads": 0, "registration_calls": 0, "mutations": 0}
                     and not changed and not [p for p in added if "startup-trace" not in p]
                     and exit_code != 0 and "자료" in message and "복구" in message}
+result["headless_guard"] = headless_guard
 Path(output).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 print(json.dumps(result, ensure_ascii=False))

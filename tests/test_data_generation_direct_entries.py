@@ -49,6 +49,10 @@ def test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, sta
        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert completed.returncode == 0, completed.stderr[-1600:]
     result = json.loads(output.read_text(encoding="utf-8"))
+    assert result["headless_guard"]["tk_blocked"]
+    assert result["headless_guard"]["notice_faked"]
+    assert result["headless_guard"]["known_folder_blocked"]
+    assert result["headless_guard"]["hidden_popen"]
     assert result["passed"], result
 
 
