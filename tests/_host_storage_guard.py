@@ -96,13 +96,20 @@ def isolate_known_folders(code, root, environ):
     root = Path(root).resolve()
     if not root.is_relative_to(OWN_ROOT.resolve()):
         raise ValueError("Native test root is outside the owned isolation root")
-    pattern = re.compile(r"\[(?:System\.)?Environment\]::GetFolderPath\(\s*['\"](\w+)['\"]\s*\)", re.I)
+    pattern = re.compile(
+        r"\[(?:System\.)?Environment\]::GetFolderPath\(\s*"
+        r"(?:['\"](?P<quoted>\w+)['\"]|"
+        r"\[(?:System\.)?Environment\+SpecialFolder\]::(?P<enum>\w+))"
+        r"(?:\s*,\s*\[(?:System\.)?Environment\+SpecialFolderOption\]::DoNotVerify)?\s*\)",
+        re.I,
+    )
     mapping = {"commonapplicationdata": "PROGRAMDATA", "localapplicationdata": "LOCALAPPDATA",
                "applicationdata": "APPDATA"}
 
     def replace(match):
-        folder = match.group(1).lower()
-        if folder not in mapping and folder not in {"startup", "commonstartup", "programs", "commonprograms"}:
+        folder = (match.group("quoted") or match.group("enum")).lower()
+        if folder not in mapping and folder not in {"startup", "commonstartup", "programs", "commonprograms",
+                                                    "desktopdirectory", "commondesktopdirectory"}:
             raise ValueError("Unreviewed native known folder in test script")
         name = mapping.get(folder)
         target = Path(environ[name]) if name and environ.get(name) else root / "known-folders" / folder

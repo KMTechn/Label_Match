@@ -1177,6 +1177,8 @@ Main은 **2026-09-07 13:09:40Z**에 [실제 Main readback](E:/KMTech/coordinator
 <a id="slim2-test-isolation"></a>
 ### pytest writer 격리
 
+정상 종료 자식 시험은 사례별 설정·등록·DirectSync 경로를 명시하여 앞선 시험의 자료 세대 기록을 물려받지 않는다. native known-folder 하네스는 검토한 문자열/enum과 `DoNotVerify` 형식을 격리하며 미검토 폴더·루트 밖 경로는 계속 거절한다. 역사 stock의 bootstrap 기록은 그 stock이 제공한 helper로 만든 뒤 후보 helper를 다시 읽어 업그레이드를 검사한다. 처리 줄 고장 시험은 활성 파일의 존재 대신 UNKNOWN 보류와 원본 바이트 보존·대기 예약 해제를 함께 확인한다.
+
 `tests/conftest.py`는 실행별 basetemp 아래 control root와 기존 TEST_MODE override를 함께 설정한다. Python·PowerShell 자식은 같은 root를 상속하므로 실제 경쟁 거절을 유지하면서 서로 다른 시험 실행의 admission mutex 간섭을 피한다. 제품 mutex 이름·derivation과 최소 권한 요청은 그대로다. 실제 Tk·호스트 자격 증명 시험은 기존 headless harness의 차단·제외 범위를 따른다.
 
 

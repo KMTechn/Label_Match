@@ -423,6 +423,12 @@ def test_queued_target_releases_on_close_or_runner_fault_without_new_pin(pin_lan
     p.app.current_set_info = other.current_set_info
     p.app.data_manager = other.data_manager
     assert p.app._package_pin_target("LABEL.SET_HOLD", other_id)[0]["id"] == other_id
+    original_checkpoint = current.read_bytes()
+    old_lane = p.app.ui_lane
+    def reset():
+        p.app.current_set_info = {"id": None, "raw": []}
+        return True
+    p.app._reset_current_set = reset
     queued_window = SimpleNamespace(alive=True)
     queued_window.winfo_exists = lambda: queued_window.alive
     entered, release = threading.Event(), threading.Event()
@@ -453,7 +459,21 @@ def test_queued_target_releases_on_close_or_runner_fault_without_new_pin(pin_lan
     assert _intent(p.app)[2] == "APPLIED"
     assert p.server.verify_calls == p.server.redeem_calls == 1
     assert other_server.verify_calls == other_server.redeem_calls == 0
-    assert p.prompts == [1] and current.exists()
+    assert p.prompts == [1]
+    if exit == "closed":
+        assert current.read_bytes() == original_checkpoint
+        assert not p.app.package_outbox.get_workbench_hold(other_id)
+    else:
+        from pathlib import Path
+
+        hold = p.app.package_outbox.get_workbench_hold(other_id)
+        assert hold and hold["held_by"] == "SYSTEM"
+        snapshot = json.loads(hold["snapshot_json"])
+        assert snapshot["current_set_info"]["id"] == other_id
+        assert snapshot["ui_lane_fault"]["result"] == "UNKNOWN"
+        assert Path(snapshot["archive_path"]).read_bytes() == original_checkpoint
+        assert not current.exists() and not p.app.current_set_info["id"]
+        assert p.app.ui_lane is not old_lane and not old_lane.worker_thread.is_alive()
     assert not p.app._package_pin_request_queue
     assert p.app.__dict__.get("_package_pin_active_request") is None
     assert not p.app._admin_pin_store.applied("label_set_recovery", other_id, "LABEL.SET_HOLD")

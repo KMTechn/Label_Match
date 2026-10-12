@@ -161,6 +161,8 @@ def test_checkpoint_lock_timeout_preserves_file_and_allows_later_retry(tmp_path,
     manager._state_lock, manager._audit_csv_lock = threading.RLock(), threading.RLock()
     manager._audit_csv_prefixes = {}
     manager._audit_outbox = manager._unverified_audit_segments = []
+    manager._state_write_failure_attempts = {}
+    manager._last_state_write_failure = None
     state = {"current_set_info": {"id": None, "raw": []}}
     state_path = tmp_path / module.Label_Match.FILES.CURRENT_STATE
     state_path.write_text(json.dumps(state), encoding="utf-8")
@@ -179,6 +181,8 @@ def test_checkpoint_lock_timeout_preserves_file_and_allows_later_retry(tmp_path,
         assert time.monotonic() - before < 0.25
         assert state_path.read_bytes() == original
         assert manager._audit_outbox == []
+        assert manager._state_write_failure_attempts == {}
+        assert manager._last_state_write_failure is None
         root, heartbeats = FakeTkRoot(), []
         root.after(0, lambda: heartbeats.append(True))
         root.run_until(lambda: bool(heartbeats))

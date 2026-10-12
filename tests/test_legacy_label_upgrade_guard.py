@@ -386,8 +386,9 @@ def test_stage_one_stock_upgrade_preserves_current_and_pending(tmp_path, worker_
     environment = _environment(tmp_path)
     work = _seed_base_work(environment)
     result = _ps(tmp_path, _definitions() + f"""
-. (Join-Path {_quote(candidate)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(candidate)}
+. (Join-Path {_quote(installed)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(installed)}
 [void](Write-BootstrapIntegrityRecord -Root {_quote(installed)} -CodeRoot {_quote(installed)})
+. (Join-Path {_quote(candidate)} 'tools/bootstrap_integrity.ps1') -SharedCodeRoot {_quote(candidate)}
 $before = PortableInventory {_quote(installed)}
 {_upgrade_preflight(candidate, installed)}
 if ((PortableInventory {_quote(installed)}).sha256 -cne $before.sha256) {{ throw 'Preflight changed the preimage' }}

@@ -29,6 +29,12 @@ def test_entrypoint_exit_releases_workers_and_replays_durable_state(tmp_path, mo
         "LABEL_MATCH_DIRECT_SYNC_BOOTSTRAP": "off", "LABEL_MATCH_SESSION_SYNC_TRIGGER": "off",
         "LABEL_MATCH_UPDATE_PROVIDER": "off", "KMTECH_TEST_SILENT_AUDIO": "1",
         "KMTECH_LABEL_WRITER_TEST_MODE": "1", "KMTECH_LABEL_WRITER_CONTROL_ROOT": str(root / "control"),
+        "LOCALAPPDATA": str(root / "local"), "APPDATA": str(root / "roaming"),
+        "PROGRAMDATA": str(root / "program"),
+        "LABEL_MATCH_SETTINGS_PATH": str(root / "settings.json"),
+        "LABEL_MATCH_LOGISTICS_PROFILE_PATH": str(root / "profile.json"),
+        "LABEL_MATCH_DIRECT_SYNC_ROOT": str(root / "direct-sync"),
+        "LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT": str(root / "program-sync"),
     })
     # communicate's observation deadline never kills a child. The probe's own
     # daemon observer sends the lane's normal STOP only after recording failure.

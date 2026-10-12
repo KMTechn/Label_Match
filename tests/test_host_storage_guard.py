@@ -56,18 +56,23 @@ else:
     assert marker.read_bytes() == b"existing evidence"
 
 
-@pytest.mark.parametrize("folder", ["CommonApplicationData", "LocalApplicationData", "Startup"])
-def test_native_known_folder_lookup_uses_an_owned_test_root(tmp_path, monkeypatch, folder):
+@pytest.mark.parametrize("folder", ["CommonApplicationData", "LocalApplicationData", "Startup", "DesktopDirectory"])
+@pytest.mark.parametrize("syntax", ["quoted", "enum", "quoted-option", "enum-option"])
+def test_native_known_folder_lookup_uses_an_owned_test_root(tmp_path, monkeypatch, folder, syntax):
     monkeypatch.setattr(guard, "OWN_ROOT", tmp_path)
     expected = tmp_path / "native-data"
     quoted = str(expected).replace("'", "''")
-    code = ("$actual = [Environment]::GetFolderPath('" + folder + "')\n"
+    argument = ("[Environment+SpecialFolder]::" + folder if syntax.startswith("enum")
+                else "'" + folder + "'")
+    if syntax.endswith("option"):
+        argument += ", [Environment+SpecialFolderOption]::DoNotVerify"
+    code = ("$actual = [Environment]::GetFolderPath(" + argument + ")\n"
             "$expected = '" + quoted + "'\n"
             "if ($actual -ne $expected) { throw 'FOLDER_NOT_ISOLATED' }\n"
             "Write-Output 'ISOLATED'")
     environ = {"PROGRAMDATA": str(expected), "LOCALAPPDATA": str(expected)}
-    if folder == "Startup":
-        expected = tmp_path / "known-folders" / "startup"
+    if folder in {"Startup", "DesktopDirectory"}:
+        expected = tmp_path / "known-folders" / folder.lower()
         code = code.replace(quoted, str(expected).replace("'", "''"))
     isolated = guard.isolate_known_folders(code, tmp_path, environ)
     script = tmp_path / "known-folder.ps1"
