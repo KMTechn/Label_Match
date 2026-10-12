@@ -145,13 +145,17 @@ def test_previous_day_bytes_are_copied_before_the_existing_validator(dayend_case
 
     def check(candidate, **kwargs):
         if Path(candidate) == path:
-            assert archive.read_bytes() == original
-            checked.append(True)
+            if not checked:
+                assert not archive.exists()
+                checked.append("hold-check")
+            else:
+                assert archive.read_bytes() == original
+                checked.append("recovery")
         return validate(candidate, **kwargs)
 
     monkeypatch.setattr(app, "_read_package_recovery_file", check)
     app._load_current_set_state_checked()
-    assert checked and app._workflow_recovered
+    assert checked == ["hold-check", "recovery"] and app._workflow_recovered
 
 
 @pytest.mark.parametrize("damage", ["shape", "syntax", "encoding"])

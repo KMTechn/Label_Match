@@ -248,8 +248,9 @@ def test_storage_probe_matches_failed_checkpoint_bytes_with_a_64_kib_cap(
 @pytest.mark.parametrize('day_offset', [0, 1])
 @pytest.mark.parametrize('retry_archive_denied', [False, True])
 @pytest.mark.parametrize('held_reason', ['STORAGE_WRITE_FAILURE', 'PROCESSING_ERROR'])
+@pytest.mark.parametrize('existing_resume', [False, True])
 def test_startup_retries_storage_hold_archive_before_opening_or_replaying_the_set(
-        station, monkeypatch, day_offset, retry_archive_denied, held_reason):
+        station, monkeypatch, day_offset, retry_archive_denied, held_reason, existing_resume):
     app, _dialogs = station
     values = prepare_set(app)
     target = Path(app.save_directory) / app.FILES.CURRENT_STATE
@@ -275,6 +276,9 @@ def test_startup_retries_storage_hold_archive_before_opening_or_replaying_the_se
     archive = Path(json.loads(held['snapshot_json'])['archive_path'])
     assert held['reason'] == held_reason
     assert target.read_bytes() == original and not archive.exists()
+    resume = target.with_name(target.name + '.resume-existing')
+    if existing_resume:
+        resume.write_bytes(original)
     _close(app)
     now = datetime.now() + timedelta(days=day_offset)
 
@@ -322,7 +326,12 @@ def test_startup_retries_storage_hold_archive_before_opening_or_replaying_the_se
             assert restored._workflow_notice_action == restored._load_current_set_state
             restored._workflow_notice_action()
         assert not target.exists() and archive.read_bytes() == original
-        assert not list(target.parent.glob(target.name + ".resume-*"))
+        resumes = list(target.parent.glob(target.name + ".resume-*"))
+        assert resumes == ([resume] if existing_resume else [])
+        if existing_resume:
+            assert resume.read_bytes() == original
+            assert restored.current_set_info['id'] is None
+            assert restored.current_set_info['raw'] == []
         assert replay_calls
         assert restored._workflow_blocking_notice is None
         assert len(restored.package_outbox.list_workbench_holds()) == 1
