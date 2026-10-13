@@ -68,6 +68,16 @@ public static class LabelAdmissionFixture {
  public static extern bool SetFileSecurityW(string path, uint info, byte[] descriptor);
 }
 '@
+$originalAcls=@()
+foreach($native in @($mapped.Values | Sort-Object -Unique)){
+ if(-not [IO.Directory]::Exists($native)){continue}
+ $acl=Microsoft.PowerShell.Security\Get-Acl -LiteralPath $native -ErrorAction Stop
+ $originalAcls+=@{path=$native;binary=$acl.GetSecurityDescriptorBinaryForm();sddl=$acl.Sddl;
+  protected=$acl.AreAccessRulesProtected;
+  owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
+  group=$acl.GetGroup([Security.Principal.SecurityIdentifier]).Value}
+}
+try{
 $fixtureSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $target='D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)(A;;0x1200af;;;AU)(A;OICIIO;SDGXGWGR;;;AU)'
 $leaf='D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)'
@@ -173,6 +183,24 @@ $afterPaths=@(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $native
 if(($beforePaths -join '|') -cne ($afterPaths -join '|')){throw 'Read-only admission created an absent path.'}
 [IO.File]::WriteAllText((Microsoft.PowerShell.Management\Join-Path $nativeRoot 'proof.json'),(@{entry=$env:LM_ADMISSION_ENTRY;scenario=$env:LM_ADMISSION_SCENARIO;calls=$calls;rejected=$failed;before=$before;owner_read_seam=$true;actual_ntfs=$true;directory_set_unchanged=$true} | ConvertTo-Json -Depth 5))
 'PASS'
+}finally{
+ $restoreErrors=@()
+ # Restore parents first, then each saved child with its original inheritance.
+ foreach($original in $originalAcls){
+  try{
+   $acl=Microsoft.PowerShell.Security\Get-Acl -LiteralPath $original.path -ErrorAction Stop
+   $information=if($original.protected){[uint32]2147483652}else{[uint32]536870916}
+   if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $original.owner){$information=$information -bor 1}
+   if($acl.GetGroup([Security.Principal.SecurityIdentifier]).Value -cne $original.group){$information=$information -bor 2}
+   if(-not [LabelAdmissionFixture]::SetFileSecurityW($original.path,$information,$original.binary)){
+    throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+   }
+   $restored=Microsoft.PowerShell.Security\Get-Acl -LiteralPath $original.path -ErrorAction Stop
+   if($restored.Sddl -cne $original.sddl){throw 'Admission fixture security was not restored.'}
+  }catch{$restoreErrors+=$_.Exception}
+ }
+ if($restoreErrors.Count){throw [AggregateException]::new('Admission fixture security restore failed.',[Exception[]]$restoreErrors)}
+}
 ''', engine=engine, values={
         'LM_ADMISSION_HELPER': str(ROOT/'tools/bootstrap_integrity.ps1'),
         'LM_ADMISSION_DAILY': str(ROOT/'tools/apply_prepared_update.ps1'),
