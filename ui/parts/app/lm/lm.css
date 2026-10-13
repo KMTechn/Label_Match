@@ -1,0 +1,70 @@
+/* 포장 작업 칸 안쪽만 — 자리(next · count · result · list · actions)와 공통 부품(위 줄 · 띠 · 수 카드 · 방금 결과 · 단추 · 바닥 줄 · 판)은 ../frame.css.
+   포장의 list = 현품표 → 제품 1…N 칸 줄(N = 상단 확인 수 1–6 → 2–7칸). 시안 w9uiout1014 apps/mock/lm-work.css 에서 옮김. */
+
+/* ── 수 카드 덧: 상태 표시 · 다음 세트부터 ── */
+.lm-badges { display: inline-flex; gap: 6px; margin-left: 10px; vertical-align: middle; }
+.lm-badge { padding: 2px 10px; border-radius: 999px; background: var(--tint-2); color: var(--ink-2); font-size: var(--s2); font-weight: 600; }
+.lm-nextset { align-self: flex-start; margin-top: 10px; padding: 4px 14px; border-radius: 999px; background: var(--tint); font-size: clamp(var(--s3), 6cqh, 26px); font-weight: 600; color: var(--ink-2); }
+.lm-held { margin-left: 12px; padding: 2px 10px; border-radius: 999px; background: var(--amber-soft); color: var(--amber-text); font-weight: 600; }
+
+/* ── 칸 줄: 현품표 → 제품 1…N — 칸 수는 state 의 slots 수(--slots, 2–7) ── */
+.lm-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--slots, 5), minmax(0, 1fr));
+  gap: 10px;
+  container-type: size; /* 칸 글이 줄 높이를 따라 큼 */
+}
+.lm-step {
+  min-height: 84px;
+  padding: 12px 14px;
+  border-radius: var(--r-card);
+  background: var(--sunk);
+  color: var(--ink-3);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto 1fr;
+  gap: 4px 8px;
+}
+.lm-step__name { font-size: clamp(var(--s4), 22cqh, 34px); font-weight: 600; }
+.lm-step__icon { grid-row: 1 / span 2; grid-column: 2; align-self: center; }
+.lm-step__icon svg { width: clamp(22px, 22cqh, 40px); height: clamp(22px, 22cqh, 40px); }
+.lm-step__val { grid-column: 1; grid-row: 2; font-size: clamp(var(--s4), 20cqh, 30px); font-variant-numeric: tabular-nums; align-self: end; }
+.lm-step--complete { background: var(--pri-soft); color: var(--pri-strong); }
+.lm-step--complete .lm-step__val { color: var(--ink-2); }
+.lm-step--current { background: var(--surface); color: var(--pri-strong); box-shadow: inset 0 0 0 2px var(--pri); }
+.lm-step--current .lm-step__val { color: var(--pri-strong); font-weight: 600; }
+.lm-step--swap { background: var(--amber-soft); color: var(--amber-text); }
+.lm-step--error { background: var(--red-soft); color: var(--red-text); }
+.lm-step--readonly { background: var(--sunk); color: var(--ink-3); }
+
+.lm-actions { justify-self: end; display: grid; grid-auto-flow: column; gap: 10px; }
+.lm-actions .act[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--pri); }
+
+/* ── 시작 · 대기(품목 목록 받는 중 · 못 받음) — 작업 칸 자리를 통째로 씀 ── */
+.work.lm-starting > :not(.lm-start) { display: none; }
+.lm-start { grid-column: 1 / -1; grid-row: 1 / -1; align-self: center; justify-self: center; max-width: 720px; display: grid; gap: 14px; text-align: center; }
+.lm-start__title { margin: 0; font-size: clamp(var(--s6), 4vw, 48px); font-weight: 700; color: var(--ink); }
+.lm-start__text { margin: 0; font-size: var(--s5); line-height: 1.5; color: var(--ink-2); }
+.lm-start .act { justify-self: center; height: 56px; padding: 0 32px; }
+
+/* ── 마우스 승인 판(틀 .sheet 꼴, 맨 위) ── */
+.lm-approval { z-index: 5; box-shadow: var(--elev-2), inset 0 3px 0 var(--red); }
+[data-approval-scrim] { z-index: 4; }
+.lm-approval .sheet__lead { white-space: pre-line; color: var(--ink); }
+
+/* ── 폰 폭(390) — 같은 자리 차례(다음에 찍을 것 → 수 카드 → 방금 결과 → 칸 줄 → 단추) ── */
+@media (max-width: 600px) {
+  .lm-steps { container-type: normal; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(60px, 1fr)); } /* 6–7칸은 한 줄에 다섯까지 */
+  .lm-step { min-height: 64px; padding: 8px; grid-template-columns: 1fr; }
+  .lm-step__name, .lm-step__val { font-size: var(--s2); }
+  .lm-step__icon { display: none; }
+  .lm-nextset { order: 3; flex-basis: 100%; margin-top: 4px; padding: 0; background: none; font-size: var(--s3); }
+  .lm-actions { justify-self: stretch; grid-auto-flow: row; grid-template-columns: 1fr 1fr; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .lm-step { transition: background-color var(--dur-tint) var(--ease-standard), color var(--dur-tint) var(--ease-standard); }
+}

@@ -1,0 +1,193 @@
+{
+  "about": "회사 서버 포장 충돌 — 실물 작업 멈춤, F1 만",
+  "state": {
+    "contract": "lm-state/1",
+    "app": "label_match",
+    "version": "v2.0.99",
+    "last_request_seq": 12,
+    "recovery": false,
+    "worker": {
+      "name": "작업자 12",
+      "label": "작업자 12"
+    },
+    "start": null,
+    "work": {
+      "stage": "submission_blocked",
+      "stage_label": "회사 서버 포장 충돌",
+      "next": "F1로 현재 트레이를 취소하세요",
+      "next_sub": [
+        {
+          "text": "그다음 관리자에게 알리세요",
+          "mark": "plain"
+        }
+      ],
+      "tag": {
+        "code": "A110",
+        "item": "커버 어셈블리",
+        "spec": "LHD",
+        "phase": ""
+      },
+      "quantity": "제품 24개",
+      "legacy": {
+        "enabled": false,
+        "text": null
+      },
+      "top_scan_count": 4,
+      "scan_total": 5,
+      "scan_done": 3,
+      "scan_left": 2,
+      "slots": [
+        {
+          "index": 1,
+          "key": "master_label",
+          "label": "현품표",
+          "value": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=A110|CLC=C0325|LBL=L0325|HSH=0f3a9c2b7d1e4a56",
+          "filled": true,
+          "state": "complete",
+          "role": "master_label"
+        },
+        {
+          "index": 2,
+          "key": "product_1",
+          "label": "제품1",
+          "value": "A110LHD2610134821",
+          "filled": true,
+          "state": "complete",
+          "role": "product"
+        },
+        {
+          "index": 3,
+          "key": "product_2",
+          "label": "제품2",
+          "value": "A110LHD2610134822",
+          "filled": true,
+          "state": "complete",
+          "role": "product"
+        },
+        {
+          "index": 4,
+          "key": "product_3",
+          "label": "제품3",
+          "value": "",
+          "filled": false,
+          "state": "current",
+          "role": "product"
+        },
+        {
+          "index": 5,
+          "key": "final_label",
+          "label": "제품4",
+          "value": "",
+          "filled": false,
+          "state": "pending",
+          "role": "last_product"
+        }
+      ],
+      "result": {
+        "kind": "ok",
+        "text": "제품2 맞음",
+        "sub": "…4822 · 방금",
+        "sound": "scan_master",
+        "code": null
+      },
+      "completion": null,
+      "badges": [],
+      "readonly": false,
+      "exchange": {
+        "phase": null,
+        "target": null
+      },
+      "short": {
+        "pending": false,
+        "remaining_s": null
+      },
+      "exact_rescan": {
+        "status": "not_started",
+        "completed": 0,
+        "target": 0
+      },
+      "held_scans": 0,
+      "top_scan_setting": {
+        "value": 4,
+        "source": "server",
+        "version": 3,
+        "updated_at": "2026-10-12 09:10",
+        "fetched_at": "2026-10-13 08:01"
+      },
+      "next_set_top_scan_count": null,
+      "manual_complete_hint": "F3 소량 완료 가능",
+      "allow": {
+        "undo": false,
+        "exchange": false,
+        "f1": true,
+        "f2": false
+      },
+      "scan_enabled": false
+    },
+    "approval": null,
+    "conn": {
+      "state": "ok",
+      "label": null,
+      "last_ok_at": "14:32"
+    },
+    "queue": {
+      "pending": 0,
+      "failed": 0
+    },
+    "update": {
+      "state": "none",
+      "version": null
+    },
+    "alerts": [
+      {
+        "kind": "bad",
+        "code": null,
+        "text": "회사 서버 포장 충돌 · 실물 작업 멈춤 — 회사 서버 확인 전에 멈춘 포장 작업입니다. F1로 현재 트레이만 취소하고 관리자에게 알리세요"
+      }
+    ],
+    "today": {
+      "date": "2026-10-13",
+      "is_today": true,
+      "loading": false,
+      "rows": [],
+      "summary": []
+    },
+    "progress": {
+      "state": "none",
+      "date": "2026-10-13",
+      "fetched_at": null,
+      "rows": []
+    },
+    "settings": {
+      "workers": [
+        {
+          "name": "작업자 12"
+        },
+        {
+          "name": "작업자 7"
+        },
+        {
+          "name": "작업자 3"
+        }
+      ],
+      "selected": "작업자 12",
+      "required": false,
+      "note": null,
+      "register": null
+    },
+    "admin": {
+      "recovery": null,
+      "pending": null,
+      "result": null
+    },
+    "about": {
+      "built_at": "2026-10-12",
+      "parts": null
+    }
+  },
+  "screen": {
+    "focus": "on",
+    "open": null
+  },
+  "replies": {}
+}

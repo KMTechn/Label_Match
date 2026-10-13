@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:">
+  <title>KMTech 셸 시험</title>
+  <link rel="stylesheet" href="core/tokens.css">
+  <link rel="stylesheet" href="core/parts.css">
+  <link rel="stylesheet" href="app.css">
+  <script src="transport.js" defer></script>
+  <script src="sink.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body tabindex="-1">
+  <header><strong id="app-name">KMTech</strong><span class="km-chip">셸 시험</span><span id="focus-status">화면 연결을 기다리고 있습니다</span></header>
+  <main>
+    <div id="focus-warning" role="status" hidden>이 창이 선택되어 있지 않아 스캔이 들어오지 않습니다 — 창을 한 번 누르세요</div>
+    <section class="km-panel"><h1 class="km-panel__title">바코드를 스캔하세요</h1><div id="buffer" aria-live="polite">바코드를 스캔하세요</div><span id="last-result" class="km-chip km-chip--ok">스캔을 기다리고 있습니다</span><span id="pedal" class="km-chip km-chip--ok" hidden>F12 뗌</span><span id="scan-verdict" class="km-chip km-chip--ok" hidden>새 스캔을 기다립니다</span></section>
+    <section class="km-panel"><h2 class="km-panel__title" id="count">총 0개</h2><div id="recent" class="km-scanlist"></div></section>
+    <section id="test-controls" class="km-panel" hidden><label for="test-input">시험용 글 칸</label><input type="text" id="test-input" autocomplete="off"><button type="button" id="test-button" class="km-btn">확인</button><span id="button-result" role="status"></span></section>
+  </main>
+</body>
+</html>

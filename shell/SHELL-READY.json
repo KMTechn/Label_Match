@@ -1,0 +1,162 @@
+{
+  "created_utc": "2026-10-13T08:05:05.024363+00:00",
+  "files": [
+    {
+      "path": "shell/bridge.py",
+      "bytes": 27561,
+      "sha256": "215365456cd3a49dd2ec9ae903140f61cadaedd23eaefbbcebfc73decbf3da5c"
+    },
+    {
+      "path": "shell/event_order.py",
+      "bytes": 2443,
+      "sha256": "48075f599c33bef1b9a3a283717d31f50f00ac2e71b1ebeb6970620b2275c146"
+    },
+    {
+      "path": "shell/host.py",
+      "bytes": 39308,
+      "sha256": "5655118f2855310dffa6d6d9f299b5287dfc18ae27e686d7337c8c9a39dbb909"
+    },
+    {
+      "path": "shell/journal.py",
+      "bytes": 4027,
+      "sha256": "714947eb6685032c896f601ef85fec9eaf7cb2c39b36ed7a8a30f0c86198b7e7"
+    },
+    {
+      "path": "shell/pedal.py",
+      "bytes": 3437,
+      "sha256": "fe19337649eddcc804398f410e022fce91bead708159ae3f82ae01dc790312f9"
+    },
+    {
+      "path": "shell/scan_rules.py",
+      "bytes": 1259,
+      "sha256": "a07e19eaac003b775adbe93fac86ce1536cf1e83729f7c654279e5f0c09f1504"
+    },
+    {
+      "path": "shell/shell_fileio.py",
+      "bytes": 2357,
+      "sha256": "4c550a6e00e506503ee2d202183b1aa15c2be157c3b92d08f8597f8516cdf295"
+    },
+    {
+      "path": "shell/sound.py",
+      "bytes": 1513,
+      "sha256": "808771ebea0eaff17619505984a0364a19e07a11ddc824298f5feeb90bb585a1"
+    },
+    {
+      "path": "shell/web/app.css",
+      "bytes": 1080,
+      "sha256": "6a4da30da94dd1f891bdfdbeed8a077a20dc43579be3df3114cde6bad46c4ed8"
+    },
+    {
+      "path": "shell/web/app.js",
+      "bytes": 9992,
+      "sha256": "fbc1691ae9ad2e6431352c0d1799789f2fa12042cf6f095398c24e9ad6839ab6"
+    },
+    {
+      "path": "shell/web/core/fonts/Pretendard-Bold.subset.woff2",
+      "bytes": 270784,
+      "sha256": "78eb71c33101ee7d4f8d1b777d193a12d00f8a296e712a8c417cf27abe946397"
+    },
+    {
+      "path": "shell/web/core/fonts/Pretendard-OFL.txt",
+      "bytes": 4419,
+      "sha256": "b04538c9abec39a3db75108cf0af0fd9c77032fe8aa2cf38345b4d250e98e38e"
+    },
+    {
+      "path": "shell/web/core/fonts/Pretendard-Regular.subset.woff2",
+      "bytes": 267096,
+      "sha256": "01dd73155fdfab7ce9b25224523e85a96927e21aef97f21957d41f1bfa7e3878"
+    },
+    {
+      "path": "shell/web/core/fonts/Pretendard-SemiBold.subset.woff2",
+      "bytes": 268752,
+      "sha256": "4247dc5e260b92640c2cbd0e75091154647b71e1d5884116655e2903468c54cc"
+    },
+    {
+      "path": "shell/web/core/parts.css",
+      "bytes": 18015,
+      "sha256": "460658d8d1f7f19b42231b6d450595c8cd21745f1d71c992c3e3630bb0c36d60"
+    },
+    {
+      "path": "shell/web/core/tokens.css",
+      "bytes": 7542,
+      "sha256": "bd8520ff68ea5e5616ab1b4916e11faf5895bc7a6bdd0498b5978b3ef70476c4"
+    },
+    {
+      "path": "shell/web/index.html",
+      "bytes": 1771,
+      "sha256": "7cc107d19fda6d064f3758eeb26f53ed9ffba320ad9c8953bdbea12227245367"
+    },
+    {
+      "path": "shell/web/sink.js",
+      "bytes": 12165,
+      "sha256": "41c7980af9ae8ac3f8ca7811a5babe1efb881f225fa4ab11d2d6c3bfda0f6f2c"
+    },
+    {
+      "path": "shell/web/transport.js",
+      "bytes": 3216,
+      "sha256": "fdb207a3b596271368fe67a4781d0cbb81c28619bd98057f12487f605b64c07a"
+    }
+  ],
+  "version": "v3.16",
+  "status": "source ready; native window behavior NOT TESTED on host",
+  "run_commands": [
+    "<python> -I -B app/shell/host.py --profile rw --data <isolated-data> --udf <isolated-udf> --test-control <control-dir>",
+    "<python> -I -B app/shell/host.py --profile iw --data <isolated-data> --udf <isolated-udf> --pedal --test-control <control-dir>"
+  ],
+  "framing": "Enter/Tab both; idle none; IW retains incomplete standard PHS2; RW submits it",
+  "transports": "default pywebview: FIFO until API ready, 15s readiness rejection; native only with window.__KMSHELL_TRANSPORT__=native at document creation",
+  "kit_layout": "app/shell/ plus sibling app/site-packages/ from VENV-READY.json",
+  "grading": "198add5 UI event-order evidence; hook at arrival diagnostic only",
+  "bridge": "scan/state, one processing owner, independent push queue, asynchronous WAV sounds",
+  "recovery_guard": "first recovered scan with first character <300ms from listener attach is rejected",
+  "test_control_additions": [
+    "delay_next_scan {ms:0..10000}",
+    "churn_list {rows:200,times:20}; enabled only by --test-control; churn_done {rows,times,ms,dom_nodes_after}"
+  ],
+  "ready_additions": [
+    "js.transportReadyAt (epoch ms)",
+    "js.transportMode",
+    "js.domContentLoaded (epoch ms, retained)"
+  ],
+  "native_push": "FIFO retained until app ready and core configured; reset readiness before reload/reinjection",
+  "regression": "actual pywebview 6.2.1 api.js + finish.js; actual on_script_notify unpack/parser; v3 FAIL / v3.1 PASS",
+  "focus_recovery": "once per ready generation, foreground Form only; Control.Focus and MoveFocus outcomes separate; focus_restored.ok based on subsequent page_active async probe",
+  "memory": "journal recent 8, aggregate counters, result cache 128 with disk duplicate lookup; duplicate push/reply suppression; pywebview synchronous UUID->None entries not retained",
+  "state_additions": [
+    "cache_sizes.journal_recent",
+    "cache_sizes.scan_results",
+    "page.diagnostics.pending_scans",
+    "page.diagnostics.rendered_request_seq",
+    "page.sink.log_keys",
+    "page.sink.log_events"
+  ],
+  "browser_presets": [
+    "none (default)",
+    "lean",
+    "lean-nogpu",
+    "lean-inproc"
+  ],
+  "preset_argument": "--browser-preset <name> before window creation via WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS; no inherited value read/log",
+  "memory_target": "foreground Normal, deactivated/minimized Low; supported/readback/error event; pinned Core API present",
+  "transport_watchdog": "after loaded: 8s without app.ready -> one CoreWebView2.Reload + transport_retry; next loaded +8s failure -> visible message + transport_stopped; no loop",
+  "app_entry": "host.run_app(profile, data, page=, processor_factory= | owner_main=, pedal=, browser_preset_name=, write_guard=, closing_timeout=120, on_force_exit=None); main(argv) unchanged for the kit",
+  "processor": "owner-thread object: state(), scan(text, info{seq,pedal_pressed,evidence,profile}) -> {accepted,verdict,message,sound,result}, command(name,args), admin(name,args); None = synthetic journal (kit unchanged)",
+  "owner_external": "Bridge(owner='external'): attach_owner(processor) once on the app thread, pump() from its loop (Tk root.after) until False",
+  "pedal_close": "single keyboard.hook_key(F12) dispatching down/up (keyboard 0.13.5 two hooks on one key -> KeyError on close, host-person 00:20); unhook errors recorded, close continues",
+  "api_additions": [
+    "command(name,args) -> {ok,result,state}",
+    "admin(name,args) -> {ok,result,state}; args never logged",
+    "bridge.push_state(**extra) any thread"
+  ],
+  "exit": "bridge.request_exit() any thread -> window.destroy on its own thread, X question skipped; window X -> processor.closing() on owner: quick True/None closes, False cancels; no answer in 0.3 s cancels X and shows closing strip, one pending Future; late True requests exit, late False removes strip; closing_timeout=120 s by default then keyboard-accessible close/wait choices; close records closing_force and ends the process after window close without waiting for stuck owner/non-daemon app threads; wait rearms same interval and reuses question; choice strip adds the warning 그래도 닫으면 저장 중인 것은 잃을 수 있습니다; on_force_exit=None preserves the v3.15 force path; callable gets no arguments and runs once on an app-force-exit daemon thread after window close, before os._exit, with worker.join(2); normal closing never calls it; force_exit_start then force_exit_done|force_exit_error (exception class only)|force_exit_timeout (wait_seconds=2), then exit; exceptions/timeouts still end the process",
+  "reply_shape": "command/admin -> {ok: True, result: <processor value>, state}; exception -> {ok: False, error, state}; frame.js unwraps a result dict carrying ok (57f87c1a)",
+  "bundle_root": "run_app(root=<bundle>, page=<bundle>/app/<app>/index.html): pywebview global server started on root before webview.start so ../ shared files load; page outside root -> ValueError before anything starts",
+  "kit_only_files": [
+    {
+      "path": "shell/tk_ab.py",
+      "bytes": 6897,
+      "sha256": "ac9272790f77ae7b8bbed96110443d58ffcccc6716154406190671057a05a356"
+    }
+  ],
+  "local_writes": "every shell file write goes through shell/shell_fileio.py (SHELL_WRITE_SITES append_bytes, create_new, truncate, replace_atomic, make_dirs), each raw write inside `with _guard(op, path, kind)`; app installs factory(op, path, kind) -> context manager via shell_fileio.set_write_guard or run_app(write_guard=); kind events|journal|sound_cache|udf|test_control; none = plain writes; refused events/sound writes lose only diagnostics (state.events_dropped); processor-mode journal failure records journal_write_failed and scanning continues; in-memory queues use put_nowait; IW derive_inventory@a211ea48 over webshell/*: 9 sinks, all in shell_fileio under _guard; test sub-1/test_v314.py"
+}

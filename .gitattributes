@@ -9,3 +9,6 @@ tests/lock_remote_guard.py -text
 tests/late_result_guard.py -text
 # Saved recovery journals are byte oracles, including their original LF bytes.
 tests/fixtures/f5-recovery-167ac7e/*.journal.json -text
+# 새 화면 셸(w9appshell1012 SHELL-READY SHA 고정)과 화면 꾸러미(웹 저장소 export_ui_parts.py MANIFEST) — 바이트 그대로
+shell/** -text
+ui/parts/** -text

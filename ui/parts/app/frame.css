@@ -1,0 +1,383 @@
+/* 현장 앱 공통 틀(주인 w9webnewui1014 — 10/13 포장 레인 apps/mock/app-frame.css 에서 옮김, 관리자 결정) — 위 줄 · 띠 · 방금 결과 · 작업 단추 · 바닥 줄 · 관리자 메뉴
+   + 다섯 앱이 같이 쓰는 것: 수 카드 · 판(관리자 ▾ 항목 · 되돌릴 수 없는 확인) · PIN 칸 · 작은 확인.
+   값은 core/tokens.css 의 var(--이름)만. 작업 칸 안 배치는 앱 css(<앱>/<앱>.css)에. 웹 화면은 이 파일을 싣지 않는다. */
+* { box-sizing: border-box; }
+[hidden] { display: none !important; } /* .band · .admin 처럼 display 를 정한 부품도 hidden 이면 숨는다 */
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--f-text);
+  font-size: var(--s3);
+  line-height: 1.4;
+  word-break: keep-all;      /* 큰 한글 글이 낱말 가운데서 끊기지 않게 */
+  overflow-wrap: break-word; /* 긴 번호만 칸 끝에서 끊김 */
+  display: grid;
+  grid-template-rows: var(--hdr-h) auto minmax(0, 1fr) 40px;
+  overflow: hidden;
+}
+/* 몸 격자 줄을 못 박는다 — 띠가 숨어도 작업 칸 · 바닥 줄이 한 줄씩 밀리지 않게 */
+body > .top { grid-row: 1; }
+body > .band, body > .bands { grid-row: 2; }
+body > main { grid-row: 3; }
+body > .status { grid-row: 4; }
+p { margin: 0; }
+button { font: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--pri-strong); outline-offset: 2px; }
+
+/* ── 위 줄: 누가 · 무엇을, 한 단계 안으로 가는 곳(오늘 기록 · 진행 현황 · 설정 · 관리자) ── */
+.top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 24px;
+  background: var(--surface);
+  box-shadow: 0 1px 0 var(--line);
+}
+.top__who { display: flex; align-items: baseline; gap: 12px; white-space: nowrap; }
+.top__app { font-size: var(--s5); font-weight: 700; }
+.top__worker { font-size: var(--s4); color: var(--ink-2); }
+.top__tag { font-size: var(--s4); color: var(--ink-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top__tag b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.top__legacy {
+  padding: 4px 8px;
+  border-radius: var(--r-ctl);
+  background: var(--amber-soft);
+  color: var(--amber-text);
+  font-size: var(--s2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.top__nav { margin-left: auto; display: flex; gap: 4px; }
+.link {
+  height: var(--ctl-h);
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--s3);
+  white-space: nowrap;
+}
+.link:hover { background: var(--tint); }
+.link--admin[aria-expanded="true"] { background: var(--tint-2); color: var(--ink); }
+.admin {
+  position: absolute;
+  top: calc(var(--hdr-h) - 6px);
+  right: 24px;
+  z-index: 2;
+  width: 320px;
+  max-height: calc(100vh - var(--hdr-h) - 16px);
+  overflow: auto;
+  padding: 8px;
+  border-radius: var(--r-card);
+  background: var(--surface);
+  box-shadow: var(--elev-2);
+  display: grid;
+  gap: 2px;
+}
+.admin__note { padding: 6px 10px 8px; font-size: var(--s2); color: var(--ink-3); }
+.admin__group { padding: 10px 10px 4px; font-size: var(--s2); font-weight: 600; color: var(--ink-3); }
+.admin button {
+  height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: transparent;
+  text-align: left;
+  color: var(--ink);
+  font-size: var(--s3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.admin button:hover { background: var(--tint); }
+.admin__pin { padding: 1px 6px; border-radius: 4px; box-shadow: inset 0 0 0 1px var(--line-2); font-size: var(--s1); color: var(--ink-3); } /* PIN 이 드는 항목 표 */
+.admin__fact { margin: 0 0 4px; padding: 8px 10px; border-radius: var(--r-ctl); background: var(--sunk); font-size: var(--s3); color: var(--ink-2); } /* 보기만 하는 설정 값 */
+.admin__fact b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* ── 띠: 단추를 가리지 않는 제자리 줄. 경고(앰버) · 막음(빨강) · 문제 아닌 알림(회색) · 창 초점 잃음(진한 앰버) ── */
+.bands { display: grid; gap: 8px; margin: 12px 24px 0; }
+.bands:empty { display: none; }
+body > .band { margin: 12px 24px 0; }
+.band {
+  padding: 12px 16px;
+  border-radius: var(--r-card);
+  background: var(--amber-soft);
+  color: var(--amber-text);
+  font-size: var(--s4);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.band svg { flex: none; }
+.band--strong { background: var(--amber-strong-soft); color: var(--on-amber); }
+.band--bad { background: var(--red-soft); color: var(--red-text); }
+.band--quiet { background: var(--tint-2); color: var(--ink-2); }
+.band__text { min-width: 0; }
+.band__choices { display: flex; gap: 8px; margin-left: auto; }
+.band__choices button {
+  height: var(--ctl-h-lg);
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--s3);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+.band__choices button.is-default { background: var(--pri); color: var(--on-pri); box-shadow: none; }
+.band__tail { margin-left: auto; font-size: var(--s3); font-weight: 400; white-space: nowrap; } /* 「빈 Enter = 확인」 · 「다음 스캔 = 작업 계속」 */
+.band__choices + .band__tail { margin-left: 4px; }
+
+/* ── 작업 칸 자리 — 다섯 앱이 같은 자리(작업자가 PC 를 옮겨도 같은 곳에서 찾게, 관리자 17:05).
+   next = 다음에 할 일(위, 가장 큰 글) · count = 수 카드(N/목표 · 남은 수) · result = 방금 결과(수 카드 옆)
+   · list = 목록(아래 줄 / 오른쪽 목록 = .work--side-list) · actions = 단추(맨 아래) ── */
+.work {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) minmax(84px, .3fr) auto; /* 남는 높이는 카드 줄과 아래 목록이 나눔 */
+  grid-template-areas:
+    "next next"
+    "count result"
+    "list list"
+    "actions actions";
+  gap: 16px 24px;
+  padding: 18px 24px 16px;
+}
+.work--side-list {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) clamp(300px, 25vw, 440px);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "next next list"
+    "count result list"
+    "actions actions actions";
+}
+.area-next { grid-area: next; min-width: 0; }
+.area-count { grid-area: count; min-height: 0; }
+.area-result { grid-area: result; min-height: 0; }
+.area-list { grid-area: list; min-height: 0; }
+.area-actions { grid-area: actions; position: relative; } /* .confirm 이 단추 위에 붙는 기준 */
+
+/* 다음에 할 일 — 다섯 앱 같은 글 크기 */
+.next { display: grid; gap: 6px; align-content: start; }
+.next__label { font-size: var(--s4); color: var(--ink-3); }
+.next__text { font-size: clamp(32px, 6vh, 60px); font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+.next__sub { font-size: var(--s4); color: var(--ink-2); min-height: 1.4em; }
+.next__sub b { color: var(--pri-strong); font-weight: 600; }
+.next__sub .off { color: var(--ink-3); } /* 아직 아닌 단계 — --dash 는 바탕 위 대비 3.19 라 AA 못 넘음(이적 레인 00:33) */
+
+/* ── 수 카드: 큰 수(N/목표) · 남은 것 — 글이 카드 높이를 따라 큼(큰 화면에서 카드 안이 비지 않게).
+   --done 다 됨 · --wait 아래 줄(확인 기다림 등)을 굵게 ── */
+.count-card {
+  border-radius: var(--r-sheet);
+  background: var(--surface);
+  box-shadow: var(--elev-2), var(--edge-hi);
+  padding: 18px 28px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  container-type: size;
+}
+.count-card__label { font-size: clamp(var(--s4), 6cqh, 30px); color: var(--ink-3); }
+.count-card__n {
+  font-family: var(--f-num);
+  font-size: clamp(88px, 46cqh, 340px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--pri-strong);
+  margin: 4px 0 8px;
+}
+.count-card__of { font-size: .42em; font-weight: 600; color: var(--dash); letter-spacing: 0; margin-left: .06em; }
+.count-card__left { font-size: clamp(var(--s5), 8cqh, 44px); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.count-card--done .count-card__n { color: var(--pri); }
+.count-card--wait .count-card__left { color: var(--ink); font-weight: 600; }
+
+/* ── 방금 결과: 맞음 · 틀림 · 주의 · 저장됨(회사 서버 확인 전) · 아직 없음, 끝 줄에 소리 이름(소리는 처리 층이 낸다) ── */
+.result {
+  padding: 14px 18px;
+  border-radius: var(--r-card);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--s5);
+  font-weight: 600;
+  line-height: 1.3;
+}
+.result small { display: block; font-size: var(--s4); font-weight: 400; margin-top: 2px; }
+.result svg { flex: none; }
+.result--ok { background: var(--pri-soft); color: var(--pri-strong); }
+.result--bad { background: var(--red-soft); color: var(--red-text); }
+.result--warn { background: var(--amber-soft); color: var(--amber-text); }
+.result--saved { background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 2px var(--pri-soft), var(--elev-1); } /* 완료(초록 바탕 · 체크)와 다르게: 흰 카드 + 초록 테두리 + 시계 표 */
+.result--saved > svg { color: var(--pri); }
+.result--idle { background: var(--tint); color: var(--ink-3); font-weight: 400; }
+.result__sound { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: var(--s3); font-weight: 600; opacity: .9; }
+/* 수 카드 옆 자리의 방금 결과는 카드 높이에 맞게 크게 */
+.work > .result { padding: 20px 28px; gap: 16px; border-radius: var(--r-sheet); container-type: size; }
+.work > .result > div { font-size: clamp(26px, 11cqh, 64px); }
+.work > .result small { font-size: clamp(var(--s5), 6cqh, 32px); margin-top: 6px; }
+.work > .result > svg { width: clamp(30px, 11cqh, 60px); height: clamp(30px, 11cqh, 60px); }
+.work > .result .result__sound svg { width: 18px; height: 18px; }
+
+/* ── 작업 단추: 보통 · 덜 쓰는 것(작업 화면에 두되 낮게) · 되돌리기 어려운 것 ── */
+.act {
+  height: 52px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: var(--pri-soft);
+  color: var(--pri-strong);
+  font-size: var(--s4);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.act:hover { background: color-mix(in srgb, var(--pri-fill) 18%, transparent); }
+.act:disabled { background: var(--sunk); color: var(--dash); cursor: default; }
+.act[aria-pressed="true"] { background: var(--pri); color: var(--on-pri); }
+.act--quiet { background: transparent; color: var(--ink-2); font-weight: 400; box-shadow: inset 0 0 0 1px var(--line-2); }
+.act--quiet:hover { background: var(--tint); }
+.act--quiet:disabled { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.act--danger { background: transparent; color: var(--red-text); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 45%, transparent); }
+.act--danger:hover, .act--danger[aria-expanded="true"] { background: var(--red-soft); }
+.act--danger:disabled { background: transparent; color: var(--dash); box-shadow: inset 0 0 0 1px var(--line); }
+.act--danger-solid, .act--danger-solid:hover { background: var(--red-text); color: var(--on-pri); } /* 판 안 마지막 확인(되돌릴 수 없음) */
+
+/* ── 바닥 한 줄: 회사 서버 · 스캔 받음 · 시각 — 단추와 겹치지 않는 제 줄 ── */
+.status {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 24px;
+  background: var(--surface);
+  box-shadow: 0 -1px 0 var(--line);
+  color: var(--ink-3);
+  font-size: var(--s3);
+  white-space: nowrap;
+}
+.status__server, .status__scan { display: inline-flex; align-items: center; gap: 8px; }
+.status__scan { margin-left: auto; }
+.status__clock { font-variant-numeric: tabular-nums; }
+.status__update { color: var(--ink-2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pri); flex: none; }
+.dot--amber { background: var(--amber); }
+.dot--off { background: var(--dash); }
+.status--offline { background: var(--amber-soft); color: var(--amber-text); box-shadow: none; }
+.status--offline .status__server { font-weight: 600; }
+
+/* ── 판: 관리자 ▾ 항목 · 되돌릴 수 없는 확인 — 작업 칸 위에 뜨는 카드, 위 줄 · 바닥 줄은 그대로 보인다(sheet.js) ── */
+.scrim { position: fixed; inset: var(--hdr-h) 0 40px; z-index: 3; background: var(--scrim); }
+.sheet {
+  position: fixed;
+  z-index: 4;
+  top: calc(var(--hdr-h) + 28px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(600px, calc(100vw - 48px));
+  max-height: calc(100vh - var(--hdr-h) - 96px);
+  overflow: auto;
+  padding: 20px 24px 22px;
+  border-radius: var(--r-sheet);
+  background: var(--surface);
+  box-shadow: var(--elev-2);
+  display: grid;
+  gap: 14px;
+}
+.sheet__head { display: flex; align-items: center; gap: 10px; }
+.sheet__tag { padding: 2px 8px; border-radius: 4px; background: var(--tint-2); color: var(--ink-2); font-size: var(--s2); font-weight: 600; }
+.sheet__tag:empty { display: none; }
+.sheet__title { margin: 0; font-size: var(--s5); font-weight: 700; }
+.sheet__head .link { margin-left: auto; }
+.sheet__body { display: grid; gap: 14px; }
+.sheet__lead { font-size: var(--s4); line-height: 1.5; color: var(--ink-2); }
+.sheet__lead b { color: var(--red-text); }
+.sheet__facts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; padding: 12px 14px; border-radius: var(--r-card); background: var(--sunk); font-size: var(--s3); }
+.sheet__facts dt { color: var(--ink-2); }
+.sheet__facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sheet__btns { display: flex; justify-content: flex-end; gap: 10px; }
+.sheet .act { height: 44px; }
+.sheet__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.sheet__list:has(> li:nth-child(4)) { grid-template-columns: 1fr 1fr; } /* 네 줄 넘는 목록은 두 칸으로 — 판이 넘치지 않게 */
+.sheet__list li { display: grid; gap: 6px; padding: 12px 14px; border-radius: var(--r-card); background: var(--sunk); }
+.sheet__list b { font-size: var(--s4); }
+.sheet__list p { font-size: var(--s3); color: var(--ink-2); line-height: 1.45; }
+.sheet__list .sheet__btns { justify-content: flex-start; }
+.sheet__note { font-size: var(--s2); color: var(--ink-3); }
+
+/* PIN 칸 — 웹 새 화면 PIN 상자(한 칸 · 가운데 · 넓은 자간 + 확인 단추) 꼴에 관리자 ID 한 칸. 값은 처리 층이 받고 화면은 남기지 않는다 */
+.pinform { display: grid; gap: 10px; }
+.pinform label { display: grid; gap: 6px; font-size: var(--s3); font-weight: 600; color: var(--ink-2); }
+.pinform input { height: var(--tap-min); padding: 0 14px; border: 1px solid var(--line-2); border-radius: var(--r-ctl); background: var(--surface); color: var(--ink); font: inherit; font-size: var(--s4); }
+.pinform input:disabled { background: var(--sunk); color: var(--ink-3); }
+.pinform input.pinform__pin { flex: 1; min-width: 0; font-size: var(--s5); letter-spacing: .4em; text-align: center; }
+.pinform input::-ms-reveal { display: none; } /* Edge 「암호 보기」 눈 단추 — 같이 쓰는 현장 PC 에서 PIN 이 보이지 않게 */
+.pinform__row { display: flex; gap: 6px; }
+.pinform__row .act { height: var(--tap-min); min-width: var(--tap-min); }
+.pinform__error { font-size: var(--s3); font-weight: 600; color: var(--red-text); }
+.pinform__note { font-size: var(--s2); color: var(--ink-3); }
+.pinform__wait { font-size: var(--s3); font-weight: 600; color: var(--amber-text); }
+
+/* 작은 확인 — 되돌릴 수 없는 단추 위에 붙는 판(단추 무리 .area-actions 안에 둔다) */
+.confirm {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  z-index: 2;
+  width: 400px;
+  padding: 18px 20px 14px;
+  border-radius: var(--r-card);
+  background: var(--surface);
+  box-shadow: var(--elev-2), inset 0 3px 0 var(--red);
+  display: grid;
+  gap: 10px;
+}
+.confirm__title { font-size: var(--s5); font-weight: 700; }
+.confirm__body { font-size: var(--s4); line-height: 1.45; color: var(--ink-2); }
+.confirm__body b { color: var(--red-text); }
+.confirm__btns { display: flex; gap: 10px; margin-top: 4px; }
+.confirm__btns button { height: 48px; padding: 0 22px; border: 0; border-radius: var(--r-ctl); font-size: var(--s4); font-weight: 600; }
+.confirm__go { background: var(--red-text); color: var(--on-pri); }
+.confirm__no { background: var(--tint-2); color: var(--ink); }
+.confirm__note { font-size: var(--s2); color: var(--ink-3); }
+
+/* ── 폰 폭(390) — 따로 짓지 않고 같은 부품이 흐르는 모양만(투 트랙 B 참고) ── */
+@media (max-width: 600px) {
+  body { grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: auto; height: auto; min-height: 100%; }
+  .top { flex-wrap: wrap; gap: 4px 12px; padding: 10px 16px; }
+  .top__tag { order: 3; flex-basis: 100%; font-size: var(--s3); }
+  .top__nav .link:not(.link--admin) { display: none; }
+  .bands, body > .band { margin: 10px 16px 0; }
+  .work, .work--side-list {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas: "next" "count" "result" "list" "actions";
+    align-content: start; /* 폰은 내용 높이대로 위에서부터 — 남는 높이를 줄마다 나누지 않음 */
+    gap: 12px;
+    padding: 14px 16px;
+  }
+  .next__text { font-size: 26px; }
+  .count-card, .work > .result { container-type: normal; }
+  .count-card { flex-direction: row; flex-wrap: wrap; align-items: baseline; justify-content: space-between; padding: 12px 18px; }
+  .count-card__label { display: none; }
+  .count-card__n { font-size: 64px; margin: 0; }
+  .count-card__left { font-size: var(--s4); }
+  .band { font-size: var(--s3); }
+  .result { font-size: var(--s4); padding: 12px 14px; }
+  .act { height: var(--ctl-h-phone); padding: 0 10px; font-size: var(--s3); white-space: normal; }
+  .status { flex-wrap: wrap; gap: 4px 16px; padding: 10px 16px; font-size: var(--s2); }
+  .status__clock { display: none; }
+  .confirm { width: min(400px, calc(100vw - 32px)); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .result, .act { transition: background-color var(--dur-tint) var(--ease-standard), color var(--dur-tint) var(--ease-standard); }
+}

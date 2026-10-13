@@ -1,0 +1,11 @@
+body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--f-text); font-size: var(--s3); }
+header { display: flex; align-items: center; gap: var(--gutter); min-height: var(--hdr-h); padding-inline: var(--gutter); background: var(--surface); }
+main { display: grid; gap: var(--gutter); padding: var(--gutter); max-width: var(--page-max); margin: auto; }
+[hidden] { display: none !important; }
+#focus-status { margin-left: auto; color: var(--ink-2); }
+#focus-warning { background: var(--amber-soft); color: var(--amber-text); padding: var(--gutter); border-radius: var(--r-card); }
+#buffer { font-size: var(--s6); min-height: var(--hdr-h); margin-block: var(--gutter); overflow-wrap: anywhere; }
+#pedal { margin-left: var(--gutter); }
+.scan-text { overflow-wrap: anywhere; min-width: 0; }
+#test-controls { display: flex; gap: var(--gutter); align-items: center; }
+#test-input { height: var(--ctl-h); font: inherit; color: var(--ink); background: var(--surface); border: thin solid var(--line-2); border-radius: var(--r-ctl); padding-inline: var(--gutter); }

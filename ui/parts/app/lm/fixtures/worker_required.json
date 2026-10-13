@@ -1,0 +1,179 @@
+{
+  "about": "작업자 안 고름 — 고르기 판이 저절로 열림",
+  "state": {
+    "contract": "lm-state/1",
+    "app": "label_match",
+    "version": "v2.0.99",
+    "last_request_seq": 12,
+    "recovery": false,
+    "worker": null,
+    "start": null,
+    "work": {
+      "stage": "master_label",
+      "stage_label": "현품표",
+      "next": "현품표를 스캔하세요",
+      "next_sub": [
+        {
+          "text": "현품표 1번 + 상단 제품 4번 = 5번 찍으면 저절로 끝납니다",
+          "mark": "plain"
+        }
+      ],
+      "tag": null,
+      "quantity": null,
+      "legacy": {
+        "enabled": false,
+        "text": null
+      },
+      "top_scan_count": 4,
+      "scan_total": 5,
+      "scan_done": 0,
+      "scan_left": 5,
+      "slots": [
+        {
+          "index": 1,
+          "key": "master_label",
+          "label": "현품표",
+          "value": "",
+          "filled": false,
+          "state": "current",
+          "role": "master_label"
+        },
+        {
+          "index": 2,
+          "key": "product_1",
+          "label": "제품1",
+          "value": "",
+          "filled": false,
+          "state": "pending",
+          "role": "product"
+        },
+        {
+          "index": 3,
+          "key": "product_2",
+          "label": "제품2",
+          "value": "",
+          "filled": false,
+          "state": "pending",
+          "role": "product"
+        },
+        {
+          "index": 4,
+          "key": "product_3",
+          "label": "제품3",
+          "value": "",
+          "filled": false,
+          "state": "pending",
+          "role": "product"
+        },
+        {
+          "index": 5,
+          "key": "final_label",
+          "label": "제품4",
+          "value": "",
+          "filled": false,
+          "state": "pending",
+          "role": "last_product"
+        }
+      ],
+      "result": {
+        "kind": "warn",
+        "text": "작업자 선택",
+        "sub": "이름을 고르거나 '새 이름 등록'에서 이름을 등록한 뒤 다시 스캔하세요.",
+        "sound": "fail",
+        "code": null
+      },
+      "completion": null,
+      "badges": [],
+      "readonly": false,
+      "exchange": {
+        "phase": null,
+        "target": null
+      },
+      "short": {
+        "pending": false,
+        "remaining_s": null
+      },
+      "exact_rescan": {
+        "status": "not_started",
+        "completed": 0,
+        "target": 0
+      },
+      "held_scans": 0,
+      "top_scan_setting": {
+        "value": 4,
+        "source": "server",
+        "version": 3,
+        "updated_at": "2026-10-12 09:10",
+        "fetched_at": "2026-10-13 08:01"
+      },
+      "next_set_top_scan_count": null,
+      "manual_complete_hint": "제품 1개 이상 스캔 후 가능",
+      "allow": {
+        "undo": false,
+        "exchange": false,
+        "f1": false,
+        "f2": false
+      },
+      "scan_enabled": true
+    },
+    "approval": null,
+    "conn": {
+      "state": "ok",
+      "label": null,
+      "last_ok_at": "14:32"
+    },
+    "queue": {
+      "pending": 0,
+      "failed": 0
+    },
+    "update": {
+      "state": "none",
+      "version": null
+    },
+    "alerts": [],
+    "today": {
+      "date": "2026-10-13",
+      "is_today": true,
+      "loading": false,
+      "rows": [],
+      "summary": []
+    },
+    "progress": {
+      "state": "none",
+      "date": "2026-10-13",
+      "fetched_at": null,
+      "rows": []
+    },
+    "settings": {
+      "workers": [
+        {
+          "name": "작업자 12"
+        },
+        {
+          "name": "작업자 7"
+        },
+        {
+          "name": "작업자 3"
+        }
+      ],
+      "selected": null,
+      "required": true,
+      "note": null,
+      "register": null
+    },
+    "admin": {
+      "recovery": null,
+      "pending": null,
+      "result": null
+    },
+    "about": {
+      "built_at": "2026-10-12",
+      "parts": null
+    }
+  },
+  "screen": {
+    "focus": "on",
+    "open": null
+  },
+  "replies": {}
+}
