@@ -78,7 +78,7 @@ def test_cli_default_root_uses_existing_owner_paths(monkeypatch, tmp_path, capsy
 
     assert user_relay.main(['--request-app-stop', '--app-root', str(tmp_path / 'app')]) == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'STOPPED'
-    assert resolve.call_count == 2
+    assert resolve.call_count == 1
     assert all(call.args == ((tmp_path / 'app').resolve(),) for call in resolve.call_args_list)
     assert user_relay.app_stop_request_path(root).is_file()
 

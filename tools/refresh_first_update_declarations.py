@@ -41,7 +41,7 @@ def git(*args: str) -> bytes:
 
 
 def digest(raw: bytes) -> str:
-    return hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
+    return hashlib.sha256(raw if raw.startswith(b"MZ") else raw.replace(b"\r\n", b"\n")).hexdigest()
 
 
 def encode_source(path: Path, source: str, original: bytes) -> bytes:
@@ -86,6 +86,9 @@ def application_layout(source: Path, target: Path) -> dict[str, str]:
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
     builder._copy_application(source, target / "app")
+    site_packages = target / "app/site-packages"
+    site_packages.mkdir()
+    builder._copy_third_party(site_packages)
     result = {
         file.relative_to(target).as_posix(): digest(file.read_bytes())
         for file in (target / "app").rglob("*") if file.is_file()

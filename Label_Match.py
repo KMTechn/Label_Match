@@ -22837,7 +22837,7 @@ class Label_Match(tk.Tk):
         entered_scan = str(text or "").strip()
         self._last_scan_enter_at = time.monotonic()
         self._clear_scanner_notice()
-        if self._reject_residual_tag_input(entered_scan, consume_input=self._consume_scan_entry):
+        if self._reject_residual_tag_input(entered_scan, consume_input=self._consume_scan_entry if from_entry else None):
             return "break"
         if self.__dict__.get("operator_workbench_ready") and entered_scan:
             self._return_to_scanner_workbench()

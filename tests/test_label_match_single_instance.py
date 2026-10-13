@@ -470,16 +470,22 @@ def test_duplicate_activation_flashes_when_windows_denies_foreground():
 
 
 def test_entrypoint_acquires_guard_before_catalog_or_tk_construction():
-    source = Path(__file__).parents[1].joinpath("Label_Match.py").read_text(
-        encoding="utf-8"
-    )
-    main_source = source[source.index("def main(argv=None):") :]
-
-    assert "run_guarded_entrypoint(" in main_source
-    assert "_run_label_match_application," in main_source
-    assert "prepare_startup_item_catalog()" not in main_source.split(
-        "if __name__ == \"__main__\":", 1
-    )[0]
+    import ast
+    source = Path(__file__).parents[1].joinpath("Label_Match.py").read_text(encoding="utf-8")
+    main = next(node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name == "main")
+    calls = [node for node in ast.walk(main) if isinstance(node, ast.Call)]
+    guarded = [node for node in calls if isinstance(node.func, ast.Name)
+               and node.func.id == "run_guarded_entrypoint"]
+    assert len(guarded) == 1
+    callback = guarded[0].args[0]
+    assert any(isinstance(node, ast.Name) and node.id == "_run_label_match_application"
+               for node in ast.walk(callback))
+    for node in calls:
+        if isinstance(node.func, ast.Name) and node.func.id == "_run_label_match_application":
+            assert any(node is child for child in ast.walk(callback))
+    assert not any(isinstance(node.func, ast.Name) and node.func.id in
+                   {"Label_Match", "prepare_startup_item_catalog"} for node in calls)
 
 
 def test_main_warns_and_continues_when_bootstrap_integrity_record_is_absent(

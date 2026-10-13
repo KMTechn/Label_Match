@@ -362,6 +362,8 @@ def door(entry_text=""):
     for name in ("_clear_scanner_notice", "_return_to_scanner_workbench", "_acknowledge_workflow_notice",
                  "_render_operator_workbench", "process_input", "_ui_lane_is_busy", "update_big_display", "_play_sound"):
         setattr(self, name, mock.Mock(name=name))
+    self._reject_residual_tag_input = types.MethodType(Label_Match.Label_Match._reject_residual_tag_input, self)
+    self._consume_scan_entry = mock.Mock()
     self.intake_scan = types.MethodType(Label_Match.Label_Match.intake_scan, self)
     return self
 
@@ -399,6 +401,8 @@ def test_screen_scan_never_reads_or_clears_the_entry():
     self._ui_lane_is_busy = mock.Mock(return_value=True)
     self._completion_scan_queue_open = mock.Mock(return_value=True)
     self._hold_scan_behind_completion = mock.Mock()
+    self._reject_residual_tag_input = types.MethodType(Label_Match.Label_Match._reject_residual_tag_input, self)
+    self._consume_scan_entry = mock.Mock()
     Label_Match.Label_Match.process_input(self, raw=" A110LHD2610134821 ")
     self._hold_scan_behind_completion.assert_called_once_with("A110LHD2610134821")
     assert self.entry.mock_calls == []

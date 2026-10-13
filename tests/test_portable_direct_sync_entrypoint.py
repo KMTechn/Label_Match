@@ -231,6 +231,12 @@ def test_fake_server_result_matches_application_dispatch(
     namespace = {"sys": sys, "Path": Path, "dispatch_product_mode": product_host.dispatch_product_mode,
                  "release_identity": lambda root: {}, "_label_match_runtime_app_root": lambda: ROOT,
                  "__file__": str(ROOT / "Label_Match.py")}
+    namespace["_first_run_onboarding_enabled"] = lambda: False
+    constants = [node for node in tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id in {
+                     "LABEL_MATCH_NEW_SCREEN_ARGUMENT", "LABEL_MATCH_SCREEN_HOST"}
+                     for target in node.targets)]
+    exec(compile(ast.Module(body=constants, type_ignores=[]), "application-constants", "exec"), namespace)
     exec(compile(ast.Module(body=[main], type_ignores=[]), "application-main", "exec"), namespace)
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     monkeypatch.setattr(sys, "argv", ["main.py", *arguments])

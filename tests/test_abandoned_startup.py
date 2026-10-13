@@ -89,7 +89,9 @@ def test_abandoned_update_mutex_verifies_consistent_installation(tmp_path, monke
     try:
         crash_owner("update", control, tmp_path / "owned", sid)
         assert updates.startup_gate(app, []) is None
-        assert [mode for mode, _root in verified] == ["Verify", "Verify"]
+        # The abandoned owner still performs Verify while holding the mutex;
+        # the subsequent unchanged install readback reuses the reviewed byte cache.
+        assert [mode for mode, _root in verified] == ["Verify"]
         report = updates.read_json(stage / "startup-support.json")
         assert report["reason_code"] == "UPDATE_MUTEX_ABANDONED_VERIFIED"
         assert report["exit_code"] == 0
@@ -196,6 +198,11 @@ def test_phs_http_crash_notifies_first_start_only(tmp_path, monkeypatch, capsys)
     namespace.update(CurrentUserOnboardingError=CurrentUserOnboardingError,
                      DataGenerationError=DataGenerationError)
     monkeypatch.setattr(updates, "startup_gate", lambda *_a, **_k: None)
+    constants = [node for node in tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id in {
+                     "LABEL_MATCH_NEW_SCREEN_ARGUMENT", "LABEL_MATCH_SCREEN_HOST"}
+                     for target in node.targets)]
+    exec(compile(ast.Module(body=constants, type_ignores=[]), str(source), "exec"), namespace)
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(source), "exec"), namespace)
     try:
         crash_owner("phs", writer_root, tmp_path / "http-owned")

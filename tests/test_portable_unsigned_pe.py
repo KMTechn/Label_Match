@@ -12,6 +12,14 @@ from tools import build_portable_release_candidate as builder
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_native_transition_digest_rejects_line_ending_changes_in_binary_bytes():
+    from tools.refresh_first_update_declarations import digest
+    original, altered = b"MZ\r\nreviewed", b"MZ\nreviewed"
+    assert digest(original) != digest(altered)
+    assert digest(original) == hashlib.sha256(original).hexdigest()
+    assert digest(b"text\r\n") == digest(b"text\n")
+
+
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 def test_installers_accept_only_the_pinned_unsigned_natives(tmp_path, engine):
     host, portable = tmp_path / "host", tmp_path / "portable"
