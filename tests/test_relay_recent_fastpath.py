@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import threading
 import time
@@ -10,6 +11,9 @@ import auto_update as updates
 import user_relay
 from test_relay_second_start_admission import live_relay, OPERATOR, SHA
 
+pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows relay admission")
+OTHER_OPERATOR = OPERATOR.rsplit("-", 1)[0] + "-" + str(int(OPERATOR.rsplit("-", 1)[1]) + 1)
+
 
 @pytest.fixture
 def recent_relay(live_relay):
@@ -20,11 +24,11 @@ def recent_relay(live_relay):
 def test_recent_relay_reuse_needs_no_snapshot_or_survival_wait(recent_relay, monkeypatch, record_testsuite_property):
     monkeypatch.setattr(updates, "process_snapshot", lambda _: pytest.fail("snapshot before window"))
     monkeypatch.setattr(user_relay, "_write_json_atomic", lambda *_a: pytest.fail("reuse wrote data"))
-    started = time.monotonic()
+    started = time.perf_counter()
     result = user_relay.reuse_or_start_user_relay_process(
         recent_relay.current, wait=lambda _: pytest.fail("survival wait before window"),
     )
-    elapsed = time.monotonic() - started
+    elapsed = time.perf_counter() - started
     assert result["status"] == "ALIVE"
     assert result["existing_relay_reused"] is True
     assert result["fast_path"] is True
@@ -49,11 +53,10 @@ def test_unqualified_status_keeps_observed_reuse(recent_relay, invalid):
     status = recent_relay.status
     if invalid in {"trial", "rollback_trial"}:
         phase = "APPLIED_PENDING_READY" if invalid == "trial" else "ROLLBACK_PENDING_READY"
-        state = dict(phase=phase, launch_nonce="n" * 32, applied_at=recent_relay.row["created_at"],
+        state = dict(phase=phase, nonce="a" * 32, applied_at=recent_relay.row["created_at"],
                      rollback_at=recent_relay.row["created_at"], trial_sha=SHA)
         recent_relay.records["transition.json"] = state
-        status["launch_nonce"] = state["launch_nonce"]
-        recent_relay.row["launch_nonce"] = state["launch_nonce"]
+        status["update_nonce"] = state["nonce"]
     elif invalid in {"old", "future"}:
         delta = -100 if invalid == "old" else 2
         status["updated_at"] = (datetime.now(timezone.utc) + timedelta(seconds=delta)).isoformat()
@@ -63,7 +66,7 @@ def test_unqualified_status_keeps_observed_reuse(recent_relay, invalid):
     elif invalid == "wrong_sha":
         status["source_commit"] = "b" * 40
     elif invalid == "wrong_sid":
-        status["sid"] = "other-operator"
+        status["sid"] = OTHER_OPERATOR
     else:
         # Keep the old refusal without starting a real child.
         status["code_root"] = str(recent_relay.current)
@@ -80,21 +83,25 @@ def test_unqualified_status_keeps_observed_reuse(recent_relay, invalid):
     assert waits == [2]
 
 
-@pytest.mark.parametrize("invalid", ["wrong_sha", "wrong_sid", "wrong_role", "elevated", "reused_pid", "missing"])
-def test_deferred_observation_rejects_changed_owner(recent_relay, invalid):
+@pytest.mark.parametrize("invalid", ["wrong_sha", "wrong_sid", "policy_changed", "wrong_role", "elevated", "reused_pid", "missing"])
+def test_deferred_observation_rejects_changed_owner(recent_relay, invalid, monkeypatch):
+    if invalid == "reused_pid":
+        recent_relay.status["updated_at"] = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
     result = user_relay.reuse_or_start_user_relay_process(recent_relay.current, wait=lambda _: None)
     assert len(recent_relay.observed) == 0
     if invalid == "wrong_sha":
         recent_relay.row["sha"] = "b" * 40
-    elif invalid == "wrong_sid":
-        recent_relay.row["sid"] = "other-operator"
+    elif invalid in {"wrong_sid", "policy_changed"}:
+        recent_relay.row["sid"] = OTHER_OPERATOR
+        if invalid == "policy_changed":
+            monkeypatch.setattr(updates, "load_policy", lambda _: {"operator_sid": recent_relay.row["sid"]})
     elif invalid == "wrong_role":
         recent_relay.row["role"] = "gui"
     elif invalid == "elevated":
         recent_relay.row["ordinary_user"] = False
     elif invalid == "reused_pid":
-        recent_relay.row["created_at"] = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
-        recent_relay.status["updated_at"] = (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat()
+        recent_relay.row["created_at"] = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        recent_relay.status["updated_at"] = user_relay._now()
     else:
         recent_relay.row["pid"] = 78
     with pytest.raises(user_relay.UserRelayError):
@@ -113,6 +120,7 @@ def test_steady_relay_publishes_its_own_identity(monkeypatch, tmp_path):
     code = tmp_path / "app"
     monkeypatch.setattr(updates, "control_root", lambda path: tmp_path if path == code else None)
     monkeypatch.setattr(updates, "version_manifest", lambda _: {"source_commit": SHA})
+    monkeypatch.setattr(updates, "read_json", lambda _: {"source_commit": SHA})
     monkeypatch.setattr(updates, "current_process_sid", lambda: OPERATOR)
     monkeypatch.setattr(updates, "ordinary_user_context", lambda: True)
     metadata = updates.relay_ready_metadata(code)
@@ -125,6 +133,39 @@ def test_steady_relay_publishes_its_own_identity(monkeypatch, tmp_path):
     persisted = user_relay._read_json(status_path)
     assert persisted["sid"] == OPERATOR
     assert persisted["source_commit"] == SHA
+
+
+def test_trial_relay_keeps_identity_metadata_for_later_steady_reuse(monkeypatch, tmp_path):
+    state = {"nonce": "a" * 32}
+    monkeypatch.setattr(updates, "trial_context", lambda _: (tmp_path, {}, state))
+    monkeypatch.setattr(updates, "version_manifest", lambda _: {"source_commit": SHA})
+    monkeypatch.setattr(updates, "current_process_sid", lambda: OPERATOR)
+    monkeypatch.setattr(updates, "ordinary_user_context", lambda: True)
+    metadata = updates.relay_ready_metadata(tmp_path / "app")
+    assert metadata["sid"] == OPERATOR
+    assert metadata["source_commit"] == SHA
+    assert metadata["update_nonce"] == state["nonce"]
+
+
+@pytest.mark.parametrize("trial", [False, True])
+def test_optional_identity_read_failure_preserves_first_start_metadata(monkeypatch, tmp_path, trial):
+    state = {"nonce": "a" * 32}
+    monkeypatch.setattr(updates, "trial_context", lambda _: (tmp_path, {}, state) if trial else None)
+    monkeypatch.setattr(updates, "control_root", lambda _: tmp_path)
+    monkeypatch.setattr(updates, "version_manifest", lambda _: {"source_commit": SHA})
+    monkeypatch.setattr(updates, "read_json", lambda _: {"source_commit": SHA})
+    monkeypatch.setattr(updates, "ordinary_user_context", lambda: True)
+
+    def unavailable():
+        raise OSError("identity read unavailable")
+
+    monkeypatch.setattr(updates, "current_process_sid", unavailable)
+    metadata = updates.relay_ready_metadata(tmp_path / "app")
+    assert "sid" not in metadata
+    if trial:
+        assert metadata["update_nonce"] == state["nonce"]
+        assert metadata["source_commit"] == SHA
+        assert metadata["ordinary_user"] is True
 
 
 def test_deferred_check_waits_for_visible_window_and_reports_on_ui_thread(monkeypatch, tmp_path):

@@ -438,7 +438,7 @@ def _existing_user_relay_owner(
                 and status.get("source_commit") == active["sha"]
                 and status.get("sid") == policy["operator_sid"]
                 and status.get("ordinary_user") is True):
-            return {**owner, "fast_path": True, "source_commit": active["sha"]}
+            return {**owner, "fast_path": True, "source_commit": active["sha"], "sid": policy["operator_sid"]}
         rows = [row for row in process_snapshot(control) if row.get("pid") == owner["process_id"]]
         if len(rows) != 1 or os.path.normcase(str(status.get("code_root") or "")) != os.path.normcase(str(expected_root)):
             return None
@@ -453,7 +453,7 @@ def _existing_user_relay_owner(
                 return None
         elif state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
             return None
-    return {**owner, "source_commit": active["sha"], "created_at": row["created_at"]}
+    return {**owner, "source_commit": active["sha"], "created_at": row["created_at"], "sid": row["sid"]}
 
 
 def _reuse_existing_user_relay(
@@ -472,6 +472,7 @@ def _reuse_existing_user_relay(
             "status": "ALIVE", "process_id": owner["process_id"], "survival_seconds": 0.0,
             "existing_relay_reused": True, "fast_path": True,
             "owner_status_updated_at": owner["updated_at"], "source_commit": owner["source_commit"],
+            "owner_sid": owner["sid"],
         }
     wait(survival)
     confirmed_owner = existing_owner()
@@ -542,6 +543,7 @@ def verify_reused_user_relay(app_root: str | os.PathLike[str], relay_start: Mapp
     owner = _existing_user_relay_owner(root, direct_sync_root, is_bootstrap=True)
     if (owner is None or owner["process_id"] != relay_start["process_id"]
             or owner.get("source_commit") != relay_start["source_commit"]
+            or owner.get("sid") != relay_start["owner_sid"]
             or _utc(owner["created_at"]) > _utc(relay_start["owner_status_updated_at"])):
         raise UserRelayError("existing user relay ownership did not survive startup verification")
 

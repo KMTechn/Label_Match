@@ -2183,10 +2183,18 @@ def relay_ready_metadata(app_root: Path) -> dict[str, Any]:
             return {}
         # Publish this process's identity, never the desired policy identity.
         # Older/missing metadata still requires the ordinary Observe path.
-        return {"source_commit": version_manifest(app_root.parent)["source_commit"],
-                "sid": current_process_sid(), "ordinary_user": ordinary_user_context()}
+        try:
+            return {"source_commit": read_json(app_root.parent / "portable-manifest.json")["source_commit"],
+                    "sid": current_process_sid(), "ordinary_user": ordinary_user_context()}
+        except (OSError, ValueError, KeyError):
+            return {}  # Optional cache metadata cannot add a first-start refusal.
     _, _, state = context
-    return {"process_id": os.getpid(), "source_commit": version_manifest(app_root.parent)["source_commit"], "update_nonce": state["nonce"], "ordinary_user": ordinary_user_context()}
+    metadata = {"process_id": os.getpid(), "source_commit": version_manifest(app_root.parent)["source_commit"], "update_nonce": state["nonce"], "ordinary_user": ordinary_user_context()}
+    try:
+        metadata["sid"] = current_process_sid()
+    except (OSError, ValueError):
+        pass  # Retain the existing nonce/readiness proof and observed fallback.
+    return metadata
 
 
 def publish_gui_ready(app_root: Path) -> bool:

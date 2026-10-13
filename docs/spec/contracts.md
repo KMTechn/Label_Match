@@ -240,6 +240,8 @@ guarded reconcile이 파일 경로로 실행하는 initializer helper는 import 
 <a id="current-user-resident-relay"></a>
 ## 정상 사용자 시작·상주 동기화와 과거 task 이행
 
+relay는 시험 시작 때도 자기 SID를 상태에 남겨 확정 뒤 재사용할 수 있게 한다. 선택적인 SID/steady 캐시 읽기가 실패하면 기존 첫 시작·nonce 준비 증명을 유지하고 관측 길을 쓴다. 창 뒤 대조는 시작 때 받아들인 SID와 판에 결속한다.
+
 두 번째 시작은 instance lease 점유·stop 표지 없음·RUNNING 상태의 worker/app/direct-sync 일치·살아 있는 PID·90초 이내 갱신·현재 active version bundle의 code_root·source_commit·운영 SID·일반 사용자 표시·steady 전이(CONFIRMED/ROLLED_BACK/DEFERRED)가 모두 맞으면 Observe와 생존 대기 없이 `ALIVE`, `existing_relay_reused`, `fast_path`를 반환한다. 창이 보인 뒤 배경에서 기존 Observe를 한 번 수행하고 원 PID·판·SID·역할·일반 사용자·원 상태 갱신 이전 생성 시각을 대조한다. 불일치는 기존 시작 거절 안내와 SETUP_FAILED/FIRST_RUN_SETUP_REQUIRED로 알리며 자료·relay·쓰기/배포 담장을 바꾸지 않는다. 칸 부재·오래된 상태·다른 판·시험 전이는 기존 관측과 nonce 검증을 사용한다. 첫 relay 시작의 첫 바퀴·생존 확인은 그대로다.
 
 사용자 승인 D11과 [현행 소스](operations.md#resident10-alignment)는 정확한 HKCU Run `KMTech.LabelMatch.Relay`와 기존 `user_relay`를 유일한 정상 persistence 경로로 사용한다. GUI와 독립적인 cycle/network retry, fresh owner 생존 확인, instance lease·stop marker·writer fence 및 identity/profile/queue/spool/receipt 계약은 유지한다. onboarding의 예약 작업 creator/필수 성공, 별도 scheduled one-shot main/parser/활성 mode를 제거했다. 옛 argv는 GUI로 흘러가지 않고 exit2로 거부한다. task10의 exact Running `Apply/REUSED` 교정은 폐기한 별도 설계의 이력이다.
