@@ -280,7 +280,7 @@ def test_canonical_removal_passes_installed_logical_root(tmp_path, shell, instal
 $ErrorActionPreference='Stop'
 $pristineInstall=$false; $legacyFirstRegistration=$false; $healthyWithoutCode=$false
 $healthyLifecycle=$null; $healthyRemovedInstall=$false
-$old=@(); $source='support'; $install='installed'
+$old=@(); $source='support'; $install='installed'; $lifecycleInstalled=$install
 $existingVerified=VERIFIED
 $writerFenceControlRoot=''; $writerSessionId=''; $writerAttemptId=''; $writerTransactionId=''
 $removalPath='REPORT'

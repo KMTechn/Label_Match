@@ -289,7 +289,7 @@ def _installer_source_identity(app_root: Path, *, source_inventory_sha256=None) 
 
 @contextmanager
 def _authenticated_support_removal_source(app_root: Path):
-    """Prove a record-free support packet against this removal target only."""
+    """Bind executing removal code to the target's verified active packet."""
     source_app = Path(__file__).absolute().parent
     source_root = source_app.parent
     target = Path(app_root).expanduser().resolve()
@@ -310,25 +310,78 @@ def _authenticated_support_removal_source(app_root: Path):
     with remote_request():
         try:
             source_root = resolve_data_path(source_root)
-            if (source_root / "bootstrap-integrity.json").exists():
-                raise DataGenerationError(UNKNOWN_MESSAGE)
             installed_root = resolve_data_path(app_root)
             if installed_root.name.casefold() == "app":
                 installed_root = installed_root.parent
             if installed_root != target:
                 raise DataGenerationError(UNKNOWN_MESSAGE)
-            record_path = installed_root / "bootstrap-integrity.json"
-            if record_path.stat().st_size > BOOTSTRAP_INTEGRITY_MAX_BYTES:
+            bootstraps, keys, records, snapshot = {}, {}, [], None
+
+            def verify(root):
+                path = resolve_data_path(root / "bootstrap-integrity.json")
+                if path.stat().st_size > BOOTSTRAP_INTEGRITY_MAX_BYTES:
+                    raise DataGenerationError(UNKNOWN_MESSAGE)
+                raw = path.read_bytes()
+                detail = verify_bootstrap_integrity(SimpleNamespace(
+                    app_root=root, bootstrap_integrity_path=path), required=True)
+                if (detail.get("status") != "PASS"
+                        or detail.get("package_layout") != "portable_cpython"
+                        or path.read_bytes() != raw):
+                    raise DataGenerationError(UNKNOWN_MESSAGE)
+                bootstraps[path] = raw
+
+            def key_bytes(path):
+                path = resolve_data_path(path)
+                with path.open("rb") as stream:
+                    raw = stream.read(16 * 1024 + 1)
+                if len(raw) > 16 * 1024:
+                    raise DataGenerationError(UNKNOWN_MESSAGE)
+                return raw
+
+            verify(installed_root)
+            active_root = installed_root
+            if installed_root.name.casefold() == "current":
+                from auto_update import SCHEMA, read_json, recovery_sha, version_bundle
+                control = resolve_data_path(installed_root.parent / "update-control")
+                records = [resolve_data_path(control / name)
+                           for name in ("policy.json", "active.json", "transition.json")]
+                present = [path.exists() for path in records]
+                if any(present):
+                    if not all(present):
+                        raise DataGenerationError(UNKNOWN_MESSAGE)
+                    snapshot = [read_json(path) for path in records]
+                    policy, pointer, state = snapshot
+                    phase, sha = state.get("phase"), pointer.get("sha")
+                    # Installation/placement DEFERRED records have no state ID.
+                    # Use lifecycle's SHA selection, never ID equality.
+                    if (policy.get("schema") != "label-match-startup-update-policy-v1"
+                            or pointer.get("schema") != SCHEMA or state.get("schema") != SCHEMA
+                            or phase not in {"CONFIRMED", "DEFERRED", "ROLLED_BACK"}
+                            or (phase == "CONFIRMED" and state.get("candidate_sha") != sha)
+                            or (phase == "ROLLED_BACK" and state.get("previous_sha") != sha)
+                            or (state.get("candidate_sha") is not None
+                                and recovery_sha(state, pointer_sha=sha) != sha)):
+                        raise DataGenerationError(UNKNOWN_MESSAGE)
+                    active_root = resolve_data_path(version_bundle(control, sha))
+                    verify(active_root)
+                    manifest = read_json(active_root / "portable-manifest.json")
+                    if (manifest.get("schema") != "label-match-portable-tree-v1"
+                            or manifest.get("source_commit") != sha):
+                        raise DataGenerationError(UNKNOWN_MESSAGE)
+                    keys = {root / "app/update-manifest-key-config.json":
+                            key_bytes(root / "app/update-manifest-key-config.json")
+                            for root in (installed_root, active_root)}
+                    if len(set(keys.values())) != 1:
+                        raise DataGenerationError(UNKNOWN_MESSAGE)
+                else:
+                    records = []
+            source_recorded = (source_root / "bootstrap-integrity.json").exists()
+            if source_recorded and source_root != active_root:
                 raise DataGenerationError(UNKNOWN_MESSAGE)
-            record_bytes = record_path.read_bytes()
-            detail = verify_bootstrap_integrity(SimpleNamespace(
-                app_root=installed_root, bootstrap_integrity_path=record_path), required=True)
-            if (detail.get("status") != "PASS"
-                    or detail.get("package_layout") != "portable_cpython"
-                    or record_path.read_bytes() != record_bytes):
-                raise DataGenerationError(UNKNOWN_MESSAGE)
-            inventory = portable_inventory_binding(installed_root)["sha256"]
+            inventory = portable_inventory_binding(active_root)["sha256"]
             identity = _installer_source_identity(source_root, source_inventory_sha256=inventory)
+            if records and [read_json(path) for path in records] != snapshot:
+                raise DataGenerationError(UNKNOWN_MESSAGE)
         except (OSError, ValueError, TypeError, RuntimeError) as exc:
             if isinstance(exc, DataGenerationError):
                 raise
@@ -349,9 +402,11 @@ def _authenticated_support_removal_source(app_root: Path):
     yield check
     with remote_request():
         try:
-            if ((source_root / "bootstrap-integrity.json").exists()
-                    or record_path.read_bytes() != record_bytes
-                    or portable_inventory_binding(installed_root)["sha256"] != inventory
+            if ((source_root / "bootstrap-integrity.json").exists() != source_recorded
+                    or any(path.read_bytes() != raw for path, raw in bootstraps.items())
+                    or any(key_bytes(path) != raw for path, raw in keys.items())
+                    or (records and [read_json(path) for path in records] != snapshot)
+                    or portable_inventory_binding(active_root)["sha256"] != inventory
                     or portable_inventory_binding(source_root)["sha256"] != inventory):
                 raise DataGenerationError(UNKNOWN_MESSAGE)
         except (OSError, ValueError, TypeError, RuntimeError) as exc:

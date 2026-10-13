@@ -6041,7 +6041,7 @@ try {
         # Completed same-user removal remains valid after code uninstall. Its
         # canonical host is absent, so do not rerun removal from a staging root.
         if (-not $healthyWithoutCode) {
-            $removalRoot = if ($existingVerified) { $install } else { $source }
+            $removalRoot = if ($existingVerified) { $lifecycleInstalled } else { $source }
             if ($existingVerified) {
                 [void](Set-LabelWriterFenceInstalledTree $writerFenceControlRoot $writerSessionId $writerAttemptId $writerTransactionId $true)
             }

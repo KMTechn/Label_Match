@@ -43,12 +43,16 @@ def test_direct_process_refuses_without_identity_or_lifecycle_changes(entry, sta
     environment = os.environ.copy()
     environment["KMTECH_DATA_GENERATION_ENTRY_KIND"] = entry
     completed = subprocess.run([
-        sys.executable, "-B", str(repo / "tests/_data_generation_direct_child.py"),
+        sys.executable, "-B", "-B", str(repo / "tests/_data_generation_direct_child.py"),
         str(repo), str(tmp_path / "isolated-user"), ENTRIES[entry], state, str(output),
     ], env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace",
        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert completed.returncode == 0, completed.stderr[-1600:]
     result = json.loads(output.read_text(encoding="utf-8"))
+    assert result["headless_guard"]["tk_blocked"]
+    assert result["headless_guard"]["notice_faked"]
+    assert result["headless_guard"]["known_folder_blocked"]
+    assert result["headless_guard"]["hidden_popen"]
     assert result["passed"], result
 
 
