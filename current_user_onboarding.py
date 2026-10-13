@@ -14,6 +14,7 @@ from pathlib import Path
 import stat
 import sys
 from typing import Any, Callable, Mapping, MutableMapping
+from urllib.parse import urlsplit
 import uuid
 
 from current_user_scheduled_task import (
@@ -30,6 +31,7 @@ from label_match_product_host import _default_product_root, requires_bootstrap_i
 from label_match_single_instance import SingleInstanceError, resolve_data_scope
 from logistics_runtime_profile import (
     APP_PROFILE_PATH_ENV as LABEL_MATCH_LOGISTICS_PROFILE_PATH_ENV,
+    LogisticsRuntimeConfigurationError,
     REQUIRED_ENV,
     assert_path_has_no_reparse_components,
     default_logistics_profile_path,
@@ -781,6 +783,59 @@ def _default_profile_loader(path: Path) -> Any:
     )
 
 
+def _server_origin(value: Any) -> tuple[str, str, int] | None:
+    if not isinstance(value, str) or not value or any(
+        character.isspace() or ord(character) < 32 for character in value
+    ):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None):
+            return None
+        if not re.fullmatch(r"[a-zA-Z0-9.:-]+", parsed.hostname):
+            return None
+        port = parsed.port
+        if port is not None and port <= 0:
+            return None
+        return parsed.scheme, parsed.hostname.lower(), port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return None
+
+
+def require_install_server_origin_matches(
+    paths: CurrentUserOnboardingPaths, *, credential: Mapping[str, Any] | None = None,
+) -> None:
+    # The machine marker survives HKCU completion. Never substitute environment
+    # overrides or a server-returned logistics profile for either bound origin.
+    from auto_update import installation_root
+    try:
+        managed = installation_root(paths.app_root)
+        if managed is None:
+            return
+        marker = managed / "update-control" / "worker-pending.json"
+        assert_path_has_no_reparse_components(marker, label="worker installation marker")
+        pending = _read_json(marker, "worker installation marker", maximum_bytes=16384)
+        if pending.get("schema") != "label-match-machine-worker-pending-v1":
+            return
+        installed = pending.get("server_base_url")
+        if not _pending_server_origin(installed):
+            return
+        if credential is None:
+            credential = _read_json(paths.credential_path, "relay endpoint")
+        installed_origin = _server_origin(installed)
+        registered_origin = _server_origin(credential.get("endpoint_url"))
+    except (OSError, ValueError, TypeError, AttributeError, LogisticsRuntimeConfigurationError):
+        # Missing legacy fields and unreadable inputs add no new refusal.
+        return
+    if installed_origin is not None and registered_origin is not None and installed_origin != registered_origin:
+        raise CurrentUserOnboardingError(
+            "설치 주소가 바뀌었습니다. 관리자에게 알려 주세요.",
+            report_path=paths.onboarding_report_path, status="RECOVERY_REQUIRED",
+            cause_code="INSTALL_SERVER_ORIGIN_CHANGED",
+        )
+
+
 def inspect_current_user_state(
     paths: CurrentUserOnboardingPaths,
     *,
@@ -869,12 +924,14 @@ def inspect_current_user_state(
             != "AUTHORITATIVE"
         ):
             raise ValueError("Label_Match requires AUTHORITATIVE logistics authority")
+        require_install_server_origin_matches(paths, credential=credential)
     except Exception as exc:
         return {
             "status": "RECOVERY_REQUIRED",
             "present": present,
             "reason": str(exc),
             "error_type": exc.__class__.__name__,
+            **({"cause_code": exc.cause_code} if isinstance(exc, CurrentUserOnboardingError) else {}),
         }
     return {
         "status": "READY",
@@ -1357,6 +1414,11 @@ def onboard_current_user(
     business_open_in_progress = False
 
     def require_registration_recovery(state: Mapping[str, Any]) -> None:
+        if state.get("cause_code") == "INSTALL_SERVER_ORIGIN_CHANGED":
+            raise CurrentUserOnboardingError(
+                str(state["reason"]), report_path=paths.onboarding_report_path,
+                status="RECOVERY_REQUIRED", cause_code="INSTALL_SERVER_ORIGIN_CHANGED",
+            )
         if state.get("status") != "ADMIN_RECOVERY_REQUIRED":
             return
         report["action"] = "ADMIN_RECOVERY_REQUIRED"
@@ -1445,6 +1507,7 @@ def onboard_current_user(
                 profile_loader=profile_loader,
                 credential_loader=credential_loader, credential_input=credential_input,
             )
+            require_registration_recovery(state)
         if state["status"] == "RECOVERY_REQUIRED":
             raise ValueError(str(state.get("reason") or "partial current-user state"))
         if state["status"] in {"ABSENT", "ABSENT_RETRYABLE"}:
@@ -1514,6 +1577,7 @@ def onboard_current_user(
                         profile_loader=profile_loader,
                         credential_loader=credential_loader, credential_input=credential_input,
                     )
+                    require_registration_recovery(state)
                     if state["status"] != "READY":
                         raise ValueError(
                             "registration returned success without complete current-user readback"

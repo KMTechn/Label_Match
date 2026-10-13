@@ -569,6 +569,10 @@ def _existing_user_relay_owner(
     fast_only: bool = False,
     process_observations: dict | None = None,
 ) -> dict[str, Any] | None:
+    from current_user_onboarding import (
+        require_install_server_origin_matches, resolve_current_user_onboarding_paths,
+    )
+    require_install_server_origin_matches(resolve_current_user_onboarding_paths(root))
     if user_relay_stop_path(direct_sync_root).exists():
         return None
     lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")

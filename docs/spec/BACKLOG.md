@@ -2,6 +2,8 @@
 
 # Label_Match 진행·공백·추가 제안
 
+- 설치/등록 주소 비교: 기계 표지와 등록에 쓴 relay endpoint가 다르면 `RECOVERY_REQUIRED`로 시작·relay 재사용을 거절하고 자료·대기열을 보존한다. 서버 반환 profile은 비교하지 않는다. 실제 재설치·안내 화면·옛 relay 종료 수용은 랩 확인 대상이다([절차](operations.md#onboarding-writer-admission)).
+
 - L02a: 반복 checkpoint 쓰기 실패의 건별 UNKNOWN 보류·원본 보관·다음 세트 진행과 10분 네 번째 건의 전체 저장 장애 안내를 구현한다. 날짜 만료 없이 보존하고 관리자 확인 전 자동 감사 재생·같은 제품/새 현품표 재처리를 막는다. CSV writer/flush의 미확정 오류 및 이미 완료한 CSV 후속 저장 오류는 기존 복구 경로다. 실제 HDD·창·전원 중단과 CSV 격리 확대는 후속 확인 대상이다.
 - 창 먼저 시작(w9firstupdsub166): READY·신선한 같은 판 relay는 주 창 뒤에서 전체 검증한다. 공유 전송 보류·실패/소유자 없음 뒤 FULL 재시작·허가 시간 초과 DEFERRED를 구현한다. 실제 HDD 20초 목표, 상태 줄·스캐너·재전송과 넓은 회귀는 현장 PC inspection6에서 확인한다([운영](operations.md#window-first-start)).
 - sub166 archrev 18:44 교정: 단일 GUI 소유 뒤 표식 기록, 물류·PIN·이름 등록 송신 입장 보류, FAST 품목 오프라인 fallback·재시도와 시작 정보 고정 전달을 반영했다. 중복 바로 가기와 보류 중 각 업무 요청은 좁은 headless 회귀로 확인하며 실제 화면 수용은 현장 몫이다.
