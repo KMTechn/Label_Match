@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from tests.test_app_stop import isolated_stop_process_observation
 
 import Label_Match as lm
 import user_relay

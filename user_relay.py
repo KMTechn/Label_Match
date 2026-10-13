@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import ntpath
 import os
 from pathlib import Path
 import subprocess
@@ -34,6 +35,7 @@ USER_RELAY_STATUS_NAME = "label_match_user_relay.json"
 USER_RELAY_STOP_NAME = "label_match_user_relay.stop.json"
 APP_STOP_NAME = "label_match_app.stop.json"
 APP_STOP_SCHEMA = "label-match-app-stop-v1"
+APP_STOP_TIMEOUT_SECONDS = 150.0
 LABEL_MATCH_SOURCE_GLOB = "포장실작업이벤트로그_*.csv"
 LABEL_MATCH_WORKER_ID = "direct-sync-relay-label-match-current-user"
 
@@ -114,9 +116,147 @@ def app_stop_request_path(direct_sync_root: str | os.PathLike[str]) -> Path:
     return Path(direct_sync_root).expanduser().resolve() / "control" / APP_STOP_NAME
 
 
-def request_app_stop(direct_sync_root: str | os.PathLike[str]) -> dict[str, Any]:
+def _app_stop_process_snapshot(*, timeout_seconds=10.0) -> list[dict[str, Any]]:
+    """Read candidate identities without exposing their command lines in receipts."""
+    from auto_update import system_executable
+    script = r"""+$ErrorActionPreference='Stop'+$rows=@(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe' OR Name='Label_Match.exe' OR Name='msedgewebview2.exe'" | ForEach-Object {
+ $owner=''
+ if (-not $_.ExecutablePath) {
+  try { $o=Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid; if($o.ReturnValue -eq 0){$owner=[string]$o.Sid} } catch {}
+ }
+ @{pid=[int]$_.ProcessId;parent_pid=[int]$_.ParentProcessId;name=[string]$_.Name;
+   image=[string]$_.ExecutablePath;command=[string]$_.CommandLine;sid=$owner;
+   session_id=[int]$_.SessionId;created_at=([datetime]$_.CreationDate).ToUniversalTime().ToString('o')}
+})
+ConvertTo-Json -InputObject $rows -Compress
+"""
+    result = subprocess.run(
+        [system_executable("WindowsPowerShell/v1.0/powershell.exe"), "-NoLogo", "-NoProfile",
+         "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
+        capture_output=True, text=True, timeout=max(0.01, float(timeout_seconds)),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode:
+        raise UserRelayError("app stop process observation failed")
+    rows = json.loads(result.stdout)
+    if not isinstance(rows, list):
+        raise UserRelayError("app stop process observation is incomplete")
+    return rows
+
+
+def _app_stop_path(value) -> str:
+    return ntpath.normcase(ntpath.normpath(str(Path(value).resolve())))
+
+
+def _webview_user_data_dir(command: str) -> str | None:
+    # Windows command-line quoting, including paths with spaces and backslashes.
+    import ctypes
+    from ctypes import wintypes
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    shell.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    shell.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    count = ctypes.c_int()
+    argv = shell.CommandLineToArgvW(command, ctypes.byref(count))
+    if not argv:
+        raise UserRelayError("WebView process arguments cannot be observed")
+    try:
+        parts = [argv[i] for i in range(count.value)]
+        for index, argument in enumerate(parts):
+            if argument.startswith("--user-data-dir="):
+                return argument.split("=", 1)[1]
+            if argument == "--user-data-dir" and index + 1 < len(parts):
+                return parts[index + 1]
+    finally:
+        kernel.LocalFree(argv)
+    return None
+
+
+def _owned_app_stop_processes(rows, app_root, webview_root, known, *, operator_sid="", own_pid=None):
+    runtime = _app_stop_path(Path(app_root) / "runtime")
+    executable = _app_stop_path(Path(app_root) / "Label_Match.exe")
+    udf = _app_stop_path(webview_root)
+    live = {}
+    own_pid = os.getpid() if own_pid is None else own_pid
+    for row in rows:
+        pid, created = row.get("pid"), row.get("created_at")
+        if type(pid) is not int or pid <= 0 or created is None:
+            raise UserRelayError("app stop process identity is incomplete")
+        if pid == own_pid:
+            continue
+        live[pid] = row
+    owned, udf_arguments = {}, {}
+    for pid, row in live.items():
+        image, name = row.get("image"), str(row.get("name") or "").casefold()
+        if name in ("python.exe", "pythonw.exe", "label_match.exe"):
+            if not image:
+                if operator_sid and row.get("sid") and row["sid"] != operator_sid:
+                    continue
+                raise UserRelayError("possible app stop process image is unavailable")
+            normalized = _app_stop_path(image)
+            if normalized == executable or (ntpath.dirname(normalized) == runtime
+                                             and name in ("python.exe", "pythonw.exe")):
+                owned[pid] = row
+        elif name == "msedgewebview2.exe":
+            prior = known.get(pid)
+            if prior and prior["created_at"] == row["created_at"]:
+                owned[pid] = row
+                continue
+            user_data_dir = _webview_user_data_dir(str(row.get("command") or ""))
+            udf_arguments[pid] = user_data_dir
+            if user_data_dir and _app_stop_path(user_data_dir) == udf:
+                owned[pid] = row
+    # UDF-less utility/crashpad processes belong only through a live proven
+    # ancestor. Creation ordering prevents a reused parent PID admitting them.
+    for _ in range(len(live)):
+        changed = False
+        for pid, row in live.items():
+            if pid in owned or str(row.get("name") or "").casefold() != "msedgewebview2.exe":
+                continue
+            if udf_arguments.get(pid):
+                continue
+            parent = owned.get(row.get("parent_pid"))
+            if (parent and row["created_at"] >= parent["created_at"]
+                    and row.get("session_id") == parent.get("session_id")):
+                owned[pid] = row
+                changed = True
+        if not changed:
+            break
+    known.clear()
+    known.update(owned)
+    return list(owned.values())
+
+
+def request_app_stop(direct_sync_root: str | os.PathLike[str], *, app_root=None,
+                     webview_root=None, timeout_seconds=150.0, wait=time.sleep) -> dict[str, Any]:
     """Request the existing preserving GUI close and stop the persistent relay."""
     root = Path(direct_sync_root).expanduser().resolve()
+    app_root = Path(app_root or _default_application_root()).resolve()
+    if webview_root is None:
+        from current_user_onboarding import resolve_current_user_onboarding_paths
+        previous = _read_json(root / "status" / "current_user_onboarding.json") or {}
+        if (previous.get("direct_sync_root") and _app_stop_path(previous["direct_sync_root"]) == _app_stop_path(root)
+                and Path(str(previous.get("data_root") or "")).is_absolute()):
+            webview_root = Path(previous["data_root"]) / "webview2"
+        else:
+            owner_environment = dict(os.environ)
+            if (root.name.casefold() == "label_match" and root.parent.name.casefold() == "directsync"
+                    and root.parent.parent.name.casefold() == "kmtech"):
+                owner_environment["LOCALAPPDATA"] = str(root.parents[2])
+            webview_root = resolve_current_user_onboarding_paths(app_root, environ=owner_environment).data_root / "webview2"
+    policy = _read_json(app_root.parent / "update-control" / "policy.json") or {}
+    operator_sid = str(policy.get("operator_sid") or "")
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    known = {}
+    # Capture live parent identities before asking the GUI/relay to exit.
+    observation_error = None
+    try:
+        _owned_app_stop_processes(_app_stop_process_snapshot(timeout_seconds=min(10, max(0, deadline - time.monotonic()))), app_root, webview_root, known,
+                                 operator_sid=operator_sid)
+    except Exception as error:
+        observation_error = type(error).__name__
     path = app_stop_request_path(root)
     payload = {
         "schema_version": APP_STOP_SCHEMA,
@@ -128,8 +268,28 @@ def request_app_stop(direct_sync_root: str | os.PathLike[str]) -> dict[str, Any]
         if _read_json(path) != payload:
             raise UserRelayError("app stop request readback differs")
     # Do not retain the app-request admission while waiting for relay absence.
-    relay = request_user_relay_stop(root)
-    return {"status": "REQUESTED", "app_stop_request_path": str(path), "relay": relay}
+    relay = request_user_relay_stop(root, timeout_seconds=0)
+    remaining = None
+    while True:
+        try:
+            remaining = _owned_app_stop_processes(_app_stop_process_snapshot(timeout_seconds=min(10, max(0, deadline - time.monotonic()))), app_root, webview_root, known,
+                                                 operator_sid=operator_sid)
+            observation_error = None
+        except Exception as error:
+            observation_error = type(error).__name__
+            remaining = None
+        if relay["status"] != "ABSENT":
+            lease = _acquire_relay_lease(root / "user-relay-instance")
+            if lease is not None:
+                (getattr(lease, "close", None) or getattr(lease, "release"))()
+                relay = {**relay, "status": "ABSENT"}
+                relay.pop("reason", None)
+        stopped = remaining == [] and relay["status"] == "ABSENT" and observation_error is None
+        if stopped or time.monotonic() >= deadline:
+            return {"status": "STOPPED" if stopped else "UNKNOWN", "app_stop_request_path": str(path),
+                    "relay": relay, "remaining_process_count": len(remaining) if remaining is not None else None,
+                    "process_observation_error": observation_error}
+        wait(min(0.25, max(0.0, deadline - time.monotonic())))
 
 
 def _application_command(
@@ -1037,9 +1197,9 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
         else:
             from current_user_onboarding import resolve_current_user_onboarding_paths
             direct_sync_root = resolve_current_user_onboarding_paths(app_root).direct_sync_root
-        report = request_app_stop(direct_sync_root)
+        report = request_app_stop(direct_sync_root, app_root=app_root, timeout_seconds=APP_STOP_TIMEOUT_SECONDS)
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-        return 0 if report["relay"]["status"] == "ABSENT" else 1
+        return 0 if report["status"] == "STOPPED" else 1
     try:
         from label_data_generation import release_identity
         release_identity(app_root)
