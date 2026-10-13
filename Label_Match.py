@@ -24624,10 +24624,30 @@ def _onboarding_refusal_codes(exc):
 
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
-    # The new screen (pywebview shell, label_match_screen) runs the same startup and
-    # processing; without the flag the Tk screen runs exactly as before.
-    new_screen = LABEL_MATCH_NEW_SCREEN_ARGUMENT in arguments
-    arguments = [value for value in arguments if value != LABEL_MATCH_NEW_SCREEN_ARGUMENT]
+    # UI selection is per launch; all remaining arguments keep their startup order.
+    old_screen = "--old-screen" in arguments
+    startup_arguments = []
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        if value in (LABEL_MATCH_NEW_SCREEN_ARGUMENT, "--old-screen"):
+            index += 1
+            continue
+        if value == "--ui":
+            if index + 1 < len(arguments) and not arguments[index + 1].startswith("--"):
+                old_screen = old_screen or arguments[index + 1] == "tk"
+                index += 2
+            else:
+                index += 1
+            continue
+        if value.startswith("--ui="):
+            old_screen = old_screen or value.partition("=")[2] == "tk"
+            index += 1
+            continue
+        startup_arguments.append(value)
+        index += 1
+    new_screen = not old_screen
+    arguments = startup_arguments
     startup_identity, identity_unknown = {}, False
     relay_reuse_report = None
     verified_hold = None
