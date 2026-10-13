@@ -446,3 +446,69 @@ def test_existing_relay_must_still_match_after_survival_window(existing_relay_st
     with pytest.raises(user_relay.UserRelayError):
         user_relay.start_user_relay_process(fixture.app, wait=owner_stops)
     assert fixture.launches == []
+
+
+@pytest.mark.parametrize("through_child_launcher", [True, False])
+def test_gui_writer_is_admitted_while_relay_cycle_waits_on_direct_sync_child(
+    tmp_path, monkeypatch, through_child_launcher
+):
+    """A relay cycle waiting on the network-bound DirectSync child must not
+    keep the writer admission mutex: the probe-only child launcher suspends
+    the cycle lease, so an operator write is admitted within its 5 s default.
+    The control case waits inside the cycle itself and must stay serialized."""
+    import threading
+
+    import writer_session_fence as fence
+
+    gui_done = threading.Event()
+    child_waiting = threading.Event()
+    gui_result = {}
+
+    def gui_writer():
+        child_waiting.wait(10)
+        try:
+            with fence.writer_admission(
+                "gui_package_enqueue",
+                timeout_seconds=5.0 if through_child_launcher else 0.5,
+            ):
+                gui_result["status"] = "ADMITTED"
+        except fence.WriterFencedError as exc:
+            gui_result["status"] = exc.code
+        finally:
+            gui_done.set()
+
+    def slow_network(command, timeout_seconds):
+        child_waiting.set()
+        gui_done.wait(8)
+        return {"status": "PASS", "returncode": 0}
+
+    monkeypatch.setattr(user_relay, "build_session_direct_sync_command", lambda **_: ["child"])
+    monkeypatch.setattr(user_relay, "_run_command", slow_network)
+
+    def run_cycle():
+        if through_child_launcher:
+            return user_relay._runtime_cycle(
+                app_root=tmp_path,
+                direct_sync_root=tmp_path / "direct_sync",
+                scan_source_dir=tmp_path / "scan",
+            )
+        slow_network(["child"], 45)
+        return {"status": "acked"}
+
+    thread = threading.Thread(target=gui_writer, daemon=True)
+    thread.start()
+    result = user_relay.run_persistent_relay_loop(
+        run_cycle,
+        status_path=tmp_path / "status.json",
+        interval_seconds=0,
+        max_cycles=1,
+    )
+    thread.join(15)
+
+    assert not thread.is_alive()
+    assert result["cycle_count"] == 1
+    if through_child_launcher:
+        assert gui_result == {"status": "ADMITTED"}
+        assert result["last_cycle"]["process_status"] == "PASS"
+    else:
+        assert gui_result == {"status": "WRITER_GATE_TIMEOUT"}
