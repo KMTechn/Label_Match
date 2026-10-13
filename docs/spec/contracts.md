@@ -6,7 +6,7 @@
 
 관리자 설치 입구(v0, w9firstupdsub63 1차 답)는 상승 또는 Session 0에서만 `-WorkerAccount <SID 또는 DOMAIN\이름>`·`-WorkerSurveyInventory <절대 JSON 경로>`를 받는다. 실제 상승과 두 인수가 필요하다. 제품은 `status == READY`, 해석한 작업자 SID와 같은 `target_sid`(상승 호출자와 같은 SID도 허용), 그 SID의 ProfileList와 같은 `target_profile_root`만 확인한다. 파일/JSON/필드/바인딩 실패는 import·감사·설치·프로필 쓰기 전 고정 실패 한 줄로 끝난다. 나머지 inventory 필드는 해석하지 않고 파일 SHA256만 기계 표지에 기록한다. 일반 작업자 세션에 이 인수가 있으면 거절한다.
 
-기계 배치는 기존 pinned helper·guardian·검증/백업·자료 세대 거절·startup policy/task를 사용한다. startup의 operator SID/LocalAppData는 지정 작업자를 가리킨다. 다른 SID 관리자 길은 HKCU Run·등록·TLS·업무 자료를 실행하지 않는다. 같은 SID는 기계 fence 해제 뒤 기존 onboarding으로 자기 등록·자료·Run을 준비하며 relay·화면을 실행하지 않고 WORKER_SESSION_PENDING을 남긴다. 전용 deferral은 유효한 자기 PENDING과 실제 상승 SID를 요구하며 첫 일반 세션 READY 전 HKCU 완료를 쓰지 않는다. 옛 앱 이전은 키트 몫이다. 실패하면 새 공용 링크·PENDING을 제거하고 기존 두 파일은 원 바이트로 복원한다. 감사 기록 실패도 두 복원 시도를 막지 않는다. `update-control/worker-pending.json`은 보호된 부모에 둔 읽기 전용 `label-match-machine-worker-pending-v1` 기록이며 설치 ID·대상 SID·source commit·판·inventory SHA256을 결속한다. `PASS_MACHINE_WORKER_PENDING`은 기계 몫의 성공과 작업자 준비 대기를 뜻한다.
+기계 배치는 기존 pinned helper·guardian·검증/백업·자료 세대 거절·startup policy/task를 사용한다. startup의 operator SID/LocalAppData는 지정 작업자를 가리킨다. 상승 또는 Session 0의 기계 설치 길은 작업자와 같은 SID여도 HKCU Run·등록·TLS·업무 자료·개인 바로 가기를 준비하지 않고 첫 일반 작업자 시작을 기다린다. `caller_is_worker`는 SID 일치와 비상승 문맥을 함께 요구한다. 같은 세션·같은 SID의 상승 콘솔 호출은 기존 설치 길을 유지한다. 옛 앱 이전은 키트 몫이다. 실패하면 새 공용 링크·PENDING을 제거하고 기존 두 파일은 원 바이트로 복원한다. 감사 기록 실패도 두 복원 시도를 막지 않는다. `update-control/worker-pending.json`은 보호된 부모에 둔 읽기 전용 `label-match-machine-worker-pending-v1` 기록이며 설치 ID·대상 SID·source commit·판·inventory SHA256을 결속한다. `PASS_MACHINE_WORKER_PENDING`은 기계 몫의 성공과 작업자 준비 대기를 뜻한다.
 
 첫 GUI 시작은 자료 세대 쓰기 전 표지의 SID를 확인하고 기존 current-user onboarding을 사용한다. READY·등록·relay 확인 뒤 기존 admission 안에서 작업자 HKCU `Software\KMTech\Label_Match\WorkerInstallCompleted`(REG_SZ, `<install_id>:<source_commit>`)를 쓰고 되읽는다. 같은 ID의 완료는 멱등이며 기계 표지를 지우거나 다시 쓰지 않는다. 실패/다른 SID는 완료 기록을 만들지 않는다. 일반 시작의 기존 onboarding 검증은 유지한다. 옛 앱 백업·끄기·복원과 관리자 `-Rollback`은 키트 계약이며 제품 canonical에 Rollback 인수나 callback을 추가하지 않는다.
 <a id="company-http"></a>
@@ -14,7 +14,7 @@
 회사 서버 HTTP 요청은 포장 앱의 고정 User-Agent를 보낸다. requests의 JSON·content·iter_content 압축 해제 경로는 유지하고, urllib 명단/PIN·물류 응답은 gzip·deflate(원시 deflate 포함)를 해제한 뒤 검증한다. 명단/PIN의 해제 후 상한은 기존 262,144/8,192바이트이며 물류 응답은 8 MiB를 넘거나 압축이 손상되면 거절한다. JSON 계약 오류는 기존 코드를 유지하고 HTML 등 비계약 403·5xx는 HTTP 코드와 쉬운 회사 서버 거절·오류 문구를 남긴다. 알려진 HTTP 오류만으로 POST 적용 여부를 확정하지 않으며 같은 멱등 키의 영수증 조회·복구를 유지한다. HMAC 서명·TLS 확인·시간 초과·원장·성공 표시 순서는 바꾸지 않는다.
 작업자 바로 가기의 새 대상은 manifest.launcher가 지정한 설치된 `current/launch-label-match.cmd`이며 인수는 비우고 앱 아이콘·최소화 창(WindowStyle=7)을 사용한다. 기계 단계는 공용 known folder만, 작업자 세션 단계는 현재 사용자의 known folder만 처리한다. 설치 루트 아래의 없는 대상만 변경하며 다른 루트·다른 앱·존재하는 대상은 보존한다. 변경 전 속성·원본 링크 바이트와 해시를 설치 감사 옆 JSON/원본 폴더에 저장한다. 복원은 정확한 root·scope·새 대상·원본 해시·현재 링크를 검증하고 변경 링크의 원본을 복원하거나 만든 링크만 제거한다. 손댄 뒤 실패하면 같은 기록으로 보상하고, 이후의 링크 변경은 덮지 않는다.
 
-onboarding과 `start_user_relay_process`는 정확히 승인된 probe sink이며 부모 writer lease도 시작·생존 확인 전에 해제한다. onboarding lifecycle 검증은 호출당 한 번 onboarding·부모 admission 밖에서 실행하며 그 호출의 thread-local 범위에만 결과를 보관한다. 각 쓰기 admission은 helper를 반복하지 않고 policy·active·transition 원 바이트의 digest와 delegation을 재확인하며 변경 시 `WRITER_LIFECYCLE_CHANGED`로 거절한다. 다른 source·스레드·다음 호출은 기존 검증을 유지한다. 디렉터리·TLS·등록·세대·원장·설정·Run·옛 작업·stop 표지·환경·보고서 쓰기는 각각 기존 source admission을 얻는다. READY는 relay 확인 뒤 새 admission에서 fence 재확인과 환경 적용을 마친 뒤 게시한다. canonical의 연기와 기존 실패 코드·stop 복원·지원 복구는 유지한다. 기존 G 기록 묶음·옛 작업 은퇴·fixed helper 자기 admission은 측정 P2로 컷 뒤에 남긴다(코디 승인; BACKLOG).
+onboarding과 `start_user_relay_process`는 정확히 승인된 probe sink이며(onboarding 기본 launcher는 같은 소유 확인을 admission 없이 먼저 하는 `reuse_or_start_user_relay_process`이고, 재사용 실패 때만 이 probe sink를 부른다; `process_snapshot`의 Observe는 writer admission을 잡지 않는다) 부모 writer lease도 시작·생존 확인 전에 해제한다. onboarding lifecycle 검증은 호출당 한 번 onboarding·부모 admission 밖에서 실행하며 그 호출의 thread-local 범위에만 결과를 보관한다. 각 쓰기 admission은 helper를 반복하지 않고 policy·active·transition 원 바이트의 digest와 delegation을 재확인하며 변경 시 `WRITER_LIFECYCLE_CHANGED`로 거절한다. 다른 source·스레드·다음 호출은 기존 검증을 유지한다. 디렉터리·TLS·등록·세대·원장·설정·Run·옛 작업·stop 표지·환경·보고서 쓰기는 각각 기존 source admission을 얻는다. READY는 relay 확인 뒤 새 admission에서 fence 재확인과 환경 적용을 마친 뒤 게시한다. canonical의 연기와 기존 실패 코드·stop 복원·지원 복구는 유지한다. 기존 G 기록 묶음·옛 작업 은퇴·fixed helper 자기 admission은 측정 P2로 컷 뒤에 남긴다(코디 승인; BACKLOG).
 
 등록·배치 자식의 종료 증명은 시작 시각 기준 하나의 30초 벽시계 마감을 공유한다. 모든 CIM 소유 관찰은 같은 프로세스의 읽기 전용 runspace에서 남은 시간만 기다리고 OperationTimeoutSec도 남은 초로 제한한다. 만료하면 BeginStop만 요청하고 관찰 결과·취소 완료를 기다리지 않으며 이후 새 종료 동작은 없다. 등록은 REGISTRATION_CHILD_UNPROVEN, 배치는 HELPER_CHILD_UNPROVEN으로 복원을 거절한다. 정상 기한 안의 live 부모 사슬·생성 시각·열린 process handle 검증은 유지한다.
 
@@ -239,6 +239,18 @@ guarded reconcile이 파일 경로로 실행하는 initializer helper는 import 
 <a id="current-user-task-reuse"></a>
 <a id="current-user-resident-relay"></a>
 ## 정상 사용자 시작·상주 동기화와 과거 task 이행
+
+relay는 시험 시작 때도 자기 SID를 상태에 남겨 확정 뒤 재사용할 수 있게 한다. 선택적인 SID/steady 캐시 읽기가 실패하면 기존 첫 시작·nonce 준비 증명을 유지하고 관측 길을 쓴다. 창 뒤 대조는 시작 때 받아들인 SID와 판에 결속한다.
+
+READY인 사용자 설정·등록 자료가 존재하고 설치 주소(등록 보고서에 있으면 그 주소)·운영 SID·현재 active 판·steady 전이(CONFIRMED/ROLLED_BACK/DEFERRED)가 맞으며, instance lease 점유·stop/검증 보류 표지 없음·RUNNING 상태의 worker/app/direct-sync 일치·살아 있는 PID·90초 이내 갱신·현재 code_root/source_commit·일반 사용자 표시가 모두 맞으면 `FAST_WINDOW_FIRST`로 창을 먼저 연다. 창 앞은 파일 확인과 짧은 writer admission으로 보류 표식 원자 기록 한 번이며 PowerShell/고정 helper 호출은 없다. 첫 실행·자료 미준비·relay 없음/오래됨·시험 전이·업데이트 대기·기존 검증 보류는 `FULL`/`FIRST_RUN`의 전체 확인을 따른다.
+
+공유 `control/startup-verification.json`은 GUI PID·native 생성 시각·시작 시각·start_path만 담는다. 단일 GUI 소유권을 얻은 시작만 창 앞에서 표식을 기록한다. 중복 실행은 기존 창을 앞으로 내고 기존 송신·표식을 유지한다. GUI DirectSync 입구와 relay enqueue·각 HTTP 송신 직전은 같은 판정 함수를 사용한다. 포장 생성·취소·교환·PHS 복구와 PIN·이름 등록도 새 서버 변경 요청 입장 전에 같은 게이트를 확인한다. 보류면 로컬 outbox는 대기 상태를 유지하고 동기 작업은 「잠시 뒤 다시」를 안내한다. 창 뒤 lifecycle Verify 한 번(고정 helper의 bootstrap 확인 포함)·Python bootstrap 무결성 한 번·relay Observe 한 번이 성공할 때까지 새 송신을 미루고 로컬 스캔·확정·저장과 기존 대기열은 보존한다. 이미 입장한 HTTP 한 건은 응답과 기존 로컬 반영을 마친다. 느린 helper·바이트 확인/해시는 writer admission 밖에서 실행하며, 입력 바이트가 동일할 때만 프로세스 내 검증 결과를 재사용한다. 입력·전이·delegation이 달라지면 기존 담장으로 거절한다.
+
+FAST 품목 준비는 시작 때 전달받은 보고서를 고정 사용하며 배경 확인이 전역 상태를 비워도 중앙 목록 새로 고침을 수행한다. FULL과 같은 과도기 오프라인 fallback·미확인 표기를 사용하고, 과도기 허용이 없으면 UI 스레드에서 같은 원본 재시도를 안내한다.
+
+확인 중 화면은 「서버 보내기 확인 중」, 실패는 「서버 보내기가 멈췄습니다. 앱을 껐다 다시 켜 주세요(계속되면 관리자에게)」와 기존 reason/cause code를 남긴다. 같은 하단 위치의 「다시 확인」은 창 뒤 전체 확인을 배경에서 한 번 더 수행한다. 확인 중에는 단추를 비활성화하고 연타도 한 번만 입장한다. 성공하면 기존 동일 표식만 해제해 송신을 재개하고, 실패하면 표식·자료·대기열을 보존한다. STARTUP_ 보류 PIN 안내에는 「이 건만 보류 — 틀린 횟수로 세지 않음」을 덧붙인다.
+
+실패·지연·소유 GUI 종료·PID 재사용·소유 관측 UNKNOWN·읽을 수 없는 표식은 자동 해제하지 않으며 다음 시작은 FULL이다. FULL 확인과 단일 GUI 입장이 끝난 뒤 시작 때 읽은 동일 표식만 지운다. READY/onboarding 또는 startup trace 최상위에는 start_path, relay_start.status, existing_relay_reused, fast_path를 남긴다. relay 자식의 WRITER_GATE_TIMEOUT은 처리되지 않은 예외 대신 DEFERRED로 기록하여 다음 바퀴에 재시도한다.
 
 사용자 승인 D11과 [현행 소스](operations.md#resident10-alignment)는 정확한 HKCU Run `KMTech.LabelMatch.Relay`와 기존 `user_relay`를 유일한 정상 persistence 경로로 사용한다. GUI와 독립적인 cycle/network retry, fresh owner 생존 확인, instance lease·stop marker·writer fence 및 identity/profile/queue/spool/receipt 계약은 유지한다. onboarding의 예약 작업 creator/필수 성공, 별도 scheduled one-shot main/parser/활성 mode를 제거했다. 옛 argv는 GUI로 흘러가지 않고 exit2로 거부한다. task10의 exact Running `Apply/REUSED` 교정은 폐기한 별도 설계의 이력이다.
 

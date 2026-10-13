@@ -39,7 +39,8 @@ from direct_sync_push import (
 )
 from direct_sync_operator import read_operator_pause
 from producer_runtime_client import ensure_runtime_authority
-from writer_session_fence import writer_sink
+from writer_session_fence import writer_sink, WriterFencedError
+from startup_send_gate import startup_send_deferred, StartupGatedSession
 
 
 DEFAULT_WORKER_ID = "direct-sync-relay-label-match"
@@ -803,6 +804,9 @@ def enqueue_completed_source_file(
     backpressure_recovery_session: Any = None,
 ) -> dict[str, Any]:
     """Spool one completed Label_Match CSV and persist local operator evidence."""
+    deferred = startup_send_deferred(Path(config.credential_path).parent)
+    if deferred:
+        return deferred
     if config.tls_ca_bundle_path:
         from label_data_generation import check_user_data_open, resolve_data_path
         selected_ca = resolve_data_path(config.tls_ca_bundle_path)
@@ -929,6 +933,10 @@ def run_relay_once(
     target_relay_id: str = "",
 ) -> dict[str, Any]:
     """Run one bounded relay drain cycle and persist status/log evidence."""
+    deferred = startup_send_deferred(Path(config.credential_path).parent)
+    if deferred:
+        return deferred
+    session = StartupGatedSession(Path(config.credential_path).parent, session)
     if config.tls_ca_bundle_path:
         from label_data_generation import check_user_data_open, resolve_data_path
         selected_ca = resolve_data_path(config.tls_ca_bundle_path)
@@ -976,6 +984,9 @@ def run_relay_once(
             tls_ca_bundle_path=str(config.tls_ca_bundle_path or ""),
         )
         runtime_lease = dict(runtime_preparation.receipt or {})
+        deferred = startup_send_deferred(Path(config.credential_path).parent)
+        if deferred:
+            return deferred
         if runtime_preparation.operator_review:
             # Not recovered automatically (live clone, stale token, bound row):
             # the work screen asks for an administrator instead of a resume.
@@ -996,6 +1007,10 @@ def run_relay_once(
             target_relay_id=target_relay_id,
             tls_ca_bundle_path=str(config.tls_ca_bundle_path or ""),
         )
+    except WriterFencedError as exc:
+        if not exc.code.startswith("STARTUP_VERIFICATION_"):
+            raise
+        return {"status": "DEFERRED", "reason_code": exc.code, "error_code": exc.code}
     except (DirectSyncPushError, sqlite3.DatabaseError) as exc:
         queue = _safe_relay_queue_status(config.db_path)
         error_code, error_message = _runtime_error_details(exc)

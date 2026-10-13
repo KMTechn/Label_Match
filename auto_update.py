@@ -620,7 +620,37 @@ def version_bundle(control: Path, sha: str) -> Path:
     return control.parent / "versions" / _sha(sha)
 
 
+_VERSION_WRITER_INVENTORY_PASS = {}
+
+
 def version_writer_inventory_sha256(bundle: Path) -> str:
+    from writer_sink_inventory import _runtime_files
+    from writer_session_fence import remote_request
+    selected = bundle.absolute()
+    def inputs():
+        paths = [*_runtime_files(bundle / "app", ".py"), *_runtime_files(bundle / "app", ".ps1"),
+                 bundle / "INSTALL_THIS_PC.ps1"]
+        result = []
+        for path in sorted(paths):
+            _assert_no_reparse_components(path)
+            result.append((path.relative_to(bundle).as_posix(), path.read_bytes()))
+        return tuple(result)
+    with remote_request():
+        observed = inputs()
+        cached = _VERSION_WRITER_INVENTORY_PASS.get(selected)
+        if cached is None or cached[0] != observed:
+            cached = next((entry for entry in _VERSION_WRITER_INVENTORY_PASS.values() if entry[0] == observed), None)
+        if cached is not None and cached[0] == observed:
+            _VERSION_WRITER_INVENTORY_PASS[selected] = cached
+            return cached[1]
+        result = _version_writer_inventory_sha256(bundle)
+        if inputs() != observed:
+            raise ValueError("writer inventory changed during verification")
+        _VERSION_WRITER_INVENTORY_PASS[selected] = (observed, result)
+        return result
+
+
+def _version_writer_inventory_sha256(bundle: Path) -> str:
     # Run the already installed scanner over bytes/AST only. Candidate modules
     # are never imported by the protected updater.
     from writer_sink_inventory import derive_writer_sink_inventory, _powershell_inventory, writer_sink_inventory_sha256
@@ -755,7 +785,10 @@ def resolve_lifecycle_context(root: Path, *, expected_from_commit: str | None = 
         raise ValueError("supported from identity differs")
     if state.get("candidate_sha") is not None and recovery_sha(state, pointer_sha=active) != active:
         raise ValueError("supported transition and pointer differ")
-    fixed_helper(control, "Verify", code_root=fixed)
+    # The selected Verify already authenticates the fixed bootstrap in
+    # Get-Authority / Assert-LabelStartupIntegrity before verifying the version.
+    if operation != "register":
+        fixed_helper(control, "Verify", code_root=fixed)
     fixed_identity = version_manifest(fixed)
     selected = version_bundle(control, active)
     fixed_helper(control, "Verify", code_root=selected)
@@ -981,6 +1014,14 @@ def update_lock(control: Path, operator_sid: str, *, trial: bool = False):
 
 @writer_sink("auto_update_fixed_helper")
 def fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> str:
+    if mode == "Verify":
+        from writer_session_fence import remote_request
+        with remote_request():
+            return _run_fixed_helper(control, mode, code_root=code_root)
+    return _run_fixed_helper(control, mode, code_root=code_root)
+
+
+def _run_fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> str:
     import subprocess
 
     root = control.parent / "current"
@@ -1004,7 +1045,10 @@ def fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> 
 
 
 def process_snapshot(control: Path) -> list[dict[str, Any]]:
-    rows = json.loads(fixed_helper(control, "Observe"))
+    # Observe only lists processes (apply_prepared_update.ps1 exits before any
+    # Apply/Verify step) and mutates no product state, so it takes no writer
+    # admission: a live relay holds admission for its whole cycle.
+    rows = json.loads(_run_fixed_helper(control, "Observe"))
     if not isinstance(rows, list):
         raise ValueError("update process observation is incomplete")
     return rows
@@ -2172,9 +2216,22 @@ def trial_stop_requested(app_root: Path) -> bool:
 def relay_ready_metadata(app_root: Path) -> dict[str, Any]:
     context = trial_context(app_root)
     if context is None:
-        return {}
+        if control_root(app_root) is None:
+            return {}
+        # Publish this process's identity, never the desired policy identity.
+        # Older/missing metadata still requires the ordinary Observe path.
+        try:
+            return {"source_commit": read_json(app_root.parent / "portable-manifest.json")["source_commit"],
+                    "sid": current_process_sid(), "ordinary_user": ordinary_user_context()}
+        except (OSError, ValueError, KeyError):
+            return {}  # Optional cache metadata cannot add a first-start refusal.
     _, _, state = context
-    return {"process_id": os.getpid(), "source_commit": version_manifest(app_root.parent)["source_commit"], "update_nonce": state["nonce"], "ordinary_user": ordinary_user_context()}
+    metadata = {"process_id": os.getpid(), "source_commit": version_manifest(app_root.parent)["source_commit"], "update_nonce": state["nonce"], "ordinary_user": ordinary_user_context()}
+    try:
+        metadata["sid"] = current_process_sid()
+    except (OSError, ValueError):
+        pass  # Retain the existing nonce/readiness proof and observed fallback.
+    return metadata
 
 
 def publish_gui_ready(app_root: Path) -> bool:

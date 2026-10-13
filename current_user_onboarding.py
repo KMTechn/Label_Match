@@ -41,7 +41,7 @@ from user_relay import (
     release_user_relay_stop_marker,
     remove_user_relay_autostart,
     request_user_relay_stop,
-    start_user_relay_process,
+    reuse_or_start_user_relay_process,
     user_relay_stop_path,
 )
 from writer_session_fence import writer_admission, writer_sink
@@ -635,7 +635,37 @@ def validate_portable_bootstrap_inventory(record, rows, app_root: Path) -> dict[
             "package_layout": "portable_cpython" if portable_layout else "onedir"}
 
 
-def verify_bootstrap_integrity(
+_BOOTSTRAP_INTEGRITY_PASS = {}
+_WINDOW_FIRST_START = None
+
+
+def verify_bootstrap_integrity(paths: CurrentUserOnboardingPaths, *, required: bool) -> dict[str, Any]:
+    from writer_session_fence import remote_request
+    if not required or not paths.bootstrap_integrity_path.exists():
+        return _verify_bootstrap_integrity_uncached(paths, required=required)
+    def inputs():
+        rows = []
+        for candidate in sorted(paths.app_root.rglob("*")):
+            if _is_reparse_point(candidate):
+                raise ValueError("bootstrap code path is redirected")
+            if candidate.is_file():
+                rows.append((candidate.relative_to(paths.app_root).as_posix(), candidate.read_bytes()))
+        return tuple(rows)
+    with remote_request():
+        observed = inputs()
+        key = (paths.app_root.absolute(), paths.bootstrap_integrity_path.absolute())
+        cached = _BOOTSTRAP_INTEGRITY_PASS.get(key)
+        if cached is not None and cached[0] == observed:
+            return dict(cached[1])
+        result = _verify_bootstrap_integrity_uncached(paths, required=required)
+        if inputs() != observed:
+            raise ValueError("bootstrap code changed during verification")
+        if result.get("status") == "PASS":
+            _BOOTSTRAP_INTEGRITY_PASS[key] = (observed, dict(result))
+        return result
+
+
+def _verify_bootstrap_integrity_uncached(
     paths: CurrentUserOnboardingPaths,
     *,
     required: bool,
@@ -1004,6 +1034,19 @@ def _worker_install_completion() -> str:
     return value
 
 
+_PENDING_SERVER_ORIGIN = re.compile(
+    r"https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::([1-9][0-9]{0,4}))?",
+    re.IGNORECASE | re.ASCII,  # case-insensitive like the installer -match, ASCII only
+)
+
+
+def _pending_server_origin(value: Any) -> bool:
+    # Mirrors the installer ServerBaseUrlOrigin result: credential-free https://host[:port].
+    match = _PENDING_SERVER_ORIGIN.fullmatch(value) if isinstance(value, str) else None
+    return match is not None and (match.group(1) is None or int(match.group(1)) <= 65535)
+
+
 def validate_pending_worker_install(app_root: str | os.PathLike[str]) -> dict[str, Any] | None:
     """Read the machine marker before any business-data or current-user write."""
     from auto_update import installation_root, current_process_sid
@@ -1038,6 +1081,10 @@ def validate_pending_worker_install(app_root: str | os.PathLike[str]) -> dict[st
                 or not isinstance(pending.get("inventory_sha256"), str)
                 or not re.fullmatch(r"[0-9a-f]{64}", pending["inventory_sha256"])):
             raise ValueError("worker installation marker identity differs")
+        # An installer -ServerBaseUrl travels here; a malformed one refuses rather
+        # than falling back to the production default.
+        if "server_base_url" in pending and not _pending_server_origin(pending["server_base_url"]):
+            raise ValueError("worker installation marker server origin differs")
         completion = install_id + ":" + commit
         if _worker_install_completion() == completion:
             return None
@@ -1085,6 +1132,131 @@ def _complete_worker_install(pending: Mapping[str, Any]) -> None:
             raise ValueError("worker installation completion readback differs")
 
 
+def window_first_release_identity(app_root):
+    report = _WINDOW_FIRST_START
+    if report is None or _resolved(app_root) != report["paths"].app_root:
+        return None
+    for path, raw in report["inputs"].items():
+        if path.read_bytes() != raw:
+            raise DataGenerationError("startup verification input changed")
+    return dict(report["identity"])
+
+
+def try_window_first_start(app_root, *, environ=None, arguments=()):
+    """Read steady local evidence, then atomically hold all new DirectSync sends."""
+    global _WINDOW_FIRST_START
+    from auto_update import (control_root, load_policy, read_json, ordinary_user_context,
+                             prepared_pending, _sha, recovery_sha)
+    from startup_send_gate import read_startup_send_hold
+    from user_relay import _existing_user_relay_owner, _reuse_existing_user_relay
+    from label_data_generation import portable_release_identity
+    from writer_session_fence import WriterFenceError
+    if arguments:
+        return None
+    try:
+        root = _resolved(app_root)
+        if root.name.casefold() == "app":
+            root = root.parent
+        control = control_root(root / "app")
+        if control is None or root.parent != control.parent / "versions":
+            return None
+        policy = load_policy(control)
+        if not ordinary_user_context(policy["operator_sid"]):
+            return None
+        active, state = read_json(control / "active.json"), read_json(control / "transition.json")
+        if (active.get("schema") != "label-match-startup-update-v1"
+                or state.get("schema") != "label-match-startup-update-v1"
+                or state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}
+                or (control / "apply-claim.json").exists()
+                or prepared_pending(control, policy, state)):
+            return None
+        manifest = _read_json(root / "portable-manifest.json", "startup manifest")
+        identity = portable_release_identity(manifest)
+        if (manifest.get("startup_update_protocol") != 1 or identity["build_id"] != _sha(active["sha"])
+                or root.name != active["sha"]
+                or (state.get("candidate_sha") is not None and recovery_sha(state, pointer_sha=active["sha"]) != active["sha"])):
+            return None
+        paths = resolve_current_user_onboarding_paths(root, environ=environ)
+        if (user_relay_stop_path(paths.direct_sync_root).exists()
+                or read_startup_send_hold(paths.direct_sync_root) is not None):
+            return None
+        previous = _read_json(paths.onboarding_report_path, "onboarding report")
+        if previous.get("status") != "READY" or previous.get("state_scope") != "current_user":
+            return None
+        for field in ("data_root", "direct_sync_root", "ledger_path", "settings_path", "logistics_profile_path"):
+            if _resolved(previous.get(field) or "") != getattr(paths, field):
+                return None
+        state_paths = (paths.identity_path, paths.producer_manifest_path, paths.credential_path,
+                       paths.registration_report_path, paths.logistics_profile_path, paths.logistics_secret_path)
+        if not all(path.is_file() for path in (*state_paths, paths.ledger_path, paths.settings_path)):
+            return None
+        registration = _read_json(paths.registration_report_path, "registration report")
+        if registration.get("server_registration_verified") is not True:
+            return None
+        registered_origin = registration.get("server_base_url")
+        if registered_origin:
+            profile = _read_json(paths.logistics_profile_path, "logistics profile")
+            if str(profile.get("base_url") or "").rstrip("/") != str(registered_origin).rstrip("/"):
+                return None
+        observed = {}
+        for path in (*state_paths, root / "portable-manifest.json", *(control / name for name in ("policy.json", "active.json", "transition.json"))):
+            assert_path_has_no_reparse_components(path, label="startup verification input")
+            if path.stat().st_size > BOOTSTRAP_INTEGRITY_MAX_BYTES:
+                return None
+            observed[path] = path.read_bytes()
+        owner = _existing_user_relay_owner(root, paths.direct_sync_root, is_bootstrap=True,
+                                          allow_fast_path=True, fast_only=True)
+        if owner is None or owner.get("fast_path") is not True:
+            return None
+        relay = _reuse_existing_user_relay(lambda: owner, 0, lambda _: None)
+        report = {"status": "READY", "start_path": "FAST_WINDOW_FIRST", "app_root": root,
+                  "paths": paths, "inputs": observed, "identity": identity,
+                  "direct_sync_root": str(paths.direct_sync_root), "report_path": paths.onboarding_report_path,
+                  "relay_start": relay, "existing_relay_reused": True, "fast_path": True,
+                  "hold": None, "server_base_url": registered_origin or DEFAULT_SERVER_BASE_URL}
+        import threading
+        report["window_visible"] = threading.Event()
+        _WINDOW_FIRST_START = report
+        apply_current_user_runtime_environment(paths, environ=environ)
+        return report
+    except (OSError, ValueError, TypeError, KeyError, CurrentUserOnboardingError, DataGenerationError, WriterFenceError):
+        return None
+
+
+def admit_window_first_start(report):
+    """Only the single-instance owner may pause this user's new sends."""
+    from startup_send_gate import create_startup_send_hold
+    window_first_release_identity(report["app_root"])
+    hold = create_startup_send_hold(report["paths"].direct_sync_root)
+    if hold is None:
+        raise CurrentUserOnboardingError("서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요.",
+            report_path=report["report_path"], cause_code="STARTUP_VERIFICATION_PENDING")
+    report["hold"] = hold
+
+
+def complete_window_first_verification(report):
+    global _WINDOW_FIRST_START
+    from startup_send_gate import release_startup_send_hold
+    from user_relay import verify_reused_user_relay
+    try:
+        window_first_release_identity(report["paths"].app_root)
+        result = onboard_current_user(report["app_root"], server_base_url=report["server_base_url"],
+                                      start_path="FAST_WINDOW_FIRST", relay_launcher=lambda _root: dict(report["relay_start"]))
+        if result.get("status") != "READY":
+            raise ValueError("startup verification did not finish")
+        verify_reused_user_relay(report["app_root"], report["relay_start"])
+        window_first_release_identity(report["paths"].app_root)
+        if not release_startup_send_hold(report["paths"].direct_sync_root, report["hold"], verified=True):
+            raise ValueError("startup verification hold changed")
+        _WINDOW_FIRST_START = None
+    except CurrentUserOnboardingError:
+        raise
+    except Exception as error:
+        failure = CurrentUserOnboardingError("서버 보내기 멈춤 — 관리자에게 알려 주세요",
+            report_path=report["report_path"], cause_code="STARTUP_VERIFICATION_FAILED")
+        raise failure from error
+
+
 @writer_sink("current_user_onboarding", probe_only=True)
 def onboard_current_user(
     app_root: str | os.PathLike[str],
@@ -1110,10 +1282,11 @@ def onboard_current_user(
     ] = read_legacy_system_task_quiescence,
     relay_launcher: Callable[
         [str | os.PathLike[str]], Mapping[str, Any]
-    ] = start_user_relay_process,
+    ] = reuse_or_start_user_relay_process,
     defer_canonical_relay_start: bool = False,
     defer_machine_worker_relay_start: bool = False,
     _startup: bool = False,
+    start_path: str = "FULL",
 ) -> dict[str, Any]:
     from auto_update import installation_root, assert_registration_storage
     from writer_session_fence import onboarding_lifecycle_context
@@ -1162,6 +1335,7 @@ def onboard_current_user(
     )
     report: dict[str, Any] = {
         "report_version": ONBOARDING_REPORT_VERSION,
+        "start_path": start_path,
         "status": "UNKNOWN",
         "action": "UNKNOWN",
         "captured_at": _now(),
@@ -1250,6 +1424,8 @@ def onboard_current_user(
             credential_loader=credential_loader, credential_input=credential_input,
         )
         report["initial_state"] = state
+        if state["status"] in {"ABSENT", "ABSENT_RETRYABLE"}:
+            report["start_path"] = "FIRST_RUN"
         require_registration_recovery(state)
         if state["status"] == "READY" and tls_ca_source:
             from tools.install_logistics_runtime_profile import (
@@ -1435,8 +1611,17 @@ def onboard_current_user(
         if defer_canonical_relay_start or defer_machine_worker_relay_start:
             report["relay_start"] = {"status": "DEFERRED_WORKER_SESSION" if defer_machine_worker_relay_start else "DEFERRED_CANONICAL_INSTALL"}
         else:
-            report["relay_start"] = dict(relay_launcher(paths.app_root))
+            from startup_send_gate import read_startup_send_hold
+            if relay_launcher is reuse_or_start_user_relay_process and (
+                (_startup and start_path != "FAST_WINDOW_FIRST")
+                or read_startup_send_hold(paths.direct_sync_root) is not None
+            ):
+                report["relay_start"] = dict(relay_launcher(paths.app_root, allow_recent_reuse=False))
+            else:
+                report["relay_start"] = dict(relay_launcher(paths.app_root))
         relay_start_status = str(report["relay_start"].get("status") or "")
+        report["existing_relay_reused"] = report["relay_start"].get("existing_relay_reused") is True
+        report["fast_path"] = report["relay_start"].get("fast_path") is True
         if relay_start_status in {"", "UNKNOWN"}:
             raise CurrentUserOnboardingError(
                 "current-user relay launch result is UNKNOWN",

@@ -16,9 +16,9 @@ PowerShell lifecycle 관측·고정 helper·새 SYSTEM 로그온 action과 옛 �
 
 유효한 대상·inventory를 확인한 뒤에만 ProgramData 설치 감사 자리 아래 관리자 진단용 임시 폴더를 만든다. 설치기 프로세스와 자식의 임시 경로를 그 폴더로 지정하므로 실패 진단도 사용자 프로필에 쓰지 않는다. 영구 환경 설정은 바꾸지 않는다. 고정 current에서 첫 시작할 때는 active가 가리키는 versions의 manifest와 PENDING의 commit·판을 대조한다.
 
-키트의 새 관리자 가지가 상승한 canonical에 `-WorkerAccount <대상 SID 또는 DOMAIN\이름> -WorkerSurveyInventory <대상 작업자 세션의 READY inventory JSON 절대 경로>`를 넘긴다. 대상은 상승 호출자와 같은 SID도 받으며 ProfileList 경로와 inventory의 경로가 일치해야 한다. 누락/모호/불일치/파일·JSON 오류는 설치와 쓰기 0, 공개 실패 한 줄이다. 키트 없이 기존 인수로 직접 SSH 호출하는 꼴은 여전히 설치를 거절한다.
+키트의 새 관리자 가지가 상승한 canonical에 `-WorkerAccount <대상 SID 또는 DOMAIN\이름> -WorkerSurveyInventory <대상 작업자 세션의 READY inventory JSON 절대 경로>`를 넘긴다. 대상은 상승 호출자와 같은 SID도 받으며 ProfileList 경로와 inventory의 경로가 일치해야 한다. 누락/모호/불일치/파일·JSON 오류는 설치와 쓰기 0, 공개 실패 한 줄이다. 작업자 인수를 생략한 상승 SSH 호출은 안정된 활성 콘솔 작업자를 읽기 전용으로 확인해 기계 배치 대상으로 삼는다. 같은 세션·같은 SID의 상승 콘솔 호출은 기존 설치 길을 사용한다.
 
-같은 SID의 상승 SSH 호출은 기계 몫 뒤 기존 onboarding을 `--defer-machine-worker-relay-start`로 실행해 자기 자료·등록·Run만 준비한다. relay·화면은 첫 일반 작업자 세션/다음 로그온에서 시작하며 그때까지 보호 PENDING과 미완료 상태를 유지한다. 중간 실패는 공용 링크·PENDING의 원래 없음/원 바이트를 복원하고 원 실패를 보존한다.
+상승 SSH 또는 Session 0의 기계 설치 호출은 작업자와 같은 SID여도 자기 자료·등록·HKCU Run·개인 바로 가기 준비를 첫 일반 작업자 시작까지 미룬다. 기계 배치와 공용 바로 가기 뒤 `PASS_MACHINE_WORKER_PENDING`을 남기며 보호 PENDING과 미완료 상태를 유지한다. 첫 일반 세션의 기존 onboarding이 등록·Run·relay와 완료 확인을 수행한다. 중간 실패는 공용 링크·PENDING의 원래 없음/원 바이트를 복원하고 원 실패를 보존한다.
 
 관리자 성공은 `PASS_MACHINE_WORKER_PENDING`과 「작업자 준비 대기」다. ProgramData의 `KMTech\Label_Match\install-audit`에는 기존 설치 감사 schema와 code/startup preimage 참조를 남긴다. 공용 프로그램 메뉴의 `KMTech 포장.lnk`는 고정 `current/runtime/pythonw.exe -I -B "current/app/main.py"`를 가리킨다. 다른 대상의 동명 바로가기는 덮어쓰지 않는다. Legacy-Survey의 `Label_Match.exe` 대상 비교에는 새 링크가 옛 후보로 잡히지 않는다.
 
@@ -34,7 +34,7 @@ writer 선언은 `python -B tools/refresh_admin_worker_declarations.py`, 확인�
 
 <a id="onboarding-writer-admission"></a>
 
-portable GUI는 매 시작에 onboarding을 실행한다. relay가 아직 없거나 오래된 상태를 갱신하는 동안 onboarding이 writer admission을 쥔 채 생존 증명을 기다리지 않는다. lifecycle Verify/Observe 검증은 onboarding 호출당 한 번 onboarding·부모 lease를 내려놓고 수행한다. 그 호출의 thread-local 검증 결과를 각 짧은 admission에서 digest·delegation만으로 재확인하며, policy·active·transition 바이트나 delegation이 바뀌면 `WRITER_LIFECYCLE_CHANGED`로 그 쓰기를 거절한다. READY·실패 보고와 stop 표지는 보호된 쓰기로 유지한다. 옛 예약 작업 은퇴·G 기록 묶음·fixed helper 자신의 admission은 코디 승인에 따라 기존 경계를 유지하고 측정 P2로 남긴다. 실제 Windows mutex/relay 자식의 지연 회귀는 headless 범위이며 새 PC 설치·첫 GUI·로그온 직후 GUI·실제 전송 수용은 랩에서 따로 확인한다.
+portable GUI는 매 시작에 onboarding을 실행한다. relay가 아직 없거나 오래된 상태를 갱신하는 동안 onboarding이 writer admission을 쥔 채 생존 증명을 기다리지 않는다. lifecycle Verify/Observe 검증은 onboarding 호출당 한 번 onboarding·부모 lease를 내려놓고 수행한다. 그 호출의 thread-local 검증 결과를 각 짧은 admission에서 digest·delegation만으로 재확인하며, policy·active·transition 바이트나 delegation이 바뀌면 `WRITER_LIFECYCLE_CHANGED`로 그 쓰기를 거절한다. READY·실패 보고와 stop 표지는 보호된 쓰기로 유지한다. 옛 예약 작업 은퇴·G 기록 묶음·fixed helper 자신의 admission은 코디 승인에 따라 기존 경계를 유지하고 측정 P2로 남긴다. 다만 프로세스 관측(`process_snapshot`, helper `Observe`)은 상태를 바꾸지 않으므로 writer admission 없이 실행한다. relay는 바퀴 내내 admission을 쥐므로, 두 번째 시작은 같은 판·같은 SID·relay 역할·보통 사용자·신선한 상태가 모두 맞는 살아 있는 relay를 시작 probe 전에 admission 없이 재사용한다(`reuse_or_start_user_relay_process`); 하나라도 어긋나면 기존 guarded 시작으로 간다. 시작 때 onboarding 거절은 startup-trace에 예외 종류·`reason_code`·`cause_code`만 남긴다(메시지·경로 값 없음). 실제 Windows mutex/relay 자식의 지연 회귀는 headless 범위이며 새 PC 설치·첫 GUI·로그온 직후 GUI·실제 전송 수용은 랩에서 따로 확인한다.
 
 종료 증명 30초는 CIM 소유 조회·자손 열거·종료 직전 부모 사슬 재확인·종료 대기·survivor 조회를 모두 포함한다. 남은 시간 안의 관찰만 사용하며 조회가 멈추면 같은 프로세스 runspace의 취소만 요청하고 즉시 미증명으로 반환한다. 이때 자식 종료·코드 복원은 추가 실행하지 않는다. 양 엔진의 35초 관찰 지연 및 정상 종료 회귀, 142/538·stock 검증 근거는 [sub-404 보고서](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-404/REPORT.md)에 기록한다. 실제 보호 설치·등록·전체 복원은 별도 랩 수용 범위다.
 
@@ -1394,8 +1394,23 @@ GUI worker·로그 writer 정리 뒤와 relay lease 해제 직전에 기존 DB�
 
 2026-10-12 flow 후속 C: 정상 종료 drain·join이 60초를 넘으면 「종료가 끝나지 않았습니다. 창을 그대로 두고 관리자에게 알리세요.」를 한 번 표시하고 계속 기다린다. 기존 지연 표시와 같은 안내를 중복하지 않는다. 강제 종료·자료 쓰기는 추가하지 않으며, 생성 선언·pin 갱신을 제외한 제품 변경은 +7/-5줄로 15줄 안이다.
 
+<a id="window-first-start"></a>
+### 정상 PC의 창 먼저 시작과 보내기 확인
+
+두 번째 정상 시작은 단일 GUI 소유권을 얻은 뒤 보내기 보류를 기록하고 주 창을 먼저 열어 「서버 보내기 확인 중」을 표시한다. 이미 창이 있을 때 바로 가기를 다시 눌러도 기존 창의 보내기를 새로 멈추지 않는다. 스캔·완료·저장은 계속되며 GUI·relay DirectSync와 포장 생성·취소·교환·현품표 복구·PIN·이름 등록의 새 요청은 함께 기다린다. 대기 건은 로컬에 남고 동기 작업은 「잠시 뒤 다시」를 안내한다. PIN 보류는 「이 건만 보류 — 틀린 횟수로 세지 않음」을 덧붙이며 서버 요청을 보내지 않는다. 확인 성공 뒤 자동으로 전송을 잇는다. 실패하면 「서버 보내기가 멈췄습니다. 앱을 껐다 다시 켜 주세요(계속되면 관리자에게)」와 기존 시작 거절 코드를 남기고 자료·대기열·보류 표식을 보존한다. 오래 걸리는 확인도 같은 보류를 유지한다.
+
+같은 하단의 「다시 확인」을 누르면 배경에서 전체 보내기 확인을 한 번 더 한다. 확인 중 단추는 비활성화되며 여러 번 눌러도 한 번만 확인한다. 성공하면 같은 보류 표식을 해제하고 대기 송신을 잇는다. 실패하면 보내기는 계속 보류하며 스캔·로컬 저장을 유지한다. 앱을 닫으면 relay도 기다리고, 다시 켠 앱의 FULL 확인과 단일 GUI 입장이 성공하면 보류를 해제한다.
+
+창 뒤 품목 확인도 FULL의 과도기 오프라인 시작·미확인 표시·재시도를 따른다. 서버가 끊기고 검증된 중앙 캐시가 없으면 과도기 허용 시 설치 품목 목록으로 시작하고, 허용이 없으면 같은 원본으로 다시 확인할 수 있다.
+
+GUI가 종료되거나 PID가 다른 프로세스로 재사용되어도 relay는 보내기를 계속하지 않는다. 다음 정상 앱 시작이 FULL 확인을 통과하고 단일 GUI로 입장하면 그 시작이 읽은 동일 보류 표식을 해제한다. 지원 확인은 onboarding/startup trace 최상위 start_path(FAST_WINDOW_FIRST/FULL/FIRST_RUN), relay_start.status, existing_relay_reused, fast_path로 한다. 보류 표식은 수동 삭제하지 않는다. relay 자식의 쓰기 허가 시간 초과는 DEFERRED와 WRITER_GATE_TIMEOUT으로 남으며 다음 주기에 재시도한다.
+
+현장 HDD의 주 창 20초 목표·실제 스캐너/상태 줄·서버 재전송은 현장 PC 검증 대상이다. 소스의 좁은 headless 회귀를 실제 화면·설치 수용으로 대신하지 않는다.
+
 <a id="startup-check"></a>
 ## 읽기 전용 시작 확인
+
+상주 relay가 있는 두 번째 시작은 90초 이내 상태에 현재 판·운영 계정·일반 사용자 정보까지 맞으면 바로 창을 연다. 기존 상태에 해당 칸이 없거나 업데이트 시험 중이면 기존 시작 확인을 따른다. PID의 실제 신원 확인은 창이 보인 뒤 배경에서 한 번 하고, 다르면 기존 「이 PC 는 지금 새 프로그램을 열 수 없습니다」 안내와 SETUP_FAILED/FIRST_RUN_SETUP_REQUIRED를 기록한다. 이 확인은 자료 저장·relay 종료·담장 변경을 하지 않는다. 실제 HDD 시작 시간과 창 뒤 안내는 랩/현장 확인 대상으로 남는다.
 
 작업자 계정에서 `<설치 루트>\runtime\python.exe -I -B <설치 루트>\app\startup_check.py --json`을 실행한다. 표준 출력 JSON 한 줄과 종료 코드 0·10·20으로 구별한다. 못 읽음이나 상한 초과는 UNKNOWN이며 READY로 바꾸지 않는다. 실행 목표는 HDD 10초 이내다. 큰 runtime 파일을 재해시하지 않고 설치 inventory·작은 시작 파일의 고정 hash를 대조한다. 전체 설치본 무결성 검사와 실제 GUI 건강 확인은 기존 지원 관문 몫이다.
 

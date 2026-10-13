@@ -211,6 +211,7 @@ if($result -cne 'BOUND'){throw 'Worker target was not accepted'}
     "same-admin", "ordinary-arguments", "ordinary-default", "ordinary-empty-arguments", "unresolved-account", "absent-profile", "session-zero-not-elevated",
 ])
 def test_worker_inventory_admission_precedes_every_write(tmp_path, engine, case):
+    # Elevated callers sharing the worker SID defer profile setup to the ordinary session.
     profile = tmp_path / "worker"
     inventory = tmp_path / "inventory.json"
     payload = {"status": "READY", "target_sid": "S-1-5-21-111-222-333-1001",
@@ -251,7 +252,7 @@ if($case -cin @('sid','account','session-zero','same-admin')){
  if($null -ne $failure){throw $failure}
  if($worker.sid -cne $sid -or $worker.inventory_sha256 -cne $env:LM_ADMIN_INVENTORY_SHA){throw 'Worker inventory binding lost'}
  if($worker.local_app_data -cne (Join-Path $env:LM_ADMIN_PROFILE 'AppData\Local')){throw 'Profile differs'}
- if($worker.caller_is_worker -ne ($case -ceq 'same-admin')){throw 'Caller worker identity differs'}
+ if($worker.caller_is_worker -ne $false){throw 'Caller worker identity differs'}
 }elseif($case -ceq 'ordinary-default'){
  if($null -ne $failure -or $null -ne $worker){throw 'Ordinary entry changed'}
 }else{
@@ -271,6 +272,7 @@ if($case -cin @('sid','account','session-zero','same-admin')){
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 @pytest.mark.parametrize("case", ["same-console", "ssh-same", "ssh-other", "no-console", "ambiguous", "changed", "invalid-profile", "test-layout", "plan-only", "explicit-empty"])
 def test_implicit_admin_entry_binds_one_stable_console_worker(tmp_path, engine, case):
+    # Elevated callers sharing the worker SID defer profile setup to the ordinary session.
     result = run_functions(tmp_path, INSTALLER,
         ["ByteSha", "Get-LabelConsoleWorker", "Resolve-LabelMachineWorker", "Assert-LabelMachineEvidencePath"], r'''
 $case=$env:LM_CONSOLE_CASE
@@ -304,7 +306,7 @@ if($case -in @('same-console','test-layout','plan-only')){
 }elseif($case -in @('ssh-same','ssh-other')){
  if($null -ne $failure -or $worker.sid -cne $workerSid -or $worker.target_source -cne 'ACTIVE_CONSOLE' -or
     $worker.profile_root -cne $env:LM_CONSOLE_PROFILE -or $worker.inventory_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-    $worker.caller_is_worker -ne ($case -ceq 'ssh-same') -or $script:observations -ne 2){throw 'Implicit worker binding differs'}
+    $worker.caller_is_worker -ne $false -or $script:observations -ne 2){throw 'Implicit worker binding differs'}
 }else{
  if($null -eq $failure -or $failure.Exception.Data['worker_pending_failure'] -ne $true -or $null -ne $worker){throw 'Ambiguous worker was accepted'}
 }
@@ -720,7 +722,7 @@ def test_machine_install_uses_pinned_helper_and_never_writes_profiles(tmp_path, 
     profile_members = {name: {p.relative_to(tmp_path / name) for p in (tmp_path / name).rglob("*")}
                        for name in ("worker", "admin", "other", "legacy")}
     originals = {p: p.read_bytes() for p in tmp_path.rglob("*.dat")}
-    result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "Assert-LabelMachineEvidencePath", "Save", "Save-LabelMachineMetadata", "ByteSha", "Same"], r'''
+    result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "New-LabelMachineWorkerPendingMarker", "Assert-LabelMachineEvidencePath", "Save", "Save-LabelMachineMetadata", "ByteSha", "Same"], r'''
 $testMode=$true
 $program=Join-Path $env:LM_MACHINE_ROOT 'program';$env:PROGRAMDATA=$program
 [void][IO.Directory]::CreateDirectory($program)
@@ -1141,3 +1143,141 @@ if(-not $refused){throw 'Next survey accepted portable shortcut as legacy'}
 ''', engine=engine, values={"LM_KIT_SURVEY": str(survey), "LM_SURVEY_ROOT": str(tmp_path)})
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "PASS"
+
+
+PENDING_ORIGIN = "https://pending-origin.test:8443"
+PENDING_FIELDS = ["schema", "install_id", "target_sid", "source_commit", "version", "installed_at", "inventory_sha256"]
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+def test_machine_pending_marker_carries_only_an_explicit_server_origin(tmp_path, engine):
+    result = run_functions(tmp_path, INSTALLER, ["New-LabelMachineWorkerPendingMarker"], r"""
+$worker=[pscustomobject]@{sid='worker-sid-fixture';inventory_sha256=('3'*64)}
+$manifest=[pscustomobject]@{source_commit=('a'*40);version='v2.0.99'}
+foreach($origin in @('', $env:LM_PENDING_ORIGIN)){
+ $marker=New-LabelMachineWorkerPendingMarker 'install-id-fixture' $worker $manifest $origin
+ [Console]::Out.WriteLine(($marker | ConvertTo-Json -Compress))
+}
+""", engine=engine, values={"LM_PENDING_ORIGIN": PENDING_ORIGIN})
+    assert result.returncode == 0, result.stderr
+    without, carried = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert list(without) == PENDING_FIELDS
+    assert list(carried) == PENDING_FIELDS + ["server_base_url"]
+    assert carried["server_base_url"] == PENDING_ORIGIN
+    assert without["schema"] == carried["schema"] == "label-match-machine-worker-pending-v1"
+    # The machine install passes the ServerBaseUrlOrigin result, '' when -ServerBaseUrl is absent.
+    text = INSTALLER.read_text(encoding="utf-8-sig")
+    assert text.count("New-LabelMachineWorkerPendingMarker $run $Worker $SourceManifest $serverBaseUrl") == 1
+    assert text.count("$serverBaseUrl = ServerBaseUrlOrigin $ServerBaseUrl") == 1
+
+
+def _write_pending_origin(marker, payload, origin):
+    payload["server_base_url"] = origin
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize("origin", [None, "https://pending-origin.test", PENDING_ORIGIN, "HTTPS://Pending-Origin.test:65535"])
+def test_pending_marker_server_origin_reaches_first_run(pending_install, origin):
+    import current_user_onboarding as onboarding
+    root, marker, payload, store, writes = pending_install
+    if origin is not None:
+        _write_pending_origin(marker, payload, origin)
+    pending = onboarding.validate_pending_worker_install(root)
+    assert pending.get("server_base_url") == origin
+    assert writes == [] and store == {}
+
+
+@pytest.mark.parametrize("origin", [
+    "http://pending-origin.test", "https://pending-origin.test/path", "https://user@pending-origin.test",
+    "https://pending-origin.test?x=1", "https://pending-origin.test#x", "https://pending-origin.test/",
+    "https://pending-origin.test:0", "https://pending-origin.test:65536", " https://pending-origin.test",
+    "https://pending-origin.test\n", "https://pending_origin.test", "", 443, None,
+])
+def test_invalid_pending_server_origin_refuses_without_production_fallback(pending_install, monkeypatch, origin):
+    import current_user_onboarding as onboarding
+    from contextlib import nullcontext
+    import writer_session_fence
+    root, marker, payload, store, writes = pending_install
+    _write_pending_origin(marker, payload, origin)
+    with pytest.raises(onboarding.CurrentUserOnboardingError) as caught:
+        onboarding.validate_pending_worker_install(root)
+    assert caught.value.cause_code == "PENDING_WORKER_INSTALL_INVALID"
+    monkeypatch.setattr(writer_session_fence, "_onboarding_lifecycle_scope",
+                        lambda _root, *, recheck=False: nullcontext())
+    monkeypatch.setattr(onboarding, "prepare_current_user_data_open", lambda *_a, **_k: pytest.fail("invalid origin opened user state"))
+    with pytest.raises(onboarding.CurrentUserOnboardingError):
+        onboarding.onboard_current_user(root, registration_runner=lambda _paths: pytest.fail("invalid origin registered"))
+    assert writes == [] and store == {}
+
+
+def _label_match_main(tmp_path, monkeypatch, pending):
+    import ast
+    import os
+    import sys
+    import auto_update
+    import startup_observation
+    from current_user_onboarding import CurrentUserOnboardingError, ONBOARDING_EXIT_CODE
+    from label_data_generation import DataGenerationError
+    from writer_session_fence import WriterFenceError
+    monkeypatch.setattr(auto_update, "startup_gate", lambda *_a, **_k: None)
+    monkeypatch.setattr(startup_observation, "begin_startup", lambda *_a, **_k: None)
+    source = Path(__file__).parents[1] / "Label_Match.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    selected = {"main", "_first_run_server_base_url"}
+    functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in selected]
+    assert len(functions) == len(selected)
+    onboarded, reports = [], []
+
+    def validate(_root):
+        if isinstance(pending, Exception):
+            raise pending
+        return pending
+
+    namespace = {
+        "Path": Path, "__file__": str(source), "os": os, "sys": sys,
+        "WriterFenceError": WriterFenceError, "CurrentUserOnboardingError": CurrentUserOnboardingError,
+        "DataGenerationError": DataGenerationError, "ONBOARDING_EXIT_CODE": ONBOARDING_EXIT_CODE,
+        "release_identity": lambda _root: {},
+        "dispatch_product_mode": lambda args: None,
+        "verify_factory_contract_startup": lambda: None,
+        "validate_pending_worker_install": validate,
+        "check_user_data_open": lambda root: None,
+        "_label_match_startup_trace": lambda event, **kw: None,
+        "_first_run_onboarding_enabled": lambda: True,
+        "_label_match_runtime_app_root": lambda: tmp_path,
+        "onboard_current_user": lambda root, **kw: onboarded.append(kw["server_base_url"]) or {},
+        "requires_bootstrap_integrity": lambda root: True,
+        "LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV": "LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL",
+        "LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL": "https://product-default.test",
+        "_show_first_run_onboarding_error": reports.append,
+        "_default_label_match_settings_path": lambda: tmp_path / "settings.json",
+        "resolve_data_scope": lambda **kw: str(tmp_path),
+        "resource_path": lambda path: path,
+        "run_guarded_entrypoint": lambda *_a, **_k: 0,
+        "_run_label_match_application": lambda: None,
+    }
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), "exec"), namespace)
+    return namespace["main"]([]), onboarded, reports
+
+
+@pytest.mark.parametrize("case", ["marker", "environment", "absent", "completed", "invalid"])
+def test_gui_first_run_uses_environment_then_marker_then_default(tmp_path, monkeypatch, case):
+    from current_user_onboarding import CurrentUserOnboardingError, ONBOARDING_EXIT_CODE
+    monkeypatch.delenv("LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL", raising=False)
+    pending = {"schema": "label-match-machine-worker-pending-v1", "server_base_url": PENDING_ORIGIN}
+    if case == "environment":
+        monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL", " https://environment-origin.test ")
+    elif case == "absent":
+        pending.pop("server_base_url")
+    elif case == "completed":
+        pending = None
+    elif case == "invalid":
+        pending = CurrentUserOnboardingError("invalid", report_path=tmp_path / "worker-pending.json",
+                                             cause_code="PENDING_WORKER_INSTALL_INVALID")
+    code, onboarded, reports = _label_match_main(tmp_path, monkeypatch, pending)
+    expected = {"marker": [PENDING_ORIGIN], "environment": ["https://environment-origin.test"],
+                "absent": ["https://product-default.test"], "completed": ["https://product-default.test"],
+                "invalid": []}[case]
+    assert onboarded == expected
+    assert code == (ONBOARDING_EXIT_CODE if case == "invalid" else 0)
+    assert [r.cause_code for r in reports] == (["PENDING_WORKER_INSTALL_INVALID"] if case == "invalid" else [])

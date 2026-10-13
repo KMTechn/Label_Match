@@ -11,6 +11,7 @@ import io
 import json
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -421,6 +422,28 @@ def _write_update_key_config(app_root: Path, value: str) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+# Installer/removal pins that name a packet file by path in the current code.
+# Each (pin name, file holding the pin, pattern, packet file) pair mirrors a
+# runtime comparison; a stale pin would make that installed path refuse.
+PACKET_FILE_PINS = (
+    ("standalone removal diagnostic tools/failure_redaction.ps1", LEGACY_INSTALLER_FILENAME,
+     r"'tools/failure_redaction\.ps1' = '([0-9a-f]{64})'", "tools/failure_redaction.ps1"),
+    ("standalone removal diagnostic tools/failure_redaction_rules.json", LEGACY_INSTALLER_FILENAME,
+     r"'tools/failure_redaction_rules\.json' = '([0-9a-f]{64})'", "tools/failure_redaction_rules.json"),
+    ("canonical installer shared manifest", CANONICAL_INSTALLER_FILENAME,
+     r"\$expectedManifestSha = '([0-9a-f]{64})'", "app/kmtech_shared.manifest.json"),
+    ("bootstrap integrity shared manifest", BOOTSTRAP_INTEGRITY_HELPER.as_posix(),
+     r"\$expectedManifestSha = '([0-9a-f]{64})'", "app/kmtech_shared.manifest.json"),
+)
+
+
+def _assert_packet_file_pins(output: Path) -> None:
+    for name, holder, pattern, target in PACKET_FILE_PINS:
+        pins = re.findall(pattern, (output / holder).read_text(encoding="utf-8-sig"))
+        if len(pins) != 1 or pins[0] != _sha256(output / target):
+            raise PortableBuildError("packet file pin differs from packet bytes: " + name)
+
+
 def _tree_metrics(root: Path) -> tuple[int, int]:
     files = [path for path in root.rglob("*") if path.is_file()]
     return len(files), sum(path.stat().st_size for path in files)
@@ -627,6 +650,7 @@ def build(
                 + ", ".join(forbidden_roots)
             )
         _assert_portable_import_closure(output, repo_root, tool_sources)
+        _assert_packet_file_pins(output)
         if not (app_root / DATA_GENERATION_POWERSHELL_LEAF).is_file():
             raise PortableBuildError("shared data-generation PowerShell leaf is absent")
         file_count, byte_count = _tree_metrics(output)

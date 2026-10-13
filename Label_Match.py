@@ -1427,6 +1427,10 @@ def _label_match_run_session_direct_sync_once(
     reason="TRAY_COMPLETE",
     deadline_monotonic=None,
 ):
+    from startup_send_gate import startup_send_deferred
+    deferred = startup_send_deferred(context.get("program_data_root", ""))
+    if deferred:
+        return deferred
     if not _label_match_session_sync_trigger_enabled():
         return {"status": "SKIPPED", "reason": "session sync trigger disabled"}
     try:
@@ -2003,6 +2007,25 @@ def _label_match_transition_reason(error):
         or (head if re.fullmatch(r"[A-Z][A-Z0-9_]{1,63}", head) else "")
         or "PACKAGE_CENTRAL_BLOCKED"
     )
+
+
+def _phs_exchange_failure(error):
+    cause, seen = error, set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        code = str(getattr(cause, "code", ""))
+        if code.startswith("STARTUP_VERIFICATION_"):
+            return Failure.from_exception(error, category="transient", commit_state="unknown",
+                retryable=True, safe_operator_code=code)
+        cause = cause.__cause__ or cause.__context__
+    return Failure.from_exception(error, category="conflict_review", commit_state="unknown",
+        retryable=None, safe_operator_code="F5_EXCHANGE_REVIEW")
+
+
+def _startup_send_wait_message(error, fallback):
+    if str(getattr(error, "code", "")).startswith("STARTUP_VERIFICATION_"):
+        return "서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요."
+    return fallback
 
 
 class _TransitionPreflightRefusal:
@@ -4980,7 +5003,8 @@ class Label_Match(tk.Tk):
     def _workflow_final_label_position(self):
         return self.FINAL_LABEL_SCAN_POSITION
 
-    def __init__(self, run_tests=False):
+    def __init__(self, run_tests=False, *, startup_report=None):
+        self._initial_load_startup_report = startup_report
         _label_match_startup_trace("app_init_before_tk", run_tests=run_tests)
         # Resolve/decrypt the protected machine profile before Tcl, but let the
         # durable outbox own network retries so recovery stays available while
@@ -5268,6 +5292,7 @@ class Label_Match(tk.Tk):
         self.initial_load_queue = queue.Queue()
         self._initial_load_thread = threading.Thread(
             target=self._async_initial_load,
+            args=(startup_report,),
             name="label-match-initial-load",
             daemon=True,
         )
@@ -6503,9 +6528,20 @@ class Label_Match(tk.Tk):
         except (TclError, AttributeError):
             return False
 
-    def _async_initial_load(self):
+    def _async_initial_load(self, startup_report=None):
         _label_match_startup_trace("async_initial_load_start")
         try:
+            catalog_unconfirmed = False
+            notices = ()
+            if startup_report is not None:
+                startup_report["window_visible"].wait()
+                try:
+                    _, catalog_unconfirmed = _prepare_startup_catalog_attempt()
+                except ItemCatalogSyncError as error:
+                    self.initial_load_queue.put({"catalog_error": error})
+                    return
+                notices = tuple(_STARTUP_WORKFLOW_NOTICES)
+                _STARTUP_WORKFLOW_NOTICES.clear()
             self._reconcile_package_cancellation_local_events()
             replacement_waiting_recovery_failed = False
             try:
@@ -6522,6 +6558,8 @@ class Label_Match(tk.Tk):
             items_data = self._load_items_data()
             loaded_data = {
                 "items": items_data,
+                "catalog_unconfirmed": catalog_unconfirmed,
+                "startup_workflow_notices": notices,
                 "replacement_waiting_recovery_failed": (
                     replacement_waiting_recovery_failed
                 ),
@@ -6539,6 +6577,19 @@ class Label_Match(tk.Tk):
         try:
             result = self.initial_load_queue.get_nowait()
             _label_match_startup_trace("initial_load_queue_result", keys=sorted(result.keys()))
+            if "catalog_error" in result:
+                # Keep Tk dialogs and retries on the owner thread.
+                if not _offer_item_catalog_startup_retry(result["catalog_error"]):
+                    self.hide_loading_overlay()
+                    self.destroy()
+                    return
+                self._initial_load_thread = threading.Thread(
+                    target=self._async_initial_load,
+                    args=(self._initial_load_startup_report,),
+                    name="label-match-initial-load", daemon=True)
+                self._initial_load_thread.start()
+                self._initial_load_after_id = self.after(100, self._process_initial_load_queue)
+                return
             if "error" in result:
                 self.hide_loading_overlay()
                 print(f"초기 로드 기술 진단: {result['error']}")
@@ -6553,6 +6604,11 @@ class Label_Match(tk.Tk):
                 self.destroy()
                 return
             self.items_data = result.get('items', {})
+            if self.__dict__.get("_initial_load_startup_report") is not None:
+                self._item_catalog_unconfirmed = result.get("catalog_unconfirmed", False)
+                self._startup_workflow_notices = (
+                    tuple(self.__dict__.get("_startup_workflow_notices", ()))
+                    + tuple(result.get("startup_workflow_notices", ())))
             self.sound_objects = self._preload_sounds()
             self.hide_loading_overlay()
             self.entry.config(state='normal')
@@ -6877,7 +6933,21 @@ class Label_Match(tk.Tk):
         suffix = words["send_count"].format(count=count) if count is not None else ""
         foreground, weight = "#64748B", "normal"
         background = self.__dict__.get("colors", {}).get("background", "#F8FAFC")
-        if review:
+        startup = self.__dict__.get("_startup_send_state")
+        retry_button = self.__dict__.get("startup_send_retry_button")
+        if retry_button is not None:
+            if startup in {"PENDING", "FAILED"}:
+                retry_button.configure(state="disabled" if startup == "PENDING" or
+                    self.__dict__.get("_startup_send_verification_running", False) else "normal")
+                retry_button.grid()
+            else:
+                retry_button.grid_remove()
+        if startup in {"PENDING", "FAILED"}:
+            long_text = short_text = ("서버 보내기 확인 중" if startup == "PENDING" else
+                                      "서버 보내기가 멈췄습니다. 앱을 껐다 다시 켜 주세요(계속되면 관리자에게)")
+            if startup == "FAILED":
+                foreground, weight = "#b42318", "bold"
+        elif review:
             long_text, short_text = (value.format(review=review) for value in words["review"])
             long_text += suffix
             foreground, weight = "#B91C1C", "bold"
@@ -6913,10 +6983,19 @@ class Label_Match(tk.Tk):
             except (TclError, AttributeError):
                 pass
         available = self.__dict__.get("_logistics_footer_available_width", width - 40)
+        if startup in {"PENDING", "FAILED"} and retry_button is not None:
+            available = max(1, available - retry_button.winfo_reqwidth() - 8)
         text = short_text if width < 1366 or self._text_pixel_width(long_text, font) > available else long_text
         label.configure(text=text, style="Status.TLabel", foreground=foreground,
-                        background=background, font=font, wraplength=0, width=1)
+                        background=background, font=font,
+                        wraplength=max(1, available) if startup == "FAILED" else 0, width=1)
         return None
+
+    def _retry_startup_send_verification(self):
+        report = self.__dict__.get("_startup_send_report")
+        if report is None or self.__dict__.get("_startup_send_state") != "FAILED":
+            return False
+        return _schedule_reused_relay_verification(self, report)
 
     def _render_relay_screen_status(self, state):
         label = self.__dict__.get("relay_screen_status_label")
@@ -17361,10 +17440,10 @@ class Label_Match(tk.Tk):
             self.current_set_info = working
             self._phs_label_guidance_notice = WorkflowNotice(
                 title="현품표 교체 실패",
-                message=(
+                message=_startup_send_wait_message(error, (
                     "현품표 교체를 완료하지 못했습니다. "
                     "관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하거나 관리자에게 문의하세요."
-                ),
+                )),
                 kind="phs_label_exchange",
                 tone="danger",
             )
@@ -17378,13 +17457,7 @@ class Label_Match(tk.Tk):
             finish=finish,
             fail=fail,
             settle=settle,
-            failure_adapter=lambda error: Failure.from_exception(
-                error,
-                category="conflict_review",
-                commit_state="unknown",
-                retryable=None,
-                safe_operator_code="F5_EXCHANGE_REVIEW",
-            ),
+            failure_adapter=_phs_exchange_failure,
         )
         if admission is not None and admission.accepted:
             self._phs_label_exchange_pending = True
@@ -17580,10 +17653,10 @@ class Label_Match(tk.Tk):
             self.current_set_info = working
             messagebox.showerror(
                 "현품표 날짜 교환 실패",
-                (
+                _startup_send_wait_message(error, (
                     "현품표 날짜 교환을 완료하지 못했습니다. "
                     "관리자에게 문의하세요."
-                ),
+                )),
                 parent=self,
             )
             self._render_operator_workbench()
@@ -17596,13 +17669,7 @@ class Label_Match(tk.Tk):
             finish=finish,
             fail=fail,
             settle=settle,
-            failure_adapter=lambda error: Failure.from_exception(
-                error,
-                category="conflict_review",
-                commit_state="unknown",
-                retryable=None,
-                safe_operator_code="F5_EXCHANGE_REVIEW",
-            ),
+            failure_adapter=_phs_exchange_failure,
         )
         if admission is not None and admission.accepted:
             self._phs_label_exchange_pending = True
@@ -22868,11 +22935,18 @@ class Label_Match(tk.Tk):
         self.operator_notebook.bind("<<NotebookTabChanged>>", self._on_logistics_progress_tab_changed, add="+")
         self._render_logistics_progress()
 
+        self.startup_send_footer = ttk.Frame(self.operator_right_pane, style="Card.TFrame")
+        self.startup_send_footer.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        self.startup_send_footer.grid_columnconfigure(0, weight=1)
         self.logistics_connection_label = ttk.Label(
-            self.operator_right_pane, text=LABEL_MATCH_STATUS_LINE_TEXT["checking"][0],
+            self.startup_send_footer, text=LABEL_MATCH_STATUS_LINE_TEXT["checking"][0],
             style="Status.TLabel", width=1, wraplength=0,
         )
-        self.logistics_connection_label.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        self.logistics_connection_label.grid(row=0, column=0, sticky="ew")
+        self.startup_send_retry_button = ttk.Button(self.startup_send_footer, text="다시 확인",
+            command=self._retry_startup_send_verification)
+        self.startup_send_retry_button.grid(row=0, column=1, padx=(8, 0), sticky="e")
+        self.startup_send_retry_button.grid_remove()
         self._logistics_footer_available_width = max(1, panes.right_width - 30)
 
         label_workbench_context.create_status_footer(
@@ -23799,25 +23873,83 @@ def _start_without_confirmed_item_catalog(error):
     return notice
 
 
-def _run_label_match_application():
-    """Start the stateful application after single-instance ownership."""
+def _schedule_reused_relay_verification(app, onboarding_report):
+    """Start the deferred read-only Observe after mapping, and report on the UI thread."""
+    from user_relay import verify_reused_user_relay
 
-    catalog_unconfirmed = False
-    while True:
+    if getattr(app, "_tk_shutdown_requested", False) or getattr(app, "_startup_send_verification_running", False):
+        return False
+    app._startup_send_verification_running = True
+    result_queue = queue.Queue(maxsize=1)
+    window_first = onboarding_report.get("start_path") == "FAST_WINDOW_FIRST"
+    if window_first:
+        app._startup_send_report = onboarding_report
+        app._startup_send_state = "PENDING"
+        app._render_logistics_connection_footer()
+
+    def observe():
         try:
-            active_catalog_path = prepare_startup_item_catalog()
-            break
-        except ItemCatalogSyncError as error:
-            _label_match_startup_trace(
-                "item_catalog_retry_available", cause_code=error.cause_code,
+            if window_first:
+                from current_user_onboarding import complete_window_first_verification
+                complete_window_first_verification(onboarding_report)
+            else:
+                verify_reused_user_relay(onboarding_report["app_root"], onboarding_report["relay_start"])
+            result_queue.put(None)
+        except Exception as error:
+            result_queue.put(error)
+
+    def poll():
+        if getattr(app, "_tk_shutdown_requested", False):
+            return
+        try:
+            error = result_queue.get_nowait()
+        except queue.Empty:
+            app.after(50, poll)
+            return
+        app._startup_send_verification_running = False
+        if error is not None:
+            failure = error if isinstance(error, CurrentUserOnboardingError) else CurrentUserOnboardingError(
+                "Label_Match first-run onboarding failed: relay ownership was not proven",
+                report_path=onboarding_report["report_path"],
             )
-            if offline_catalog_startable(authenticated=False, enrolled=True,
-                                         legacy=legacy_label_transition_enabled()):
-                _start_without_confirmed_item_catalog(error)
-                active_catalog_path, catalog_unconfirmed = None, True
-                break
-            if not _offer_item_catalog_startup_retry(error):
-                raise
+            if failure is not error:
+                failure.__cause__ = error
+            if window_first:
+                app._startup_send_state = "FAILED"
+                app._render_logistics_connection_footer()
+            failure._startup_check_refusal = True
+            _label_match_startup_trace("current_user_onboarding_blocked", **_onboarding_refusal_codes(failure))
+            _show_first_run_onboarding_error(failure)
+        elif window_first:
+            app._startup_send_state = "VERIFIED"
+            app._render_logistics_connection_footer()
+
+    def start():
+        if getattr(app, "_tk_shutdown_requested", False):
+            return
+        if not app.winfo_viewable():
+            app.after(50, start)
+            return
+        if window_first:
+            onboarding_report["window_visible"].set()
+        threading.Thread(target=observe, name="label-match-relay-owner-check", daemon=True).start()
+        app.after(50, poll)
+
+    app.after(0, start)
+    return True
+
+
+def _prepare_startup_catalog_attempt():
+    """Share verified catalog selection and transitional offline startup."""
+    try:
+        active_catalog_path = prepare_startup_item_catalog()
+    except ItemCatalogSyncError as error:
+        _label_match_startup_trace("item_catalog_retry_available", cause_code=error.cause_code)
+        if not offline_catalog_startable(authenticated=False, enrolled=True,
+                                        legacy=legacy_label_transition_enabled()):
+            raise
+        _start_without_confirmed_item_catalog(error)
+        return None, True
     if active_catalog_path is not None:
         catalog_context = get_sanitized_catalog_attempt_context()
         _label_match_startup_trace(
@@ -23838,12 +23970,36 @@ def _run_label_match_application():
             and catalog_context.get("catalog_source") == "VERIFIED_CACHE"
         ):
             _show_item_catalog_cache_warning(catalog_context)
+    return active_catalog_path, False
+
+
+def _run_label_match_application(*, relay_reuse_report=None, verified_hold=None):
+    """Start the stateful application after single-instance ownership."""
+
+    window_first = relay_reuse_report is not None and relay_reuse_report.get("start_path") == "FAST_WINDOW_FIRST"
+    if window_first:
+        from current_user_onboarding import admit_window_first_start
+        admit_window_first_start(relay_reuse_report)
+    if verified_hold is not None:
+        from startup_send_gate import release_startup_send_hold
+        release_startup_send_hold(*verified_hold, verified=True, full=True)
+    catalog_unconfirmed = False
+    while not window_first:
+        try:
+            _, catalog_unconfirmed = _prepare_startup_catalog_attempt()
+            break
+        except ItemCatalogSyncError as error:
+            if not _offer_item_catalog_startup_retry(error):
+                raise
     try:
         from startup_observation import observe_startup
-        observe_startup()
+        if not window_first:
+            observe_startup()
     except Exception:
         pass
-    app = Label_Match()
+    app = Label_Match(startup_report=relay_reuse_report) if window_first else Label_Match()
+    if relay_reuse_report is not None:
+        _schedule_reused_relay_verification(app, relay_reuse_report)
     from auto_update import trial_context, publish_gui_ready, trial_stop_requested, confirmed_trial
     _update_trial = trial_context(Path(__file__).resolve().parent) is not None
     if _update_trial:
@@ -23886,15 +24042,45 @@ def _run_label_match_application():
     return 0
 
 
+def _first_run_server_base_url(pending_worker):
+    # Environment override > machine installer origin (validated marker) > product default.
+    configured = os.environ.get(LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV, "").strip()
+    if configured:
+        return configured
+    if pending_worker and pending_worker.get("server_base_url"):
+        return pending_worker["server_base_url"]
+    return LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL
+
+
+def _onboarding_refusal_codes(exc):
+    # Type names and fixed codes only: never messages, paths or secrets.
+    cause, codes = exc, {"error_type": type(exc).__name__}
+    while cause is not None:
+        code = getattr(cause, "code", None)
+        if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code):
+            codes.update(reason_code=code, reason_type=type(cause).__name__)
+            break
+        cause = cause.__cause__
+    cause_code = getattr(exc, "cause_code", None)
+    if isinstance(cause_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", cause_code):
+        codes["cause_code"] = cause_code
+    return codes
+
+
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     startup_identity, identity_unknown = {}, False
+    relay_reuse_report = None
+    verified_hold = None
+    from current_user_onboarding import try_window_first_start
+    window_first = (try_window_first_start(_label_match_runtime_app_root(), arguments=arguments)
+                    if _first_run_onboarding_enabled() else None)
     try:
         startup_identity = release_identity(_label_match_runtime_app_root())
     except Exception:
         identity_unknown = True  # Existing checks still retry and decide admission.
     from auto_update import startup_gate
-    update_result = startup_gate(Path(__file__).resolve().parent, arguments)
+    update_result = None if window_first is not None else startup_gate(Path(__file__).resolve().parent, arguments)
     if update_result is not None:
         return update_result
     hosted_result = dispatch_product_mode(arguments)
@@ -23907,22 +24093,35 @@ def main(argv=None):
         observe_startup = lambda *args, **kwargs: None
     verify_factory_contract_startup()
     try:
-        validate_pending_worker_install(_label_match_runtime_app_root())
+        pending_worker = validate_pending_worker_install(_label_match_runtime_app_root())
         check_user_data_open(_label_match_runtime_app_root())
         _label_match_startup_trace("main_enter")
         if _first_run_onboarding_enabled():
             app_root = _label_match_runtime_app_root()
             try:
-                onboarding_report = onboard_current_user(
+                if window_first is None:
+                    from startup_send_gate import read_startup_send_hold
+                    from current_user_onboarding import resolve_current_user_onboarding_paths
+                    sync_root = resolve_current_user_onboarding_paths(app_root).direct_sync_root
+                    hold = read_startup_send_hold(sync_root)
+                    if hold is not None:
+                        verified_hold = (sync_root, hold)
+                onboarding_report = window_first if window_first is not None else onboard_current_user(
                     app_root,
-                    server_base_url=os.environ.get(
-                        LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL_ENV,
-                        LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
-                    ).strip()
-                    or LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL,
+                    server_base_url=_first_run_server_base_url(pending_worker),
                     require_bootstrap_integrity=requires_bootstrap_integrity(app_root),
                     _startup=True,
                 )
+                _label_match_startup_trace("startup_path_selected",
+                    start_path=onboarding_report.get("start_path", "FULL"),
+                    relay_start={"status": (onboarding_report.get("relay_start") or {}).get("status", "UNKNOWN")},
+                    existing_relay_reused=(onboarding_report.get("relay_start") or {}).get("existing_relay_reused") is True,
+                    fast_path=(onboarding_report.get("relay_start") or {}).get("fast_path") is True)
+                if (onboarding_report.get("relay_start") or {}).get("fast_path") is True:
+                    relay_reuse_report = window_first if window_first is not None else {
+                        "app_root": app_root, "relay_start": onboarding_report["relay_start"],
+                        "report_path": Path(onboarding_report["direct_sync_root"]) / "status" / "current_user_onboarding.json",
+                    }
                 if (
                     (onboarding_report.get("bootstrap_integrity") or {}).get(
                         "status"
@@ -23932,6 +24131,9 @@ def main(argv=None):
                     _label_match_startup_trace("bootstrap_integrity_absent")
                     _show_bootstrap_integrity_absent_warning()
             except WriterFenceError as exc:
+                _label_match_startup_trace(
+                    "current_user_onboarding_fenced", **_onboarding_refusal_codes(exc)
+                )
                 _show_installation_recovery_required(exc)
                 return ONBOARDING_EXIT_CODE
             except CurrentUserOnboardingError as exc:
@@ -23939,6 +24141,7 @@ def main(argv=None):
                     "current_user_onboarding_blocked",
                     status=exc.status,
                     report_path=str(exc.report_path),
+                    **_onboarding_refusal_codes(exc),
                 )
                 exc._startup_check_refusal = True
                 _show_first_run_onboarding_error(exc)
@@ -23949,7 +24152,8 @@ def main(argv=None):
             settings_template_path=resource_path(os.path.join("config", "app_settings.json")),
         )
         return run_guarded_entrypoint(
-            _run_label_match_application,
+            (_run_label_match_application if relay_reuse_report is None and verified_hold is None else
+             lambda: _run_label_match_application(relay_reuse_report=relay_reuse_report, verified_hold=verified_hold)),
             data_scope=data_scope,
         )
     except WriterFenceError as exc:
