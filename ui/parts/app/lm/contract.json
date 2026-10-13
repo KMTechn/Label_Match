@@ -42,6 +42,7 @@
       "profile": {"type": "string", "description": "셸이 씀('rw' 꼴 받이)"},
       "pedal": {"type": "object", "description": "셸이 씀(포장은 발판 없음)"},
       "journal_uncertain": {"type": "boolean", "description": "셸이 씀"},
+      "events_dropped": {"type": "integer", "minimum": 0, "description": "셸 v3.14가 씀: 담장 거절·실패로 잃은 진단 줄 수"},
       "owner_thread_id": {"type": ["integer", "null"], "description": "셸이 씀"},
       "cache_sizes": {"type": "object", "description": "셸이 씀"},
       "processor_error": {"type": "string", "description": "셸이 씀 — state() 가 예외였을 때 예외 이름"},

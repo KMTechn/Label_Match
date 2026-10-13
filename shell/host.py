@@ -17,6 +17,7 @@ if PACKAGED_SITE.is_dir():
 sys.path.insert(1 if PACKAGED_SITE.is_dir() else 0, str(SHELL))
 
 from bridge import Bridge
+import shell_fileio
 
 SETTINGS = ('AreDevToolsEnabled', 'AreBrowserAcceleratorKeysEnabled',
             'AreDefaultContextMenusEnabled', 'IsZoomControlEnabled', 'IsPinchZoomEnabled',
@@ -443,7 +444,7 @@ class NativeHost:
 
 
 def test_controls(path, host, stop):
-    path.mkdir(parents=True, exist_ok=True)
+    shell_fileio.make_dirs(path, 'test_control')
     seen = set()
     while not stop.wait(0.05):
         for file in sorted(path.glob('cmd-*.json')):
@@ -471,10 +472,7 @@ def test_controls(path, host, stop):
                 ack = {'id': command['id'], 'op': op, 'ok': True, 'result': result}
             except Exception as error:
                 ack = {'id': command['id'], 'op': op, 'ok': False, 'error': type(error).__name__}
-            target = path / f'ack-{ident}.json'
-            temporary = path / f'ack-{ident}.json.tmp'
-            temporary.write_text(json.dumps(ack, ensure_ascii=False), encoding='utf-8')
-            os.replace(temporary, target)
+            shell_fileio.replace_atomic(path / f'ack-{ident}.json', json.dumps(ack, ensure_ascii=False).encode('utf-8'), 'test_control')
             seen.add(file.name)
 
 
@@ -514,20 +512,24 @@ def wait_owner_start(bridge, owner_thread, timeout=None, poll=0.5):
 
 
 def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, processor_factory=None,
-            owner_main=None, browser_preset_name='none', test_control=None, owner_timeout=None, root=None):
+            owner_main=None, browser_preset_name='none', test_control=None, owner_timeout=None, root=None,
+            write_guard=None):
     """App entry (HOST-USE.md). Call on the main thread; returns when the window closes.
     profile 'rw'|'iw' = scan framing; data = this app's shell folder (events/journal/sounds);
     page = the app's index.html (default = shell test page); root = folder served as the local
     http root (default = page's folder) so the page may load ../ shared files below root.
     processor_factory() runs on our owner thread, or owner_main(bridge) runs on a new thread
-    that calls bridge.attach_owner(processor) and then bridge.pump() until it returns False."""
+    that calls bridge.attach_owner(processor) and then bridge.pump() until it returns False.
+    write_guard(op, path, kind) -> context manager around each shell file write (the app's writer fence),
+    installed before the shell writes anything (shell_fileio.set_write_guard); None keeps plain writes."""
+    if write_guard is not None: shell_fileio.set_write_guard(write_guard)
     page_path = Path(page).resolve() if page else SHELL / 'web/index.html'
     root_path = Path(root).resolve() if root else None
     if root_path is not None and root_path not in page_path.parents:
         raise ValueError('page must be inside root')
     data = Path(data).resolve()
     udf = Path(udf or data / 'webview2').resolve()
-    udf.mkdir(parents=True, exist_ok=True)
+    shell_fileio.make_dirs(udf, 'udf')
     bridge = Bridge(data, profile, test_control=bool(test_control), processor_factory=processor_factory,
                     owner='external' if owner_main else 'thread')
     bridge.events.record('py', 'py_start', pid=os.getpid(), argv=sys.argv, profile=profile)

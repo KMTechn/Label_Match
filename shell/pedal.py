@@ -98,5 +98,5 @@ class Pedal:
 
     def close(self):
         self.stop()
-        self._queue.put(None)
+        self._queue.put_nowait(None)
         self._worker.join(2)

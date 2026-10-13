@@ -29,6 +29,7 @@ class Bridge:
         self._test_control = test_control
         self._processor_factory, self._processor, self._external = processor_factory, None, owner == 'external'
         self.owner_thread_id = None
+        # Unbounded in-memory queues: put_nowait never fails and equals put (no file/network write).
         self._tasks, self._pushes = queue.Queue(), queue.Queue()
         self._intake_lock = threading.Lock()
         self._notify = None
@@ -125,14 +126,14 @@ class Bridge:
         if self._exit_requested or self._closed or self._processor is None or not hasattr(self._processor, 'closing'):
             return True
         future = Future()
-        self._tasks.put(('closing', None, future))
+        self._tasks.put_nowait(('closing', None, future))
         try: return future.result(timeout) is not False
         except Exception as error:
             self.events.record(self.src, 'closing_timeout', error=type(error).__name__)
             return True
 
     def push(self, event):
-        self._pushes.put(copy.deepcopy(event))
+        self._pushes.put_nowait(copy.deepcopy(event))
 
     def _publish(self):
         while not self._publisher_stop.is_set():
@@ -156,7 +157,7 @@ class Bridge:
         with self._intake_lock:
             if self._closed:
                 raise RuntimeError('bridge closed')
-            self._tasks.put((op, value, future))
+            self._tasks.put_nowait((op, value, future))
         return future.result()
 
     def scan(self, text, meta):
@@ -172,7 +173,7 @@ class Bridge:
             if type(seq) is int:
                 self._intake_seq = max(self._intake_seq, seq)
             future = Future()
-            self._tasks.put(('scan', (text, captured, arrived, hook), future))
+            self._tasks.put_nowait(('scan', (text, captured, arrived, hook), future))
         return future.result()
 
     def submit_scan(self, text, meta):
@@ -184,14 +185,14 @@ class Bridge:
     def admin(self, name, args=None): return self._call('admin', (name, copy.deepcopy(args)))
     def push_state(self, **extra):
         # Any thread: the snapshot itself is taken on the owner thread.
-        self._tasks.put(('push_state', extra, Future()))
+        self._tasks.put_nowait(('push_state', extra, Future()))
     def ready(self, meta): return self._call('ready', copy.deepcopy(meta))
     def log_batch(self, batch): return self._call('log_batch', copy.deepcopy(batch))
     def f12_physical(self): return self._call('f12_physical')
     def delay_next_scan(self, ms): return self._call('delay', ms)
     def mark_recovery(self):
         # Failure/reload callbacks on the UI thread must never wait for owner I/O.
-        self._tasks.put(('recovery', None, Future()))
+        self._tasks.put_nowait(('recovery', None, Future()))
 
     def _snapshot(self):
         pressed, generation = self.pedal.snapshot()
@@ -199,6 +200,7 @@ class Bridge:
         base = self.journal.state() if self._processor is None else {**self._processor_state(), 'last_seq': self._last_seq}
         return {**base, 'last_request_seq': self._last_seq, 'profile': self.profile,
                 'pedal': {'pressed': pressed, 'generation': generation}, 'journal_uncertain': self._failed,
+                'events_dropped': self.events.dropped,
                 'recovery': self._view_count > 0 or self._recovered_startup or self._recovery_pending,
                 'owner_thread_id': self.owner_thread_id,
                 'cache_sizes': {'journal_recent': len(self.journal.rows), 'scan_results': len(self._completed)}}
@@ -341,8 +343,8 @@ class Bridge:
                    'paths': meta.get('paths', {}), 'n_keys': meta.get('n_keys', 0), 'owner_thread_id': self.owner_thread_id}
             try: self.journal.append(row)
             except Exception:
-                self._failed = True
-                self.events.record(self.src, 'journal_uncertain', seq=seq)
+                # Receipt cache only (app store = record): keep scanning; idempotency stays in _completed.
+                self.events.record(self.src, 'journal_write_failed', seq=seq)
             else: self.events.record(self.src, 'scan', **row)
         if sound: self._play(seq, sound)
         return reply
@@ -476,7 +478,7 @@ class Bridge:
         with self._intake_lock:
             if self._closed: return
             self._closed = True
-            future = Future(); self._tasks.put(('close', None, future))
+            future = Future(); self._tasks.put_nowait(('close', None, future))
         if self._external:
             if threading.get_ident() == self.owner_thread_id: self.pump()
             elif self._initialized.done() and self._initialized.exception() is None:
@@ -487,5 +489,5 @@ class Bridge:
             future.result()
             self._owner.join(2)
         self.pedal.close()
-        self._publisher_stop.set(); self._pushes.put(None)
+        self._publisher_stop.set(); self._pushes.put_nowait(None)
         self._publisher.join(2)

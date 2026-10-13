@@ -1,5 +1,10 @@
 # Label_Match 데이터·통합 계약
 
+<a id="new-screen-shell-write-guard"></a>
+새 화면 입구는 셸 v3.14의 첫 쓰기 전에 `run_app(write_guard=shell_write_guard)`를 넣는다. 셸의 events·journal·sound_cache·udf·test_control 쓰기는 `shell/shell_fileio.py`의 다섯 함수로 모이며, 각각 기존 `writer_admission("shell_fileio")` 안에서만 실행한다. 선언에는 이 위임을 `shell_fileio` 한 source로 기록한다. 허가는 한 번 쓰기 뒤 내려놓으며 화면·스캔·사람 응답·네트워크를 기다리는 동안 쥐지 않는다.
+
+정적 검사는 고정 `shell/SHELL-READY.json`(v3.14, SHA256 `40710032b00a33a8f8628ccf9960fccd2c876e3f141d5a53dff47086b986be08`), 사본 파일 바이트·Python 파일 집합·앱 입구의 담장 설치를 함께 확인한다. 거절된 events는 해당 진단 줄만 잃고 `events_dropped`로 센다. 처리 층 모드의 셸 journal 실패는 앱 저장 결과를 바꾸지 않고 다음 스캔과 최근 seq 중복 응답을 계속한다. 시작 폴더를 만들 수 없으면 기존 셸 계약대로 창 없이 실패한다.
+
 설치기와 배포 helper의 조상·검증 대상 조회 및 패키지 자식 열거는 숨김 속성이 있는 ProgramData·AppData·설치 경로도 검사한다. 읽기 `-Force`는 숨김 항목만 포함하며 reparse·파일 종류·바인딩 거절과 삭제 조건은 유지한다.
 
 작업자 대상 거절은 기존 `PENDING_TARGET_INVALID`·종료 코드 1·공개 JSON 한 줄을 유지하며 `reason`과 `summary`를 덧붙인다. `summary`는 `PENDING_TARGET_INVALID reason=<고정 코드>`이며 계정·SID·경로·예외 원문을 포함하지 않는다. 인수·계정 해석·SID 종류·inventory 경로/파일/해독/바인딩·프로필·콘솔·감사 경로의 까닭을 구분하고 미분류 또는 허용 목록 밖 값은 `UNCLASSIFIED`로 공개한다.

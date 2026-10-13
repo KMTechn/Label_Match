@@ -1,4 +1,4 @@
-"""포장 새 화면 띄우기 — 셸 host(v3.8) run_app 의 owner_main 꼴(HOST-USE §4 나).
+"""포장 새 화면 띄우기 — 셸 host(v3.14) run_app 의 owner_main 꼴(HOST-USE §4 나).
 
 `Label_Match.py --new-screen` 이 main() 의 같은 시작 확인(업데이트 · 한 개만 · 설치 확인)을 거친 뒤 여기로 온다.
 포장 앱(Tk)은 주인 스레드 하나에서 숨긴 채 만들고 돌며(root.after 로 bridge.pump), 보이는 화면은 셸 창(WebView2)이다.
@@ -7,15 +7,25 @@
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
 import sys
 from pathlib import Path
+
+from writer_session_fence import writer_admission
 
 APP_ROOT = Path(__file__).resolve().parent
 SHELL_DIR = APP_ROOT / "shell"
 PARTS = APP_ROOT / "ui" / "parts"  # 화면 꾸러미 꼭대기 = http 뿌리(셸 v3.8 root) — ../frame.js · ../../core 가 닿음
 PAGE = PARTS / "app" / "lm" / "index.html"
 PUMP_MS = 10
+
+
+@contextmanager
+def shell_write_guard(op, path, kind):
+    """셸의 한 번 쓰기만 기존 포장 쓰기 허가 안에서 실행한다."""
+    with writer_admission("shell_fileio"):
+        yield
 
 
 def shell_data_dir():
@@ -78,6 +88,6 @@ def screen_runner(module):
         from host import run_app
 
         return run_app("rw", shell_data_dir(), root=PARTS, page=PAGE, title="포장", owner_main=owner_main_for(module),
-                       pedal=False, browser_preset_name="none")
+                       pedal=False, browser_preset_name="none", write_guard=shell_write_guard)
 
     return run
