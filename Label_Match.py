@@ -16,6 +16,7 @@ import carrier_identity_port as carrier_identity
 import label_history
 import label_completion
 import label_worker_roster
+import label_packing_settings
 import label_transition
 import label_workbench_context
 import label_workbench_history
@@ -1628,22 +1629,43 @@ def _plan_b_dispatch_key(event_type):
     return f"{LABEL_MATCH_SOURCE_SYSTEM}|{LABEL_MATCH_SOURCE_TRANSPORT_OR_DATASET}|{event_type}"
 
 
-def _label_match_barcode_role(scan_position):
+def _label_match_set_top_scan_count(current_set_info):
+    """The top scan count N the set opened with (absent: 4, today's flow)."""
+    return label_packing_settings.set_count(current_set_info)
+
+
+def _label_match_set_total_scan_count(current_set_info):
+    """Master label plus N products; the last position is the final product."""
+    return _label_match_set_top_scan_count(current_set_info) + 1
+
+
+def _label_match_set_product_sample_count(current_set_info):
+    return _label_match_set_top_scan_count(current_set_info) - 1
+
+
+def _label_match_barcode_role(
+    scan_position, final_position=LABEL_MATCH_FINAL_LABEL_SCAN_POSITION
+):
     try:
         position = int(scan_position)
     except Exception:
         return "unknown"
     if position == LABEL_MATCH_MASTER_SCAN_POSITION:
         return "material_master_label"
-    if LABEL_MATCH_MASTER_SCAN_POSITION < position < LABEL_MATCH_FINAL_LABEL_SCAN_POSITION:
+    if LABEL_MATCH_MASTER_SCAN_POSITION < position < final_position:
         return "product"
-    if position == LABEL_MATCH_FINAL_LABEL_SCAN_POSITION:
+    if position == final_position:
         return "final_packaging_label"
     return "unknown"
 
 
-def _label_match_barcode_projection(raw_barcode, parsed_barcode, scan_position):
-    role = _label_match_barcode_role(scan_position)
+def _label_match_barcode_projection(
+    raw_barcode,
+    parsed_barcode,
+    scan_position,
+    final_position=LABEL_MATCH_FINAL_LABEL_SCAN_POSITION,
+):
+    role = _label_match_barcode_role(scan_position, final_position)
     product_barcode = raw_barcode if role == "product" else None
     return {
         "scan_contract_version": LABEL_MATCH_SCAN_CONTRACT_VERSION,
@@ -1880,7 +1902,7 @@ def _label_match_manual_complete_block_reason(current_set_info):
     scan_count = len(current.get("raw") or current.get("parsed") or [])
     if scan_count < 2:
         return "manual_complete_requires_product_scan"
-    if scan_count >= LABEL_MATCH_TOTAL_SCAN_COUNT:
+    if scan_count >= _label_match_set_total_scan_count(current):
         return "manual_complete_only_for_partial_sets"
     if current.get("has_error_or_reset") or current.get("error_count", 0):
         return "manual_complete_blocked_after_error"
@@ -2154,7 +2176,12 @@ def _label_match_operator_item_code(raw_value, parsed_value):
     return match.group(0) if match else ""
 
 
-def _label_match_operator_scan_identifier(raw_value, item_code, scan_position):
+def _label_match_operator_scan_identifier(
+    raw_value,
+    item_code,
+    scan_position,
+    final_position=LABEL_MATCH_FINAL_LABEL_SCAN_POSITION,
+):
     raw_text = str(raw_value or "").strip()
     decoded = (
         _label_match_decode_possible_base64_label(raw_text)
@@ -2188,7 +2215,7 @@ def _label_match_operator_scan_identifier(raw_value, item_code, scan_position):
     )
     priorities = (
         final_priorities
-        if int(scan_position or 0) == LABEL_MATCH_FINAL_LABEL_SCAN_POSITION
+        if int(scan_position or 0) == final_position
         else product_priorities
     )
     for key, label in priorities:
@@ -2213,7 +2240,12 @@ def _label_match_operator_scan_identifier(raw_value, item_code, scan_position):
     return "ID", f"#{fingerprint}"
 
 
-def _label_match_operator_scan_summary(raw_value, parsed_value, scan_position):
+def _label_match_operator_scan_summary(
+    raw_value,
+    parsed_value,
+    scan_position,
+    final_position=LABEL_MATCH_FINAL_LABEL_SCAN_POSITION,
+):
     """Build a concise list value while keeping the accepted raw value elsewhere."""
 
     item_code = _label_match_operator_item_code(raw_value, parsed_value)
@@ -2224,6 +2256,7 @@ def _label_match_operator_scan_summary(raw_value, parsed_value, scan_position):
         raw_value,
         item_code,
         scan_position,
+        final_position,
     )
     base = item_code or "-"
     if not identifier:
@@ -2313,7 +2346,10 @@ def _label_match_apply_sealed_exchange_state(
     current = copy.deepcopy(dict(current_set_info or {}))
     raw = list(current.get("raw") or [])
     parsed = list(current.get("parsed") or [])
-    if not 1 <= len(raw) < LABEL_MATCH_TOTAL_SCAN_COUNT or len(raw) != len(parsed):
+    if (
+        not 1 <= len(raw) < _label_match_set_total_scan_count(current)
+        or len(raw) != len(parsed)
+    ):
         raise PackageLogisticsError(
             "sealed transfer replacement can only apply before CREATE_PACKAGE"
         )
@@ -2356,7 +2392,9 @@ def _label_match_apply_sealed_exchange_state(
     replacement_by_barcode = dict(zip(old_values, new_values, strict=True))
     if not keeps_physical_phs2:
         raw[0] = new_qr
-    for index in range(1, min(len(raw), 4)):
+    for index in range(
+        1, min(len(raw), 1 + _label_match_set_product_sample_count(current))
+    ):
         replacement = replacement_by_barcode.get(
             normalize_exchange_barcode(raw[index])
         )
@@ -2398,19 +2436,24 @@ def _label_match_package_draft(
         current = {**current, "id": current["completion_identity"]}
     raw = list(current.get("raw") or [])
     central_inherit_all = bool(current.get("central_inherit_all"))
+    set_total_scan_count = _label_match_set_total_scan_count(current)
     required_scan_count = (
         LABEL_MATCH_CENTRAL_INHERIT_ALL_SCAN_COUNT
         if central_inherit_all
-        else LABEL_MATCH_TOTAL_SCAN_COUNT
+        else set_total_scan_count
     )
     if current.get("scanner_only"):
-        required_scan_count = len(raw) if current.get("shortage_confirmed") else LABEL_MATCH_TOTAL_SCAN_COUNT
+        required_scan_count = len(raw) if current.get("shortage_confirmed") else set_total_scan_count
     if len(raw) != required_scan_count:
         if central_inherit_all:
             raise PackageLogisticsError(
                 "central INHERIT_ALL packaging requires exactly one PHS2 source scan"
             )
-        raise PackageLogisticsError("authoritative packaging requires the complete five-scan set")
+        raise PackageLogisticsError(
+            "authoritative packaging requires the complete five-scan set"
+            if set_total_scan_count == LABEL_MATCH_TOTAL_SCAN_COUNT
+            else f"authoritative packaging requires the complete {set_total_scan_count}-scan set"
+        )
     transfer = _label_match_parse_sealed_transfer_qr(raw[0])
     configured_mode = os.environ.get(
         LABEL_MATCH_LOGISTICS_MEMBERSHIP_MODE_ENV, "INHERIT_ALL"
@@ -2639,9 +2682,15 @@ def _label_match_package_draft(
             raw[1:]
             if current.get("scanner_only")
             else () if central_inherit_all
-            else raw[1:1 + LABEL_MATCH_PRODUCT_SAMPLE_COUNT]
+            # Legacy QA samples stay within the shared three-sample limit.
+            else raw[1:1 + min(
+                LABEL_MATCH_PRODUCT_SAMPLE_COUNT,
+                _label_match_set_product_sample_count(current),
+            )]
         ),
         scanner_only=bool(current.get("scanner_only")),
+        top_scan_count=_label_match_set_top_scan_count(current),
+        packing_settings_version=label_packing_settings.set_version(current),
         scan_payload=str(current.get("physical_scanned_qr_payload") or raw[0]),
         local_completed_at=str(current.get("local_completed_at") or ""),
         short_confirmed=bool(current.get("shortage_confirmed")),
@@ -3634,11 +3683,13 @@ def _enrich_label_match_event(event_type, details, pc_id):
                 if inspection_trace.get("input_tag_id"):
                     enriched.setdefault("source_session_id", inspection_trace["input_tag_id"])
                 enriched.setdefault("inspection_trace", inspection_trace)
+        final_position = _label_match_set_total_scan_count(enriched)
         barcode_roles = [
             _label_match_barcode_projection(
                 raw_scans[index] if index < len(raw_scans) else "",
                 parsed_scans[index] if index < len(parsed_scans) else "",
                 index + 1,
+                final_position,
             )
             for index in range(max(len(raw_scans), len(parsed_scans)))
         ]
@@ -4854,6 +4905,9 @@ class Label_Match(tk.Tk):
         # In the notice row with a warning sound, never a modal window: a
         # product scanned while the window was open only closed the window.
         title, message = LABEL_TRANSITION_LOCAL_NOTICES[kind]
+        count = self._workflow_top_scan_count()
+        if count != label_packing_settings.DEFAULT_TOP_SCAN_COUNT:
+            message = message.replace("제품 4개", f"제품 {count}개")
         self._phs_label_guidance_notice = WorkflowNotice(
             title=title, message=message, kind="transition_start", tone="warning",
         )
@@ -4996,14 +5050,33 @@ class Label_Match(tk.Tk):
         )
 
     def _operator_workflow_hint_text(self, source=None):
-        return "현품표 1 + 상단 제품 4 · 다섯 번째 스캔에서 자동 완료 · 교환/취소 카드 또는 단추"
+        count = self._workflow_top_scan_count(source)
+        return (
+            f"현품표 1 + 상단 제품 {count} · "
+            f"{label_packing_settings.ordinal_text(count + 1)} 스캔에서 자동 완료 · "
+            "교환/취소 카드 또는 단추"
+        )
 
+    def _packing_settings_state(self):
+        state = self.__dict__.get("_packing_settings")
+        return state if state is not None else label_packing_settings.default_state()
 
-    def _workflow_total_scan_count(self):
-        return self.TOTAL_SCAN_COUNT
+    def _workflow_top_scan_count(self, source=None):
+        """N of the open set; with no open set, N for the next set."""
+        current = (
+            source
+            if isinstance(source, dict)
+            else self.__dict__.get("current_set_info", {}) or {}
+        )
+        if current.get("raw") or current.get("parsed"):
+            return _label_match_set_top_scan_count(current)
+        return self._packing_settings_state().value
 
-    def _workflow_final_label_position(self):
-        return self.FINAL_LABEL_SCAN_POSITION
+    def _workflow_total_scan_count(self, source=None):
+        return self._workflow_top_scan_count(source) + 1
+
+    def _workflow_final_label_position(self, source=None):
+        return self._workflow_top_scan_count(source) + 1
 
     def __init__(self, run_tests=False, *, startup_report=None):
         self._initial_load_startup_report = startup_report
@@ -5140,6 +5213,7 @@ class Label_Match(tk.Tk):
         )
         self.package_logistics_client = startup_package_logistics_client
         self._init_worker_roster()
+        self._init_packing_settings()
         self._logistics_authoritative_required = startup_logistics_required
         self._legacy_label_transition_enabled = legacy_label_transition_enabled()
         self.deferred_intent_capture = None
@@ -5195,6 +5269,7 @@ class Label_Match(tk.Tk):
                 self.package_outbox,
                 self.package_logistics_client,
                 prepare_scanner_delivery=self._prepare_scanner_package_delivery,
+                read_packing_settings_version=self._packing_settings_version_for_resend,
             )
             if self.package_logistics_client is not None
             else None
@@ -6634,6 +6709,7 @@ class Label_Match(tk.Tk):
             self._load_current_set_state()
             self._request_worker_roster_refresh()
             self._poll_worker_roster()
+            self._request_packing_settings_refresh()
             if not self._roster_worker_allowed():
                 self.open_settings_window()
             else:
@@ -7195,6 +7271,124 @@ class Label_Match(tk.Tk):
 
     def _recent_worker_names(self):
         return [entry["name"] for entry in self._worker_history_entries()]
+
+    def _init_packing_settings(self):
+        """Start from this PC's last received top scan count (or 4)."""
+        self._packing_settings_path = os.path.join(
+            os.path.dirname(self.app_settings_path), label_packing_settings.STORE_FILENAME
+        )
+        self._packing_settings = label_packing_settings.state_from_saved(
+            label_packing_settings.load_saved(self._packing_settings_path)
+        )
+        self._packing_settings_queue = queue.Queue()
+        self._packing_settings_thread = None
+        self._packing_settings_pending = False
+        self._packing_settings_poll_after_id = None
+
+    def _request_packing_settings_refresh(self, *, fetch=None):
+        """Read the web setting off the Tk thread (app start, session start).
+
+        Like the worker roster refresh: the network read runs on a daemon
+        thread and only its result is applied on the Tk thread by the poll.
+        """
+        state = self.__dict__
+        if state.get("_tk_shutdown_requested", False) or "_packing_settings_queue" not in state:
+            return False
+        fetch = fetch or state.get("_packing_settings_fetch")
+        if fetch is None:
+            if state.get("run_tests", False) or _label_match_automated_test_mode():
+                return False
+            fetch = label_packing_settings.fetch
+        running = state.get("_packing_settings_thread")
+        if running is not None and running.is_alive():
+            self._packing_settings_pending = True
+            return True
+        self._packing_settings_pending = False
+        results = self._packing_settings_queue
+
+        def read():
+            try:
+                result = dict(fetch())
+                result["fetched_at"] = label_packing_settings.utc_now_text()
+                results.put((result, None))
+            except label_packing_settings.PackingSettingsReadError as exc:
+                results.put((None, exc.code))
+            except Exception:  # noqa: BLE001 - any failure keeps working
+                results.put((None, label_packing_settings.UNAVAILABLE))
+
+        thread = threading.Thread(target=read, name="label-packing-settings", daemon=True)
+        self._packing_settings_thread = thread
+        thread.start()
+        if state.get("_packing_settings_poll_after_id") is None:
+            self._packing_settings_poll_after_id = self.after(100, self._poll_packing_settings)
+        return True
+
+    def _poll_packing_settings(self):
+        self._packing_settings_poll_after_id = None
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return
+        applied = False
+        while True:
+            try:
+                result, error_code = self._packing_settings_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._apply_packing_settings_result(result, error_code)
+            applied = True
+        running = self.__dict__.get("_packing_settings_thread")
+        if running is not None and running.is_alive():
+            self._packing_settings_poll_after_id = self.after(100, self._poll_packing_settings)
+        elif self.__dict__.get("_packing_settings_pending"):
+            self._request_packing_settings_refresh()
+        if applied:
+            self._render_operator_workbench()
+
+    def _apply_packing_settings_result(self, result, error_code):
+        path = self.__dict__.get("_packing_settings_path")
+        saved = label_packing_settings.load_saved(path) if path else None
+        if error_code is None and result is not None and path:
+            try:
+                label_packing_settings.save_received(path, result)
+            except (OSError, WriterFenceError, ValueError) as exc:
+                # The received value is still used for this run.
+                print(f"포장 설정 저장 기술 진단: {type(exc).__name__}")
+        self._packing_settings = label_packing_settings.state_after_read(
+            result, error_code, saved
+        )
+        return self._packing_settings
+
+    def _packing_settings_snapshot_fields(self):
+        state = self._packing_settings_state()
+        return {
+            "next_set_top_scan_count": state.value,
+            "top_scan_setting": state.view(),
+            "alerts": (
+                ({"kind": "warn", "code": state.alert_code, "text": state.alert_text},)
+                if state.alert_code is not None
+                else ()
+            ),
+        }
+
+    def _packing_settings_notice(self):
+        state = self._packing_settings_state()
+        if state.alert_code is None:
+            return None
+        return WorkflowNotice(
+            title="회사 서버 설정",
+            message=state.alert_text,
+            kind="packing_settings_warning",
+            tone="warning",
+        )
+
+    def _packing_settings_version_for_resend(self):
+        """Read the setting again for a refused confirm (outbox worker thread)."""
+        fetch = self.__dict__.get("_packing_settings_fetch") or label_packing_settings.fetch
+        try:
+            return int(dict(fetch())["version"])
+        except Exception:  # noqa: BLE001 - fall back to the last received value
+            path = self.__dict__.get("_packing_settings_path")
+            saved = label_packing_settings.load_saved(path) if path else None
+            return label_packing_settings.state_from_saved(saved).version
 
     def _init_worker_roster(self):
         self._roster_enabled = True
@@ -9002,6 +9196,7 @@ class Label_Match(tk.Tk):
             "_history_after_id",
             "_update_check_after_id",
             "_roster_poll_after_id",
+            "_packing_settings_poll_after_id",
             "_deferred_validation_after_id",
             "_deferred_observability_poll_after_id",
             "_relay_screen_status_after_id",
@@ -12536,7 +12731,7 @@ class Label_Match(tk.Tk):
                  + str(saved_set_info.get("item_name_override") or
                        self.__dict__.get("items_data", {}).get(
                            (saved_set_info.get("parsed") or [""])[0], {}).get("Item Name") or "이전 세트")
-                 + f"·남은 {max(0, self._workflow_total_scan_count() - len(saved_set_info.get('raw') or []))}개"
+                 + f"·남은 {max(0, self._workflow_top_scan_count(saved_set_info) + 1 - len(saved_set_info.get('raw') or []))}개"
                  if dayend_restore else "이전에 완료되지 않은 세트를 복구했습니다. "
                 "계속 스캔하거나 현재 트레이를 취소하세요."
                 + (f" 이전 작업자: {display_operator_name(saved_worker_name)}."
@@ -15214,6 +15409,8 @@ class Label_Match(tk.Tk):
             "local_completed_at": draft.local_completed_at,
             "scanner_exchanges": list(draft.scanner_exchanges),
             "package_source_snapshot": snapshot, "sealed_transfer": sealed,
+            label_packing_settings.SET_COUNT_KEY: draft.top_scan_count,
+            label_packing_settings.SET_VERSION_KEY: draft.packing_settings_version,
             **evidence.state_fields()}
         hydrated = _label_match_package_draft(current, item_code=draft.item_code,
                                               require_source_snapshot=True)
@@ -16078,7 +16275,8 @@ class Label_Match(tk.Tk):
             workflow_total = self._workflow_total_scan_count()
             self.update_big_display(self._next_action_text(count),
                 "green" if count < workflow_total else "primary")
-            sound = self._sound_key_for_success_scan(count)
+            sound = self._sound_key_for_success_scan(
+                count, self._workflow_final_label_position())
             if sound and not self.is_running_simulation:
                 self._play_sound(sound)
             try:
@@ -16111,7 +16309,7 @@ class Label_Match(tk.Tk):
                 self._show_scanner_notice(
                     "모자란 상자", f"{LABEL_MATCH_SHORTAGE_NOTICE} · 서버 연결 뒤 마감")
                 return False
-            if not (1 <= len(raw) - 1 == member_count <= 3):
+            if not (1 <= len(raw) - 1 == member_count <= _label_match_set_product_sample_count(current)):
                 self._show_scanner_notice("모자란 상자", LABEL_MATCH_SHORTAGE_NOTICE)
                 return False
         previous = copy.deepcopy(self.current_set_info)
@@ -16119,7 +16317,7 @@ class Label_Match(tk.Tk):
         self.current_set_info["shortage_confirmed_at"] = datetime.fromtimestamp(
             time.time(), timezone.utc).isoformat()
         snapshot = copy.deepcopy(self.current_set_info)
-        missing = self.TOTAL_SCAN_COUNT - len(snapshot["raw"])
+        missing = _label_match_set_total_scan_count(snapshot) - len(snapshot["raw"])
         self.current_set_info.update(shortage_confirmed=True,
             shortage_confirmation_pending=True, shortage_undo_snapshot=snapshot)
         if not self._save_current_set_state():
@@ -17893,6 +18091,11 @@ class Label_Match(tk.Tk):
         try:
             if first_scan:
                 self._bind_current_worker_record()
+                # The set keeps the top scan count it opened with, even if the
+                # web setting changes before it is finished or reopened.
+                label_packing_settings.stamp_set(
+                    self.current_set_info, self._packing_settings_state()
+                )
                 if not durable_acceptance:
                     self._clear_workflow_completion()
                     self._workflow_recovered = False
@@ -17938,7 +18141,7 @@ class Label_Match(tk.Tk):
             "green" if num_scans < workflow_total else "primary",
         )
         if not self.is_running_simulation:
-            sound_key = self._sound_key_for_success_scan(num_scans)
+            sound_key = self._sound_key_for_success_scan(num_scans, final_label_position)
             if sound_key:
                 self._play_sound(sound_key)
         try:
@@ -17983,14 +18186,16 @@ class Label_Match(tk.Tk):
             self._finalize_set(self.Results.PASS)
 
     @classmethod
-    def _sound_key_for_success_scan(cls, scan_position):
+    def _sound_key_for_success_scan(cls, scan_position, final_position=None):
         try:
             position = int(scan_position)
         except Exception:
             return None
+        if final_position is None:
+            final_position = cls.FINAL_LABEL_SCAN_POSITION
         if position == LABEL_MATCH_MASTER_SCAN_POSITION:
             return "scan_master"
-        if LABEL_MATCH_MASTER_SCAN_POSITION < position < cls.FINAL_LABEL_SCAN_POSITION:
+        if LABEL_MATCH_MASTER_SCAN_POSITION < position < final_position:
             return f"scan_{position - LABEL_MATCH_MASTER_SCAN_POSITION}"
         return None
 
@@ -18448,6 +18653,13 @@ class Label_Match(tk.Tk):
             "CENTRAL_INHERIT_ALL" if central_inherit_all else "LEGACY_QA_SAMPLES"
         )
         details['central_membership_inherited'] = central_inherit_all
+        set_top_scan_count = _label_match_set_top_scan_count(self.current_set_info)
+        if set_top_scan_count != label_packing_settings.DEFAULT_TOP_SCAN_COUNT:
+            # Only a non-default count is recorded; absent means today's 4.
+            details['top_scan_count'] = set_top_scan_count
+            details['packing_settings_version'] = label_packing_settings.set_version(
+                self.current_set_info
+            )
         details['shortage_confirmed'] = bool(self.current_set_info.get('shortage_confirmed'))
         details['scanner_exchanges'] = copy.deepcopy(self.current_set_info.get('scanner_exchanges', []))
         if self.current_set_info.get("scanner_only"):
@@ -19908,6 +20120,8 @@ class Label_Match(tk.Tk):
             authenticated_admin=authenticated_admin,
         )
         self._sync_worker_record_context()
+        # A work session starts: read the web top scan count again.
+        self._request_packing_settings_refresh()
         self.title(_label_match_window_title())
         operator_context = self.__dict__.get("operator_header_context_label")
         if operator_context is not None:
@@ -20534,6 +20748,12 @@ class Label_Match(tk.Tk):
             return self._details_for_current_set()
         return self._dict_value_by_string_key(self.__dict__.get("set_details_map", {}), iid)
 
+    def _detail_step_names(self, raw_scans, parsed_scans):
+        count = max(len(raw_scans), len(parsed_scans))
+        if count <= len(self.STEP_NAMES):
+            return self.STEP_NAMES
+        return label_packing_settings.step_names(count)
+
     def _barcode_detail_text(self, details):
         if not details:
             return "기록을 선택하면 현품표와 제품 바코드 원문이 여기에 표시됩니다."
@@ -20551,7 +20771,7 @@ class Label_Match(tk.Tk):
         if production_date or phase != "-":
             lines.append(f"생산일/차수: {production_date or '-'} / {phase}")
         lines.append("")
-        for index, role in enumerate(self.STEP_NAMES):
+        for index, role in enumerate(self._detail_step_names(raw_scans, parsed_scans)):
             parsed = parsed_scans[index] if index < len(parsed_scans) else ""
             raw = raw_scans[index] if index < len(raw_scans) else ""
             if not parsed and not raw:
@@ -20572,7 +20792,7 @@ class Label_Match(tk.Tk):
         parsed_scans = list(details.get("parsed_product_barcodes") or [])
         local_notice = _label_match_local_completion_notice(details)
         lines = [local_notice] if local_notice else []
-        for index, role in enumerate(self.STEP_NAMES):
+        for index, role in enumerate(self._detail_step_names(raw_scans, parsed_scans)):
             value = ""
             if index < len(parsed_scans) and parsed_scans[index]:
                 value = parsed_scans[index]
@@ -21992,6 +22212,7 @@ class Label_Match(tk.Tk):
             has_error=bool(self.__dict__.get("_pending_workflow_error")),
             error_message=str(self.__dict__.get("_workflow_error_message") or ""),
             legacy_label_blocked=self._legacy_label_needs_transition() == "legacy",
+            **self._packing_settings_snapshot_fields(),
         )
         view = present_workflow(snapshot)
         self._last_workflow_view = view
@@ -22195,7 +22416,7 @@ class Label_Match(tk.Tk):
             "_phs_label_guidance_notice"
         ) or self.__dict__.get(
             "_ui_lane_review_notice"
-        )
+        ) or self._packing_settings_notice()
         self._set_workflow_notice_ui(
             display_notice,
             "" if deferred_capture_notice is not None else view.next_action,
@@ -23303,7 +23524,7 @@ class Label_Match(tk.Tk):
         if not self.initialized_successfully or self.run_tests or _label_match_automated_test_mode(): return
         # One short success waveform, a long completion waveform, repeated
         # errors. Keep old keys/assets for saved settings and callers.
-        if sound_key in {"scan_master", "scan_1", "scan_2", "scan_3"}:
+        if sound_key in {"scan_master", "scan_1", "scan_2", "scan_3", "scan_4", "scan_5"}:
             sound_key = "scan_master"
         generation = self.__dict__.get("_sound_sequence_generation", 0) + 1
         self._sound_sequence_generation = generation
@@ -23396,9 +23617,12 @@ class Label_Match(tk.Tk):
             num_scans = len(current.get('parsed', []))
         if num_scans <= 0:
             return self._idle_instruction_text()
-        if self._central_inherit_all_active():
-            return f"{num_scans + 1}/5 제품 {num_scans} 스캔" if num_scans < 5 else "통과 완료"
         workflow_total = self._workflow_total_scan_count()
+        if self._central_inherit_all_active():
+            return (
+                f"{num_scans + 1}/{workflow_total} 제품 {num_scans} 스캔"
+                if num_scans < workflow_total else "통과 완료"
+            )
         final_label_position = self._workflow_final_label_position()
         if num_scans < final_label_position - 1:
             return f"{num_scans + 1}/{workflow_total} 제품 {num_scans} 스캔"
@@ -23410,6 +23634,8 @@ class Label_Match(tk.Tk):
         reason = _label_match_manual_complete_block_reason(getattr(self, "current_set_info", {}))
         if reason is None and self._central_inherit_all_active():
             return "랩핑 후 포장 완료 가능"
+        if reason == "manual_complete_only_for_partial_sets":
+            return f"이미 {self._workflow_total_scan_count()}개 완료됨"
         return self.MANUAL_COMPLETE_HINTS.get(reason, "F3 소량 완료 가능")
 
     def _update_step_rail(
@@ -23432,11 +23658,17 @@ class Label_Match(tk.Tk):
                 self._central_inherit_all_active()
                 or self._standard_phs2_workflow_expected(current)
             )
+        set_scan_total = self._workflow_top_scan_count() + 1
         step_names = (
-            ("현품표", "제품1", "제품2", "제품3", "제품4")
-            if central_inherit_all
-            else self.STEP_NAMES
+            (
+                ("현품표", "제품1", "제품2", "제품3", "제품4")
+                if central_inherit_all
+                else self.STEP_NAMES
+            )
+            if set_scan_total == self.TOTAL_SCAN_COUNT
+            else label_packing_settings.step_names(set_scan_total)
         )
+        self._ensure_step_label_count(len(step_names))
         for index, label in enumerate(self.step_labels):
             visible = index < len(step_names)
             try:
@@ -23461,6 +23693,31 @@ class Label_Match(tk.Tk):
             else:
                 bg, fg, relief = self.colors["background"], self.colors["text_subtle"], "solid"
             label.configure(background=bg, foreground=fg, relief=relief, highlightthickness=0)
+
+    def _ensure_step_label_count(self, count):
+        """Add rail cells when a set has more steps than the rail was built with."""
+        frame = self.__dict__.get("step_rail_frame")
+        labels = self.__dict__.get("step_labels")
+        if frame is None or not isinstance(labels, list) or len(labels) >= count:
+            return
+        template = labels[0] if labels else None
+        for index in range(len(labels), count):
+            try:
+                frame.grid_columnconfigure(index, weight=1, uniform="scan_steps")
+                step_label = tk.Label(
+                    frame,
+                    text="",
+                    font=template.cget("font") if template is not None else None,
+                    padx=6,
+                    pady=5,
+                    bd=1,
+                    relief="solid",
+                    anchor="center",
+                )
+                step_label.grid(row=0, column=index, sticky="ew", padx=(4, 0))
+            except (AttributeError, TclError, TypeError):
+                return
+            labels.append(step_label)
 
     def _apply_history_view_mode(self):
         if "entry" not in self.__dict__:
@@ -23525,7 +23782,7 @@ class Label_Match(tk.Tk):
             )
         elif self.current_set_info.get("exact_rescan_complete"):
             status_text += " | 전체 재스캔 완료"
-        status_text += " | 제품 4개 자동 완료 · 교환/취소 카드"
+        status_text += f" | 제품 {self._workflow_top_scan_count()}개 자동 완료 · 교환/취소 카드"
         self.status_label.config(text=status_text, style="Status.TLabel")
         self._update_step_rail(num_scans, error=self.current_set_info.get('has_error_or_reset', False))
         self._update_manual_complete_button_state()

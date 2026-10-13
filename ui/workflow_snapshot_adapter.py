@@ -11,7 +11,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ui.workflow_view_state import WorkflowNotice, WorkflowSnapshot
+from ui.workflow_view_state import (
+    DEFAULT_TOP_SCAN_COUNT,
+    MAX_TOP_SCAN_COUNT,
+    TopScanSettingView,
+    WorkflowAlert,
+    WorkflowNotice,
+    WorkflowSnapshot,
+)
 
 
 QA_TOTAL = 5
@@ -32,6 +39,9 @@ def adapt_workflow_snapshot(
     has_error: bool | None = None,
     error_message: str = "",
     legacy_label_blocked: bool = False,
+    next_set_top_scan_count: int | None = None,
+    top_scan_setting: TopScanSettingView | Mapping[str, Any] | None = None,
+    alerts: Sequence[WorkflowAlert | Mapping[str, Any]] = (),
 ) -> WorkflowSnapshot:
     """Copy runtime and transient UI state into an immutable snapshot.
 
@@ -45,6 +55,10 @@ def adapt_workflow_snapshot(
     ``has_error`` may be supplied for a transient error that has not been
     written to ``current_set_info`` yet.  It can add an error but cannot hide
     an error already recorded by ``has_error_or_reset``.
+
+    The open set's ``top_scan_count`` (frozen when it opened; absent = 4) sets
+    the number of steps.  With no accepted scan, ``next_set_top_scan_count``
+    (the web setting for the next set) is shown instead.
     """
 
     if not isinstance(current_set_info, Mapping):
@@ -55,7 +69,10 @@ def adapt_workflow_snapshot(
         current_set_info.get("parsed"),
         field="parsed",
     )
-    _validate_accepted_scan_counts(raw_scans, parsed_scans)
+    top_scan_count = _set_top_scan_count(
+        current_set_info, raw_scans, next_set_top_scan_count
+    )
+    _validate_accepted_scan_counts(raw_scans, parsed_scans, top_scan_count + 1)
 
     exact_barcodes = _detached_sequence(
         current_set_info.get("exact_rescan_barcodes"),
@@ -95,6 +112,64 @@ def adapt_workflow_snapshot(
         exact_rescan_target=exact_target,
         exact_rescan_barcodes=exact_barcodes,
         legacy_label_blocked=bool(legacy_label_blocked),
+        top_scan_count=top_scan_count,
+        top_scan_setting=_detached_setting(top_scan_setting),
+        next_set_top_scan_count=(
+            _valid_count(next_set_top_scan_count)
+            if next_set_top_scan_count is not None
+            else None
+        ),
+        alerts=tuple(_detached_alert(alert) for alert in alerts),
+    )
+
+
+def _valid_count(value: Any) -> int:
+    if type(value) is not int or not 1 <= value <= MAX_TOP_SCAN_COUNT:
+        raise ValueError("top_scan_count must be an integer 1-6")
+    return value
+
+
+def _set_top_scan_count(
+    current_set_info: Mapping[str, Any],
+    raw_scans: tuple[Any, ...],
+    next_set_top_scan_count: int | None,
+) -> int:
+    value = current_set_info.get("top_scan_count")
+    if raw_scans or value is not None:
+        # Same rule as the set record: absent or damaged means today's 4.
+        if type(value) is int and 1 <= value <= MAX_TOP_SCAN_COUNT:
+            return value
+        return DEFAULT_TOP_SCAN_COUNT
+    if next_set_top_scan_count is not None:
+        return _valid_count(next_set_top_scan_count)
+    return DEFAULT_TOP_SCAN_COUNT
+
+
+def _detached_setting(
+    value: TopScanSettingView | Mapping[str, Any] | None,
+) -> TopScanSettingView | None:
+    if value is None or isinstance(value, TopScanSettingView):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("top_scan_setting must be one TopScanSettingView or Mapping")
+    return TopScanSettingView(
+        value=_valid_count(value.get("value")),
+        source=str(value.get("source") or ""),
+        version=int(value.get("version") or 0),
+        updated_at=value.get("updated_at"),
+        fetched_at=value.get("fetched_at"),
+    )
+
+
+def _detached_alert(value: WorkflowAlert | Mapping[str, Any]) -> WorkflowAlert:
+    if isinstance(value, WorkflowAlert):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("alerts must contain WorkflowAlert or Mapping values")
+    return WorkflowAlert(
+        kind=str(value.get("kind") or "warn"),
+        code=str(value.get("code") or ""),
+        text=str(value.get("text") or ""),
     )
 
 
@@ -109,6 +184,7 @@ def _detached_sequence(value: Any, *, field: str) -> tuple[Any, ...]:
 def _validate_accepted_scan_counts(
     raw_scans: tuple[Any, ...],
     parsed_scans: tuple[Any, ...],
+    scan_total: int = QA_TOTAL,
 ) -> None:
     raw_count = len(raw_scans)
     parsed_count = len(parsed_scans)
@@ -117,9 +193,9 @@ def _validate_accepted_scan_counts(
             "accepted scan count mismatch: "
             f"raw={raw_count}, parsed={parsed_count}"
         )
-    if raw_count > QA_TOTAL:
+    if raw_count > scan_total:
         raise ValueError(
-            f"accepted scan count cannot exceed {QA_TOTAL}: {raw_count}"
+            f"accepted scan count cannot exceed {scan_total}: {raw_count}"
         )
 
 

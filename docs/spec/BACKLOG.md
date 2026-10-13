@@ -14,6 +14,8 @@
 - 작업자 바로 가기: 공용 기계 단계와 현재 사용자 단계의 설치·기록·복원을 구현한다. PS5.1/7의 격리 .lnk 회귀로 대상·인수·아이콘·원본 바이트·다른 루트 보존을 확인한다. 관리자 직접 설치 뒤 작업자 개인 링크 처리는 첫 시작 onboarding에서 같은 UserOnly helper를 받을 후속 자리이며, 실제 Explorer·검은 창·아이콘·현장 복귀는 랩 확인 대상이다.
 - 원격 정상 멈춤(w9firstupdsub94): `user_relay.py --request-app-stop`으로 GUI의 기존 입력 보존·정상 종료와 relay stop을 요청한다. SQLite checkpoint/close를 적용하며 실제 PC의 프로세스 종료·WAL/SHM 부재·키트 되돌림은 별도 확인 대상이다([절차](operations.md#remote-app-stop)).
 
+w9firstupd sub-151: 포장 상단 확인 수 N(웹 설정 1–6, 기본 4)을 앱이 읽어 세트마다 고정해 쓴다(구현·가짜 서버 시험 PROVEN). 남음(NOT TESTED): 실서버(bbcab868) 맞춤·현장 PC 확인, Tk 관리자 메뉴 보기 칸, 기록 표 열(5칸 고정 — N>4 세트는 상세에서 전체), 「다음 세트부터 N개」 Tk 표시.
+
 w9firstupd sub-114: 서버가 PIN을 거절한 건도 명시적으로 미확인 보류하고 다른 포장을 계속할 수 있다. 안내·intent·단추가 같은 판정을 쓰며 대상·작업자 변경과 감사 실패는 보류하지 않는다. 기존 저장 형식·원본·요청 키·수량·원장을 보존한다. 실제 화면·장치·운영 서버 수용은 [운영 범위](operations.md#package-admin-pin-ui-lane)에 남는다.
 
 LM-W5: 건별 복구의 관리자 PIN 요청·중앙 조회·로컬 적용을 기존 UI lane의 두 단계로 옮겼다. PIN 입력과 표시·목록 갱신은 UI 단계이며, 창 닫힘 뒤에도 내구 적용은 끝낸다. 중복 접수·빈 결과·취소/예외의 대기 표시와 reset의 화면 소유를 headless 회귀로 확인한다. 이 lane에는 foreground/background 구분 API가 없어 기존 busy 판정을 유지한다. 실제 화면·장치·서버 및 생성 선언의 통합 수용은 [운영 범위](operations.md#package-admin-pin-ui-lane)에 남는다.
