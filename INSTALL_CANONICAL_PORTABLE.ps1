@@ -456,11 +456,26 @@ function Manifest([string]$Root, [bool]$UnsignedOk) {
         'tools\label_writer_fence.ps1'
     )
     $value = Read-KmtechPortableManifest $Root
+    $unsignedPe = @{
+        'site-packages/_cffi_backend.cp312-win_amd64.pyd' = '9af5e4f68a41f26b726f2e9424f9d58a4f5666189f6a48be95f406b257102aec'
+        'site-packages/clr_loader/ffi/dlls/amd64/ClrLoader.dll' = '07f62bcb1b70320f221ffb2cfc5ce6133815195f3e7cdb8d833222506188c2ac'
+        'site-packages/pythonnet/runtime/Python.Runtime.dll' = '2ebd4492e28442ef1f1af587afe5b3a090c2ebfa220758ded4f1450f2a27f13a'
+    }
+    $listedPe = @(@($value.allowed_unsigned_app_pe) | ForEach-Object { [string]$_ })
+    $unsignedPeOk = $listedPe.Count -eq 0 -or (
+        $listedPe.Count -eq $unsignedPe.Count -and
+        @($listedPe | Sort-Object -Unique -CaseSensitive).Count -eq $unsignedPe.Count -and
+        @($listedPe | Where-Object {
+            $_ -cin @($unsignedPe.Keys) -and
+            (Test-Path -LiteralPath (Join-Path (Join-Path $Root 'app') $_.Replace('/', '\')) -PathType Leaf) -and
+            (Sha (Join-Path (Join-Path $Root 'app') $_.Replace('/', '\'))) -ceq $unsignedPe[$_]
+        }).Count -eq $unsignedPe.Count
+    )
     if (
         [string]$value.schema -cne 'label-match-portable-tree-v1' -or
         [string]$value.entrypoint -cne 'runtime/pythonw.exe app/main.py' -or
         [string]$value.launcher -cne 'launch-label-match.cmd' -or
-        @($value.allowed_unsigned_app_pe).Count -ne 0 -or
+        -not $unsignedPeOk -or
         @($value.forbidden_package_roots).Count -ne 0 -or
         (Sha (Join-Path $Root 'runtime\pythonw.exe')) -cne
             ([string]$value.runtime_pythonw_sha256).ToLowerInvariant() -or

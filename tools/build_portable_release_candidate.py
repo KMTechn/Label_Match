@@ -40,6 +40,7 @@ APP_PACKAGE_DIRS = (
     "kmtech_zero_pe",
     "kmtech_shared",
     "ui",
+    "shell",
 )
 APP_DATA_DIRS = ("assets", "config")
 APP_DATA_FILES = (
@@ -65,17 +66,48 @@ WORKER_SHORTCUT_HELPER = Path("tools/label_worker_shortcuts.ps1")
 SHARED_POWERSHELL_LEAF = Path("kmtech_shared/powershell/portable.ps1")
 DATA_GENERATION_POWERSHELL_LEAF = Path("kmtech_shared/powershell/data_generation.ps1")
 THIRD_PARTY = {
-    "babel": ("2.18.0", ("babel",)),
-    "certifi": ("2026.6.17", ("certifi",)),
-    "chardet": ("5.2.0", ("chardet",)),
-    "idna": ("3.18", ("idna",)),
-    "qrcode": ("8.2", ("qrcode",)),
-    "requests": ("2.34.2", ("requests",)),
-    "tkcalendar": ("1.6.1", ("tkcalendar",)),
-    "typing-extensions": ("4.15.0", ("typing_extensions.py",)),
-    "urllib3": ("2.7.0", ("urllib3",)),
+    'babel': ('2.18.0', ('babel',)),
+    'certifi': ('2026.6.17', ('certifi',)),
+    'chardet': ('5.2.0', ('chardet',)),
+    'idna': ('3.18', ('idna',)),
+    'qrcode': ('8.2', ('qrcode',)),
+    'requests': ('2.34.2', ('requests',)),
+    'tkcalendar': ('1.6.1', ('tkcalendar',)),
+    'typing-extensions': ('4.15.0', ('typing_extensions.py',)),
+    'urllib3': ('2.7.0', ('urllib3',)),
+    'bottle': ('0.13.4', ('bottle.py',)),
+    'cffi': ('2.1.1', ('cffi', '_cffi_backend.cp312-win_amd64.pyd')),
+    'clr_loader': ('0.3.1', ('clr_loader',)),
+    'proxy_tools': ('0.1.0', ('proxy_tools',)),
+    'pycparser': ('3.11', ('pycparser',)),
+    'pythonnet': ('3.2.1', ('pythonnet', 'clr.py')),
+    'pywebview': ('6.2.1', ('webview',)),
 }
-ALLOWED_APP_NATIVE_NAMES: set[str] = set()
+NATIVE_ALLOWLIST_SOURCE_SHA256 = "d88fc67bd49ccfba37b991c975d6eff38233b00bc24fb66369640b5e140691d7"
+
+APP_NATIVE_ALLOWLIST: dict[str, tuple[int, str]] = {
+    "site-packages/_cffi_backend.cp312-win_amd64.pyd": (181248, "9af5e4f68a41f26b726f2e9424f9d58a4f5666189f6a48be95f406b257102aec"),
+    "site-packages/clr_loader/ffi/dlls/amd64/ClrLoader.dll": (10752, "07f62bcb1b70320f221ffb2cfc5ce6133815195f3e7cdb8d833222506188c2ac"),
+    "site-packages/pythonnet/runtime/Python.Runtime.dll": (451584, "2ebd4492e28442ef1f1af587afe5b3a090c2ebfa220758ded4f1450f2a27f13a"),
+    "site-packages/webview/lib/Microsoft.Web.WebView2.Core.dll": (649800, "8219a3135436c147f8eb02fb831e99596103eebc18b6d7b794ca93f4c67018a2"),
+    "site-packages/webview/lib/Microsoft.Web.WebView2.WinForms.dll": (39016, "c48f8d729dc531288d2c53a6241effe7922ed1b947850b2442008a945c098c48"),
+    "site-packages/webview/lib/runtimes/win-x64/native/WebView2Loader.dll": (161864, "eb5335edeaa6f2122c044e82aab2351dc8c9b4e0fe5e578c71922fb61be285e7"),
+}
+
+APP_NATIVE_UNSIGNED = frozenset({
+    "site-packages/_cffi_backend.cp312-win_amd64.pyd",
+    "site-packages/clr_loader/ffi/dlls/amd64/ClrLoader.dll",
+    "site-packages/pythonnet/runtime/Python.Runtime.dll",
+})
+
+THIRD_PARTY_EXCLUDED_PATHS = frozenset({
+    "clr_loader/ffi/dlls/x86/ClrLoader.dll",
+    "webview/lib/WebBrowserInterop.x64.dll",
+    "webview/lib/WebBrowserInterop.x86.dll",
+    "webview/lib/runtimes/win-arm64/native/WebView2Loader.dll",
+    "webview/lib/runtimes/win-x86/native/WebView2Loader.dll",
+})
+
 
 
 class PortableBuildError(RuntimeError):
@@ -99,10 +131,14 @@ def _ignore(_directory: str, names: list[str]) -> set[str]:
     return ignored
 
 
-def _copy_tree(source: Path, target: Path) -> None:
+def _copy_tree(source: Path, target: Path, excluded=frozenset()) -> None:
     if not source.is_dir():
         raise PortableBuildError(f"required source directory is missing: {source}")
-    shutil.copytree(source, target, ignore=_ignore)
+    def ignore(directory, names):
+        relative = Path(directory).relative_to(source.parent)
+        return _ignore(directory, names) | {name for name in names
+            if (relative / name).as_posix() in excluded}
+    shutil.copytree(source, target, ignore=ignore)
 
 
 def _tool_module_source(repo_root: Path, module_name: str) -> Path:
@@ -271,7 +307,7 @@ def _copy_third_party(site_packages: Path) -> dict[str, str]:
             source = source_root / package_name
             target = site_packages / package_name
             if source.is_dir():
-                _copy_tree(source, target)
+                _copy_tree(source, target, THIRD_PARTY_EXCLUDED_PATHS)
             elif source.is_file():
                 shutil.copy2(source, target)
             else:
@@ -281,7 +317,10 @@ def _copy_third_party(site_packages: Path) -> dict[str, str]:
         shutil.copytree(
             metadata_path, site_packages / metadata_path.name, ignore=_ignore
         )
-    if len(locations) != 1:
+    # Reuse the reviewed inspection shell venv alongside the original LM provider.
+    shell_root = Path(importlib.metadata.distribution("pywebview")._path).resolve().parent
+    base_root = Path(sys.base_prefix) / "Lib" / "site-packages"
+    if not locations <= {shell_root, base_root.resolve()}:
         raise PortableBuildError(
             "third-party packages must come from one exact environment"
         )
@@ -375,12 +414,35 @@ def _app_native_inventory(app_root: Path) -> list[str]:
         for path in app_root.rglob("*")
         if _is_pe(path)
     )
-    names = {Path(path).name for path in native}
-    if names != ALLOWED_APP_NATIVE_NAMES or native:
+    mismatched = [
+        path for path in native
+        if path not in APP_NATIVE_ALLOWLIST
+        or (app_root / path).stat().st_size != APP_NATIVE_ALLOWLIST[path][0]
+        or _sha256(app_root / path) != APP_NATIVE_ALLOWLIST[path][1]
+    ]
+    if mismatched or set(native) != set(APP_NATIVE_ALLOWLIST):
         raise PortableBuildError(
-            "portable app native closure must be empty: " + ", ".join(native)
+            "portable app native closure must be exactly the pinned allowlist: "
+            + ", ".join(sorted(set(mismatched) | (set(native) ^ set(APP_NATIVE_ALLOWLIST))))
         )
     return native
+
+
+INSTALLER_UNSIGNED_PIN = re.compile(r"'(site-packages/[^']+)' = '([0-9a-f]{64})'")
+
+
+def _assert_installer_unsigned_pins(output: Path, app_root: Path) -> None:
+    """Both installers' unsigned-PE pins == the builder's unsigned pins == the packet's actual files (one source of truth).
+
+    A shell kit update that changes only one of the three places would otherwise ship a stock no installer accepts."""
+    expected = {path: APP_NATIVE_ALLOWLIST[path][1] for path in APP_NATIVE_UNSIGNED}
+    actual = {path: _sha256(app_root / path) for path in APP_NATIVE_UNSIGNED if (app_root / path).is_file()}
+    if actual != expected:
+        raise PortableBuildError("packet unsigned natives differ from the builder pins")
+    for name in ("INSTALL_CANONICAL_PORTABLE.ps1", "INSTALL_THIS_PC.ps1"):
+        pinned = dict(INSTALLER_UNSIGNED_PIN.findall((output / name).read_text(encoding="utf-8-sig")))
+        if pinned != expected:
+            raise PortableBuildError(f"{name} unsigned native pins differ from the builder pins")
 
 
 def _update_public_key_config(value: str) -> str | dict[str, object]:
@@ -641,7 +703,7 @@ def build(
         native = _app_native_inventory(app_root)
         forbidden_roots = [
             name
-            for name in ("PIL", "pygame", "charset_normalizer", "cryptography", "cffi")
+            for name in ("PIL", "pygame", "charset_normalizer", "cryptography")
             if (site_packages / name).exists()
         ]
         if forbidden_roots:
@@ -651,8 +713,12 @@ def build(
             )
         _assert_portable_import_closure(output, repo_root, tool_sources)
         _assert_packet_file_pins(output)
+        _assert_installer_unsigned_pins(output, app_root)
         if not (app_root / DATA_GENERATION_POWERSHELL_LEAF).is_file():
             raise PortableBuildError("shared data-generation PowerShell leaf is absent")
+        from tools.refresh_first_update_declarations import validate_shell_ready_pin
+        validate_shell_ready_pin(app_root)
+        shell_ready = json.loads((app_root / "shell/SHELL-READY.json").read_bytes())
         file_count, byte_count = _tree_metrics(output)
         manifest = {
             "schema": PORTABLE_SCHEMA,
@@ -677,7 +743,10 @@ def build(
             "canonical_installer": CANONICAL_INSTALLER_FILENAME,
             "canonical_installer_sha256": _sha256(output / CANONICAL_INSTALLER_FILENAME),
             "third_party_versions": versions,
-            "allowed_unsigned_app_pe": native,
+            "shell_version": shell_ready["version"],
+            "shell_ready_sha256": _sha256(app_root / "shell/SHELL-READY.json"),
+            "app_native_pe": native,
+            "allowed_unsigned_app_pe": sorted(APP_NATIVE_UNSIGNED),
             "update_key_config_sha256": update_key_config_sha256,
             "forbidden_package_roots": forbidden_roots,
             "file_count_before_manifest": file_count,

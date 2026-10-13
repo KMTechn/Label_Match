@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+조립 후보 v2.0.100은 앱·자료 판 번호를 함께 올리며 자료 꼴은 유지한다. v2.0.99 자료는 열고 v2.0.100 자료의 v2.0.99 되돌림은 거절한다. 새 화면 셸 v3.16/READY와 기존 검사 런타임의 정확한 native 6개를 바이트로 고정한다. 두 설치기의 unsigned 허용은 없음(옛 판) 또는 정확한 3경로·해시이며, 빌더·설치기·패킷 핀이 다르면 빌드 실패다.
+
 READY 판정과 살아 있는 relay 재사용은 설치기가 남긴 `update-control/worker-pending.json`의 명시적 `server_base_url`과 등록에 사용한 relay credential의 `endpoint_url`을 로컬에서 대조한다. 완료된 기계 표지도 사용하며 scheme·host·유효 port만 비교한다(대소문자·끝 슬래시·기본 port는 동등). 둘 다 판독 가능하고 다르면 `RECOVERY_REQUIRED`·`INSTALL_SERVER_ORIGIN_CHANGED`로 등록·relay 시작/재사용 전에 거절하고 로컬 자료·대기열을 보존한다. 환경 override와 서버가 반환한 logistics profile 주소는 비교하지 않는다. 주소가 없거나 판독 불가능한 옛 기록은 이 비교를 건너뛰며 기존 검증을 유지한다. 네트워크·새 대기·writer admission은 추가하지 않는다.
 
 portable direct-sync relay 자식은 기존 시작 관문을 지난 뒤 `label_match_product_host.dispatch_product_mode`를 호출하며 `Label_Match` 앱 모듈을 적재하지 않는다. host의 `startup_gate(role="relay")`·업데이트 trial/판 확인·자료 세대·credential 준비·writer sink·인수·종료/오류 계약과 별도 자식 프로세스는 유지한다. 일반 GUI와 다른 제품 인수의 진입 경로는 그대로다.

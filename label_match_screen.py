@@ -28,8 +28,9 @@ def shell_write_guard(op, path, kind):
         yield
 
 
-def shell_data_dir():
-    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+def shell_data_dir(*, environ=None):
+    environment = os.environ if environ is None else environ
+    local_app_data = environment.get("LOCALAPPDATA", "").strip()
     if not local_app_data:
         raise RuntimeError("LOCALAPPDATA is required for the Label_Match screen shell")
     return Path(local_app_data) / "KMTech" / "Label_Match" / "screen-shell"
@@ -92,7 +93,7 @@ def screen_runner(module):
         from host import run_app
 
         return run_app("rw", shell_data_dir(), root=PARTS, page=PAGE, title="포장", owner_main=owner_main_for(module),
-                       # 기존 마무리는 Tk 주인 전용이며 2초 상한이 없어 force callback은 기본 None.
-                       pedal=False, browser_preset_name="none", write_guard=shell_write_guard)
+                       # Bounded cross-thread save callback is pending in the app-stop lane.
+                       on_force_exit=None, pedal=False, browser_preset_name="none", write_guard=shell_write_guard)
 
     return run

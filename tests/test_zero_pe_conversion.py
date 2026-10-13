@@ -97,9 +97,11 @@ def test_portable_builder_pinned_inputs_match_release_lock() -> None:
         assert re.search(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)", line), name
 
 
-def test_portable_builder_requires_an_empty_native_application_closure() -> None:
+def test_portable_builder_requires_the_reviewed_native_application_closure() -> None:
     assert portable_builder.EXPECTED_PYTHON == (3, 12, 10)
-    assert portable_builder.ALLOWED_APP_NATIVE_NAMES == set()
+    assert len(portable_builder.APP_NATIVE_ALLOWLIST) == 6
+    assert len(portable_builder.APP_NATIVE_UNSIGNED) == 3
+    assert portable_builder.APP_NATIVE_UNSIGNED <= set(portable_builder.APP_NATIVE_ALLOWLIST)
     assert portable_builder.EXTERNAL_TOOL_MODULES == (
         "tools.direct_sync_relay_operator",
         "tools.label_auth_recovery_canary",
@@ -107,7 +109,7 @@ def test_portable_builder_requires_an_empty_native_application_closure() -> None
         "tools.label_legacy_task_quiescence",
         "tools.label_server_initializer_rehearsal",
     )
-    for forbidden in ("cffi", "cryptography", "pillow", "pygame", "pycparser"):
+    for forbidden in ("cryptography", "pillow", "pygame"):
         assert forbidden not in portable_builder.THIRD_PARTY
 
 

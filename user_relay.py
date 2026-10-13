@@ -235,17 +235,12 @@ def request_app_stop(direct_sync_root: str | os.PathLike[str], *, app_root=None,
     root = Path(direct_sync_root).expanduser().resolve()
     app_root = Path(app_root or _default_application_root()).resolve()
     if webview_root is None:
-        from current_user_onboarding import resolve_current_user_onboarding_paths
-        previous = _read_json(root / "status" / "current_user_onboarding.json") or {}
-        if (previous.get("direct_sync_root") and _app_stop_path(previous["direct_sync_root"]) == _app_stop_path(root)
-                and Path(str(previous.get("data_root") or "")).is_absolute()):
-            webview_root = Path(previous["data_root"]) / "webview2"
-        else:
-            owner_environment = dict(os.environ)
-            if (root.name.casefold() == "label_match" and root.parent.name.casefold() == "directsync"
-                    and root.parent.parent.name.casefold() == "kmtech"):
-                owner_environment["LOCALAPPDATA"] = str(root.parents[2])
-            webview_root = resolve_current_user_onboarding_paths(app_root, environ=owner_environment).data_root / "webview2"
+        from label_match_screen import shell_data_dir
+        owner_environment = dict(os.environ)
+        if (root.name.casefold() == "label_match" and root.parent.name.casefold() == "directsync"
+                and root.parent.parent.name.casefold() == "kmtech"):
+            owner_environment["LOCALAPPDATA"] = str(root.parents[2])
+        webview_root = shell_data_dir(environ=owner_environment) / "webview2"
     policy = _read_json(app_root.parent / "update-control" / "policy.json") or {}
     operator_sid = str(policy.get("operator_sid") or "")
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
@@ -675,7 +670,7 @@ def reuse_or_start_user_relay_process(
     """Reuse a proven live relay without writer admission, else start one.
 
     Reuse launches and writes nothing; it keeps every start_user_relay_process
-    ownership check. A live relay holds writer admission for its whole cycle
+    ownership check. The relay releases writer admission while its child waits on network
     (run_persistent_relay_loop), so the start probe must not gate reuse.
     """
     if launcher is None and os.name == "nt":
