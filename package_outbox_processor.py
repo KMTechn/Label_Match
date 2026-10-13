@@ -130,7 +130,7 @@ class PackageOutboxProcessor:
                     if not applied:
                         self.outbox.request_receipt_recheck(row, receipt)
                 except PackageApiError as exc:
-                    if exc.committed is True:
+                    if exc.committed is True or exc.code == "RESIDUAL_TAG_NOT_ALLOWED":
                         applied = self.outbox.mark_conflict(
                             key,
                             exc,
@@ -248,6 +248,8 @@ class PackageOutboxProcessor:
     def _reconcile_receipts(self) -> int:
         acked = 0
         for row in self.outbox.pending_receipt_rechecks():
+            if row.get("last_error_code") == "RESIDUAL_TAG_NOT_ALLOWED":
+                continue
             self._receipt_recheck_attempts += 1
             try:
                 draft = PackageCommandDraft.from_dict(json.loads(row["draft_json"]))

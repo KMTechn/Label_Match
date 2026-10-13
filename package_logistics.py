@@ -1526,9 +1526,11 @@ class PackageLogisticsClient:
             return self._data(self._request("POST", path, body=body, key=key))
         except PackageApiError as original:
             should_recover_receipt = (
-                original.committed is True
-                or original.committed is None
-                or original.status_code >= 500
+                original.code != "RESIDUAL_TAG_NOT_ALLOWED" and (
+                    original.committed is True
+                    or original.committed is None
+                    or original.status_code >= 500
+                )
             )
             if not should_recover_receipt:
                 raise
@@ -2243,7 +2245,7 @@ class PackageLogisticsClient:
         try:
             return self._data(self._request("POST", "/logistics/api/v1/packages", body=body, key=key))
         except PackageApiError as original:
-            if original.committed is not True:
+            if original.code == "RESIDUAL_TAG_NOT_ALLOWED" or original.committed is not True:
                 raise
             try:
                 recovered = self.get_receipt_if_exists(
@@ -2597,7 +2599,7 @@ class PackageCancellationOutboxProcessor:
                     if not applied:
                         self.outbox.request_receipt_recheck(row, receipt)
                 except PackageApiError as exc:
-                    if exc.committed is True:
+                    if exc.committed is True or exc.code == "RESIDUAL_TAG_NOT_ALLOWED":
                         counts["conflict"] += int(self.outbox.mark_conflict(key, exc, expected_claim=row))
                     elif (
                         exc.status_code not in {409, 412}
@@ -2625,6 +2627,8 @@ class PackageCancellationOutboxProcessor:
     def _reconcile_receipts(self) -> int:
         acked = 0
         for row in self.outbox.pending_receipt_rechecks():
+            if row.get("last_error_code") == "RESIDUAL_TAG_NOT_ALLOWED":
+                continue
             try:
                 self._validate_linked_create_receipt(row)
                 command = json.loads(row["command_json"])

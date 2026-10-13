@@ -640,9 +640,10 @@ class SealedTransferExchangeStore:
         committed = getattr(error, "committed", None)
         upstream_pending = (getattr(error, "code", "") == "UPSTREAM_COMPLETION_PENDING"
                             and bool(getattr(error, "retryable", False)))
-        terminal_api_error = not upstream_pending and isinstance(error, PackageApiError) and int(
-            getattr(error, "status_code", 0) or 0
-        ) in {400, 403, 409, 412, 422}
+        terminal_api_error = not upstream_pending and isinstance(error, PackageApiError) and (
+            code == "RESIDUAL_TAG_NOT_ALLOWED"
+            or int(getattr(error, "status_code", 0) or 0) in {400, 403, 409, 412, 422}
+        )
         unknown_api_outcome = isinstance(error, PackageApiError) and (
             committed is None
             or int(getattr(error, "status_code", 0) or 0) >= 500
@@ -827,6 +828,7 @@ class SealedTransferExchangeStore:
                           SELECT 1 FROM sealed_transfer_receipt_rechecks AS recheck
                           WHERE recheck.intent_id=sealed_transfer_exchange_intents.intent_id
                             AND recheck.verified_at IS NULL))
+                        AND COALESCE(last_error_code,'') != 'RESIDUAL_TAG_NOT_ALLOWED'
                         AND NOT EXISTS (
                           SELECT 1 FROM package_workbench_holds AS hold
                           WHERE hold.set_id=sealed_transfer_exchange_intents.set_id)

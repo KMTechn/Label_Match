@@ -11,6 +11,8 @@ from pathlib import Path
 import math
 import re
 
+import carrier_identity_port as carrier_identity
+
 
 _TEXT = "text"
 _INTEGER = "integer"
@@ -433,6 +435,8 @@ def validate_recovery_record(kind, value, *, journal_version=None):
     if kind == 'current' and isinstance(value, dict):
         value = {name: item for name, item in value.items() if name != 'scanner_audit_csv_prefixes'}
     if not isinstance(value, dict) or not _json_tree_valid(value):
+        return False
+    if kind == "current_set" and carrier_identity.current_set_has_residual_tag(value):
         return False
     required = schema["required"]
     optional = schema["optional"]
