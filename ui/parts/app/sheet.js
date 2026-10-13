@@ -121,6 +121,11 @@ window.AppSheet = (() => {
     form.append(el('p', 'pinform__note', PIN_NOTE));
     return [form, buttons([{ text: '그만두기', go: 'close', quiet: true }])];
   }
+  // 비밀 판(PIN · password 칸): 판의 빈 곳 · 바깥을 눌러도 초점이 칸을 떠나지 않게 — 칸 밖 키는 scan.js 가 버림(막는 길 둘)
+  document.addEventListener('mousedown', (event) => {
+    const box = $('[data-sheet]');
+    if (box && !box.hidden && box.querySelector('input[type=password], [data-pin]') && !event.target.closest('input, button, a, label, select, textarea')) event.preventDefault();
+  }, true);
 
   return { render };
 })();

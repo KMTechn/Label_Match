@@ -1,5 +1,6 @@
 'use strict';
 // 현장 앱 스캔 받이(주인 w9appshell1012 셸 레인 — 10/13 넘김: shell/web/sink.js 셸 v3.10 sha256 bc572234…, 이름만 KMScanSink → AppScan).
+// 10/13 틀 고침(셸 원본과 다름 — 셸 다음 판 몫): 키 기록에 key · code 값 0 · 비밀 판이 열리면 칸 밖 키 버림 · 빈 버퍼 Tab 은 초점 이동 그대로.
 // 키 조립 · F12 판정 증거(v2.0.152 사건 순서, F12-V152-RULES.md)는 여기서만 — 앱 화면 JS 에 keydown 조립 0(APP-SCREENS 불변식 4).
 // 판정 규칙 · meta 꼴은 처리 층(bridge.py · event_order.py)이 읽으므로 셸 레인과 함께만 고친다. 붙이기 = frame.js(AppFrame.start)가 첫 state 뒤 start 한 번.
 // Framing correction: IW components_v2.py:665,765–833 @a211ea4;
@@ -34,12 +35,11 @@ window.AppScan = (() => {
     return null;
   }
   function logKey(event) {
-    // Editable fields (PIN/password included): never log code/key of characters — only Enter/Escape/Tab names (same rule as frame scan.js 071f2f7e).
-    if (event.editing) { keys.push({type:event.type,t:stamp(event),editing:true,...(['Enter','Escape','Tab'].includes(event.key) ? {key:event.key} : {})}); return; }
-    keys.push({type:event.type,key:event.key,code:event.code,keyCode:event.keyCode,
-      shift:event.shiftKey,caps:mod(event,'CapsLock'),numlock:mod(event,'NumLock'),alt:event.altKey,
-      ctrl:event.ctrlKey,meta:event.metaKey,isComposing:event.isComposing,repeat:event.repeat,t:stamp(event)});
+    // 칸 안팎 모두 글자 키의 key · code 값을 남기지 않는다(PIN 이 칸 밖에서 쳐져도 셸 기록에 0) — 순서 · 시각 · 표시만, 이름 키(Enter · Tab · Escape · Backspace · F12)만 이름.
+    keys.push({type:event.type,t:stamp(event),editing:event.editing,...(['Enter','Escape','Tab','Backspace','F12'].includes(event.key) ? {key:event.key} : {})});
   }
+  // 비밀 판(PIN · password 칸이 보이는 판)이 열려 있으면 칸 밖 키로 스캔을 조립하지 않는다 — 버림, scan() 0. 판이 닫히면 다시.
+  const secret = () => [...document.querySelectorAll('input[type=password], [data-pin]')].some(node => !node.closest('[hidden]'));
   function eventLog(ev, fields = {}) { events.push({ev, ...fields}); }
   function flush() {
     if (keys.length) { events.push({ev:'keys',batch:keys}); keys = []; }
@@ -114,10 +114,12 @@ window.AppScan = (() => {
     if (event.ctrlKey || event.metaKey) {
       if (event.code !== 'KeyV') event.preventDefault(); return;
     }
-    if (event.altKey && /^Numpad[0-9]$/.test(event.code)) { eventLog('alt_numpad',{code:event.code}); return; }
-    if (event.code === 'Enter' || event.code === 'NumpadEnter' || event.code === 'Tab' || event.key === 'Enter' || event.key === 'Tab') {
+    if (event.altKey && /^Numpad[0-9]$/.test(event.code)) { eventLog('alt_numpad'); return; }
+    const tab = event.code === 'Tab' || event.key === 'Tab';
+    if (event.code === 'Enter' || event.code === 'NumpadEnter' || event.key === 'Enter' || tab && buffer) {
       event.preventDefault(); submit(event); return;
     }
+    if (tab) return; // 빈 버퍼 Tab · Shift+Tab 은 초점 이동 그대로(키보드만으로 메뉴 · 판 단추) — 끝 Tab 은 버퍼가 있을 때만 먹음
     if (event.key === 'Backspace' || event.code === 'Backspace') {
       event.preventDefault(); buffer = Array.from(buffer).slice(0,-1).join(''); nKeys++;
       if (!buffer) { first = null; observe('clear',stamp(event)); }
@@ -125,7 +127,7 @@ window.AppScan = (() => {
     }
     const fromCode = physical(event);
     const fromKey = event.key.length === 1 && /^[\x20-\x7e]$/.test(event.key) && !event.isComposing && event.keyCode !== 229 ? event.key : null;
-    if (fromKey !== null && fromCode !== null && fromKey !== fromCode) eventLog('key_diag',{key:fromKey,code:event.code,mapped:fromCode,t:stamp(event)/1000});
+    if (fromKey !== null && fromCode !== null && fromKey !== fromCode) eventLog('key_diag',{t:stamp(event)/1000});
     const character = fromKey !== null ? fromKey : fromCode;
     event.preventDefault();
     if (character !== null) { nKeys++; append(character,fromKey !== null ? 'key' : 'code',event); }
@@ -133,7 +135,7 @@ window.AppScan = (() => {
   function press(event) {
     if (event.editing) return;
     if (event.ctrlKey || event.metaKey || event.altKey || event.key.length !== 1 || event.key.charCodeAt(0) < 0x20) { event.preventDefault(); return; }
-    event.preventDefault(); nKeys++; append(event.key,'keypress',event); eventLog('keypress_path',{key:event.key});
+    event.preventDefault(); nKeys++; append(event.key,'keypress',event); eventLog('keypress_path');
   }
   function up(event) {
     if (event.code === 'F12' || event.key === 'F12') {
@@ -149,6 +151,7 @@ window.AppScan = (() => {
   }
   function capture(event) {
     const editing = editable(document.activeElement);
+    if (!editing && event.code !== 'F12' && event.key !== 'F12' && secret()) { logKey({type:event.type,timeStamp:event.timeStamp,editing}); return; }
     const caps = mod(event,'CapsLock'), numlock = mod(event,'NumLock');
     const copy = {type:event.type,key:event.key || '',code:event.code || '',keyCode:event.keyCode,shiftKey:event.shiftKey,
       altKey:event.altKey,ctrlKey:event.ctrlKey,metaKey:event.metaKey,isComposing:event.isComposing,repeat:event.repeat,
@@ -200,6 +203,6 @@ window.AppScan = (() => {
     window.addEventListener('blur',()=>focusEvent('blur')); window.addEventListener('focus',()=>focusEvent('focus'));
     setInterval(flush,250);
   }
-  return {start,flush,editable,completePHS2,focusEvent,state:() => ({buffer,seq,profile,paths:{...paths},evidence:frame ? {...frame} : null,
+  return {start,flush,editable,completePHS2,focusEvent,secret,state:() => ({buffer,seq,profile,paths:{...paths},evidence:frame ? {...frame} : null,
     pressed,generation,t_attach:attachedAt,recovered,queued:waiting ? waiting.queue.length : 0,log_keys:keys.length,log_events:events.length})};
 })();
