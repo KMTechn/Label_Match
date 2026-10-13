@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+READY 판정과 살아 있는 relay 재사용은 설치기가 남긴 `update-control/worker-pending.json`의 명시적 `server_base_url`과 등록에 사용한 relay credential의 `endpoint_url`을 로컬에서 대조한다. 완료된 기계 표지도 사용하며 scheme·host·유효 port만 비교한다(대소문자·끝 슬래시·기본 port는 동등). 둘 다 판독 가능하고 다르면 `RECOVERY_REQUIRED`·`INSTALL_SERVER_ORIGIN_CHANGED`로 등록·relay 시작/재사용 전에 거절하고 로컬 자료·대기열을 보존한다. 환경 override와 서버가 반환한 logistics profile 주소는 비교하지 않는다. 주소가 없거나 판독 불가능한 옛 기록은 이 비교를 건너뛰며 기존 검증을 유지한다. 네트워크·새 대기·writer admission은 추가하지 않는다.
+
 설치기와 배포 helper의 조상·검증 대상 조회 및 패키지 자식 열거는 숨김 속성이 있는 ProgramData·AppData·설치 경로도 검사한다. 읽기 `-Force`는 숨김 항목만 포함하며 reparse·파일 종류·바인딩 거절과 삭제 조건은 유지한다.
 
 작업자 대상 거절은 기존 `PENDING_TARGET_INVALID`·종료 코드 1·공개 JSON 한 줄을 유지하며 `reason`과 `summary`를 덧붙인다. `summary`는 `PENDING_TARGET_INVALID reason=<고정 코드>`이며 계정·SID·경로·예외 원문을 포함하지 않는다. 인수·계정 해석·SID 종류·inventory 경로/파일/해독/바인딩·프로필·콘솔·감사 경로의 까닭을 구분하고 미분류 또는 허용 목록 밖 값은 `UNCLASSIFIED`로 공개한다.

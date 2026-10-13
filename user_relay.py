@@ -405,6 +405,10 @@ def remove_user_relay_autostart(
 
 
 def _existing_user_relay_owner(root: Path, direct_sync_root: Path, *, is_bootstrap: bool) -> dict[str, Any] | None:
+    from current_user_onboarding import (
+        require_install_server_origin_matches, resolve_current_user_onboarding_paths,
+    )
+    require_install_server_origin_matches(resolve_current_user_onboarding_paths(root))
     if user_relay_stop_path(direct_sync_root).exists():
         return None
     lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
