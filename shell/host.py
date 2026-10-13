@@ -1,6 +1,7 @@
 """Run only on the designated test PCs. This entrypoint creates a real window."""
 import argparse
 import json
+import math
 import os
 import re
 import socket
@@ -33,6 +34,83 @@ BROWSER_PRESETS = {'none': '', 'lean': LEAN_ARGUMENTS,
                    'lean-inproc': LEAN_ARGUMENTS + ' --in-process-gpu'}
 TRANSPORT_WAIT_SECONDS = 8
 TRANSPORT_STOP_MESSAGE = '화면 준비가 늦습니다 — 잠시 뒤 다시 엽니다'
+CLOSING_WAIT_SECONDS = 120
+
+
+class ClosingWait:
+    """Cancel a slow X, then observe its one owner Future off the UI thread."""
+    def __init__(self, bridge, show, timeout=CLOSING_WAIT_SECONDS):
+        if not math.isfinite(timeout) or timeout <= 0: raise ValueError('closing_timeout must be positive and finite')
+        self.bridge, self.show, self.timeout = bridge, show, timeout
+        self._lock = threading.RLock()
+        self._pending, self._timer = None, None
+        self._generation, self._timed_out, self._closed = 0, False, False
+        self.forced = False
+
+    def closing(self):
+        with self._lock:
+            if self.bridge._exit_requested or self._closed: return True
+            if self._pending is not None: return False
+            allowed = self.bridge.ask_closing()
+            if allowed is not None: return allowed
+            self._pending = self.bridge._closing_future
+            self.bridge.events.record('py', 'closing_pending')
+            self.show('waiting')
+            self._arm()
+            # Future callbacks run on the owner. Move all host work off that thread.
+            self._pending.add_done_callback(lambda future: threading.Thread(
+                target=self._answered, args=(future,), name='shell-closing', daemon=True).start())
+            return False
+
+    def _arm(self):
+        if self._timer: self._timer.cancel()
+        self._generation += 1
+        self._timer = threading.Timer(self.timeout, self._expired, (self._pending, self._generation))
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _answered(self, future):
+        with self._lock:
+            if self._closed or self._pending is not future or self.bridge._exit_requested: return
+            try: allowed = future.result() is not False
+            except Exception: allowed = True  # same owner-error behavior as a quick answer
+            self._pending = None
+            self._timed_out = False
+            if self._timer: self._timer.cancel()
+            if allowed: self.bridge.request_exit()
+            else: self.show(None)
+
+    def _expired(self, future, generation):
+        with self._lock:
+            if self._closed or self._pending is not future or generation != self._generation or self.bridge._exit_requested: return
+            if future.done():
+                self._answered(future)
+                return
+            self._timed_out = True
+            self.bridge.events.record('py', 'closing_timeout', wait_seconds=self.timeout)
+            self.show('choice')
+
+    def choose(self, action):
+        with self._lock:
+            if self._closed or self._pending is None or not self._timed_out or self.bridge._exit_requested: return
+            if self._pending.done():
+                self._answered(self._pending)
+                return
+            if action == 'wait':
+                self.bridge.events.record('py', 'closing_wait_more')
+                self._timed_out = False
+                self.show('waiting')
+                self._arm()
+            elif action == 'close':
+                self.bridge.events.record('py', 'closing_force')
+                self.forced = True
+                if self._timer: self._timer.cancel()
+                self.bridge.request_exit()
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            if self._timer: self._timer.cancel()
 
 
 def browser_preset(name, events):
@@ -129,6 +207,50 @@ class NativeHost:
         self._memory_level = 'Normal'
         self._memory_applied = None
         self._test_control_enabled = bool(test_control)
+        self._closing_banner = None
+
+    def show_closing(self, mode, choose):
+        """Native strip inside the existing Form, independent of page/owner readiness.
+        BeginInvoke never parks the owner or the closing waiter on the UI thread."""
+        from System import Action
+        form = self.window.native
+        if form is None or form.IsDisposed: return
+        def render():
+            if self._closed or form.IsDisposed: return
+            if mode is None:
+                if self._closing_banner:
+                    panel, _, _, _ = self._closing_banner
+                    restore_focus = panel.ContainsFocus
+                    form.Controls.Remove(panel)
+                    panel.Dispose()
+                    self._closing_banner = None
+                    if restore_focus: form.browser.webview.Focus()
+                return
+            if self._closing_banner is None:
+                from System.Windows.Forms import Button, DockStyle, FlowLayoutPanel, Label, Padding
+                from System.Drawing import Font
+                panel, label, close_button, wait_button = FlowLayoutPanel(), Label(), Button(), Button()
+                panel.Dock, panel.Height, panel.WrapContents = DockStyle.Top, 84, False
+                panel.Font = Font('Malgun Gothic', 12)
+                label.AutoSize, label.Margin = True, Padding(16, 24, 24, 0)
+                for index, (button, text, action) in enumerate(((close_button, '그래도 닫기', 'close'),
+                                                             (wait_button, '더 기다리기', 'wait'))):
+                    button.Text, button.AccessibleName = text, text
+                    button.AutoSize, button.TabStop, button.TabIndex = True, True, index
+                    button.Margin = Padding(8, 16, 8, 0)
+                    button.Click += lambda sender, args, action=action: choose(action)
+                for control in (label, close_button, wait_button): panel.Controls.Add(control)
+                form.Controls.Add(panel)
+                panel.BringToFront()
+                self._closing_banner = panel, label, close_button, wait_button
+            _, label, close_button, wait_button = self._closing_banner
+            label.Text = ('응답이 없습니다 —\n그래도 닫으면 저장 중인 것은 잃을 수 있습니다'
+                          if mode == 'choice' else '끝내는 중 — 남은 일을 마치고 닫습니다')
+            close_button.Visible = wait_button.Visible = mode == 'choice'
+            if mode == 'choice': wait_button.Focus()  # Enter waits; Shift+Tab then Enter/Space closes
+        try: form.BeginInvoke(Action(render))
+        except Exception as error:
+            self.bridge.events.record('py', 'closing_display_failed', error=type(error).__name__)
 
     def before_load(self):
         # pywebview calls before_load synchronously from NavigationCompleted.
@@ -513,7 +635,7 @@ def wait_owner_start(bridge, owner_thread, timeout=None, poll=0.5):
 
 def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, processor_factory=None,
             owner_main=None, browser_preset_name='none', test_control=None, owner_timeout=None, root=None,
-            write_guard=None):
+            write_guard=None, closing_timeout=CLOSING_WAIT_SECONDS, on_force_exit=None):
     """App entry (HOST-USE.md). Call on the main thread; returns when the window closes.
     profile 'rw'|'iw' = scan framing; data = this app's shell folder (events/journal/sounds);
     page = the app's index.html (default = shell test page); root = folder served as the local
@@ -521,8 +643,14 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
     processor_factory() runs on our owner thread, or owner_main(bridge) runs on a new thread
     that calls bridge.attach_owner(processor) and then bridge.pump() until it returns False.
     write_guard(op, path, kind) -> context manager around each shell file write (the app's writer fence),
-    installed before the shell writes anything (shell_fileio.set_write_guard); None keeps plain writes."""
+    installed before the shell writes anything (shell_fileio.set_write_guard); None keeps plain writes.
+    on_force_exit() runs once on a daemon thread before a forced process exit, with a two-second wait;
+    None keeps the previous forced-exit path. Normal closing never calls it."""
     if write_guard is not None: shell_fileio.set_write_guard(write_guard)
+    if on_force_exit is not None and not callable(on_force_exit):
+        raise TypeError('on_force_exit must be callable or None')
+    if not math.isfinite(closing_timeout) or closing_timeout <= 0:
+        raise ValueError('closing_timeout must be positive and finite')
     page_path = Path(page).resolve() if page else SHELL / 'web/index.html'
     root_path = Path(root).resolve() if root else None
     if root_path is not None and root_path not in page_path.parents:
@@ -558,6 +686,7 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
     window.events.loaded += native.loaded
     bridge.set_notifier(native.notify_push)
     bridge.set_exit_handler(window.destroy)
+    closing_wait = ClosingWait(bridge, lambda mode: native.show_closing(mode, closing_wait.choose), closing_timeout)
     picker_closed = threading.Event()
     def picker(title, kinds=None):
         # A Future; the bridge drops it once the picker is detached (closing/closed).
@@ -568,7 +697,7 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
         picker_closed.set()
         bridge.set_file_picker(None)
     def closing():
-        allowed = bridge.ask_closing()
+        allowed = closing_wait.closing()
         if allowed: detach_picker()
         return allowed
     window.events.shown += shown
@@ -606,8 +735,31 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
         raise
     finally:
         stop.set()
+        closing_wait.close()
         detach_picker()
         native.close()
+        if closing_wait.forced:
+            # The user explicitly chose to end the process despite a stuck owner.
+            # bridge.close()/owner.join() could wait forever; non-daemon app threads
+            # must not leave a windowless process behind either.
+            if on_force_exit is not None:
+                errors = []
+                def finish_app():
+                    try: on_force_exit()
+                    except BaseException as error: errors.append(type(error).__name__)
+                bridge.events.record('py', 'force_exit_start')
+                worker = threading.Thread(target=finish_app, name='app-force-exit', daemon=True)
+                try:
+                    worker.start()
+                    worker.join(2)
+                except Exception as error:
+                    bridge.events.record('py', 'force_exit_error', error=type(error).__name__)
+                else:
+                    if worker.is_alive(): bridge.events.record('py', 'force_exit_timeout', wait_seconds=2)
+                    elif errors: bridge.events.record('py', 'force_exit_error', error=errors[0])
+                    else: bridge.events.record('py', 'force_exit_done')
+            bridge.events.record('py', 'exit', code=code, forced=True)
+            os._exit(code)
         bridge.close()
         if owner_thread: owner_thread.join(5)
         bridge.events.record('py', 'exit', code=code)

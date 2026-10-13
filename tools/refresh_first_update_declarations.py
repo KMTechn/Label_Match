@@ -21,6 +21,17 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLED_REFS = ("d9160b6", "89155f17233fb1c8b5bae2a9e470832772a4d785")
+SHELL_READY_VERSION = "v3.16"
+SHELL_READY_SHA256 = "0c3d7524e8c989b61f5f8da698847e6b5b61fc0939e6fd0fb8bd7faa51efeec8"
+
+
+def validate_shell_ready_pin(root: Path) -> None:
+    """Release declarations use the reviewed shell; runtime checks candidates."""
+    path = root / "shell/SHELL-READY.json"
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != SHELL_READY_SHA256:
+        raise ValueError("declarations require pinned SHELL-READY " + SHELL_READY_VERSION)
+    if json.loads(path.read_bytes()).get("version") != SHELL_READY_VERSION:
+        raise ValueError("declaration shell version differs")
 
 
 def git(*args: str) -> bytes:
@@ -147,6 +158,7 @@ def writer_probe(source: str):
 
 
 def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
+    validate_shell_ready_pin(ROOT)
     sys.path.insert(0, str(ROOT))
     from writer_sink_inventory import derive_writer_sink_inventory, writer_sink_inventory_sha256
 

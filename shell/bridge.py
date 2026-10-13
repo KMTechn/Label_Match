@@ -36,6 +36,7 @@ class Bridge:
         self._closed = False
         self._owner_done = False
         self._exit_handler, self._exit_requested = None, False
+        self._closing_future = None
         self._file_picker = None
         self._file_pick_lock = threading.Lock()
         self._idle = None
@@ -120,14 +121,22 @@ class Bridge:
         if self._exit_handler:
             threading.Thread(target=self._exit_handler, name='shell-exit', daemon=True).start()
 
-    def ask_closing(self, timeout=3):
-        """UI thread, window X: True = let it close. processor.closing() decides on the
-        owner thread; no answer within timeout -> close (a stuck owner must not trap the user)."""
-        if self._exit_requested or self._closed or self._processor is None or not hasattr(self._processor, 'closing'):
-            return True
-        future = Future()
-        self._tasks.put_nowait(('closing', None, future))
-        try: return future.result(timeout) is not False
+    def begin_closing(self):
+        """One owner question at a time. A slow answer remains available to the host."""
+        with self._intake_lock:
+            if self._exit_requested or self._closed or self._processor is None or not hasattr(self._processor, 'closing'):
+                future = Future(); future.set_result(True)
+                return future
+            if self._closing_future is None or self._closing_future.done():
+                self._closing_future = Future()
+                self._tasks.put_nowait(('closing', None, self._closing_future))
+            return self._closing_future
+
+    def ask_closing(self, timeout=0.3):
+        """True/False = owner answer; None = still waiting, so window X must be cancelled."""
+        try: return self.begin_closing().result(timeout) is not False
+        except TimeoutError:
+            return None
         except Exception as error:
             self.events.record(self.src, 'closing_timeout', error=type(error).__name__)
             return True

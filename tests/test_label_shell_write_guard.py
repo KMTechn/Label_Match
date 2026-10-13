@@ -14,16 +14,16 @@ from writer_sink_inventory import derive_writer_sink_inventory, WriterSinkInvent
 from tests.test_label_screen_bridge import call, meta, screen
 
 ROOT = Path(__file__).resolve().parents[1]
-READY_SHA256 = "40710032b00a33a8f8628ccf9960fccd2c876e3f141d5a53dff47086b986be08"
+READY_SHA256 = "0c3d7524e8c989b61f5f8da698847e6b5b61fc0939e6fd0fb8bd7faa51efeec8"
 
 
-def test_shell_copy_matches_v314_ready():
+def test_shell_copy_matches_v316_ready():
     ready_path = ROOT / "shell/SHELL-READY.json"
     assert ready_path.is_file()
     raw = ready_path.read_bytes()
     assert hashlib.sha256(raw).hexdigest() == READY_SHA256
     ready = json.loads(raw)
-    assert ready["version"] == "v3.14"
+    assert ready["version"] == "v3.16"
     for entry in ready["files"]:
         path = ROOT / entry["path"]
         assert path.stat().st_size == entry["bytes"]

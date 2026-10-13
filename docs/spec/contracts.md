@@ -1,9 +1,11 @@
 # Label_Match 데이터·통합 계약
 
 <a id="new-screen-shell-write-guard"></a>
-새 화면 입구는 셸 v3.14의 첫 쓰기 전에 `run_app(write_guard=shell_write_guard)`를 넣는다. 셸의 events·journal·sound_cache·udf·test_control 쓰기는 `shell/shell_fileio.py`의 다섯 함수로 모이며, 각각 기존 `writer_admission("shell_fileio")` 안에서만 실행한다. 선언에는 이 위임을 `shell_fileio` 한 source로 기록한다. 허가는 한 번 쓰기 뒤 내려놓으며 화면·스캔·사람 응답·네트워크를 기다리는 동안 쥐지 않는다.
+새 화면 입구는 셸 v3.16의 첫 쓰기 전에 `run_app(write_guard=shell_write_guard)`를 넣는다. 셸의 events·journal·sound_cache·udf·test_control 쓰기는 `shell/shell_fileio.py`의 다섯 함수로 모이며, 각각 기존 `writer_admission("shell_fileio")` 안에서만 실행한다. 선언에는 이 위임을 `shell_fileio` 한 source로 기록한다. 허가는 한 번 쓰기 뒤 내려놓으며 화면·스캔·사람 응답·네트워크를 기다리는 동안 쥐지 않는다.
 
-정적 검사는 고정 `shell/SHELL-READY.json`(v3.14, SHA256 `40710032b00a33a8f8628ccf9960fccd2c876e3f141d5a53dff47086b986be08`), 사본 파일 바이트·Python 파일 집합·앱 입구의 담장 설치를 함께 확인한다. 거절된 events는 해당 진단 줄만 잃고 `events_dropped`로 센다. 처리 층 모드의 셸 journal 실패는 앱 저장 결과를 바꾸지 않고 다음 스캔과 최근 seq 중복 응답을 계속한다. 시작 폴더를 만들 수 없으면 기존 셸 계약대로 창 없이 실패한다.
+선언 생성기는 고정 `shell/SHELL-READY.json`(v3.16, SHA256 `0c3d7524e8c989b61f5f8da698847e6b5b61fc0939e6fd0fb8bd7faa51efeec8`)을 대조한다. 설치된 실행 스캐너는 후보의 `shell/SHELL-READY*.json` 하나와 파일 바이트·Python 파일 집합의 자기 일관, 앱 입구의 담장 설치를 확인하므로 다른 셸 판의 자기 일관 후보도 받는다. 거절된 events는 해당 진단 줄만 잃고 `events_dropped`로 센다. 처리 층 모드의 셸 journal 실패는 앱 저장 결과를 바꾸지 않고 다음 스캔과 최근 seq 중복 응답을 계속한다. 시작 폴더를 만들 수 없으면 기존 셸 계약대로 창 없이 실패한다.
+
+창 X는 0.3초 안에 처리 층 답이 없으면 취소하고 「끝내는 중」 띠를 보인다. 늦은 허용 답은 닫고 거절 답은 띠를 내린다. 셸의 기본 120초 뒤에는 저장 손실 경고와 「그래도 닫기 / 더 기다리기」를 보인다. 앱의 기존 마무리는 Tk 주인 전용이며 2초 안의 스레드 안전 마무리가 없어 `on_force_exit`는 기본 None이다. 앱의 60/105초 감시는 지연을 알리는 값이며 강제 마감 상한은 아니다(주인 몫 — 상한 필요).
 
 설치기와 배포 helper의 조상·검증 대상 조회 및 패키지 자식 열거는 숨김 속성이 있는 ProgramData·AppData·설치 경로도 검사한다. 읽기 `-Force`는 숨김 항목만 포함하며 reparse·파일 종류·바인딩 거절과 삭제 조건은 유지한다.
 

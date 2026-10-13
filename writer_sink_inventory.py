@@ -12,7 +12,6 @@ from typing import Iterable
 
 
 INVENTORY_SCHEMA = "label-match-writer-sink-inventory-v2"
-SHELL_READY_SHA256 = "40710032b00a33a8f8628ccf9960fccd2c876e3f141d5a53dff47086b986be08"
 _EXCLUDED_ROOTS = frozenset(
     {
         ".git",
@@ -189,22 +188,33 @@ def _powershell_inventory(path: Path, root: Path) -> list[WriterSinkEvidence]:
 
 
 def _validate_shell_write_guard(root: Path) -> None:
-    """The pinned kit delegates its five file operations to one app admission."""
+    """A self-consistent candidate delegates its file operations to app admission."""
     shell = root / "shell"
     if not shell.is_dir():
         return
-    ready_path = shell / "SHELL-READY.json"
-    if not ready_path.is_file() or hashlib.sha256(ready_path.read_bytes()).hexdigest() != SHELL_READY_SHA256:
-        raise WriterSinkInventoryError("shell must match pinned SHELL-READY v3.14")
-    ready = json.loads(ready_path.read_bytes())
-    for entry in ready["files"]:
-        path = root / entry["path"]
-        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
-            raise WriterSinkInventoryError("shell file differs from pinned SHELL-READY: " + entry["path"])
+    ready_paths = list(shell.glob("SHELL-READY*.json"))
+    if len(ready_paths) != 1 or not ready_paths[0].is_file():
+        raise WriterSinkInventoryError("shell must have one SHELL-READY manifest")
+    try:
+        ready = json.loads(ready_paths[0].read_bytes())
+        files = ready["files"]
+        if not isinstance(files, list) or not files:
+            raise ValueError("empty shell file list")
+        listed = set()
+        for entry in files:
+            relative = entry["path"]
+            path = root / relative
+            if relative in listed or not path.resolve().is_relative_to(shell.resolve()):
+                raise ValueError("ambiguous shell file path")
+            listed.add(relative)
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
+                raise WriterSinkInventoryError("shell file differs from SHELL-READY: " + relative)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise WriterSinkInventoryError("shell SHELL-READY manifest is invalid") from exc
     expected_python = {entry["path"] for entry in ready["files"] if entry["path"].endswith(".py")}
     actual_python = {path.relative_to(root).as_posix() for path in shell.rglob("*.py")}
     if actual_python != expected_python:
-        raise WriterSinkInventoryError("shell Python file set differs from pinned SHELL-READY")
+        raise WriterSinkInventoryError("shell Python file set differs from SHELL-READY")
     entrypoint = root / "label_match_screen.py"
     if not entrypoint.is_file():
         raise WriterSinkInventoryError("shell app entrypoint is missing")

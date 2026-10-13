@@ -1,4 +1,4 @@
-- 새 화면 이음: 셸 v3.14 사본·`shell_fileio` 쓰기 허가·사본/담장 정적 확인 구현됨. 실제 창·현장 PC·조립판 설치 packet은 확인 대기다([계약](contracts.md#new-screen-shell-write-guard)).
+- 새 화면 이음: 셸 v3.16 사본·`shell_fileio` 쓰기 허가·후보 자기 일관/담장 정적 확인 구현됨. 처리 층 마감의 강제 상한은 주인 몫 — 상한 필요. 실제 창·현장 PC·조립판 설치 packet은 확인 대기다([계약](contracts.md#new-screen-shell-write-guard)).
 - LM-7 B: 이름만 등록·내구 outbox·동명 확인·다음 트레이 신원 대응 구현됨. `stage_a=false`, 숨김 없음. 실제 화면과 회사 서버 확인은 별도다. [등록 B 계약](worker-roster-b.md).
 
 # Label_Match 진행·공백·추가 제안

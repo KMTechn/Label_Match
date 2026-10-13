@@ -1,4 +1,4 @@
-"""포장 새 화면 띄우기 — 셸 host(v3.14) run_app 의 owner_main 꼴(HOST-USE §4 나).
+"""포장 새 화면 띄우기 — 셸 host(v3.16) run_app 의 owner_main 꼴(HOST-USE §4 나).
 
 `Label_Match.py --new-screen` 이 main() 의 같은 시작 확인(업데이트 · 한 개만 · 설치 확인)을 거친 뒤 여기로 온다.
 포장 앱(Tk)은 주인 스레드 하나에서 숨긴 채 만들고 돌며(root.after 로 bridge.pump), 보이는 화면은 셸 창(WebView2)이다.
@@ -88,6 +88,7 @@ def screen_runner(module):
         from host import run_app
 
         return run_app("rw", shell_data_dir(), root=PARTS, page=PAGE, title="포장", owner_main=owner_main_for(module),
+                       # 기존 마무리는 Tk 주인 전용이며 2초 상한이 없어 force callback은 기본 None.
                        pedal=False, browser_preset_name="none", write_guard=shell_write_guard)
 
     return run
