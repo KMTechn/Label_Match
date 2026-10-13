@@ -9000,6 +9000,95 @@ class Label_Match(tk.Tk):
             print(f"로그 매니저 복구 실패: {replacement_error}")
             return False
 
+    def _remember_force_exit_checkpoint(self, state_data, *, preserve_audits=False):
+        """Publish an independent current-set snapshot on the processing thread.
+
+        The shell daemon reads these immutable bytes, never the UI's live dict.
+        """
+        lock = self.__dict__.setdefault('_force_exit_snapshot_lock', threading.Lock())
+        try:
+            with lock:
+                snapshot = copy.deepcopy(state_data)
+                previous = self.__dict__.get('_force_exit_snapshot')
+                if preserve_audits and previous:
+                    old = json.loads(previous.decode('utf-8'))
+                    current = json.loads(json.dumps(snapshot['current_set_info'], cls=DateTimeEncoder))
+                    if old.get('current_set_info') == current and old.get('scanner_audit_outbox'):
+                        snapshot['scanner_audit_outbox'] = old['scanner_audit_outbox']
+                payload = json.dumps(snapshot, ensure_ascii=False, cls=DateTimeEncoder).encode('utf-8')
+                manager = self.__dict__.get('data_manager')
+                self.__dict__['_force_exit_snapshot_generation'] = manager.__dict__.get('_checkpoint_generation', 0)
+                self.__dict__['_force_exit_snapshot_manager'] = manager
+                self.__dict__['_force_exit_snapshot'] = payload if len(payload) <= 65536 else None
+                return self.__dict__['_force_exit_snapshot']
+        except Exception:
+            self.__dict__['_force_exit_snapshot'] = None
+            return None  # Ordinary persistence still decides whether saving succeeded.
+
+    def save_current_set_on_force_exit(self):
+        """One best-effort small atomic checkpoint for shell on_force_exit.
+
+        Safe on the shell daemon: no Tk, network, retries or waiting for locks.
+        The shell owns the absolute two-second join/process-exit boundary.
+        """
+        try:
+            lock = self.__dict__.get('_force_exit_snapshot_lock')
+            if lock is None:
+                return False
+            if not lock.acquire(blocking=False):
+                self.__dict__['_force_exit_checkpoint_result'] = 'FORCE_EXIT_CHECKPOINT_SNAPSHOT_BUSY'
+                try:
+                    print('FORCE_EXIT_CHECKPOINT_SNAPSHOT_BUSY', file=sys.stderr)
+                except Exception:
+                    pass
+                return False
+            try:
+                if self.__dict__.get('_force_exit_save_attempted'):
+                    return False
+                self.__dict__['_force_exit_save_attempted'] = True
+                payload = self.__dict__.get('_force_exit_snapshot')
+                generation = self.__dict__.get('_force_exit_snapshot_generation')
+                snapshot_manager = self.__dict__.get('_force_exit_snapshot_manager')
+                self.__dict__['_force_exit_snapshot'] = None
+            finally:
+                lock.release()
+            if not payload:
+                return False
+            manager = self.__dict__.get('data_manager')
+            if manager is not snapshot_manager:
+                return False
+            # Pending ordinary-update recovery may invoke a process observer.
+            # A force-exit hook cannot spend its two seconds on that proof.
+            from auto_update import control_root, optional_record
+            control = control_root(Path(__file__).resolve().parent)
+            if control is not None:
+                state = optional_record(control / 'transition.json')
+                if state and (state.get('phase') not in {'CONFIRMED', 'ROLLED_BACK', 'DEFERRED'}
+                              or state.get('recovery_pending') is True):
+                    self.__dict__['_force_exit_checkpoint_result'] = 'FORCE_EXIT_CHECKPOINT_UPDATE_PENDING'
+                    try:
+                        print('FORCE_EXIT_CHECKPOINT_UPDATE_PENDING', file=sys.stderr)
+                    except Exception:
+                        pass
+                    return False
+            with writer_admission('gui_force_exit_checkpoint', timeout_seconds=0):
+                saved = manager.save_current_state(json.loads(payload.decode('utf-8')), _force_exit=True,
+                                                   _force_exit_generation=generation)
+            code = 'FORCE_EXIT_CHECKPOINT_SAVED' if saved else 'FORCE_EXIT_CHECKPOINT_SAVE_FAILED'
+            self.__dict__['_force_exit_checkpoint_result'] = code
+            try:
+                print(code, file=sys.stderr)
+            except Exception:
+                pass
+            return bool(saved)
+        except Exception as error:
+            self.__dict__['_force_exit_checkpoint_result'] = 'FORCE_EXIT_CHECKPOINT_SAVE_FAILED'
+            try:
+                print('FORCE_EXIT_CHECKPOINT_SAVE_FAILED exception_type=' + type(error).__name__, file=sys.stderr)
+            except Exception:
+                pass
+            return False
+
     def _save_current_set_state(self, *, audit_events=()):
         current_set = self.__dict__.get("current_set_info") or {}
         frozen = (self.__dict__.get("_csv_completed_set") or {}).get("current_snapshot") or {}
@@ -9008,6 +9097,10 @@ class Label_Match(tk.Tk):
         if not self.initialized_successfully or (
             not current_set.get("raw") and "scanner_failure_result" not in current_set
         ):
+            lock = self.__dict__.get('_force_exit_snapshot_lock')
+            if lock is not None:
+                with lock:
+                    self.__dict__['_force_exit_snapshot'] = None
             return True
         state_data = {
             'current_set_info': current_set,
@@ -9015,7 +9108,13 @@ class Label_Match(tk.Tk):
         }
         if audit_events:
             state_data['scanner_audit_outbox'] = list(audit_events)
-        return bool(self.data_manager.save_current_state(state_data))
+        snapshot = self._remember_force_exit_checkpoint(state_data)
+        saved = bool(self.data_manager.save_current_state(state_data))
+        if saved:
+            with self.__dict__['_force_exit_snapshot_lock']:
+                if self.__dict__.get('_force_exit_snapshot') == snapshot:
+                    self.__dict__['_force_exit_snapshot'] = None
+        return saved
 
     def _replay_scanner_audits(self, *, include_holds=False):
         replay = getattr(self.__dict__.get('data_manager'), 'replay_audit_events', None)
@@ -12603,6 +12702,10 @@ class Label_Match(tk.Tk):
 
     def _delete_current_set_state(self):
         self.data_manager.delete_current_state()
+        lock = self.__dict__.get('_force_exit_snapshot_lock')
+        if lock is not None:
+            with lock:
+                self.__dict__['_force_exit_snapshot'] = None
 
     def _flush_data_manager_if_supported(self, timeout=5.0):
         flush = getattr(self.data_manager, "flush", None)
@@ -22602,6 +22705,10 @@ class Label_Match(tk.Tk):
         )
         frozen = (self.__dict__.get('_csv_completed_set') or {}).get('current_snapshot') or {}
         csv_completed = bool(frozen and str(frozen.get('id') or '') == str(self.current_set_info.get('id') or ''))
+        current = frozen if csv_completed else self.__dict__.get('current_set_info') or {}
+        if current.get('raw') or 'scanner_failure_result' in current:
+            self._remember_force_exit_checkpoint(
+                {'current_set_info': current, 'timestamp': datetime.now().isoformat()}, preserve_audits=True)
         if (not lease_failure and not policy_notice and not csv_completed
                 and retry_action is None and self._hold_storage_checkpoint_failure(error)):
             return False

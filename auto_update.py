@@ -1926,6 +1926,10 @@ def assert_version_writer(app_root: Path, *, source: str, environ: Mapping[str, 
     own_sha = _sha(read_json(app_root.parent / "portable-manifest.json").get("source_commit"))
     if own_sha != active["sha"]:
         raise ValueError("writer code is not the active version")
+    if source == "gui_force_exit_checkpoint" and state and (
+            state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}
+            or state.get("recovery_pending") is True):
+        raise ValueError("bounded force exit requires settled update state")
     deferred_at = environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
     if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"} and deferred_at:
         # The caller already holds writer admission. Do not invert the lock order

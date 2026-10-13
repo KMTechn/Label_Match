@@ -147,6 +147,8 @@ class DataManager:
         self._writer_error_keys = {}
         self._recovered_audit_errors = set()
         self._state_lock = threading.RLock()
+        self._checkpoint_generation = 0
+        self._force_exit_prepared_checkpoint = None
         self._archived_audit_outbox = []
         self._audit_csv_lock = threading.RLock()
         self._audit_csv_indexes = {}
@@ -549,21 +551,50 @@ class DataManager:
             raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
         return True
     @contextmanager
-    def _bounded_save_lock(self, lock):
-        if not lock.acquire(timeout=STATE_SAVE_LOCK_TIMEOUT_SECONDS):
+    def _bounded_save_lock(self, lock, *, timeout_seconds=STATE_SAVE_LOCK_TIMEOUT_SECONDS):
+        if not lock.acquire(timeout=timeout_seconds):
             raise TimeoutError("저장 잠금 대기 상한")
         try:
             yield
         finally:
             lock.release()
 
-    def save_current_state(self, state_data, *, _completed_audit_keys=()):
+    def save_current_state(self, state_data, *, _completed_audit_keys=(), _force_exit=False,
+                           _force_exit_generation=None):
         checkpoint_write = False
+        deadline = time.monotonic() + 0.25 if _force_exit else None
+        lock_timeout = 0 if _force_exit else STATE_SAVE_LOCK_TIMEOUT_SECONDS
         try:
-            with self._bounded_save_lock(self._state_lock):
+            with self._bounded_save_lock(self._state_lock, timeout_seconds=lock_timeout):
                 state_path = os.path.join(self.save_directory, self._current_state_filename())
+                if _force_exit:
+                    if _force_exit_generation != self.__dict__.get('_checkpoint_generation', 0):
+                        return False  # Normal persistence superseded this memory snapshot.
+                    payload = self.__dict__.get('_force_exit_prepared_checkpoint')
+                    if not payload:
+                        return False
+                    # Metadata, audit references and schema were proved during
+                    # normal saving. Reuse only those bounded immutable bytes;
+                    # never walk/serialize a large audit backlog in this hook.
+                    prepared = json.loads(payload.decode('utf-8'))
+                    snapshot = json.loads(json.dumps(sanitize_persistent_value(state_data),
+                                                     cls=self._datetime_encoder()))
+                    if prepared['current_set_info'] != snapshot.get('current_set_info'):
+                        return False
+                    audits = {item['details']['scanner_audit']['key']: item
+                              for item in prepared.get('scanner_audit_outbox', [])}
+                    if any(audits.get(item['details']['scanner_audit']['key']) != item
+                           for item in snapshot.get('scanner_audit_outbox', [])):
+                        return False
+                    if time.monotonic() >= deadline:
+                        return False
+                    write_checked_bytes(state_path, payload, allowed_root=self.save_directory)
+                    self._checkpoint_generation += 1
+                    self._audit_outbox = list(audits.values())
+                    self._last_state_write_failure = None
+                    return True
                 state_data_with_worker = sanitize_persistent_value(dict(state_data or {}))
-                with self._bounded_save_lock(self._audit_csv_lock):
+                with self._bounded_save_lock(self._audit_csv_lock, timeout_seconds=lock_timeout):
                     if self._audit_csv_prefixes:
                         state_data_with_worker['scanner_audit_csv_prefixes'] = dict(self._audit_csv_prefixes)
                 pending = {item['details']['scanner_audit']['key']: item for item in self._audit_outbox}
@@ -642,14 +673,18 @@ class DataManager:
                                   cls=self._datetime_encoder()).encode('utf-8')) > RECOVERY_MAX_BYTES:
                     raise ValueError('current business state exceeds recovery size limit')
                 checkpoint_payload = encoded.encode('utf-8')
+                self._force_exit_prepared_checkpoint = checkpoint_payload if len(checkpoint_payload) <= 65536 else None
                 checkpoint_write = True
                 write_checked_bytes(state_path, checkpoint_payload,
                                     allowed_root=self.save_directory)
+                self._checkpoint_generation = self.__dict__.get('_checkpoint_generation', 0) + 1
                 self._audit_outbox = list(pending.values())
                 self._last_state_write_failure = None
                 self._state_write_failure_attempts.pop(str(current.get('id') or ''), None)
                 return True
         except TimeoutError as e:
+            if _force_exit:
+                return False
             self._last_state_write_failure = None
             if checkpoint_write:
                 # Writer admission waits do not prove a checkpoint IO failure.
@@ -657,6 +692,8 @@ class DataManager:
             print(f"임시 상태 저장 실패: {e}")
             return False
         except Exception as e:
+            if _force_exit:
+                return False
             self._last_state_write_failure = None
             if checkpoint_write and isinstance(e, OSError):
                 current = (state_data or {}).get('current_set_info') or {}
@@ -756,6 +793,8 @@ class DataManager:
                     source_input_tag_id=source_input_tag_id, snapshot=snapshot,
                     reason='STORAGE_WRITE_FAILURE', held_by='SYSTEM_STORAGE_CHECK')
             snapshot = json.loads(held['snapshot_json'])
+            self._force_exit_prepared_checkpoint = None
+            self._checkpoint_generation = self.__dict__.get('_checkpoint_generation', 0) + 1
             archive = snapshot['archive_path']
             if os.path.lexists(active):
                 quarantine_entry(active, archive, description=description,
@@ -797,6 +836,8 @@ class DataManager:
                     or outbox.get_workbench_hold(str(held['set_id'])) != held
                     or describe_entry(active, allowed_root=root) != description):
                 raise OSError('held checkpoint changed before startup isolation')
+            self._force_exit_prepared_checkpoint = None
+            self._checkpoint_generation = self.__dict__.get('_checkpoint_generation', 0) + 1
             quarantine_entry(active, archive, description=description, allowed_root=root)
 
     def _save_completed_worker_identity(self, current):
@@ -863,5 +904,9 @@ class DataManager:
                 return
             state_path = os.path.join(self.save_directory, self._current_state_filename())
             if os.path.exists(state_path):
-                try: unlink_checked(state_path, allowed_root=self.save_directory)
+                try:
+                    unlink_checked(state_path, allowed_root=self.save_directory)
+                    self._checkpoint_generation = self.__dict__.get('_checkpoint_generation', 0) + 1
                 except Exception as e: print(f"임시 상태 파일 삭제 실패: {e}")
+            else:
+                self._checkpoint_generation = self.__dict__.get('_checkpoint_generation', 0) + 1
