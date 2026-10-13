@@ -42,7 +42,8 @@ def _assert_generation_writer_added(candidate, old):
 
 
 def _release_digest(data: bytes) -> str:
-    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+    raw = data if data.startswith(b"MZ") else data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(raw).hexdigest()
 
 
 @pytest.mark.parametrize("case,expected", [
@@ -492,6 +493,9 @@ def nextfix_archive_layouts(tmp_path_factory):
         spec.loader.exec_module(builder)
         layout = root / (name + "-layout")
         builder._copy_application(source, layout / "app")
+        site_packages = layout / "app/site-packages"
+        site_packages.mkdir()
+        builder._copy_third_party(site_packages)
         (layout / "runtime").mkdir()
         for relative in ("INSTALL_THIS_PC.ps1", "launch-label-match.cmd", "tools/bootstrap_integrity.ps1",
                          "tools/label_writer_fence.ps1", "tools/label_writer_fence_contract.json"):

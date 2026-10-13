@@ -1256,6 +1256,11 @@ def _label_match_main(tmp_path, monkeypatch, pending):
         "run_guarded_entrypoint": lambda *_a, **_k: 0,
         "_run_label_match_application": lambda: None,
     }
+    constants = [node for node in tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id in {
+                     "LABEL_MATCH_NEW_SCREEN_ARGUMENT", "LABEL_MATCH_SCREEN_HOST"}
+                     for target in node.targets)]
+    exec(compile(ast.Module(body=constants, type_ignores=[]), str(source), "exec"), namespace)
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), "exec"), namespace)
     return namespace["main"]([]), onboarded, reports
 

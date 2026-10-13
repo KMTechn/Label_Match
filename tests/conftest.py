@@ -197,3 +197,12 @@ def late_result_adapter_factory(tmp_path, monkeypatch, request):
     original = __import__("package_logistics")._utc_before
     monkeypatch.setattr(__import__("package_logistics"), "_utc_before", original)
     return lambda transport: PackageLateAdapter(tmp_path, request.param, transport, monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _nonproduction_registration_origin(monkeypatch):
+    # Synthetic registration must never select the operational service by default.
+    address = "https://unreachable.invalid"
+    monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_SERVER_BASE_URL", address)
+    from tools import register_label_match_worker_pc as registration
+    monkeypatch.setattr(registration, "DEFAULT_SERVER_BASE_URL", address)
