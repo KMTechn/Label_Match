@@ -7,6 +7,7 @@ import socket
 import sys
 import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 
 SHELL = Path(__file__).resolve().parent
@@ -270,18 +271,26 @@ class NativeHost:
     def pick_file(self, title, kinds=None):
         # pywebview 6.2.1 has no title argument for create_file_dialog.
         # Only return the path; never open/stat/read the selected file.
+        # Posted to the UI thread; the owner keeps pumping until the Future settles (bridge._wait_picked).
         import webview
-        path = None
+        from System import Action
+        picked = Future()
         def choose():
-            nonlocal path
-            form = self.window.native
-            if self._closed or self.bridge._closed or self.bridge._exit_requested or form is None or form.IsDisposed: return
-            file_types = tuple(f'{description} ({patterns})' for description, patterns in (kinds or ()))
-            selected = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False, file_types=file_types)
-            if selected and not self._closed and not self.bridge._closed and not self.bridge._exit_requested:
-                path = selected[0]
-        self.ui(choose)
-        return path
+            path = None
+            try:
+                form = self.window.native
+                if self._closed or self.bridge._closed or self.bridge._exit_requested or form is None or form.IsDisposed: return
+                file_types = tuple(f'{description} ({patterns})' for description, patterns in (kinds or ()))
+                selected = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False, file_types=file_types)
+                if selected and not self._closed and not self.bridge._closed and not self.bridge._exit_requested:
+                    path = selected[0]
+            except Exception as error: picked.set_exception(error)
+            finally:
+                if not picked.done(): picked.set_result(path)
+        form = self.window.native
+        if form is None or form.IsDisposed: picked.set_result(None)
+        else: form.BeginInvoke(Action(choose))
+        return picked
 
     def page_signal(self, name, value):
         with self._page_lock: self._signals.append((name, value))
@@ -549,9 +558,8 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
     bridge.set_exit_handler(window.destroy)
     picker_closed = threading.Event()
     def picker(title, kinds=None):
-        if picker_closed.is_set(): return None
-        path = native.pick_file(title, kinds)
-        return None if picker_closed.is_set() else path
+        # A Future; the bridge drops it once the picker is detached (closing/closed).
+        return None if picker_closed.is_set() else native.pick_file(title, kinds)
     def shown():
         if not picker_closed.is_set(): bridge.set_file_picker(picker)
     def detach_picker():

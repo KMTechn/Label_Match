@@ -5,7 +5,7 @@ import copy
 import queue
 import threading
 import time
-from concurrent.futures import Future
+from concurrent.futures import Future, wait as wait_futures
 from collections import OrderedDict
 
 from journal import Events, Journal
@@ -37,6 +37,7 @@ class Bridge:
         self._exit_handler, self._exit_requested = None, False
         self._file_picker = None
         self._file_pick_lock = threading.Lock()
+        self._idle = None
         self._publisher_stop = threading.Event()
         self._initialized = Future()
         self._owner = None if self._external else threading.Thread(target=self._run, name='shell-owner', daemon=True)
@@ -47,9 +48,13 @@ class Bridge:
         self._publisher.start()
         self.pedal.set_callback(self._pedal_changed)
 
-    def attach_owner(self, processor=None):
-        """External owner only: call once on the owner thread before pump()."""
+    def attach_owner(self, processor=None, idle=None):
+        """External owner only: call once on the owner thread before pump().
+        idle() runs on the owner thread while it waits inside pick_file (Tk: root.update) so the
+        app's own timers keep running; the bridge keeps pumping its queue itself."""
         if not self._external or self._initialized.done(): raise RuntimeError('attach_owner: external owner only, once')
+        if idle is not None and not callable(idle): raise TypeError('idle must be callable or None')
+        self._idle = idle
         try: self._init_owner(processor)
         except Exception as error:
             self._initialized.set_exception(error)
@@ -88,9 +93,11 @@ class Bridge:
         if picker is not None and not callable(picker): raise TypeError('picker must be callable or None')
         self._file_picker = picker
 
-    def pick_file(self, title, kinds=None) -> str | None:
-        """Blocking owner operation. Reserve before queueing so a second caller
-        returns busy immediately instead of opening another dialog afterwards."""
+    def pick_file(self, title, kinds=None, timeout=None) -> str | None:
+        """Owner operation; returns when the dialog settles. While the host's dialog is open
+        the owner keeps pumping (queued scans/state/push_state, gap timer, idle hook).
+        Cancel, window closing or timeout (seconds, default none) -> None. Reserve before
+        queueing so a second caller returns busy immediately instead of opening another dialog."""
         if not self._file_pick_lock.acquire(blocking=False):
             self.events.record(self.src, 'pick_file', result='busy')
             return None
@@ -98,7 +105,7 @@ class Bridge:
             if self._file_picker is None or self._closed or self._exit_requested:
                 self.events.record(self.src, 'pick_file', result='unavailable')
                 return None
-            try: return self._call('pick_file', (title, copy.deepcopy(kinds)))
+            try: return self._call('pick_file', (title, copy.deepcopy(kinds), timeout))
             except Exception:
                 self.events.record(self.src, 'pick_file', result='unavailable')
                 return None
@@ -227,7 +234,12 @@ class Bridge:
         if op == 'pick_file':
             picker, path, result = self._file_picker, None, 'unavailable'
             if picker is not None and not self._closed and not self._exit_requested:
-                try: path = picker(*value)
+                title, kinds, timeout = value
+                try:
+                    path = picker(title, kinds)
+                    # The host returns a Future (dialog on the UI thread); a plain value = synchronous fake.
+                    if isinstance(path, Future): path = self._wait_picked(path, picker, timeout)
+                except TimeoutError: path, result = None, 'timeout'
                 except Exception: pass  # Never log exception text: it may contain a path/title.
                 else:
                     if self._closed or self._exit_requested or self._file_picker is not picker:
@@ -283,6 +295,23 @@ class Bridge:
             self.push({**(value or {}), 'kind': 'state', 'state': self._snapshot()})
             return True
         raise ValueError('unknown owner operation')
+
+    def _wait_picked(self, pending, picker, timeout):
+        """Owner thread: keep the owner pump going until the UI-thread dialog settles.
+        Closing/exit/detached picker -> None; past the deadline -> TimeoutError (a late
+        selection is dropped)."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not pending.done():
+            if self._owner_done or self._closed or self._exit_requested or self._file_picker is not picker: return None
+            if deadline is not None and time.monotonic() >= deadline: raise TimeoutError
+            self.pump()
+            if self._idle is not None and not self._owner_done:
+                try: self._idle()
+                except Exception as error:
+                    self._idle = None  # A destroyed Tk root must not loop errors; the bridge still pumps.
+                    self.events.record(self.src, 'idle_error', error=type(error).__name__)
+            wait_futures((pending,), timeout=0.01)
+        return pending.result()
 
     def _play(self, seq, sound):
         try:
@@ -388,7 +417,7 @@ class Bridge:
             self._initialized.set_exception(error)
             return
         self._initialized.set_result(True)
-        while True:
+        while not self._owner_done:  # a pick_file wait may have consumed 'close'
             try: op, value, future = self._tasks.get(timeout=0.05)
             except queue.Empty:
                 self._expire_pending()

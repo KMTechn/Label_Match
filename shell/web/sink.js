@@ -31,12 +31,12 @@ window.KMScanSink = (() => {
     return null;
   }
   function logKey(event) {
-    // Editable fields (PIN/password included): never log code/key of characters — only Enter/Escape/Tab names (same rule as frame scan.js 071f2f7e).
-    if (event.editing) { keys.push({type:event.type,t:stamp(event),editing:true,...(['Enter','Escape','Tab'].includes(event.key) ? {key:event.key} : {})}); return; }
-    keys.push({type:event.type,key:event.key,code:event.code,keyCode:event.keyCode,
-      shift:event.shiftKey,caps:mod(event,'CapsLock'),numlock:mod(event,'NumLock'),alt:event.altKey,
-      ctrl:event.ctrlKey,meta:event.metaKey,isComposing:event.isComposing,repeat:event.repeat,t:stamp(event)});
+    // Inside and outside fields: no key/code value of character keys (a PIN typed outside its field leaves 0) —
+    // order, time and editing flag only; named keys Enter/Escape/Tab/Backspace/F12 by name (same rule as frame scan.js 280f5625).
+    keys.push({type:event.type,t:stamp(event),editing:event.editing,...(['Enter','Escape','Tab','Backspace','F12'].includes(event.key) ? {key:event.key} : {})});
   }
+  // While a password/PIN field is visible, keys typed outside it build no scan — dropped, scan() 0 (frame scan.js 280f5625).
+  const secret = () => [...document.querySelectorAll('input[type=password], [data-pin]')].some(node => !node.closest('[hidden]'));
   function eventLog(ev, fields = {}) { events.push({ev, ...fields}); }
   function flush() {
     if (keys.length) { events.push({ev:'keys',batch:keys}); keys = []; }
@@ -111,7 +111,7 @@ window.KMScanSink = (() => {
     if (event.ctrlKey || event.metaKey) {
       if (event.code !== 'KeyV') event.preventDefault(); return;
     }
-    if (event.altKey && /^Numpad[0-9]$/.test(event.code)) { eventLog('alt_numpad',{code:event.code}); return; }
+    if (event.altKey && /^Numpad[0-9]$/.test(event.code)) { eventLog('alt_numpad'); return; }
     if (event.code === 'Enter' || event.code === 'NumpadEnter' || event.code === 'Tab' || event.key === 'Enter' || event.key === 'Tab') {
       event.preventDefault(); submit(event); return;
     }
@@ -122,7 +122,7 @@ window.KMScanSink = (() => {
     }
     const fromCode = physical(event);
     const fromKey = event.key.length === 1 && /^[\x20-\x7e]$/.test(event.key) && !event.isComposing && event.keyCode !== 229 ? event.key : null;
-    if (fromKey !== null && fromCode !== null && fromKey !== fromCode) eventLog('key_diag',{key:fromKey,code:event.code,mapped:fromCode,t:stamp(event)/1000});
+    if (fromKey !== null && fromCode !== null && fromKey !== fromCode) eventLog('key_diag',{t:stamp(event)/1000});
     const character = fromKey !== null ? fromKey : fromCode;
     event.preventDefault();
     if (character !== null) { nKeys++; append(character,fromKey !== null ? 'key' : 'code',event); }
@@ -130,7 +130,7 @@ window.KMScanSink = (() => {
   function press(event) {
     if (event.editing) return;
     if (event.ctrlKey || event.metaKey || event.altKey || event.key.length !== 1 || event.key.charCodeAt(0) < 0x20) { event.preventDefault(); return; }
-    event.preventDefault(); nKeys++; append(event.key,'keypress',event); eventLog('keypress_path',{key:event.key});
+    event.preventDefault(); nKeys++; append(event.key,'keypress',event); eventLog('keypress_path');
   }
   function up(event) {
     if (event.code === 'F12' || event.key === 'F12') {
@@ -146,6 +146,7 @@ window.KMScanSink = (() => {
   }
   function capture(event) {
     const editing = editable(document.activeElement);
+    if (!editing && event.code !== 'F12' && event.key !== 'F12' && secret()) { logKey({type:event.type,timeStamp:event.timeStamp,editing}); return; }
     const caps = mod(event,'CapsLock'), numlock = mod(event,'NumLock');
     const copy = {type:event.type,key:event.key || '',code:event.code || '',keyCode:event.keyCode,shiftKey:event.shiftKey,
       altKey:event.altKey,ctrlKey:event.ctrlKey,metaKey:event.metaKey,isComposing:event.isComposing,repeat:event.repeat,
@@ -197,6 +198,6 @@ window.KMScanSink = (() => {
     window.addEventListener('blur',()=>focusEvent('blur')); window.addEventListener('focus',()=>focusEvent('focus'));
     setInterval(flush,250);
   }
-  return {start,flush,editable,completePHS2,focusEvent,state:() => ({buffer,seq,profile,paths:{...paths},evidence:frame ? {...frame} : null,
+  return {start,flush,editable,completePHS2,focusEvent,secret,state:() => ({buffer,seq,profile,paths:{...paths},evidence:frame ? {...frame} : null,
     pressed,generation,t_attach:attachedAt,recovered,queued:waiting ? waiting.queue.length : 0,log_keys:keys.length,log_events:events.length})};
 })();
