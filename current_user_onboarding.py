@@ -41,7 +41,7 @@ from user_relay import (
     release_user_relay_stop_marker,
     remove_user_relay_autostart,
     request_user_relay_stop,
-    start_user_relay_process,
+    reuse_or_start_user_relay_process,
     user_relay_stop_path,
 )
 from writer_session_fence import writer_admission, writer_sink
@@ -1127,7 +1127,7 @@ def onboard_current_user(
     ] = read_legacy_system_task_quiescence,
     relay_launcher: Callable[
         [str | os.PathLike[str]], Mapping[str, Any]
-    ] = start_user_relay_process,
+    ] = reuse_or_start_user_relay_process,
     defer_canonical_relay_start: bool = False,
     defer_machine_worker_relay_start: bool = False,
     _startup: bool = False,

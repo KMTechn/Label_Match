@@ -404,6 +404,108 @@ def remove_user_relay_autostart(
     }
 
 
+def _existing_user_relay_owner(root: Path, direct_sync_root: Path, *, is_bootstrap: bool) -> dict[str, Any] | None:
+    if user_relay_stop_path(direct_sync_root).exists():
+        return None
+    lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
+    if lease is not None:
+        lease.close()
+        return None
+    status = _read_json(user_relay_status_path(direct_sync_root))
+    owner = _fresh_persistent_owner(
+        status,
+        app_root=_logical_application_root(root),
+        direct_sync_root=direct_sync_root,
+    )
+    if owner is None or not is_bootstrap:
+        return owner
+    from auto_update import control_root, load_policy, update_lock, read_json, version_bundle, process_snapshot, process_matches_trial, _utc
+    code = root / "app" if (root / "app").is_dir() else root
+    control = control_root(code)
+    if control is None:
+        return None
+    policy = load_policy(control)
+    with update_lock(control, policy["operator_sid"]):
+        active = read_json(control / "active.json")
+        state = read_json(control / "transition.json")
+        expected_root = version_bundle(control, active["sha"])
+        rows = [row for row in process_snapshot(control) if row.get("pid") == owner["process_id"]]
+        if len(rows) != 1 or os.path.normcase(str(status.get("code_root") or "")) != os.path.normcase(str(expected_root)):
+            return None
+        row = rows[0]
+        if (row.get("observable") is not True or row.get("sha") != active["sha"]
+                or row.get("sid") != policy["operator_sid"] or row.get("role") != "relay"
+                or row.get("ordinary_user") is not True
+                or _utc(row.get("created_at")) > _utc(status.get("updated_at"))):
+            return None
+        if state.get("phase") in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
+            if status.get("update_nonce") != state.get("nonce") or not process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="relay"):
+                return None
+        elif state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
+            return None
+    return owner
+
+
+def _reuse_existing_user_relay(
+    existing_owner: Callable[[], dict[str, Any] | None],
+    survival: float,
+    wait: Callable[[float], None],
+) -> dict[str, Any] | None:
+    # A duplicate persistent relay exits cleanly when the instance lease is held.
+    # Reuse only the same fresh live owner across the normal survival window;
+    # zero exit by itself also covers stop-marker and ordinary loop termination.
+    owner = existing_owner()
+    if owner is None:
+        return None
+    wait(survival)
+    confirmed_owner = existing_owner()
+    if confirmed_owner is None or confirmed_owner["process_id"] != owner["process_id"]:
+        raise UserRelayError("existing current-user relay ownership changed during survival readback")
+    return {
+        "status": "ALIVE",
+        "process_id": confirmed_owner["process_id"],
+        "survival_seconds": survival,
+        "existing_relay_reused": True,
+        "owner_status_updated_at": confirmed_owner["updated_at"],
+    }
+
+
+def reuse_or_start_user_relay_process(
+    app_root: str | os.PathLike[str],
+    *,
+    launcher: Callable[[Sequence[str]], Any] | None = None,
+    survival_seconds: float = 2.0,
+    bootstrap_readiness_seconds: float = 75.0,
+    wait: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Reuse a proven live relay without writer admission, else start one.
+
+    Reuse launches and writes nothing; it keeps every start_user_relay_process
+    ownership check. A live relay holds writer admission for its whole cycle
+    (run_persistent_relay_loop), so the start probe must not gate reuse.
+    """
+    if launcher is None and os.name == "nt":
+        from current_user_onboarding import resolve_current_user_onboarding_paths
+
+        root = Path(app_root).expanduser().resolve()
+        direct_sync_root = resolve_current_user_onboarding_paths(root).direct_sync_root
+        is_bootstrap = "--bootstrap" in build_user_relay_command(app_root)
+        reused = _reuse_existing_user_relay(
+            lambda: _existing_user_relay_owner(root, direct_sync_root, is_bootstrap=is_bootstrap),
+            max(0.0, float(survival_seconds)),
+            wait,
+        )
+        if reused is not None:
+            return reused
+    return start_user_relay_process(
+        app_root,
+        launcher=launcher,
+        survival_seconds=survival_seconds,
+        bootstrap_readiness_seconds=bootstrap_readiness_seconds,
+        wait=wait,
+    )
+
+
 @writer_sink("user_relay_process_start")
 def start_user_relay_process(
     app_root: str | os.PathLike[str],
@@ -426,62 +528,11 @@ def start_user_relay_process(
     is_bootstrap = "--bootstrap" in command
 
     def existing_owner() -> dict[str, Any] | None:
-        if user_relay_stop_path(direct_sync_root).exists():
-            return None
-        lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
-        if lease is not None:
-            lease.close()
-            return None
-        status = _read_json(user_relay_status_path(direct_sync_root))
-        owner = _fresh_persistent_owner(
-            status,
-            app_root=_logical_application_root(root),
-            direct_sync_root=direct_sync_root,
-        )
-        if owner is None or not is_bootstrap:
-            return owner
-        from auto_update import control_root, load_policy, update_lock, read_json, version_bundle, process_snapshot, process_matches_trial, _utc
-        code = root / "app" if (root / "app").is_dir() else root
-        control = control_root(code)
-        if control is None:
-            return None
-        policy = load_policy(control)
-        with update_lock(control, policy["operator_sid"]):
-            active = read_json(control / "active.json")
-            state = read_json(control / "transition.json")
-            expected_root = version_bundle(control, active["sha"])
-            rows = [row for row in process_snapshot(control) if row.get("pid") == owner["process_id"]]
-            if len(rows) != 1 or os.path.normcase(str(status.get("code_root") or "")) != os.path.normcase(str(expected_root)):
-                return None
-            row = rows[0]
-            if (row.get("observable") is not True or row.get("sha") != active["sha"]
-                    or row.get("sid") != policy["operator_sid"] or row.get("role") != "relay"
-                    or row.get("ordinary_user") is not True
-                    or _utc(row.get("created_at")) > _utc(status.get("updated_at"))):
-                return None
-            if state.get("phase") in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
-                if status.get("update_nonce") != state.get("nonce") or not process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="relay"):
-                    return None
-            elif state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
-                return None
-        return owner
+        return _existing_user_relay_owner(root, direct_sync_root, is_bootstrap=is_bootstrap)
 
-    # A duplicate persistent relay exits cleanly when the instance lease is held.
-    # Reuse only the same fresh live owner across the normal survival window;
-    # zero exit by itself also covers stop-marker and ordinary loop termination.
-    owner = existing_owner()
-    if owner is not None:
-        wait(survival)
-        confirmed_owner = existing_owner()
-        if confirmed_owner is None or confirmed_owner["process_id"] != owner["process_id"]:
-            raise UserRelayError("existing current-user relay ownership changed during survival readback")
-        return {
-            "status": "ALIVE",
-            "process_id": confirmed_owner["process_id"],
-            "survival_seconds": survival,
-            "existing_relay_reused": True,
-            "owner_status_updated_at": confirmed_owner["updated_at"],
-        }
+    reused = _reuse_existing_user_relay(existing_owner, survival, wait)
+    if reused is not None:
+        return reused
     from auto_update import start_ordinary_process
     process = start_ordinary_process(command, cwd=str(Path(app_root).expanduser().resolve()))
     if process.pid <= 0:

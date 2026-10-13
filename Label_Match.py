@@ -23896,6 +23896,21 @@ def _first_run_server_base_url(pending_worker):
     return LABEL_MATCH_DIRECT_SYNC_DEFAULT_SERVER_BASE_URL
 
 
+def _onboarding_refusal_codes(exc):
+    # Type names and fixed codes only: never messages, paths or secrets.
+    cause, codes = exc, {"error_type": type(exc).__name__}
+    while cause is not None:
+        code = getattr(cause, "code", None)
+        if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code):
+            codes.update(reason_code=code, reason_type=type(cause).__name__)
+            break
+        cause = cause.__cause__
+    cause_code = getattr(exc, "cause_code", None)
+    if isinstance(cause_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", cause_code):
+        codes["cause_code"] = cause_code
+    return codes
+
+
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     startup_identity, identity_unknown = {}, False
@@ -23938,6 +23953,9 @@ def main(argv=None):
                     _label_match_startup_trace("bootstrap_integrity_absent")
                     _show_bootstrap_integrity_absent_warning()
             except WriterFenceError as exc:
+                _label_match_startup_trace(
+                    "current_user_onboarding_fenced", **_onboarding_refusal_codes(exc)
+                )
                 _show_installation_recovery_required(exc)
                 return ONBOARDING_EXIT_CODE
             except CurrentUserOnboardingError as exc:
@@ -23945,6 +23963,7 @@ def main(argv=None):
                     "current_user_onboarding_blocked",
                     status=exc.status,
                     report_path=str(exc.report_path),
+                    **_onboarding_refusal_codes(exc),
                 )
                 exc._startup_check_refusal = True
                 _show_first_run_onboarding_error(exc)

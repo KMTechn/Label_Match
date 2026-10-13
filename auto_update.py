@@ -981,6 +981,10 @@ def update_lock(control: Path, operator_sid: str, *, trial: bool = False):
 
 @writer_sink("auto_update_fixed_helper")
 def fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> str:
+    return _run_fixed_helper(control, mode, code_root=code_root)
+
+
+def _run_fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> str:
     import subprocess
 
     root = control.parent / "current"
@@ -1004,7 +1008,10 @@ def fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> 
 
 
 def process_snapshot(control: Path) -> list[dict[str, Any]]:
-    rows = json.loads(fixed_helper(control, "Observe"))
+    # Observe only lists processes (apply_prepared_update.ps1 exits before any
+    # Apply/Verify step) and mutates no product state, so it takes no writer
+    # admission: a live relay holds admission for its whole cycle.
+    rows = json.loads(_run_fixed_helper(control, "Observe"))
     if not isinstance(rows, list):
         raise ValueError("update process observation is incomplete")
     return rows
