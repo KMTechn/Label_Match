@@ -51,7 +51,15 @@ def _set_shutdown_stall_notice(data_scope, *, stalled: bool) -> None:
 
     path = Path(data_scope) / "label_match_shutdown_stall.json"
     if stalled:
-        path.write_text(json.dumps({"pid": os.getpid(), "executable": sys.executable}), encoding="utf-8")
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump({"pid": os.getpid(), "executable": sys.executable}, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
     else:
         path.unlink(missing_ok=True)
 
@@ -468,6 +476,10 @@ def run_guarded_entrypoint(
     previous = getattr(_active_instance_lease, "lease", None)
     _active_instance_lease.lease = lease
     try:
+        # Read the previous close evidence before ordinary state/outbox replay.
+        notice = Path(data_scope) / "label_match_shutdown_stall.json"
+        if notice.is_file():
+            print("이전 종료가 끝나지 않았습니다. 저장된 작업과 보낼 것을 다시 확인합니다.")
         # Stale diagnostics never become an additional startup lock.
         _try_update_shutdown_stall_notice(data_scope, stalled=False)
         result = start()

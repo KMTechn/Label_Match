@@ -35,6 +35,18 @@ READY_CHECKS = (
 APPLY_PROGRESS_TIMEOUT = 60
 STARTUP_WAIT_SECONDS = 240
 STARTUP_PROGRESS_MESSAGE = "업데이트가 진행 중입니다. 잠시 후 다시 실행하세요."
+UPDATE_MUTEX_RECOVERY_MESSAGE = (
+    "설치 복구 필요: 업데이트 상태와 설치 파일을 확인하지 못해 시작을 멈췄습니다. "
+    "자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
+)
+
+
+class UpdateMutexRecoveryRequired(RuntimeError):
+    """An abandoned owner never grants permission to use unverified code."""
+
+    def __init__(self, policy):
+        super().__init__("UPDATE_MUTEX_ABANDONED_RECOVERY_REQUIRED")
+        self.policy = policy
 
 
 def support_record(fields=None, *, stage):
@@ -962,7 +974,7 @@ def prepared_marker_sha256(policy: Mapping[str, Any] | None) -> str | None:
 
 
 @contextmanager
-def update_lock(control: Path, operator_sid: str, *, trial: bool = False):
+def update_lock(control: Path, operator_sid: str, *, trial: bool = False, abandoned_check=None):
     """One cross-session mutex shared by SYSTEM and the installed operator SID."""
     import ctypes
     from ctypes import wintypes
@@ -1000,10 +1012,14 @@ def update_lock(control: Path, operator_sid: str, *, trial: bool = False):
         result = kernel.WaitForSingleObject(handle, 5000)
         acquired = result in {0, 0x80}
         if result == 0x80:
-            raise RuntimeError("update mutex ownership was abandoned")
+            if abandoned_check is None or trial:
+                raise RuntimeError("update mutex ownership was abandoned")
+            # WAIT_ABANDONED grants ownership. Keep it until the caller has
+            # proved the durable state and installed bytes, before yielding.
+            abandoned_check()
         if result == 0x102:
             raise RuntimeError("update mutex ownership is busy")
-        if result != 0:
+        if result not in {0, 0x80}:
             raise OSError(ctypes.get_last_error(), "update mutex wait failed")
         yield
     finally:
@@ -2327,12 +2343,85 @@ def startup_bootstrap_reason(sha: str, active: Mapping[str, Any], state, prepare
     return None
 
 
+def _record_abandoned_update(policy, *, verified: bool) -> None:
+    fields = {"reason_code": ("UPDATE_MUTEX_ABANDONED_VERIFIED" if verified else
+                              "UPDATE_MUTEX_ABANDONED_RECOVERY_REQUIRED"),
+              "exit_code": 0 if verified else 20}
+    try:
+        emit_support_record(fields, stage="update_apply", policy=policy)
+    except Exception:
+        # A diagnostic failure cannot mask the recovery decision at the
+        # module-level entrypoint. Publish only fixed codes, never exceptions.
+        try:
+            print(json.dumps({**fields, "stage": "update_apply"}, sort_keys=True))
+        except Exception:
+            pass
+
+
+def _verify_abandoned_update(control: Path, policy: Mapping[str, Any]) -> None:
+    """Read-only proof while the abandoned update mutex is still owned."""
+    try:
+        state = read_json(control / "transition.json")
+        active = read_json(control / "active.json")
+        if state.get("recovery_pending") is True:
+            raise ValueError("update recovery remains pending")
+        resolve_lifecycle_context(control.parent, expected_from_commit=_sha(active.get("sha")),
+                                  operation="register")
+        if (read_json(control / "transition.json") != state
+                or read_json(control / "active.json") != active or load_policy(control) != policy):
+            raise ValueError("update installation changed during abandoned-owner verification")
+    except Exception as error:
+        raise UpdateMutexRecoveryRequired(policy) from error
+    _record_abandoned_update(policy, verified=True)
+
+
+def _show_update_mutex_recovery_notice() -> None:
+    parent = None
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        parent = tk.Tk()
+        parent.withdraw()
+        messagebox.showerror("설치 복구 필요", UPDATE_MUTEX_RECOVERY_MESSAGE, parent=parent)
+    except Exception:
+        pass  # The fixed stderr guidance remains available when Tk cannot open.
+    finally:
+        if parent is not None:
+            try:
+                parent.destroy()
+            except Exception:
+                pass
+
+
+def _refuse_abandoned_update(policy, *, role: str) -> int:
+    _record_abandoned_update(policy, verified=False)
+    try:
+        print(UPDATE_MUTEX_RECOVERY_MESSAGE + " [UPDATE_MUTEX_ABANDONED_RECOVERY_REQUIRED]", file=sys.stderr)
+    except Exception:
+        pass
+    if role == "gui":
+        try:
+            from startup_observation import observe_startup
+            observe_startup(["INSTALL_MANIFEST_MISMATCH"], identity={}, refused=False)
+        except Exception:
+            pass
+        try:
+            _show_update_mutex_recovery_notice()
+        except Exception:
+            pass
+    return 20
+
+
 def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> int | None:
     if arguments[:1] in (["--label-match-user-relay"], ["--label-match-direct-sync-relay"]):
         role = "relay"
     try:
         return _startup_gate(app_root, arguments, role=role)
+    except UpdateMutexRecoveryRequired as error:
+        return _refuse_abandoned_update(error.policy, role=role)
     except RuntimeError as error:
+        if str(error) == "update mutex ownership was abandoned":
+            return _refuse_abandoned_update(None, role=role)
         if str(error) != "update mutex ownership is busy":
             raise
         control = control_root(app_root)
@@ -2366,7 +2455,8 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
             except Exception:
                 pass
         return 20
-    with update_lock(control, policy["operator_sid"]):
+    with update_lock(control, policy["operator_sid"],
+                     abandoned_check=lambda: _verify_abandoned_update(control, policy)):
         state = optional_record(control / "transition.json")
         active = read_json(control / "active.json")
         release = version_manifest(app_root.parent)
@@ -2512,7 +2602,11 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
 def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
     try:
         return _bootstrap(app_root, arguments, role=role)
+    except UpdateMutexRecoveryRequired as error:
+        return _refuse_abandoned_update(error.policy, role=role)
     except RuntimeError as error:
+        if str(error) == "update mutex ownership was abandoned":
+            return _refuse_abandoned_update(None, role=role)
         if str(error) not in {"update mutex ownership is busy", "update mutex ownership was abandoned"}:
             raise
         record = support_record({"reason_code": "UPDATE_IN_PROGRESS"}, stage="update_apply")
@@ -2539,7 +2633,8 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
     deadline = time.monotonic() + STARTUP_WAIT_SECONDS
     while time.monotonic() < deadline:
         try:
-            with update_lock(control, policy["operator_sid"]):
+            with update_lock(control, policy["operator_sid"],
+                             abandoned_check=lambda: _verify_abandoned_update(control, policy)):
                 state = optional_record(control / "transition.json")
                 claim_status = apply_claim_status(control)
                 apply_started = apply_started or claim_status in {"LIVE", "UNKNOWN"} or bool(state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"})
@@ -2657,7 +2752,8 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
         time.sleep(0.1)
     if apply_claim_status(control) == "UNKNOWN":
         try:
-            with update_lock(control, policy["operator_sid"]):
+            with update_lock(control, policy["operator_sid"],
+                             abandoned_check=lambda: _verify_abandoned_update(control, policy)):
                 try:
                     stale_claim = time.time() - (control / "apply-claim.json").stat().st_mtime > 15 * 60
                 except OSError:

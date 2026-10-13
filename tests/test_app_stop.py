@@ -14,6 +14,13 @@ from terminal_operation_lease import OperationLeaseStore
 from tests.test_f6_pointer_confirmation import app
 
 
+@pytest.fixture(autouse=True)
+def isolated_stop_process_observation(monkeypatch):
+    # Existing stop/ACK tests have no native app processes. The process-tree
+    # behavior is exercised separately with synthetic identity snapshots.
+    monkeypatch.setattr(user_relay, '_app_stop_process_snapshot', lambda **k: [])
+
+
 def test_idle_request_reuses_relay_stop_and_normal_close(app, tmp_path):
     app.current_set_info["raw"] = []
     root = tmp_path / 'direct-sync'
@@ -55,7 +62,8 @@ def test_cli_stop_runs_before_startup_gate_or_credentials(monkeypatch, tmp_path,
 
     assert user_relay.main(['--request-app-stop', '--direct-sync-root', str(root)]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report['status'] == 'REQUESTED'
+    assert report['status'] == 'STOPPED'
+    assert report['remaining_process_count'] == 0
     assert report['relay']['status'] == 'ABSENT'
     assert user_relay.app_stop_request_path(root).is_file()
     forbidden.assert_not_called()
@@ -65,18 +73,21 @@ def test_cli_default_root_uses_existing_owner_paths(monkeypatch, tmp_path, capsy
     import current_user_onboarding
 
     root = tmp_path / 'owner-direct-sync'
-    resolve = Mock(return_value=SimpleNamespace(direct_sync_root=root))
+    resolve = Mock(return_value=SimpleNamespace(direct_sync_root=root, data_root=tmp_path / 'data'))
     monkeypatch.setattr(current_user_onboarding, 'resolve_current_user_onboarding_paths', resolve)
 
     assert user_relay.main(['--request-app-stop', '--app-root', str(tmp_path / 'app')]) == 0
-    assert json.loads(capsys.readouterr().out)['status'] == 'REQUESTED'
-    resolve.assert_called_once_with((tmp_path / 'app').resolve())
+    assert json.loads(capsys.readouterr().out)['status'] == 'STOPPED'
+    assert resolve.call_count == 2
+    assert all(call.args == ((tmp_path / 'app').resolve(),) for call in resolve.call_args_list)
     assert user_relay.app_stop_request_path(root).is_file()
 
 
 def test_cli_keeps_unknown_relay_absence_as_failure(monkeypatch, tmp_path, capsys):
     root = tmp_path / 'direct-sync'
-    monkeypatch.setattr(user_relay, 'request_user_relay_stop', lambda _root: {'status': 'UNKNOWN'})
+    monkeypatch.setattr(user_relay, 'request_user_relay_stop', lambda _root, **k: {'status': 'UNKNOWN'})
+    monkeypatch.setattr(user_relay, '_acquire_relay_lease', lambda _: None)
+    monkeypatch.setattr(user_relay, 'APP_STOP_TIMEOUT_SECONDS', 0)
 
     assert user_relay.main(['--request-app-stop', '--direct-sync-root', str(root)]) == 1
     assert json.loads(capsys.readouterr().out)['relay']['status'] == 'UNKNOWN'

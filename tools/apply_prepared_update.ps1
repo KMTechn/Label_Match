@@ -275,7 +275,7 @@ function Enter-LabelStartupUpdateAuthority {
     return [pscustomobject]@{ root=$root; policy=$policy }
 }
 
-function Get-StartupUpdateProcesses([string]$Root) {
+function Get-StartupUpdateProcesses([string]$Root, [string]$OperatorSid = '') {
     # Query only app-related rows; do not log other applications' command lines.
     if (-not ('KMTechStartupUpdateToken' -as [type])) {
         Add-Type -TypeDefinition @'
@@ -312,6 +312,24 @@ public static class KMTechStartupUpdateToken {
     $rows = @()
     foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
         $image = [string]$process.ExecutablePath
+        if (-not $image -and [string]$process.Name -match '^(pythonw?|Label_Match)\.exe$') {
+            # A terminating process may disappear between the list and path
+            # read. Retry only this identity, briefly; never wait indefinitely.
+            for ($attempt = 0; $attempt -lt 3 -and -not $image; $attempt++) {
+                if ($attempt -gt 0) { Start-Sleep -Milliseconds 100 }
+                $again = @(Get-CimInstance Win32_Process -Filter ("ProcessId=" + [int]$process.ProcessId) -ErrorAction Stop)
+                if ($again.Count -eq 0) { $process = $null; break }
+                $process = $again[0]
+                $image = [string]$process.ExecutablePath
+            }
+            if ($null -eq $process) { continue }
+            if (-not $image -and $OperatorSid) {
+                try {
+                    $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -ErrorAction Stop
+                    if ($owner.ReturnValue -eq 0 -and $owner.Sid -and [string]$owner.Sid -cne $OperatorSid) { continue }
+                } catch { } # Ambiguous ownership remains fail closed below.
+            }
+        }
         if (-not $image) {
             if ([string]$process.Name -match '^(pythonw?|Label_Match)\.exe$') {
                 $rows += @{pid=[int]$process.ProcessId;observable=$false;bootstrap=$false}
@@ -436,7 +454,7 @@ function Assert-StartupUpdateVersion([string]$Root, [string]$Candidate) {
 $authority = Enter-LabelStartupUpdateAuthority
 if ($Mode -ceq 'Authority') { exit 0 }
 if ($Mode -ceq 'Observe') {
-    $rows = Get-StartupUpdateProcesses $authority.root
+    $rows = Get-StartupUpdateProcesses $authority.root ([string]$authority.policy.operator_sid)
     ConvertTo-Json -InputObject @($rows) -Depth 8 -Compress
     exit 0
 }

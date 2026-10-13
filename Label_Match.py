@@ -373,6 +373,8 @@ LABEL_MATCH_SESSION_SYNC_PROCESS_TIMEOUT_SECONDS = 45
 LABEL_MATCH_SESSION_SYNC_TERMINATION_GRACE_SECONDS = 5
 LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS = 10
 LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS = 105
+LABEL_MATCH_APP_CLOSE_PROCESS_TIMEOUT_SECONDS = 45
+LABEL_MATCH_APP_CLOSE_EXIT_GRACE_SECONDS = 15
 LABEL_MATCH_TK_SHUTDOWN_THREAD_TIMEOUT_SECONDS = 5
 # Background lane work waits this long after the last scan's Enter.
 LABEL_MATCH_SCAN_QUIET_SECONDS = 1.0
@@ -5302,6 +5304,7 @@ class Label_Match(tk.Tk):
             100, self._process_initial_load_queue
         )
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self._app_stop_poll_after_id = self.after(500, self._poll_app_stop_request)
         self.bind_all("<Control-MouseWheel>", self.on_ctrl_wheel)
         self.bind("<Button-1>", self._on_root_click)
         self.bind("<Configure>", self._on_window_configure)
@@ -6735,7 +6738,7 @@ class Label_Match(tk.Tk):
         from user_relay import APP_STOP_SCHEMA, app_stop_request_path
 
         context = self.__dict__.get("direct_sync_bootstrap_context") or {}
-        root = context.get("program_data_root")
+        root = context.get("program_data_root") or _startup_app_stop_root()
         if not root:
             return False
         path = app_stop_request_path(root)
@@ -6760,6 +6763,10 @@ class Label_Match(tk.Tk):
             print("앱 시작 전 멈춤 요청을 무시했습니다.")
         elif request_id == self.__dict__.get("_app_stop_deferred"):
             accepted = bool(self.__dict__.get("_tk_destroy_complete", False))
+        elif not self.__dict__.get("initialized_successfully", True):
+            self.destroy()
+            accepted = bool(self.__dict__.get("_app_close_in_progress", False)
+                            or self.__dict__.get("_tk_destroy_complete", False))
         elif (self._app_close_needs_confirmation() or self._ui_lane_is_busy()
               or self._has_background_work()
               or self.__dict__.get("_scans_behind_completion") or active_pin_operation.get()):
@@ -6786,6 +6793,18 @@ class Label_Match(tk.Tk):
             except Exception as exc:
                 print(f"앱 멈춤 요청 정리 실패: {type(exc).__name__}")
         return accepted
+
+    def _poll_app_stop_request(self):
+        """Keep stop observation independent of loading and relay rendering."""
+        self._app_stop_poll_after_id = None
+        if self.__dict__.get("_tk_shutdown_requested", False):
+            return
+        if not self.__dict__.get("_app_close_in_progress", False):
+            self._process_app_stop_request()
+        if (not self.__dict__.get("_tk_shutdown_requested", False)
+                and not self.__dict__.get("_tk_destroy_complete", False)
+                and self.__dict__.get("_app_stop_poll_after_id") is None):
+            self._app_stop_poll_after_id = self.after(500, self._poll_app_stop_request)
 
     def _refresh_relay_screen_status(self):
         self._relay_screen_status_after_id = None
@@ -8591,11 +8610,40 @@ class Label_Match(tk.Tk):
             if destroy_completed and state.get("_app_stop_deferred"):
                 self._process_app_stop_request(_closed=True)
 
+    def _force_app_close_exit(self):
+        # All acknowledged scans are already durable. Never abandon cleanup
+        # while the live window can still accept work; this runs only after
+        # mainloop returned. The next start replays state/outbox normally.
+        state = self.__dict__
+        if state.get("_app_close_forcing_exit") or state.get("_tk_destroy_complete"):
+            return
+        state["_app_close_forcing_exit"] = True
+        _retain_current_instance_lease()
+        if state.get("save_directory"):
+            _try_update_shutdown_stall_notice(state["save_directory"], stalled=True)
+        _label_match_startup_trace("mainloop_cleanup_deadline_exceeded")
+        os._exit(1)
+
     def _finish_after_mainloop(self):
         """Finish the existing close callbacks while still owning the guard."""
         state = self.__dict__
         if state.get("_tk_destroy_complete", False):
             return
+        process_deadline = time.monotonic() + LABEL_MATCH_APP_CLOSE_PROCESS_TIMEOUT_SECONDS
+        watchdog = threading.Timer(LABEL_MATCH_APP_CLOSE_PROCESS_TIMEOUT_SECONDS, self._force_app_close_exit)
+        watchdog.daemon = True
+        watchdog.start()
+        # Reserve 15 seconds for the small durable notice. If its writer or
+        # diagnostic I/O also stalls, process cleanup still has a 60s ceiling.
+        def final_exit():
+            if not state.get("_tk_destroy_complete", False):
+                os._exit(1)
+        exit_watchdog = threading.Timer(
+            LABEL_MATCH_APP_CLOSE_PROCESS_TIMEOUT_SECONDS + LABEL_MATCH_APP_CLOSE_EXIT_GRACE_SECONDS,
+            final_exit,
+        )
+        exit_watchdog.daemon = True
+        exit_watchdog.start()
         notice_deadline = state.get(
             "_app_close_deadline_monotonic",
             time.monotonic() + LABEL_MATCH_APP_CLOSE_TOTAL_TIMEOUT_SECONDS,
@@ -8611,6 +8659,8 @@ class Label_Match(tk.Tk):
             if not state.get("_app_close_in_progress", False):
                 self.on_closing(_confirmed=True)
             while not state.get("_tk_destroy_complete", False):
+                if time.monotonic() >= process_deadline:
+                    self._force_app_close_exit()
                 if time.monotonic() >= notice_deadline:
                     self._mark_app_close_stall()
                 self.update()
@@ -8628,6 +8678,9 @@ class Label_Match(tk.Tk):
                 _retain_current_instance_lease()
                 self._mark_app_close_stall()
                 _label_match_startup_trace("mainloop_cleanup_incomplete")
+            else:
+                watchdog.cancel()
+                exit_watchdog.cancel()
 
     def _suspend_deferred_validation_for_close(self):
         after_id = self.__dict__.get("_deferred_validation_after_id")
@@ -8899,6 +8952,8 @@ class Label_Match(tk.Tk):
                     )
                 )
                 self._app_close_in_progress = False
+                if self.__dict__.get("_app_stop_poll_after_id") is None:
+                    self._app_stop_poll_after_id = self.after(500, self._poll_app_stop_request)
                 try:
                     # Closing is being abandoned, so keep the package advisory
                     # and retry cycle active for resumed operation.
@@ -8950,6 +9005,7 @@ class Label_Match(tk.Tk):
             "_deferred_validation_after_id",
             "_deferred_observability_poll_after_id",
             "_relay_screen_status_after_id",
+            "_app_stop_poll_after_id",
             "_app_close_poll_after_id",
             "_app_close_drain_watchdog_after_id",
             "_app_close_recovery_after_id",
@@ -23779,9 +23835,50 @@ def _show_item_catalog_startup_error(error):
         _label_match_startup_trace("item_catalog_startup_dialog_unavailable")
 
 
+def _startup_app_stop_root():
+    # Before onboarding applies its runtime environment, the stop file already
+    # belongs to the installation owner, rather than the old ProgramData root.
+    configured = (os.environ.get(LABEL_MATCH_DIRECT_SYNC_ROOT_ENV)
+                  or os.environ.get(LEGACY_DIRECT_SYNC_ROOT_ENV)
+                  or os.environ.get(LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT_ENV))
+    if configured:
+        return Path(configured).resolve()
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "KMTech" / "DirectSync" / "label_match"
+    return _label_match_direct_sync_context("")["program_data_root"]
+
+
+def _startup_app_stop_requested():
+    from user_relay import APP_STOP_SCHEMA, app_stop_request_path, _read_json
+    path = app_stop_request_path(_startup_app_stop_root())
+    try:
+        if not path.is_file() or path.stat().st_size > 4096:
+            return False
+        payload = _read_json(path) or {}
+        if (payload.get("schema_version") != APP_STOP_SCHEMA
+                or re.fullmatch(r"[0-9a-f]{32}", str(payload.get("request_id") or "")) is None):
+            return False
+        requested_at = datetime.fromisoformat(payload.get("requested_at"))
+        return requested_at.tzinfo is not None and requested_at >= _APP_PROCESS_STARTED_AT
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _offer_item_catalog_startup_retry(error):
     context = get_catalog_attempt_context_from_error(error)
+    parent = None
     try:
+        if _startup_app_stop_requested():
+            return False
+        parent = tk.Tk()
+        parent.withdraw()
+        def poll_stop():
+            if _startup_app_stop_requested():
+                parent.destroy()
+                return
+            parent.after(500, poll_stop)
+        parent.after(500, poll_stop)
         retry = messagebox.askretrycancel(
             "회사 서버 품목 목록 확인 필요",
             (
@@ -23791,6 +23888,7 @@ def _offer_item_catalog_startup_retry(error):
                 "네트워크와 중앙 물류 설정을 확인한 뒤 '다시 시도'를 누르세요. "
                 "같은 신뢰 원본을 다시 확인합니다. 계속 실패하면 IT 담당자에게 오류 코드를 알려 주세요."
             ),
+            parent=parent,
         )
         if not retry:
             setattr(error, "_catalog_retry_dialog_shown", True)
@@ -23798,6 +23896,12 @@ def _offer_item_catalog_startup_retry(error):
     except Exception:
         _label_match_startup_trace("item_catalog_retry_dialog_unavailable")
         return False
+    finally:
+        if parent is not None:
+            try:
+                parent.destroy()
+            except TclError:
+                pass
 
 
 def _item_catalog_cache_time_for_display(value):
@@ -23944,12 +24048,16 @@ def _prepare_startup_catalog_attempt():
     try:
         active_catalog_path = prepare_startup_item_catalog()
     except ItemCatalogSyncError as error:
+        if _startup_app_stop_requested():
+            raise
         _label_match_startup_trace("item_catalog_retry_available", cause_code=error.cause_code)
         if not offline_catalog_startable(authenticated=False, enrolled=True,
                                         legacy=legacy_label_transition_enabled()):
             raise
         _start_without_confirmed_item_catalog(error)
         return None, True
+    if _startup_app_stop_requested():
+        return None, False
     if active_catalog_path is not None:
         catalog_context = get_sanitized_catalog_attempt_context()
         _label_match_startup_trace(
@@ -23976,6 +24084,8 @@ def _prepare_startup_catalog_attempt():
 def _run_label_match_application(*, relay_reuse_report=None, verified_hold=None):
     """Start the stateful application after single-instance ownership."""
 
+    if _startup_app_stop_requested():
+        return 0
     window_first = relay_reuse_report is not None and relay_reuse_report.get("start_path") == "FAST_WINDOW_FIRST"
     if window_first:
         from current_user_onboarding import admit_window_first_start
@@ -23985,12 +24095,20 @@ def _run_label_match_application(*, relay_reuse_report=None, verified_hold=None)
         release_startup_send_hold(*verified_hold, verified=True, full=True)
     catalog_unconfirmed = False
     while not window_first:
+        if _startup_app_stop_requested():
+            return 0
         try:
             _, catalog_unconfirmed = _prepare_startup_catalog_attempt()
             break
         except ItemCatalogSyncError as error:
+            if _startup_app_stop_requested():
+                return 0
             if not _offer_item_catalog_startup_retry(error):
+                if _startup_app_stop_requested():
+                    return 0
                 raise
+    if _startup_app_stop_requested():
+        return 0
     try:
         from startup_observation import observe_startup
         if not window_first:
@@ -24093,7 +24211,11 @@ def main(argv=None):
         observe_startup = lambda *args, **kwargs: None
     verify_factory_contract_startup()
     try:
+        if _startup_app_stop_requested():
+            return 0
         pending_worker = validate_pending_worker_install(_label_match_runtime_app_root())
+        if _startup_app_stop_requested():
+            return 0
         check_user_data_open(_label_match_runtime_app_root())
         _label_match_startup_trace("main_enter")
         if _first_run_onboarding_enabled():
@@ -24117,6 +24239,10 @@ def main(argv=None):
                     relay_start={"status": (onboarding_report.get("relay_start") or {}).get("status", "UNKNOWN")},
                     existing_relay_reused=(onboarding_report.get("relay_start") or {}).get("existing_relay_reused") is True,
                     fast_path=(onboarding_report.get("relay_start") or {}).get("fast_path") is True)
+                # Onboarding's atomic registration/settings unit must finish
+                # before honoring a stop received during that unit.
+                if _startup_app_stop_requested():
+                    return 0
                 if (onboarding_report.get("relay_start") or {}).get("fast_path") is True:
                     relay_reuse_report = window_first if window_first is not None else {
                         "app_root": app_root, "relay_start": onboarding_report["relay_start"],
@@ -24147,6 +24273,8 @@ def main(argv=None):
                 _show_first_run_onboarding_error(exc)
                 return ONBOARDING_EXIT_CODE
         settings_path = _default_label_match_settings_path()
+        if _startup_app_stop_requested():
+            return 0
         data_scope = resolve_data_scope(
             settings_path=settings_path,
             settings_template_path=resource_path(os.path.join("config", "app_settings.json")),
@@ -24157,9 +24285,13 @@ def main(argv=None):
             data_scope=data_scope,
         )
     except WriterFenceError as exc:
+        if _startup_app_stop_requested():
+            return 0
         _show_installation_recovery_required(exc)
         return ONBOARDING_EXIT_CODE
     except CurrentUserOnboardingError as exc:
+        if _startup_app_stop_requested():
+            return 0
         exc._startup_check_refusal = True
         _show_first_run_onboarding_error(exc)
         return ONBOARDING_EXIT_CODE
