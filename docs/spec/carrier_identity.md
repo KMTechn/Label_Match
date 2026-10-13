@@ -4,6 +4,7 @@
 
 | 경로 | 허용·정규화·반환 | 거부·오류 |
 |---|---|---|
+| 잔량표 선행 거절 | 스캔 decode를 적용한 필드 중 SRC=`KMTECH_RESIDUAL_TAG`가 하나라도 있으면 정상·과도기 판독 전에 거절한다. 대소문자·공백·중복 SRC로 일반 표가 되지 않는다 | compact 스캔은 포장 전용 안내의 `ValueError`, workflow는 `RESIDUAL_TAG_NOT_ALLOWED`·retryable=False, legacy는 None. 일반 표의 기존 파싱 결과·오류는 유지 |
 | 스캔 decode | `str(raw or '').strip()`; 빈값·`\|` 포함·길이 ≤20은 그대로. 나머지는 URL-safe 문자 치환·padding 보완 후 permissive Base64→UTF-8, 결과에 `\|`와 `=`가 모두 있을 때만 채택 | Base64/UTF-8 실패는 원 text. 길이 >20인 비ASCII 단독 text의 Base64 `ValueError`는 전파. bytes도 `str(bytes)`로 처리하며 별도 bytes decode 없음 |
 | compact 스캔 | decode 후 정확히 `PHS,SRC,ITG,CLC,LBL,HSH` 6필드. key strip+uppercase, value strip. PHS=`2`, SRC 대소문자 허용→`KMTECH_INPUT_TAG`, HSH 16 ASCII hex→소문자. ITG/CLC/LBL은 case 보존. dict 반환 | `ValueError`: 아래 표의 영어 문구. 추가·순서 변경·빈값·중복·field 내 여러 `=` 거부 |
 | workflow raw compact | 위 6필드 결과와 정규화는 동일. 입력 `str(raw or '').strip()`만, Base64 decode 없음 | `PHSLabelWorkflowError`, code=`PHS2_FORMAT_INVALID`, retryable=False, details={}; 아래 한국어 문구 |

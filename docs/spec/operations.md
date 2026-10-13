@@ -186,6 +186,8 @@ F3 진입/action gate·성공음/이력·중앙 worker dispatch·재시도/자�
 <a id="carrier-identity-w5b2"></a>
 ## W5-B2 · carrier·legacy·Item Code 경계
 
+잔량표를 포장에서 찍으면 오류음과 「잔량표는 포장에 쓸 수 없습니다 — 검사실로 돌려보내세요」를 확인하고 종이를 검사실로 돌려보낸다. 옛 현품표 받기·서버 끊김에도 같다. 진행 중 트레이는 그대로 두고 다음 정상 입력을 받는다. 저장본에 잔량표가 있으면 복원·감사 재생 전에 멈추고 원본을 보존한다. 보류 원본을 일반 현품표로 바꾸거나 삭제해 복원하지 않는다. 서버의 확정 거절은 해당 건의 기존 충돌/관리자 확인 길로 처리하며 재시작 뒤에도 자동 재전송·재조회하지 않는다. 관리자는 해당 세트를 보류해 원본을 보존하고 다음 트레이 진행을 열 수 있다. 실제 스캐너·오류음·화면과 회사 서버 짝 시험은 별도 확인 대상이다([계약](contracts.md#residual-tag-rejection)).
+
 `carrier_identity_port.py`는 순수 명시 인자만 받고 기존 app/workflow/물류 caller의 진입 이름과 오류를 유지한다. [규칙·호출 표](carrier_identity.md)와 [고정 기준·동등성 시험](../../tests/test_carrier_identity_port.py)을 따른다. 설정·CSV·snapshot I/O, 표시용 느슨한 parser, source/receipt 검증, F3 내구 완료·성공·ACK와 F4/재시도/자정 복구는 기존 caller 소유다.
 
 기준 `a6253d1`의 고정 벡터·생성 입력 47 PASS를 `cb7ef7f`에 기록했다. 기존 관련 6개 suite는 변경 전 C: 격리에서 530 PASS다. 기존 UI 안내 문구 assertion 실패는 범위 밖으로 보존하며, ProgramData 기본 경로 시험은 전체 core 시험이 만든 synthetic onboarding state의 영향을 받으므로 독립 실행(1 PASS)한다. 기존 업무 테스트와 기대값은 수정하지 않는다.

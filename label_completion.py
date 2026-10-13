@@ -255,6 +255,8 @@ def _queue_transition_package(
     try:
         queued = package()
     except errors as error:
+        if getattr(error, "code", "") == "RESIDUAL_TAG_NOT_ALLOWED":
+            raise
         outbox = self.__dict__.get("package_outbox")
         reasons = [*reasons, reason(error)]
         if (

@@ -13,6 +13,8 @@ from datetime import datetime
 import re
 from typing import Any
 
+RESIDUAL_TAG_REJECTION_MESSAGE = "잔량표는 포장에 쓸 수 없습니다 — 검사실로 돌려보내세요"
+
 
 
 def decode_carrier_scan(raw_value):
@@ -28,8 +30,36 @@ def decode_carrier_scan(raw_value):
         return text
 
 
+def is_residual_tag(raw_value):
+    try:
+        decoded = decode_carrier_scan(raw_value)
+    except ValueError:
+        return False  # Leave unrelated decoder errors to the ordinary caller.
+    for part in decoded.split("|"):
+        key, separator, value = part.partition("=")
+        if separator and key.strip().upper() == "SRC" and value.strip().upper() == "KMTECH_RESIDUAL_TAG":
+            return True
+    return False
+
+
+def current_set_has_residual_tag(current):
+    seen = set()
+    while isinstance(current, dict) and id(current) not in seen:
+        seen.add(id(current))
+        raw = current.get("raw")
+        values = list(raw) if isinstance(raw, list) else []
+        values.extend(current.get(name) for name in (
+            "canonical_input_tag_qr", "physical_scanned_qr_payload", "active_label_qr_payload"))
+        if any(is_residual_tag(value) for value in values):
+            return True
+        current = current.get("shortage_undo_snapshot")
+    return False
+
+
 def parse_legacy_fields(raw_value):
     decoded = decode_carrier_scan(raw_value)
+    if is_residual_tag(decoded):
+        return None
     if '|' not in decoded or '=' not in decoded:
         return None
     try:
@@ -73,6 +103,8 @@ def parse_compact_carrier(raw_value):
 
     decoded = decode_carrier_scan(raw_value)
     parts = decoded.split("|") if decoded else []
+    if is_residual_tag(decoded):
+        raise ValueError(RESIDUAL_TAG_REJECTION_MESSAGE)
     expected_keys = ("PHS", "SRC", "ITG", "CLC", "LBL", "HSH")
     if len(parts) == 7 and parts[-1].startswith("QT="):
         raw_quantity = str(raw_value).split("|")[-1] if "|" in str(raw_value) else parts[-1]
@@ -110,6 +142,8 @@ def parse_compact_carrier(raw_value):
 def parse_raw_compact_carrier(raw_value: Any, *, error_type) -> dict[str, str]:
     """Parse raw workflow text with the caller's existing (code, message) error."""
     value = str(raw_value or "")
+    if is_residual_tag(value):
+        raise error_type("RESIDUAL_TAG_NOT_ALLOWED", RESIDUAL_TAG_REJECTION_MESSAGE)
     expected_keys = ("PHS", "SRC", "ITG", "CLC", "LBL", "HSH")
     parts = value.split("|") if value else []
     if len(parts) != 7:

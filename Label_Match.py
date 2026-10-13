@@ -11813,6 +11813,9 @@ class Label_Match(tk.Tk):
         return result
 
     def _recheck_package_recovery_physical(self, set_id, physical_qr, *, manager_code=None):
+        if carrier_identity.is_residual_tag(physical_qr):
+            self._package_pin_ui(self._play_sound, "fail")
+            return carrier_identity.RESIDUAL_TAG_REJECTION_MESSAGE
         manager_id = self._package_recovery_manager(manager_code)
         if not manager_id:
             return "관리자 확인이 필요합니다."
@@ -12278,6 +12281,16 @@ class Label_Match(tk.Tk):
         current_path = self._package_current_state_path()
         if current_path and os.path.lexists(current_path):
             evidence = self._read_package_recovery_file(current_path)
+            try:
+                saved = json.loads(evidence["raw"] or b"{}")
+            except (ValueError, TypeError, RecursionError):
+                saved = {}
+            if carrier_identity.current_set_has_residual_tag(
+                saved.get("current_set_info") if isinstance(saved, dict) else None
+            ):
+                self._package_pin_ui(self._play_sound, "fail")
+                self._show_package_recovery_block(carrier_identity.RESIDUAL_TAG_REJECTION_MESSAGE)
+                return
             set_id = str(((evidence['value'] or {}).get('current_set_info') or {}).get('id') or '')
             get_hold = getattr(self.__dict__.get('package_outbox'), 'get_workbench_hold', None)
             held = get_hold(set_id) if evidence['verified'] and set_id and callable(get_hold) else None
@@ -13747,6 +13760,16 @@ class Label_Match(tk.Tk):
             (item for item in chain if isinstance(item, PackageApiError)),
             None,
         )
+        if api_error is not None and api_error.code == "RESIDUAL_TAG_NOT_ALLOWED":
+            return {
+                "outcome": "INVALID", "reason_code": api_error.code,
+                "retry_after_seconds": None,
+                "evidence": {
+                    "contract_version": "label-validation-evidence-v1",
+                    "step_id": selected_step, "http_status": int(api_error.status_code),
+                    "error_code": api_error.code, "observed_at": observed_at,
+                },
+            }
         config = getattr(
             self.__dict__.get("package_logistics_client"), "config", None
         )
@@ -15623,16 +15646,11 @@ class Label_Match(tk.Tk):
             nonlocal input_consumed
             if input_consumed:
                 return
-            # The durable-capture callback runs while the lane has disabled
-            # scanning. Tk ignores delete() on a disabled/readonly Entry.
-            entry_state = self.entry.cget("state")
-            try:
-                self.entry.configure(state="normal")
-                self.entry.delete(0, tk.END)
-            finally:
-                self.entry.configure(state=entry_state)
+            self._consume_scan_entry()
             input_consumed = True
 
+        if self._reject_residual_tag_input(raw_input, consume_input=consume_input):
+            return
         if self._ui_lane_is_busy():
             if not held_scan and self._completion_scan_queue_open():
                 # Only the completion save runs: the scan waits for it.
@@ -16107,6 +16125,24 @@ class Label_Match(tk.Tk):
             self._update_on_success_scan(raw_input, master_code, prepare_durable_state=prepare)
         else:
             consume_input()
+
+    def _consume_scan_entry(self):
+        # Capture can disable the entry; restore its state after consuming it.
+        entry_state = self.entry.cget("state")
+        try:
+            self.entry.configure(state="normal")
+            self.entry.delete(0, tk.END)
+        finally:
+            self.entry.configure(state=entry_state)
+
+    def _reject_residual_tag_input(self, raw_input, *, consume_input=None):
+        if not carrier_identity.is_residual_tag(raw_input):
+            return False
+        if callable(consume_input):
+            consume_input()
+        self._play_sound("fail")
+        self._show_scanner_notice("잔량표", carrier_identity.RESIDUAL_TAG_REJECTION_MESSAGE, tone="danger")
+        return True
 
     def _ignore_product_scan(self, raw_input, message):
         """Reject this input without consuming the next scan as an acknowledgment."""
@@ -19600,6 +19636,8 @@ class Label_Match(tk.Tk):
 
     # [수정됨] 버그가 수정되고 로직이 개선된 최종 버전
     def _cancel_completed_tray_by_label(self, label_to_cancel, _confirmed_target=None):
+        if self._reject_residual_tag_input(label_to_cancel):
+            return
         if _confirmed_target is not None and (
             self._app_close_blocks_local_action()
             or self._block_active_history_load_action("완료된 트레이 취소", parent=self)
@@ -22671,6 +22709,8 @@ class Label_Match(tk.Tk):
             entered_scan = entry.get().strip() if entry is not None else ""
         except (TclError, AttributeError):
             entered_scan = ""
+        if self._reject_residual_tag_input(entered_scan, consume_input=self._consume_scan_entry):
+            return "break"
         if self.__dict__.get("operator_workbench_ready") and entered_scan:
             self._return_to_scanner_workbench()
         if self.__dict__.get("_pending_workflow_error") or self.__dict__.get(

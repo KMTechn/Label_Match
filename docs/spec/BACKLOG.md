@@ -6,6 +6,8 @@
 
 - w9firstupdsub167lm: portable direct-sync relay 자식의 앱 적재를 없애고 기존 product host와 relay 시작 관문을 유지한다. 격리 RED→GREEN·인수/종료/오류 및 전송 결과 대조는 focused 검증 범위다. 실제 바퀴 CPU 4초 미만·stock packet/설치·넓은 회귀는 현장 PC inspection6 몫이며, 안전한 무효화 근거가 없는 프로세스 간 판 지문 캐시는 추가하지 않는다.
 
+- w9firstupdsub158: 검사실 잔량표는 일반/과도기/끊김 스캔과 현재 상태·보류·관리자 재판독에서 포장 시작 전에 거절한다. 서버 `RESIDUAL_TAG_NOT_ALLOWED`는 확정 거절로 자동 재전송하지 않는다. 실제 장치·화면·회사 서버 짝 확인은 후속 범위다([계약](contracts.md#residual-tag-rejection)).
+
 - L02a: 반복 checkpoint 쓰기 실패의 건별 UNKNOWN 보류·원본 보관·다음 세트 진행과 10분 네 번째 건의 전체 저장 장애 안내를 구현한다. 날짜 만료 없이 보존하고 관리자 확인 전 자동 감사 재생·같은 제품/새 현품표 재처리를 막는다. CSV writer/flush의 미확정 오류 및 이미 완료한 CSV 후속 저장 오류는 기존 복구 경로다. 실제 HDD·창·전원 중단과 CSV 격리 확대는 후속 확인 대상이다.
 - 창 먼저 시작(w9firstupdsub166): READY·신선한 같은 판 relay는 주 창 뒤에서 전체 검증한다. 공유 전송 보류·실패/소유자 없음 뒤 FULL 재시작·허가 시간 초과 DEFERRED를 구현한다. 실제 HDD 20초 목표, 상태 줄·스캐너·재전송과 넓은 회귀는 현장 PC inspection6에서 확인한다([운영](operations.md#window-first-start)).
 - sub166 archrev 18:44 교정: 단일 GUI 소유 뒤 표식 기록, 물류·PIN·이름 등록 송신 입장 보류, FAST 품목 오프라인 fallback·재시도와 시작 정보 고정 전달을 반영했다. 중복 바로 가기와 보류 중 각 업무 요청은 좁은 headless 회귀로 확인하며 실제 화면 수용은 현장 몫이다.
