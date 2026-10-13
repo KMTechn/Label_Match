@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+portable direct-sync relay 자식은 기존 시작 관문을 지난 뒤 `label_match_product_host.dispatch_product_mode`를 호출하며 `Label_Match` 앱 모듈을 적재하지 않는다. host의 `startup_gate(role="relay")`·업데이트 trial/판 확인·자료 세대·credential 준비·writer sink·인수·종료/오류 계약과 별도 자식 프로세스는 유지한다. 일반 GUI와 다른 제품 인수의 진입 경로는 그대로다.
+
 설치기와 배포 helper의 조상·검증 대상 조회 및 패키지 자식 열거는 숨김 속성이 있는 ProgramData·AppData·설치 경로도 검사한다. 읽기 `-Force`는 숨김 항목만 포함하며 reparse·파일 종류·바인딩 거절과 삭제 조건은 유지한다.
 
 작업자 대상 거절은 기존 `PENDING_TARGET_INVALID`·종료 코드 1·공개 JSON 한 줄을 유지하며 `reason`과 `summary`를 덧붙인다. `summary`는 `PENDING_TARGET_INVALID reason=<고정 코드>`이며 계정·SID·경로·예외 원문을 포함하지 않는다. 인수·계정 해석·SID 종류·inventory 경로/파일/해독/바인딩·프로필·콘솔·감사 경로의 까닭을 구분하고 미분류 또는 허용 목록 밖 값은 `UNCLASSIFIED`로 공개한다.

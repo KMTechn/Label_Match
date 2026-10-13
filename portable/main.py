@@ -74,6 +74,10 @@ def main() -> int:
     result = startup_gate(APP_ROOT, list(sys.argv[1:]))
     if result is not None:
         return result
+    if sys.argv[1:2] == ["--label-match-direct-sync-relay"]:
+        from label_match_product_host import dispatch_product_mode
+
+        return int(dispatch_product_mode(sys.argv[1:]))
     from Label_Match import main as application_main
 
     return int(application_main())
