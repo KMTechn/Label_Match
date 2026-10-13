@@ -626,6 +626,11 @@ def test_first_update_stock_pair_accepts_candidate_and_refuses_changed_app_files
     assert result.returncode == 0, result.stdout + result.stderr
     assert {relative: (installed / relative).read_bytes() for relative in pairs} == installed_before
     # Keep every mutation; break its hardlink once and restore all bytes between probes.
+    # SHELL-READY is a second independent gate: its covered bytes cannot be repinned.
+    from writer_sink_inventory import WriterSinkInventoryError
+    ready_path, = (candidate / "app/shell").glob("SHELL-READY*.json")
+    shell_files = {"app/" + entry["path"]
+                   for entry in json.loads(ready_path.read_bytes())["files"]}
     changed_candidate = _tree(candidate, tmp_path / "candidate-changes", app_files)
     for index, relative in enumerate(sorted(app_files)):
         mutation_path = changed_candidate / relative
@@ -633,7 +638,12 @@ def test_first_update_stock_pair_accepts_candidate_and_refuses_changed_app_files
         try:
             with (changed_candidate / relative).open("a", encoding="utf-8") as stream:
                 stream.write("\n" if relative.endswith(".json") else "\n# unreviewed source byte change\n")
-            _pin(changed_candidate)
+            if relative in shell_files:
+                with pytest.raises(WriterSinkInventoryError, match="shell file differs from SHELL-READY"):
+                    _pin(changed_candidate)
+            else:
+                _pin(changed_candidate)
+            # The installer must independently refuse the same unrepinnable shell mutation.
             result = _nextfix_probe(tmp_path, changed_candidate, installed)
             assert result.returncode != 0, relative
         except BaseException:
