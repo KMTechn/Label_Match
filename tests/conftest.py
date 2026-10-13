@@ -1,10 +1,14 @@
 """Keep default writer admission isolated across pytest runs and their children."""
 
 import functools
+import subprocess
 import threading
 import time
 
 import pytest
+
+
+_NATIVE_POPEN = next(cls for cls in subprocess.Popen.__mro__ if cls.__module__ == "subprocess")
 
 
 @pytest.fixture
@@ -54,6 +58,35 @@ def _isolated_writer_control_root(tmp_path):
             str(tmp_path / "writer-control"),
         )
         yield
+
+
+@pytest.fixture(autouse=True)
+def _inherited_child_profile_folders(monkeypatch, _isolated_writer_control_root):
+    import os
+
+    names = ("TEMP", "TMP", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA")
+    isolated = {name: os.environ.get(name) for name in names}
+    # Run after any headless wrapper has rebuilt the actual child environment.
+    original = _NATIVE_POPEN.__init__
+
+    def launch(process, *args, **kwargs):
+        if kwargs.get("env") is not None:
+            environment = dict(kwargs["env"])
+            program_data = environment.get("ProgramData") or environment.get("PROGRAMDATA")
+            # Minimal child environments must keep the parent's isolated
+            # folders without inheriting any unrelated configuration.
+            for name in names:
+                if not environment.get(name):
+                    value = os.environ.get(name) or isolated[name]
+                    if value:
+                        environment[name] = value
+            program_data = program_data or environment.get("PROGRAMDATA")
+            if program_data:
+                environment["PROGRAMDATA"] = environment["ProgramData"] = program_data
+            kwargs["env"] = environment
+        original(process, *args, **kwargs)
+
+    monkeypatch.setattr(_NATIVE_POPEN, "__init__", launch)
 
 
 
