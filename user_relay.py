@@ -406,6 +406,8 @@ def remove_user_relay_autostart(
 
 def _existing_user_relay_owner(
     root: Path, direct_sync_root: Path, *, is_bootstrap: bool, allow_fast_path: bool = False,
+    fast_only: bool = False,
+    process_observations: dict | None = None,
 ) -> dict[str, Any] | None:
     if user_relay_stop_path(direct_sync_root).exists():
         return None
@@ -427,7 +429,8 @@ def _existing_user_relay_owner(
     if control is None:
         return None
     policy = load_policy(control)
-    with update_lock(control, policy["operator_sid"]):
+    from contextlib import nullcontext
+    with nullcontext() if fast_only else update_lock(control, policy["operator_sid"]):
         active = read_json(control / "active.json")
         state = read_json(control / "transition.json")
         expected_root = version_bundle(control, active["sha"])
@@ -439,7 +442,16 @@ def _existing_user_relay_owner(
                 and status.get("sid") == policy["operator_sid"]
                 and status.get("ordinary_user") is True):
             return {**owner, "fast_path": True, "source_commit": active["sha"], "sid": policy["operator_sid"]}
-        rows = [row for row in process_snapshot(control) if row.get("pid") == owner["process_id"]]
+        if fast_only:
+            return None
+        from auto_update import native_process_identity
+        process = native_process_identity(owner["process_id"]) if process_observations is not None else {}
+        key = (str(control), active["sha"], policy["operator_sid"], owner["process_id"],
+               process.get("creation_identity"), json.dumps(state, sort_keys=True))
+        cached = process_observations.get(key) if process_observations is not None and process.get("status") == "LIVE" else None
+        rows = cached if cached is not None else [row for row in process_snapshot(control) if row.get("pid") == owner["process_id"]]
+        if process_observations is not None and process.get("status") == "LIVE":
+            process_observations[key] = rows
         if len(rows) != 1 or os.path.normcase(str(status.get("code_root") or "")) != os.path.normcase(str(expected_root)):
             return None
         row = rows[0]
@@ -494,6 +506,7 @@ def reuse_or_start_user_relay_process(
     survival_seconds: float = 2.0,
     bootstrap_readiness_seconds: float = 75.0,
     wait: Callable[[float], None] = time.sleep,
+    allow_recent_reuse: bool = True,
 ) -> dict[str, Any]:
     """Reuse a proven live relay without writer admission, else start one.
 
@@ -507,7 +520,8 @@ def reuse_or_start_user_relay_process(
         root = Path(app_root).expanduser().resolve()
         direct_sync_root = resolve_current_user_onboarding_paths(root).direct_sync_root
         is_bootstrap = "--bootstrap" in build_user_relay_command(app_root)
-        allow_fast_path = True
+        allow_fast_path = allow_recent_reuse
+        process_observations = {}
 
         def existing_owner():
             nonlocal allow_fast_path
@@ -515,6 +529,7 @@ def reuse_or_start_user_relay_process(
             allow_fast_path = False
             return _existing_user_relay_owner(
                 root, direct_sync_root, is_bootstrap=is_bootstrap, allow_fast_path=recent,
+                process_observations=process_observations,
             )
 
         reused = _reuse_existing_user_relay(

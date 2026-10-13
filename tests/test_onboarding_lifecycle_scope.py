@@ -26,6 +26,8 @@ def _stock_helper_counter(monkeypatch, helpers, *, native=False):
     actual_run = subprocess.run
     actual_acquire = fence._acquire_named_mutex
     actual_release = fence._NamedMutexLease.release
+    actual_suspend = fence._NamedMutexLease.suspend
+    actual_resume = fence._NamedMutexLease.resume
     measuring = threading.local()
     acquisitions, holds = {}, []
 
@@ -40,6 +42,19 @@ def _stock_helper_counter(monkeypatch, helpers, *, native=False):
         result = actual_release(lease)
         if began is not None:
             holds.append(time.monotonic() - began)
+        return result
+
+    def suspend(lease):
+        began = acquisitions.pop(id(lease), None)
+        result = actual_suspend(lease)
+        if began is not None:
+            holds.append(time.monotonic() - began)
+        return result
+
+    def resume(lease, *args, **kwargs):
+        result = actual_resume(lease, *args, **kwargs)
+        if getattr(measuring, "helper", False):
+            acquisitions[id(lease)] = time.monotonic()
         return result
 
     def fixed(*args, **kwargs):
@@ -72,6 +87,8 @@ def _stock_helper_counter(monkeypatch, helpers, *, native=False):
 
     monkeypatch.setattr(fence, "_acquire_named_mutex", acquire)
     monkeypatch.setattr(fence._NamedMutexLease, "release", release)
+    monkeypatch.setattr(fence._NamedMutexLease, "suspend", suspend)
+    monkeypatch.setattr(fence._NamedMutexLease, "resume", resume)
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(auto_update, "fixed_helper", fixed)
     monkeypatch.setattr(auto_update, "lifecycle_task_observation", _STOCK_TASK_OBSERVATION)
@@ -112,10 +129,10 @@ def test_one_managed_onboarding_uses_one_lifecycle_helper_sequence(managed_onboa
         "actual_powershell_helpers_executed": False,
     }, indent=2), encoding="utf-8")
     assert report["status"] == "READY"
-    assert [row["mode"] for row in helpers] == ["Verify", "Verify", "ObserveLifecycle"]
+    assert [row["mode"] for row in helpers] == ["Verify", "ObserveLifecycle"]
     assert all(row["parent_admission_depth"] == 0 for row in helpers)
-    assert [row["admission_depth"] for row in helpers] == [1, 1, 0]
-    assert [row["admission_source"] for row in helpers] == ["auto_update_fixed_helper", "auto_update_fixed_helper", None]
+    assert [row["admission_depth"] for row in helpers] == [0, 0]
+    assert [row["admission_source"] for row in helpers] == [None, None]
     assert getattr(fence._WRITER_LOCAL, "onboarding_lifecycle", None) is None
 
 
@@ -148,7 +165,7 @@ def test_each_write_denies_changed_lifecycle_without_another_helper(managed_onbo
         codes.append(getattr(cause, "code", None))
         cause = cause.__cause__
     assert "WRITER_LIFECYCLE_CHANGED" in codes
-    assert len(helpers) == 3
+    assert len(helpers) == 2
     assert onboarding.REQUIRED_ENV not in environment
     assert not paths.onboarding_report_path.exists()
     assert getattr(fence._WRITER_LOCAL, "onboarding_lifecycle", None) is None
@@ -160,7 +177,7 @@ def test_next_onboarding_call_validates_again(managed_onboarding):
         report = _onboard(paths, environment,
                           relay_launcher=lambda _root: {"status": "ALIVE", "process_id": 77})
         assert report["status"] == "READY"
-        assert len(helpers) == (call + 1) * 3
+        assert len(helpers) == (call + 1) * 2
         assert getattr(fence._WRITER_LOCAL, "onboarding_lifecycle", None) is None
 
 
@@ -197,8 +214,8 @@ def test_scope_does_not_reuse_observation_for_other_thread_or_source(managed_onb
 
     assert _onboard(paths, environment, relay_launcher=launcher)["status"] == "READY"
     assert not errors
-    assert len([row for row in helpers if row["thread"] == caller_thread]) == 3
-    assert len([row for row in helpers if row["thread"] != caller_thread]) == 3
+    assert len([row for row in helpers if row["thread"] == caller_thread]) == 2
+    assert len([row for row in helpers if row["thread"] != caller_thread]) == 2
     assert other_sources.count("gui_settings_save") == 2
     assert other_sources.count("current_user_onboarding") == 1
 
@@ -217,14 +234,14 @@ def test_stock_helper_decorator_hold_with_native_powershell_counter(monkeypatch,
     report = _onboard(paths, environment,
                       relay_launcher=lambda _root: {"status": "ALIVE", "process_id": 77})
     assert report["status"] == "READY"
-    assert [row["mode"] for row in helpers] == ["Verify", "Verify", "ObserveLifecycle"]
+    assert [row["mode"] for row in helpers] == ["Verify", "ObserveLifecycle"]
     assert len(holds) == 2
     assert all(row["parent_admission_depth"] == 0 for row in helpers)
     (tmp_path / "stock-helper-admission-timing.json").write_text(json.dumps({
         "status": report["status"], "helper_calls": len(helpers),
         "total_seconds": time.monotonic() - started,
         "verify_admission_seconds": holds, "verify_admission_max_seconds": max(holds),
-        "verify_admission_sum_seconds": sum(holds), "native_powershell_children": 3,
+        "verify_admission_sum_seconds": sum(holds), "native_powershell_children": 2,
         "stock_decorator_retained": True, "stock_verify_payload_executed": False,
         "payload_scope": "isolated native PowerShell counter; installed Verify work not timed",
     }, indent=2), encoding="utf-8")
@@ -300,7 +317,7 @@ def test_next_start_reuses_registration_after_fence_interrupts_before_ready(tmp_
     run_before = stored_run["value"]
     assert run_before == autostarts[0]["command"]
     if existing_stop:
-        assert helpers == ["Verify", "Verify", "ObserveLifecycle"]
+        assert helpers == ["Verify", "ObserveLifecycle"]
     (control / fence.ACTIVE_FILENAME).unlink()
 
     ready = onboarding.onboard_current_user(app_root, **kwargs)
@@ -314,7 +331,7 @@ def test_next_start_reuses_registration_after_fence_interrupts_before_ready(tmp_
     assert ready["relay_autostart"]["status"] == "PASS"
     assert stored_run["value"] == run_before == ready["relay_autostart"]["command"]
     if existing_stop:
-        assert helpers == ["Verify", "Verify", "ObserveLifecycle"] * 2
+        assert helpers == ["Verify", "ObserveLifecycle"] * 2
     (tmp_path / "interrupted-onboarding-restart.json").write_text(json.dumps({
         "status": ready["status"], "registration_calls": len(registrations),
         "duplicate_registration_calls": 0, "stop_marker_present_after_ready": marker.exists(),

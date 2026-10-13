@@ -152,14 +152,17 @@ def _append_jsonl(path: Path, payload: dict[str, object]) -> None:
 def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> None:
     from tools.direct_sync_relay_install_pack import _bounded_diagnostic_text
 
+    from writer_session_fence import WriterFencedError
+    deferred = isinstance(error, WriterFencedError) and error.code == "WRITER_GATE_TIMEOUT"
     captured_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     error_type = error.__class__.__name__[:128]
     worker_id = _option_value(arguments, "--worker-id")[:256]
     diagnostic = {
-        "status": "runtime_error",
+        "status": "DEFERRED" if deferred else "runtime_error",
+        "reason_code": "WRITER_GATE_TIMEOUT" if deferred else "HOSTED_RELAY_FAILURE",
         "app": "Label_Match",
         "worker_id": worker_id,
-        "error_code": "hosted_relay_unhandled_exception",
+        "error_code": "WRITER_GATE_TIMEOUT" if deferred else "hosted_relay_unhandled_exception",
         "error_type": error_type,
         "error_message": _bounded_diagnostic_text(f"{error_type}: {error}"),
         "runtime_status_write_status": "PASS",
@@ -197,7 +200,7 @@ def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> 
             _append_jsonl(
                 Path(log_path),
                 {
-                    "event": "hosted_relay_unhandled_exception",
+                    "event": "hosted_relay_deferred" if deferred else "hosted_relay_unhandled_exception",
                     "app": "Label_Match",
                     "worker_id": worker_id,
                     "error_code": diagnostic["error_code"],
@@ -296,7 +299,8 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
                     print(str(exc), file=sys.stderr)
                     return HOSTED_RELAY_FAILURE_EXIT_CODE
                 _record_hosted_relay_failure(arguments, exc)
-                return HOSTED_RELAY_FAILURE_EXIT_CODE
+                from writer_session_fence import WriterFencedError
+                return 0 if isinstance(exc, WriterFencedError) and exc.code == "WRITER_GATE_TIMEOUT" else HOSTED_RELAY_FAILURE_EXIT_CODE
         if mode == USER_RELAY_MODE:
             try:
                 from user_relay import main as user_relay_main
@@ -308,7 +312,8 @@ def dispatch_product_mode(argv: Sequence[str]) -> int | None:
                     print(str(exc), file=sys.stderr)
                     return HOSTED_RELAY_FAILURE_EXIT_CODE
                 _record_hosted_relay_failure([USER_RELAY_MODE, *arguments], exc)
-                return HOSTED_RELAY_FAILURE_EXIT_CODE
+                from writer_session_fence import WriterFencedError
+                return 0 if isinstance(exc, WriterFencedError) and exc.code == "WRITER_GATE_TIMEOUT" else HOSTED_RELAY_FAILURE_EXIT_CODE
         if mode == ONBOARD_CURRENT_USER_MODE:
             from current_user_onboarding import onboarding_main
 

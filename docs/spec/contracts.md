@@ -242,7 +242,11 @@ guarded reconcile이 파일 경로로 실행하는 initializer helper는 import 
 
 relay는 시험 시작 때도 자기 SID를 상태에 남겨 확정 뒤 재사용할 수 있게 한다. 선택적인 SID/steady 캐시 읽기가 실패하면 기존 첫 시작·nonce 준비 증명을 유지하고 관측 길을 쓴다. 창 뒤 대조는 시작 때 받아들인 SID와 판에 결속한다.
 
-두 번째 시작은 instance lease 점유·stop 표지 없음·RUNNING 상태의 worker/app/direct-sync 일치·살아 있는 PID·90초 이내 갱신·현재 active version bundle의 code_root·source_commit·운영 SID·일반 사용자 표시·steady 전이(CONFIRMED/ROLLED_BACK/DEFERRED)가 모두 맞으면 Observe와 생존 대기 없이 `ALIVE`, `existing_relay_reused`, `fast_path`를 반환한다. 창이 보인 뒤 배경에서 기존 Observe를 한 번 수행하고 원 PID·판·SID·역할·일반 사용자·원 상태 갱신 이전 생성 시각을 대조한다. 불일치는 기존 시작 거절 안내와 SETUP_FAILED/FIRST_RUN_SETUP_REQUIRED로 알리며 자료·relay·쓰기/배포 담장을 바꾸지 않는다. 칸 부재·오래된 상태·다른 판·시험 전이는 기존 관측과 nonce 검증을 사용한다. 첫 relay 시작의 첫 바퀴·생존 확인은 그대로다.
+READY인 사용자 설정·등록 자료가 존재하고 설치 주소(등록 보고서에 있으면 그 주소)·운영 SID·현재 active 판·steady 전이(CONFIRMED/ROLLED_BACK/DEFERRED)가 맞으며, instance lease 점유·stop/검증 보류 표지 없음·RUNNING 상태의 worker/app/direct-sync 일치·살아 있는 PID·90초 이내 갱신·현재 code_root/source_commit·일반 사용자 표시가 모두 맞으면 `FAST_WINDOW_FIRST`로 창을 먼저 연다. 창 앞은 파일 확인과 짧은 writer admission으로 보류 표식 원자 기록 한 번이며 PowerShell/고정 helper 호출은 없다. 첫 실행·자료 미준비·relay 없음/오래됨·시험 전이·업데이트 대기·기존 검증 보류는 `FULL`/`FIRST_RUN`의 전체 확인을 따른다.
+
+공유 `control/startup-verification.json`은 GUI PID·native 생성 시각·시작 시각·start_path만 담는다. GUI DirectSync 입구와 relay enqueue·각 HTTP 송신 직전은 같은 판정 함수를 사용한다. 창 뒤 lifecycle Verify 한 번(고정 helper의 bootstrap 확인 포함)·Python bootstrap 무결성 한 번·relay Observe 한 번이 성공할 때까지 새 송신을 미루고 로컬 스캔·확정·저장과 기존 대기열은 보존한다. 이미 입장한 HTTP 한 건은 응답과 기존 로컬 반영을 마친다. 느린 helper·바이트 확인/해시는 writer admission 밖에서 실행하며, 입력 바이트가 동일할 때만 프로세스 내 검증 결과를 재사용한다. 입력·전이·delegation이 달라지면 기존 담장으로 거절한다.
+
+확인 중 화면은 「서버 보내기 확인 중」, 실패는 「서버 보내기 멈춤 — 관리자에게 알려 주세요」와 기존 reason/cause code를 남긴다. 실패·지연·소유 GUI 종료·PID 재사용·소유 관측 UNKNOWN·읽을 수 없는 표식은 자동 해제하지 않으며 다음 시작은 FULL이다. FULL 확인과 단일 GUI 입장이 끝난 뒤 시작 때 읽은 동일 표식만 지운다. READY/onboarding 또는 startup trace 최상위에는 start_path, relay_start.status, existing_relay_reused, fast_path를 남긴다. relay 자식의 WRITER_GATE_TIMEOUT은 처리되지 않은 예외 대신 DEFERRED로 기록하여 다음 바퀴에 재시도한다.
 
 사용자 승인 D11과 [현행 소스](operations.md#resident10-alignment)는 정확한 HKCU Run `KMTech.LabelMatch.Relay`와 기존 `user_relay`를 유일한 정상 persistence 경로로 사용한다. GUI와 독립적인 cycle/network retry, fresh owner 생존 확인, instance lease·stop marker·writer fence 및 identity/profile/queue/spool/receipt 계약은 유지한다. onboarding의 예약 작업 creator/필수 성공, 별도 scheduled one-shot main/parser/활성 mode를 제거했다. 옛 argv는 GUI로 흘러가지 않고 exit2로 거부한다. task10의 exact Running `Apply/REUSED` 교정은 폐기한 별도 설계의 이력이다.
 

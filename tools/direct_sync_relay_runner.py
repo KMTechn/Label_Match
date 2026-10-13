@@ -544,6 +544,11 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                     [Path(args.enqueue_source_file).expanduser().absolute().parent] if args.enqueue_source_file else [])
     record_user_data_open(product_root, (paths.data_root, paths.ledger_path.parent, *roots, *source_roots))
     config = _build_config(args)
+    from startup_send_gate import startup_send_deferred
+    deferred = startup_send_deferred(Path(config.credential_path).parent)
+    if deferred:
+        _persist_scan_runtime_status(config, deferred)
+        return 0
     if args.baseline_existing_source_files:
         try:
             status = _baseline_existing_source_files(
@@ -724,6 +729,9 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
             _persist_scan_runtime_status(config, status)
     else:
         status = run_relay_once(config, credential_input=credential_input)
+    if status.get("status") == "DEFERRED":
+        _persist_scan_runtime_status(config, status)
+        return 0
     print(f"direct_sync_relay_status={status['status']}")
     if "scan_status" in status:
         print(f"direct_sync_scan_status={status['scan_status']}")

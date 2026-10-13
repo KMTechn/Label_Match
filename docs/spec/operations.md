@@ -1394,6 +1394,15 @@ GUI worker·로그 writer 정리 뒤와 relay lease 해제 직전에 기존 DB�
 
 2026-10-12 flow 후속 C: 정상 종료 drain·join이 60초를 넘으면 「종료가 끝나지 않았습니다. 창을 그대로 두고 관리자에게 알리세요.」를 한 번 표시하고 계속 기다린다. 기존 지연 표시와 같은 안내를 중복하지 않는다. 강제 종료·자료 쓰기는 추가하지 않으며, 생성 선언·pin 갱신을 제외한 제품 변경은 +7/-5줄로 15줄 안이다.
 
+<a id="window-first-start"></a>
+### 정상 PC의 창 먼저 시작과 보내기 확인
+
+두 번째 정상 시작은 주 창을 먼저 열고 「서버 보내기 확인 중」을 표시한다. 스캔·완료·저장은 계속되며 GUI와 살아 있는 relay의 새 DirectSync 송신은 함께 기다린다. 확인 성공 뒤 자동으로 전송을 잇는다. 실패하면 「서버 보내기 멈춤 — 관리자에게 알려 주세요」와 기존 시작 거절 코드를 남기고 자료·대기열·보류 표식을 보존한다. 오래 걸리는 확인도 같은 보류를 유지한다.
+
+GUI가 종료되거나 PID가 다른 프로세스로 재사용되어도 relay는 보내기를 계속하지 않는다. 다음 정상 앱 시작이 FULL 확인을 통과하고 단일 GUI로 입장하면 그 시작이 읽은 동일 보류 표식을 해제한다. 지원 확인은 onboarding/startup trace 최상위 start_path(FAST_WINDOW_FIRST/FULL/FIRST_RUN), relay_start.status, existing_relay_reused, fast_path로 한다. 보류 표식은 수동 삭제하지 않는다. relay 자식의 쓰기 허가 시간 초과는 DEFERRED와 WRITER_GATE_TIMEOUT으로 남으며 다음 주기에 재시도한다.
+
+현장 HDD의 주 창 20초 목표·실제 스캐너/상태 줄·서버 재전송은 현장 PC 검증 대상이다. 소스의 좁은 headless 회귀를 실제 화면·설치 수용으로 대신하지 않는다.
+
 <a id="startup-check"></a>
 ## 읽기 전용 시작 확인
 

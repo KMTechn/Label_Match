@@ -44,6 +44,10 @@ def portable_release_identity(manifest: Mapping[str, object]) -> dict[str, objec
 def release_identity(app_root: Path) -> dict[str, object]:
     """Use the existing code-root verifier, never a user-supplied build string."""
     root = Path(app_root).expanduser().resolve()
+    from current_user_onboarding import window_first_release_identity
+    provisional = window_first_release_identity(root)
+    if provisional is not None:
+        return provisional
     manifest_path = root / "portable-manifest.json"
     cache_key = None
     if manifest_path.exists() or getattr(sys, "frozen", False):
@@ -52,9 +56,6 @@ def release_identity(app_root: Path) -> dict[str, object]:
             else (sys.argv[0] if sys.argv else __file__)
         ).expanduser().resolve()
         cache_key = (root, entrypoint)
-        cached = _RELEASE_IDENTITY_PASS.get(cache_key)
-        if cached is not None:
-            return cached.copy()
         from current_user_onboarding import (
             verify_bootstrap_integrity,
         )
@@ -64,6 +65,11 @@ def release_identity(app_root: Path) -> dict[str, object]:
         )
         if integrity.get("status") != "PASS":
             raise DataGenerationError(UNKNOWN_MESSAGE)
+        identity_path = manifest_path if manifest_path.exists() else root / "build-identity.json"
+        cache_key = (*cache_key, identity_path.read_bytes())
+        cached = _RELEASE_IDENTITY_PASS.get(cache_key)
+        if cached is not None:
+            return cached.copy()
         if manifest_path.exists():
             if manifest_path.stat().st_size > 65536:
                 raise DataGenerationError(UNKNOWN_MESSAGE)

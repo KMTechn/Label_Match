@@ -1427,6 +1427,10 @@ def _label_match_run_session_direct_sync_once(
     reason="TRAY_COMPLETE",
     deadline_monotonic=None,
 ):
+    from startup_send_gate import startup_send_deferred
+    deferred = startup_send_deferred(context.get("program_data_root", ""))
+    if deferred:
+        return deferred
     if not _label_match_session_sync_trigger_enabled():
         return {"status": "SKIPPED", "reason": "session sync trigger disabled"}
     try:
@@ -6506,6 +6510,11 @@ class Label_Match(tk.Tk):
     def _async_initial_load(self):
         _label_match_startup_trace("async_initial_load_start")
         try:
+            import current_user_onboarding as onboarding
+            pending = onboarding._WINDOW_FIRST_START
+            if pending is not None:
+                pending["window_visible"].wait()
+                prepare_startup_item_catalog()
             self._reconcile_package_cancellation_local_events()
             replacement_waiting_recovery_failed = False
             try:
@@ -6877,7 +6886,13 @@ class Label_Match(tk.Tk):
         suffix = words["send_count"].format(count=count) if count is not None else ""
         foreground, weight = "#64748B", "normal"
         background = self.__dict__.get("colors", {}).get("background", "#F8FAFC")
-        if review:
+        startup = self.__dict__.get("_startup_send_state")
+        if startup in {"PENDING", "FAILED"}:
+            long_text = short_text = ("서버 보내기 확인 중" if startup == "PENDING" else
+                                      "서버 보내기 멈춤 — 관리자에게 알려 주세요")
+            if startup == "FAILED":
+                foreground, weight = "#b42318", "bold"
+        elif review:
             long_text, short_text = (value.format(review=review) for value in words["review"])
             long_text += suffix
             foreground, weight = "#B91C1C", "bold"
@@ -23804,10 +23819,18 @@ def _schedule_reused_relay_verification(app, onboarding_report):
     from user_relay import verify_reused_user_relay
 
     result_queue = queue.Queue(maxsize=1)
+    window_first = onboarding_report.get("start_path") == "FAST_WINDOW_FIRST"
+    if window_first:
+        app._startup_send_state = "PENDING"
+        app._render_logistics_connection_footer()
 
     def observe():
         try:
-            verify_reused_user_relay(onboarding_report["app_root"], onboarding_report["relay_start"])
+            if window_first:
+                from current_user_onboarding import complete_window_first_verification
+                complete_window_first_verification(onboarding_report)
+            else:
+                verify_reused_user_relay(onboarding_report["app_root"], onboarding_report["relay_start"])
             result_queue.put(None)
         except Exception as error:
             result_queue.put(error)
@@ -23821,14 +23844,21 @@ def _schedule_reused_relay_verification(app, onboarding_report):
             app.after(50, poll)
             return
         if error is not None:
-            failure = CurrentUserOnboardingError(
+            failure = error if isinstance(error, CurrentUserOnboardingError) else CurrentUserOnboardingError(
                 "Label_Match first-run onboarding failed: relay ownership was not proven",
                 report_path=onboarding_report["report_path"],
             )
-            failure.__cause__ = error
+            if failure is not error:
+                failure.__cause__ = error
+            if window_first:
+                app._startup_send_state = "FAILED"
+                app._render_logistics_connection_footer()
             failure._startup_check_refusal = True
             _label_match_startup_trace("current_user_onboarding_blocked", **_onboarding_refusal_codes(failure))
             _show_first_run_onboarding_error(failure)
+        elif window_first:
+            app._startup_send_state = "VERIFIED"
+            app._render_logistics_connection_footer()
 
     def start():
         if getattr(app, "_tk_shutdown_requested", False):
@@ -23836,17 +23866,24 @@ def _schedule_reused_relay_verification(app, onboarding_report):
         if not app.winfo_viewable():
             app.after(50, start)
             return
+        if window_first:
+            onboarding_report["window_visible"].set()
         threading.Thread(target=observe, name="label-match-relay-owner-check", daemon=True).start()
         app.after(50, poll)
 
     app.after(0, start)
 
 
-def _run_label_match_application(*, relay_reuse_report=None):
+def _run_label_match_application(*, relay_reuse_report=None, verified_hold=None):
     """Start the stateful application after single-instance ownership."""
 
+    if verified_hold is not None:
+        from startup_send_gate import release_startup_send_hold
+        release_startup_send_hold(*verified_hold, verified=True, full=True)
     catalog_unconfirmed = False
-    while True:
+    window_first = relay_reuse_report is not None and relay_reuse_report.get("start_path") == "FAST_WINDOW_FIRST"
+    active_catalog_path = None
+    while not window_first:
         try:
             active_catalog_path = prepare_startup_item_catalog()
             break
@@ -23883,7 +23920,8 @@ def _run_label_match_application(*, relay_reuse_report=None):
             _show_item_catalog_cache_warning(catalog_context)
     try:
         from startup_observation import observe_startup
-        observe_startup()
+        if not window_first:
+            observe_startup()
     except Exception:
         pass
     app = Label_Match()
@@ -23960,12 +23998,16 @@ def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     startup_identity, identity_unknown = {}, False
     relay_reuse_report = None
+    verified_hold = None
+    from current_user_onboarding import try_window_first_start
+    window_first = (try_window_first_start(_label_match_runtime_app_root(), arguments=arguments)
+                    if _first_run_onboarding_enabled() else None)
     try:
         startup_identity = release_identity(_label_match_runtime_app_root())
     except Exception:
         identity_unknown = True  # Existing checks still retry and decide admission.
     from auto_update import startup_gate
-    update_result = startup_gate(Path(__file__).resolve().parent, arguments)
+    update_result = None if window_first is not None else startup_gate(Path(__file__).resolve().parent, arguments)
     if update_result is not None:
         return update_result
     hosted_result = dispatch_product_mode(arguments)
@@ -23984,14 +24026,26 @@ def main(argv=None):
         if _first_run_onboarding_enabled():
             app_root = _label_match_runtime_app_root()
             try:
-                onboarding_report = onboard_current_user(
+                if window_first is None:
+                    from startup_send_gate import read_startup_send_hold
+                    from current_user_onboarding import resolve_current_user_onboarding_paths
+                    sync_root = resolve_current_user_onboarding_paths(app_root).direct_sync_root
+                    hold = read_startup_send_hold(sync_root)
+                    if hold is not None:
+                        verified_hold = (sync_root, hold)
+                onboarding_report = window_first if window_first is not None else onboard_current_user(
                     app_root,
                     server_base_url=_first_run_server_base_url(pending_worker),
                     require_bootstrap_integrity=requires_bootstrap_integrity(app_root),
                     _startup=True,
                 )
+                _label_match_startup_trace("startup_path_selected",
+                    start_path=onboarding_report.get("start_path", "FULL"),
+                    relay_start={"status": (onboarding_report.get("relay_start") or {}).get("status", "UNKNOWN")},
+                    existing_relay_reused=(onboarding_report.get("relay_start") or {}).get("existing_relay_reused") is True,
+                    fast_path=(onboarding_report.get("relay_start") or {}).get("fast_path") is True)
                 if (onboarding_report.get("relay_start") or {}).get("fast_path") is True:
-                    relay_reuse_report = {
+                    relay_reuse_report = window_first if window_first is not None else {
                         "app_root": app_root, "relay_start": onboarding_report["relay_start"],
                         "report_path": Path(onboarding_report["direct_sync_root"]) / "status" / "current_user_onboarding.json",
                     }
@@ -24025,8 +24079,8 @@ def main(argv=None):
             settings_template_path=resource_path(os.path.join("config", "app_settings.json")),
         )
         return run_guarded_entrypoint(
-            (_run_label_match_application if relay_reuse_report is None else
-             lambda: _run_label_match_application(relay_reuse_report=relay_reuse_report)),
+            (_run_label_match_application if relay_reuse_report is None and verified_hold is None else
+             lambda: _run_label_match_application(relay_reuse_report=relay_reuse_report, verified_hold=verified_hold)),
             data_scope=data_scope,
         )
     except WriterFenceError as exc:
