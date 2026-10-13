@@ -1343,7 +1343,7 @@ admin_worker_replacements = {'INSTALL_THIS_PC.ps1': ('bdc42c26a8b5464d8a65e880ba
  'app/label_admin_pin.py': ('0c2818a8667bf680a2eb3b44f7b460732f0b25f6828ea151bb49dea5e814ad89',
                             '37c41be008dc8e9efbf4337dafaac672c33c900abc88d11a2f8004952654947a'),
  'app/main.py': ('f85e46a1779eba99ac26609a172e8e4fad55e4e4115ee314bc5e1e66f4cf75ab',
-                 'b030fcc37c62e7f7e9b124cf2b85f6918719741f495ed7a3d94ea8a6058c0d4c'),
+                 'ec057f6925b13951c00c1795a0ef26bd457d4acc37470cfe8c7af65dc89b391e'),
  'app/writer_session_fence.py': ('a43bf51c06caf667a0a0e98849553ca667aa8cd2640b546d357d918d95ec13bb',
                                  '3133d7a4bbc0cd512df21ec7d7ec5ba77d1eb21dd0ebf2c3bd41683e075ceb1c'),
  'tools/apply_prepared_update.ps1': ('dc7e30404d7bd4277692f875120aff4f7afd5c01b84301ed9e95a2c03e844c83',
