@@ -268,6 +268,101 @@ def test_phs_wait_survives_typed_ui_failure_without_conflict_instruction():
 
 
 @pytest.fixture
+def failed_startup_window(steady_start, monkeypatch):
+    import Label_Match as gui
+    import threading
+    report = onboarding.try_window_first_start(steady_start.paths.app_root, environ=steady_start.environment)
+    onboarding.admit_window_first_start(report)
+    jobs, calls = [], []
+    state = SimpleNamespace(fail=False, block=False, entered=threading.Event(), proceed=threading.Event())
+    app = SimpleNamespace(after=lambda _delay, callback: jobs.append(callback),
+        winfo_viewable=lambda: True, _tk_shutdown_requested=False,
+        _render_logistics_connection_footer=lambda: None)
+    def full_check(*_a, **_k):
+        calls.append(threading.get_ident())
+        assert getattr(fence._WRITER_LOCAL, "depth", 0) == 0
+        if len(calls) > 1 and state.block:
+            state.entered.set()
+            assert state.proceed.wait(2)
+        return {"status": "READY"}
+    def observe(*_a, **_k):
+        if len(calls) == 1 or state.fail:
+            raise RuntimeError("relay verification unavailable")
+    monkeypatch.setattr(onboarding, "onboard_current_user", full_check)
+    monkeypatch.setattr(user_relay, "verify_reused_user_relay", observe)
+    monkeypatch.setattr(gui, "_show_first_run_onboarding_error", lambda _: None)
+    gui._schedule_reused_relay_verification(app, report)
+    _finish_verification_jobs(app, jobs, "FAILED")
+    yield SimpleNamespace(app=app, report=report, jobs=jobs, calls=calls, state=state)
+    state.proceed.set()
+
+
+def _finish_verification_jobs(app, jobs, expected):
+    for _ in range(200):
+        if jobs:
+            jobs.pop(0)()
+        if app._startup_send_state == expected and not jobs:
+            return
+        time.sleep(0.005)
+    pytest.fail("startup verification did not finish")
+
+
+def test_retry_verification_success_releases_same_hold_and_resumes(failed_startup_window):
+    import Label_Match as gui
+    import threading
+    from startup_send_gate import StartupGatedSession, startup_send_deferred
+    item = failed_startup_window
+    root = item.report["paths"].direct_sync_root
+    sent = []
+    session = StartupGatedSession(root, SimpleNamespace(post=lambda *_a, **_k: sent.append(True)))
+    with pytest.raises(fence.WriterFencedError):
+        session.post("https://example.invalid")
+    assert gui.Label_Match._retry_startup_send_verification(item.app)
+    _finish_verification_jobs(item.app, item.jobs, "VERIFIED")
+    assert len(item.calls) == 2 and all(owner != threading.get_ident() for owner in item.calls)
+    assert startup_send_deferred(root) is None
+    session.post("https://example.invalid")
+    assert sent == [True]
+
+
+def test_retry_verification_failure_keeps_original_hold(failed_startup_window):
+    import Label_Match as gui
+    from startup_send_gate import startup_send_hold_path, startup_send_deferred
+    item = failed_startup_window
+    root = item.report["paths"].direct_sync_root
+    before = startup_send_hold_path(root).read_bytes()
+    item.state.fail = True
+    assert gui.Label_Match._retry_startup_send_verification(item.app)
+    _finish_verification_jobs(item.app, item.jobs, "FAILED")
+    assert len(item.calls) == 2
+    assert startup_send_hold_path(root).read_bytes() == before
+    assert startup_send_deferred(root)
+    assert onboarding.try_window_first_start(item.report["app_root"]) is None
+
+
+def test_retry_verification_rapid_clicks_run_one_background_check(failed_startup_window):
+    import Label_Match as gui
+    from startup_send_gate import startup_send_deferred
+    item = failed_startup_window
+    item.state.block = True
+    assert gui.Label_Match._retry_startup_send_verification(item.app)
+    assert not gui.Label_Match._retry_startup_send_verification(item.app)
+    item.jobs.pop(0)()
+    assert item.state.entered.wait(1)
+    assert all(not gui.Label_Match._retry_startup_send_verification(item.app) for _ in range(10))
+    assert len(item.calls) == 2 and startup_send_deferred(item.report["paths"].direct_sync_root)
+    item.state.proceed.set()
+    _finish_verification_jobs(item.app, item.jobs, "VERIFIED")
+    assert len(item.calls) == 2
+
+
+def test_pin_startup_deferral_explains_attempt_is_not_counted():
+    from label_admin_pin import operator_message
+    message = operator_message("STARTUP_VERIFICATION_PENDING")
+    assert message.endswith("이 건만 보류 — 틀린 횟수로 세지 않음")
+
+
+@pytest.fixture
 def steady_start(managed_onboarding, monkeypatch):
     paths, environment, control, helpers = managed_onboarding
     onboarding.apply_current_user_runtime_environment(paths, environ=environment)
@@ -661,16 +756,24 @@ def test_full_onboarding_requires_observed_owner_before_window(steady_start, mon
 
 
 @pytest.mark.parametrize("state,message", [
-    ("PENDING", "서버 보내기 확인 중"), ("FAILED", "서버 보내기 멈춤 — 관리자에게 알려 주세요"),
+    ("PENDING", "서버 보내기 확인 중"), ("FAILED", "서버 보내기가 멈췄습니다. 앱을 껐다 다시 켜 주세요(계속되면 관리자에게)"),
 ])
 def test_startup_notice_uses_the_visible_work_screen_footer(state, message):
     import Label_Match as gui
-    rendered = {}
+    rendered, button = {}, {}
+    retry_button = SimpleNamespace(configure=lambda **fields: button.update(fields),
+        grid=lambda: button.update(visible=True), grid_remove=lambda: button.update(visible=False),
+        winfo_reqwidth=lambda: 80)
     window = SimpleNamespace(logistics_connection_label=SimpleNamespace(configure=lambda **fields: rendered.update(fields)),
+                             startup_send_retry_button=retry_button,
                              _startup_send_state=state, _text_pixel_width=lambda *_args: 0,
                              winfo_width=lambda: 1920)
     gui.Label_Match._render_logistics_connection_footer(window)
     assert rendered["text"] == message
+    assert button == {"visible": True, "state": "normal" if state == "FAILED" else "disabled"}
+    if state == "FAILED":
+        assert rendered["wraplength"] > 0
     window._startup_send_state = "VERIFIED"
     gui.Label_Match._render_logistics_connection_footer(window)
     assert rendered["text"] != message
+    assert button["visible"] is False

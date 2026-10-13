@@ -6934,9 +6934,17 @@ class Label_Match(tk.Tk):
         foreground, weight = "#64748B", "normal"
         background = self.__dict__.get("colors", {}).get("background", "#F8FAFC")
         startup = self.__dict__.get("_startup_send_state")
+        retry_button = self.__dict__.get("startup_send_retry_button")
+        if retry_button is not None:
+            if startup in {"PENDING", "FAILED"}:
+                retry_button.configure(state="disabled" if startup == "PENDING" or
+                    self.__dict__.get("_startup_send_verification_running", False) else "normal")
+                retry_button.grid()
+            else:
+                retry_button.grid_remove()
         if startup in {"PENDING", "FAILED"}:
             long_text = short_text = ("서버 보내기 확인 중" if startup == "PENDING" else
-                                      "서버 보내기 멈춤 — 관리자에게 알려 주세요")
+                                      "서버 보내기가 멈췄습니다. 앱을 껐다 다시 켜 주세요(계속되면 관리자에게)")
             if startup == "FAILED":
                 foreground, weight = "#b42318", "bold"
         elif review:
@@ -6975,10 +6983,19 @@ class Label_Match(tk.Tk):
             except (TclError, AttributeError):
                 pass
         available = self.__dict__.get("_logistics_footer_available_width", width - 40)
+        if startup in {"PENDING", "FAILED"} and retry_button is not None:
+            available = max(1, available - retry_button.winfo_reqwidth() - 8)
         text = short_text if width < 1366 or self._text_pixel_width(long_text, font) > available else long_text
         label.configure(text=text, style="Status.TLabel", foreground=foreground,
-                        background=background, font=font, wraplength=0, width=1)
+                        background=background, font=font,
+                        wraplength=max(1, available) if startup == "FAILED" else 0, width=1)
         return None
+
+    def _retry_startup_send_verification(self):
+        report = self.__dict__.get("_startup_send_report")
+        if report is None or self.__dict__.get("_startup_send_state") != "FAILED":
+            return False
+        return _schedule_reused_relay_verification(self, report)
 
     def _render_relay_screen_status(self, state):
         label = self.__dict__.get("relay_screen_status_label")
@@ -22918,11 +22935,18 @@ class Label_Match(tk.Tk):
         self.operator_notebook.bind("<<NotebookTabChanged>>", self._on_logistics_progress_tab_changed, add="+")
         self._render_logistics_progress()
 
+        self.startup_send_footer = ttk.Frame(self.operator_right_pane, style="Card.TFrame")
+        self.startup_send_footer.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        self.startup_send_footer.grid_columnconfigure(0, weight=1)
         self.logistics_connection_label = ttk.Label(
-            self.operator_right_pane, text=LABEL_MATCH_STATUS_LINE_TEXT["checking"][0],
+            self.startup_send_footer, text=LABEL_MATCH_STATUS_LINE_TEXT["checking"][0],
             style="Status.TLabel", width=1, wraplength=0,
         )
-        self.logistics_connection_label.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        self.logistics_connection_label.grid(row=0, column=0, sticky="ew")
+        self.startup_send_retry_button = ttk.Button(self.startup_send_footer, text="다시 확인",
+            command=self._retry_startup_send_verification)
+        self.startup_send_retry_button.grid(row=0, column=1, padx=(8, 0), sticky="e")
+        self.startup_send_retry_button.grid_remove()
         self._logistics_footer_available_width = max(1, panes.right_width - 30)
 
         label_workbench_context.create_status_footer(
@@ -23853,9 +23877,13 @@ def _schedule_reused_relay_verification(app, onboarding_report):
     """Start the deferred read-only Observe after mapping, and report on the UI thread."""
     from user_relay import verify_reused_user_relay
 
+    if getattr(app, "_tk_shutdown_requested", False) or getattr(app, "_startup_send_verification_running", False):
+        return False
+    app._startup_send_verification_running = True
     result_queue = queue.Queue(maxsize=1)
     window_first = onboarding_report.get("start_path") == "FAST_WINDOW_FIRST"
     if window_first:
+        app._startup_send_report = onboarding_report
         app._startup_send_state = "PENDING"
         app._render_logistics_connection_footer()
 
@@ -23878,6 +23906,7 @@ def _schedule_reused_relay_verification(app, onboarding_report):
         except queue.Empty:
             app.after(50, poll)
             return
+        app._startup_send_verification_running = False
         if error is not None:
             failure = error if isinstance(error, CurrentUserOnboardingError) else CurrentUserOnboardingError(
                 "Label_Match first-run onboarding failed: relay ownership was not proven",
@@ -23907,6 +23936,7 @@ def _schedule_reused_relay_verification(app, onboarding_report):
         app.after(50, poll)
 
     app.after(0, start)
+    return True
 
 
 def _prepare_startup_catalog_attempt():

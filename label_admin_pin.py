@@ -51,7 +51,7 @@ def unverified_hold_allowed(code: str) -> bool:
 
 def operator_message(code: str, *, http_status: int = 0) -> str:
     if code.startswith("STARTUP_VERIFICATION_"):
-        return "서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요."
+        return "서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요. 이 건만 보류 — 틀린 횟수로 세지 않음"
     if code == "VERIFY_UNAVAILABLE":
         if http_status >= 500:
             return f"회사 서버 오류({http_status})가 발생했습니다. 이 건만 보류하고 잠시 뒤 다시 확인하세요."

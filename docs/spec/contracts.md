@@ -248,7 +248,9 @@ READY인 사용자 설정·등록 자료가 존재하고 설치 주소(등록 �
 
 FAST 품목 준비는 시작 때 전달받은 보고서를 고정 사용하며 배경 확인이 전역 상태를 비워도 중앙 목록 새로 고침을 수행한다. FULL과 같은 과도기 오프라인 fallback·미확인 표기를 사용하고, 과도기 허용이 없으면 UI 스레드에서 같은 원본 재시도를 안내한다.
 
-확인 중 화면은 「서버 보내기 확인 중」, 실패는 「서버 보내기 멈춤 — 관리자에게 알려 주세요」와 기존 reason/cause code를 남긴다. 실패·지연·소유 GUI 종료·PID 재사용·소유 관측 UNKNOWN·읽을 수 없는 표식은 자동 해제하지 않으며 다음 시작은 FULL이다. FULL 확인과 단일 GUI 입장이 끝난 뒤 시작 때 읽은 동일 표식만 지운다. READY/onboarding 또는 startup trace 최상위에는 start_path, relay_start.status, existing_relay_reused, fast_path를 남긴다. relay 자식의 WRITER_GATE_TIMEOUT은 처리되지 않은 예외 대신 DEFERRED로 기록하여 다음 바퀴에 재시도한다.
+확인 중 화면은 「서버 보내기 확인 중」, 실패는 「서버 보내기가 멈췄습니다. 앱을 껐다 다시 켜 주세요(계속되면 관리자에게)」와 기존 reason/cause code를 남긴다. 같은 하단 위치의 「다시 확인」은 창 뒤 전체 확인을 배경에서 한 번 더 수행한다. 확인 중에는 단추를 비활성화하고 연타도 한 번만 입장한다. 성공하면 기존 동일 표식만 해제해 송신을 재개하고, 실패하면 표식·자료·대기열을 보존한다. STARTUP_ 보류 PIN 안내에는 「이 건만 보류 — 틀린 횟수로 세지 않음」을 덧붙인다.
+
+실패·지연·소유 GUI 종료·PID 재사용·소유 관측 UNKNOWN·읽을 수 없는 표식은 자동 해제하지 않으며 다음 시작은 FULL이다. FULL 확인과 단일 GUI 입장이 끝난 뒤 시작 때 읽은 동일 표식만 지운다. READY/onboarding 또는 startup trace 최상위에는 start_path, relay_start.status, existing_relay_reused, fast_path를 남긴다. relay 자식의 WRITER_GATE_TIMEOUT은 처리되지 않은 예외 대신 DEFERRED로 기록하여 다음 바퀴에 재시도한다.
 
 사용자 승인 D11과 [현행 소스](operations.md#resident10-alignment)는 정확한 HKCU Run `KMTech.LabelMatch.Relay`와 기존 `user_relay`를 유일한 정상 persistence 경로로 사용한다. GUI와 독립적인 cycle/network retry, fresh owner 생존 확인, instance lease·stop marker·writer fence 및 identity/profile/queue/spool/receipt 계약은 유지한다. onboarding의 예약 작업 creator/필수 성공, 별도 scheduled one-shot main/parser/활성 mode를 제거했다. 옛 argv는 GUI로 흘러가지 않고 exit2로 거부한다. task10의 exact Running `Apply/REUSED` 교정은 폐기한 별도 설계의 이력이다.
 
