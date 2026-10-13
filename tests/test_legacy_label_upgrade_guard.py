@@ -625,13 +625,23 @@ def test_first_update_stock_pair_accepts_candidate_and_refuses_changed_app_files
     result = _nextfix_probe(tmp_path, candidate, installed)
     assert result.returncode == 0, result.stdout + result.stderr
     assert {relative: (installed / relative).read_bytes() for relative in pairs} == installed_before
+    # Keep every mutation; break its hardlink once and restore all bytes between probes.
+    changed_candidate = _tree(candidate, tmp_path / "candidate-changes", app_files)
     for index, relative in enumerate(sorted(app_files)):
-        changed_candidate = _tree(candidate, tmp_path / f"candidate-change-{index}", [relative])
-        with (changed_candidate / relative).open("a", encoding="utf-8") as stream:
-            stream.write("\n" if relative.endswith(".json") else "\n# unreviewed source byte change\n")
-        _pin(changed_candidate)
-        result = _nextfix_probe(tmp_path, changed_candidate, installed)
-        assert result.returncode != 0, relative
+        mutation_path = changed_candidate / relative
+        original_bytes = mutation_path.read_bytes()
+        try:
+            with (changed_candidate / relative).open("a", encoding="utf-8") as stream:
+                stream.write("\n" if relative.endswith(".json") else "\n# unreviewed source byte change\n")
+            _pin(changed_candidate)
+            result = _nextfix_probe(tmp_path, changed_candidate, installed)
+            assert result.returncode != 0, relative
+        except BaseException:
+            shutil.copytree(changed_candidate, tmp_path / f"failed-candidate-{index}")
+            raise
+        finally:
+            mutation_path.write_bytes(original_bytes)
+            _pin(changed_candidate)
 
 
 def test_first_update_stock_pair_refuses_changed_installed_app(tmp_path, first_update_stock_packages):

@@ -1223,7 +1223,7 @@ def _label_match_main(tmp_path, monkeypatch, pending):
     monkeypatch.setattr(startup_observation, "begin_startup", lambda *_a, **_k: None)
     source = Path(__file__).parents[1] / "Label_Match.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
-    selected = {"main", "_first_run_server_base_url"}
+    selected = {"main", "_first_run_server_base_url", "_onboarding_refusal_codes"}
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in selected]
     assert len(functions) == len(selected)
     onboarded, reports = [], []
@@ -1235,6 +1235,7 @@ def _label_match_main(tmp_path, monkeypatch, pending):
 
     namespace = {
         "Path": Path, "__file__": str(source), "os": os, "sys": sys,
+        "re": __import__("re"), "_startup_app_stop_requested": lambda: False,
         "WriterFenceError": WriterFenceError, "CurrentUserOnboardingError": CurrentUserOnboardingError,
         "DataGenerationError": DataGenerationError, "ONBOARDING_EXIT_CODE": ONBOARDING_EXIT_CODE,
         "release_identity": lambda _root: {},
