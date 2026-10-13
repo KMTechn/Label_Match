@@ -309,7 +309,7 @@ window.AppFrame = (() => {
     // scan.js 는 그대로(빈 Enter 는 지금처럼 버림), 판정은 처리 층(keys.Enter 의 명령).
     window.addEventListener('keydown', (event) => {
       if (!app.keys || !app.keys.Enter || event.repeat || event.isComposing || (event.code !== 'Enter' && event.code !== 'NumpadEnter')) return;
-      if (shownSheet() || ui.admin_open || !window.AppScan || window.AppScan.editable(document.activeElement)) return;
+      if (shownSheet() || ui.admin_open || !window.AppScan || window.AppScan.editable(document.activeElement) || window.AppScan.control()) return; // 단추 등에 초점 = 그 요소가 눌림(M60)
       const sink = window.AppScan.state();
       if (!sink.buffer && !sink.queued) go(app.keys.Enter);
     }, true);

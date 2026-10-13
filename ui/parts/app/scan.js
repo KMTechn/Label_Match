@@ -40,6 +40,9 @@ window.AppScan = (() => {
   }
   // 비밀 판(PIN · password 칸이 보이는 판)이 열려 있으면 칸 밖 키로 스캔을 조립하지 않는다 — 버림, scan() 0. 판이 닫히면 다시.
   const secret = () => [...document.querySelectorAll('input[type=password], [data-pin]')].some(node => !node.closest('[hidden]'));
+  // M60: 초점이 조작 요소(단추 · 링크 · 입력 · 고르기)에 있고 버퍼가 비었으면 Enter · Space 는 그 요소 몫(눌림) — body 빈 Enter 는 frame 「확인」 길
+  const control = () => !!document.activeElement && document.activeElement.matches('button, a[href], input, select, summary, [role=button]');
+  const owns = event => !buffer && (event.key === 'Enter' || event.code === 'NumpadEnter' || event.key === ' ') && control();
   function eventLog(ev, fields = {}) { events.push({ev, ...fields}); }
   function flush() {
     if (keys.length) { events.push({ev:'keys',batch:keys}); keys = []; }
@@ -115,6 +118,7 @@ window.AppScan = (() => {
       if (event.code !== 'KeyV') event.preventDefault(); return;
     }
     if (event.altKey && /^Numpad[0-9]$/.test(event.code)) { eventLog('alt_numpad'); return; }
+    if (owns(event)) return;
     const tab = event.code === 'Tab' || event.key === 'Tab';
     if (event.code === 'Enter' || event.code === 'NumpadEnter' || event.key === 'Enter' || tab && buffer) {
       event.preventDefault(); submit(event); return;
@@ -133,7 +137,7 @@ window.AppScan = (() => {
     if (character !== null) { nKeys++; append(character,fromKey !== null ? 'key' : 'code',event); }
   }
   function press(event) {
-    if (event.editing) return;
+    if (event.editing || owns(event)) return;
     if (event.ctrlKey || event.metaKey || event.altKey || event.key.length !== 1 || event.key.charCodeAt(0) < 0x20) { event.preventDefault(); return; }
     event.preventDefault(); nKeys++; append(event.key,'keypress',event); eventLog('keypress_path');
   }
@@ -203,6 +207,6 @@ window.AppScan = (() => {
     window.addEventListener('blur',()=>focusEvent('blur')); window.addEventListener('focus',()=>focusEvent('focus'));
     setInterval(flush,250);
   }
-  return {start,flush,editable,completePHS2,focusEvent,secret,state:() => ({buffer,seq,profile,paths:{...paths},evidence:frame ? {...frame} : null,
+  return {start,flush,editable,completePHS2,focusEvent,secret,control,state:() => ({buffer,seq,profile,paths:{...paths},evidence:frame ? {...frame} : null,
     pressed,generation,t_attach:attachedAt,recovered,queued:waiting ? waiting.queue.length : 0,log_keys:keys.length,log_events:events.length})};
 })();
