@@ -404,7 +404,9 @@ def remove_user_relay_autostart(
     }
 
 
-def _existing_user_relay_owner(root: Path, direct_sync_root: Path, *, is_bootstrap: bool) -> dict[str, Any] | None:
+def _existing_user_relay_owner(
+    root: Path, direct_sync_root: Path, *, is_bootstrap: bool, allow_fast_path: bool = False,
+) -> dict[str, Any] | None:
     if user_relay_stop_path(direct_sync_root).exists():
         return None
     lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
@@ -429,6 +431,14 @@ def _existing_user_relay_owner(root: Path, direct_sync_root: Path, *, is_bootstr
         active = read_json(control / "active.json")
         state = read_json(control / "transition.json")
         expected_root = version_bundle(control, active["sha"])
+        age = (datetime.now(timezone.utc) - _utc(owner["updated_at"])).total_seconds()
+        if (allow_fast_path and 0 <= age <= 90
+                and state.get("phase") in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}
+                and os.path.normcase(str(status.get("code_root") or "")) == os.path.normcase(str(expected_root))
+                and status.get("source_commit") == active["sha"]
+                and status.get("sid") == policy["operator_sid"]
+                and status.get("ordinary_user") is True):
+            return {**owner, "fast_path": True, "source_commit": active["sha"]}
         rows = [row for row in process_snapshot(control) if row.get("pid") == owner["process_id"]]
         if len(rows) != 1 or os.path.normcase(str(status.get("code_root") or "")) != os.path.normcase(str(expected_root)):
             return None
@@ -443,7 +453,7 @@ def _existing_user_relay_owner(root: Path, direct_sync_root: Path, *, is_bootstr
                 return None
         elif state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
             return None
-    return owner
+    return {**owner, "source_commit": active["sha"], "created_at": row["created_at"]}
 
 
 def _reuse_existing_user_relay(
@@ -457,6 +467,12 @@ def _reuse_existing_user_relay(
     owner = existing_owner()
     if owner is None:
         return None
+    if owner.get("fast_path") is True:
+        return {
+            "status": "ALIVE", "process_id": owner["process_id"], "survival_seconds": 0.0,
+            "existing_relay_reused": True, "fast_path": True,
+            "owner_status_updated_at": owner["updated_at"], "source_commit": owner["source_commit"],
+        }
     wait(survival)
     confirmed_owner = existing_owner()
     if confirmed_owner is None or confirmed_owner["process_id"] != owner["process_id"]:
@@ -490,8 +506,18 @@ def reuse_or_start_user_relay_process(
         root = Path(app_root).expanduser().resolve()
         direct_sync_root = resolve_current_user_onboarding_paths(root).direct_sync_root
         is_bootstrap = "--bootstrap" in build_user_relay_command(app_root)
+        allow_fast_path = True
+
+        def existing_owner():
+            nonlocal allow_fast_path
+            recent = allow_fast_path
+            allow_fast_path = False
+            return _existing_user_relay_owner(
+                root, direct_sync_root, is_bootstrap=is_bootstrap, allow_fast_path=recent,
+            )
+
         reused = _reuse_existing_user_relay(
-            lambda: _existing_user_relay_owner(root, direct_sync_root, is_bootstrap=is_bootstrap),
+            existing_owner,
             max(0.0, float(survival_seconds)),
             wait,
         )
@@ -504,6 +530,20 @@ def reuse_or_start_user_relay_process(
         bootstrap_readiness_seconds=bootstrap_readiness_seconds,
         wait=wait,
     )
+
+
+def verify_reused_user_relay(app_root: str | os.PathLike[str], relay_start: Mapping[str, Any]) -> None:
+    """Observe a fast reuse once after the GUI is visible; never start or stop a process."""
+    from auto_update import _utc
+    from current_user_onboarding import resolve_current_user_onboarding_paths
+
+    root = Path(app_root).expanduser().resolve()
+    direct_sync_root = resolve_current_user_onboarding_paths(root).direct_sync_root
+    owner = _existing_user_relay_owner(root, direct_sync_root, is_bootstrap=True)
+    if (owner is None or owner["process_id"] != relay_start["process_id"]
+            or owner.get("source_commit") != relay_start["source_commit"]
+            or _utc(owner["created_at"]) > _utc(relay_start["owner_status_updated_at"])):
+        raise UserRelayError("existing user relay ownership did not survive startup verification")
 
 
 @writer_sink("user_relay_process_start")

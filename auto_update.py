@@ -2179,7 +2179,12 @@ def trial_stop_requested(app_root: Path) -> bool:
 def relay_ready_metadata(app_root: Path) -> dict[str, Any]:
     context = trial_context(app_root)
     if context is None:
-        return {}
+        if control_root(app_root) is None:
+            return {}
+        # Publish this process's identity, never the desired policy identity.
+        # Older/missing metadata still requires the ordinary Observe path.
+        return {"source_commit": version_manifest(app_root.parent)["source_commit"],
+                "sid": current_process_sid(), "ordinary_user": ordinary_user_context()}
     _, _, state = context
     return {"process_id": os.getpid(), "source_commit": version_manifest(app_root.parent)["source_commit"], "update_nonce": state["nonce"], "ordinary_user": ordinary_user_context()}
 

@@ -63,6 +63,8 @@ sub-474 측정 P2(컷 뒤): 기존 자료 세대 5-root 기록 묶음의 실제 
 
 sub-160 두 번째 시작(10/13): relay 재사용 판정의 Observe와 시작 probe는 admission 밖으로 옮겼다. onboarding의 나머지 짧은 admission(진입 probe·자동 시작 등록·옛 작업 은퇴·READY 게시 등)은 relay 바퀴가 admission을 쥔 동안 각각 최대 5초 기다리고 넘으면 `WRITER_GATE_TIMEOUT`으로 거절될 수 있다. 후속 제안: relay 바퀴의 네트워크 구간을 admission 밖으로 빼 보유 시간을 줄인다(실측 뒤 결정).
 
+sub-165 두 번째 시작: 90초 이내 steady relay의 판·운영 SID·일반 사용자 상태를 읽기만 해 즉시 재사용하고, 창 뒤 배경 Observe 한 번으로 신원을 대조한다. 칸 부재·시험 전이·첫 실행은 기존 길이다. focused headless의 1초 이내 판정과 실제 HDD/창 수용은 구분한다. onboarding의 나머지 admission 대기와 실제 화면·전송 확인은 남는다.
+
 sub-474 fixed helper P2(컷 뒤): 코디 msg_eb0b977f005f에 따라 Verify helper 자신의 auto_update_fixed_helper admission도 기존대로 둔다. 실제 stock 데코레이터·native PowerShell 계수기의 두 보유 시간은 최대 0.422초·합 0.704초, 호출 3회·READY 12.547초다. 계수기 payload만 실행했으므로 설치된 stock Verify 업무 시간은 미측정이며 실제 랩에서 확인한다. 다른 helper mode·source·호출에 probe를 추가하지 않는다.
 
 설치 packet의 release identity PASS 기억과 첫 admission 전 확인을 적용한다. 생성 선언·정확한 G 전환 쌍과 최종 stock gate는 통합 sub-480에서 갱신·검증한다. GUI onboarding 직접 확인의 시작 1회 비용은 별도 계수하며, sub-474의 짧은 admission이 합쳐진 머리에서 I5 위치를 재확인한다. 실제 HDD 첫 시작·GUI·Defender 수용은 headless 계수·stock 표본과 별도다.

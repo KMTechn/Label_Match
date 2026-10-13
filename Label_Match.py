@@ -23799,7 +23799,50 @@ def _start_without_confirmed_item_catalog(error):
     return notice
 
 
-def _run_label_match_application():
+def _schedule_reused_relay_verification(app, onboarding_report):
+    """Start the deferred read-only Observe after mapping, and report on the UI thread."""
+    from user_relay import verify_reused_user_relay
+
+    result_queue = queue.Queue(maxsize=1)
+
+    def observe():
+        try:
+            verify_reused_user_relay(onboarding_report["app_root"], onboarding_report["relay_start"])
+            result_queue.put(None)
+        except Exception as error:
+            result_queue.put(error)
+
+    def poll():
+        if getattr(app, "_tk_shutdown_requested", False):
+            return
+        try:
+            error = result_queue.get_nowait()
+        except queue.Empty:
+            app.after(50, poll)
+            return
+        if error is not None:
+            failure = CurrentUserOnboardingError(
+                "Label_Match first-run onboarding failed: relay ownership was not proven",
+                report_path=onboarding_report["report_path"],
+            )
+            failure.__cause__ = error
+            failure._startup_check_refusal = True
+            _label_match_startup_trace("current_user_onboarding_blocked", **_onboarding_refusal_codes(failure))
+            _show_first_run_onboarding_error(failure)
+
+    def start():
+        if getattr(app, "_tk_shutdown_requested", False):
+            return
+        if not app.winfo_viewable():
+            app.after(50, start)
+            return
+        threading.Thread(target=observe, name="label-match-relay-owner-check", daemon=True).start()
+        app.after(50, poll)
+
+    app.after(0, start)
+
+
+def _run_label_match_application(*, relay_reuse_report=None):
     """Start the stateful application after single-instance ownership."""
 
     catalog_unconfirmed = False
@@ -23844,6 +23887,8 @@ def _run_label_match_application():
     except Exception:
         pass
     app = Label_Match()
+    if relay_reuse_report is not None:
+        _schedule_reused_relay_verification(app, relay_reuse_report)
     from auto_update import trial_context, publish_gui_ready, trial_stop_requested, confirmed_trial
     _update_trial = trial_context(Path(__file__).resolve().parent) is not None
     if _update_trial:
@@ -23914,6 +23959,7 @@ def _onboarding_refusal_codes(exc):
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     startup_identity, identity_unknown = {}, False
+    relay_reuse_report = None
     try:
         startup_identity = release_identity(_label_match_runtime_app_root())
     except Exception:
@@ -23944,6 +23990,11 @@ def main(argv=None):
                     require_bootstrap_integrity=requires_bootstrap_integrity(app_root),
                     _startup=True,
                 )
+                if (onboarding_report.get("relay_start") or {}).get("fast_path") is True:
+                    relay_reuse_report = {
+                        "app_root": app_root, "relay_start": onboarding_report["relay_start"],
+                        "report_path": Path(onboarding_report["direct_sync_root"]) / "status" / "current_user_onboarding.json",
+                    }
                 if (
                     (onboarding_report.get("bootstrap_integrity") or {}).get(
                         "status"
@@ -23974,7 +24025,8 @@ def main(argv=None):
             settings_template_path=resource_path(os.path.join("config", "app_settings.json")),
         )
         return run_guarded_entrypoint(
-            _run_label_match_application,
+            (_run_label_match_application if relay_reuse_report is None else
+             lambda: _run_label_match_application(relay_reuse_report=relay_reuse_report)),
             data_scope=data_scope,
         )
     except WriterFenceError as exc:

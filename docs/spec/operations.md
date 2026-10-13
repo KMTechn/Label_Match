@@ -1397,6 +1397,8 @@ GUI worker·로그 writer 정리 뒤와 relay lease 해제 직전에 기존 DB�
 <a id="startup-check"></a>
 ## 읽기 전용 시작 확인
 
+상주 relay가 있는 두 번째 시작은 90초 이내 상태에 현재 판·운영 계정·일반 사용자 정보까지 맞으면 바로 창을 연다. 기존 상태에 해당 칸이 없거나 업데이트 시험 중이면 기존 시작 확인을 따른다. PID의 실제 신원 확인은 창이 보인 뒤 배경에서 한 번 하고, 다르면 기존 「이 PC 는 지금 새 프로그램을 열 수 없습니다」 안내와 SETUP_FAILED/FIRST_RUN_SETUP_REQUIRED를 기록한다. 이 확인은 자료 저장·relay 종료·담장 변경을 하지 않는다. 실제 HDD 시작 시간과 창 뒤 안내는 랩/현장 확인 대상으로 남는다.
+
 작업자 계정에서 `<설치 루트>\runtime\python.exe -I -B <설치 루트>\app\startup_check.py --json`을 실행한다. 표준 출력 JSON 한 줄과 종료 코드 0·10·20으로 구별한다. 못 읽음이나 상한 초과는 UNKNOWN이며 READY로 바꾸지 않는다. 실행 목표는 HDD 10초 이내다. 큰 runtime 파일을 재해시하지 않고 설치 inventory·작은 시작 파일의 고정 hash를 대조한다. 전체 설치본 무결성 검사와 실제 GUI 건강 확인은 기존 지원 관문 몫이다.
 
 묶음은 UPDATE_PENDING / DEPLOY_FENCE / INSTALL_MISMATCH / DATA_GUARD / ACCOUNT_MISMATCH / CATALOG_OFFLINE / ALREADY_RUNNING / UNKNOWN이다. READY이면 `category=READY`; `categories`에는 실제로 겹친 묶음만 들어간다. ALREADY_RUNNING은 알림이며 거부가 아니다. 목록 확인은 같은 사용자 인증의 cache·복구 payload를 읽기만 하며 cache 복구 파일을 만들지 않는다. 품목 목록이 없어도 관리자가 켠 기존 과도기 스위치는 유지한다. 알림·관리자 SSH 고침과 결과 폴더 ACL은 설치 키트 몫이다.
