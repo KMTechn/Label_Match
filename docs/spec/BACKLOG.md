@@ -4,6 +4,7 @@
 
 - L02a: 반복 checkpoint 쓰기 실패의 건별 UNKNOWN 보류·원본 보관·다음 세트 진행과 10분 네 번째 건의 전체 저장 장애 안내를 구현한다. 날짜 만료 없이 보존하고 관리자 확인 전 자동 감사 재생·같은 제품/새 현품표 재처리를 막는다. CSV writer/flush의 미확정 오류 및 이미 완료한 CSV 후속 저장 오류는 기존 복구 경로다. 실제 HDD·창·전원 중단과 CSV 격리 확대는 후속 확인 대상이다.
 - 창 먼저 시작(w9firstupdsub166): READY·신선한 같은 판 relay는 주 창 뒤에서 전체 검증한다. 공유 전송 보류·실패/소유자 없음 뒤 FULL 재시작·허가 시간 초과 DEFERRED를 구현한다. 실제 HDD 20초 목표, 상태 줄·스캐너·재전송과 넓은 회귀는 현장 PC inspection6에서 확인한다([운영](operations.md#window-first-start)).
+- sub166 archrev 18:44 교정: 단일 GUI 소유 뒤 표식 기록, 물류·PIN·이름 등록 송신 입장 보류, FAST 품목 오프라인 fallback·재시도와 시작 정보 고정 전달을 반영했다. 중복 바로 가기와 보류 중 각 업무 요청은 좁은 headless 회귀로 확인하며 실제 화면 수용은 현장 몫이다.
 - w9firstupdsub63 관리자 입구·기계 배치·PENDING·기존 첫 시작 연결 후보를 구현한다. 같은 SID의 상승 SSH도 자기 프로필 준비·등록·Run·relay/화면을 첫 일반 작업자 시작까지 미루고 실패 시 새 공용 링크·PENDING을 회수한다. LM-2의 키트 관리자 가지 연결과 실제 VM 설치/첫 시작 전후 키트 Rollback 증명은 남는다. 아래의 기존 묶음 결정은 보존하며 이 후보의 승인·조립/출시는 1차와 키트 담당의 후속 판정이다.
 - 작업자 바로 가기: 공용 기계 단계와 현재 사용자 단계의 설치·기록·복원을 구현한다. PS5.1/7의 격리 .lnk 회귀로 대상·인수·아이콘·원본 바이트·다른 루트 보존을 확인한다. 관리자 직접 설치 뒤 작업자 개인 링크 처리는 첫 시작 onboarding에서 같은 UserOnly helper를 받을 후속 자리이며, 실제 Explorer·검은 창·아이콘·현장 복귀는 랩 확인 대상이다.
 - 원격 정상 멈춤(w9firstupdsub94): `user_relay.py --request-app-stop`으로 GUI의 기존 입력 보존·정상 종료와 relay stop을 요청한다. SQLite checkpoint/close를 적용하며 실제 PC의 프로세스 종료·WAL/SHM 부재·키트 되돌림은 별도 확인 대상이다([절차](operations.md#remote-app-stop)).

@@ -244,7 +244,9 @@ relay는 시험 시작 때도 자기 SID를 상태에 남겨 확정 뒤 재사�
 
 READY인 사용자 설정·등록 자료가 존재하고 설치 주소(등록 보고서에 있으면 그 주소)·운영 SID·현재 active 판·steady 전이(CONFIRMED/ROLLED_BACK/DEFERRED)가 맞으며, instance lease 점유·stop/검증 보류 표지 없음·RUNNING 상태의 worker/app/direct-sync 일치·살아 있는 PID·90초 이내 갱신·현재 code_root/source_commit·일반 사용자 표시가 모두 맞으면 `FAST_WINDOW_FIRST`로 창을 먼저 연다. 창 앞은 파일 확인과 짧은 writer admission으로 보류 표식 원자 기록 한 번이며 PowerShell/고정 helper 호출은 없다. 첫 실행·자료 미준비·relay 없음/오래됨·시험 전이·업데이트 대기·기존 검증 보류는 `FULL`/`FIRST_RUN`의 전체 확인을 따른다.
 
-공유 `control/startup-verification.json`은 GUI PID·native 생성 시각·시작 시각·start_path만 담는다. GUI DirectSync 입구와 relay enqueue·각 HTTP 송신 직전은 같은 판정 함수를 사용한다. 창 뒤 lifecycle Verify 한 번(고정 helper의 bootstrap 확인 포함)·Python bootstrap 무결성 한 번·relay Observe 한 번이 성공할 때까지 새 송신을 미루고 로컬 스캔·확정·저장과 기존 대기열은 보존한다. 이미 입장한 HTTP 한 건은 응답과 기존 로컬 반영을 마친다. 느린 helper·바이트 확인/해시는 writer admission 밖에서 실행하며, 입력 바이트가 동일할 때만 프로세스 내 검증 결과를 재사용한다. 입력·전이·delegation이 달라지면 기존 담장으로 거절한다.
+공유 `control/startup-verification.json`은 GUI PID·native 생성 시각·시작 시각·start_path만 담는다. 단일 GUI 소유권을 얻은 시작만 창 앞에서 표식을 기록한다. 중복 실행은 기존 창을 앞으로 내고 기존 송신·표식을 유지한다. GUI DirectSync 입구와 relay enqueue·각 HTTP 송신 직전은 같은 판정 함수를 사용한다. 포장 생성·취소·교환·PHS 복구와 PIN·이름 등록도 새 서버 변경 요청 입장 전에 같은 게이트를 확인한다. 보류면 로컬 outbox는 대기 상태를 유지하고 동기 작업은 「잠시 뒤 다시」를 안내한다. 창 뒤 lifecycle Verify 한 번(고정 helper의 bootstrap 확인 포함)·Python bootstrap 무결성 한 번·relay Observe 한 번이 성공할 때까지 새 송신을 미루고 로컬 스캔·확정·저장과 기존 대기열은 보존한다. 이미 입장한 HTTP 한 건은 응답과 기존 로컬 반영을 마친다. 느린 helper·바이트 확인/해시는 writer admission 밖에서 실행하며, 입력 바이트가 동일할 때만 프로세스 내 검증 결과를 재사용한다. 입력·전이·delegation이 달라지면 기존 담장으로 거절한다.
+
+FAST 품목 준비는 시작 때 전달받은 보고서를 고정 사용하며 배경 확인이 전역 상태를 비워도 중앙 목록 새로 고침을 수행한다. FULL과 같은 과도기 오프라인 fallback·미확인 표기를 사용하고, 과도기 허용이 없으면 UI 스레드에서 같은 원본 재시도를 안내한다.
 
 확인 중 화면은 「서버 보내기 확인 중」, 실패는 「서버 보내기 멈춤 — 관리자에게 알려 주세요」와 기존 reason/cause code를 남긴다. 실패·지연·소유 GUI 종료·PID 재사용·소유 관측 UNKNOWN·읽을 수 없는 표식은 자동 해제하지 않으며 다음 시작은 FULL이다. FULL 확인과 단일 GUI 입장이 끝난 뒤 시작 때 읽은 동일 표식만 지운다. READY/onboarding 또는 startup trace 최상위에는 start_path, relay_start.status, existing_relay_reused, fast_path를 남긴다. relay 자식의 WRITER_GATE_TIMEOUT은 처리되지 않은 예외 대신 DEFERRED로 기록하여 다음 바퀴에 재시도한다.
 

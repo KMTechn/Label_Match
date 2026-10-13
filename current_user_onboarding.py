@@ -1147,7 +1147,7 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
     global _WINDOW_FIRST_START
     from auto_update import (control_root, load_policy, read_json, ordinary_user_context,
                              prepared_pending, _sha, recovery_sha)
-    from startup_send_gate import read_startup_send_hold, create_startup_send_hold
+    from startup_send_gate import read_startup_send_hold
     from user_relay import _existing_user_relay_owner, _reuse_existing_user_relay
     from label_data_generation import portable_release_identity
     from writer_session_fence import WriterFenceError
@@ -1209,14 +1209,11 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
         if owner is None or owner.get("fast_path") is not True:
             return None
         relay = _reuse_existing_user_relay(lambda: owner, 0, lambda _: None)
-        hold = create_startup_send_hold(paths.direct_sync_root)
-        if hold is None:
-            return None
         report = {"status": "READY", "start_path": "FAST_WINDOW_FIRST", "app_root": root,
                   "paths": paths, "inputs": observed, "identity": identity,
                   "direct_sync_root": str(paths.direct_sync_root), "report_path": paths.onboarding_report_path,
                   "relay_start": relay, "existing_relay_reused": True, "fast_path": True,
-                  "hold": hold, "server_base_url": registered_origin or DEFAULT_SERVER_BASE_URL}
+                  "hold": None, "server_base_url": registered_origin or DEFAULT_SERVER_BASE_URL}
         import threading
         report["window_visible"] = threading.Event()
         _WINDOW_FIRST_START = report
@@ -1224,6 +1221,17 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
         return report
     except (OSError, ValueError, TypeError, KeyError, CurrentUserOnboardingError, DataGenerationError, WriterFenceError):
         return None
+
+
+def admit_window_first_start(report):
+    """Only the single-instance owner may pause this user's new sends."""
+    from startup_send_gate import create_startup_send_hold
+    window_first_release_identity(report["app_root"])
+    hold = create_startup_send_hold(report["paths"].direct_sync_root)
+    if hold is None:
+        raise CurrentUserOnboardingError("서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요.",
+            report_path=report["report_path"], cause_code="STARTUP_VERIFICATION_PENDING")
+    report["hold"] = hold
 
 
 def complete_window_first_verification(report):

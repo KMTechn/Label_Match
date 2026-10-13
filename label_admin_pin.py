@@ -19,7 +19,7 @@ from typing import Any, Mapping
 from direct_sync_push import SIGNATURE_VERSION
 from direct_sync_runtime import load_credentials_from_json
 from producer_runtime_client import canonical_json, _utc_now_text
-from writer_session_fence import remote_request, writer_sink
+from writer_session_fence import WriterFencedError, writer_sink
 
 
 CONTRACT_VERSION = "admin-pin.v1"
@@ -50,6 +50,8 @@ def unverified_hold_allowed(code: str) -> bool:
 
 
 def operator_message(code: str, *, http_status: int = 0) -> str:
+    if code.startswith("STARTUP_VERIFICATION_"):
+        return "서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요."
     if code == "VERIFY_UNAVAILABLE":
         if http_status >= 500:
             return f"회사 서버 오류({http_status})가 발생했습니다. 이 건만 보류하고 잠시 뒤 다시 확인하세요."
@@ -154,9 +156,20 @@ class AdminPinClient:
                                expected_status=201 if mode == "create" else 200)
 
     @writer_sink("label_admin_pin_request")
-    @remote_request()
     def _post_path(self, path: str, payload: Mapping[str, Any], *, response_limit: int = 8192,
                    expected_status: int | None = None) -> dict[str, Any]:
+        from startup_send_gate import startup_send_request
+        try:
+            with startup_send_request():
+                return self._post_path_admitted(path, payload, response_limit=response_limit,
+                                                expected_status=expected_status)
+        except WriterFencedError as error:
+            if not error.code.startswith("STARTUP_VERIFICATION_"):
+                raise
+            raise AdminPinError(error.code, status=425) from error
+
+    def _post_path_admitted(self, path: str, payload: Mapping[str, Any], *, response_limit: int,
+                            expected_status: int | None) -> dict[str, Any]:
         body = canonical_json(payload).encode("utf-8")
         if len(body) > 8192:
             raise AdminPinError("REQUEST_TOO_LARGE")

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from writer_session_fence import WriterFencedError, writer_admission, writer_sink, remote_request
@@ -80,6 +81,29 @@ def release_startup_send_hold(direct_sync_root, expected, *, verified: bool, ful
     return True
 
 
+def current_startup_send_root() -> Path:
+    """Use the current user's relay root, including the legacy root override."""
+    selected = (os.environ.get("LABEL_MATCH_DIRECT_SYNC_ROOT")
+                or os.environ.get("LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT") or "").strip()
+    if selected:
+        return Path(selected)
+    local = os.environ.get("LOCALAPPDATA", "").strip()
+    if local:
+        return Path(local) / "KMTech" / "DirectSync" / "label_match"
+    return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "KMTech" / "DirectSync" / "label_match"
+
+
+@contextmanager
+def startup_send_request(direct_sync_root=None):
+    """Check the hold under admission immediately before a new HTTP request."""
+    with writer_admission("startup_send_request"):
+        deferred = startup_send_deferred(current_startup_send_root() if direct_sync_root is None else direct_sync_root)
+        if deferred:
+            raise WriterFencedError(deferred["reason_code"], "서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요.")
+        with remote_request():
+            yield
+
+
 class StartupGatedSession:
     """Admit each new HTTP separately; an admitted request may finish."""
     def __init__(self, direct_sync_root, session=None):
@@ -90,12 +114,8 @@ class StartupGatedSession:
         self.session = session
 
     def post(self, *args, **kwargs):
-        with writer_admission("startup_send_request"):
-            deferred = startup_send_deferred(self.direct_sync_root)
-            if deferred:
-                raise WriterFencedError(deferred["reason_code"], "startup verification is pending")
-            with remote_request():
-                return self.session.post(*args, **kwargs)
+        with startup_send_request(self.direct_sync_root):
+            return self.session.post(*args, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self.session, name)

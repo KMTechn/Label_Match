@@ -2367,8 +2367,9 @@ class PackageLogisticsClient:
                 return None
             raise
 
-    @remote_request()
     def _request(self, method: str, path: str, *, body: bytes | None = None, key: str = ""):
+        from startup_send_gate import startup_send_request
+        from writer_session_fence import WriterFencedError
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
@@ -2382,13 +2383,22 @@ class PackageLogisticsClient:
         }
         if key:
             headers["Idempotency-Key"] = key
-        return self._transport(
-            method,
-            self.config.base_url.rstrip("/") + path,
-            headers,
-            body,
-            self.config.timeout_seconds,
-        )
+        try:
+            admission = remote_request() if method.upper() in {"GET", "HEAD"} else startup_send_request()
+            with admission:
+                return self._transport(
+                    method,
+                    self.config.base_url.rstrip("/") + path,
+                    headers,
+                    body,
+                    self.config.timeout_seconds,
+                )
+        except WriterFencedError as error:
+            if not error.code.startswith("STARTUP_VERIFICATION_"):
+                raise
+            raise PackageApiError(425, error.code,
+                "서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요.",
+                retryable=True, committed=False, retry_after_seconds=1) from error
 
     @staticmethod
     def _data(response: Mapping[str, Any]) -> dict[str, Any]:

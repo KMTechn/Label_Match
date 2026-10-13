@@ -24,6 +24,249 @@ def reset_window_start(monkeypatch):
     monkeypatch.setattr(onboarding, "_WINDOW_FIRST_START", None, raising=False)
 
 
+def test_duplicate_shortcut_keeps_original_window_sending(steady_start, monkeypatch):
+    import Label_Match as gui
+    import label_match_single_instance as single
+    from startup_send_gate import StartupGatedSession, startup_send_deferred
+    sent, activated = [], []
+    monkeypatch.setattr(gui, "_label_match_runtime_app_root", lambda: steady_start.paths.app_root)
+    monkeypatch.setattr(gui, "_first_run_onboarding_enabled", lambda: True)
+    for name in ("verify_factory_contract_startup", "validate_pending_worker_install", "check_user_data_open"):
+        monkeypatch.setattr(gui, name, lambda *_: None)
+    monkeypatch.setattr(gui, "release_identity", lambda _: {})
+    monkeypatch.setattr(gui, "resolve_data_scope", lambda **_: "local")
+    monkeypatch.setattr(gui, "_run_label_match_application", lambda **_: pytest.fail("second window"))
+    def guarded(callback, **kwargs):
+        return single.run_guarded_entrypoint(callback, **kwargs,
+            acquire=lambda _: SimpleNamespace(owner=False),
+            activate=lambda: activated.append(True) or SimpleNamespace(found=True))
+    monkeypatch.setattr(gui, "run_guarded_entrypoint", guarded)
+    assert gui.main([]) == 0
+    assert activated == [True]
+    assert startup_send_deferred(steady_start.paths.direct_sync_root) is None
+    session = StartupGatedSession(steady_start.paths.direct_sync_root,
+                                 SimpleNamespace(post=lambda *_a, **_k: sent.append(True)))
+    session.post("https://example.invalid")
+    assert sent == [True]
+
+
+@pytest.mark.parametrize("operation", ["create", "cancel", "replace", "adopt", "exchange",
+    "reconciliation", "print", "print_complete", "activate"])
+def test_business_mutations_wait_at_transport_until_release(tmp_path, monkeypatch, operation):
+    import uuid
+    from package_logistics import PackageClientConfig, PackageLogisticsClient, PackageApiError
+    from startup_send_gate import create_startup_send_hold, release_startup_send_hold
+    root = tmp_path / "sync"
+    monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_ROOT", str(root))
+    sent = []
+    config = PackageClientConfig(base_url="https://example.invalid", token=uuid.uuid4().hex,
+        authority_scope_id="scope", source_host_id="host", device_id="device")
+    client = PackageLogisticsClient(config, transport=lambda method, *_a: sent.append(method) or {"ok": True, "data": {}})
+    command = {"idempotency_key": "intent", "authority_scope_id": "scope", "payload": {"target_bundle_id": "transfer"}}
+    operations = {
+        "create": lambda: client.create_package(command),
+        "cancel": lambda: client.cancel_package(command),
+        "replace": lambda: client.replace_and_reseal_transfer(command),
+        "adopt": lambda: client.adopt_phs_label(authority_scope_id="scope", qr_payload="label"),
+        "exchange": lambda: client.prepare_phs_label_exchange(authority_scope_id="scope", exchange_kind="replace", sources=[], targets=[], idempotency_key="intent"),
+        "reconciliation": lambda: client.prepare_phs_reconciliation_label_exchange("reconciliation", authority_scope_id="scope", action_ids=["action"], expected_reconciliation_version=1, idempotency_key="intent"),
+        "print": lambda: client.request_phs_label_print("exchange", authority_scope_id="scope", label_id="label", idempotency_key="intent"),
+        "print_complete": lambda: client.complete_phs_label_print("attempt", authority_scope_id="scope", succeeded=True),
+        "activate": lambda: client.activate_phs_label_exchange("exchange", authority_scope_id="scope", expected_exchange_version=1),
+    }
+    hold = create_startup_send_hold(root)
+    with pytest.raises(PackageApiError) as failure:
+        operations[operation]()
+    assert failure.value.retryable is True and failure.value.committed is False
+    assert "잠시 뒤 다시" in failure.value.message
+    assert sent == []
+    assert release_startup_send_hold(root, hold, verified=True)
+    operations[operation]()
+    assert sent == ["POST"]
+
+
+@pytest.mark.parametrize("operation", ["pin", "name"])
+def test_admin_mutations_wait_until_release(tmp_path, monkeypatch, operation):
+    import uuid
+    from label_admin_pin import AdminPinClient, AdminPinError, operator_message
+    from startup_send_gate import create_startup_send_hold, release_startup_send_hold
+    root = tmp_path / "sync"
+    monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_ROOT", str(root))
+    sent = []
+    credentials = SimpleNamespace(endpoint_url="https://example.invalid/ingest",
+        producer_id="producer", key_id="key-id", secret=uuid.uuid4().hex)
+    client = AdminPinClient(credentials, transport=lambda *_a: sent.append(True) or (201, b'{"ok":true}'))
+    request = {"mode": "create", "authority_scope_id": "scope", "request_id": str(uuid.uuid4()),
+        "display_name": "worker", "action_at": "2026-10-13T09:00:00Z", "temp_uuid": str(uuid.uuid4())}
+    invoke = lambda: client.post("verifications", {}) if operation == "pin" else client.register_roster(request)
+    hold = create_startup_send_hold(root)
+    with pytest.raises(AdminPinError) as failure:
+        invoke()
+    assert "잠시 뒤 다시" in operator_message(failure.value.code)
+    assert sent == []
+    assert release_startup_send_hold(root, hold, verified=True)
+    invoke()
+    assert sent == [True]
+
+
+def _initial_load_stub(gui):
+    import queue
+    return SimpleNamespace(initial_load_queue=queue.Queue(),
+        _reconcile_package_cancellation_local_events=lambda: None,
+        _reconcile_phs_replacement_waiting_events=lambda: None,
+        _reconcile_post_review_required_events=lambda: None,
+        _load_items_data=lambda: {"bundled": True})
+
+
+def test_fast_catalog_uses_full_offline_fallback(steady_start, monkeypatch):
+    import Label_Match as gui
+    from item_catalog_sync import ItemCatalogSyncError
+    report = onboarding.try_window_first_start(steady_start.paths.app_root, environ=steady_start.environment)
+    report["window_visible"].set()
+    attempts, notices = [], []
+    def unavailable():
+        attempts.append(True)
+        raise ItemCatalogSyncError("offline", cause_code="SNAPSHOT_UNAVAILABLE_AFTER_VERIFY")
+    monkeypatch.setattr(gui, "prepare_startup_item_catalog", unavailable)
+    monkeypatch.setattr(gui, "offline_catalog_startable", lambda **_: True)
+    monkeypatch.setattr(gui, "_start_without_confirmed_item_catalog", notices.append)
+    app = _initial_load_stub(gui)
+    gui.Label_Match._async_initial_load(app, report)
+    result = app.initial_load_queue.get_nowait()
+    assert result["items"] == {"bundled": True}
+    assert result["catalog_unconfirmed"] is True
+    assert attempts == [True] and len(notices) == 1
+
+
+def test_fast_catalog_keeps_start_report_after_background_clears_global(steady_start, monkeypatch):
+    import Label_Match as gui
+    report = onboarding.try_window_first_start(steady_start.paths.app_root, environ=steady_start.environment)
+    report["window_visible"].set()
+    onboarding._WINDOW_FIRST_START = None
+    refreshed = []
+    monkeypatch.setattr(gui, "prepare_startup_item_catalog", lambda: refreshed.append(True))
+    app = _initial_load_stub(gui)
+    gui.Label_Match._async_initial_load(app, report)
+    assert refreshed == [True]
+    assert "error" not in app.initial_load_queue.get_nowait()
+
+
+def test_fast_catalog_retry_runs_on_ui_thread_with_same_start_report(steady_start, monkeypatch):
+    import Label_Match as gui
+    import threading
+    from item_catalog_sync import ItemCatalogSyncError
+    report = onboarding.try_window_first_start(steady_start.paths.app_root, environ=steady_start.environment)
+    report["window_visible"].set()
+    attempts, prompts, destroyed, scheduled = [], [], [], []
+    def prepare():
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise ItemCatalogSyncError("offline", cause_code="SNAPSHOT_UNAVAILABLE_AFTER_VERIFY")
+    monkeypatch.setattr(gui, "prepare_startup_item_catalog", prepare)
+    monkeypatch.setattr(gui, "offline_catalog_startable", lambda **_: False)
+    monkeypatch.setattr(gui, "_offer_item_catalog_startup_retry", lambda _: prompts.append(threading.get_ident()) or True)
+    app = _initial_load_stub(gui)
+    app._initial_load_startup_report = report
+    app._async_initial_load = lambda saved: gui.Label_Match._async_initial_load(app, saved)
+    app._process_initial_load_queue = lambda: None
+    app.after = lambda delay, callback: scheduled.append(callback)
+    app.hide_loading_overlay = lambda: None
+    app.destroy = lambda: destroyed.append(True)
+    gui.Label_Match._async_initial_load(app, report)
+    assert prompts == []
+    onboarding._WINDOW_FIRST_START = None
+    gui.Label_Match._process_initial_load_queue(app)
+    app._initial_load_thread.join(2)
+    assert not app._initial_load_thread.is_alive()
+    assert prompts == [threading.get_ident()] and attempts == [True, True]
+    assert app.initial_load_queue.get_nowait()["items"] == {"bundled": True}
+    assert len(scheduled) == 1 and destroyed == []
+
+
+@pytest.mark.parametrize("operation", ["create", "cancel"])
+def test_business_outbox_remains_pending_then_acks_after_release(tmp_path, monkeypatch, operation):
+    import uuid
+    import package_logistics as package
+    from tests.test_package_logistics import _draft, _receipt, _source_evidence, _ack_package_creation, _cancellation_intent, _cancellation_receipt, SCOPE, TRANSFER
+    from startup_send_gate import create_startup_send_hold, release_startup_send_hold
+    root = tmp_path / "sync"
+    monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_ROOT", str(root))
+    sent = []
+    draft = _draft()
+    outbox = package.PackageOutbox(tmp_path / "outbox.sqlite3")
+    config = package.PackageClientConfig(base_url="https://example.invalid", token=uuid.uuid4().hex,
+        authority_scope_id=SCOPE, source_host_id="host", device_id="device")
+    receipt = _receipt(draft) if operation == "create" else _cancellation_receipt(draft)
+    client = package.PackageLogisticsClient(config,
+        transport=lambda method, *_a: sent.append(method) or {"ok": True, "data": receipt})
+    monkeypatch.setattr(client, "get_receipt_if_exists", lambda *_a, **_k: None)
+    if operation == "create":
+        row = outbox.enqueue(draft)
+        outbox.mark_local_completion_committed(row["idempotency_key"])
+        command = {"contract_version": "logistics-v1", "command_type": "CREATE_PACKAGE",
+            "authority_scope_id": SCOPE, "authority_epoch": 5, "ledger_plane": "AUTHORITATIVE",
+            "plane_epoch": 3, "idempotency_key": row["idempotency_key"],
+            "expected_versions": {f"bundle:{TRANSFER}": 7},
+            "payload": {"source_bundle_id": TRANSFER, "package_bundle_id": draft.package_bundle_id,
+                        "source_evidence": _source_evidence()}}
+        monkeypatch.setattr(client, "build_create_package_command", lambda *_a, **_k: (TRANSFER, command))
+        processor = package.PackageOutboxProcessor(outbox, client)
+    else:
+        _ack_package_creation(outbox, draft)
+        outbox = package.PackageCancellationOutbox(tmp_path / "outbox.sqlite3")
+        row = outbox.enqueue(_cancellation_intent(draft))
+        outbox.mark_local_event_committed(row["cancellation_event_id"])
+        processor = package.PackageCancellationOutboxProcessor(outbox, client)
+    monkeypatch.setattr(package, "_utc_after", lambda _: package.utc_now())
+    def status():
+        saved = outbox.get_by_set_id(draft.set_id)
+        return (saved if operation == "create" else saved[0])["status"]
+    hold = create_startup_send_hold(root)
+    assert processor.drain(limit=1)["retry"] == 1
+    assert sent == []
+    assert status() == "PENDING"
+    assert release_startup_send_hold(root, hold, verified=True)
+    assert processor.drain(limit=1)["acked"] == 1
+    assert sent == ["POST"]
+    assert status() == "ACKED"
+
+
+def test_name_registration_outbox_preserves_pending_request(tmp_path, monkeypatch):
+    import uuid
+    from label_admin_pin import AdminPinClient, AdminPinError
+    from label_worker_roster import WorkerRoster
+    from startup_send_gate import create_startup_send_hold, release_startup_send_hold
+    root = tmp_path / "sync"
+    monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_ROOT", str(root))
+    store = WorkerRoster(tmp_path / "roster.json", "scope")
+    store.register_local("worker")
+    request = store.pending_requests()[0]
+    sent = []
+    credentials = SimpleNamespace(endpoint_url="https://example.invalid/ingest",
+        producer_id="producer", key_id="key-id", secret=uuid.uuid4().hex)
+    client = AdminPinClient(credentials, transport=lambda *_a: sent.append(True) or (201, b'{"ok":true}'))
+    hold = create_startup_send_hold(root)
+    with pytest.raises(AdminPinError) as failure:
+        client.register_roster(request)
+    store.apply_registration(request, error=failure.value)
+    assert store.pending_requests() == [request] and sent == []
+    assert release_startup_send_hold(root, hold, verified=True)
+    client.register_roster(store.pending_requests()[0])
+    assert sent == [True]
+
+
+def test_phs_wait_survives_typed_ui_failure_without_conflict_instruction():
+    import Label_Match as gui
+    from package_logistics import PackageApiError
+    from phs_label_workflow import PHSLabelWorkflowError
+    refused = PackageApiError(425, "STARTUP_VERIFICATION_PENDING", "pending", retryable=True, committed=False)
+    wrapped = PHSLabelWorkflowError("RECOVERY_FAILED", "recovery failed")
+    wrapped.__cause__ = refused
+    failure = gui._phs_exchange_failure(wrapped)
+    assert failure.retryable is True and failure.commit_state == "unknown"
+    assert "잠시 뒤 다시" in gui._startup_send_wait_message(failure, "review")
+
+
 @pytest.fixture
 def steady_start(managed_onboarding, monkeypatch):
     paths, environment, control, helpers = managed_onboarding
@@ -71,6 +314,8 @@ def test_fast_start_has_no_helpers_and_records_shared_hold(steady_start, monkeyp
     assert result["relay_start"]["status"] == "ALIVE"
     assert result["existing_relay_reused"] is True and result["fast_path"] is True
     assert steady_start.helpers == []
+    assert startup_send_deferred(steady_start.paths.direct_sync_root) is None
+    onboarding.admit_window_first_start(result)
     marker = json.loads(startup_send_hold_path(steady_start.paths.direct_sync_root).read_text())
     assert set(marker) == {"pid", "creation_identity", "started_at", "start_path"}
     assert marker["pid"] == os.getpid()
@@ -224,6 +469,7 @@ def test_background_waits_for_window_then_releases_only_after_success(steady_sta
     import time
     from startup_send_gate import startup_send_hold_path, startup_send_deferred
     report = onboarding.try_window_first_start(steady_start.paths.app_root, environ=steady_start.environment)
+    onboarding.admit_window_first_start(report)
     before = steady_start.paths.ledger_path.read_bytes()
     completed = threading.Event()
     checks, notices, jobs, traces = [], [], [], []
