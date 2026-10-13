@@ -529,6 +529,24 @@ def test_main_warns_and_continues_when_bootstrap_integrity_record_is_absent(
 
 def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
     import Label_Match as app_module
+    import auto_update
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    # Retry now owns a hidden parent so its stop poll can dismiss the modal.
+    # Keep native Tk blocked while retaining every existing dialog assertion.
+    parent = SimpleNamespace(withdraw=Mock(), destroy=Mock(), after=Mock())
+    parents = iter((parent, SimpleNamespace(withdraw=Mock(), destroy=Mock(), after=Mock())))
+    monkeypatch.setattr(app_module.tk, "Tk", lambda: next(parents))
+    # This case tests catalog refusal after successful onboarding, rather than
+    # depending on another test's first-run state in the isolated profile.
+    monkeypatch.setattr(app_module, "_first_run_onboarding_enabled", lambda: True)
+    monkeypatch.setattr(app_module, "onboard_current_user", lambda *a, **k: {
+        "status": "READY", "bootstrap_integrity": {"status": "PRESENT"},
+    })
+    monkeypatch.setattr(app_module, "validate_pending_worker_install", lambda _: None)
+    monkeypatch.setattr(app_module, "check_user_data_open", lambda _: None)
+    monkeypatch.setattr(auto_update, "startup_gate", lambda *a, **k: None)
 
     sensitive_marker = "profile-token-must-not-leak"
     dialogs = []
@@ -584,7 +602,7 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
     monkeypatch.setattr(
         app_module.messagebox,
         "askretrycancel",
-        lambda title, message: (dialogs.append((title, message)), False)[1],
+        lambda title, message, **options: (dialogs.append((title, message)), False)[1],
     )
     monkeypatch.setattr(
         app_module,
@@ -592,10 +610,12 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
         lambda stage, **details: traces.append((stage, details)),
     )
 
-    result = app_module.main()
+    result = app_module.main([])
 
     assert result == app_module.ITEM_CATALOG_STARTUP_EXIT_CODE == 3
     assert len(dialogs) == 1
+    parent.after.assert_called_once()
+    parent.destroy.assert_called_once()
     assert "회사 서버 품목 목록" in dialogs[0][0]
     assert "IT 담당자" in dialogs[0][1]
     assert r"C:\ProgramData\KMTech\Logistics" in dialogs[0][1]
