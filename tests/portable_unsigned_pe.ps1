@@ -45,7 +45,7 @@ function Reference($Path, [string]$Name, [string[]]$Dependencies) {
     return [scriptblock]::Create($text + "`n" + $Name + ' @args')
 }
 $canonical = Reference (Join-Path $HostRoot 'INSTALL_CANONICAL_PORTABLE.ps1') 'Manifest' @('Sha')
-$thisPc = Reference (Join-Path $HostRoot 'INSTALL_THIS_PC.ps1') 'Assert-RequiredRelease' @('Get-FileSha256', 'Test-SamePath', 'Get-StrictFullPath')
+$thisPc = Reference (Join-Path $HostRoot 'INSTALL_THIS_PC.ps1') 'Assert-RequiredRelease' @('Get-EarlyFileSha256', 'Get-FileSha256', 'Test-SamePath', 'Get-StrictFullPath')
 $manifestPath = Join-Path $PortableRoot 'portable-manifest.json'
 $original = [IO.File]::ReadAllText($manifestPath)
 function Write-Manifest([object[]]$Listed) {

@@ -54,12 +54,28 @@ def test_new_fixed_codes_survive_public_output(code):
     assert "cause_code" not in public_record({"cause_code": "UNREVIEWED_ASSEMBLY_CODE"})
 
 
-def test_screen_force_hook_is_explicitly_pending(tmp_path, monkeypatch):
+def test_screen_force_hook_calls_the_published_apps_bounded_save(tmp_path, monkeypatch):
+    import label_screen_bridge
     calls = []
-    monkeypatch.setitem(sys.modules, "host", SimpleNamespace(run_app=lambda *_a, **k: calls.append(k)))
+    saved = []
+    app = SimpleNamespace(after=lambda *_a: None, mainloop=lambda: None,
+                          _finish_after_mainloop=lambda: None,
+                          save_current_set_on_force_exit=lambda: saved.append(True))
+    bridge = SimpleNamespace(_view_count=1, attach_owner=lambda processor: None,
+                             request_exit=lambda: None)
+    module = SimpleNamespace(LABEL_MATCH_SCREEN_HOST={})
+    module._run_label_match_application = lambda: module.LABEL_MATCH_SCREEN_HOST["run"](app)
+    def run_app(*_a, **kwargs):
+        calls.append(kwargs)
+        kwargs["on_force_exit"]()
+        assert saved == []
+        kwargs["owner_main"](bridge)
+        kwargs["on_force_exit"]()
+    monkeypatch.setitem(sys.modules, "host", SimpleNamespace(run_app=run_app))
+    monkeypatch.setattr(label_screen_bridge, "LabelMatchScreenProcessor", lambda *_a: None)
     monkeypatch.setattr(screen, "shell_data_dir", lambda: tmp_path)
-    screen.screen_runner(SimpleNamespace())()
-    assert calls[0]["on_force_exit"] is None
+    screen.screen_runner(module)()
+    assert saved == [True]
     assert calls[0]["write_guard"] is screen.shell_write_guard
 
 

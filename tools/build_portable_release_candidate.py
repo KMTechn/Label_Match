@@ -83,6 +83,9 @@ THIRD_PARTY = {
     'pythonnet': ('3.2.1', ('pythonnet', 'clr.py')),
     'pywebview': ('6.2.1', ('webview',)),
 }
+SHELL_RUNTIME_SITE_PACKAGES = Path("E:/KMTech/builders/iw-py312-webshell/venv/Lib/site-packages")
+SHELL_DISTRIBUTIONS = frozenset({"bottle", "cffi", "clr_loader", "proxy_tools",
+                               "pycparser", "pythonnet", "pywebview", "typing_extensions"})
 NATIVE_ALLOWLIST_SOURCE_SHA256 = "d88fc67bd49ccfba37b991c975d6eff38233b00bc24fb66369640b5e140691d7"
 
 APP_NATIVE_ALLOWLIST: dict[str, tuple[int, str]] = {
@@ -286,7 +289,15 @@ def _runtime_source(python_home: Path, runtime: Path) -> None:
 
 
 def _distribution_root(name: str, expected_version: str) -> tuple[Path, Path]:
-    distribution = importlib.metadata.distribution(name)
+    if name.replace("-", "_") in SHELL_DISTRIBUTIONS:
+        matches = [distribution for distribution in importlib.metadata.distributions(
+            path=[str(SHELL_RUNTIME_SITE_PACKAGES)])
+            if distribution.metadata["Name"].replace("-", "_").lower() == name.replace("-", "_")]
+        if len(matches) != 1:
+            raise PortableBuildError("reviewed shell distribution is unavailable: " + name)
+        distribution = matches[0]
+    else:
+        distribution = importlib.metadata.distribution(name)
     actual = distribution.version
     if actual != expected_version:
         raise PortableBuildError(
@@ -318,7 +329,7 @@ def _copy_third_party(site_packages: Path) -> dict[str, str]:
             metadata_path, site_packages / metadata_path.name, ignore=_ignore
         )
     # Reuse the reviewed inspection shell venv alongside the original LM provider.
-    shell_root = Path(importlib.metadata.distribution("pywebview")._path).resolve().parent
+    shell_root = SHELL_RUNTIME_SITE_PACKAGES.resolve()
     base_root = Path(sys.base_prefix) / "Lib" / "site-packages"
     if not locations <= {shell_root, base_root.resolve()}:
         raise PortableBuildError(
@@ -393,6 +404,7 @@ def _assert_portable_import_closure(
         text=True,
         timeout=60,
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "no diagnostic").strip()
@@ -513,12 +525,13 @@ def _tree_metrics(root: Path) -> tuple[int, int]:
 
 def _git_value(repo_root: Path, expression: str) -> str:
     completed = subprocess.run(
-        ["git", "rev-parse", "--verify", expression],
+        ["git", "-c", "core.autocrlf=false", "rev-parse", "--verify", expression],
         cwd=repo_root,
         capture_output=True,
         text=True,
         timeout=30,
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if completed.returncode != 0:
         raise PortableBuildError(f"git identity is unavailable: {expression}")
@@ -527,12 +540,13 @@ def _git_value(repo_root: Path, expression: str) -> str:
 
 def _assert_clean_source(repo_root: Path) -> None:
     completed = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=normal"],
+        ["git", "-c", "core.autocrlf=false", "status", "--porcelain=v1", "--untracked-files=normal"],
         cwd=repo_root,
         capture_output=True,
         text=True,
         timeout=30,
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if completed.returncode != 0:
         raise PortableBuildError("git source cleanliness could not be verified")
@@ -601,8 +615,9 @@ def build(
     # so the strict installed-tree guard sees the same release on every host.
     with tempfile.TemporaryDirectory(prefix="label-portable-source-") as temporary:
         entries = subprocess.check_output(
-            ["git", "ls-tree", "-r", "-z", "--full-tree", source_commit],
+            ["git", "-c", "core.autocrlf=false", "ls-tree", "-r", "-z", "--full-tree", source_commit],
             cwd=repo_root, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ).split(b"\0")
         files = []
         for entry in filter(None, entries):
@@ -613,9 +628,10 @@ def build(
             files.append((relative.decode("utf-8"), object_id))
         # Unlike archive/checkout, cat-file never applies EOL or smudge filters.
         blobs = subprocess.run(
-            ["git", "cat-file", "--batch"], cwd=repo_root,
+            ["git", "-c", "core.autocrlf=false", "cat-file", "--batch"], cwd=repo_root,
             input=b"".join(object_id + b"\n" for _, object_id in files),
             capture_output=True, timeout=60, check=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         repo_root = Path(temporary).resolve()
         with io.BytesIO(blobs.stdout) as stream:
@@ -636,6 +652,7 @@ def build(
             [sys.executable, "-I", "-B", str(repo_root / "qualification/check_kmtech_shared.py"),
              "--check", "--root", str(repo_root)],
             capture_output=True, text=True, timeout=30, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if shared_check.returncode != 0:
             raise PortableBuildError("shared source pin check failed: " + shared_check.stderr)

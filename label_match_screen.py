@@ -36,7 +36,7 @@ def shell_data_dir(*, environ=None):
     return Path(local_app_data) / "KMTech" / "Label_Match" / "screen-shell"
 
 
-def owner_main_for(module):
+def owner_main_for(module, *, app_holder=None):
     """주인 스레드 본문 — 앱 만들기(지금 시작 길 그대로) · 처리 층 붙이기 · pump."""
     from label_screen_bridge import LabelMatchScreenProcessor
 
@@ -61,6 +61,8 @@ def owner_main_for(module):
                     pass  # 이미 끝남(위 fail_owner)
 
     def run_on_owner(app, bridge, attached):
+        if app_holder is not None:
+            app_holder.append(app)
         # The processing Tk root is hidden; the shell's ready receipt proves visibility.
         app._startup_screen_visible = lambda: bridge._view_count > 0
         bridge.attach_owner(LabelMatchScreenProcessor(app, bridge))
@@ -91,9 +93,13 @@ def screen_runner(module):
         if str(SHELL_DIR) not in sys.path:
             sys.path.insert(0, str(SHELL_DIR))
         from host import run_app
+        app_holder = []
 
-        return run_app("rw", shell_data_dir(), root=PARTS, page=PAGE, title="포장", owner_main=owner_main_for(module),
-                       # Bounded cross-thread save callback is pending in the app-stop lane.
-                       on_force_exit=None, pedal=False, browser_preset_name="none", write_guard=shell_write_guard)
+        def on_force_exit():
+            if app_holder:
+                app_holder[0].save_current_set_on_force_exit()
+
+        return run_app("rw", shell_data_dir(), root=PARTS, page=PAGE, title="포장", owner_main=owner_main_for(module, app_holder=app_holder),
+                       on_force_exit=on_force_exit, pedal=False, browser_preset_name="none", write_guard=shell_write_guard)
 
     return run
