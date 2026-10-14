@@ -711,9 +711,15 @@ HMAC 서명은 전송 시 새 키로 생성한다. 대기 행의 원 metadata/id
 <a id="onboarding-registration-recovery"></a>
 ### 첫 설정의 기존 PC 등록 안내
 
-첫 설정은 등록 보고서의 `ADMIN_RECOVERY_REQUIRED`와 `POSSESSION_PROOF_REATTACH_REQUIRED`를 일반 `SETUP_FAILED`로 바꾸지 않는다. 첫 실패와 보고서만 남은 다음 시작 모두 `RECOVERY_REQUIRED`로 멈추며 고정 원인은 각각 `ADMIN_RECOVERY_ACTION`, `POSSESSION_PROOF_REATTACH_REQUIRED`다. 업무 자료·Run·전송 프로그램은 준비 완료를 확인하기 전에 시작하지 않는다. 등록 보고와 원 신원은 보존한다.
+첫 설정은 등록 보고서의 `ADMIN_RECOVERY_REQUIRED`와 `POSSESSION_PROOF_REATTACH_REQUIRED`를 일반 `SETUP_FAILED`로 바꾸지 않는다. 실패하면 `RECOVERY_REQUIRED`로 멈추며 고정 원인은 각각 `ADMIN_RECOVERY_ACTION`, `POSSESSION_PROOF_REATTACH_REQUIRED`다. 관리자 회복 요구는 다음 시작에서도 유지한다. 소유 키 연결 요구만 남은 다음 명시적 시작은 같은 신원·서버 주소를 대조한 뒤 원 키 연결을 재시도한다. 업무 자료·Run·전송 프로그램은 준비 완료를 확인하기 전에 시작하지 않는다. 등록 보고와 원 신원은 보존한다.
 
 기존 PC 등록의 사용자 안내는 「이 PC는 이미 등록돼 있습니다」 / 「현장 관리자에게 알리세요」 / 「코드: ADMIN_RECOVERY_ACTION」이다. 원 소유 키 연결 실패는 「이 PC 등록을 다시 연결하지 못했습니다」 / 「현장 관리자에게 알리세요」 / 「코드: POSSESSION_PROOF_REATTACH_REQUIRED」이다. 관리자용 자세한 안내는 「현장 관리자: 관리자 계정으로 이 PC 등록 회복을 실행하세요」다. 새 화면과 옛 화면이 사용하는 첫 설정 오류 문안과 보호 보고서에 같은 원인을 전달한다. 화면 실제 수용은 별도다.
+
+**원 소유 키가 남은 길 A:** 같은 작업자의 첫 설정(`Label_Match.exe --onboard-current-user`) 또는 설치된 `tools/register_label_match_worker_pc.py --apply --credential-scope current_user --server-base-url <주소> --data-dir <전송 상태> --sync-dir <업무 자료> --logistics-profile-path <프로필> --tls-ca-bundle-path <CA 원본>`이 HTTP 409 `reattach_proof_required`를 받으면 `/api/producer-ingest/v2/reattach/challenge` → 원 current-user P-256 CNG 키로 정확한 proof 서명 → `/reattach`를 실행한다. 진행 문안은 「이 PC 등록을 다시 연결하는 중입니다」 / 「잠시 기다려 주세요」다. 105의 기존 실패 보고만 남았으면 새 enroll 없이 challenge부터 이어간다. 명령은 인수 이름·자리표시자만 적으며 승인 토큰 사용은 아래 IP 정책을 따른다.
+
+기존 identity·credential·manifest·receipt·물류 자격·queue/spool이 있으면 자동 연결로 덮어쓰지 않는다. challenge의 신원·manifest·audience·엄격한 UTC 만료·원 키 fingerprint, completion과 client receipt의 같은 신원·새 credential epoch(2 이상)·manifest·키를 대조한 뒤 기존 DPAPI/프로필/JSON readback으로 READY를 판정한다. 원 키 교체·export·기존 root secret 재생은 없다. completion 응답이 유실되면 다음 명시적 시작에서 새 challenge를 받아 다시 연결한다. 서버 회전 확인 뒤 로컬 저장 실패는 기존 post-recovery 보존·지원 복구 판정으로 멈춘다.
+
+**원 키가 없는 길 B:** 현재 판은 고정 관리자 안내로 멈춘다. 회사 웹 identity-recovery 요청·`/admin-pin` 승인·승인 뒤 2PC를 소비하는 새 앱 입구는 첫 업데이트(11/1) 몫이며 현재 판의 `--admin-recovery-secret-file`과 다른 계약이다. 승인만으로 READY라 표시하거나 자동으로 새 키를 바꿔 기존 신원을 덮어쓰지 않는다. 정상 `--remove-current-user-setup`·코드 전용 `-Uninstall`은 신원을 보존하므로 단순 제거→다시 설치는 기존 신원으로 잇는다. 같은 PC에서 작업자 계정 변경·프로필 재생성·진단 정리 등으로 로컬 신원만 잃으면 이 복구 구분이 필요하다.
 
 ### 등록·관리자 복구의 IP 기준 승인
 

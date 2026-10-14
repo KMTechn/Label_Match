@@ -95,7 +95,7 @@ def test_reattach_required_onboarding_preserves_classification_across_restart(tm
         report = json.loads(paths.onboarding_report_path.read_text(encoding="utf-8"))
         assert report["recovery_action"] == "POSSESSION_PROOF_REATTACH_REQUIRED"
         assert not report["server_registration_verified"]
-    assert attempts == [1]
+    assert attempts == [1, 1]
     assert not paths.identity_path.exists() and not paths.ledger_path.exists()
 
 
