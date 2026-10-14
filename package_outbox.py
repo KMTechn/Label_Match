@@ -82,6 +82,74 @@ def _record_receipt_recheck(conn, kind, row, receipt, now):
     )
 
 
+_PACKAGE_SOURCE_MATCH = """(
+    NULLIF(json_extract(previous.source_json,'$.source_input_tag_id'),'')
+    =NULLIF(json_extract(current.source_json,'$.source_input_tag_id'),'')
+    OR NULLIF(json_extract(previous.source_json,'$.source_bundle_id'),'')
+       =NULLIF(json_extract(current.source_json,'$.source_bundle_id'),'')
+    OR NULLIF(previous.resolved_source_bundle_id,'')
+       =NULLIF(json_extract(current.source_json,'$.source_bundle_id'),'')
+    OR NULLIF(json_extract(previous.source_json,'$.source_bundle_id'),'')
+       =NULLIF(current.resolved_source_bundle_id,'')
+    OR NULLIF(previous.resolved_source_bundle_id,'')
+       =NULLIF(current.resolved_source_bundle_id,''))"""
+
+
+def _set_repack_review(conn, row, code, now, post_review_event_payload):
+    message = (
+        "이전 포장 순서를 확인할 수 없습니다. 현품표를 구분 보관하고 관리자에게 확인을 요청하세요."
+        if code == "REPACK_PREDECESSOR_REVIEW_REQUIRED" else
+        "회사 서버에서 이 트레이를 다시 포장할 수 있는 상태로 되돌리지 못했습니다. 관리자에게 확인을 요청하세요."
+    )
+    conn.execute("""UPDATE package_command_outbox SET status='CONFLICT',
+        review_status='OPERATOR_REVIEW',last_error_code=?,last_error_message=?,
+        retry_after_at=NULL,updated_at=? WHERE idempotency_key=?""",
+        (code, message, now, row['idempotency_key']))
+    lease_id = json.loads(row['draft_json']).get('operation_lease_id')
+    if lease_id:
+        cursor = conn.execute("""UPDATE package_operation_leases SET status='OPERATOR_REVIEW',
+            consume_claimed_at=NULL,last_error_code=?,last_error_message=?,updated_at=?
+            WHERE lease_id=? AND operation_result_id=? AND status='LOCAL_COMPLETED'""",
+            (code, message, now, lease_id, row['idempotency_key']))
+        if cursor.rowcount:
+            conn.execute("""UPDATE package_operation_lease_issue_attempts SET status='RETIRED',
+                retire_reason='OPERATOR_REVIEW',retired_at=?,updated_at=?
+                WHERE lease_id=? AND status='ACTIVE'""", (now, now, lease_id))
+    event_id, event, fingerprint = post_review_event_payload(
+        dict(row), conflict_code=code, conflict_origin='REPACK_SAFETY_GUARD', required_at=now)
+    conn.execute("""INSERT OR IGNORE INTO package_post_review_outbox(
+        review_event_id,package_idempotency_key,event_fingerprint,event_json,
+        local_csv_committed,created_at,updated_at) VALUES (?,?,?,?,0,?,?)""",
+        (event_id, row['idempotency_key'], fingerprint, canonical_json(event), now, now))
+
+
+def _apply_repack_review_guards(conn, now, post_review_event_payload):
+    """Keep ambiguous legacy sources and explicit reopen refusals out of delivery."""
+    rows = conn.execute("""WITH packages AS (
+        SELECT *,CASE WHEN json_valid(draft_json) THEN draft_json ELSE '{}' END AS source_json
+        FROM package_command_outbox)
+        SELECT current.*,CASE WHEN EXISTS (
+            SELECT 1 FROM package_cancellation_outbox AS cancel
+            WHERE cancel.package_idempotency_key=current.predecessor_package_key
+              AND cancel.status='ACKED'
+              AND (json_type(CASE WHEN json_valid(cancel.receipt_json) THEN cancel.receipt_json ELSE '{}' END,'$.data.reopen')='false'
+                OR json_type(CASE WHEN json_valid(cancel.receipt_json) THEN cancel.receipt_json ELSE '{}' END,'$.reopen')='false'))
+            THEN 'REPACK_REOPEN_REFUSED' ELSE 'REPACK_PREDECESSOR_REVIEW_REQUIRED' END AS guard_code
+        FROM packages AS current WHERE current.status='PENDING'
+          AND current.local_completion_committed=1 AND (
+            EXISTS (SELECT 1 FROM packages AS previous WHERE previous.status='CONFLICT'
+                AND previous.last_error_code IN ('REPACK_PREDECESSOR_REVIEW_REQUIRED','REPACK_REOPEN_REFUSED')
+                AND """ + _PACKAGE_SOURCE_MATCH + """ )
+            OR EXISTS (SELECT 1 FROM package_cancellation_outbox AS cancel
+                WHERE cancel.package_idempotency_key=current.predecessor_package_key
+                  AND cancel.status='ACKED'
+                  AND (json_type(CASE WHEN json_valid(cancel.receipt_json) THEN cancel.receipt_json ELSE '{}' END,'$.data.reopen')='false'
+                    OR json_type(CASE WHEN json_valid(cancel.receipt_json) THEN cancel.receipt_json ELSE '{}' END,'$.reopen')='false')))
+        """).fetchall()
+    for row in rows:
+        _set_repack_review(conn, row, row['guard_code'], now, post_review_event_payload)
+
+
 def _record_completion_predecessor(conn: sqlite3.Connection, key: str, order: int) -> None:
     """Freeze the immediately preceding completed package in this transaction."""
     previous = conn.execute(
@@ -93,17 +161,7 @@ def _record_completion_predecessor(conn: sqlite3.Connection, key: str, order: in
            JOIN packages AS previous
              ON previous.local_completion_committed=1
             AND previous.local_completion_order<?
-           WHERE current.idempotency_key=? AND (
-               NULLIF(json_extract(previous.source_json,'$.source_input_tag_id'),'')
-               =NULLIF(json_extract(current.source_json,'$.source_input_tag_id'),'')
-               OR NULLIF(json_extract(previous.source_json,'$.source_bundle_id'),'')
-                  =NULLIF(json_extract(current.source_json,'$.source_bundle_id'),'')
-               OR NULLIF(previous.resolved_source_bundle_id,'')
-                  =NULLIF(json_extract(current.source_json,'$.source_bundle_id'),'')
-               OR NULLIF(json_extract(previous.source_json,'$.source_bundle_id'),'')
-                  =NULLIF(current.resolved_source_bundle_id,'')
-               OR NULLIF(previous.resolved_source_bundle_id,'')
-                  =NULLIF(current.resolved_source_bundle_id,''))
+           WHERE current.idempotency_key=? AND """ + _PACKAGE_SOURCE_MATCH + """
            ORDER BY previous.local_completion_order DESC LIMIT 1""",
         (order, key),
     ).fetchone()
@@ -543,6 +601,7 @@ class PackageOutbox:
                             AND recheck.verified_at IS NULL)""",
                 (now, stale_before),
             )
+            _apply_repack_review_guards(conn, now, self._post_review_event_payload)
             row = conn.execute(
                 """SELECT * FROM package_command_outbox
                      WHERE status='PENDING'
@@ -1525,6 +1584,7 @@ class PackageOutbox:
                         operation_lease_id,
                     ),
                 )
+            _apply_repack_review_guards(conn, self._utc_now(), self._post_review_event_payload)
             conn.commit()
 
     def counts(self) -> dict[str, int]:

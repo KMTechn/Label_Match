@@ -53,6 +53,7 @@ from package_outbox_processor import PackageOutboxProcessor as _PackageOutboxPro
 from package_outbox import (
     PackageOutbox as _PackageOutbox, _sending_claim_cas, _request_receipt_recheck,
     _receipt_recheck_cas, _record_receipt_recheck, _record_completion_predecessor,
+    _set_repack_review, _apply_repack_review_guards, _PACKAGE_SOURCE_MATCH,
 )
 from package_errors import (
     MAX_RETRY_AFTER_SECONDS,
@@ -279,9 +280,55 @@ def _post_review_conflict_origin(error: Exception) -> str:
     return "LOCAL_VALIDATION_OR_RECEIPT_CONFLICT"
 
 
+def _require_supported_outbox_schema(conn: sqlite3.Connection) -> None:
+    """Read the stored version before schema compatibility code can write anything."""
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='package_outbox_schema_info'").fetchone():
+        saved = conn.execute("SELECT value FROM package_outbox_schema_info WHERE key='schema_version'").fetchone()
+        if saved:
+            version = re.fullmatch(r'label-match-package-outbox-v(\d+)', str(saved[0]))
+            supported = int(OUTBOX_SCHEMA_VERSION.rsplit('v', 1)[1])
+            if version is None or int(version[1]) > supported:
+                error = PackageLogisticsError(
+                    "PACKAGE_OUTBOX_SCHEMA_TOO_NEW: 저장된 포장 자료는 이 앱보다 새 판입니다. "
+                    "자료를 보존하고 관리자에게 맞는 앱 판 또는 업데이트 앞 DB 사본 복원을 요청하세요.")
+                error.code = 'PACKAGE_OUTBOX_SCHEMA_TOO_NEW'
+                raise error
+
+
+def _migrate_completion_predecessors(conn: sqlite3.Connection) -> None:
+    """Legacy enqueue/time order cannot prove completion order for a shared source."""
+    completed = conn.execute("""SELECT idempotency_key FROM package_command_outbox
+        WHERE local_completion_committed=1 AND local_completion_order IS NULL""").fetchall()
+    visited = set()
+    order = conn.execute("SELECT COALESCE(MAX(local_completion_order),0) FROM package_command_outbox").fetchone()[0]
+    for item in completed:
+        key = item[0]
+        if key in visited:
+            continue
+        peers = conn.execute("""WITH RECURSIVE packages AS (
+            SELECT *,CASE WHEN json_valid(draft_json) THEN draft_json ELSE '{}' END AS source_json
+            FROM package_command_outbox WHERE local_completion_committed=1),
+            linked(idempotency_key) AS (
+                SELECT ? UNION SELECT previous.idempotency_key FROM linked
+                JOIN packages AS current ON current.idempotency_key=linked.idempotency_key
+                JOIN packages AS previous ON """ + _PACKAGE_SOURCE_MATCH + """ )
+            SELECT packages.* FROM packages JOIN linked USING(idempotency_key)""", (key,)).fetchall()
+        visited.update(row['idempotency_key'] for row in peers)
+        if len(peers) == 1:
+            order += 1
+            _record_completion_predecessor(conn, key, order)
+        else:
+            # Keep every original command/receipt/marker, and leave unknown links unknown.
+            for row in peers:
+                if row['status'] in {'PENDING', 'SENDING'}:
+                    _set_repack_review(conn, row, 'REPACK_PREDECESSOR_REVIEW_REQUIRED',
+                                       utc_now(), _post_review_event_payload)
+
+
 def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
     """Atomically install the current schema without disturbing live SENDING leases."""
 
+    _require_supported_outbox_schema(conn)
     ensure_deferred_intent_schema_compatibility(conn)
     cancellation_table_existed = (
         conn.execute(
@@ -482,17 +529,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE package_command_outbox ADD COLUMN local_completion_order INTEGER")
     if "predecessor_package_key" not in command_columns:
         conn.execute("ALTER TABLE package_command_outbox ADD COLUMN predecessor_package_key TEXT")
-    # Legacy completion intents are append-only: retain their insertion order,
-    # including tied/reversed clocks, then freeze each link exactly once.
-    completed = conn.execute(
-        """SELECT idempotency_key FROM package_command_outbox
-           WHERE local_completion_committed=1 AND local_completion_order IS NULL ORDER BY rowid"""
-    ).fetchall()
-    last_order = conn.execute(
-        "SELECT COALESCE(MAX(local_completion_order),0) FROM package_command_outbox"
-    ).fetchone()[0]
-    for order, row in enumerate(completed, last_order + 1):
-        _record_completion_predecessor(conn, row[0], order)
+    _migrate_completion_predecessors(conn)
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS ix_package_local_completion_order
                     ON package_command_outbox(local_completion_order)""")
     if "local_recovery_dismissed" not in command_columns:
@@ -602,6 +639,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         evidence_json TEXT NOT NULL,observed_at TEXT NOT NULL,
         verified_at TEXT,previous_status TEXT,previous_error_code TEXT,previous_error_message TEXT,receipt_json TEXT,
         PRIMARY KEY(outbox_kind,idempotency_key))""")
+    _apply_repack_review_guards(conn, utc_now(), _post_review_event_payload)
     # Stamp the version only after every table/column/index is present.
     conn.execute(
         "INSERT OR REPLACE INTO package_outbox_schema_info(key,value) VALUES ('schema_version',?)",
@@ -870,6 +908,7 @@ class PackageCancellationOutbox:
                 raise PackageLogisticsError("package cancellation ACK state changed concurrently")
             if expected_claim is not None:
                 _record_receipt_recheck(conn, "cancel", expected_claim, receipt, utc_now())
+            _apply_repack_review_guards(conn, utc_now(), _post_review_event_payload)
             conn.commit()
             return True
 

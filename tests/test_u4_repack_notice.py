@@ -28,7 +28,11 @@ def test_repack_review_notice_reads_ack_without_changing_receipt_or_local_comple
     repack = _draft_for_set('REPACK')
     queued(outbox, repack)
     row = outbox.claim_next()
-    outbox.mark_conflict(row['idempotency_key'], PackageApiError(409, 'COMPLETION_REVIEW_REQUIRED', 'synthetic repack review'))
+    if mode == "refused":
+        assert row is None
+        assert outbox.get_by_set_id(repack.set_id)["last_error_code"] == "REPACK_REOPEN_REFUSED"
+    else:
+        outbox.mark_conflict(row['idempotency_key'], PackageApiError(409, 'COMPLETION_REVIEW_REQUIRED', 'synthetic repack review'))
     snapshot = app._read_package_review_snapshot()
     app._refresh_package_cancellation_review_notice(snapshot)
     assert app._package_create_review_rows[0].get('repack_server_notice') == expected
