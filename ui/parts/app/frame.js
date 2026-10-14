@@ -1,9 +1,4 @@
-// 현장 앱 공통 틀 JS(주인 w9webnewui1014 — 10/13 포장 레인 apps/mock/app-frame.js 에서 옮김, 관리자 결정). 쓰는 곳: 다섯 앱 static/ui/app/<앱>/.
-// 화면은 KMShell.call(name, [args]) 한 곳만 부른다(셸 다리 transport.js — 셸 BRIDGE-DESIGN §1: state · scan · command · admin).
-// 처리 → 화면 = KMHost.push(event) — pywebview 는 host 가 KMHost.push 를 부르고, WebView2 직접은 transport.js 가 shellpush 사건으로 넘긴다.
-// 그리기 길은 하나: state() 한 덩어리(APPS-SUMMARY §2 {app, version, worker, work:{앱별}, conn, queue, update, alerts, sheet?, last_seq?})
-// → drawFrame(위 줄 · 띠 · 바닥 줄) + app.render(작업 칸) + AppSheet(판). 화면이 스스로 아는 잠깐 상태(ui) = 창 초점 · 관리자 메뉴 · 열린 판 · 시각뿐 —
-// 다시 읽히면 state() 하나로 같은 화면. 소리는 처리 층이 낸다(화면은 소리 이름만). 스캔 키 조립은 scan.js 만 한다.
+// 현장 앱 공통 화면 틀 — 입력·판·셸 이음. 스캔 조립은 scan.js.
 'use strict';
 window.AppFrame = (() => {
   const SVG = 'http://www.w3.org/2000/svg';
@@ -86,8 +81,7 @@ window.AppFrame = (() => {
       .concat(ui.stopped ? [{ kind: 'bad', text: ui.stopped }] : [], (ui.notices || []).map((text, i) => ({ kind: 'warn', text, choices: [{ text: '확인', go: `dismiss:${i}` }] })), s.alerts || []);
     $('[data-bands]').replaceChildren(...alerts.map(band));
 
-    // 바닥 서버 줄 다섯 갈래(이적 4fb02da 사실 — w9uiflow1014 CA-STATE §2): review(관리자 확인, 다른 넷보다 앞섬 — 갈래 고르기는 처리 층)
-    // · offline · late(연결됨인데 오래 못 보냄) · first(아직 회사 서버와 주고받은 적 없음) · ok. 글은 앱이 conn.label 로 줄 수 있고, 없으면 기본 글.
+    // 서버 상태는 처리 층 conn.state 로 고른다.
     const conn = s.conn || {};
     const queue = s.queue || { pending: 0, failed: 0 };
     const SERVER = {
@@ -110,10 +104,7 @@ window.AppFrame = (() => {
     $('[data-clock]').textContent = ui.clock || '';
   }
 
-  /* ── 앱 시작: app = {render(state, ui), sheets?: {이름: 판(sheet.js 꼴)}, keys?: {F1: 'command:<이름>' | 'open:<판>', …},
-     onPush?(event, ui), onScan?(사건 이름, detail, ui)} — keys 는 F1–F11 · Escape · Delete · Ctrl+<글자>(V 빼고) 만
-     (단추와 같은 뜻의 기능 키: 포장 F1·F2·F4·Esc, 검사 Ctrl+N·Z·D — 스캐너는 Ctrl 을 안 보냄)
-     + Enter = 「빈 Enter」(스캔 받이 버퍼가 빌 때의 Enter — 이적 막는 알림 확인). 글이 있는 Enter 는 늘 스캔 ── */
+  // 앱은 render · sheets · keys · onPush · onScan 을 준다.
   const ui = { focus: 'on', admin_open: false, sheet: null, stopped: '', clock: '', notices: [] };
   const LOCAL_PUSH = { pedal: 1, focus_state: 1 }; // 화면 표시만 바뀌는 알림 — state() 를 다시 묻지 않는다(app.onPush 가 그림)
   const FN_KEY = /^(F([1-9]|1[01])|Escape|Delete|Ctrl\+[A-Z])$/;
@@ -170,8 +161,7 @@ window.AppFrame = (() => {
     else refresh().catch(() => {});
     return reply;
   }
-  function open(name, target) { // 관리자 메뉴 · 판 열기(null = 닫기) — 화면 잠깐 상태. target = 목록 줄 대상(open:<판>:<id>) → 보낼 때 args.target.
-    // 판 내용이 처리 층 자료면(load: 명령 이름) 열 때 한 번 묻는다(대상이 있으면 {id})
+  function open(name, target) {
     const sheet = name && name !== 'admin' && app.sheets ? app.sheets[name] : null;
     ui.admin_open = name === 'admin';
     ui.sheet = sheet ? { ...sheet, name, target, pin: sheet.kind === 'pin' ? 'enter' : undefined } : null;
@@ -182,7 +172,7 @@ window.AppFrame = (() => {
       }, () => {});
     }
   }
-  function go(value) { // 단추의 data-go: close · retry(PIN 다시) · open:<판>[:<대상 id>] · command:<이름>[:<대상 id>] → command(이름, {id})
+  function go(value) {
     const [kind, rest = ''] = String(value).split(/:(.*)/);
     if (kind === 'close') closeSheet();
     else if (kind === 'retry' && ui.sheet) { ui.sheet = { ...ui.sheet, pin: 'enter', result: undefined }; paint(); }
@@ -194,20 +184,63 @@ window.AppFrame = (() => {
       bridge('command', name, id === undefined ? {} : { id }).then(answer, () => refresh().catch(() => {}));
     }
   }
-  function submitPin() {
+  const PIN_FAST_MS = 50;
+  function pinField(event) {
+    const sheet = shownSheet();
+    return sheet && sheet.kind === 'pin' && sheet.pin === 'enter' && event.target.matches('[data-pin], [data-pin-id]') ? event.target : null;
+  }
+  function pinIsScan(input) {
+    const times = input.pinTimes || [];
+    const tail = times.slice(times.lastIndexOf(null) + 1);
+    if (tail.length < 5) return false;
+    const gaps = tail.slice(1).map((t, i) => t - tail[i]).sort((a, b) => a - b), n = gaps.length;
+    return (gaps[Math.floor((n - 1) / 2)] + gaps[Math.floor(n / 2)]) / 2 < PIN_FAST_MS;
+  }
+  function pinHint(text) {
+    const box = $('[data-sheet-body]');
+    let hint = box.querySelector('.pinform__error');
+    if (!hint) {
+      hint = el('p', 'pinform__error');
+      hint.setAttribute('role', 'alert');
+      box.querySelector('.pinform').append(hint);
+    }
+    hint.textContent = text;
+  }
+  function pinClearScan(input) {
+    if (!(input.pinUntil > performance.now())) pinHint(pinIsScan(input) ? '스캔은 PIN 판을 닫은 뒤 하세요 — 칸에 들어간 스캔은 지웠습니다' : 'PIN 칸에 스캔이 들어가 지웠습니다 — PIN 은 손으로 넣으세요');
+    input.value = '';
+    input.pinTimes = [];
+    input.pinUntil = performance.now() + 300;
+  }
+  function submitPin(event) {
     const sheet = ui.sheet;
     if (sheet !== shownSheet()) return; // 처리 층 modal 판이 위에 있으면 밑의 PIN 판은 안 보냄
     if (!sheet || sheet.kind !== 'pin' || sheet.pin !== 'enter') return;
     const box = $('[data-sheet-body]');
     const pin = box.querySelector('[data-pin]');
+    const id = box.querySelector('[data-pin-id]');
+    const adminId = id ? id.value.trim() : '';
+    const fields = [id, pin].filter(Boolean);
+    if (event.isComposing || event.keyCode === 229 || fields.some(input => input.pinComposing)) return;
+    const fastFields = fields.filter(input => pinIsScan(input) || (input === pin && input.value.length > 6));
+    for (const input of fastFields) pinClearScan(input);
+    const held = fields.find(input => input.pinUntil > performance.now());
+    if (held) { held.focus(); return; }
+    if (!adminId && id && id.pinUntil) { id.focus(); return; }
+    if (!adminId || !pin || !/^\d{6}$/.test(pin.value)) {
+      if (pin) { pin.value = ''; pin.pinTimes = []; }
+      pinHint('관리자 ID 와 PIN 6자리를 넣으세요');
+      const focus = !adminId ? id : pin;
+      if (focus) focus.focus();
+      return;
+    }
     const values = {};
     for (const input of box.querySelectorAll('[data-field]')) values[input.dataset.field] = input.value.trim();
-    const adminId = (box.querySelector('[data-pin-id]') || {}).value || '';
-    const args = { ...values, ...(sheet.target === undefined ? {} : { target: sheet.target }), admin_id: adminId.trim(), pin: pin ? pin.value : '' };
-    if (pin) pin.value = ''; // PIN 은 화면에 남기지 않는다
+    const args = { ...values, ...(sheet.target === undefined ? {} : { target: sheet.target }), admin_id: adminId, pin: pin.value };
+    pin.value = ''; pin.pinTimes = []; // PIN 은 화면에 남기지 않는다
     ui.sheet = { ...sheet, pin: 'checking', admin_id: args.admin_id, values };
     paint();
-    const done = (reply) => { // 답 = {ok, result?, sheet?(PIN 뒤에 보일 판 — 목록 등), state?}
+    const done = (reply) => {
       if (ui.sheet && ui.sheet.name === sheet.name) {
         ui.sheet = reply.ok && reply.sheet ? { ...reply.sheet, name: sheet.name } : { ...ui.sheet, pin: reply.ok ? 'done' : 'denied', result: reply.result };
       }
@@ -300,7 +333,7 @@ window.AppFrame = (() => {
       if (ui.admin_open && !event.target.closest('[data-admin], [data-admin-btn]')) open(null); // 메뉴 밖을 누르면 닫힘
       if (!target) return;
       if (target.matches('[data-admin-btn]')) open(ui.admin_open ? null : 'admin');
-      else if (target.matches('[data-pin-ok]')) submitPin();
+      else if (target.matches('[data-pin-ok]')) submitPin(event);
       else if (target.matches('[data-form-ok]')) submitForm();
       else if (target.dataset.open) open(target.dataset.open);
       else if (target.dataset.go) go(target.dataset.go);
@@ -313,11 +346,43 @@ window.AppFrame = (() => {
       const sink = window.AppScan.state();
       if (!sink.buffer && !sink.queued) go(app.keys.Enter);
     }, true);
-    document.addEventListener('keydown', (event) => { // 글 키 · Enter · Tab · F12 는 스캔 받이(scan.js) 몫 — 여기는 PIN 칸 Enter · Esc · 앱 기능 키(app.keys)만
+    document.addEventListener('beforeinput', (event) => {
+      const input = pinField(event);
+      if (!input) return;
+      // prev lives only through this native input; retained scan metadata is counts/times.
+      const prev = input.value, end = input.selectionStart === prev.length && input.selectionEnd === prev.length;
+      const paste = event.inputType === 'insertFromPaste';
+      input.pinDiff = (value, time) => {
+        const times = input.pinTimes || Array(prev.length).fill(null);
+        if (!paste && end && value.length === prev.length + 1 && value.startsWith(prev)) return [...times, time];
+        if (!paste && value.length < prev.length && prev.startsWith(value)) return times.slice(0, value.length);
+        return Array(value.length).fill(null);
+      };
+      setTimeout(() => { input.pinDiff = null; }, 0);
+    });
+    document.addEventListener('input', (event) => {
+      const input = pinField(event);
+      if (!input) return;
+      input.pinTimes = input.pinDiff ? input.pinDiff(input.value, event.timeStamp) : Array(input.value.length).fill(null);
+      input.pinDiff = null;
+      if (input.pinUntil > performance.now() || (input.matches('[data-pin]') && input.value.length > 6) || pinIsScan(input)) pinClearScan(input);
+      else input.pinUntil = 0;
+    });
+    for (const type of ['compositionstart', 'compositionend']) document.addEventListener(type, (event) => {
+      const input = pinField(event);
+      if (input) input.pinComposing = type === 'compositionstart';
+    });
+    document.addEventListener('keydown', (event) => {
+      const sheet = shownSheet();
+      if (sheet && sheet.kind === 'pin' && (event.key === 'Enter' || event.code === 'Enter' || event.code === 'NumpadEnter') &&
+          (event.isComposing || event.keyCode === 229 || [...$('[data-sheet-body]').querySelectorAll('[data-pin], [data-pin-id]')].some(input => input.pinComposing))) {
+        event.preventDefault();
+        return;
+      }
       if (event.key === 'Enter' && event.target.closest('[data-sheet-body] input')) {
         event.preventDefault();
         const shown = shownSheet();
-        if (shown && shown.kind === 'form') submitForm(); else submitPin();
+        if (shown && shown.kind === 'form') submitForm(); else submitPin(event);
         return;
       }
       if (event.key === 'Escape' && ui.admin_open) { open(null); return; } // Esc 차례: 관리자 메뉴 → 판(처리 층 판은 cancel)

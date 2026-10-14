@@ -114,7 +114,7 @@ window.AppSheet = (() => {
     ok.type = 'button';
     ok.disabled = busy;
     ok.dataset.pinOk = '';
-    row.append(input({ type: 'password', inputMode: 'numeric', maxLength: 6, autocomplete: 'one-time-code', placeholder: busy ? '●●●●●●' : '······', disabled: busy },
+    row.append(input({ type: 'password', inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: busy ? '●●●●●●' : '······', disabled: busy },
       { pin: '' }, 'pinform__pin'), ok);
     form.append(label('PIN 6자리', row));
     if (busy) form.append(el('p', 'pinform__wait', '회사 서버에서 PIN 을 확인하는 중 — 창이 닫혀도 적용은 끝까지 진행됩니다'));
