@@ -22,6 +22,16 @@ class PackageRecoveryEvidenceError(PackageLogisticsError):
         super().__init__(self.code + ': ' + self.message)
 
 
+class PackageRecoveryStorageError(PackageLogisticsError):
+    """A storage read failure does not classify the stored evidence as damaged."""
+
+    code = 'PACKAGE_RECOVERY_STORAGE_UNAVAILABLE'
+    message = '관리자에게 알리세요'
+
+    def __init__(self):
+        super().__init__(self.code + ': ' + self.message)
+
+
 class PackageTransportError(PackageLogisticsError):
     pass
 

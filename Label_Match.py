@@ -275,7 +275,7 @@ from package_logistics import (
     canonical_barcodes,
     package_client_from_env,
 )
-from package_errors import PackageRecoveryEvidenceError
+from package_errors import PackageRecoveryEvidenceError, PackageRecoveryStorageError
 from terminal_operation_lease import (
     LEASE_BINDING_KEYS,
     OPERATION as PACKAGE_OPERATION_LEASE_OPERATION,
@@ -24969,6 +24969,10 @@ def main(argv=None):
         _show_first_run_onboarding_error(exc)
         return ONBOARDING_EXIT_CODE
     except PackageLogisticsError as exc:
+        if getattr(exc, 'code', '') == PackageRecoveryStorageError.code:
+            print(str(PackageRecoveryStorageError()), file=sys.stderr)
+            observe_startup(['DATA_GENERATION_REFUSED'], refused=True)
+            return ONBOARDING_EXIT_CODE
         if getattr(exc, 'code', '') == PackageRecoveryEvidenceError.code:
             print(str(PackageRecoveryEvidenceError()), file=sys.stderr)
             observe_startup(['DATA_GENERATION_REFUSED'], refused=True)

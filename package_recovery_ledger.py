@@ -3,7 +3,7 @@ import json
 import sqlite3
 
 from package_command_draft import canonical_json
-from package_errors import PackageLogisticsError, PackageRecoveryEvidenceError
+from package_errors import PackageLogisticsError, PackageRecoveryEvidenceError, PackageRecoveryStorageError
 from package_recovery import CONTRACT_SHA256, recovery_expectation, validate_recovery_read
 
 
@@ -28,14 +28,24 @@ def initialize_recovery_schema(conn, *, validate=True):
         return
     try:
         _validate_stored_recovery_evidence(conn)
+    except sqlite3.Error:
+        raise PackageRecoveryStorageError() from None
     except (PackageLogisticsError, ValueError, TypeError, KeyError, AttributeError,
-            OverflowError, sqlite3.DatabaseError):
+            OverflowError):
         raise PackageRecoveryEvidenceError() from None
+
+
+def _stored_identity(value):
+    if not isinstance(value,str) or not value or value != value.strip():
+        raise PackageRecoveryEvidenceError()
+    return value
 
 
 def _validate_stored_recovery_evidence(conn):
     # A corrupted record must never become authority to skip a product/source hold.
     for row in conn.execute('SELECT * FROM package_recovery_evidence').fetchall():
+        for field in ('cancel_key','package_key','cancel_receipt_id','recovery_receipt_id'):
+            _stored_identity(row[field])
         expected = expectation_for_cancel(conn, row['cancel_key'])
         package = conn.execute('''SELECT package.* FROM package_command_outbox AS package
             JOIN package_cancellation_outbox AS cancel ON cancel.package_idempotency_key=package.idempotency_key
@@ -55,7 +65,7 @@ def _validate_stored_recovery_evidence(conn):
         raise PackageLogisticsError('PACKAGE_RECOVERY_STORED_EVIDENCE_INVALID')
     for closure in conn.execute('SELECT * FROM package_recovery_review_closures').fetchall():
         snapshot = json.loads(closure['review_snapshot_json'])
-        target = recovery_target(conn, snapshot['set_id'], include_closed=True)
+        target = recovery_target(conn, _stored_identity(snapshot['set_id']), include_closed=True)
         if (target is None or target['review']['idempotency_key'] != closure['review_key']
                 or target['cancel']['idempotency_key'] != closure['cancel_key']
                 or canonical_json(target['review']) != closure['review_snapshot_json']):

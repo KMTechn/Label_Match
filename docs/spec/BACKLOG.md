@@ -731,3 +731,5 @@ B1–B5 headless 실제 자식/반대 guard 회귀는 sub-470 RESULT에 결속�
 Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRITER_GATE_TIMEOUT`만 기존 240초 창에서 0.1초씩 쉬며 재시도한다. 각 시도는 기존 launch_version의 admission을 다시 얻으며 시도 사이에는 admission을 보유하지 않는다. 상한은 240초 + 마지막 admission 대기 최대 5초이며 마감 뒤에는 기존 실패 출구를 유지한다. fence 확정·버려진 소유권 등 다른 거절과 GUI 실행 자체의 timeout은 재시도하지 않는다. 포인터·trial claim·READY·CONFIRMED·G 허가·cohort·잠금 순서는 유지한다. bootstrap 밖의 relay launcher admission과 실제 로그온/pythonw 수용은 별도 범위다.
 
 - P2(코디 msg_c06cdb448ab5·msg_3efe0acd3297 범위 제외): 예약 작업 퇴역 native helper의 ABSENT 길을 소유 합성 작업 이름 둘로 대응해 측정하니 PowerShell 시작 포함 writer admission 8.890초(5초 초과)였다. 호스트 scheduler 변경 0; 기존 제품 작업 존재 시 거절 길 2.047초. 실제 제품 이름 ABSENT 길은 NOT VERIFIED(랩 첫 GUI 재실행). 다음 수정에서 helper/퇴역 대기를 admission 밖으로 나누고 쓰기 직전 재확인한다.
+
+- 첫 업데이트: 거절 뒤 `wal_checkpoint(TRUNCATE)`가 commit 된 WAL을 주 DB로 옮김 — 바이트 불변은 읽기 전용 admission으로 구조 나눔(sub-90 P2-2). 107은 거절 길의 논리 내용 보존까지다.
