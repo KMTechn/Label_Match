@@ -48,7 +48,13 @@ def test_real_foreign_cancelled_member_quarantines_a_different_completed_label(t
             assert observed.get('status')=='OBSERVED_REJECTED'
 
 
-def test_real_refused_cancel_member_is_blocked_before_other_label_and_other_products_ack(tmp_path,central):
+def test_real_refused_cancel_member_is_blocked_before_other_label_and_other_products_ack(tmp_path,central,monkeypatch):
+    from datetime import datetime
+    import terminal_operation_lease
+    import deferred_intent_capture
+    monkeypatch.setattr(lm,'datetime',datetime)
+    monkeypatch.setattr(terminal_operation_lease,'datetime',datetime)
+    monkeypatch.setattr(deferred_intent_capture,'datetime',datetime)
     with local_server(tmp_path,mode='spill-physical') as server:
         app,dialogs,case,root,_releases=central
         def bind(evidence):
@@ -74,7 +80,17 @@ def test_real_refused_cancel_member_is_blocked_before_other_label_and_other_prod
             root.run_until(lambda: idle(app),timeout=5)
         bind(server.evidence)
         app.package_cancellation_outbox=PackageCancellationOutbox(app.package_outbox.db_path)
-        create=PackageOutboxProcessor(app.package_outbox,server.client)
+        def prepare(draft):
+            try:
+                return app._prepare_scanner_package_delivery(draft)
+            except Exception as error:
+                import traceback
+                (tmp_path/'delivery-failure.safe.json').write_text(json.dumps({
+                    'type':type(error).__name__, 'frames':[
+                        {'file':frame.filename,'line':frame.lineno}
+                        for frame in traceback.extract_tb(error.__traceback__)]}))
+                raise
+        create=PackageOutboxProcessor(app.package_outbox,server.client,prepare_scanner_delivery=prepare)
         cancel=PackageCancellationOutboxProcessor(app.package_cancellation_outbox,server.client)
         master=case.group['scan_payload']
         held_values=[m['normalized_barcode'] for m in case.snapshot['work_group_source']['members']]
