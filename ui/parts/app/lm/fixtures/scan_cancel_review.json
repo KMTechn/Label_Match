@@ -1,0 +1,216 @@
+{
+  "about": "취소 뒤 줄 상태: review",
+  "state": {
+    "contract": "lm-state/1",
+    "app": "label_match",
+    "version": "v2.0.99",
+    "last_request_seq": 12,
+    "recovery": false,
+    "worker": {
+      "name": "작업자 12",
+      "label": "작업자 12"
+    },
+    "start": null,
+    "work": {
+      "stage": "product_3",
+      "stage_label": "제품3",
+      "next": "상단 제품 3번째를 스캔하세요",
+      "next_sub": [
+        {
+          "text": "5번째를 찍으면 저절로 끝납니다",
+          "mark": "plain"
+        }
+      ],
+      "tag": {
+        "code": "A110",
+        "item": "커버 어셈블리",
+        "spec": "LHD",
+        "phase": ""
+      },
+      "quantity": "제품 24개",
+      "legacy": {
+        "enabled": false,
+        "text": null
+      },
+      "top_scan_count": 4,
+      "scan_total": 5,
+      "scan_done": 3,
+      "scan_left": 2,
+      "slots": [
+        {
+          "index": 1,
+          "key": "master_label",
+          "label": "현품표",
+          "value": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=A110|CLC=C0325|LBL=L0325|HSH=0f3a9c2b7d1e4a56",
+          "filled": true,
+          "state": "complete",
+          "role": "master_label"
+        },
+        {
+          "index": 2,
+          "key": "product_1",
+          "label": "제품1",
+          "value": "A110LHD2610134821",
+          "filled": true,
+          "state": "complete",
+          "role": "product"
+        },
+        {
+          "index": 3,
+          "key": "product_2",
+          "label": "제품2",
+          "value": "A110LHD2610134822",
+          "filled": true,
+          "state": "complete",
+          "role": "product"
+        },
+        {
+          "index": 4,
+          "key": "product_3",
+          "label": "제품3",
+          "value": "",
+          "filled": false,
+          "state": "current",
+          "role": "product"
+        },
+        {
+          "index": 5,
+          "key": "final_label",
+          "label": "제품4",
+          "value": "",
+          "filled": false,
+          "state": "pending",
+          "role": "last_product"
+        }
+      ],
+      "result": {
+        "kind": "ok",
+        "text": "제품2 맞음",
+        "sub": "…4822 · 방금",
+        "sound": "scan_master",
+        "code": null
+      },
+      "completion": null,
+      "badges": [],
+      "readonly": false,
+      "exchange": {
+        "phase": null,
+        "target": null
+      },
+      "short": {
+        "pending": false,
+        "remaining_s": null
+      },
+      "exact_rescan": {
+        "status": "not_started",
+        "completed": 0,
+        "target": 0
+      },
+      "held_scans": 0,
+      "top_scan_setting": {
+        "value": 4,
+        "source": "server",
+        "version": 3,
+        "updated_at": "2026-10-12 09:10",
+        "fetched_at": "2026-10-13 08:01"
+      },
+      "next_set_top_scan_count": null,
+      "manual_complete_hint": "F3 소량 완료 가능",
+      "allow": {
+        "undo": true,
+        "exchange": true,
+        "f1": true,
+        "f2": true
+      },
+      "scan_enabled": true
+    },
+    "approval": null,
+    "conn": {
+      "state": "ok",
+      "label": null,
+      "last_ok_at": "14:32"
+    },
+    "queue": {
+      "pending": 0,
+      "failed": 0
+    },
+    "update": {
+      "state": "none",
+      "version": null
+    },
+    "alerts": [],
+    "today": {
+      "date": "2026-10-13",
+      "is_today": true,
+      "loading": false,
+      "rows": [
+        {
+          "row": "r1",
+          "no": 1,
+          "time": "08:12",
+          "tag": "A110",
+          "item": "커버 어셈블리",
+          "result": "통과",
+          "kind": "ok",
+          "scans": 5,
+          "raw": [
+            "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=A110|CLC=C0325|LBL=L0325|HSH=0f3a9c2b7d1e4a56",
+            "A110LHD2610134821",
+            "A110LHD2610134822",
+            "A110LHD2610134823",
+            "A110LHD2610134824"
+          ],
+          "status": "cancelled",
+          "products": 4,
+          "cancellation": {
+            "state": "review",
+            "text": "원 기록을 보존했습니다"
+          }
+        }
+      ],
+      "summary": [
+        {
+          "item": "A110 1차",
+          "count": 4
+        }
+      ]
+    },
+    "progress": {
+      "state": "none",
+      "date": "2026-10-13",
+      "fetched_at": null,
+      "rows": []
+    },
+    "settings": {
+      "workers": [
+        {
+          "name": "작업자 12"
+        },
+        {
+          "name": "작업자 7"
+        },
+        {
+          "name": "작업자 3"
+        }
+      ],
+      "selected": "작업자 12",
+      "required": false,
+      "note": null,
+      "register": null
+    },
+    "admin": {
+      "recovery": null,
+      "pending": null,
+      "result": null
+    },
+    "about": {
+      "built_at": "2026-10-12",
+      "parts": null
+    }
+  },
+  "screen": {
+    "focus": "on",
+    "open": "history"
+  },
+  "replies": {}
+}

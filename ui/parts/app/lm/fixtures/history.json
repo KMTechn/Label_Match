@@ -159,7 +159,9 @@
             "A110LHD2610134822",
             "A110LHD2610134823",
             "A110LHD2610134824"
-          ]
+          ],
+          "status": "completed",
+          "products": 4
         },
         {
           "row": "r2",
@@ -176,7 +178,9 @@
             "A110LHD2610134822",
             "A110LHD2610134823",
             "A110LHD2610134824"
-          ]
+          ],
+          "status": "completed",
+          "products": 4
         },
         {
           "row": "r3",
@@ -191,7 +195,9 @@
             "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=A110|CLC=C0325|LBL=L0325|HSH=0f3a9c2b7d1e4a56",
             "A110LHD2610134821",
             "A110LHD2610134822"
-          ]
+          ],
+          "status": "completed",
+          "products": 2
         },
         {
           "row": "r4",
@@ -208,7 +214,9 @@
             "A110LHD2610134822",
             "A110LHD2610134823",
             "A110LHD2610134824"
-          ]
+          ],
+          "status": "completed",
+          "products": 4
         },
         {
           "row": "r5",
@@ -224,7 +232,9 @@
             "A110LHD2610134821",
             "A110LHD2610134822",
             "A110LHD2610134823"
-          ]
+          ],
+          "status": "completed",
+          "products": 3
         },
         {
           "row": "r6",
@@ -241,7 +251,9 @@
             "A110LHD2610134822",
             "A110LHD2610134823",
             "A110LHD2610134824"
-          ]
+          ],
+          "status": "completed",
+          "products": 4
         }
       ],
       "summary": [

@@ -1,10 +1,10 @@
 {
  "schema": "ui-parts/1",
  "source": "WorkerAnalysisGUI-web",
- "commit": "97efc8e733ba8d73c3d4c8d8a486cad5c3d8d531",
+ "commit": "e89e206683b58098186e5b8052c4d614889c692d",
  "dirty": false,
  "app": "lm",
- "parts_fingerprint": "65b1b241ad7e2f34",
+ "parts_fingerprint": "5075b2747e16178a",
  "files": [
   {
    "path": "app/frame.css",
@@ -20,9 +20,9 @@
   },
   {
    "path": "app/lm/contract.json",
-   "sha256": "25de7b2aec3e848dd52b740ad778491734f1893a57b44006a98ec8f737eb1fa3",
-   "bytes": 30185,
-   "gzip": 8123
+   "sha256": "86aa690d83ecd8a67f37e43780d00f02e657fb34450efd7f7a071887cdbc200a",
+   "bytes": 35854,
+   "gzip": 9153
   },
   {
    "path": "app/lm/fixtures/about.json",
@@ -104,9 +104,9 @@
   },
   {
    "path": "app/lm/fixtures/history.json",
-   "sha256": "bf32276012b9ceaf03d732c5e0c7512d8f2c41bf111c3c808f0c98082d441bc2",
-   "bytes": 7104,
-   "gzip": 1610
+   "sha256": "9525c67b6f0257f6269507d0013c89bdc74f2e62706fa972c4a15565c8001283",
+   "bytes": 7452,
+   "gzip": 1634
   },
   {
    "path": "app/lm/fixtures/late.json",
@@ -193,6 +193,84 @@
    "gzip": 1463
   },
   {
+   "path": "app/lm/fixtures/scan_cancel.json",
+   "sha256": "38809e5deb30c7549a9465f43e995696d85bd724d869137fbee6665f3c0353c5",
+   "bytes": 6572,
+   "gzip": 1667
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_acknowledged.json",
+   "sha256": "77e230204d28e3fe1f6cebac1726ea38525040a218d9d2121a73e5417442cc25",
+   "bytes": 4931,
+   "gzip": 1523
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_bad_input.json",
+   "sha256": "fc30513fd5bf1b10d23634c54bbb94a89067f5868225f0b51f82ea72360df330",
+   "bytes": 5013,
+   "gzip": 1545
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_busy.json",
+   "sha256": "c790ad41527a420222fa6ada567087f1d00bd8f67bcc058fd94520c00802aa80",
+   "bytes": 5003,
+   "gzip": 1544
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_confirmation.json",
+   "sha256": "21322521490ba71e5b64fc1d5e37189ca02309ed04c43cc48845a9151218e005",
+   "bytes": 5393,
+   "gzip": 1734
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_confirmation_pending.json",
+   "sha256": "4c732d0e66cf66ad3a5e33f48069a5328a609c8eea53c31a1edf4463e90a2311",
+   "bytes": 5029,
+   "gzip": 1557
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_failed.json",
+   "sha256": "d47c935c1101a12db5315614bacdc8574ed3eee6a20144a95d0766e153aca178",
+   "bytes": 5017,
+   "gzip": 1557
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_in_progress.json",
+   "sha256": "5ed02d36be206ba7565bb06c1d43d39b7d711b508d0e26f21667aee0c8345ea6",
+   "bytes": 5024,
+   "gzip": 1551
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_not_applied.json",
+   "sha256": "0118101bc1bfa01793c2bd240e28cb7bf74a83251bd9769bd8c54deb8fb1f765",
+   "bytes": 5014,
+   "gzip": 1550
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_pending.json",
+   "sha256": "c1975ad996429e0f1d5982b570f5b52adc176bed3ac54cae7d3397e5b28f4128",
+   "bytes": 4928,
+   "gzip": 1522
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_read_only.json",
+   "sha256": "91348a54c2644812a5af8a749efdd5a5da3bba7e12cc4fde0f68ab20e46ae0d1",
+   "bytes": 5010,
+   "gzip": 1550
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_review.json",
+   "sha256": "eb106ce143d40261321ea537844b88b45334b0e70e604d81643332774bacb476",
+   "bytes": 4899,
+   "gzip": 1507
+  },
+  {
+   "path": "app/lm/fixtures/scan_cancel_target_changed.json",
+   "sha256": "3dd8c30f5d4b06e4ed667527b680a2c6af43a9bb6d72ee2815f3effc392687ea",
+   "bytes": 5023,
+   "gzip": 1554
+  },
+  {
    "path": "app/lm/fixtures/setbad.json",
    "sha256": "e754c034a60c33c5b250a2119ca9115559baca039e42e4abd6139afa36bfbc8f",
    "bytes": 4409,
@@ -260,15 +338,15 @@
   },
   {
    "path": "app/lm/lm.css",
-   "sha256": "31b740d04743060ae7b4d6dd74c6ba40d26d8b85ca352358e6d1c205312e9419",
-   "bytes": 4426,
-   "gzip": 1756
+   "sha256": "a025c053a03f33f33eb141e243a64d6ec672aaba7fec63b23f99b84a10c2256e",
+   "bytes": 5353,
+   "gzip": 1973
   },
   {
    "path": "app/lm/lm.js",
-   "sha256": "034bf1efbe1e5bb1596c83751c55a72b50309b2388ab1530351d851f7b480afc",
-   "bytes": 13319,
-   "gzip": 5096
+   "sha256": "556a97bff13c919a5cdcf721ebf3cf8d44ad0502aa707ceda6ae5762ae01f534",
+   "bytes": 24160,
+   "gzip": 7818
   },
   {
    "path": "app/scan.js",

@@ -13,7 +13,7 @@
   "approval_input": "pointer",
   "sheets": {
     "admin": "관리자 ▾ 메뉴(틀) — 상단 확인 수 보기 칸 · 멈춘 작업 확인 · 대기 현황 · 바코드 원문 · 정보",
-    "history": "오늘 기록(품목별 합계)",
+    "history": "오늘 기록(품목별 합계) — 끝난 줄 하나 고르기 → 이 기록 취소 → 기존 마우스 승인. 지난 기록은 회사 웹 리포트에서 봅니다",
     "progress": "진행 현황(출고 계획 대비)",
     "settings": "작업자 고르기(같은 이름 후보 줄 포함)",
     "register": "새 이름 등록(form — 이름 칸)",
@@ -278,7 +278,41 @@
                 "result": {"type": "string"},
                 "kind": {"enum": ["ok", "bad", "warn"]},
                 "scans": {"type": "integer", "minimum": 0},
-                "raw": {"type": "array", "maxItems": 7, "items": {"type": "string"}}
+                "raw": {"type": "array", "maxItems": 7, "items": {"type": "string"}},
+                "status": {
+                  "enum": [
+                    "completed",
+                    "in_progress",
+                    "cancelled"
+                  ],
+                  "description": "이음이 정한 줄 상태. 없는 옛 snapshot은 표시만 하며 취소 단추를 만들지 않는다. 완료 통과·불량(미달 완료 포함)은 completed."
+                },
+                "products": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "이 줄의 제품 수 — 이음 값 그대로 승인 안내에 표시(화면에서 scans/raw로 계산하지 않음)."
+                },
+                "cancellation": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "state",
+                    "text"
+                  ],
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "pending",
+                        "acknowledged",
+                        "review"
+                      ]
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "기존 취소 업무 결과 안내. ACK 전 완료를 약속하지 않음."
+                    }
+                  }
+                }
               }
             }
           },
@@ -431,9 +465,164 @@
       "exchange": {"args": {}, "source": "_handle_f4_action :17685 → _scanner_command('KMCMD:EXCHANGE') :15848", "keys": ["F4", "단추 「제품 교환」", "명령 카드 KMCMD:EXCHANGE"], "approval": null},
       "cancel_current": {"args": {}, "source": "_reset_current_set(full_reset=True) :22370", "keys": ["F1", "단추 「현재 트레이 취소 (F1)」"], "approval": null},
       "cancel_completed": {"args": {"label": "string"}, "source": "askstring :19252 → _cancel_completed_tray_by_label :19267 → 마우스 승인 :19338", "keys": ["F2", "단추 「완료 트레이 취소 (F2)」 → 판 cancel_completed"], "approval": "pointer"},
+      "scan_cancel": {
+        "args": {
+          "rows": "string[] — today.rows[].row (기존 history_tree 행 ID; 화면은 한 줄)"
+        },
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rows"
+          ],
+          "properties": {
+            "rows": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "result_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ok",
+            "code",
+            "deleted"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "code": {
+              "type": "string"
+            },
+            "deleted": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "result": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "text"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "saved",
+                    "warn"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "ok": {
+                    "const": false
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "code": {
+                    "enum": [
+                      "SCAN_CANCEL_BAD_INPUT",
+                      "SCAN_CANCEL_TARGET_CHANGED",
+                      "SCAN_CANCEL_IN_PROGRESS",
+                      "SCAN_CANCEL_BUSY",
+                      "SCAN_CANCEL_READ_ONLY",
+                      "SCAN_CANCEL_CONFIRMATION_PENDING",
+                      "SCAN_CANCEL_NOT_APPLIED",
+                      "SCAN_CANCEL_FAILED"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "code": {
+                    "not": {
+                      "const": "SCAN_CANCEL_CONFIRMATION_REQUIRED"
+                    }
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              },
+              "then": {
+                "required": [
+                  "result"
+                ]
+              }
+            }
+          ]
+        },
+        "rejection_codes": [
+          "SCAN_CANCEL_BAD_INPUT",
+          "SCAN_CANCEL_TARGET_CHANGED",
+          "SCAN_CANCEL_IN_PROGRESS",
+          "SCAN_CANCEL_BUSY",
+          "SCAN_CANCEL_READ_ONLY",
+          "SCAN_CANCEL_CONFIRMATION_PENDING",
+          "SCAN_CANCEL_NOT_APPLIED",
+          "SCAN_CANCEL_FAILED"
+        ],
+        "source": "기존 _delete_selected_row → 기존 pointer 확인 → 선택 snapshot 재대조 → SET_DELETED/outbox. 날짜·자격·상세·승인 표지를 받지 않음. 승인 뒤 줄 상태는 today.rows로 확인.",
+        "keys": [
+          "오늘 기록의 끝난 줄 선택 → 이 기록 취소"
+        ],
+        "approval": "pointer"
+      },
       "ack": {"args": {}, "source": "_acknowledge_workflow_notice :22394", "keys": ["띠 「확인 (Esc)」"], "approval": null},
       "escape": {"args": {}, "source": "_handle_workflow_escape :22380(판 · 관리자 메뉴가 열려 있으면 틀이 닫기 먼저)", "keys": ["Esc"], "approval": null},
-      "approve": {"args": {"id": "string"}, "source": "승인 대기 실행(_confirm_pointer_action :21451 뒤 줄 — pending[2]() :21470)", "keys": ["승인 판 단추 — 같은 단추 안 왼쪽 누름 + 뗌만"], "approval": null},
+      "approve": {
+        "args": {
+          "id": "string"
+        },
+        "source": "승인 대기 실행(_confirm_pointer_action :21451 뒤 줄 — pending[2]() :21470)",
+        "keys": [
+          "승인 판 단추 — 같은 단추 안 왼쪽 누름 + 뗌만"
+        ],
+        "approval": null,
+        "result_schema": {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "object",
+              "required": [
+                "kind",
+                "text"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
       "dismiss": {"args": {"id": "string"}, "source": "승인 대기만 비움(:21465 과 같은 비움, 실행 0)", "keys": ["승인 판 「그만두기」"], "approval": null},
       "empty_enter": {"args": {}, "source": "intake_scan('') — Tk 입력 칸의 빈 Enter 와 같은 문(대기 오류 확인 · 잠김 안내)", "keys": ["받이 버퍼가 빈 Enter(틀 keys.Enter)"], "approval": null},
       "close": {"args": {}, "source": "on_closing :8661 → 하던 트레이가 있으면 승인 :8693", "keys": ["창 닫기(셸이 command close 로)"], "approval": "pointer"},

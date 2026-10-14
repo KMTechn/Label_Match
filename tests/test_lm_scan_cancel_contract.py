@@ -19,7 +19,7 @@ from tests.test_label_screen_bridge import Bridge, call, schema_errors
 from tests.test_lm_scan_cancel import app_for_delete
 
 
-CONTRACT_BYTES = (Path(__file__).parent / 'fixtures/lm_cancel_contract_a624fa08.json').read_bytes()
+CONTRACT_BYTES = (Path(__file__).parent / 'fixtures/lm_cancel_contract_e89e2066.json').read_bytes()
 CONTRACT = json.loads(CONTRACT_BYTES)
 PREVIOUS_CONTRACT_BYTES = (Path(__file__).parent / 'fixtures/lm_cancel_contract_c6d5f907.json').read_bytes()
 
@@ -52,7 +52,7 @@ def command(screen, name, args):
     return result
 
 
-def test_exact_a624fa08_schema_preserves_c6d5f907_and_shell_completed_rows(cancel_screen):
+def test_exact_e89e2066_schema_preserves_c6d5f907_and_shell_completed_rows(cancel_screen):
     assert hashlib.sha256(CONTRACT_BYTES).hexdigest() == '86aa690d83ecd8a67f37e43780d00f02e657fb34450efd7f7a071887cdbc200a'
     assert hashlib.sha256(PREVIOUS_CONTRACT_BYTES).hexdigest() == 'fa255a368d378b43fe13fd670cd88eedb7a4fb9e0752c74093aab683db3cd862'
     assert CONTRACT['state'] == json.loads(PREVIOUS_CONTRACT_BYTES)['state']
@@ -67,6 +67,27 @@ def test_exact_a624fa08_schema_preserves_c6d5f907_and_shell_completed_rows(cance
     approved = command(cancel_screen, 'approve', {'id': result['state']['approval']['id']})
     assert approved['deleted'] == 1 and approved['result'] == {'kind': 'saved', 'text': '기록을 취소했습니다'}
     assert len(approved['state']['today']['rows']) == 1
+
+
+@pytest.mark.parametrize('action_text', ['삭제', '스캔 취소', '확인'])
+def test_m107_approval_is_bound_to_row_independently_of_action_text(cancel_screen, monkeypatch, action_text):
+    app = cancel_screen.app
+    original = app._request_pointer_confirmation
+    def request(title, message, _action_text, action):
+        return original(title, message, action_text, action)
+    monkeypatch.setattr(app, '_request_pointer_confirmation', request)
+    before = call(cancel_screen, cancel_screen.bridge.get_state)
+    assert before['approval'] is None
+    requested = command(cancel_screen, 'scan_cancel', {'rows': ['SET-1']})
+    approval = requested['state']['approval']
+    assert approval['id'] and approval['action'] == action_text
+    assert requested['code'] == 'SCAN_CANCEL_CONFIRMATION_REQUIRED'
+    app._workflow_notice_action_text = '다른 확인 글'
+    approved = command(cancel_screen, 'approve', {'id': approval['id']})
+    assert approved['ok'] is True and approved['code'] == 'SCAN_CANCEL_APPLIED'
+    assert approved['deleted'] == 1 and approved['result'] == {'kind': 'saved', 'text': '기록을 취소했습니다'}
+    assert not app.history_tree.exists('SET-1') and app.history_tree.exists('SET-2')
+    assert len(app.data_manager.events) == 1 and app.data_manager.flushed
 
 
 def test_in_progress_rejection_has_no_ledger_or_outbox_effect(cancel_screen):

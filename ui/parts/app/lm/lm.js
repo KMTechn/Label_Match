@@ -13,6 +13,19 @@
   const MARK = { complete: 'check', current: 'now', swap: 'swap', error: 'alert' };
   const ACTION = { 'LABEL.RECHECK': '다시 확인', 'LABEL.SET_HOLD': '보류 후 계속', 'LABEL.F5_HOLD': '보류 후 계속', 'LABEL.SUPPORT_HANDOFF': '지원 인계' };
   const PROGRESS = { loading: '진행 현황을 받는 중입니다', offline: '회사 서버에 닿지 않아 받지 못했습니다 — 작업은 그대로 하세요', none: '아직 받지 않았습니다' };
+  const CANCEL_ERROR = {
+    SCAN_CANCEL_BAD_INPUT: '기록이 바뀌었습니다 · 목록을 다시 보고 고르세요',
+    SCAN_CANCEL_TARGET_CHANGED: '기록이 바뀌었습니다 · 목록을 다시 보고 고르세요',
+    SCAN_CANCEL_IN_PROGRESS: '진행 중인 묶음은 「방금 스캔 되돌리기」 로 고치세요',
+    SCAN_CANCEL_BUSY: '지금은 처리 중입니다 · 잠시 뒤 다시 누르세요',
+    SCAN_CANCEL_READ_ONLY: '지난 기록은 여기서 취소할 수 없습니다 · 관리자에게 알리세요',
+    SCAN_CANCEL_CONFIRMATION_PENDING: '열린 확인을 먼저 끝내세요',
+    SCAN_CANCEL_NOT_APPLIED: '취소되지 않았습니다 · 관리자에게 알리세요',
+    SCAN_CANCEL_FAILED: '취소 중 오류가 났습니다 · 관리자에게 알리세요',
+  };
+  const CANCEL_STATE = { pending: '취소됨 · 회사 서버에 알리는 중', acknowledged: '취소됨', review: '취소됨 · 확인 필요 — 관리자에게 알리세요' };
+  let cancelBusy = false, cancelSending = false, cancelTarget = null, cancelApprovalId = null, cancelApprovalBefore = null, cancelAwaitingApproval = false, cancelWaitTimer = null, cancelRequest = 0, cancelNotice = null;
+  const cancellable = (s, row) => s.today.is_today && !s.today.loading && row && row.status === 'completed' && !row.cancellation && Number.isInteger(row.products) && row.products >= 0;
   const pin = (title, go, lead, fields) => ({ kind: 'pin', tag: 'PIN', title, go, lead, fields });
 
   const sheets = {
@@ -35,12 +48,15 @@
 
   /* 판 내용 중 state 에서 오는 것 — 판이 열려 있으면 render 가 그 판을 같은 state 로 다시 채운다 */
   const LIVE = {
-    history(s) {
+    history(s, sheet) {
       const t = s.today;
+      const selected = t.rows.find((row) => row.row === sheet.target);
       return {
-        lead: t.loading ? '기록을 불러오는 중입니다' : t.is_today ? `오늘 ${t.date}` : `${t.date} 기록 — 조회 전용`,
-        facts: t.summary.map((row) => [row.item, `${row.count}개`]),
-        rows: t.rows.map((row) => ({ title: `${row.no}. ${row.time} · ${row.result}`, text: `${row.tag} ${row.item} · 스캔 ${row.scans}번` })),
+        lead: t.loading ? '기록을 불러오는 중입니다' : t.is_today ? `오늘 ${t.date}` : '오늘 기록을 다시 불러오세요',
+        facts: t.summary.length ? t.summary.map((row) => [row.item, `${row.count}개`]) : undefined,
+        rows: t.rows.map((row) => ({ title: `${row.no}. ${row.time} · ${row.status === 'cancelled' || row.cancellation ? CANCEL_STATE[row.cancellation?.state] || CANCEL_STATE.review : row.result}`,
+          text: `${row.tag} ${row.item} · 스캔 ${row.scans}번` })),
+        actions: cancellable(s, selected) && !s.approval ? [{ text: cancelBusy ? '처리 중…' : '이 기록 취소', danger: true }] : [],
       };
     },
     progress(s) {
@@ -165,11 +181,52 @@
   }
 
   let approvalId = null;
+  function showHistory(target = AppFrame.ui.sheet?.target) {
+    const rows = AppFrame.current().today.rows;
+    AppFrame.open('history', rows.some((row) => row.row === target) ? target : undefined);
+  }
+
+  const commandResult = (reply) => reply?.result && typeof reply.result === 'object' && 'ok' in reply.result ? reply.result : reply;
+  function stopCancelWait() {
+    cancelAwaitingApproval = false;
+    clearTimeout(cancelWaitTimer);
+    cancelWaitTimer = null;
+  }
+  function cancelRefreshFailed() {
+    if (!cancelAwaitingApproval) return;
+    stopCancelWait();
+    cancelBusy = false;
+    cancelNotice = { kind: 'warn', text: CANCEL_ERROR.SCAN_CANCEL_FAILED };
+    showHistory();
+  }
+  async function receiveState(reply, result) {
+    const state = reply?.state || result?.state;
+    if (state) KMHost.push({ state });
+    else await AppFrame.refresh();
+  }
+
   function drawApproval(a) {
+    const previous = approvalId;
     approvalId = a ? a.id : null;
     $('[data-approval]').hidden = !a;
     $('[data-approval-scrim]').hidden = !a;
-    if (!a) return;
+    if (!a) {
+      if (previous && previous === cancelApprovalId) {
+        const target = cancelTarget?.row;
+        cancelBusy = false;
+        cancelApprovalId = null;
+        cancelTarget = null;
+        queueMicrotask(() => showHistory(target));
+      }
+      return;
+    }
+    if (cancelAwaitingApproval && a.id !== cancelApprovalBefore && !cancelApprovalId) {
+      cancelNotice = null;
+      cancelApprovalId = a.id;
+      cancelBusy = true;
+      cancelSending = false;
+      stopCancelWait();
+    }
     $('[data-approval-title]').textContent = a.title;
     $('[data-approval-text]').textContent = a.message;
     const go = $('[data-approval-go]');
@@ -177,22 +234,183 @@
     const no = $('[data-approval-no]');
     no.textContent = a.cancel;
     no.dataset.go = `command:dismiss:${a.id}`;
+    go.disabled = no.disabled = cancelSending;
+    if (a.id === cancelApprovalId && cancelTarget) {
+      $('[data-approval-title]').textContent = '이 기록을 취소할까요?';
+      $('[data-approval-text]').textContent = `현품표 ${cancelTarget.tag.slice(-12)} · 제품 ${cancelTarget.products}개 · ${cancelTarget.time} — 이 묶음 전체가 취소되고 되돌릴 수 없습니다.`;
+      go.textContent = '취소 확인';
+      no.textContent = '그만두기';
+    }
+    if (previous !== a.id) no.focus();
   }
 
+  function drawHistory(s, ui, focus) {
+    if (AppFrame.current() !== s || ui.sheet?.name !== 'history' || s.sheet?.modal) return;
+    const box = $('[data-sheet-body]');
+    box.classList.add('lm-history');
+    const items = box.querySelectorAll('.sheet__list > li');
+    s.today.rows.forEach((row, i) => {
+      const li = items[i];
+      if (!li) return;
+      let button = li.querySelector('[data-history-row]');
+      if (!button) {
+        button = el('button', 'lm-history__row');
+        button.type = 'button';
+        button.append(...li.childNodes);
+        li.replaceChildren(button);
+      }
+      button.dataset.historyRow = row.row;
+      button.dataset.go = `open:history:${row.row}`;
+      button.setAttribute('aria-pressed', String(row.row === ui.sheet.target));
+      button.classList.toggle('lm-history__row--cancelled', row.status === 'cancelled' || !!row.cancellation);
+      button.classList.toggle('lm-history__row--review', row.cancellation?.state === 'review');
+      let detail = li.querySelector('[data-history-detail]');
+      if (row.cancellation?.text) {
+        if (!detail) {
+          detail = el('small', 'sheet__note');
+          detail.dataset.historyDetail = '';
+          li.append(detail);
+        }
+        detail.textContent = row.cancellation.text;
+      } else detail?.remove();
+    });
+    const cancel = box.querySelector(':scope > .sheet__btns button');
+    if (cancel) { cancel.dataset.historyCancel = ''; cancel.disabled = cancelBusy; }
+    let notice = box.querySelector('[data-history-result]');
+    if (cancelNotice?.text) {
+      if (!notice) {
+        notice = el('p');
+        notice.dataset.historyResult = '';
+        box.querySelector('.sheet__list').before(notice);
+      }
+      notice.className = cancelNotice.kind === 'warn' ? 'result result--warn' : 'sheet__lead';
+      notice.setAttribute('role', cancelNotice.kind === 'warn' ? 'alert' : 'status');
+      if (notice.textContent !== cancelNotice.text) notice.textContent = cancelNotice.text;
+    } else notice?.remove();
+    if (!box.querySelector('[data-history-note]')) {
+      const note = el('p', 'sheet__note', '잘못 찍은 기록은 줄을 눌러 취소합니다 · 지난 기록은 회사 웹 리포트에서 봅니다');
+      note.dataset.historyNote = '';
+      box.append(note);
+    }
+    const chosen = [...box.querySelectorAll('[data-history-row]')].find((button) => button.dataset.historyRow === ui.sheet.target);
+    if (s.approval) {
+      if (!document.activeElement.closest('[data-approval]')) $('[data-approval-no]').focus();
+      return;
+    }
+    if (focus === 'cancel' && cancel) cancel.focus();
+    else if (chosen && (focus || document.activeElement === cancel || !box.contains(document.activeElement))) chosen.focus();
+    else if (!chosen && !box.contains(document.activeElement)) {
+      const title = $('[data-sheet-title]');
+      title.tabIndex = -1;
+      (box.querySelector('[data-history-row]') || title).focus();
+    }
+  }
+
+  document.addEventListener('click', async (event) => {
+    const dismiss = event.target.closest('[data-approval-no]');
+    if ((event.target.closest('[data-approval-send]') || dismiss) && approvalId === cancelApprovalId && approvalId) {
+      event.stopImmediatePropagation();
+      if (cancelSending) return;
+      const id = approvalId;
+      cancelBusy = true;
+      cancelSending = true;
+      showHistory();
+      try {
+        const reply = await KMShell.call('command', [dismiss ? 'dismiss' : 'approve', { id }]);
+        const result = commandResult(reply);
+        if (result?.result) cancelNotice = result.result;
+        else if (!result?.ok) cancelNotice = { kind: 'warn', text: CANCEL_ERROR.SCAN_CANCEL_FAILED };
+        await receiveState(reply, result);
+      } catch (_) {
+        if (!cancelNotice) cancelNotice = { kind: 'warn', text: CANCEL_ERROR.SCAN_CANCEL_FAILED };
+      } finally {
+        cancelSending = false;
+        cancelBusy = cancelAwaitingApproval || AppFrame.current().approval?.id === cancelApprovalId && !!cancelApprovalId;
+        showHistory();
+      }
+      return;
+    }
+    if (event.target.closest('[data-history-row]')) cancelNotice = null;
+    if (!event.target.closest('[data-history-cancel]')) return;
+    event.stopImmediatePropagation();
+    const s = AppFrame.current(), ui = AppFrame.ui;
+    const row = s.today.rows.find((item) => item.row === ui.sheet?.target);
+    if (cancelBusy || s.approval || !cancellable(s, row)) return;
+    const request = ++cancelRequest;
+    cancelApprovalBefore = s.approval?.id ?? null;
+    cancelTarget = { ...row };
+    cancelBusy = true;
+    cancelSending = true;
+    cancelNotice = null;
+    stopCancelWait();
+    cancelApprovalId = null;
+    AppFrame.open('history', row.row);
+    try {
+      const reply = await KMShell.call('command', ['scan_cancel', { rows: [row.row] }]);
+      if (request !== cancelRequest) return;
+      cancelSending = false;
+      const result = commandResult(reply);
+      cancelAwaitingApproval = result?.code === 'SCAN_CANCEL_CONFIRMATION_REQUIRED' && result.ok;
+      // refresh()가 겹치면 먼저 끝난 답은 틀이 버린다. 적용된 state만 대기를 끝낸다.
+      if (cancelAwaitingApproval) cancelWaitTimer = setTimeout(cancelRefreshFailed, 15000);
+      if (!result?.ok) cancelNotice = { kind: 'warn', text: CANCEL_ERROR[result?.code] || CANCEL_ERROR.SCAN_CANCEL_FAILED };
+      else if (!cancelAwaitingApproval && result.result) cancelNotice = result.result;
+      await receiveState(reply, result);
+    } catch (_) {
+      if (request === cancelRequest) {
+        cancelRefreshFailed();
+        if (!cancelApprovalId) {
+          cancelSending = false;
+          if (!cancelNotice) cancelNotice = { kind: 'warn', text: CANCEL_ERROR.SCAN_CANCEL_FAILED };
+        }
+      }
+    } finally {
+      if (request === cancelRequest) {
+        cancelBusy = cancelAwaitingApproval || AppFrame.current().approval?.id === cancelApprovalId && !!cancelApprovalId;
+        showHistory();
+      }
+    }
+  }, true);
+
+  $('[data-approval]').onkeydown = (event) => {
+    if (!approvalId) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      $('[data-approval-no]').click();
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const no = $('[data-approval-no]'), go = $('[data-approval-go]');
+      (document.activeElement === no ? go : no).focus();
+    }
+  };
+
   function render(s, ui) {
+    if (cancelAwaitingApproval && !s.approval && !s.today.rows.some((row) => row.row === cancelTarget?.row)) {
+      stopCancelWait();
+      cancelBusy = false;
+      cancelTarget = null;
+    }
+    const focused = document.activeElement;
+    const historyFocus = focused?.hasAttribute('data-history-cancel') ? 'cancel' : focused?.dataset.historyRow;
+    $('[data-sheet-body]').classList.remove('lm-history');
     const w = s.work;
     drawTop(s, w);
     drawStart(s.start);
     drawWork(w);
     drawApproval(s.approval);
     if (s.settings.required && !ui.sheet) ui.sheet = { ...sheets.settings, name: 'settings' }; // 작업자를 골라야 스캔이 됨(:15334) — 판을 저절로 엶
+    if (ui.sheet?.name === 'history' && !s.today.rows.some((row) => row.row === ui.sheet.target)) ui.sheet.target = undefined;
     if (ui.sheet && LIVE[ui.sheet.name]) ui.sheet = { ...ui.sheet, ...LIVE[ui.sheet.name](s, ui.sheet) };
+    if (ui.sheet?.name === 'history') queueMicrotask(() => drawHistory(s, ui, historyFocus));
   }
 
   /* 승인 — 같은 승인 단추 안에서 왼쪽 단추를 누르고 뗄 때만(뗄 때 단추 밖이면 없음). 보내기는 틀의 단추 길(숨은 단추의 data-go) */
   let pressed = null;
   document.addEventListener('pointerdown', (event) => {
-    pressed = event.button === 0 && approvalId && event.target.closest('[data-approval-go]') ? { id: approvalId, pointer: event.pointerId } : null;
+    const button = event.target.closest('[data-approval-go]');
+    pressed = event.button === 0 && approvalId && button && !button.disabled ? { id: approvalId, pointer: event.pointerId } : null;
   });
   document.addEventListener('pointerup', (event) => {
     const was = pressed;

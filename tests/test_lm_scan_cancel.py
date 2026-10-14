@@ -77,6 +77,7 @@ def snapshot(app):
 
 @pytest.mark.parametrize('central', [False, True])
 def test_web_and_tk_delete_have_identical_counts_audit_and_outbox(tmp_path, monkeypatch, central):
+    from tests.test_lm_scan_cancel_contract import assert_state
     native = mock.Mock(side_effect=AssertionError('native dialog created'))
     monkeypatch.setattr(lm.tk, 'Toplevel', native)
     monkeypatch.setattr(lm.messagebox, 'showwarning', lambda *_a, **_kw: None)
@@ -90,9 +91,11 @@ def test_web_and_tk_delete_have_identical_counts_audit_and_outbox(tmp_path, monk
     processor = LabelMatchScreenProcessor(web, module=lm)
     try:
         result = processor.command('scan_cancel', {'rows': ['SET-1']})
+        assert_state(result['state'])
         assert result['ok'] is True and result['code'] == 'SCAN_CANCEL_CONFIRMATION_REQUIRED'
         assert result['deleted'] == 0 and 'SET-1' in web.set_details_map
         approved = processor.command('approve', {'id': _approval_id(_pointer_pending(web))})
+        assert_state(approved['state'])
         assert approved['ok'] is True
         assert approved['deleted'] == 1
         assert approved['result'] == {'kind': 'saved', 'text': '기록을 취소했습니다'}
