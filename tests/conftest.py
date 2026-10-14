@@ -11,6 +11,71 @@ import pytest
 _NATIVE_POPEN = next(cls for cls in subprocess.Popen.__mro__ if cls.__module__ == "subprocess")
 
 
+@pytest.fixture(autouse=True)
+def native_window_calls(monkeypatch):
+    """Record default app window actions; reject real user32 calls even on bypass."""
+    import ctypes
+    from types import SimpleNamespace
+    import label_match_instance_win32 as native
+
+    calls = []
+    original = SimpleNamespace(activate=native.activate_pid, foreground=native.set_foreground_window,
+                               flash=native.flash_window, notice=native.timed_notice)
+    protected = {"EnumWindows", "ShowWindow", "ShowWindowAsync", "SetForegroundWindow",
+                 "FlashWindowEx", "MessageBoxW", "MessageBoxTimeoutW"}
+
+    class GuardedUser32:
+        def __init__(self, api):
+            self.api = api
+
+        def __getattr__(self, name):
+            if name in protected:
+                def refused(*_args, **_kwargs):
+                    raise AssertionError("NATIVE_WINDOW_CALL_BLOCKED:" + name)
+                return refused
+            return getattr(self.api, name)
+
+    if hasattr(ctypes, "WinDLL"):
+        loader = ctypes.WinDLL
+
+        def guarded_loader(name, *args, **kwargs):
+            api = loader(name, *args, **kwargs)
+            return GuardedUser32(api) if str(name).lower() in {"user32", "user32.dll"} else api
+
+        monkeypatch.setattr(ctypes, "WinDLL", guarded_loader)
+        monkeypatch.setattr(ctypes.windll, "user32", GuardedUser32(ctypes.windll.user32))
+
+    def activate(pid, *, user32=None):
+        if user32 is not None:
+            return original.activate(pid, user32=user32)
+        calls.append(("activate_pid", (pid,)))
+        return native.ActivationResult(False)
+
+    def foreground(hwnd, *, user32=None):
+        if user32 is not None:
+            return original.foreground(hwnd, user32=user32)
+        calls.append(("SetForegroundWindow", (hwnd,)))
+        return True
+
+    def notice(*, closing=None, user32=None):
+        if user32 is not None:
+            return original.notice(closing=closing, user32=user32)
+        text = native.CLOSING_MESSAGE if closing is True else native.OPENING_MESSAGE if closing is False else native.UNKNOWN_MESSAGE
+        calls.append(("MessageBoxTimeoutW", (None, text, native.APP_NAME, 0x10000, 0, native.NOTICE_TIMEOUT_MS)))
+
+    def flash(hwnd, *, user32=None):
+        if user32 is not None:
+            return original.flash(hwnd, user32=user32)
+        calls.append(("FlashWindowEx", (hwnd,)))
+        return True
+
+    monkeypatch.setattr(native, "activate_pid", activate)
+    monkeypatch.setattr(native, "set_foreground_window", foreground)
+    monkeypatch.setattr(native, "flash_window", flash)
+    monkeypatch.setattr(native, "timed_notice", notice)
+    return SimpleNamespace(calls=calls, original=original)
+
+
 @pytest.fixture
 def isolated_dpapi(monkeypatch, tmp_path):
     """Use a shared authenticated double unless a guest explicitly requests native DPAPI."""

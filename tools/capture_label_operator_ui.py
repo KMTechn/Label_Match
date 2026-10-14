@@ -6273,13 +6273,17 @@ def _attempt_foreground_acquisition(
     for name, args in (
         ("ShowWindow", (int(target_hwnd), 9)),
         ("BringWindowToTop", (int(target_hwnd),)),
-        ("SetForegroundWindow", (int(target_hwnd),)),
+        ("set_foreground_window", (int(target_hwnd),)),
         ("SetFocus", (int(target_hwnd),)),
     ):
         try:
             # Win32 return values have API-specific meanings. They are retained
             # only as telemetry; acceptance uses the observation below.
-            api_results[name] = int(getattr(user32, name)(*args) or 0)
+            if name == "set_foreground_window":
+                from label_match_instance_win32 import set_foreground_window
+                api_results["SetForegroundWindow"] = int(set_foreground_window(*args, user32=user32))
+            else:
+                api_results[name] = int(getattr(user32, name)(*args) or 0)
         except Exception as exc:
             api_results[name] = 0
             api_errors[name] = f"{type(exc).__name__}: {exc}"

@@ -94,17 +94,31 @@ def activate_pid(pid, *, user32=None):
     hwnd = windows[0]
     if user.IsIconic(hwnd):
         user.ShowWindow(hwnd, 9)
-    foreground = bool(user.SetForegroundWindow(hwnd))
+    foreground = set_foreground_window(hwnd, user32=user)
     flashed = False
     if not foreground:
-        class FlashInfo(ctypes.Structure):
-            _fields_ = [('cbSize', wintypes.UINT), ('hwnd', wintypes.HWND), ('dwFlags', wintypes.DWORD), ('uCount', wintypes.UINT), ('dwTimeout', wintypes.DWORD)]
-        info = FlashInfo(ctypes.sizeof(FlashInfo), hwnd, 3 | 12, 3, 0)
-        if user32 is None:
-            user.FlashWindowEx.argtypes = [ctypes.POINTER(FlashInfo)]
-            user.FlashWindowEx.restype = wintypes.BOOL
-        flashed = bool(user.FlashWindowEx(ctypes.byref(info)))
+        flashed = flash_window(hwnd, user32=user32)
     return ActivationResult(True, foreground, flashed)
+
+
+def set_foreground_window(hwnd, *, user32=None):
+    """Keep explicit-HWND foreground calls, including capture tools, at this seam."""
+    user = user32 or ctypes.WinDLL("user32", use_last_error=True)
+    if user32 is None:
+        user.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user.SetForegroundWindow.restype = wintypes.BOOL
+    return bool(user.SetForegroundWindow(hwnd))
+
+
+def flash_window(hwnd, *, user32=None):
+    user = user32 or ctypes.WinDLL("user32", use_last_error=True)
+    class FlashInfo(ctypes.Structure):
+        _fields_ = [('cbSize', wintypes.UINT), ('hwnd', wintypes.HWND), ('dwFlags', wintypes.DWORD), ('uCount', wintypes.UINT), ('dwTimeout', wintypes.DWORD)]
+    info = FlashInfo(ctypes.sizeof(FlashInfo), hwnd, 3 | 12, 3, 0)
+    if user32 is None:
+        user.FlashWindowEx.argtypes = [ctypes.POINTER(FlashInfo)]
+        user.FlashWindowEx.restype = wintypes.BOOL
+    return bool(user.FlashWindowEx(ctypes.byref(info)))
 
 
 def timed_notice(*, closing=None, user32=None):

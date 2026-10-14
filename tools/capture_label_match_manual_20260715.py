@@ -513,7 +513,9 @@ def _force_foreground_window(hwnd: int) -> None:
         win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
         win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
         try:
-            win32gui.SetForegroundWindow(root_hwnd)
+            from label_match_instance_win32 import set_foreground_window
+            if not set_foreground_window(root_hwnd):
+                raise OSError("foreground request refused")
         except Exception:
             pass
         try:

@@ -123,7 +123,9 @@ def _bring_window_to_foreground(hwnd: int) -> dict[str, Any]:
     except Exception as exc:
         result["show_window_error"] = repr(exc)
     try:
-        win32gui.SetForegroundWindow(hwnd)
+        from label_match_instance_win32 import set_foreground_window
+        if not set_foreground_window(hwnd):
+            raise OSError("foreground request refused")
         result["set_foreground_ok"] = True
     except Exception as exc:
         result["set_foreground_ok"] = False
@@ -211,7 +213,9 @@ def _dialog_helper_main(argv: list[str]) -> int:
         hwnd = _helper_wait_for_window(args.pid, args.title)
         info["window_text"] = win32gui.GetWindowText(hwnd)
         try:
-            win32gui.SetForegroundWindow(hwnd)
+            from label_match_instance_win32 import set_foreground_window
+            if not set_foreground_window(hwnd):
+                raise OSError("foreground request refused")
             info["foreground_set"] = True
         except Exception as exc:
             info["foreground_set"] = False
