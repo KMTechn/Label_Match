@@ -377,7 +377,7 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
 
 
 
-def test_relay_logon_launches_gui_and_trial_relay_with_existing_lm_user_roots(monkeypatch, tmp_path):
+def test_relay_logon_claims_one_headless_relay_with_existing_lm_user_roots(monkeypatch, tmp_path):
     from contextlib import nullcontext
     import time
 
@@ -396,13 +396,15 @@ def test_relay_logon_launches_gui_and_trial_relay_with_existing_lm_user_roots(mo
     monkeypatch.setattr(updates, "prepared_pending", lambda *_args: False)
     # E1 requests supervision before a resumed trial; this is the OS task boundary.
     monkeypatch.setattr(updates, "request_apply_task", lambda *_args: None)
+    import current_user_onboarding
+    monkeypatch.setattr(current_user_onboarding, "_machine_worker_context", lambda _: None)
     launched = []
     monkeypatch.setattr(updates, "launch_version", lambda _control, sha, args, **kwargs: launched.append((sha, args, kwargs)) or 42)
     def complete(_seconds):
         updates.write_json_durable(control / "transition.json", {**state, "phase": "CONFIRMED"})
     monkeypatch.setattr(time, "sleep", complete)
     assert updates.bootstrap(tmp_path / "app", ["--label-match-user-relay"], role="relay") == 0
-    assert [args for _, args, _ in launched] == [[], ["--label-match-user-relay"]]
+    assert [args for _, args, _ in launched] == [["--label-match-user-relay"]]
     assert all(sha == NEW and settings["nonce"] == state["nonce"] for sha, _, settings in launched)
 
 
@@ -522,7 +524,7 @@ def test_ready_reads_existing_ledger_and_queue_without_repair(monkeypatch, tmp_p
     elif queue_state == "corrupt":
         queue.write_bytes(b"original corrupt evidence")
     before = queue.read_bytes() if queue.exists() else None
-    state = trial()
+    state = {**trial(), "trial_pid": updates.os.getpid()}
     monkeypatch.setattr(updates, "trial_context", lambda _root: (tmp_path, {"staging_root": str(tmp_path)}, state))
     monkeypatch.setattr(updates, "ordinary_user_context", lambda *_args: True)
     monkeypatch.setattr(current_user_onboarding, "resolve_current_user_onboarding_paths", lambda _root: paths)
@@ -599,7 +601,7 @@ def test_unreadable_unfinished_state_cannot_publish_ready_or_change_evidence(mon
         with sqlite3.connect(database) as c:c.execute("CREATE TABLE preserved(value TEXT)")
     unfinished=tmp_path/"operator/worker_current_set_state_packaging.json";unfinished.parent.mkdir()
     original=b'original unreadable failure evidence';unfinished.write_bytes(original)
-    state=trial()
+    state = {**trial(), "trial_pid": updates.os.getpid()}
     monkeypatch.setattr(updates,"trial_context",lambda _root:(tmp_path,{"staging_root":str(tmp_path)},state))
     monkeypatch.setattr(updates,"ordinary_user_context",lambda *_args:True)
     monkeypatch.setattr(current_user_onboarding,"resolve_current_user_onboarding_paths",lambda _root:paths)
@@ -613,6 +615,8 @@ def test_unreadable_unfinished_state_cannot_publish_ready_or_change_evidence(mon
 def test_bootstrap_trial_relay_uses_verified_user_launch_and_bound_nonce(monkeypatch,tmp_path):
     from types import SimpleNamespace
     bundle=tmp_path/"versions"/NEW
+    (bundle / "app").mkdir(parents=True)
+    (bundle / "app/label_match_relay_entry.py").write_text("", encoding="utf-8")
     calls=[]
     monkeypatch.setattr(updates,"version_bundle",lambda _root,_sha:bundle)
     monkeypatch.setattr(updates,"version_manifest",lambda _root:{"source_commit":NEW})

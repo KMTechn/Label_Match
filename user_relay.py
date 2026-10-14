@@ -622,7 +622,7 @@ def _existing_user_relay_owner(
         if (row.get("observable") is not True or row.get("sha") != active["sha"]
                 or row.get("sid") != policy["operator_sid"] or row.get("role") != "relay"
                 or row.get("ordinary_user") is not True
-                or _utc(row.get("created_at")) > _utc(status.get("updated_at"))):
+                or _utc(row.get("created_at")).replace(microsecond=0) > _utc(status.get("updated_at")).replace(microsecond=0)):
             return None
         if state.get("phase") in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
             if status.get("update_nonce") != state.get("nonce") or not process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="relay"):

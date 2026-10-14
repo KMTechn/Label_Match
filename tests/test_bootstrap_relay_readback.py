@@ -22,7 +22,7 @@ def relay_bootstrap(monkeypatch, tmp_path):
     state_root = tmp_path / "user-state"
     state_root.mkdir()
     sha = "1" * 40
-    version = tmp_path / "versions" / sha
+    version = updates.version_bundle(control, sha)
     status = {}
     records = {"active.json": {"sha": sha}, "transition.json": {
         "schema": updates.SCHEMA, "phase": "DEFERRED", "deferred_at": user_relay._now(),
@@ -34,7 +34,7 @@ def relay_bootstrap(monkeypatch, tmp_path):
         "integrity_rid": 8192, "session_id": 2,
     })
     monkeypatch.setattr(updates, "read_json", lambda path: records[path.name])
-    monkeypatch.setattr(updates, "optional_record", lambda path: records.get(path.name))
+    monkeypatch.setattr(updates, "optional_record", lambda path: dict(status) if path.name == user_relay.user_relay_status_path(state_root).name else records.get(path.name))
     monkeypatch.setattr(updates, "ordinary_user_context", lambda *_: True)
     monkeypatch.setattr(updates, "update_lock", lambda *a, **k: nullcontext())
     monkeypatch.setattr(updates, "prepared_pending", lambda *a: False)
@@ -53,8 +53,9 @@ def relay_bootstrap(monkeypatch, tmp_path):
         status.update(status="RUNNING", worker_id=user_relay.LABEL_MATCH_WORKER_ID,
                       process_id=77, app_root=str(current), code_root=str(version),
                       direct_sync_root=str(state_root), updated_at=user_relay._now())
-        rows.append(dict(pid=77, observable=True, sha=sha, sid="operator", role="relay",
-                         ordinary_user=True, created_at=user_relay._now()))
+        rows.append(dict(pid=77, observable=True, sha=sha, sid=policy["operator_sid"], role="relay",
+                         ordinary_user=True, created_at=updates.now_utc()))
+        status.update(source_commit=selected, ordinary_user=True, sid=policy["operator_sid"])
         status["updated_at"] = user_relay._now()
         return 77
     monkeypatch.setattr(updates, "launch_version", launch)

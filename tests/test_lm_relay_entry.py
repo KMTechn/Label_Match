@@ -84,6 +84,8 @@ def test_source_relay_command_names_the_headless_entry():
 
 
 def test_update_version_launch_preserves_relay_and_gui_entry_boundaries(tmp_path, monkeypatch):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app/label_match_relay_entry.py").write_text("", encoding="utf-8")
     commands = []
     monkeypatch.setattr(auto_update, "version_bundle", lambda *_: tmp_path)
     monkeypatch.setattr(auto_update, "version_manifest", lambda *_: {"source_commit": "a" * 40})
