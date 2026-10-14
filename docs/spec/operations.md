@@ -1,8 +1,10 @@
 # Label_Match 운영·복구·검증
 
-v2.0.100부터 인수 없이 시작하면 새 화면(셸 v3.16)을 엽니다. 비상 시작은 `--ui tk` 또는 `--old-screen`이며 그 실행에만 적용됩니다. `--new-screen`·`--ui web`은 새 화면과 같은 뜻이고, 모르는 `--ui` 값은 기본 새 화면을 사용합니다. 셸 가져오기·자료 폴더·WebView2 준비 등 창 생성 전 실패는 같은 프로세스의 Tk로 이어집니다. 시작 임대와 처리 층을 하나로 유지하며 고정 SHELL_* 원인 코드 한 줄을 기록합니다. 창 생성 뒤 화면 전환(⑭)은 제외합니다(관리자 10/14 05:00·08:51). 시작 확인·업데이트·한 개만·설치·자료 거절은 기존 순서를 따릅니다.
+v2.0.101부터 인수 없이 시작하면 새 화면(셸 v3.16)을 엽니다. 비상 시작은 `--ui tk` 또는 `--old-screen`이며 그 실행에만 적용됩니다. `--new-screen`·`--ui web`은 새 화면과 같은 뜻이고, 모르는 `--ui` 값은 기본 새 화면을 사용합니다. 셸 가져오기·자료 폴더·WebView2 준비 등 창 생성 전 실패는 같은 프로세스의 Tk로 이어집니다. 시작 임대와 처리 층을 하나로 유지하며 고정 SHELL_* 원인 코드 한 줄을 기록합니다. 창 생성 뒤 화면 전환(⑭)은 제외합니다(관리자 10/14 05:00·08:51). 시작 확인·업데이트·한 개만·설치·자료 거절은 기존 순서를 따릅니다.
 
-v2.0.100 조립 빌더는 기존 호스트 Python312와 명시된 검사 빌더 venv의 site-packages를 분포별로 함께 사용한다(기존 분포 판·native 바이트 고정, 내려받기 없음). 패킷은 shell/와 pywebview/WebView2 의존성을 포함하며 manifest에 셸 v3.16·READY SHA를 기록한다. 끄기 추적은 해당 작업자의 Label_Match/screen-shell/webview2 UDF만 셈한다. 강제 닫기는 주인 스레드가 게시한 앱의 save_current_set_on_force_exit를 호출한다. 준비 상한·검증된 내구 스냅숏을 사용하며 디스크 정지의 전체 상한은 셸의 2초 join이 맡는다.
+사용자 startup-trace는 LOCALAPPDATA·TEMP에만 쓰며 기계 공유 ProgramData 뿌리를 만들지 않는다.
+
+v2.0.101 조립 빌더는 기존 호스트 Python312와 명시된 검사 빌더 venv의 site-packages를 분포별로 함께 사용한다(기존 분포 판·native 바이트 고정, 내려받기 없음). 패킷은 shell/와 pywebview/WebView2 의존성을 포함하며 manifest에 셸 v3.16·READY SHA를 기록한다. 끄기 추적은 해당 작업자의 Label_Match/screen-shell/webview2 UDF만 셈한다. 강제 닫기는 주인 스레드가 게시한 앱의 save_current_set_on_force_exit를 호출한다. 준비 상한·검증된 내구 스냅숏을 사용하며 디스크 정지의 전체 상한은 셸의 2초 join이 맡는다.
 
 새 화면 이음 가지의 셸 사본은 `shell/SHELL-READY.json` v3.16의 앱용 19파일과 바이트가 같으며, Tk 비교용 `tk_ab.py`는 앱 사본에 넣지 않는다. 새 화면 입구는 기존 시작 확인과 셸 import·WebView2 준비 뒤, 첫 프로필 폴더 쓰기 전에 `_prepare_screen`에서 셸 쓰기 담장을 설치하고 `run_app`에도 같은 담장을 전달한다([계약](contracts.md#new-screen-shell-write-guard)). 선언 생성기의 고정 READY 핀과 실행 스캐너의 후보 자기 일관 검사를 구분한다. 창 X의 늦은 답은 같은 창의 띠로 기다린다. 열린 셸의 events 진단 손실·처리 층 journal 실패는 화면과 다음 스캔을 멈추지 않는다. 창 생성 전 일반 준비 실패는 원인 SHELL_* 한 줄과 함께 같은 프로세스·시작 임대 안에서 Tk로 이어지며, 이미 숨김 처리 층이 있으면 그대로 재사용한다. 준비 때 writer 거절과 창 생성 뒤 오류는 다시 던지고 Tk로 우회하지 않는다.
 
