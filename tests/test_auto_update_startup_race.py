@@ -209,7 +209,10 @@ def test_transition_same_meaning_rewrite_during_onboarding_passes(managed_onboar
         transition.write_text(json.dumps(updates.read_json(transition), indent=4) + '\n')
         return {'status': 'ALIVE', 'pid': 77}
     report = _onboard(paths, environment, relay_launcher=launcher)
-    assert report['status'] == 'READY' and len(helpers) == 3
+    assert report['status'] == 'READY'
+    assert [row['mode'] for row in helpers] == ['Verify', 'ObserveLifecycle']
+    assert all(row['admission_depth'] == 0 for row in helpers)
+    assert all(row['parent_admission_depth'] == 0 for row in helpers)
 
 
 def test_startup_onboarding_rereads_changed_observation_under_update_lock(managed_onboarding, monkeypatch):

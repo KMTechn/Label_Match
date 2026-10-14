@@ -264,6 +264,8 @@ w9scanflow 비교(옛 앱 대비 스캐너만으로 일하기)의 포장 항목�
 
 ## W9 · 기존 시험 실패 감사
 
+닫기 실패의 Tk scheduler double, onboarding의 Verify→ObserveLifecycle 순서·허가 밖 실행, 실제 relay 자식의 DEFERRED/WRITER_GATE_TIMEOUT·업무 전송 0, 신원 cache의 매 호출 무결성 확인을 현행 계약으로 단언한다. 실제 자식 시험은 변경 없는 committed HEAD에서 실행한다.
+
 최소 mutex 권한의 소스 회귀와 정확한 전이 pin을 확인한 뒤에도 새 packet의 상승 설치→일반 제거·재등록과 실제 다른 계정의 거부 보존은 랩 수용으로 남는다.
 
 기존 전체 suite의 21 FAIL은 제품 변경 없이 fixture/API 16개와 저장 루트 환경 의존 5개로 교정했고 첫 전체 3065 PASS/5 SKIP를 확인했다([분류·현재 검증](operations.md#test-audit-w9)). 마지막 시험 변경 뒤 전체 3회 반복의 결과는 해당 RESULT로 결속하며 실제 GUI 5개·VM·서버·운영 lifecycle 수용은 별도로 남는다.

@@ -622,13 +622,13 @@ def test_parent_writer_admission_blocks_the_same_real_relay_child(
                 check=False,
             )
 
-    assert blocked.returncode != 0, blocked.stdout
+    assert blocked.returncode == 0
     assert not server.source_file_requests
     status_path = direct_sync_root / "status" / "direct_sync_relay_status.json"
-    if status_path.is_file():
-        status = json.loads(status_path.read_text(encoding="utf-8"))
-        assert status.get("error_code") == "hosted_relay_unhandled_exception"
-        assert "WriterFencedError" in str(status.get("error_message") or "")
+    assert status_path.is_file()
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status['status'] == 'DEFERRED'
+    assert status['reason_code'] == 'WRITER_GATE_TIMEOUT'
 
 
 def test_run_session_direct_sync_once_posts_packaging_csv_to_loopback_https(

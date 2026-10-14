@@ -2755,6 +2755,8 @@ def test_save_current_state_uses_atomic_replace_and_preserves_existing_file(tmp_
 def test_on_closing_replaces_closed_data_manager_after_close_failure(monkeypatch):
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
+    scheduled = []
+    app.after = lambda ms, callback: scheduled.append((ms, callback)) or "test-stop-poll"
     failed_manager = _RecoverableCloseFailingDataManager()
     replacement_manager = _FakeLoggingDataManager()
     app.initialized_successfully = True
@@ -2778,11 +2780,14 @@ def test_on_closing_replaces_closed_data_manager_after_close_failure(monkeypatch
     assert outbox_restarts == [True]
     app.data_manager.log_event("AFTER_FAILED_CLOSE", {})
     assert app.data_manager.events[-1][0] == "AFTER_FAILED_CLOSE"
+    assert scheduled == [(500, app._poll_app_stop_request)]
 
 
 def test_on_closing_does_not_destroy_when_log_close_fails(monkeypatch):
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
+    scheduled = []
+    app.after = lambda ms, callback: scheduled.append((ms, callback)) or "test-stop-poll"
     app.initialized_successfully = True
     app.is_running_simulation = False
     app.is_generating_test_logs = False
@@ -2798,6 +2803,7 @@ def test_on_closing_does_not_destroy_when_log_close_fails(monkeypatch):
     module.Label_Match.on_closing(app)
 
     assert errors
+    assert scheduled == [(500, app._poll_app_stop_request)]
 
 
 def test_on_closing_starts_async_app_close_sync_after_log_close(monkeypatch):

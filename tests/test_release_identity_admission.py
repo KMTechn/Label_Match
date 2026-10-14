@@ -237,12 +237,12 @@ def test_identity_copy_and_entrypoint_scoped_cache(packet, verification_calls, m
     first["build_id"] = "b" * 40
     alias = packet.parent / "missing" / ".." / packet.name
     assert generation.release_identity(alias)["build_id"] == "a" * 40
-    assert verification_calls == [False]
+    assert verification_calls == [False, False]
     other = packet.with_name("other-packet")
     shutil.copytree(packet, other)
     _write_bootstrap_inventory_record(other)
     assert generation.release_identity(other)["build_id"] == "a" * 40
-    assert verification_calls == [False, False]
+    assert verification_calls == [False, False, False]
     monkeypatch.setattr(sys, "argv", [str(packet / "app" / "relay.py")])
     assert generation.release_identity(packet)["build_id"] == "a" * 40
-    assert verification_calls == [False, False, False]
+    assert verification_calls == [False, False, False, False]
