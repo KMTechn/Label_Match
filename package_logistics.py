@@ -2427,6 +2427,16 @@ class PackageLogisticsClient:
                 return None
             raise
 
+    def get_package_recovery(self, expected: Mapping[str, Any]) -> dict[str, Any]:
+        """Read only the original cancel receipt's recovery evidence."""
+        scope = str(expected['authority_scope_id'])
+        self._assert_authority(scope, ledger_plane=expected['ledger_plane'],
+                               plane_epoch=expected['plane_epoch'])
+        path = ('/logistics/api/v1/packages/' + quote(scope, safe='') + '/'
+                + quote(expected['package_bundle_id'], safe='')
+                + '/recovery?cancel_receipt_id=' + quote(expected['cancel_receipt_id'], safe=''))
+        return self._data(self._request('GET', path))
+
     def _request(self, method: str, path: str, *, body: bytes | None = None, key: str = ""):
         from startup_send_gate import startup_send_request
         from writer_session_fence import WriterFencedError
