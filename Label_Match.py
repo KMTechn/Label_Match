@@ -5678,7 +5678,7 @@ class Label_Match(tk.Tk):
         if status_label is not None:
             try:
                 status_label.config(
-                    text="처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요.",
+                    text="처리 오류로 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요.",
                     style="Error.TLabel",
                 )
                 status_label.grid()
