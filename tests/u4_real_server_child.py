@@ -83,6 +83,12 @@ def main():
         assert response.status_code == 200
         projection = response.get_json()['data']
         headers = _machine_headers()
+        if mode == 'spill-physical':
+            _other_seed, other_label, _other_resolved = _seed_sealed_label(
+                database, app.test_client(), suffix='spill-physical-other', ordinal=2, unit_count=4)
+            other_response = _resolve_package_source(app.test_client(), other_label)
+            assert other_response.status_code == 200
+            extra['other_evidence'] = other_response.get_json()['data']
     credential = uuid.uuid4().hex
     app.config['LOGISTICS_API_TOKEN'] = credential
     from cryptography import x509

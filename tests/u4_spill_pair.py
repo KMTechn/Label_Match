@@ -6,11 +6,11 @@ import sqlite3
 import pytest
 import Label_Match as lm
 from package_logistics import PackageApiError
-from tests.u4_real_server_pair import local_server, pair, draft_for, cancel_local
+from tests.u4_real_server_pair import local_server, pair, draft_for, cancel_local, central, clock_case
 from tests.test_u4_cancellation_order import queued
 from tests.test_w9scanonly_packaging import packaging, scan, completions
 from tests.test_u4_repack_visibility import business_snapshot
-from package_logistics import PackageOutbox
+from package_logistics import PackageOutbox, PackageCancellationOutbox, PackageOutboxProcessor, PackageCancellationOutboxProcessor
 
 
 def cancelled_source(tmp_path):
@@ -48,46 +48,77 @@ def test_real_foreign_cancelled_member_quarantines_a_different_completed_label(t
             assert observed.get('status')=='OBSERVED_REJECTED'
 
 
-def test_real_refused_cancel_member_is_blocked_before_other_label_and_other_products_ack(tmp_path,packaging):
-    with cancelled_source(tmp_path) as server:
-        owner,create,cancel,original,master=pair(tmp_path,server)
+def test_real_refused_cancel_member_is_blocked_before_other_label_and_other_products_ack(tmp_path,central):
+    with local_server(tmp_path,mode='spill-physical') as server:
+        app,dialogs,case,root,_releases=central
+        def bind(evidence):
+            case.group.clear()
+            case.group.update(evidence['phs_work_group'])
+            case.snapshot.clear()
+            case.snapshot.update(lm._label_match_package_source_snapshot(evidence))
+            case.response.clear()
+            case.response.update(evidence)
+            case.app.package_logistics_client = server.client
+            app.package_logistics_client = server.client
+            for name, method in tuple(app.__dict__.items()):
+                if getattr(method, '__self__', None) is case.app and hasattr(method, '__func__'):
+                    setattr(app, name, method.__func__.__get__(app, type(app)))
+            item = case.group['item_id']
+            app.items_data[item] = {'name': item, 'spec': item}
+        def idle(owner):
+            return not owner._ui_lane_is_busy() and (not owner.is_blinking) and (not owner.__dict__.get('_phs_label_scan_lookup_in_progress')) and (not owner.__dict__.get('_phs2_background_pending'))
+        def settled_scan(value):
+            app.run_tests=False
+            root.run_until(lambda: idle(app),timeout=5)
+            scan(app,value)
+            root.run_until(lambda: idle(app),timeout=5)
+        bind(server.evidence)
+        app.package_cancellation_outbox=PackageCancellationOutbox(app.package_outbox.db_path)
+        create=PackageOutboxProcessor(app.package_outbox,server.client)
+        cancel=PackageCancellationOutboxProcessor(app.package_cancellation_outbox,server.client)
+        master=case.group['scan_payload']
+        held_values=[m['normalized_barcode'] for m in case.snapshot['work_group_source']['members']]
+        settled_scan(master)
+        for value in held_values: settled_scan(value)
+        original_set=next(iter(app.set_details_map))
+        assert create.drain()['acked']==1
+        assert app.package_outbox.get_by_set_id(original_set)['status']=='ACKED'
+        source_ids=server.evidence['work_group_source']['source_transfer_bundle_ids']
         with sqlite3.connect(server.data['database']) as conn:
-            conn.execute('UPDATE logistics_bundles SET entity_version=entity_version+1 WHERE bundle_id=?',
-                         (server.source['bundle_id'],))
-        cancel_local(owner,'tk')
+            for source_id in source_ids:
+                conn.execute('UPDATE logistics_bundles SET entity_version=entity_version+1 WHERE bundle_id=?',(source_id,))
+        app.run_tests=True
+        app._cancel_completed_tray_by_label(master)
         assert cancel.drain()['acked']==1
-        receipt=json.loads(owner.package_cancellation_outbox.get_by_set_id(original.set_id)[0]['receipt_json'])
+        receipt=json.loads(app.package_cancellation_outbox.get_by_set_id(original_set)[0]['receipt_json'])
         assert receipt['data']['reopen'] is False
-        app,dialogs=packaging
-        app.package_outbox=owner.package_outbox
-        other=server.data['other_projection']
-        server.source=copy.deepcopy(other)
-        item=draft_for(server,'guarded-other-label',other['active_seal']['seal_qr_payload']).item_code
-        app.items_data[item]={'item_name':item,'spec':item}
-        scan(app,item)
+        bind(server.data['other_evidence'])
+        other_master=case.group['scan_payload']
+        values=[m['normalized_barcode'] for m in case.snapshot['work_group_source']['members']]
+        assert len(values)==4 and not set(values).intersection(held_values)
+        settled_scan(other_master)
+        assert app.current_set_info['raw']==[other_master]
         before=copy.deepcopy(app.current_set_info)
         business=business_snapshot(app.package_outbox)
         sent=list(server.sent)
         reads=server.source_reads
         for _ in range(2):
-            scan(app,original.sample_barcodes[0])
+            settled_scan(held_values[0])
             assert app._phs_label_guidance_notice.title=='이 제품은 관리자 회수 대기 중입니다'
             assert app._phs_label_guidance_notice.message=='따로 두고 현장 관리자에게 알리세요'
             assert app.current_set_info==before and business_snapshot(app.package_outbox)==business
             assert server.sent==sent and server.source_reads==reads
         app.package_outbox=PackageOutbox(app.package_outbox.db_path)
-        scan(app,original.sample_barcodes[0])
+        settled_scan(held_values[-1])
         assert app.current_set_info==before and business_snapshot(app.package_outbox)==business
-        values=[member['normalized_barcode'] for member in other['members']]
-        for value in values:
-            scan(app,value)
+        for value in values: settled_scan(value)
         rows=completions(app)
-        assert len(rows)==1 and rows[0][1]["scanned_product_barcodes"]==[item,*values]
-        assert app.durable_commits[-1]["result"]==app.Results.PASS and dialogs==[]
-        good=draft_for(server,'guarded-other-label',other['active_seal']['seal_qr_payload'])
-        good=replace(good,sample_barcodes=tuple(rows[0][1]["scanned_product_barcodes"][1:4]))
-        queued(owner.package_outbox,good)
+        assert len(rows)==2 and rows[-1][1]["scanned_product_barcodes"]==[other_master,*values]
+        assert app.durable_commits[-1]['result']==app.Results.PASS and dialogs==[]
+        other_set=next(iter(app.set_details_map))
+        assert other_set!=original_set
         assert create.drain()=={'acked':1,'retry':0,'conflict':0}
-        assert owner.package_outbox.get_by_set_id(good.set_id)['status']=='ACKED'
-        assert not owner.package_outbox.list_conflicts()
-        assert server.sent==sent+[('CREATE_PACKAGE',good.package_bundle_id)]
+        completed=app.package_outbox.get_by_set_id(other_set)
+        assert completed['status']=='ACKED' and completed['local_completion_committed']==1
+        assert not app.package_outbox.list_conflicts()
+        assert server.sent==sent+[('CREATE_PACKAGE',json.loads(completed['draft_json'])['package_bundle_id'])]
