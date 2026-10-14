@@ -34,7 +34,8 @@ def main():
     profile = _explicit_development_catalog_profile.__wrapped__(patch, None, state)
     if hasattr(profile, '__next__'):
         next(profile)
-    if mode == 'legacy':
+    extra = {}
+    if mode in ('legacy','spill'):
         from test_logistics_api_v1 import _app, _headers, SCOPE
         from test_sealed_transfer_replacement import _seed
         app, database = _app(state, opening_qty=30)
@@ -47,6 +48,23 @@ def main():
         projection = projection_response.get_json()['data']
         label = None
         headers = _headers(program='Label_Match')
+        if mode == 'spill':
+            from test_sealed_transfer_replacement import _complete_phs, _post, membership_hash
+            other_id, other_version, other_members = _complete_phs(
+                app.test_client(), session_id='spill-other-session', count=4,
+                label='spill-other-label', start_index=21)
+            other = app.test_client().get('/logistics/api/v1/bundles/'+SCOPE+'/'+other_id,
+                                          headers=_headers()).get_json()['data']
+            sealed = _post(app.test_client(), '/logistics/api/v1/transfers/seal',
+                'SEAL_TRANSFER_BUNDLE', 'spill-other-seal', {'bundle:'+other_id:other_version},
+                {'source_bundle_id':other_id,'transfer_bundle_id':'spill-other-transfer',
+                 'external_label':'spill-other-transfer-label','member_ids':other_members,
+                 'membership_hash':membership_hash(other_members),
+                 'scanned_barcodes':[row['normalized_barcode'] for row in other['members']]})
+            assert sealed.status_code in (200,201)
+            extra['other_projection'] = app.test_client().get(
+                '/logistics/api/v1/bundles/'+SCOPE+'/spill-other-transfer',
+                headers=_headers()).get_json()['data']
     else:
         from test_phs_label_exchange import ledger
         from test_phs_label_overlay_api import _app, _machine_headers
@@ -90,6 +108,7 @@ def main():
     metadata = {'port': server.server_port, 'database': str(database), 'projection': projection,
                 'seed': seed, 'label': label, 'headers': headers, 'credential': credential,
                 'tls_ca_bundle_path': str(certificate_path)}
+    metadata.update(extra)
     ready.write_text(json.dumps(metadata), encoding='utf-8')
     server.serve_forever()
 
