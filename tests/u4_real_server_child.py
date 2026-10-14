@@ -57,7 +57,8 @@ def main():
                                           headers=_headers()).get_json()['data']
             sealed = _post(app.test_client(), '/logistics/api/v1/transfers/seal',
                 'SEAL_TRANSFER_BUNDLE', 'spill-other-seal', {'bundle:'+other_id:other_version},
-                {'source_bundle_id':other_id,'transfer_bundle_id':'spill-other-transfer',
+                {'item_id':other.get('item_id',other['item_code']),
+                 'source_bundle_id':other_id,'transfer_bundle_id':'spill-other-transfer',
                  'external_label':'spill-other-transfer-label','member_ids':other_members,
                  'membership_hash':membership_hash(other_members),
                  'scanned_barcodes':[row['normalized_barcode'] for row in other['members']]})
