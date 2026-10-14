@@ -472,9 +472,8 @@ class LabelMatchScreenProcessor:
 
     def _run_scan_cancel(self, rows, callback):
         app = self.app
-        before = len(self._dialogs)
         try:
-            callback()
+            completed = callback()
         except Exception:
             deleted = sum(not app.history_tree.exists(row) for row in rows)
             self._changed("scan_cancel")
@@ -485,9 +484,10 @@ class LabelMatchScreenProcessor:
         if pending is not None:
             self._scan_cancel_confirmation = (pending, tuple(rows), self._scan_cancel_snapshot(rows))
             return self._scan_cancel_reply(True, "SCAN_CANCEL_CONFIRMATION_REQUIRED", deleted)
-        if any(row["kind"] == "bad" for row in self._dialogs[before:]) or 0 < deleted < len(rows):
-            return self._scan_cancel_reply(False, "SCAN_CANCEL_FAILED", deleted)
-        return self._scan_cancel_reply(bool(deleted), "SCAN_CANCEL_APPLIED" if deleted else "SCAN_CANCEL_NOT_APPLIED", deleted)
+        if completed is not True or deleted != len(rows):
+            failed = bool(deleted) or completed is not None
+            return self._scan_cancel_reply(False, "SCAN_CANCEL_FAILED" if failed else "SCAN_CANCEL_NOT_APPLIED", deleted)
+        return self._scan_cancel_reply(True, "SCAN_CANCEL_APPLIED", deleted)
 
     def _command_scan_cancel(self, args):
         rows = args.get("rows")

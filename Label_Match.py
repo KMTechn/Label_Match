@@ -19249,20 +19249,22 @@ class Label_Match(tk.Tk):
             messagebox.showerror("삭제 실패", message, parent=self)
 
     def _delete_selected_row(self, _confirmed_selection=None):
+        # None means waiting for confirmation; bool reports the actual business
+        # completion, independently of bounded UI dialog history.
         if self._app_close_blocks_local_action():
-            return
+            return False
         if self._block_active_history_load_action("기록 삭제"):
-            return
+            return False
         if not self.history_view_updates_active_state:
             if not self.run_tests:
                 messagebox.showwarning("조회 모드", "과거 날짜 조회 중에는 기록 삭제를 할 수 없습니다.\n'오늘' 기록으로 돌아온 뒤 다시 시도하세요.")
-            return
+            return False
 
         selected_iids = self.history_tree.selection()
         if not selected_iids:
             if not self.run_tests:
                 messagebox.showwarning("선택 필요", "삭제할 기록을 목록에서 선택하세요.")
-            return
+            return False
 
         selection_snapshot = (
             tuple(selected_iids),
@@ -19274,10 +19276,10 @@ class Label_Match(tk.Tk):
                 f"선택된 {len(selected_iids)}개 기록을 삭제(무효화)합니다. 이 작업은 되돌릴 수 없습니다.",
                 "삭제", lambda: self._delete_selected_row(selection_snapshot),
             )
-            return
+            return None
         if _confirmed_selection is not None and _confirmed_selection != selection_snapshot:
             self._show_scanner_notice("선택 다시 필요", "선택한 기록이 바뀌었습니다. 다시 선택하여 확인하세요.")
-            return
+            return False
 
         deleted_count = 0
         central_pending_count = 0
@@ -19359,12 +19361,12 @@ class Label_Match(tk.Tk):
             self._show_delete_failure(failure)
             if self.__dict__.get("run_tests", False):
                 raise failure
-            return
+            return False
 
         if deleted_count == 0:
             if not self.run_tests:
                 messagebox.showwarning("선택 필요", "삭제할 수 있는 기록이 없습니다.")
-            return
+            return False
 
         if not self.run_tests:
             if central_conflict_count:
@@ -19401,6 +19403,7 @@ class Label_Match(tk.Tk):
                 self.update_big_display(
                     f"{deleted_count}개의 기록이 삭제 처리되었습니다.", "green"
                 )
+        return central_conflict_count == 0
 
     def _rebuild_global_scanned_set_from_details(self):
         rebuilt = set()

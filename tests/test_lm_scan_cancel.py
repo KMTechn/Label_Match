@@ -166,6 +166,64 @@ def test_scan_cancel_durable_outbox_failure_preserves_row_and_reports_failure(tm
         processor.uninstall()
 
 
+def test_rebuild_failure_with_two_existing_dialogs_never_reports_success(tmp_path, monkeypatch):
+    app = app_for_delete(tmp_path, central=False)
+    processor = LabelMatchScreenProcessor(app, module=lm)
+    native = mock.Mock(side_effect=AssertionError('native dialog created'))
+    monkeypatch.setattr(lm.tk, 'Toplevel', native)
+    processor._dialog('warn', '기존 안내', '첫 안내')
+    processor._dialog('warn', '기존 안내', '둘째 안내')
+    failure = OSError('summary rebuild failed')
+    monkeypatch.setattr(app, '_update_summary_tree', mock.Mock(side_effect=failure))
+    try:
+        requested = processor.command('scan_cancel', {'rows': ['SET-1']})
+        assert requested['code'] == 'SCAN_CANCEL_CONFIRMATION_REQUIRED'
+        assert len(processor._dialogs) == 2
+        reply = processor.command('approve', {'id': _approval_id(_pointer_pending(app))})
+        assert reply['ok'] is False and reply['code'] == 'SCAN_CANCEL_FAILED'
+        assert reply['deleted'] == 1 and reply['result']['kind'] == 'warn'
+        assert len(processor._dialogs) == 2
+        assert any(row['kind'] == 'bad' for row in processor._dialogs)
+        assert not app.history_tree.exists('SET-1')
+        assert len(app.data_manager.events) == 1 and app.data_manager.flushed
+        native.assert_not_called()
+    finally:
+        processor.uninstall()
+
+
+@pytest.mark.parametrize('value', [None, False, 1, '업무 오류'])
+def test_removed_row_without_explicit_business_success_is_failure(tmp_path, value):
+    app = app_for_delete(tmp_path, central=False)
+    processor = LabelMatchScreenProcessor(app, module=lm)
+    def callback():
+        app.history_tree.delete('SET-1')
+        return value
+    try:
+        reply = processor._run_scan_cancel(['SET-1'], callback)
+        assert reply['ok'] is False and reply['code'] == 'SCAN_CANCEL_FAILED'
+        assert reply['deleted'] == 1 and reply['result']['kind'] == 'warn'
+    finally:
+        processor.uninstall()
+
+
+def test_business_central_conflict_preserves_warning_and_reports_failure(tmp_path, monkeypatch):
+    app = app_for_delete(tmp_path)
+    processor = LabelMatchScreenProcessor(app, module=lm)
+    original = app._queue_authoritative_package_cancellation
+    def conflict(**kwargs):
+        return {**original(**kwargs), 'status': 'CONFLICT'}
+    monkeypatch.setattr(app, '_queue_authoritative_package_cancellation', conflict)
+    try:
+        requested = processor.command('scan_cancel', {'rows': ['SET-1']})
+        reply = processor.command('approve', {'id': requested['state']['approval']['id']})
+        assert reply['ok'] is False and reply['code'] == 'SCAN_CANCEL_FAILED'
+        assert reply['deleted'] == 1 and reply['result']['kind'] == 'warn'
+        assert any(row['kind'] == 'warn' for row in processor._dialogs)
+        assert len(app.data_manager.events) == 1 and app.data_manager.flushed
+    finally:
+        processor.uninstall()
+
+
 @pytest.mark.parametrize('blocked', ['busy', 'read_only', 'loading'])
 def test_scan_cancel_blocks_mutation_during_processing_or_read_only_view(tmp_path, blocked):
     app = app_for_delete(tmp_path)
