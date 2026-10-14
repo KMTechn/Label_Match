@@ -443,6 +443,7 @@ def _start_gate(monkeypatch, *, catalog):
     calls = []
     screen = types.ModuleType("label_match_screen")
     screen.screen_runner = lambda module: (lambda: calls.append("window") or 0)
+    screen.ScreenUnavailable = type("ScreenUnavailable", (RuntimeError,), {})
     monkeypatch.setitem(sys.modules, "label_match_screen", screen)
     monkeypatch.setitem(Label_Match.LABEL_MATCH_SCREEN_HOST, "requested", True)
     monkeypatch.setattr(Label_Match, "prepare_startup_item_catalog", catalog)
@@ -483,7 +484,7 @@ def test_owner_that_cannot_build_the_app_ends_the_start_wait_without_a_window():
     bridge.attach_owner.assert_not_called()
 
 
-def test_screen_runner_leaves_the_owner_wait_unbounded(monkeypatch):
+def test_screen_runner_leaves_the_owner_wait_unbounded(monkeypatch, tmp_path):
     import inspect
     import label_match_screen
     sys.path.insert(0, str(label_match_screen.SHELL_DIR))
@@ -495,6 +496,8 @@ def test_screen_runner_leaves_the_owner_wait_unbounded(monkeypatch):
     passed = {}
     fake = types.ModuleType("host")
     fake.run_app = lambda *args, **kwargs: passed.update(kwargs) or 0
+    from tests.test_screen_precreation_recovery import shell_runtime
+    shell_runtime.__wrapped__(monkeypatch, tmp_path)
     monkeypatch.setitem(sys.modules, "host", fake)
     assert label_match_screen.screen_runner(Label_Match)() == 0
     assert "owner_timeout" not in passed  # 셸 v3.12: 느린 PC 에서도 앱을 끝까지 만든 뒤 창(daemon 주인을 끊지 않음)

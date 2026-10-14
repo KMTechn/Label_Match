@@ -24542,8 +24542,18 @@ def _run_label_match_application(*, relay_reuse_report=None, verified_hold=None)
     if LABEL_MATCH_SCREEN_HOST["requested"] and not LABEL_MATCH_SCREEN_HOST["active"]:
         LABEL_MATCH_SCREEN_HOST["catalog_unconfirmed"] = catalog_unconfirmed
         LABEL_MATCH_SCREEN_HOST["relay_reuse_report"] = relay_reuse_report
-        from label_match_screen import screen_runner
-        return screen_runner(sys.modules[__name__])()
+        try:
+            from label_match_screen import ScreenUnavailable, screen_runner
+        except ImportError:
+            _label_match_startup_trace("SHELL_IMPORT_FAILED")
+        else:
+            try:
+                return screen_runner(sys.modules[__name__])()
+            except ScreenUnavailable as error:
+                _label_match_startup_trace(error.code)
+        # Preparation failed before creating a processing layer or shell window.
+        # Continue this guarded body; never reacquire its lease or startup hold.
+        LABEL_MATCH_SCREEN_HOST.update(requested=False, active=False, run=None)
     try:
         from startup_observation import observe_startup
         if not window_first:

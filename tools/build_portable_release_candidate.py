@@ -104,6 +104,7 @@ APP_NATIVE_UNSIGNED = frozenset({
 })
 
 THIRD_PARTY_EXCLUDED_PATHS = frozenset({
+    "qrcode/tests",
     "clr_loader/ffi/dlls/x86/ClrLoader.dll",
     "webview/lib/WebBrowserInterop.x64.dll",
     "webview/lib/WebBrowserInterop.x86.dll",
@@ -270,7 +271,7 @@ def _runtime_source(python_home: Path, runtime: Path) -> None:
         ignored = _ignore(directory, names)
         if Path(directory).resolve() == lib_source.resolve():
             ignored.update(
-                {"site-packages", "ensurepip", "idlelib", "test", "turtledemo"}
+                {"site-packages", "ensurepip", "idlelib", "test", "turtledemo", "venv"}
             )
         return ignored
 
