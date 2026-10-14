@@ -2029,12 +2029,18 @@ if ($Uninstall.IsPresent) {
         if (-not $testOverride) { Assert-ProtectedCodeAncestors $application }
         $folder = $null
         if (-not $testOverride) { $scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\') }
+        $emergencyRemovalFailure = $null
+        try { Remove-LabelEmergencyShortcut $installRootFull }
+        catch {
+            $emergencyRemovalFailure = $_
+            Write-Warning '포장 비상 바로 가기를 지우지 못했습니다. 나머지 제거를 계속합니다.'
+        }
         if ($WorkerShortcutRecordPath) {
             Invoke-LabelWorkerShortcutOperation $installRootFull 'Restore' $WorkerShortcutRecordPath `
                 $VerifiedWorkerShortcutHelperPath $ExpectedWorkerShortcutHelperSha256
         }
-        Remove-LabelEmergencyShortcut $installRootFull
         $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder
+        if ($null -ne $emergencyRemovalFailure) { throw $emergencyRemovalFailure }
         'uninstall_status=PASS_CODE_REMOVED_STATE_PRESERVED'
         'application_root_status=RETAINED_FOR_EVIDENCE_AND_RETAINED_ITEMS'
         if ($testOverride) { 'system_task_status=NOT_TESTED' } else { 'system_task_status=ABSENT' }

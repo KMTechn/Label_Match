@@ -9,6 +9,18 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize('engine', ['powershell', 'pwsh'])
+def test_emergency_link_failure_does_not_block_other_uninstall_stages(tmp_path, engine):
+    executable = shutil.which(engine)
+    assert executable is not None
+    child = subprocess.run([executable, '-NoProfile', '-NonInteractive',
+        '-ExecutionPolicy', 'Bypass', '-File', str(ROOT / 'tests/lm_emergency_removal_failure.ps1'),
+        '-HostRoot', str(ROOT), '-FixtureRoot', str(tmp_path)],
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert child.returncode == 0
+    assert child.stdout.strip() == b'PASS' and not child.stderr
+
+
 @pytest.mark.parametrize('engine', ['powershell.exe', 'pwsh.exe'])
 @pytest.mark.parametrize('scenario', ['owned', 'foreign', 'other_file', 'owned_and_foreign', 'corrupt'])
 def test_emergency_link_readback_update_removal_and_foreign_preservation(tmp_path, engine, scenario):
