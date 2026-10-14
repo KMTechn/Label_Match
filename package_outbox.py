@@ -81,6 +81,39 @@ def _record_receipt_recheck(conn, kind, row, receipt, now):
          kind, row["idempotency_key"], row["command_json"]),
     )
 
+
+def _record_completion_predecessor(conn: sqlite3.Connection, key: str, order: int) -> None:
+    """Freeze the immediately preceding completed package in this transaction."""
+    previous = conn.execute(
+        """WITH packages AS (
+               SELECT *,CASE WHEN json_valid(draft_json) THEN draft_json ELSE '{}' END AS source_json
+               FROM package_command_outbox)
+           SELECT previous.idempotency_key
+           FROM packages AS current
+           JOIN packages AS previous
+             ON previous.local_completion_committed=1
+            AND previous.local_completion_order<?
+           WHERE current.idempotency_key=? AND (
+               NULLIF(json_extract(previous.source_json,'$.source_input_tag_id'),'')
+               =NULLIF(json_extract(current.source_json,'$.source_input_tag_id'),'')
+               OR NULLIF(json_extract(previous.source_json,'$.source_bundle_id'),'')
+                  =NULLIF(json_extract(current.source_json,'$.source_bundle_id'),'')
+               OR NULLIF(previous.resolved_source_bundle_id,'')
+                  =NULLIF(json_extract(current.source_json,'$.source_bundle_id'),'')
+               OR NULLIF(json_extract(previous.source_json,'$.source_bundle_id'),'')
+                  =NULLIF(current.resolved_source_bundle_id,'')
+               OR NULLIF(previous.resolved_source_bundle_id,'')
+                  =NULLIF(current.resolved_source_bundle_id,''))
+           ORDER BY previous.local_completion_order DESC LIMIT 1""",
+        (order, key),
+    ).fetchone()
+    conn.execute(
+        """UPDATE package_command_outbox
+           SET local_completion_order=?,predecessor_package_key=?
+           WHERE idempotency_key=? AND local_completion_order IS NULL""",
+        (order, previous[0] if previous else None, key),
+    )
+
 class PackageOutbox:
     def __init__(
         self,
@@ -514,25 +547,18 @@ class PackageOutbox:
                 """SELECT * FROM package_command_outbox
                      WHERE status='PENDING'
                        AND local_completion_committed=1
-                       AND NOT EXISTS (
+                       AND (predecessor_package_key IS NULL OR (EXISTS (
                            SELECT 1 FROM package_cancellation_outbox AS cancel
-                           JOIN package_command_outbox AS previous
-                             ON previous.idempotency_key=cancel.package_idempotency_key
-                           WHERE previous.idempotency_key<>package_command_outbox.idempotency_key
+                           WHERE cancel.package_idempotency_key=package_command_outbox.predecessor_package_key
+                             AND cancel.status='ACKED')
+                           AND NOT EXISTS (
+                             SELECT 1 FROM package_cancellation_outbox AS cancel
+                             WHERE cancel.package_idempotency_key=package_command_outbox.predecessor_package_key
                              AND (cancel.status<>'ACKED' OR EXISTS (
                                  SELECT 1 FROM package_receipt_rechecks AS recheck
                                  WHERE recheck.outbox_kind='cancel'
                                    AND recheck.idempotency_key=cancel.idempotency_key
-                                   AND recheck.verified_at IS NULL))
-                             AND (
-                                 (NULLIF(json_extract(previous.draft_json,'$.source_input_tag_id'),'')
-                                  =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_input_tag_id'),''))
-                                 OR (NULLIF(json_extract(previous.draft_json,'$.source_bundle_id'),'')
-                                     =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_bundle_id'),''))
-                                 OR (NULLIF(previous.resolved_source_bundle_id,'')
-                                     =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_bundle_id'),''))
-                                 OR (NULLIF(previous.resolved_source_bundle_id,'')
-                                     =NULLIF(package_command_outbox.resolved_source_bundle_id,''))))
+                                   AND recheck.verified_at IS NULL)))))
                        AND NOT EXISTS (SELECT 1 FROM package_receipt_rechecks AS recheck
                            WHERE recheck.outbox_kind='create'
                              AND recheck.idempotency_key=package_command_outbox.idempotency_key
@@ -1448,6 +1474,10 @@ class PackageOutbox:
                     "package local completion intent does not exist"
                 )
             if int(row["local_completion_committed"] or 0) == 0:
+                order = conn.execute(
+                    "SELECT COALESCE(MAX(local_completion_order),0)+1 FROM package_command_outbox"
+                ).fetchone()[0]
+                _record_completion_predecessor(conn, identity, order)
                 conn.execute(
                     """UPDATE package_command_outbox
                           SET local_completion_committed=1,
@@ -1511,20 +1541,13 @@ class PackageOutbox:
         with self._connect() as conn:
             row = conn.execute(
                 """SELECT cancel.receipt_json FROM package_command_outbox
-                   JOIN package_command_outbox AS previous
-                     ON previous.idempotency_key<>package_command_outbox.idempotency_key
                    JOIN package_cancellation_outbox AS cancel
-                     ON cancel.package_idempotency_key=previous.idempotency_key
+                     ON cancel.package_idempotency_key=package_command_outbox.predecessor_package_key
                    WHERE package_command_outbox.set_id=? AND cancel.status='ACKED'
-                     AND (
-                         NULLIF(json_extract(previous.draft_json,'$.source_input_tag_id'),'')
-                         =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_input_tag_id'),'')
-                         OR NULLIF(json_extract(previous.draft_json,'$.source_bundle_id'),'')
-                            =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_bundle_id'),'')
-                         OR NULLIF(previous.resolved_source_bundle_id,'')
-                            =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_bundle_id'),'')
-                         OR NULLIF(previous.resolved_source_bundle_id,'')
-                            =NULLIF(package_command_outbox.resolved_source_bundle_id,''))
+                     AND NOT EXISTS (SELECT 1 FROM package_receipt_rechecks AS recheck
+                         WHERE recheck.outbox_kind='cancel'
+                           AND recheck.idempotency_key=cancel.idempotency_key
+                           AND recheck.verified_at IS NULL)
                    ORDER BY cancel.created_at DESC,cancel.idempotency_key DESC LIMIT 1""",
                 (set_id,),
             ).fetchone()

@@ -52,7 +52,7 @@ from package_validation import (
 from package_outbox_processor import PackageOutboxProcessor as _PackageOutboxProcessor
 from package_outbox import (
     PackageOutbox as _PackageOutbox, _sending_claim_cas, _request_receipt_recheck,
-    _receipt_recheck_cas, _record_receipt_recheck,
+    _receipt_recheck_cas, _record_receipt_recheck, _record_completion_predecessor,
 )
 from package_errors import (
     MAX_RETRY_AFTER_SECONDS,
@@ -82,7 +82,7 @@ from package_command_draft import (
 )
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v11"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v12"
 POST_REVIEW_EVENT_VERSION = "label-match-post-review-required-v1"
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
 PACKAGE_HTTP_USER_AGENT = "KMTech-Worker-ClaimClient/1.0 LabelMatch"
@@ -312,6 +312,8 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
             local_completion_committed INTEGER NOT NULL DEFAULT 0
                 CHECK(local_completion_committed IN (0,1)),
             local_completion_committed_at TEXT,
+            local_completion_order INTEGER,
+            predecessor_package_key TEXT,
             local_recovery_dismissed INTEGER NOT NULL DEFAULT 0
                 CHECK(local_recovery_dismissed IN (0,1)),
             local_recovery_dismissed_at TEXT,
@@ -476,6 +478,23 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE package_command_outbox ADD COLUMN local_completion_committed_at TEXT"
         )
+    if "local_completion_order" not in command_columns:
+        conn.execute("ALTER TABLE package_command_outbox ADD COLUMN local_completion_order INTEGER")
+    if "predecessor_package_key" not in command_columns:
+        conn.execute("ALTER TABLE package_command_outbox ADD COLUMN predecessor_package_key TEXT")
+    # Legacy completion intents are append-only: retain their insertion order,
+    # including tied/reversed clocks, then freeze each link exactly once.
+    completed = conn.execute(
+        """SELECT idempotency_key FROM package_command_outbox
+           WHERE local_completion_committed=1 AND local_completion_order IS NULL ORDER BY rowid"""
+    ).fetchall()
+    last_order = conn.execute(
+        "SELECT COALESCE(MAX(local_completion_order),0) FROM package_command_outbox"
+    ).fetchone()[0]
+    for order, row in enumerate(completed, last_order + 1):
+        _record_completion_predecessor(conn, row[0], order)
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS ix_package_local_completion_order
+                    ON package_command_outbox(local_completion_order)""")
     if "local_recovery_dismissed" not in command_columns:
         conn.execute(
             """ALTER TABLE package_command_outbox
