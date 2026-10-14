@@ -330,7 +330,11 @@ function Invoke-LabelPlacementLifecycleChild([scriptblock]$Action, [switch]$Acti
         }
         finally {
             for ($index = 0; $index -lt $names.Count; $index++) {
-                [Environment]::SetEnvironmentVariable($names[$index], $environmentBefore[$index], 'Process')
+                if ($null -eq $environmentBefore[$index]) {
+                    [Environment]::SetEnvironmentVariable($names[$index], [NullString]::Value, 'Process')
+                } else {
+                    [Environment]::SetEnvironmentVariable($names[$index], $environmentBefore[$index], 'Process')
+                }
             }
             if ($null -ne $childExitCode) { $global:LASTEXITCODE = $childExitCode }
         }
@@ -2206,6 +2210,11 @@ if (-not $testOverride) {
     $writerFenceLease = Enter-LabelCanonicalPlacement -TimeoutMilliseconds 15000
 }
 
+$stagingRoot = ''
+$replacementRollbackRoot = ''
+$replacementApplied = $false
+$Script:StartupUpdatePreimage = $null
+try {
 $applicationParent = Split-Path -Parent $installRootFull
 $supportedContext = $null
 if (-not $testOverride -and ((Test-Path -LiteralPath (Join-Path $applicationParent 'update-control')) -or
@@ -2241,7 +2250,6 @@ if ($applyHardenedAcl) {
     Set-HardenedCodeAcl $applicationParent
 }
 New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
-try {
     Assert-PlacementDataDowngrade $sourceRootFull
     $robocopy = Join-Path ([Environment]::SystemDirectory) 'robocopy.exe'
     & $robocopy $sourceRootFull $stagingRoot /E /XJ /MT:16 /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /XF (Join-Path $sourceRootFull $IntegrityFileName) | Out-Null
@@ -2383,7 +2391,7 @@ catch {
     if (-not $testOverride) {
         Write-ElevationLog 'FAILED' ($_.Exception.GetType().Name)
     }
-    if (Test-Path -LiteralPath $stagingRoot) {
+    if ($stagingRoot -and (Test-Path -LiteralPath $stagingRoot)) {
         $stagingFull = Get-StrictFullPath $stagingRoot "bootstrap staging root"
         $parentFull = (Get-StrictFullPath $applicationParent "application parent") + '\'
         if (-not $stagingFull.StartsWith($parentFull, [StringComparison]::OrdinalIgnoreCase)) {
