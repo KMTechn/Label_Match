@@ -35,7 +35,7 @@ def test_real_foreign_cancelled_member_quarantines_a_different_completed_label(t
         assert ('CREATE_PACKAGE',bad.package_bundle_id) not in server.sent
         # The actual server also rejects this evidence when supplied directly.
         _source,command=server.client.build_create_package_command(good,idempotency_key='spill-direct-proof')
-        command['payload'].update(sample_barcodes=list(bad.sample_barcodes),deferred_reflection=True)
+        command['payload'].update(sample_barcodes=list(bad.sample_barcodes))
         try:
             observed=server.client.create_package(command)
         except PackageApiError as error:
