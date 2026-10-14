@@ -410,7 +410,10 @@ class LabelMatchScreenProcessor:
         self._register = {"name": register.get("name", ""), "candidates": [], "different_from": register.get("name")}
         return {"ok": True}
 
-    def _command_history(self, _args):
+    def _command_history(self, args):
+        if args:
+            return {"ok": False, "code": "HISTORY_TODAY_ONLY",
+                    "result": {"kind": "warn", "text": "지난 날짜 기록은 웹 관리 화면에서 확인하세요."}}
         self.app._load_history_and_rebuild_summary(None)
 
     def _command_scan_cancel(self, args):
