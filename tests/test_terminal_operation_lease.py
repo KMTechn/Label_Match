@@ -1041,6 +1041,7 @@ def test_refused_lease_terminal_rejection_is_code_only_and_not_retried(
     # A terminal refusal must release the drain and allow the next ordinary
     # package to finish. Receipt contents have their own contract regressions.
     ordinary = lease_draft(
+        source_bundle_id="independent-transfer", source_input_tag_id="independent-input-tag",
         set_id='following-package', operation_lease_id='',
         operation_lease_token='', operation_lease_fence=0,
         operation_lease_snapshot_hash='', operation_lease_completed_at='',
