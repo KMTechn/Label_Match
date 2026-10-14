@@ -6437,7 +6437,22 @@ class Label_Match(tk.Tk):
                 except Exception as exc:
                     print(f"과거 중앙 포장 충돌 정리 오류: {exc}")
             try:
-                rows = json.dumps(list(outbox.list_conflicts(limit=21))) if available else None
+                conflicts = list(outbox.list_conflicts(limit=21)) if available else None
+                if conflicts is not None and prefix == "package_create":
+                    read_cancel = getattr(outbox, "get_repack_cancellation_receipt", None)
+                    if callable(read_cancel):
+                        for row in conflicts:
+                            receipt = read_cancel(row["set_id"])
+                            if receipt is None:
+                                continue
+                            data = receipt.get("data", receipt)
+                            if data.get("reopen") is False:
+                                row["repack_server_notice"] = "REOPEN_REFUSED"
+                            elif not all(data.get(name) for name in (
+                                "reopened_transfer_bundle_id", "transfer_entity_version", "reversal_movement_id",
+                            )):
+                                row["repack_server_notice"] = "OLD_SERVER"
+                rows = json.dumps(conflicts) if conflicts is not None else None
             except Exception as exc:
                 print(f"중앙 확인 상태 조회 오류: {exc}")
                 rows = None
@@ -6511,6 +6526,11 @@ class Label_Match(tk.Tk):
                     )
                     + "해당 현품표 실물을 구분 보관하고 관리자에게 확인을 요청하세요."
                 )
+                repack_notices = {row.get("repack_server_notice") for row in conflicts}
+                if "OLD_SERVER" in repack_notices:
+                    message += " 회사 서버가 취소한 현품표의 다시 포장을 지원하지 않습니다. 관리자에게 확인을 요청하세요."
+                elif "REOPEN_REFUSED" in repack_notices:
+                    message += " 회사 서버에서 이 트레이를 다시 포장할 수 있는 상태로 되돌리지 못했습니다. 관리자에게 확인을 요청하세요."
             else:
                 title = "중앙 취소 확인 필요"
                 message = (
@@ -18480,10 +18500,10 @@ class Label_Match(tk.Tk):
     @staticmethod
     def _package_cancellation_completion_message(cancellation):
         if not cancellation:
-            return "해당 작업이 정상적으로 취소되었습니다."
+            return "해당 작업이 정상적으로 취소되었습니다. 같은 현품표로 다시 포장할 수 있습니다."
         status = str(cancellation.get("status") or "").strip().upper()
         if bool(cancellation.get("central_cancellation_acked")) or status == "ACKED":
-            return "이 PC의 기록과 회사 서버 포장이 모두 취소되었습니다."
+            return "이 PC의 기록과 회사 서버 포장이 모두 취소되었습니다. 같은 현품표로 다시 포장할 수 있습니다."
         if status == "CONFLICT":
             return (
                 "로컬 취소 기록은 저장되었지만 중앙 취소 확인이 필요합니다. "
@@ -18492,6 +18512,7 @@ class Label_Match(tk.Tk):
         return (
             "로컬 취소 기록이 저장되었습니다. 중앙 취소 전송·확인 중입니다. "
             "중앙 확인 전 해당 트레이를 반출하지 마세요."
+            " 같은 현품표로 다시 포장할 수 있습니다."
         )
 
     @writer_sink("gui_package_cancel_enqueue")

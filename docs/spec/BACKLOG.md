@@ -5,6 +5,8 @@
 
 # Label_Match 진행·공백·추가 제안
 
+U4 앱: 같은 현품표의 취소 ACK 전 새 포장 전송을 기다리고, F2 결과와 옛 서버/되돌리기 거절 안내를 구분한다. 새 화면 `scan_cancel`은 기존 취소 outbox를 사용한다. 계약 대역 짝 시험과 실제 U3 서버·현장 PC/폰 출고 수용을 구분하며, 후자는 부모 레인의 후속 검증이다.
+
 - 설치/등록 주소 비교: 기계 표지와 등록에 쓴 relay endpoint가 다르면 `RECOVERY_REQUIRED`로 시작·relay 재사용을 거절하고 자료·대기열을 보존한다. 서버 반환 profile은 비교하지 않는다. 실제 재설치·안내 화면·옛 relay 종료 수용은 랩 확인 대상이다([절차](operations.md#onboarding-writer-admission)).
 
 - w9firstupdsub167lm: portable direct-sync relay 자식의 앱 적재를 없애고 기존 product host와 relay 시작 관문을 유지한다. 격리 RED→GREEN·인수/종료/오류 및 전송 결과 대조는 focused 검증 범위다. 실제 바퀴 CPU 4초 미만·stock packet/설치·넓은 회귀는 현장 PC inspection6 몫이며, 안전한 무효화 근거가 없는 프로세스 간 판 지문 캐시는 추가하지 않는다.

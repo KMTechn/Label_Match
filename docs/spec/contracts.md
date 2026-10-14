@@ -500,6 +500,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 `POST L/packages/cancel` / `CANCEL_PACKAGE`는 package ID·사유·비어 있지 않은 evidence와 예상 version을 요구한다. 로컬 취소 outbox는 원래 CREATE 명령 ACK에 의존하며 동일 취소 command/key로 재시도한다. 서버는 포장 완료 유효성을 취소하고 **재고는 SHIPPING-WAIT에 유지**한다. 이를 TRANSFER 재고 반환이나 실제 포장 해체라고 해석하지 않는다. 집계의 취소 제외는 별도 projection 소비 결과다. 근거: [PackageCancellationOutbox/processor](../../package_logistics.py), [API](../../../WorkerAnalysisGUI-web/blueprints/logistics/api.py), [service.cancel_package](../../../WorkerAnalysisGUI-web/logistics_ledger/service.py). [LM-09](README.md#lm-09), [LM-B05](BACKLOG.md#lm-b05).
 
+U4 앱은 U3 취소 영수증의 `reopened_transfer_bundle_id`·`transfer_entity_version`·`reversal_movement_id` 추가 칸을 보존한다. 이 칸이 없는 옛 서버는 위 SHIPPING-WAIT 계약이며, 다시 포장 충돌의 로컬 완료·원 영수증을 유지하고 「회사 서버가 취소한 현품표의 다시 포장을 지원하지 않습니다」를 덧붙인다. `reopen:false`이면 되돌리지 못했다는 안내를 구분한다. 이 판의 U3 응답 검증은 계약 대역이며 실제 서버의 원 이적 반환·새 포장 출고는 별도 수용이다. F2 결과는 기존 취소 대기/반출 보류 안내와 함께 「같은 현품표로 다시 포장할 수 있습니다」를 알린다.
+
 <a id="c-07"></a>
 ## C-07 저장된 F5 현품표 출력·활성화 복구
 

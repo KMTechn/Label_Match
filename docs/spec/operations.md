@@ -888,10 +888,13 @@ GUI·relay·등록·writer의 Python mutex 생성은 `CreateMutexExW`의 `SYNCHR
 | 미리 받은 잠금의 밤사이 만료 | 스캔은 기존 잠금 없는 원천 조회로 진행하고 저장된 잠금을 보존. 완료는 원 잠금으로 보내 회사 서버가 허용 여부를 판정 | 새 발급의 만료 검증 유지. 서버 거절은 그 세트만 충돌·관리자 확인 대기; 만료 행 삭제·새 발급으로 우회하지 않음 |
 | 이전 세트 읽기 실패 | 비중앙 timestamp 오류도 기존 「멈춘 작업」 보류 snapshot과 별도 원본 파일에 내구 보관·SHA readback 후 새 세트 시작. 「어제 하던 세트를 확인 대기로 두었습니다. 관리자에게 알리세요.」 | 보관 실패면 원본/current-state를 유지하고 새 저장을 막음. 관리자 메뉴 「멈춘 작업 확인」에서 확인. 중앙 캐시 timestamp 오류는 기존 복구 잠금 유지 |
 | F1/F2 | F1은 gate가 허용하는 미완료 초기화. F2 취소는 CREATE ACK dependency와 별도 취소 key 사용 | 취소·중복 요청이 원래 PACKAGE에 연결되고 SHIPPING-WAIT 재고 유지. 실물 해체·재고 반환으로 해석하지 않음([C-06](contracts.md#c-06)) |
+
 | F4 응답/로컬 확인 실패 | 저장 intent/receipt부터 복구; 중앙 성공 후 새 QR 확인·로컬 적용은 별도 단계 | 중복 교체 없이 현재 membership/seal을 확인한 뒤 후속 gate 해제([C-03](contracts.md#c-03)) |
 | F5 출력 결과 불명 | `recover_current/recover_reconciliation`과 journal·서버 status·출력 evidence를 먼저 대조 | 재출력 여부를 결정하고 prepare/print/activate를 조정. 새로운 출력부터 반복하지 않음([C-07](contracts.md#c-07)) |
 | spool 유실/손상 | 통신 재시도로 파일을 재생성하지 못함. `failed_permanent`/검토 prefix를 보존하고 원본 range와 identity를 대조 | 원본에서 복구 가능한 범위와 손실을 구분하고 유효 accepted receipt까지 진척을 확정하지 않음([C-05](contracts.md#c-05)) |
 | 처리 중 종료 | UI lane drain·현재 상태/로그 저장·세션 동기화의 종료 경계를 따른다. BROKEN/timeout을 정상 저장으로 간주하지 않음 | 재시작으로 durable 상태를 확인. 강제 종료 후 성공 여부는 소리·창 닫힘으로 판정하지 않음([TkSerialUiLane](../../tk_serial_ui_lane.py), [앱 `on_closing`](../../Label_Match.py)) |
+
+U4: F2 또는 새 화면 스캔 기록 취소 뒤 같은 현품표의 다시 포장은 앞 취소 ACK까지 전송 대기한다. 인터넷이 돌아오면 앞 CREATE → 취소 → 새 CREATE 순서로 보내고, 다른 현품표는 계속 처리한다. 옛 서버·`reopen:false` 충돌은 로컬 완료와 영수증을 보존하며 관리자 확인 안내를 낸다. 실제 U3 서버 판과 현장 PC의 F2 → 다시 포장 → 폰 출고 preview는 아직 별도 수용이다.
 
 지원 인계에는 비밀 없는 set/package/key·발생 시각과 업무일·로컬 marker/status·중앙 receipt 또는 오류 코드·producer 상태·관련 산출물 경로·실물 구분을 연결한다. 원본 로그 전문을 복사하거나 DB/status를 수동 편집해 복구 성공을 만들지 않는다. 요구 RPO/RTO·재시도 후 인계 시점·최종 승인 역할은 아직 미정이다([LM-B02](BACKLOG.md#lm-b02), [LM-B07](BACKLOG.md#lm-b07)).
 

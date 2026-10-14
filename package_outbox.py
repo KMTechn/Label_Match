@@ -1506,6 +1506,30 @@ class PackageOutbox:
             result.update({row["status"]: int(row["count"]) for row in rows})
             return result
 
+    def get_repack_cancellation_receipt(self, set_id: str) -> dict[str, Any] | None:
+        """Read the preceding ACK for the same source; it grants no new authority."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT cancel.receipt_json FROM package_command_outbox
+                   JOIN package_command_outbox AS previous
+                     ON previous.idempotency_key<>package_command_outbox.idempotency_key
+                   JOIN package_cancellation_outbox AS cancel
+                     ON cancel.package_idempotency_key=previous.idempotency_key
+                   WHERE package_command_outbox.set_id=? AND cancel.status='ACKED'
+                     AND (
+                         NULLIF(json_extract(previous.draft_json,'$.source_input_tag_id'),'')
+                         =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_input_tag_id'),'')
+                         OR NULLIF(json_extract(previous.draft_json,'$.source_bundle_id'),'')
+                            =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_bundle_id'),'')
+                         OR NULLIF(previous.resolved_source_bundle_id,'')
+                            =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_bundle_id'),'')
+                         OR NULLIF(previous.resolved_source_bundle_id,'')
+                            =NULLIF(package_command_outbox.resolved_source_bundle_id,''))
+                   ORDER BY cancel.created_at DESC,cancel.idempotency_key DESC LIMIT 1""",
+                (set_id,),
+            ).fetchone()
+            return json.loads(row['receipt_json']) if row is not None else None
+
     def list_conflicts(self, *, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
