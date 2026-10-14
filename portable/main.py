@@ -54,7 +54,7 @@ def _portable_smoke() -> int:
     return 0
 
 
-def main() -> int:
+def _main_after_instance() -> int:
     if sys.argv[1:2] == ["--label-match-lifecycle-context"]:
         from auto_update import lifecycle_context_main
         return lifecycle_context_main(sys.argv[2:])
@@ -89,6 +89,19 @@ def main() -> int:
     from Label_Match import main as application_main
 
     return int(application_main())
+
+
+def main() -> int:
+    from label_match_single_instance import run_early_gui_entry
+    from writer_session_fence import WriterFenceError
+    try:
+        return run_early_gui_entry(_main_after_instance, arguments=list(sys.argv[1:]), app_root=APP_ROOT)
+    except WriterFenceError as error:
+        if error.code != "WRITER_GATE_ABANDONED":
+            raise
+        from Label_Match import _show_installation_recovery_required
+        _show_installation_recovery_required(error)
+        return 1
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 
 import pytest
+import ntpath
+from label_match_instance_win32 import activate_pid, process_matches
 
 import item_catalog_sync as catalog_sync
 from label_match_single_instance import (
@@ -10,7 +12,6 @@ from label_match_single_instance import (
     ERROR_ALREADY_EXISTS,
     MutexLease,
     SingleInstanceError,
-    _window_candidate_matches,
     acquire_data_scope_mutex,
     activate_existing_label_window,
     mutex_name_for_data_scope,
@@ -40,6 +41,10 @@ class _FakeActivationKernel32:
 
     def OpenProcess(self, _access, _inherit, process_id):
         return 90 + int(process_id)
+
+    def GetExitCodeProcess(self, _handle, code):
+        code._obj.value = 259
+        return True
 
     def QueryFullProcessImageNameW(self, _handle, _flags, buffer, _size):
         buffer.value = self.image_path
@@ -411,38 +416,24 @@ def test_owner_releases_mutex_after_success_and_constructor_failure():
     assert events == ["started", ("closed", 77)]
 
 
-def test_window_validation_requires_label_title_and_same_executable_name():
-    assert _window_candidate_matches(
-        title="바코드 세트 검증기 (v2.0.58)",
-        process_path=r"D:\other-install\Label_Match.exe",
-        expected_executable_name=r"C:\current\Label_Match.exe",
-    )
-    assert not _window_candidate_matches(
-        title="바코드 세트 검증기 (v2.0.58)",
-        process_path=r"D:\other-install\python.exe",
-        expected_executable_name=r"C:\current\Label_Match.exe",
-    )
-    assert not _window_candidate_matches(
-        title="업데이트 발견",
-        process_path=r"D:\other-install\Label_Match.exe",
-        expected_executable_name=r"C:\current\Label_Match.exe",
-    )
+def test_owner_validation_requires_live_pid_and_same_absolute_executable():
+    kernel = _FakeActivationKernel32("E:/KMTech/test/Label_Match.exe")
+    assert process_matches(111, kernel.image_path, kernel32=kernel)
+    assert not process_matches(111, "E:/elsewhere/Label_Match.exe", kernel32=kernel)
+    assert not process_matches(111, "E:/KMTech/test/Other.exe", kernel32=kernel)
+    kernel.GetExitCodeProcess = lambda _handle, code: False
+    assert not process_matches(111, kernel.image_path, kernel32=kernel)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Win32 window enumeration contract")
-def test_duplicate_activation_restores_only_a_validated_label_window():
+def test_duplicate_activation_restores_the_validated_owner_pid_window():
     user = _FakeActivationUser32(
         title="바코드 세트 검증기 (v2.0.54)",
         foreground=True,
     )
     kernel = _FakeActivationKernel32(r"D:\old-install\Label_Match.exe")
 
-    result = activate_existing_label_window(
-        executable_name="Label_Match.exe",
-        current_process_id=9999,
-        user32=user,
-        kernel32=kernel,
-    )
+    result = (activate_pid(user.process_id, user32=user) if process_matches(user.process_id, ntpath.join(ntpath.dirname(kernel.image_path), "Label_Match.exe"), kernel32=kernel) else ActivationResult(False))
 
     assert result == ActivationResult(found=True, foreground=True, flashed=False)
     assert user.restored == [(701, 9)]
@@ -450,16 +441,11 @@ def test_duplicate_activation_restores_only_a_validated_label_window():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Win32 window enumeration contract")
-def test_duplicate_activation_rejects_same_title_from_another_executable():
+def test_duplicate_activation_rejects_another_executable():
     user = _FakeActivationUser32(title="바코드 세트 검증기 (v2.0.54)")
     kernel = _FakeActivationKernel32(r"D:\untrusted\python.exe")
 
-    result = activate_existing_label_window(
-        executable_name="Label_Match.exe",
-        current_process_id=9999,
-        user32=user,
-        kernel32=kernel,
-    )
+    result = (activate_pid(user.process_id, user32=user) if process_matches(user.process_id, ntpath.join(ntpath.dirname(kernel.image_path), "Label_Match.exe"), kernel32=kernel) else ActivationResult(False))
 
     assert result == ActivationResult(found=False)
     assert user.restored == []
@@ -473,12 +459,7 @@ def test_duplicate_activation_flashes_when_windows_denies_foreground():
     )
     kernel = _FakeActivationKernel32(r"D:\old-install\Label_Match.exe")
 
-    result = activate_existing_label_window(
-        executable_name="Label_Match.exe",
-        current_process_id=9999,
-        user32=user,
-        kernel32=kernel,
-    )
+    result = (activate_pid(user.process_id, user32=user) if process_matches(user.process_id, ntpath.join(ntpath.dirname(kernel.image_path), "Label_Match.exe"), kernel32=kernel) else ActivationResult(False))
 
     assert result == ActivationResult(found=True, foreground=False, flashed=True)
     assert user.flashes == 1

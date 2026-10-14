@@ -1,5 +1,8 @@
 import os
 import sys
+if __name__ == "__main__":
+    from label_match_single_instance import begin_early_gui_entry
+    _source_instance_lease = begin_early_gui_entry(sys.argv[1:], app_root=os.path.dirname(os.path.abspath(__file__)))
 import json
 import base64
 import traceback
@@ -56,7 +59,7 @@ from protected_admin import (
     sanitize_persistent_value,
 )
 from label_match_single_instance import (
-    _retain_current_instance_lease, _try_update_shutdown_stall_notice,
+    _retain_current_instance_lease, _try_update_shutdown_stall_notice, mark_current_instance_closing,
     SingleInstanceError, prepare_user_directory, resolve_data_scope, run_guarded_entrypoint,
 )
 from current_user_onboarding import (
@@ -9068,6 +9071,7 @@ class Label_Match(tk.Tk):
             entry = self.__dict__.get("entry")
             if not self.__dict__.get("_app_close_in_progress", False):
                 self._app_close_in_progress = True
+                mark_current_instance_closing()
                 self._clear_package_pin_requests()
                 self._app_close_previous_is_blinking = bool(
                     self.__dict__.get("is_blinking", False)

@@ -167,6 +167,8 @@ class LabelMatchScreenProcessor:
 
     def uninstall(self):
         """받이를 되돌림(시험 · 화면 판을 끝낼 때) — 모듈 messagebox · simpledialog 와 앱 메서드."""
+        if not self._installed:
+            return
         for name, value in self._installed.get("module", {}).items():
             setattr(self.module, name, value)
         for name in self._installed.get("app", []):

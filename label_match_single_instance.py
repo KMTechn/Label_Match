@@ -20,14 +20,11 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from writer_session_fence import writer_sink
+import label_match_instance_win32 as instance_win32
+from label_match_instance_win32 import ActivationResult
 
 
 ERROR_ALREADY_EXISTS = 183
-PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-SW_RESTORE = 9
-FLASHW_ALL = 0x00000003
-FLASHW_TIMERNOFG = 0x0000000C
-LABEL_WINDOW_TITLE_PREFIX = "바코드 세트 검증기 ("
 
 
 class SingleInstanceError(RuntimeError):
@@ -35,11 +32,13 @@ class SingleInstanceError(RuntimeError):
 
 
 _active_instance_lease = threading.local()
+_process_instance_lease = None
+_instance_notice_lock = threading.RLock()
 
 
 def _retain_current_instance_lease() -> None:
     """An unfinished writer keeps its native handle until OS process cleanup."""
-    lease = getattr(_active_instance_lease, "lease", None)
+    lease = getattr(_active_instance_lease, "lease", None) or _process_instance_lease
     if lease is not None:
         lease._retain_on_exit = True
 
@@ -82,16 +81,7 @@ def _shutdown_stall_message(data_scope) -> str:
         pid, executable = notice["pid"], notice["executable"]
         if type(pid) is not int or not 0 < pid < 2**32 or not isinstance(executable, str) or not executable:
             return ""
-        from ctypes import wintypes
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel.OpenProcess.restype = wintypes.HANDLE
-        kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
-        kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
-        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel.CloseHandle.restype = wintypes.BOOL
-        actual = _query_process_path(kernel, pid)
-        if actual and ntpath.normcase(actual) == ntpath.normcase(executable):
+        if instance_win32.process_matches(pid, executable):
             return "Label Match 종료 정리가 지연되고 있습니다. 앱이 닫히고 다시 안 켜지면 PC를 재시작하세요."
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         pass
@@ -248,10 +238,17 @@ class MutexLease:
     _close_handle: Callable[[int], object] | None = None
 
     def close(self) -> None:
-        handle = self.handle
-        self.handle = None
-        if handle and self._close_handle is not None:
-            self._close_handle(handle)
+        with _instance_notice_lock:
+            pinned = getattr(self, "_notice_handle", None)
+            self._notice_handle = None
+            handle = self.handle
+            self.handle = None
+            try:
+                if pinned is not None:
+                    pinned.close()  # DELETE_ON_CLOSE was granted under the metadata writer.
+            finally:
+                if handle and self._close_handle is not None:
+                    self._close_handle(handle)
 
     def __enter__(self) -> "MutexLease":
         return self
@@ -273,27 +270,9 @@ def acquire_data_scope_mutex(
         # a cross-platform process lock protects production state.
         return MutexLease(owner=True, name=name)
 
-    from ctypes import wintypes
-
-    api = kernel32 or ctypes.WinDLL("kernel32", use_last_error=True)
-    create_mutex = api.CreateMutexExW
-    close_handle = api.CloseHandle
-    if kernel32 is None:
-        create_mutex.argtypes = [
-            wintypes.LPVOID, wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-        ]
-        create_mutex.restype = wintypes.HANDLE
-        close_handle.argtypes = [wintypes.HANDLE]
-        close_handle.restype = wintypes.BOOL
-
-    set_last_error = getattr(ctypes, "set_last_error", None)
-    if set_last_error is not None:
-        set_last_error(0)
-    # Keep default security. GUI/relay lifetime handles need no full-control
-    # rights when the same user's elevated process already created the mutex.
-    handle = create_mutex(None, name, 0, 0x00100000)
-    error_reader = last_error_getter or getattr(ctypes, "get_last_error", lambda: 0)
-    error = int(error_reader())
+    handle, error, close_handle = instance_win32.create_mutex(
+        name, kernel32=kernel32, last_error_getter=last_error_getter,
+    )
     if not handle:
         raise SingleInstanceError(
             f"Label Match single-instance mutex acquisition failed ({error})"
@@ -310,160 +289,166 @@ def acquire_data_scope_mutex(
     )
 
 
-def _window_candidate_matches(
-    *,
-    title: str,
-    process_path: str,
-    expected_executable_name: str,
-) -> bool:
-    return bool(
-        title.startswith(LABEL_WINDOW_TITLE_PREFIX)
-        and ntpath.basename(process_path).casefold()
-        == ntpath.basename(expected_executable_name).casefold()
-    )
+def instance_notice_path(data_scope):
+    # The mutex keeps its data-root scope; metadata stays in the current user's root.
+    local = str(os.environ.get("LOCALAPPDATA") or "").strip()
+    if not local:
+        raise SingleInstanceError("current-user instance storage is unavailable")
+    selected = Path(local).expanduser().resolve(strict=False)
+    machine = {Path("C:/ProgramData").resolve(strict=False)}
+    for name in ("ProgramData", "PROGRAMDATA"):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            machine.add(Path(value).expanduser().resolve(strict=False))
+    if any(selected == root or root in selected.parents for root in machine):
+        raise SingleInstanceError("instance metadata requires current-user storage")
+    suffix = hashlib.sha256(canonical_data_scope(data_scope).encode("utf-8")).hexdigest()[:32]
+    return selected / "KMTech" / "Label_Match" / "single-instance" / (suffix + ".json")
 
 
-@dataclass(frozen=True)
-class ActivationResult:
-    found: bool
-    foreground: bool = False
-    flashed: bool = False
-
-
-def _query_process_path(kernel32, process_id: int) -> str:
-    from ctypes import wintypes
-
-    open_process = kernel32.OpenProcess
-    query_image = kernel32.QueryFullProcessImageNameW
-    close_handle = kernel32.CloseHandle
-    handle = open_process(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
-    if not handle:
-        return ""
-    try:
-        buffer = ctypes.create_unicode_buffer(32768)
-        size = wintypes.DWORD(len(buffer))
-        if not query_image(handle, 0, buffer, ctypes.byref(size)):
-            return ""
-        return buffer.value
-    finally:
-        close_handle(handle)
-
-
-def activate_existing_label_window(
-    *,
-    executable_name: str | None = None,
-    current_process_id: int | None = None,
-    user32=None,
-    kernel32=None,
-) -> ActivationResult:
-    """Restore/raise a validated existing Label window, then return."""
-
-    if os.name != "nt" and (user32 is None or kernel32 is None):
-        return ActivationResult(found=False)
-
-    from ctypes import wintypes
-
-    user = user32 or ctypes.WinDLL("user32", use_last_error=True)
-    kernel = kernel32 or ctypes.WinDLL("kernel32", use_last_error=True)
-    expected_name = executable_name or sys_executable_name()
-    own_pid = int(current_process_id if current_process_id is not None else os.getpid())
-    matches: list[tuple[int, int]] = []
-
-    enum_proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    if user32 is None:
-        user.EnumWindows.argtypes = [enum_proc_type, wintypes.LPARAM]
-        user.EnumWindows.restype = wintypes.BOOL
-        user.IsWindowVisible.argtypes = [wintypes.HWND]
-        user.IsWindowVisible.restype = wintypes.BOOL
-        user.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-        user.GetWindowTextLengthW.restype = ctypes.c_int
-        user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-        user.GetWindowTextW.restype = ctypes.c_int
-        user.GetWindowThreadProcessId.argtypes = [
-            wintypes.HWND,
-            ctypes.POINTER(wintypes.DWORD),
-        ]
-        user.GetWindowThreadProcessId.restype = wintypes.DWORD
-        user.IsIconic.argtypes = [wintypes.HWND]
-        user.IsIconic.restype = wintypes.BOOL
-        user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-        user.ShowWindow.restype = wintypes.BOOL
-        user.SetForegroundWindow.argtypes = [wintypes.HWND]
-        user.SetForegroundWindow.restype = wintypes.BOOL
-    if kernel32 is None:
-        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel.OpenProcess.restype = wintypes.HANDLE
-        kernel.QueryFullProcessImageNameW.argtypes = [
-            wintypes.HANDLE,
-            wintypes.DWORD,
-            wintypes.LPWSTR,
-            ctypes.POINTER(wintypes.DWORD),
-        ]
-        kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
-        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel.CloseHandle.restype = wintypes.BOOL
-
-    def visit(hwnd, _lparam):
-        if not user.IsWindowVisible(hwnd):
-            return True
-        length = int(user.GetWindowTextLengthW(hwnd))
-        if length <= 0:
-            return True
-        title_buffer = ctypes.create_unicode_buffer(length + 1)
-        user.GetWindowTextW(hwnd, title_buffer, len(title_buffer))
-        process_id = wintypes.DWORD()
-        user.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
-        pid = int(process_id.value)
-        if not pid or pid == own_pid:
-            return True
-        process_path = _query_process_path(kernel, pid)
-        if _window_candidate_matches(
-            title=title_buffer.value,
-            process_path=process_path,
-            expected_executable_name=expected_name,
-        ):
-            matches.append((int(hwnd), pid))
-            return False
-        return True
-
-    callback = enum_proc_type(visit)
-    user.EnumWindows(callback, 0)
-    if not matches:
-        return ActivationResult(found=False)
-
-    hwnd, _pid = matches[0]
-    if user.IsIconic(hwnd):
-        user.ShowWindow(hwnd, SW_RESTORE)
-    foreground = bool(user.SetForegroundWindow(hwnd))
-    flashed = False
-    if not foreground:
-        class FLASHWINFO(ctypes.Structure):
-            _fields_ = [
-                ("cbSize", wintypes.UINT),
-                ("hwnd", wintypes.HWND),
-                ("dwFlags", wintypes.DWORD),
-                ("uCount", wintypes.UINT),
-                ("dwTimeout", wintypes.DWORD),
-            ]
-
-        info = FLASHWINFO(
-            ctypes.sizeof(FLASHWINFO),
-            hwnd,
-            FLASHW_ALL | FLASHW_TIMERNOFG,
-            3,
-            0,
-        )
-        if user32 is None:
-            user.FlashWindowEx.argtypes = [ctypes.POINTER(FLASHWINFO)]
-            user.FlashWindowEx.restype = wintypes.BOOL
-        flashed = bool(user.FlashWindowEx(ctypes.byref(info)))
-    return ActivationResult(found=True, foreground=foreground, flashed=flashed)
-
-
-def sys_executable_name() -> str:
+def _validated_owner_notice(data_scope):
     import sys
+    try:
+        notice = json.loads(instance_win32.read_notice(instance_notice_path(data_scope)))
+        pid, executable = notice["pid"], notice["executable"]
+        if (type(pid) is not int or not 0 < pid < 2**32
+                or not isinstance(executable, str) or not ntpath.isabs(executable)
+                or ntpath.normcase(ntpath.normpath(executable)) != ntpath.normcase(ntpath.normpath(sys.executable))
+                or type(notice.get("closing", False)) is not bool
+                or not instance_win32.process_matches(pid, executable)):
+            return None
+        return notice
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, SingleInstanceError):
+        return None
 
-    return Path(sys.executable).name
+
+@writer_sink("gui_instance_owner_notice")
+def _write_instance_owner_notice(lease, *, closing=False):
+    import sys
+    path = instance_notice_path(lease._data_scope)
+    prepare_user_directory(path.parent)
+    payload = {"pid": os.getpid(), "executable": sys.executable, "closing": bool(closing)}
+    previous = getattr(lease, "_notice_handle", None)
+    if previous is not None:
+        # The Windows DELETE_ON_CLOSE handle pins this inode until lease close.
+        # Update through its admitted write authority instead of replacing it.
+        previous.update(json.dumps(payload).encode("utf-8"))
+        return
+    temporary = path.with_name(path.name + "." + str(os.getpid()) + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(payload, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        pinned = instance_win32.pin_notice(path)
+        lease._notice_handle = pinned
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def mark_current_instance_closing():
+    with _instance_notice_lock:
+        # The shell's hidden Tk owner runs on a different thread from its lease.
+        lease = getattr(_active_instance_lease, "lease", None) or _process_instance_lease
+        if lease is not None and lease.owner and not getattr(lease, "_closing_notice", False):
+            try:
+                _write_instance_owner_notice(lease, closing=True)
+                lease._closing_notice = True
+            except Exception as error:
+                logging.getLogger(__name__).warning("instance closing notice unavailable: %s", type(error).__name__)
+
+
+def activate_existing_label_window(*, data_scope):
+    notice = _validated_owner_notice(data_scope)
+    if notice is None:
+        return ActivationResult(False)
+    return instance_win32.activate_pid(notice["pid"])
+
+
+def _duplicate_entry(data_scope, activate=None):
+    notice = _validated_owner_notice(data_scope)
+    try:
+        result = (activate() if activate is not None else
+                  instance_win32.activate_pid(notice["pid"]) if notice is not None else ActivationResult(False))
+    except (OSError, AttributeError):
+        result = ActivationResult(False)
+    if not result.found:
+        try:
+            instance_win32.timed_notice(closing=bool(notice and notice.get("closing")))
+        except (OSError, AttributeError):
+            pass
+    return 0
+
+
+def _is_gui_entry(arguments):
+    non_gui = {"--label-match-lifecycle-context", "--label-match-direct-sync-relay", "--label-match-user-relay",
+               "--label-match-scheduled-relay", "--onboard-current-user", "--remove-current-user-setup",
+               "--restore-current-user-lifecycle-after-replacement", "--zero-pe-portable-smoke"}
+    return not any(value in non_gui or value.startswith("--kmtech-lm-") for value in arguments)
+
+
+def _early_data_scope(app_root):
+    import sys
+    explicit = str(os.environ.get("LABEL_MATCH_SETTINGS_PATH") or "").strip()
+    local = str(os.environ.get("LOCALAPPDATA") or "").strip()
+    if not explicit and not local:
+        raise SingleInstanceError("current-user settings storage is unavailable")
+    settings = Path(explicit) if explicit else Path(local)/"KMTech"/"Label_Match"/"config"/"app_settings.json"
+    root = Path(app_root)
+    portable = root.name.casefold() == "app" and (root.parent/"portable-manifest.json").is_file()
+    enabled = str(os.environ.get("LABEL_MATCH_ENABLE_FIRST_RUN_ONBOARDING") or "").strip().lower() in {"1","true","yes","on","enabled"}
+    template = Path(getattr(sys, "_MEIPASS", root))/"config"/"app_settings.json"
+    return resolve_data_scope(settings_path=settings, settings_template_path=template,
+                              for_onboarding=bool(getattr(sys,"frozen",False) or portable or enabled))
+
+
+def end_early_gui_entry(lease):
+    global _process_instance_lease
+    if lease is None:
+        return
+    if getattr(_active_instance_lease,"lease",None) is lease:
+        _active_instance_lease.lease = getattr(lease,"_previous_lease",None)
+    if _process_instance_lease is lease:
+        _process_instance_lease = getattr(lease, "_previous_process_lease", None)
+    if not getattr(lease,"_retain_on_exit",False):
+        lease.close()
+
+
+def begin_early_gui_entry(arguments, *, app_root):
+    global _process_instance_lease
+    if not _is_gui_entry(arguments):
+        return None
+    scope = _early_data_scope(app_root)
+    lease = acquire_data_scope_mutex(scope)
+    if not lease.owner:
+        _duplicate_entry(scope)
+        raise SystemExit(0)
+    lease._data_scope = scope
+    lease._early = True
+    lease._previous_lease = getattr(_active_instance_lease,"lease",None)
+    lease._previous_process_lease = _process_instance_lease
+    _active_instance_lease.lease = lease
+    _process_instance_lease = lease
+    try:
+        _write_instance_owner_notice(lease)
+    except BaseException:
+        end_early_gui_entry(lease)
+        raise
+    import atexit
+    atexit.register(end_early_gui_entry, lease)
+    return lease
+
+
+def run_early_gui_entry(start, *, arguments, app_root):
+    try:
+        lease = begin_early_gui_entry(arguments, app_root=app_root)
+    except SystemExit as stopped:
+        return int(stopped.code or 0)
+    try:
+        return int(start() or 0)
+    finally:
+        end_early_gui_entry(lease)
 
 
 def run_guarded_entrypoint(
@@ -471,29 +456,26 @@ def run_guarded_entrypoint(
     *,
     data_scope: str | os.PathLike[str],
     acquire: Callable[[str | os.PathLike[str]], MutexLease] = acquire_data_scope_mutex,
-    activate: Callable[[], ActivationResult] = activate_existing_label_window,
+    activate: Callable[[], ActivationResult] | None = None,
 ) -> int:
     """Run ``start`` only for the data-scope owner."""
 
+    global _process_instance_lease
+    held = getattr(_active_instance_lease, "lease", None)
+    if held is not None and held.owner and getattr(held, "_early", False):
+        if canonical_data_scope(getattr(held,"_data_scope","")) != canonical_data_scope(data_scope):
+            raise SingleInstanceError("instance data scope changed during startup")
+        return int(start() or 0)
     lease = acquire(data_scope)
     if not lease.owner:
-        result = activate()
-        try:
-            from startup_observation import observe_startup
-            observe_startup(["ALREADY_RUNNING"])
-        except Exception:
-            pass
-        message = (
-            "기존 Label Match 창을 표시했습니다."
-            if result.found
-            else (_shutdown_stall_message(data_scope)
-                  or "Label Match가 이미 실행 중입니다. 기존 창을 확인하세요.")
-        )
-        print(message)
-        return 0
+        return _duplicate_entry(data_scope, activate)
+    lease._data_scope = data_scope
     previous = getattr(_active_instance_lease, "lease", None)
+    previous_process = _process_instance_lease
     _active_instance_lease.lease = lease
+    _process_instance_lease = lease
     try:
+        _write_instance_owner_notice(lease)
         # Read the previous close evidence before ordinary state/outbox replay.
         notice = Path(data_scope) / "label_match_shutdown_stall.json"
         if notice.is_file():
@@ -504,5 +486,6 @@ def run_guarded_entrypoint(
         return int(result or 0)
     finally:
         _active_instance_lease.lease = previous
+        _process_instance_lease = previous_process
         if not getattr(lease, "_retain_on_exit", False):
             lease.close()
