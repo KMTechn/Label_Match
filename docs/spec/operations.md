@@ -708,6 +708,13 @@ HMAC 서명은 전송 시 새 키로 생성한다. 대기 행의 원 metadata/id
 격리 회귀는 partial/full 각각 미전송/lost-ACK 4경로에서 Web ad0fc84의 실제 등록·복구·runtime lease·source-file handler와 SQLite를 사용하여 서버 receipt 1건·로컬 ACK 1건, 원 metadata 재사용, 구 키 거부, 정상 만료 후 fence 증가를 확인한다. 실제 서버 소켓·설치/UAC·GUI·재부팅은 이 호스트 시험의 범위가 아니다.
 
 <a id="enrollment-ip-policy"></a>
+<a id="onboarding-registration-recovery"></a>
+### 첫 설정의 기존 PC 등록 안내
+
+첫 설정은 등록 보고서의 `ADMIN_RECOVERY_REQUIRED`와 `POSSESSION_PROOF_REATTACH_REQUIRED`를 일반 `SETUP_FAILED`로 바꾸지 않는다. 첫 실패와 보고서만 남은 다음 시작 모두 `RECOVERY_REQUIRED`로 멈추며 고정 원인은 각각 `ADMIN_RECOVERY_ACTION`, `POSSESSION_PROOF_REATTACH_REQUIRED`다. 업무 자료·Run·전송 프로그램은 준비 완료를 확인하기 전에 시작하지 않는다. 등록 보고와 원 신원은 보존한다.
+
+기존 PC 등록의 사용자 안내는 「이 PC는 이미 등록돼 있습니다」 / 「현장 관리자에게 알리세요」 / 「코드: ADMIN_RECOVERY_ACTION」이다. 원 소유 키 연결 실패는 「이 PC 등록을 다시 연결하지 못했습니다」 / 「현장 관리자에게 알리세요」 / 「코드: POSSESSION_PROOF_REATTACH_REQUIRED」이다. 관리자용 자세한 안내는 「현장 관리자: 관리자 계정으로 이 PC 등록 회복을 실행하세요」다. 새 화면과 옛 화면이 사용하는 첫 설정 오류 문안과 보호 보고서에 같은 원인을 전달한다. 화면 실제 수용은 별도다.
+
 ### 등록·관리자 복구의 IP 기준 승인
 
 [등록 도구](../../tools/register_label_match_worker_pc.py)의 정상 등록과 `--admin-recovery-secret-file` 복구는 네트워크 승인 토큰 없이 서버 허용 IP 정책을 사용할 수 있다. 이 PC의 접속 IP를 서버 허용 목록에 등록한 뒤 토큰 인수·파일·`PRODUCER_SELF_ENROLL_TOKEN` 환경 값을 비워 실행한다(환경 값 사용 제외: `--enrollment-token-env ""`). 빈 값은 `X-Producer-Enrollment-Token` 헤더나 등록 토큰 JSON 필드로 전송하지 않는다. 서버가 `enrollment_unauthorized`로 거부하면 HTTP 상태·오류 코드를 보존하고 CLI 출력과 등록 보고서 `blocked_reason`에 `서버 허용 IP 목록에 이 PC 를 등록하거나 토큰을 입력하세요`를 표시한다. 토큰을 제공하면 기존 인증을 유지하며 잘못된 토큰으로 거부된 요청을 자동으로 토큰 없이 재전송하지 않는다. 관리자 복구에는 별도의 일회용 승인 파일(`recovery_token`), 명시 identity·서버 활성 manifest hash·TLS CA와 현재 사용자 소유 키가 계속 필요하다. IP 허용은 이 복구 검증이나 등록 후 업무용 기계 자격증명을 대체하지 않는다.

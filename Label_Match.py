@@ -24110,6 +24110,14 @@ INSTALLATION_RECOVERY_REQUIRED_MESSAGE = (
     "자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
 )
 FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
+    "POSSESSION_PROOF_REATTACH_REQUIRED": (
+        "이 PC 등록을 다시 연결하지 못했습니다\n현장 관리자에게 알리세요\n\n"
+        "코드: POSSESSION_PROOF_REATTACH_REQUIRED"
+    ),
+    "ADMIN_RECOVERY_ACTION": (
+        "이 PC는 이미 등록돼 있습니다\n현장 관리자에게 알리세요\n\n"
+        "코드: ADMIN_RECOVERY_ACTION"
+    ),
     "PENDING_WORKER_SID_MISMATCH": (
         "설치할 때 지정한 작업자 계정으로 다시 실행하세요.\n\n"
         "어떤 계정인지 모르면 관리자에게 아래 설치 기록 경로를 전달하세요."
@@ -24176,7 +24184,8 @@ def _show_first_run_onboarding_error(failure):
         message = FIRST_RUN_ONBOARDING_CAUSE_MESSAGES.get(
             getattr(failure, "cause_code", ""), FIRST_RUN_ONBOARDING_ERROR_MESSAGE,
         )
-        if failure.status == "RECOVERY_REQUIRED":
+        if (failure.status == "RECOVERY_REQUIRED"
+                and getattr(failure, "cause_code", "") not in FIRST_RUN_ONBOARDING_CAUSE_MESSAGES):
             message = str(failure)
         if getattr(failure, "recovery_command", ""):
             message += "\n\n지원 명령: " + failure.recovery_command

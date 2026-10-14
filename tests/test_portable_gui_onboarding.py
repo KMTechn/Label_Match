@@ -42,6 +42,24 @@ def portable_gui(monkeypatch, tmp_path):
     return release.resolve()
 
 
+@pytest.mark.parametrize("cause,wording", [
+    ("POSSESSION_PROOF_REATTACH_REQUIRED", "이 PC 등록을 다시 연결하지 못했습니다\n현장 관리자에게 알리세요"),
+    ("ADMIN_RECOVERY_ACTION", "이 PC는 이미 등록돼 있습니다\n현장 관리자에게 알리세요"),
+])
+def test_registration_recovery_uses_fixed_wording_in_bootstrap_dialog(monkeypatch, tmp_path, cause, wording):
+    from types import SimpleNamespace
+    shown = []
+    parent = SimpleNamespace(**{name: lambda *_args, **_kwargs: None for name in (
+        "withdraw", "title", "geometry", "attributes", "deiconify", "lift", "update", "focus_force", "destroy")})
+    monkeypatch.setattr(app.tk, "Tk", lambda: parent)
+    monkeypatch.setattr(app.messagebox, "showerror", lambda _title, message, **_kwargs: shown.append(message))
+    failure = onboarding.CurrentUserOnboardingError("untrusted diagnostic", report_path=tmp_path / "report.json",
+                                                    status="RECOVERY_REQUIRED", cause_code=cause)
+    app._show_first_run_onboarding_error(failure)
+    assert shown[0].startswith(wording + "\n\n코드: " + cause)
+    assert "untrusted diagnostic" not in shown[0]
+
+
 def test_normal_portable_gui_onboards_before_selecting_data_scope_and_workflow(
     monkeypatch, portable_gui
 ):

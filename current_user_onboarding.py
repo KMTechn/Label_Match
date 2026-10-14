@@ -859,6 +859,13 @@ def inspect_current_user_state(
         return {"status": "ABSENT", "present": present}
     if present["registration_report"] and sum(present.values()) == 1:
         report = _read_json(paths.registration_report_path, "registration report")
+        if (
+            report.get("report_version") == "label-match-worker-pc-registration-v1"
+            and report.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED"
+            and report.get("recovery_action") == "POSSESSION_PROOF_REATTACH_REQUIRED"
+            and report.get("secret_material_persisted") is False
+        ):
+            return {"status": "POSSESSION_PROOF_REATTACH_REQUIRED", "present": present}
         if str(report.get("status") or "") in {"BLOCKED", "FAILED", "UNKNOWN"}:
             return {"status": "ABSENT_RETRYABLE", "present": present}
         if (
@@ -1446,15 +1453,23 @@ def onboard_current_user(
                 str(state["reason"]), report_path=paths.onboarding_report_path,
                 status="RECOVERY_REQUIRED", cause_code="INSTALL_SERVER_ORIGIN_CHANGED",
             )
+        if state.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED":
+            report["action"] = "POSSESSION_PROOF_REATTACH_REQUIRED"
+            report["recovery_action"] = "POSSESSION_PROOF_REATTACH_REQUIRED"
+            raise CurrentUserOnboardingError(
+                "이 PC 등록을 다시 연결하지 못했습니다\n현장 관리자에게 알리세요\n\n코드: POSSESSION_PROOF_REATTACH_REQUIRED",
+                report_path=paths.onboarding_report_path,
+                status="RECOVERY_REQUIRED", cause_code="POSSESSION_PROOF_REATTACH_REQUIRED",
+            )
         if state.get("status") != "ADMIN_RECOVERY_REQUIRED":
             return
         report["action"] = "ADMIN_RECOVERY_REQUIRED"
         report["recovery_action"] = "ADMIN_RECOVERY_REQUIRED"
+        report["administrator_guidance"] = "현장 관리자: 관리자 계정으로 이 PC 등록 회복을 실행하세요"
         raise CurrentUserOnboardingError(
-            "이 PC의 기존 등록을 복구해야 합니다. 관리자는 설치된 등록 도구에서 "
-            "일반 등록 토큰과 별도의 관리자 복구 승인을 사용한 뒤 초기 설정을 다시 실행하세요.",
+            "이 PC는 이미 등록돼 있습니다\n현장 관리자에게 알리세요\n\n코드: ADMIN_RECOVERY_ACTION",
             report_path=paths.onboarding_report_path,
-            status="RECOVERY_REQUIRED",
+            status="RECOVERY_REQUIRED", cause_code="ADMIN_RECOVERY_ACTION",
         )
 
     def restore_stop_marker_fence() -> None:
