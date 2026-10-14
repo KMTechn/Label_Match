@@ -15,9 +15,7 @@ import current_user_onboarding
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
-@pytest.mark.parametrize("corruption", (None, "manifest_pin", "integrity_record"))
-def test_full_verify_in_fresh_child_with_only_dependency_modules(tmp_path, engine, corruption):
+def _fresh_verify(tmp_path, engine, corruption=None, *, native_case="legacy"):
     current = tmp_path / "managed/current"
     for leaf in ("tools", "runtime", "app/tools", "../update-control"):
         (current / leaf).mkdir(parents=True, exist_ok=True)
@@ -46,6 +44,41 @@ def test_full_verify_in_fresh_child_with_only_dependency_modules(tmp_path, engin
     manifest = {"schema": "label-match-portable-tree-v1", "startup_update_protocol": 1, "source_commit": "a" * 40,
                 "entrypoint": "runtime/pythonw.exe app/main.py", "allowed_unsigned_app_pe": [], "forbidden_package_roots": [],
                 "writer_sink_inventory_contract_sha256": "b" * 64}
+    from tools import build_portable_release_candidate as builder
+    natives = sorted(builder.APP_NATIVE_UNSIGNED)
+    if native_case != "legacy":
+        for relative in natives:
+            destination = current / "app" / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(builder.SHELL_RUNTIME_SITE_PACKAGES / Path(relative).relative_to("site-packages"), destination)
+            assert hashlib.sha256(destination.read_bytes()).hexdigest() == builder.APP_NATIVE_ALLOWLIST[relative][1]
+        manifest["allowed_unsigned_app_pe"] = natives.copy()
+        if native_case == "unknown":
+            manifest["allowed_unsigned_app_pe"][0] = "site-packages/unknown.dll"
+        elif native_case == "extra":
+            manifest["allowed_unsigned_app_pe"].append("site-packages/extra.dll")
+        elif native_case == "duplicate":
+            manifest["allowed_unsigned_app_pe"][0] = natives[1]
+        elif native_case == "partial":
+            manifest["allowed_unsigned_app_pe"].pop()
+        elif native_case == "missing":
+            (current / "app" / natives[0]).unlink()
+        elif native_case == "tampered":
+            path = current / "app" / natives[0]
+            raw = bytearray(path.read_bytes())
+            raw[-1] ^= 1
+            path.write_bytes(raw)
+        elif native_case == "fake":
+            for relative in natives:
+                (current / "app" / relative).write_bytes(b"MZ untrusted native")
+        elif native_case == "escape":
+            manifest["allowed_unsigned_app_pe"][0] = "../" + natives[0]
+        elif native_case == "case":
+            manifest["allowed_unsigned_app_pe"][0] = natives[0].upper()
+        elif native_case == "backslash":
+            manifest["allowed_unsigned_app_pe"][0] = natives[0].replace("/", "\\")
+        else:
+            assert native_case == "stock"
     for leaf, field in pins.items():
         path = current / leaf
         if not path.exists():
@@ -72,7 +105,7 @@ Export-ModuleMember -Function Get-Acl
 ''', encoding="utf-8-sig")
     driver = tmp_path / "fresh-child.ps1"
     policy = current.parent / "update-control/policy.json"
-    driver.write_text("$ErrorActionPreference='Stop'\nImport-Module " + quote(boundary) + "\n" +
+    driver.write_text("$ErrorActionPreference='Stop'\n$env:TEMP=" + quote(tmp_path) + "\n$env:TMP=$env:TEMP\nImport-Module " + quote(boundary) + "\n" +
         "@{operator_sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}|ConvertTo-Json|Set-Content -LiteralPath " + quote(policy) + " -Encoding UTF8\n" +
         "& " + quote(helper) + " -InstallRoot " + quote(current) + " -Mode Verify -CodeRoot " + quote(current) + "\nexit $LASTEXITCODE\n",
         encoding="utf-8-sig")
@@ -82,6 +115,15 @@ Export-ModuleMember -Function Get-Acl
                             cwd=tmp_path, env=environment, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
     (tmp_path / "full-verify.stdout").write_bytes(result.stdout)
     (tmp_path / "full-verify.stderr").write_bytes(result.stderr)
+    result.driver = driver
+    return result, current
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("corruption", (None, "manifest_pin", "integrity_record"))
+@pytest.mark.parametrize("native_case", ("legacy", "stock"))
+def test_full_verify_in_fresh_child_with_only_dependency_modules(tmp_path, engine, corruption, native_case):
+    result, _ = _fresh_verify(tmp_path, engine, corruption, native_case=native_case)
     if corruption is None:
         assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
         assert not result.stderr
@@ -102,12 +144,34 @@ Export-ModuleMember -Function Get-Acl
 
 
 @pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
+@pytest.mark.parametrize("native_case", ("stock", "legacy", "unknown", "extra", "duplicate", "partial",
+                                       "missing", "tampered", "fake", "escape", "case", "backslash"))
+def test_fresh_verify_native_stock_and_refusals(tmp_path, engine, native_case):
+    result, _ = _fresh_verify(tmp_path, engine, native_case=native_case)
+    if native_case in {"stock", "legacy"}:
+        assert result.returncode == 0
+        assert not result.stderr
+    else:
+        assert result.returncode == 1
+        line = next(line for line in result.stderr.decode("utf-8", errors="replace").splitlines()
+                    if line.startswith("LABEL_MATCH_INSTALLER_FAILURE="))
+        record = json.loads(line.split("=", 1)[1])
+        evidence = json.loads(Path(record["report_path"]).read_bytes())
+        assert evidence["check"]["check"] == "MANIFEST"
+        assert "STARTUP_UPDATE_PORTABLE_MANIFEST_DIFFERS" in evidence["trace"]
+
+
+@pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"))
 def test_early_native_acl_verify_failure_has_typed_protected_sidecar(tmp_path, engine):
     environment = os.environ.copy()
     environment.update(TEMP=str(tmp_path), TMP=str(tmp_path))
+    quote = lambda path: "'" + str(path).replace("'", "''") + "'"
+    driver = tmp_path / "early-acl.ps1"
+    driver.write_text("$env:TEMP=" + quote(tmp_path) + "\n$env:TMP=$env:TEMP\n& " +
+        quote(ROOT / "tools/apply_prepared_update.ps1") + " -InstallRoot " + quote(tmp_path / "current") +
+        " -Mode Verify -CodeRoot " + quote(tmp_path / "current") + "\nexit $LASTEXITCODE\n", encoding="utf-8-sig")
     result = subprocess.run([shutil.which(engine), "-NoLogo", "-NoProfile", "-NonInteractive",
-        "-WindowStyle", "Hidden", "-File", str(ROOT / "tools/apply_prepared_update.ps1"),
-        "-InstallRoot", str(tmp_path / "current"), "-Mode", "Verify", "-CodeRoot", str(tmp_path / "current")],
+        "-WindowStyle", "Hidden", "-File", str(driver)],
         cwd=tmp_path, env=environment, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
     (tmp_path / "native.stdout").write_bytes(result.stdout)
     (tmp_path / "native.stderr").write_bytes(result.stderr)

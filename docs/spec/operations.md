@@ -1473,3 +1473,8 @@ PowerShell 원문은 byte I/O로 BOM과 줄 끝을 보존한다. 비ASCII PowerS
 요청 세대 또는 세트 ID가 현재 입력과 다르거나 화면 밖의 보류 검증 작업이면 자동 재개하지 않는다. 고장 기록 뒤 현재 입력을 그대로 두고 기존 관리자 안내로 멈춘다.
 
 동일 품목 코드의 새 세트는 기존 중복 검사를 그대로 거친다. 격리한 원래 세트 ID는 보류 해소 전 자동 검증·물질화에서 제외하며, 품목 코드 전체를 막지 않는다.
+## Native manifest agreement (v2.0.104)
+
+The canonical unsigned native hashes are `label_native_policy.UNSIGNED_NATIVE_SHA256`. The portable builder checks both public installer copies and `tools/apply_prepared_update.ps1` against those exact pins and the actual bytes before building. Verify and update selection use the same `Assert-StartupUpdateVersion` check. The supported relay-stop release preflight uses the same Python policy. Each readback accepts the old empty list or exactly the three pinned files; duplicates, extra paths, absent files and changed hashes fail.
+
+Recovery card: 같은 작업자 지원 제거(main --remove-current-user-setup) → 관리자 INSTALL_THIS_PC.ps1 -Uninstall → 고친 v2.0.104 승인 키트 재설치 → 같은 작업자 첫 설정 READY 확인; 자료·설정·등록·전송 대기 보존.

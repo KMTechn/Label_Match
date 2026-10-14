@@ -397,6 +397,23 @@ function Assert-StartupUpdateVersion([string]$Root, [string]$Candidate) {
     $manifest = Read-KmtechPortableManifest $full
     $script:LabelStartupVerifyDiagnostic=[ordered]@{check='MANIFEST_RUNTIME_PIN';relative_path='runtime/pythonw.exe';expected_sha256=[string]$manifest.runtime_pythonw_sha256;observation='READ_PENDING'}
     $runtimePythonwSha256=Get-BootstrapFileSha256 (Join-Path $full 'runtime\pythonw.exe')
+    # These fixed pins are checked against the builder and both installers by
+    # the release gate. Older zero-PE packets retain their empty declaration.
+    $unsignedPe = @{
+        'site-packages/_cffi_backend.cp312-win_amd64.pyd' = '9af5e4f68a41f26b726f2e9424f9d58a4f5666189f6a48be95f406b257102aec'
+        'site-packages/clr_loader/ffi/dlls/amd64/ClrLoader.dll' = '07f62bcb1b70320f221ffb2cfc5ce6133815195f3e7cdb8d833222506188c2ac'
+        'site-packages/pythonnet/runtime/Python.Runtime.dll' = '2ebd4492e28442ef1f1af587afe5b3a090c2ebfa220758ded4f1450f2a27f13a'
+    }
+    $listedPe = @(@($manifest.allowed_unsigned_app_pe) | ForEach-Object { [string]$_ })
+    $unsignedPeOk = $listedPe.Count -eq 0 -or (
+        $listedPe.Count -eq $unsignedPe.Count -and
+        @($listedPe | Sort-Object -Unique -CaseSensitive).Count -eq $unsignedPe.Count -and
+        @($listedPe | Where-Object {
+            $_ -cin @($unsignedPe.Keys) -and
+            (Test-Path -LiteralPath (Join-Path (Join-Path $full 'app') $_.Replace('/', '\')) -PathType Leaf) -and
+            (Get-BootstrapFileSha256 (Join-Path (Join-Path $full 'app') $_.Replace('/', '\'))) -ceq $unsignedPe[$_]
+        }).Count -eq $unsignedPe.Count
+    )
     $script:LabelStartupVerifyDiagnostic=[ordered]@{check='MANIFEST';expected_schema='label-match-portable-tree-v1';
         actual_schema=[string]$manifest.schema;schema_matches=([string]$manifest.schema -ceq 'label-match-portable-tree-v1');expected_protocol=1;protocol=$manifest.startup_update_protocol;
         commit_valid=([string]$manifest.source_commit -cmatch '^[0-9a-f]{40}$');
@@ -408,7 +425,7 @@ function Assert-StartupUpdateVersion([string]$Root, [string]$Candidate) {
         [string]$manifest.source_commit -cnotmatch '^[0-9a-f]{40}$' -or
         [string]$manifest.entrypoint -cne 'runtime/pythonw.exe app/main.py' -or
         $runtimePythonwSha256 -cne [string]$manifest.runtime_pythonw_sha256 -or
-        @($manifest.allowed_unsigned_app_pe).Count -ne 0 -or @($manifest.forbidden_package_roots).Count -ne 0) {
+        -not $unsignedPeOk -or @($manifest.forbidden_package_roots).Count -ne 0) {
         throw 'STARTUP_UPDATE_PORTABLE_MANIFEST_DIFFERS'
     }
     $pins = @{

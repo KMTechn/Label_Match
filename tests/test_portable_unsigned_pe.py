@@ -12,6 +12,24 @@ from tools import build_portable_release_candidate as builder
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_runtime_native_policy_matches_builder_and_rejects_fake_bytes(tmp_path):
+    from label_native_policy import UNSIGNED_NATIVE_SHA256, unsigned_native_manifest_valid
+    assert UNSIGNED_NATIVE_SHA256 == {path: builder.APP_NATIVE_ALLOWLIST[path][1] for path in builder.APP_NATIVE_UNSIGNED}
+    natives = sorted(UNSIGNED_NATIVE_SHA256)
+    for relative in natives:
+        target = tmp_path / "app" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(builder.SHELL_RUNTIME_SITE_PACKAGES / Path(relative).relative_to("site-packages"), target)
+    assert unsigned_native_manifest_valid(tmp_path, natives)
+    assert unsigned_native_manifest_valid(tmp_path, [])
+    assert not unsigned_native_manifest_valid(tmp_path, [natives[0]] * 3)
+    assert not unsigned_native_manifest_valid(tmp_path, natives[:-1])
+    assert not unsigned_native_manifest_valid(tmp_path, natives + ["site-packages/extra.dll"])
+    assert not unsigned_native_manifest_valid(tmp_path, [path.upper() for path in natives])
+    (tmp_path / "app" / natives[0]).write_bytes(b"MZ fake native")
+    assert not unsigned_native_manifest_valid(tmp_path, natives)
+
+
 def test_native_transition_digest_rejects_line_ending_changes_in_binary_bytes():
     from tools.refresh_first_update_declarations import digest
     original, altered = b"MZ\r\nreviewed", b"MZ\nreviewed"
@@ -70,7 +88,8 @@ def test_builder_fails_when_installer_builder_and_packet_unsigned_pins_disagree(
         pins[path] = (len(data), hashlib.sha256(data).hexdigest())
     monkeypatch.setattr(builder, "APP_NATIVE_ALLOWLIST", {**builder.APP_NATIVE_ALLOWLIST, **pins})
     block = "".join(f"    '{path}' = '{sha}'\n" for path, (_size, sha) in pins.items())
-    for name in ("INSTALL_CANONICAL_PORTABLE.ps1", "INSTALL_THIS_PC.ps1"):
+    for name in ("INSTALL_CANONICAL_PORTABLE.ps1", "INSTALL_THIS_PC.ps1", "tools/apply_prepared_update.ps1"):
+        (output / name).parent.mkdir(parents=True, exist_ok=True)
         (output / name).write_text("$unsignedPe = @{\n" + block + "}\n", encoding="utf-8-sig")
     builder._assert_installer_unsigned_pins(output, app)
     first = sorted(pins)[0]
@@ -82,6 +101,30 @@ def test_builder_fails_when_installer_builder_and_packet_unsigned_pins_disagree(
     (app / first).write_bytes(b"MZ changed")
     with pytest.raises(builder.PortableBuildError):
         builder._assert_installer_unsigned_pins(output, app)
+
+
+@pytest.mark.parametrize("name", ("INSTALL_CANONICAL_PORTABLE.ps1", "INSTALL_THIS_PC.ps1", "tools/apply_prepared_update.ps1"))
+def test_all_native_pin_consumers_equal_canonical_and_reject_drift(tmp_path, name):
+    app = tmp_path / "app"
+    for relative in builder.APP_NATIVE_UNSIGNED:
+        destination = app / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(builder.SHELL_RUNTIME_SITE_PACKAGES / Path(relative).relative_to("site-packages"), destination)
+    for relative in ("INSTALL_CANONICAL_PORTABLE.ps1", "INSTALL_THIS_PC.ps1", "tools/apply_prepared_update.ps1"):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    builder._assert_installer_unsigned_pins(tmp_path, app)
+    path = tmp_path / name
+    source = path.read_text(encoding="utf-8-sig")
+    original = next(iter(builder.APP_NATIVE_UNSIGNED))
+    pin = builder.APP_NATIVE_ALLOWLIST[original][1]
+    path.write_text(source.replace(pin, "0" * 64, 1), encoding="utf-8-sig")
+    with pytest.raises(builder.PortableBuildError):
+        builder._assert_installer_unsigned_pins(tmp_path, app)
+    path.write_text(source + f"\n'{original}' = '{pin}'\n", encoding="utf-8-sig")
+    with pytest.raises(builder.PortableBuildError):
+        builder._assert_installer_unsigned_pins(tmp_path, app)
 
 
 def test_native_inventory_rejects_added_missing_and_changed_pe(tmp_path, monkeypatch):

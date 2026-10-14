@@ -121,6 +121,7 @@ def _portable_stop_marker_release_preflight(
     environ: Mapping[str, str] | None = None,
     credential_input=None,
 ) -> dict[str, Any]:
+    from label_native_policy import unsigned_native_manifest_valid
     marker = user_relay_stop_path(paths.direct_sync_root)
     if not marker.exists():
         return {"status": "NOT_REQUIRED", "marker_present": False}
@@ -164,7 +165,7 @@ def _portable_stop_marker_release_preflight(
         or any(character not in "0123456789abcdef" for character in source_commit)
         or len(source_tree) != 40
         or any(character not in "0123456789abcdef" for character in source_tree)
-        or manifest.get("allowed_unsigned_app_pe") != []
+        or not unsigned_native_manifest_valid(owner_root, manifest.get("allowed_unsigned_app_pe"))
         or manifest.get("forbidden_package_roots") != []
         or manifest.get("canonical_installer") != "INSTALL_CANONICAL_PORTABLE.ps1"
         or _file_sha256(installer_path)

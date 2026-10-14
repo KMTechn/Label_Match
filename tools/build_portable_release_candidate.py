@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from kmtech_zero_pe.release_signature import validate_public_key_config  # noqa: E402
+from label_native_policy import UNSIGNED_NATIVE_SHA256  # noqa: E402
 
 EXPECTED_PYTHON = (3, 12, 10)
 PORTABLE_SCHEMA = "label-match-portable-tree-v1"
@@ -102,6 +103,7 @@ APP_NATIVE_UNSIGNED = frozenset({
     "site-packages/clr_loader/ffi/dlls/amd64/ClrLoader.dll",
     "site-packages/pythonnet/runtime/Python.Runtime.dll",
 })
+assert {path: APP_NATIVE_ALLOWLIST[path][1] for path in APP_NATIVE_UNSIGNED} == UNSIGNED_NATIVE_SHA256
 
 THIRD_PARTY_EXCLUDED_PATHS = frozenset({
     "qrcode/tests",
@@ -445,16 +447,17 @@ INSTALLER_UNSIGNED_PIN = re.compile(r"'(site-packages/[^']+)' = '([0-9a-f]{64})'
 
 
 def _assert_installer_unsigned_pins(output: Path, app_root: Path) -> None:
-    """Both installers' unsigned-PE pins == the builder's unsigned pins == the packet's actual files (one source of truth).
+    """Installer and Verify/apply pins equal the builder's canonical native pins.
 
     A shell kit update that changes only one of the three places would otherwise ship a stock no installer accepts."""
     expected = {path: APP_NATIVE_ALLOWLIST[path][1] for path in APP_NATIVE_UNSIGNED}
     actual = {path: _sha256(app_root / path) for path in APP_NATIVE_UNSIGNED if (app_root / path).is_file()}
     if actual != expected:
         raise PortableBuildError("packet unsigned natives differ from the builder pins")
-    for name in ("INSTALL_CANONICAL_PORTABLE.ps1", "INSTALL_THIS_PC.ps1"):
-        pinned = dict(INSTALLER_UNSIGNED_PIN.findall((output / name).read_text(encoding="utf-8-sig")))
-        if pinned != expected:
+    for name in ("INSTALL_CANONICAL_PORTABLE.ps1", "INSTALL_THIS_PC.ps1", "tools/apply_prepared_update.ps1"):
+        entries = INSTALLER_UNSIGNED_PIN.findall((output / name).read_text(encoding="utf-8-sig"))
+        pinned = dict(entries)
+        if len(entries) != len(expected) or pinned != expected:
             raise PortableBuildError(f"{name} unsigned native pins differ from the builder pins")
 
 

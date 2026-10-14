@@ -583,6 +583,73 @@ def test_first_run_and_rerun_succeed_without_mutating_readonly_code_root(tmp_pat
     assert code_after == code_before
 
 
+def test_native_stock_first_setup_reaches_ready(tmp_path, monkeypatch):
+    """Real fresh-child Verify precedes actual onboarding; external services stay isolated."""
+    import auto_update
+    from tests.test_fixed_helper_failure_evidence import _fresh_verify
+
+    result, root = _fresh_verify(tmp_path, "powershell.exe", native_case="stock")
+    assert result.returncode == 0
+    control = root.parent / "update-control"
+    settings = auto_update.canonical_startup_settings({})
+    (root / "app/auto-update-settings.json").write_bytes(settings)
+    policy = json.loads((control / "policy.json").read_text(encoding="utf-8-sig"))
+    policy.update(json.loads(settings), settings_sha256=hashlib.sha256(settings).hexdigest())
+    _write_json(control / "policy.json", policy)
+    _write_json(control / "active.json", {"schema": auto_update.SCHEMA, "sha": "a" * 40})
+    _write_json(control / "transition.json", {"schema": auto_update.SCHEMA, "phase": "CONFIRMED"})
+    manifest = json.loads((root / "portable-manifest.json").read_bytes())
+    from label_data_generation import CURRENT_VERSION
+    manifest["version"] = CURRENT_VERSION
+    _write_json(root / "portable-manifest.json", manifest)
+    _write_bootstrap_inventory_record(root)
+    # The first fixture call creates policy; subsequent Verify observes it.
+    lines = result.driver.read_text(encoding="utf-8-sig").splitlines()
+    result.driver.write_text("\n".join(line for line in lines if not line.startswith("@{operator_sid=")), encoding="utf-8-sig")
+    import shutil
+    selected = root.parent / "versions" / manifest["source_commit"]
+    shutil.copytree(root, selected)
+    _write_bootstrap_inventory_record(selected)
+    calls = []
+
+    def verify(selected_control, mode, *, code_root=None):
+        import subprocess
+        import shutil
+        assert selected_control == control and mode == "Verify" and code_root in {root, selected}
+        driver = tmp_path / "selected-verify.ps1"
+        quote = lambda path: "'" + str(path).replace("'", "''") + "'"
+        driver.write_text(result.driver.read_text(encoding="utf-8-sig").replace(
+            " -CodeRoot " + quote(root), " -CodeRoot " + quote(code_root)), encoding="utf-8-sig")
+        checked = subprocess.run([shutil.which("powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive",
+                                  "-WindowStyle", "Hidden", "-File", str(driver)], capture_output=True,
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+        assert checked.returncode == 0
+        calls.append(mode)
+        return ""
+
+    monkeypatch.setattr(auto_update, "fixed_helper", verify)
+    # Installed source-inventory acceptance is a controlled provider in this
+    # small first-setup fixture; the complete native/manifest Verify stays real.
+    monkeypatch.setattr(auto_update, "version_manifest", lambda _root: dict(manifest))
+    monkeypatch.setattr(auto_update, "lifecycle_task_observation", lambda _root: {"task_exists": True})
+    environment = _environment(tmp_path)
+    paths = resolve_current_user_onboarding_paths(root, environ=environment)
+    assert not paths.registration_report_path.exists()
+
+    def register(selected_paths):
+        assert calls  # The real selected-version Verify has completed.
+        _ready_state(selected_paths)
+        return 0
+
+    report = onboard_current_user(root, environ=environment, require_bootstrap_integrity=True,
+        registration_runner=register, profile_loader=_profile_loader, credential_loader=_credential_loader,
+        ledger_factory=_ledger_factory, autostart_installer=_autostart, scheduled_task_remover=_scheduled_task_absent,
+        legacy_task_quiescence_reader=_legacy_task_quiescent, relay_launcher=_relay_start)
+    assert report["status"] == "READY"
+    assert report["server_registration_verified"] is True
+    assert paths.registration_report_path.exists() and paths.ledger_path.is_file()
+
+
 def test_enabled_legacy_task_blocks_before_enrollment_or_persistence(tmp_path):
     app_root = tmp_path / "app"
     app_root.mkdir()
