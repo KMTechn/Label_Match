@@ -89,8 +89,30 @@ def main():
         projection = response.get_json()['data']
         headers = _machine_headers()
         if mode == 'spill-physical':
+            other_client = app.test_client()
+            seed_post = other_client.post
+            def traced_seed_post(*args, **kwargs):
+                response = seed_post(*args, **kwargs)
+                if response.status_code >= 400:
+                    import re
+                    code = str((response.get_json() or {}).get('error', {}).get('code', 'UNKNOWN'))
+                    payload = (kwargs.get('json') or {}).get('payload') or {}
+                    selected = payload.get('member_ids') or []
+                    scanned = payload.get('scanned_barcodes') or []
+                    import sqlite3
+                    with sqlite3.connect(database) as connection:
+                        actual = [row[0] for row in connection.execute(
+                            'SELECT normalized_barcode FROM logistics_units WHERE unit_id IN ('
+                            + ','.join('?' for _ in selected) + ')', selected)] if selected else []
+                    (state/'physical-seed-failure.safe.json').write_text(json.dumps({
+                        'status': response.status_code,
+                        'code': code if re.fullmatch('[A-Z0-9_]{1,80}', code) else 'UNKNOWN',
+                        'selected_count': len(selected), 'scanned_count': len(scanned),
+                        'actual_count': len(actual), 'matching_scans': sorted(actual)==sorted(scanned)}))
+                return response
+            other_client.post = traced_seed_post
             _other_seed, other_label, _other_resolved = _seed_sealed_label(
-                database, app.test_client(), suffix='spill-physical-other', ordinal=2, unit_count=4, prepare_balance=False)
+                database, other_client, suffix='SPILL-PHYSICAL-OTHER', ordinal=2, unit_count=4, prepare_balance=False)
             other_response = _resolve_package_source(app.test_client(), other_label)
             assert other_response.status_code == 200
             extra['other_evidence'] = other_response.get_json()['data']
