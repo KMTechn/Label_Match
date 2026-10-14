@@ -253,35 +253,8 @@ def test_inline_detail_keeps_keys_out_of_business_actions(app, keys):
     app._focus_scan_entry_if_available.assert_called()
 
 
-@pytest.fixture
-def calendar(app, monkeypatch):
-    import sys
-    calendar_module = NS(Calendar=Widget)
-    monkeypatch.setitem(sys.modules, 'tkcalendar', calendar_module)
-    monkeypatch.setattr(lm.ttk.Frame, '__init__', Widget.__init__)
-    for name in ('grid', 'winfo_children'):
-        monkeypatch.setattr(lm.ttk.Frame, name, getattr(Widget, name))
-    monkeypatch.setattr(lm.ttk.Frame, 'bind', Widget.bind)
-    monkeypatch.setattr(lm.ttk.Frame, 'destroy', Widget.destroy)
-    monkeypatch.setattr(lm.ttk, 'Frame', Widget)
-    monkeypatch.setattr(lm.ttk, 'Button', Widget)
-    return lm.CalendarWindow(app)
 
 
-@pytest.mark.parametrize('keys', ['SCAN\r', '\r', 'Y', 'N', ' '])
-def test_inline_calendar_only_mouse_selection_loads_history(app, calendar, keys):
-    pending = [calendar]
-    while pending:
-        widget = pending.pop()
-        for char in keys:
-            assert widget.bindings['<KeyPress>'](NS(char=char)) == 'break'
-            assert widget.bindings['<KeyRelease>'](NS(char=char)) == 'break'
-        pending.extend(widget.children)
-    app._load_history_and_rebuild_summary.assert_not_called()
-    assert '받지 않았습니다' in app.update_big_display.call_args.args[0]
-    calendar.on_select()
-    app._load_history_and_rebuild_summary.assert_called_once_with(datetime.datetime(2026, 10, 4))
-    assert not calendar.alive
 
 
 def test_pointer_notice_keeps_entry_focus_and_warning_style(app):

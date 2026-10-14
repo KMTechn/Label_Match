@@ -20,7 +20,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -507,32 +507,6 @@ def _invoke_first_tk_button(widget: Any, prefixes: tuple[str, ...] = ("확인", 
     return False
 
 
-def _schedule_tk_toplevel_capture_and_close(
-    app: Any,
-    screenshots: list[dict[str, Any]],
-    screenshot_dir: Path,
-    name: str,
-    title_contains: str,
-    delay_ms: int = 700,
-    note: str = "",
-) -> None:
-    def capture_and_close() -> None:
-        try:
-            screenshots.append(_capture_active(screenshot_dir, name, note, title_contains=title_contains))
-        except Exception as exc:
-            screenshots.append({"name": name, "note": note, "capture_error": repr(exc)})
-        for child in app.winfo_children():
-            try:
-                title = child.title()
-            except Exception:
-                continue
-            if title_contains in title:
-                try:
-                    child.destroy()
-                except Exception:
-                    pass
-
-    app.after(delay_ms, capture_and_close)
 
 
 def _schedule_tk_entry_dialog_submit(
@@ -720,35 +694,6 @@ def _rows_containing(rows: list[dict[str, str]], needle: str) -> list[dict[str, 
     return [row for row in rows if needle in json.dumps(row, ensure_ascii=False)]
 
 
-def _write_past_row(label_match_module: Any, app: Any, marker: str) -> Path:
-    yesterday = datetime.now() - timedelta(days=1)
-    path = Path(app.data_manager._get_log_filepath(yesterday))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    exists = path.exists()
-    details = {
-        "master_label_code": f"PAST-{marker}",
-        "item_code": REAL_MASTER,
-        "item_name": "PAST_UI_WALKTHROUGH",
-        "spec": "E2E",
-        "scan_count": TOTAL_SCAN_COUNT,
-        "scanned_product_barcodes": [
-            f"PAST-{marker}",
-            *(f"PRODUCT_PAST-{marker}_{index}" for index in range(1, PRODUCT_SAMPLE_COUNT + 1)),
-            f"FINAL_LABEL_PAST-{marker}{GS}6D{yesterday.strftime('%Y%m%d')}",
-        ],
-        "parsed_product_barcodes": [f"PAST-{marker}"] * TOTAL_SCAN_COUNT,
-        "final_result": label_match_module.LABEL_MATCH_RESULT_PASS,
-        "result_display": label_match_module.LABEL_MATCH_RESULT_PASS,
-        "production_date": yesterday.strftime("%Y-%m-%d"),
-        "set_id": f"past-{marker}",
-        "phase": "-",
-    }
-    with path.open("a", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        if not exists:
-            writer.writerow(["timestamp", "worker_name", "event", "details"])
-        writer.writerow([yesterday.isoformat(), app.data_manager.worker_name, label_match_module.Label_Match.Events.TRAY_COMPLETE, json.dumps(details, ensure_ascii=False)])
-    return path
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -1001,30 +946,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         screenshots.append(_capture_window(app, screenshot_dir, "19_restored_set_completed", "restored set completed"))
         actions.append({"name": "restore_prompt_and_complete", "master": restore_master})
 
-        _write_past_row(label_match_module, app, marker)
-        _schedule_tk_toplevel_capture_and_close(
-            app,
-            screenshots,
-            screenshot_dir,
-            "20_date_picker_dialog",
-            "날짜 선택",
-            delay_ms=700,
-            note="date picker modal visible",
-        )
-        app.date_search_button.invoke()
-        _pump(app, 0.3)
-        target_date = datetime.now() - timedelta(days=1)
-        app._load_history_and_rebuild_summary(target_date)
-        _wait_history_idle(app)
-        screenshots.append(_capture_window(app, screenshot_dir, "21_past_history_view", "past history view-only mode"))
-        before_scan_rows = len(_rows_containing(_csv_rows(Path(app.data_manager._get_log_filepath())), "PRODUCT_SHOULD_BE_BLOCKED"))
-        _operator_scan(app, f"PRODUCT_SHOULD_BE_BLOCKED_{marker}", seconds=0.35)
-        after_scan_rows = len(_rows_containing(_csv_rows(Path(app.data_manager._get_log_filepath())), "PRODUCT_SHOULD_BE_BLOCKED"))
-        screenshots.append(_capture_window(app, screenshot_dir, "22_past_history_scan_blocked", "scan attempt blocked during past view"))
-        app.today_button.invoke()
-        _wait_history_idle(app)
-        screenshots.append(_capture_window(app, screenshot_dir, "23_today_restored", "today view restored"))
-        actions.append({"name": "past_history_view_and_blocked_scan", "blocked_rows_before": before_scan_rows, "blocked_rows_after": after_scan_rows})
 
         malicious = 'CLC=BAD<script>alert(1)</script>|SPC=../..;DROP TABLE x;=HYPERLINK("http://bad")|PHS=9'
         _operator_scan(app, malicious)

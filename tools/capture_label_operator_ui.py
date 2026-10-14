@@ -4877,7 +4877,6 @@ def collect_ui_geometry(
     ]
     history_button_names = (
         ("history_today_button", "today_button"),
-        ("history_date_search_button", "date_search_button"),
         ("history_decrease_font_button", "decrease_font_button"),
         ("history_increase_font_button", "increase_font_button"),
     )
