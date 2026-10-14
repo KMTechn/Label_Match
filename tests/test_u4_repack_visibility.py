@@ -44,7 +44,7 @@ def assert_visible(app, expected_ids, full_label):
     selected = [row for row in candidates if row.get('repack_review')]
     assert {row['set_id'] for row in selected} == set(expected_ids)
     assert all(row['current'] is None and row['package']['local_completion_committed']==1 for row in selected)
-    assert all(row['repack_review']['label']=='확인 필요' for row in selected)
+    assert all(row['repack_review']['label']=='관리자 회수 대기' for row in selected)
     assert all(row['repack_review']['source']=='현품표 '+full_label for row in selected)
     processor = LabelMatchScreenProcessor(app,module=lm)
     try:
@@ -52,8 +52,8 @@ def assert_visible(app, expected_ids, full_label):
         visible = [row for row in processor._recovery['rows'] if row['set_id'] in expected_ids]
         assert len(visible)==len(expected_ids)
         for row in visible:
-            assert row['tag']=='확인 필요' and row['item']=='현품표 '+full_label
-            assert row['status'] in {'회사 서버가 다시 포장을 거절했습니다','이전 포장 순서를 확인할 수 없습니다'}
+            assert row['tag']=='관리자 회수 대기' and row['item']=='현품표 '+full_label
+            assert row['status'] in {'회사 서버가 다시 포장을 거절했습니다\n웹 사무실에서 현장 관리자가 제품을 새 이적 묶음으로 회수해야 합니다','이전 포장 순서를 확인할 수 없습니다\n웹 사무실에서 현장 관리자가 제품을 새 이적 묶음으로 회수해야 합니다'}
             assert row['actions']==[]
     finally:
         processor.uninstall()
@@ -130,15 +130,15 @@ def test_same_phs2_scan_shows_fixed_band_without_new_set_network_pin_or_queue_wr
     for _ in range(2):
         scan(app,master)
         notice=app._phs_label_guidance_notice
-        assert notice.title=='이 현품표는 확인이 필요합니다'
-        assert notice.message=='웹 사무실에서 이 이적 묶음을 확인하세요'
+        assert notice.title=='이 현품표는 관리자 회수 대기입니다'
+        assert notice.message=='제품은 따로 두고 현장 관리자에게 알리세요\n다른 현품표 작업은 계속할 수 있습니다'
         assert app.current_set_info==current
         assert not app._ui_lane_is_busy()
     assert dialogs==[]
     processor=LabelMatchScreenProcessor(app,module=lm)
     try:
         bands=_alerts(processor,None,app._phs_label_guidance_notice)
-        assert bands[0]['text']=='이 현품표는 확인이 필요합니다 — 웹 사무실에서 이 이적 묶음을 확인하세요'
+        assert bands[0]['text']=='이 현품표는 관리자 회수 대기입니다\n제품은 따로 두고 현장 관리자에게 알리세요\n다른 현품표 작업은 계속할 수 있습니다'
         assert 'choices' not in bands[0]
     finally:
         processor.uninstall()

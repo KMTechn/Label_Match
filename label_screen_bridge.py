@@ -743,6 +743,9 @@ def _alerts(processor, view, notice):
         message = _text(app._compact_operator_notice_message(notice.message))
         band = {"kind": BAND.get(str(notice.tone or "danger"), "warn"), "code": None,
                 "text": f"{_text(notice.title)} — {message}" if message else _text(notice.title)}
+        if notice.kind == "scanner_notice" and notice.title in {
+                "이 현품표는 관리자 회수 대기입니다", "이 제품은 관리자 회수 대기 중입니다"}:
+            band["text"] = str(notice.title) + "\n" + str(notice.message)
         if (app.__dict__.get("_pending_workflow_error") or app.__dict__.get("_workflow_pending_error")
                 or callable(app.__dict__.get("_workflow_notice_action"))):
             action_text = _text(app.__dict__.get("_workflow_notice_action_text") or "확인")
@@ -871,7 +874,8 @@ def _recovery_row(app, item):
     review = item.get("repack_review")
     if review:
         return {"set_id": str(item["set_id"]), "tag": review["label"],
-                "item": review["source"], "status": review["message"], "actions": []}
+                "item": review["source"],
+                "status": review["message"] + "\n" + review["instruction"], "actions": []}
     held = item.get("held") or {}
     reason = "이 건의 상태를 다시 확인하거나 보류로 두세요."
     if held:

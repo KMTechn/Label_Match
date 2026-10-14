@@ -9938,11 +9938,12 @@ class Label_Match(tk.Tk):
         except (TypeError, ValueError, AttributeError):
             source = ""
         return {
-            "label": "확인 필요", "source": "현품표 " + source,
+            "label": "관리자 회수 대기", "source": "현품표 " + source,
             "message": ("회사 서버가 다시 포장을 거절했습니다"
                         if package["last_error_code"] == "REPACK_REOPEN_REFUSED"
                         else "이전 포장 순서를 확인할 수 없습니다"),
-            "notice": "회사 서버가 아직 다시 포장을 받지 않습니다\n웹 사무실에서 이 이적 묶음을 확인하세요",
+            "instruction": "웹 사무실에서 현장 관리자가 제품을 새 이적 묶음으로 회수해야 합니다",
+            "notice": "아직 회수되지 않았습니다\n웹 사무실에서 회수한 뒤 다시 확인하세요",
         }
 
     def _package_recovery_candidates(self):
@@ -12297,7 +12298,7 @@ class Label_Match(tk.Tk):
                 review = item.get("repack_review")
                 if review:
                     reason = review["label"] + " · " + review["source"]
-                    detail_rows[-1] = "\n".join((review["label"], review["source"], review["message"]))
+                    detail_rows[-1] = "\n".join((review["label"], review["source"], review["message"], review["instruction"]))
                 listing.insert(tk.END, f"{len(detail_rows)}. {reason}")
 
         def show_details(_event=None):
@@ -15949,6 +15950,22 @@ class Label_Match(tk.Tk):
         if self._block_active_history_load_action("스캔"):
             return
 
+        lookup_cancelled_product = getattr(
+            self.__dict__.get("package_outbox"), "cancelled_package_for_barcode", None)
+        if callable(lookup_cancelled_product) and not raw_input.startswith("KMCMD:"):
+            try:
+                cancelled_product = lookup_cancelled_product(raw_input)
+            except Exception:
+                consume_input()
+                self._show_scanner_notice(
+                    "제품 회수 상태를 확인하지 못했습니다", "저장 폴더를 확인하고 다시 스캔하세요")
+                return
+            if cancelled_product:
+                consume_input()
+                self._show_scanner_notice(
+                    "이 제품은 관리자 회수 대기 중입니다", "따로 두고 현장 관리자에게 알리세요")
+                return
+
         if self._csv_completed_set_blocks_edit(raw_input):
             consume_input()
             return
@@ -16123,8 +16140,8 @@ class Label_Match(tk.Tk):
                 if repack_review:
                     consume_input()
                     self._show_scanner_notice(
-                        "이 현품표는 확인이 필요합니다",
-                        "웹 사무실에서 이 이적 묶음을 확인하세요",
+                        "이 현품표는 관리자 회수 대기입니다",
+                        "제품은 따로 두고 현장 관리자에게 알리세요\n다른 현품표 작업은 계속할 수 있습니다",
                     )
                     return
                 if held or label_hold:

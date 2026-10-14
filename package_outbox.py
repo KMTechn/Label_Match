@@ -14,7 +14,7 @@ import threading
 from typing import Any, Callable, Iterator, Mapping
 
 from deferred_intent_capture import supersede_for_legacy_outbox
-from package_command_draft import PackageCommandDraft, canonical_json, stable_id
+from package_command_draft import PackageCommandDraft, canonical_barcodes, canonical_json, stable_id
 from package_errors import PackageLogisticsError, _bounded_retry_after_seconds
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 from label_admin_pin import active_pin_operation
@@ -1426,6 +1426,53 @@ class PackageOutbox:
                 (input_tag_id, input_tag_id, source_label, source_label),
             ).fetchone()
             return dict(row) if row else None
+
+    def cancelled_package_for_barcode(self, barcode: str):
+        """Read known members of packages whose acknowledged cancel refused reopening.
+
+        ACKed commands prove their QA/exact scans. Hydrated source rows additionally
+        identify unscanned members, restricted to the actual package receipt IDs.
+        Missing barcode evidence never stands in for an entire item or source.
+        """
+        normalized = canonical_barcodes((barcode,))
+        if not normalized:
+            return None
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT package.idempotency_key,package.set_id,package.command_json,
+                          package.draft_json,package.receipt_json
+                   FROM package_command_outbox AS package
+                   JOIN package_cancellation_outbox AS cancel
+                     ON cancel.package_idempotency_key=package.idempotency_key
+                   WHERE package.status='ACKED' AND cancel.status='ACKED'
+                     AND (json_type(CASE WHEN json_valid(cancel.receipt_json)
+                                    THEN cancel.receipt_json ELSE '{}' END,'$.data.reopen')='false'
+                       OR json_type(CASE WHEN json_valid(cancel.receipt_json)
+                                    THEN cancel.receipt_json ELSE '{}' END,'$.reopen')='false')
+                   ORDER BY cancel.created_at,cancel.idempotency_key"""
+            )
+            for row in rows:
+                command = json.loads(row['command_json'] or '{}')
+                draft = json.loads(row['draft_json'] or '{}')
+                receipt = json.loads(row['receipt_json'] or '{}')
+                data = receipt.get('data', receipt)
+                payload = command.get('payload', {})
+                known = []
+                for evidence in (payload, data):
+                    for field in ('sample_barcodes', 'exact_rescan_barcodes'):
+                        values = evidence.get(field)
+                        if isinstance(values, list):
+                            known.extend(value for value in values if isinstance(value, str))
+                member_ids = set(data.get('member_ids') or ())
+                source = draft.get('work_group_source') or {}
+                for member in source.get('members') or ():
+                    if isinstance(member, Mapping) and member.get('unit_id') in member_ids:
+                        value = member.get('normalized_barcode')
+                        if isinstance(value, str):
+                            known.append(value)
+                if normalized[0] in canonical_barcodes(known):
+                    return {'idempotency_key': row['idempotency_key'], 'set_id': row['set_id']}
+        return None
 
     def dismiss_recoverable_prewrite_conflict(
         self, key: str
