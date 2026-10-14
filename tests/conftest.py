@@ -22,7 +22,7 @@ def native_window_calls(monkeypatch):
     original = SimpleNamespace(activate=native.activate_pid, foreground=native.set_foreground_window,
                                flash=native.flash_window, notice=native.timed_notice,
                                show=native.show_window, bring=native.bring_window_to_top, focus=native.set_focus)
-    protected = {"EnumWindows", "ShowWindow", "ShowWindowAsync", "SetForegroundWindow",
+    protected = {"EnumWindows", "ShowWindow", "ShowWindowAsync", "SetForegroundWindow", "BringWindowToTop", "SetFocus",
                  "FlashWindowEx", "MessageBoxW", "MessageBoxTimeoutW"}
 
     class GuardedUser32:

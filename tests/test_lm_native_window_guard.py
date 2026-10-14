@@ -74,6 +74,6 @@ def test_capture_does_not_swallow_native_window_guard_assertions(api):
 @pytest.mark.parametrize("api", ["ShowWindow", "BringWindowToTop", "SetFocus", "SetForegroundWindow"])
 @pytest.mark.iwrun_real_window("ShowWindow", "BringWindowToTop", "SetFocus", "SetForegroundWindow")
 def test_absolute_user32_loader_is_blocked_before_native_window_actions(api):
-    with pytest.raises(AssertionError, match="native window"):
+    with pytest.raises(AssertionError, match="^NATIVE_WINDOW_CALL_BLOCKED:"):
         function = getattr(ctypes.WinDLL("C:/Windows/System32/user32.dll"), api)
         function(7, 9) if api == "ShowWindow" else function(7)
