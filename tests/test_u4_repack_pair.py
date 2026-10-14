@@ -117,6 +117,16 @@ def test_offline_two_repacks_retry_create_and_restart_preserve_causal_delivery(t
             conn.execute("UPDATE package_outbox_schema_info SET value='label-match-package-outbox-v11' WHERE key='schema_version'")
     outbox = PackageOutbox(outbox.db_path)
     cancels = PackageCancellationOutbox(outbox.db_path)
+    if legacy:
+        # §13: v11 has no durable completion order; do not infer the chain.
+        create_review = outbox.list_conflicts()
+        assert len(create_review) == 3
+        assert all(row["last_error_code"] == "REPACK_PREDECESSOR_REVIEW_REQUIRED" for row in create_review)
+        assert all(row["local_completion_order"] is None and row["predecessor_package_key"] is None for row in create_review)
+        assert outbox.claim_next() is None
+        assert cancels.claim_next() is None
+        assert not server.sent
+        return
     initial_keys = [outbox.get_by_set_id(draft.set_id)["idempotency_key"] for draft in drafts]
     assert [outbox.get_by_set_id(draft.set_id)["predecessor_package_key"] for draft in drafts] == [None, *initial_keys[:2]]
     source = server.source

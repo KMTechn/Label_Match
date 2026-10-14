@@ -24845,6 +24845,12 @@ def main(argv=None):
         exc._startup_check_refusal = True
         _show_first_run_onboarding_error(exc)
         return ONBOARDING_EXIT_CODE
+    except PackageLogisticsError as exc:
+        if getattr(exc, "code", "") != "PACKAGE_OUTBOX_SCHEMA_TOO_NEW":
+            raise
+        print(str(exc), file=sys.stderr)
+        observe_startup(["DATA_GENERATION_REFUSED"], refused=True)
+        return ONBOARDING_EXIT_CODE
     except DataGenerationError as exc:
         print(str(exc), file=sys.stderr)
         try:

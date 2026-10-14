@@ -75,9 +75,9 @@ def test_predecessor_follows_durable_completion_order_not_enqueue_order_or_clock
 
 
 @pytest.mark.parametrize("store_type", [PackageOutbox, PackageCancellationOutbox])
-def test_v11_migration_freezes_predecessors_without_changing_live_delivery(tmp_path, store_type):
+def test_v11_independent_single_migration_preserves_live_delivery(tmp_path, store_type):
     outbox = PackageOutbox(tmp_path / "outbox.db")
-    originals = [_draft_for_set(name) for name in ("A", "B", "C")]
+    originals = [_draft_for_set(name, independent_source=True) for name in ("A", "B", "C")]
     for draft in originals:
         queued(outbox, draft)
     claimed = outbox.claim_next()
@@ -89,7 +89,7 @@ def test_v11_migration_freezes_predecessors_without_changing_live_delivery(tmp_p
         conn.execute("UPDATE package_outbox_schema_info SET value='label-match-package-outbox-v11' WHERE key='schema_version'")
     store_type(outbox.db_path)
     restarted = PackageOutbox(outbox.db_path)
-    expected = [None, before[0]["idempotency_key"], before[1]["idempotency_key"]]
+    expected = [None, None, None]
     for order, (draft, old, predecessor) in enumerate(zip(originals, before, expected), 1):
         row = restarted.get_by_set_id(draft.set_id)
         assert row["local_completion_order"] == order
@@ -98,6 +98,8 @@ def test_v11_migration_freezes_predecessors_without_changing_live_delivery(tmp_p
         assert {key: value for key, value in row.items() if key not in causal} == {
             key: value for key, value in old.items() if key not in causal}
     assert restarted.get_by_set_id(claimed["set_id"])["status"] == "SENDING"
+    assert {restarted.claim_next()["set_id"] for _ in range(2)} == {
+        draft.set_id for draft in originals if draft.set_id != claimed["set_id"]}
     assert restarted.claim_next() is None
 
 
