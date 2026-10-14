@@ -1,8 +1,9 @@
 """Append-only cancellation recovery evidence and once-only review closure."""
 import json
+import sqlite3
 
 from package_command_draft import canonical_json
-from package_errors import PackageLogisticsError
+from package_errors import PackageLogisticsError, PackageRecoveryEvidenceError
 from package_recovery import CONTRACT_SHA256, recovery_expectation, validate_recovery_read
 
 
@@ -25,6 +26,14 @@ def initialize_recovery_schema(conn, *, validate=True):
         operator_id TEXT NOT NULL, operator_name TEXT NOT NULL)''')
     if not validate:
         return
+    try:
+        _validate_stored_recovery_evidence(conn)
+    except (PackageLogisticsError, ValueError, TypeError, KeyError, AttributeError,
+            OverflowError, sqlite3.DatabaseError):
+        raise PackageRecoveryEvidenceError() from None
+
+
+def _validate_stored_recovery_evidence(conn):
     # A corrupted record must never become authority to skip a product/source hold.
     for row in conn.execute('SELECT * FROM package_recovery_evidence').fetchall():
         expected = expectation_for_cancel(conn, row['cancel_key'])

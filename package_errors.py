@@ -12,6 +12,16 @@ class PackageLogisticsError(RuntimeError):
     pass
 
 
+class PackageRecoveryEvidenceError(PackageLogisticsError):
+    """A fixed startup refusal; stored receipt contents never enter the message."""
+
+    code = 'PACKAGE_RECOVERY_STORED_EVIDENCE_INVALID'
+    message = '저장된 포장 회수 증거를 확인하지 못했습니다. 자료를 보존하고 관리자에게 복구를 요청하세요.'
+
+    def __init__(self):
+        super().__init__(self.code + ': ' + self.message)
+
+
 class PackageTransportError(PackageLogisticsError):
     pass
 
