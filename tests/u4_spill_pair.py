@@ -62,7 +62,7 @@ def test_real_refused_cancel_member_is_blocked_before_other_label_and_other_prod
         app.package_outbox=owner.package_outbox
         other=server.data['other_projection']
         server.source=copy.deepcopy(other)
-        item=other['item_code']
+        item=draft_for(server,'guarded-other-label',other['active_seal']['seal_qr_payload']).item_code
         app.items_data[item]={'item_name':item,'spec':item}
         scan(app,item)
         before=copy.deepcopy(app.current_set_info)
