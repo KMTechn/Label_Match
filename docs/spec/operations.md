@@ -1479,7 +1479,13 @@ PowerShell 원문은 byte I/O로 BOM과 줄 끝을 보존한다. 비ASCII PowerS
 
 The canonical unsigned native hashes are `label_native_policy.UNSIGNED_NATIVE_SHA256`. The portable builder checks both public installer copies and `tools/apply_prepared_update.ps1` against those exact pins and the actual bytes before building. Verify and update selection use the same `Assert-StartupUpdateVersion` check. The supported relay-stop release preflight uses the same Python policy. Each readback accepts the old empty list or exactly the three pinned files; duplicates, extra paths, absent files and changed hashes fail.
 
-Recovery card: 같은 작업자 지원 제거(main --remove-current-user-setup) → 관리자 INSTALL_THIS_PC.ps1 -Uninstall → 고친 v2.0.104 승인 키트 재설치 → 같은 작업자 첫 설정 READY 확인; 자료·설정·등록·전송 대기 보존.
+Recovery card: 같은 작업자 지원 제거(main --remove-current-user-setup) → 관리자 INSTALL_THIS_PC.ps1 -Uninstall → 고친 승인 키트 재설치 → 같은 작업자 첫 설정 READY 확인; 자료·설정·등록·전송 대기 보존.
+
+### 공개 기계 helper의 임대 범위 (w9firstupdsub193)
+
+공개 설치기는 검증한 helper 바이트를 메모리 ScriptBlock으로 실행한다. 배치 helper의 lifecycle 조회·활성화는 호출 helper가 보유한 임대를 `-Lease ([ref]$writerFenceLease)`로 받아 같은 참조를 해제·재취득한다. launcher의 script 범위에 있는 임대를 찾거나 바꾸지 않는다. 지원 제거 뒤 `removed.json` 또는 `update-control`이 남아도 기존 lifecycle 판정을 실행하며, 임대 없음·fence 변경·자식 실패의 거절은 유지한다.
+
+기계 `RECOVERY_REQUIRED`의 지원 복구는 원 감사·자료·등록·대기를 보존하고 실제 작업자 persistence·제품/자식 종료·fence 상태를 확인한 뒤 승인 packet의 `INSTALL_THIS_PC.ps1 -Uninstall -InstallRoot <canonical>` 코드 전용 제거를 사용한다. 이 틀에는 `-WorkerSid`를 추가하지 않는다. 제거 readback 뒤 고친 packet을 공개 기계 입구로 새 거래에 설치하고 같은 작업자의 첫 설정 READY를 별도로 확인한다. 감사 수정·수동 fence 해제·일반 rollback-resume로 상태를 바꾸지 않는다. PS5.1/7의 격리 메모리 helper 회귀는 현장 재설치·READY의 성공 증거와 구별한다.
 
 ## Atomic file publication
 

@@ -205,10 +205,11 @@ function Enter-LabelCanonicalPlacement([int]$TimeoutMilliseconds = 5000) {
         -TimeoutMilliseconds $TimeoutMilliseconds
 }
 
-function Invoke-LabelPlacementLifecycleChild([scriptblock]$Action, [switch]$Activate) {
+function Invoke-LabelPlacementLifecycleChild([scriptblock]$Action, [switch]$Activate, [ref]$Lease) {
     # A delegated child still needs the native admission mutex. Keep the session
     # fence while lending only this call's sources, then restore the exact grant.
-    if ($null -eq $script:writerFenceLease -or -not $script:writerFenceLease.acquired) {
+    # The frozen public helper runs in a child scope, not the launcher's script scope.
+    if ($null -eq $Lease -or $null -eq $Lease.Value -or -not $Lease.Value.acquired) {
         throw 'LABEL_PLACEMENT_CHILD_ADMISSION_MISSING'
     }
     $before = Assert-LabelWriterFenceOwner -ControlRoot $WriterFenceControlRoot `
@@ -237,8 +238,8 @@ function Invoke-LabelPlacementLifecycleChild([scriptblock]$Action, [switch]$Acti
         for ($index = 0; $index -lt $names.Count; $index++) {
             [Environment]::SetEnvironmentVariable($names[$index], $values[$index], 'Process')
         }
-        Exit-LabelWriterAdmission $script:writerFenceLease
-        $script:writerFenceLease = $null; $released = $true
+        Exit-LabelWriterAdmission $Lease.Value
+        $Lease.Value = $null; $released = $true
         $output = @(& $Action)
         $childExitCode = $LASTEXITCODE
         return $output
@@ -246,7 +247,7 @@ function Invoke-LabelPlacementLifecycleChild([scriptblock]$Action, [switch]$Acti
     finally {
         try {
             if ($released) {
-                $script:writerFenceLease = Enter-LabelWriterAdmission -ControlRoot $WriterFenceControlRoot `
+                $Lease.Value = Enter-LabelWriterAdmission -ControlRoot $WriterFenceControlRoot `
                     -TimeoutMilliseconds 15000
             }
             if ($null -ne $scoped) {
@@ -2103,7 +2104,7 @@ $applicationParent = Split-Path -Parent $installRootFull
 $supportedContext = $null
 if (-not $testOverride -and ((Test-Path -LiteralPath (Join-Path $applicationParent 'update-control')) -or
     (Test-Path -LiteralPath (Join-Path $applicationParent 'removed.json')))) {
-    $healthOutput = @(Invoke-LabelPlacementLifecycleChild -Action { & (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
+    $healthOutput = @(Invoke-LabelPlacementLifecycleChild -Lease ([ref]$writerFenceLease) -Action { & (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
         (Join-Path $sourceRootFull 'app\main.py') --label-match-lifecycle-context `
         --install-root $applicationParent --operation install })
     if ($LASTEXITCODE -ne 0) { throw ('자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요. ' + ($healthOutput -join "`n")) }
@@ -2241,7 +2242,7 @@ try {
     Write-Output "release_layout=$releaseLayout"
     Write-Output "integrity_record=$(Join-Path $placementRoot $IntegrityFileName)"
     if ($versionedPlacement) {
-        $activation = @(Invoke-LabelPlacementLifecycleChild -Activate -Action { & (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
+        $activation = @(Invoke-LabelPlacementLifecycleChild -Lease ([ref]$writerFenceLease) -Activate -Action { & (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
             (Join-Path $sourceRootFull 'app\main.py') --label-match-lifecycle-context `
             --install-root $applicationParent --expected-from-commit $ExpectedActiveCommit `
             --activate-supported-commit $nextCommit })

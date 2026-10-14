@@ -5,6 +5,8 @@
 
 # Label_Match 진행·공백·추가 제안
 
+- w9firstupdsub193: 104 공개 기계 설치가 지원 제거 뒤 lifecycle 조회에서 script 범위의 없는 임대를 읽던 결함을 호출 helper의 명시적 임대 참조로 고친다. PS5.1/7 메모리 helper와 기존 fence/자식 실패 회귀를 확인한다. 설치/되돌림 코드의 독립 검토, 새 판 packet 빌드, 검사 6 지원 제거→공개 재설치→같은 작업자 READY 실측은 1차의 후속 확인 대상이다.
+
 U4 앱: 같은 현품표의 취소 ACK 전 새 포장 전송을 기다리고, F2 결과와 옛 서버/되돌리기 거절 안내를 구분한다. 새 화면 `scan_cancel`은 기존 취소 outbox를 사용한다. 계약 대역 짝 시험 4종(새 포장·끊김 순서·F4 새 봉인·옛 서버 안내), 취소 ACK 재대조, 실제 PHS2의 F2/scan_cancel 뒤 같은 표 5회 스캔 로컬 완료를 headless로 확인했다. 실제 U3 서버의 작업군 되돌림·현장 PC/폰 출고 수용은 부모 레인의 후속 검증이다.
 
 - 설치/등록 주소 비교: 기계 표지와 등록에 쓴 relay endpoint가 다르면 `RECOVERY_REQUIRED`로 시작·relay 재사용을 거절하고 자료·대기열을 보존한다. 서버 반환 profile은 비교하지 않는다. 실제 재설치·안내 화면·옛 relay 종료 수용은 랩 확인 대상이다([절차](operations.md#onboarding-writer-admission)).

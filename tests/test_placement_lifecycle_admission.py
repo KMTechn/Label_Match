@@ -175,7 +175,7 @@ $global:LASTEXITCODE=0
 $caught='';$restored=$false;$environmentRestored=$false
 try{{
  try{{
-  $output=@(Invoke-LabelPlacementLifecycleChild -Action {{
+  $output=@(Invoke-LabelPlacementLifecycleChild -Lease ([ref]$script:writerFenceLease) -Action {{
    if({quote(damage)} -ceq 'throw'){{throw 'INJECTED_CHILD_FAILURE'}}
    if({quote(damage)} -ceq 'grant_changed'){{
     $changed=Read-LabelWriterFence $WriterFenceControlRoot
