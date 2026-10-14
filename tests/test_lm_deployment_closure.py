@@ -50,7 +50,7 @@ foreach($path in @(@PATHS@)){
  foreach($node in $ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true)){
   $name=$node.GetCommandName()
   if($name -in @('Invoke-LabelAtomicReplace','Invoke-LabelPinnedAtomicReplace')){$atomic++}
-  if($name -cne 'Move-Item'){continue};$direct++
+  if(($name -replace '^.*\\','') -notin @('Move-Item','Rename-Item')){continue};$direct++
   $parent=$node.Parent;$guarded=$false
   while($null -ne $parent){
    if($parent -is [Management.Automation.Language.IfStatementAst] -and

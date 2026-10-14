@@ -5298,7 +5298,12 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
         if ($null -ne $Lifecycle -and $Lifecycle.lifecycle_state -ceq 'INSTALLED') { $parameters.ExpectedActiveCommit=[string]$Lifecycle.from_commit }
         # Already elevated: the same launcher omits RunAs, preserving its pins and delegation.
         $exit = InvokeFrozenPlacementHelper $frozen $parameters
-        if ($exit -ne 0) { throw 'Machine code placement failed.' }
+        if ($exit -ne 0) {
+            $failure = [InvalidOperationException]::new('Machine code placement failed.')
+            $failure.Data['installation_preparation_exit_code'] = $exit
+            $failure.Data['placement_child_failure'] = $Script:LabelPlacementChildFailure
+            throw $failure
+        }
         # The pinned helper has completed its placement/readback. Later census,
         # shortcut or profile failures must retain a marker for that release.
         $workerPendingForPlacedCode = New-LabelMachineWorkerPendingMarker $run $Worker $SourceManifest $serverBaseUrl
@@ -5359,6 +5364,9 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
             }
         } catch { $audit.preimage_capture_failure=Get-LabelLaunchFailure $_ 'machine_preimage_capture' }
         $audit.status='RECOVERY_REQUIRED';$audit.failure=Get-LabelLaunchFailure $originalFailure 'machine_placement'
+        if ($originalFailure.Exception.Data.Contains('placement_child_failure')) {
+            $audit.placement_child_failure=$originalFailure.Exception.Data['placement_child_failure']
+        }
         if ($null -ne $Script:LabelPlacementSession -and $Script:LabelPlacementSession.child_exit_unproven) { $audit.code_state='UNKNOWN' }
         try {
             Save $auditFile $audit

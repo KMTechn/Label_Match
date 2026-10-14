@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _parse(tmp_path, engine, payload, *, child_exit=73, writer_fails=False):
     executable = shutil.which(engine)
     if not executable:
-        pytest.skip("PowerShell engine unavailable")
+        pytest.fail("PowerShell engine unavailable")
     source = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
     start = source.index("    if (Test-Path -LiteralPath $failurePath -PathType Leaf)",
                          source.index("function InvokeFrozenPlacementHelper"))
