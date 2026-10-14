@@ -24971,7 +24971,8 @@ def main(argv=None):
     except PackageLogisticsError as exc:
         if getattr(exc, 'code', '') == PackageRecoveryStorageError.code:
             print(str(PackageRecoveryStorageError()), file=sys.stderr)
-            observe_startup(['DATA_GENERATION_REFUSED'], refused=True)
+            observe_startup(['DATA_GENERATION_REFUSED'], refused=True,
+                            notice=PackageRecoveryStorageError)
             return ONBOARDING_EXIT_CODE
         if getattr(exc, 'code', '') == PackageRecoveryEvidenceError.code:
             print(str(PackageRecoveryEvidenceError()), file=sys.stderr)

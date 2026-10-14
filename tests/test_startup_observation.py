@@ -20,6 +20,7 @@ import label_match_single_instance as instance
 import startup_check as check
 import startup_observation as observation
 import writer_session_fence as fence
+from package_errors import PackageRecoveryStorageError
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -131,7 +132,8 @@ def test_slow_observation_produces_unknown_without_a_notice(diagnostic, monkeypa
     assert diagnostic.notices == []
 
 
-def test_simple_notice_contains_only_the_fixed_sentence_and_close_button(monkeypatch):
+@pytest.mark.parametrize("notice", [None, PackageRecoveryStorageError])
+def test_simple_notice_contains_only_the_fixed_sentence_and_close_button(monkeypatch, notice):
     import tkinter as tk
     labels, buttons, events = [], [], []
     class Parent:
@@ -147,11 +149,22 @@ def test_simple_notice_contains_only_the_fixed_sentence_and_close_button(monkeyp
     monkeypatch.setattr(tk, "Tk", lambda: parent)
     monkeypatch.setattr(tk, "Label", Widget)
     monkeypatch.setattr(tk, "Button", Widget)
-    observation.show_startup_blocked_notice()
-    assert len(labels) == len(buttons) == 1
-    assert labels[0]["text"] == observation.STARTUP_BLOCKED_MESSAGE
-    assert "\n" not in labels[0]["text"] and buttons[0]["text"] == "닫기"
-    assert "mainloop" in events and "destroy" in events
+    if notice is None:
+        observation.show_startup_blocked_notice()
+        assert len(labels) == len(buttons) == 1
+        assert labels[0]["text"] == observation.STARTUP_BLOCKED_MESSAGE
+        assert "\n" not in labels[0]["text"] and buttons[0]["text"] == "닫기"
+        assert "mainloop" in events and "destroy" in events
+    else:
+        observation.show_startup_blocked_notice(notice)
+        assert [label["text"] for label in labels] == [
+            "작업 기록을 읽지 못했습니다\n잠시 후 프로그램을 다시 켜세요",
+            "코드: PACKAGE_RECOVERY_STORAGE_UNAVAILABLE",
+            "다시 켜도 같으면 현장 관리자에게 알리세요",
+        ]
+        assert labels[1]["font"] == "TkSmallCaptionFont"
+        assert len(buttons) == 1 and buttons[0]["text"] == "닫기"
+        assert "mainloop" in events and "destroy" in events
 
 
 @pytest.fixture

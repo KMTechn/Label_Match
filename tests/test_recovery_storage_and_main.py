@@ -55,9 +55,9 @@ def test_valid_evidence_sql_read_error_has_its_own_fixed_code_and_main_refusal(t
         assert str(failure.value)==str(PackageRecoveryStorageError())
     notices=configure_main(monkeypatch,tmp_path,path)
     assert lm.main([])==lm.ONBOARDING_EXIT_CODE
-    assert notices==[(['DATA_GENERATION_REFUSED'],{'refused':True})]
+    assert notices==[(['DATA_GENERATION_REFUSED'],{'refused':True,'notice':PackageRecoveryStorageError})]
     assert capsys.readouterr().err==str(PackageRecoveryStorageError())+'\n'
-    assert PackageRecoveryStorageError.message=='관리자에게 알리세요'
+    assert PackageRecoveryStorageError.message=='작업 기록을 읽지 못했습니다\n잠시 후 프로그램을 다시 켜세요'
     assert len(reached)==3 and logical_snapshot(outbox)==before
 
 
