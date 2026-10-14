@@ -1848,8 +1848,8 @@ def test_immutable_cas_api_statuses_are_conflicts_even_when_marked_retryable(
 
 
 def test_retry_backoff_prevents_first_cancellation_from_starving_next_row(tmp_path):
-    first_draft = _draft_for_set("SET-STARVE-1")
-    second_draft = _draft_for_set("SET-STARVE-2")
+    first_draft = _draft_for_set("SET-STARVE-1", independent_source=True)
+    second_draft = _draft_for_set("SET-STARVE-2", independent_source=True)
     db_path = tmp_path / "cancel-starvation.sqlite3"
     package_outbox = PackageOutbox(db_path)
     for draft in (first_draft, second_draft):
@@ -2869,7 +2869,7 @@ def test_restart_uses_saved_command_and_recovers_server_receipt_without_rebuild(
 
 def test_offline_drain_attempts_multiple_locally_completed_packages_once_each(tmp_path):
     outbox = PackageOutbox(tmp_path / "offline-multiple.sqlite3")
-    drafts = [_draft_for_set("SET-OFFLINE-1"), _draft_for_set("SET-OFFLINE-2")]
+    drafts = [_draft_for_set("SET-OFFLINE-1", independent_source=True), _draft_for_set("SET-OFFLINE-2", independent_source=True)]
     keys = []
     for draft in drafts:
         row = outbox.enqueue(draft)
@@ -2910,7 +2910,7 @@ def test_offline_retry_fairness_survives_limit_and_restart_without_starvation(
 ):
     db_path = tmp_path / "offline-fairness.sqlite3"
     outbox = PackageOutbox(db_path)
-    drafts = [_draft_for_set(f"SET-OFFLINE-{index:02d}") for index in range(21)]
+    drafts = [_draft_for_set(f"SET-OFFLINE-{index:02d}", independent_source=True) for index in range(21)]
     keys = []
     for draft in drafts:
         row = outbox.enqueue(draft)
@@ -3208,8 +3208,8 @@ def test_v8_post_local_conflict_is_backfilled_as_pending_review_case(tmp_path):
 def test_held_package_keeps_original_command_and_does_not_reenter_sender(tmp_path):
     db_path = tmp_path / "held-package.sqlite3"
     outbox = PackageOutbox(db_path)
-    held_draft = _draft_for_set("SET-HELD")
-    good_draft = _draft_for_set("SET-GOOD")
+    held_draft = _draft_for_set("SET-HELD", independent_source=True)
+    good_draft = _draft_for_set("SET-GOOD", independent_source=True)
     held_row = outbox.enqueue(held_draft)
     good_row = outbox.enqueue(good_draft)
     outbox.mark_local_completion_committed(held_row["idempotency_key"])

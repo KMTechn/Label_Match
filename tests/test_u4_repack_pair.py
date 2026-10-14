@@ -2,6 +2,7 @@
 import copy
 from datetime import datetime, timedelta, timezone
 import json
+import sqlite3
 import uuid
 
 import pytest
@@ -16,7 +17,10 @@ from package_logistics import (
 )
 from sealed_transfer_exchange import SealedTransferExchangeCoordinator, SealedTransferExchangeStore
 from tests.test_lm_scan_cancel import SelectableTree, app_for_delete
-from tests.test_package_logistics import _projection, _qr, _receipt, _cancellation_receipt
+from tests.test_package_logistics import (
+    _projection, _qr, _receipt, _cancellation_receipt, _cancellation_intent,
+    _draft_for_set, _ack_package_creation,
+)
 from tests.test_sealed_transfer_exchange import FakeClient, _prepare, _target_projection
 from tests.test_u4_cancellation_order import queued
 from tests.test_deferred_lease_clock_retry import clock_case  # noqa: F401
@@ -83,6 +87,99 @@ class ReopenContractDouble:
                                membership_hash=self.source['membership_hash'])
         self.receipts[key] = receipt
         return {'ok': True, 'data': receipt}
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_offline_two_repacks_retry_create_and_restart_preserve_causal_delivery(tmp_path, monkeypatch, legacy):
+    clock = [datetime(2026, 10, 14, tzinfo=timezone.utc)]
+    stamp = lambda value: value.isoformat().replace("+00:00", "Z")
+    monkeypatch.setattr(logistics, "utc_now", lambda: stamp(clock[0]))
+    monkeypatch.setattr(logistics, "_utc_after", lambda seconds: stamp(clock[0] + timedelta(seconds=seconds)))
+    monkeypatch.setattr(logistics, "_utc_before", lambda seconds: stamp(clock[0] - timedelta(seconds=seconds)))
+    server = ReopenContractDouble()
+    outbox = PackageOutbox(tmp_path / "causal.db")
+    cancels = PackageCancellationOutbox(outbox.db_path)
+    drafts = [draft_for(server, name, _qr()) for name in ("A", "B", "C")]
+    intents = []
+    for draft in drafts:
+        server.drafts[draft.package_bundle_id] = draft
+        queued(outbox, draft)
+        if draft is not drafts[-1]:
+            intent = _cancellation_intent(draft)
+            intents.append(intent)
+            assert cancels.enqueue(intent)["status"] == "DEFERRED"
+            cancels.mark_local_event_committed(intent.cancellation_event_id)
+    if legacy:
+        with sqlite3.connect(outbox.db_path) as conn:
+            conn.execute("DROP INDEX ix_package_local_completion_order")
+            conn.execute("ALTER TABLE package_command_outbox DROP COLUMN local_completion_order")
+            conn.execute("ALTER TABLE package_command_outbox DROP COLUMN predecessor_package_key")
+            conn.execute("UPDATE package_outbox_schema_info SET value='label-match-package-outbox-v11' WHERE key='schema_version'")
+    outbox = PackageOutbox(outbox.db_path)
+    cancels = PackageCancellationOutbox(outbox.db_path)
+    initial_keys = [outbox.get_by_set_id(draft.set_id)["idempotency_key"] for draft in drafts]
+    assert [outbox.get_by_set_id(draft.set_id)["predecessor_package_key"] for draft in drafts] == [None, *initial_keys[:2]]
+    source = server.source
+    first_attempt = [True]
+
+    def transport(method, url, headers, body, timeout):
+        if method == "POST" and first_attempt[0]:
+            command = json.loads(body.decode("utf-8"))
+            assert command["command_type"] == "CREATE_PACKAGE"
+            assert command["payload"]["package_bundle_id"] == drafts[0].package_bundle_id
+            first_attempt[0] = False
+            error = PackageTransportError("offline original create")
+            error.retry_after_seconds = 60
+            raise error
+        return server.transport(method, url, headers, body, timeout)
+
+    client = PackageLogisticsClient(PackageClientConfig(
+        "https://unreachable.invalid", uuid.uuid4().hex, source["authority_scope_id"], "host", "device",
+        authority_epoch=source["authority_epoch"], ledger_plane=source["ledger_plane"],
+        plane_epoch=source["plane_epoch"]), transport=transport)
+    client.get_receipt_if_exists = lambda key, **kwargs: server.receipts.get(key)
+    def get_receipt(key, **kwargs):
+        if key not in server.receipts:
+            raise PackageApiError(404, "RECEIPT_NOT_FOUND", "receipt not received")
+        return server.receipts[key]
+    client.get_receipt = get_receipt
+    create = PackageOutboxProcessor(outbox, client)
+    result = create.drain()
+    assert result["retry"] == 1
+    assert result == {"acked": 0, "retry": 1, "conflict": 0}
+    original = outbox.get_by_set_id("A")
+    assert original["command_json"] and original["attempt_count"] == 1
+    assert not server.sent
+    other = _draft_for_set("OTHER", independent_source=True)
+    assert _ack_package_creation(outbox, other)["status"] == "ACKED"
+    assert PackageCancellationOutboxProcessor(cancels, client).drain()["acked"] == 0
+
+    # All three local completions, both cancellation intents and the retry survive.
+    outbox = PackageOutbox(outbox.db_path)
+    cancels = PackageCancellationOutbox(outbox.db_path)
+    create = PackageOutboxProcessor(outbox, client)
+    cancel = PackageCancellationOutboxProcessor(cancels, client)
+    keys = [outbox.get_by_set_id(draft.set_id)["idempotency_key"] for draft in drafts]
+    assert [outbox.get_by_set_id(draft.set_id)["predecessor_package_key"] for draft in drafts] == [None, *keys[:2]]
+    assert outbox.get_by_set_id("A")["command_json"] == original["command_json"]
+    clock[0] += timedelta(seconds=61)
+    for _ in range(2):
+        assert create.drain() == {"acked": 1, "retry": 0, "conflict": 0}
+        assert cancel.drain()["acked"] == 1
+    assert create.drain() == {"acked": 1, "retry": 0, "conflict": 0}
+    assert server.sent == [
+        ("CREATE_PACKAGE", drafts[0].package_bundle_id),
+        ("CANCEL_PACKAGE", drafts[0].package_bundle_id),
+        ("CREATE_PACKAGE", drafts[1].package_bundle_id),
+        ("CANCEL_PACKAGE", drafts[1].package_bundle_id),
+        ("CREATE_PACKAGE", drafts[2].package_bundle_id),
+    ]
+    assert [outbox.get_by_set_id(draft.set_id)["status"] for draft in drafts] == ["ACKED"] * 3
+    assert [outbox.get_by_set_id(draft.set_id)["attempt_count"] for draft in drafts] == [2, 1, 1]
+    assert outbox.get_repack_cancellation_receipt("A") is None
+    for draft, intent in zip(drafts[1:], intents):
+        receipt = json.loads(cancels.get_by_event_id(intent.cancellation_event_id)["receipt_json"])
+        assert outbox.get_repack_cancellation_receipt(draft.set_id) == receipt
 
 
 def draft_for(server, set_id, master):
