@@ -2957,11 +2957,29 @@ finally{foreach($s in $streams){$s.Dispose()}}
         if (($diagnosticItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $diagnosticItem.Length -gt 65536) {
             throw 'Placement child failure evidence is not a bounded ordinary file.'
         }
-        $record = [IO.File]::ReadAllText($failurePath) | ConvertFrom-Json
-        if ([string]$record.schema -cne 'label-match-placement-child-failure-v1' -or
-            [int]$record.exit_code -ne $childExit) { throw 'Placement child failure evidence differs.' }
-        $Script:LabelPlacementChildFailure = $record
-        if ($null -ne $record.PSObject.Properties['full_exception_trace']) {
+        # Diagnostic parsing must not replace the child's first failure.
+        $diagnosticText = [IO.File]::ReadAllText($failurePath)
+        $record = $null
+        try { $record = $diagnosticText | ConvertFrom-Json } catch { }
+        $knownFormat = $null -ne $record -and $record -is [pscustomobject] -and
+            $null -ne $record.PSObject.Properties['schema'] -and
+            $record.schema -is [string] -and
+            $record.schema -ceq 'label-match-placement-child-failure-v1' -and
+            $null -ne $record.PSObject.Properties['exit_code'] -and
+            ($record.exit_code -is [int] -or $record.exit_code -is [long])
+        if ($knownFormat) {
+            if ($record.exit_code -ne $childExit) { throw 'Placement child failure evidence differs.' }
+            $Script:LabelPlacementChildFailure = $record
+        } else {
+            if ($childExit -eq 0) { throw 'Placement child failure evidence differs.' }
+            $fallback=[ordered]@{schema='label-match-placement-child-failure-v1';phase='CHILD_EXIT';placement_code='PLACEMENT_DIAGNOSTIC_UNAVAILABLE';exit_code=$childExit;exception_type='System.InvalidOperationException';hresult=0;message=[string]$Script:KmtechRedactionRules.safe_messages[0];diagnostic_format='진단 형식 모름'}
+            # Retain the original record verbatim in protected evidence, including
+            # its reason/first cause. Never publish an unvalidated diagnostic.
+            try { $fallback.full_exception_trace=Write-KmtechProtectedFailureSidecar -Text $diagnosticText }
+            catch { $fallback.trace_failure_type=$_.Exception.GetType().Name }
+            $Script:LabelPlacementChildFailure = $fallback
+        }
+        if ($knownFormat -and $null -ne $record.PSObject.Properties['full_exception_trace']) {
             $tracePath = [string]$record.full_exception_trace.path
             if ($tracePath -cne ($failurePath + '.trace.txt')) { throw 'Placement trace path differs.' }
             $traceItem = Get-Item -Force -LiteralPath $tracePath
@@ -2973,8 +2991,8 @@ finally{foreach($s in $streams){$s.Dispose()}}
     }
     if ($childExit -ne 0 -and $null -eq $Script:LabelPlacementChildFailure) {
         $fallback=[ordered]@{schema='label-match-placement-child-failure-v1';phase='CHILD_EXIT';placement_code='PLACEMENT_DIAGNOSTIC_UNAVAILABLE';exit_code=$childExit;exception_type='System.InvalidOperationException';hresult=0;message=[string]$Script:KmtechRedactionRules.safe_messages[0]}
-        $reference=Write-KmtechProtectedFailureSidecar -Text ($fallback|ConvertTo-Json -Compress)
-        $fallback.full_exception_trace=$reference
+        try { $fallback.full_exception_trace=Write-KmtechProtectedFailureSidecar -Text ($fallback|ConvertTo-Json -Compress) }
+        catch { $fallback.trace_failure_type=$_.Exception.GetType().Name }
         $Script:LabelPlacementChildFailure=$fallback
     }
     return $childExit
