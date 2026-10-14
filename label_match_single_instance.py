@@ -314,7 +314,7 @@ def _validated_owner_notice(data_scope):
         if (type(pid) is not int or not 0 < pid < 2**32
                 or not isinstance(executable, str) or not ntpath.isabs(executable)
                 or ntpath.normcase(ntpath.normpath(executable)) != ntpath.normcase(ntpath.normpath(sys.executable))
-                or type(notice.get("closing", False)) is not bool
+                or (notice.get("closing") is not None and type(notice["closing"]) is not bool)
                 or not instance_win32.process_matches(pid, executable)):
             return None
         return notice
@@ -375,7 +375,7 @@ def _duplicate_entry(data_scope, activate=None):
         result = ActivationResult(False)
     if not result.found:
         try:
-            instance_win32.timed_notice(closing=bool(notice and notice.get("closing")))
+            instance_win32.timed_notice(closing=notice.get("closing") if notice is not None else None)
         except (OSError, AttributeError):
             pass
     return 0

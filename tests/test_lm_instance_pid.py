@@ -66,13 +66,15 @@ def test_foreground_rejection_flashes_only_the_owner_window():
     assert windows.flashes == [8]
 
 
-@pytest.mark.parametrize('closing', [False, True])
+@pytest.mark.parametrize('closing', [False, True, None])
 def test_no_window_notice_has_final_copy_one_default_button_and_five_second_timeout(closing):
     user = mock.Mock()
     native.timed_notice(closing=closing, user32=user)
     parent, text, title, flags, language, timeout = user.MessageBoxTimeoutW.call_args.args
     assert parent is None and title == '포장'
-    assert text == ('프로그램을 닫는 중입니다 · 잠시 뒤 다시 누르세요' if closing else '프로그램이 켜지는 중입니다 · 잠시 기다려 주세요')
+    assert text == {True: "프로그램을 닫는 중입니다 · 잠시 뒤 다시 누르세요",
+                    False: "프로그램이 켜지는 중입니다 · 잠시 기다려 주세요",
+                    None: "프로그램이 이미 켜져 있습니다 · 잠시 뒤 다시 누르세요"}[closing]
     assert flags & 0xF == 0 and flags & 0x300 == 0  # MB_OK, first button default
     assert timeout == 5000 and language == 0
 
@@ -105,7 +107,7 @@ def test_duplicate_returns_zero_and_never_constructs_a_second_app(ownership, win
     notice.assert_not_called()
 
 
-@pytest.mark.parametrize('closing', [False, True])
+@pytest.mark.parametrize('closing', [False, True, None])
 def test_duplicate_without_window_has_bounded_notice_and_zero_exit(ownership, closing):
     scope, record, process, activation, notice = ownership
     record['closing'] = closing
@@ -133,7 +135,7 @@ def test_stale_owner_notice_is_never_used_for_activation(ownership, stale):
     assert instance.run_guarded_entrypoint(lambda: pytest.fail('second app created'), data_scope=scope,
                                          acquire=lambda _scope: instance.MutexLease(False,'duplicate')) == 0
     activation.assert_not_called()
-    notice.assert_called_once_with(closing=False)
+    notice.assert_called_once_with(closing=None)
 
 
 @pytest.mark.parametrize('owner_thread', ['main', 'web_owner'])

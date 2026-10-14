@@ -7,6 +7,7 @@ import ntpath
 APP_NAME = "포장"
 OPENING_MESSAGE = "프로그램이 켜지는 중입니다 · 잠시 기다려 주세요"
 CLOSING_MESSAGE = "프로그램을 닫는 중입니다 · 잠시 뒤 다시 누르세요"
+UNKNOWN_MESSAGE = "프로그램이 이미 켜져 있습니다 · 잠시 뒤 다시 누르세요"
 NOTICE_TIMEOUT_MS = 5000
 
 
@@ -106,13 +107,14 @@ def activate_pid(pid, *, user32=None):
     return ActivationResult(True, foreground, flashed)
 
 
-def timed_notice(*, closing=False, user32=None):
+def timed_notice(*, closing=None, user32=None):
     user = user32 or ctypes.WinDLL("user32", use_last_error=True)
     if user32 is None:
         user.MessageBoxTimeoutW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT, wintypes.WORD, wintypes.DWORD]
         user.MessageBoxTimeoutW.restype = ctypes.c_int
     # MB_OK (one default-focused button), foreground; no modal wait without timeout.
-    user.MessageBoxTimeoutW(None, CLOSING_MESSAGE if closing else OPENING_MESSAGE, APP_NAME, 0x10000, 0, NOTICE_TIMEOUT_MS)
+    text = CLOSING_MESSAGE if closing is True else OPENING_MESSAGE if closing is False else UNKNOWN_MESSAGE
+    user.MessageBoxTimeoutW(None, text, APP_NAME, 0x10000, 0, NOTICE_TIMEOUT_MS)
 
 
 def _file_api(kernel32=None):
