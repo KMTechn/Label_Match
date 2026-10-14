@@ -63,7 +63,7 @@ def test_noninteractive_first_setup_and_relay_leave_shell_calls_and_marker_zero(
     import label_match_product_host as host
     monkeypatch.setattr(host, "dispatch_product_mode", lambda args: calls.append(tuple(args)) or 0)
     assert entry.main(["--label-match-user-relay"]) == 0
-    assert shell.web_allowed(tmp_path, "v2.0.105") is True
+    assert shell.web_allowed(tmp_path, "v2.0.106") is True
     assert calls == [("--label-match-user-relay",)] and not marker.exists()
 
 
