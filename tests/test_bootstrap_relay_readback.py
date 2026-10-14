@@ -65,7 +65,7 @@ def relay_bootstrap(monkeypatch, tmp_path):
         result = updates.bootstrap(current / "app", ["--label-match-user-relay"], role="relay")
         return SimpleNamespace(pid=42, poll=lambda: result)
     monkeypatch.setattr(updates, "start_ordinary_process", start)
-    return SimpleNamespace(current=current, version=version, status=status, rows=rows, launched=launched)
+    return SimpleNamespace(current=current, version=version, status=status, rows=rows, launched=launched, records=records)
 
 
 def test_bootstrap_exit_zero_is_bound_to_actual_active_version_relay(relay_bootstrap):
@@ -145,3 +145,23 @@ if($relayRoot -cne {quote(version)} -or $relay.Contains('--bootstrap') -or -not 
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == "FIXED_RUN_AND_VERSION_RELAY"
+
+
+def test_relay_recovery_never_transforms_relay_mode_into_gui(relay_bootstrap, monkeypatch):
+    fixture = relay_bootstrap
+    sha = fixture.version.name
+    fixture.records["transition.json"] = {"phase": "DEFERRED", "retained_candidate": True}
+    monkeypatch.setattr(updates, "prepared_pending", lambda *_: False)
+    monkeypatch.setattr(updates, "startup_action", lambda *_args, **_kw: "WAIT_FOR_RECOVERY")
+    monkeypatch.setattr(updates, "recovery_sha", lambda *_args, **_kw: sha)
+    received = []
+    monkeypatch.setattr(updates, "start_current", lambda _control, _policy, _state, _active, args, **_kw:
+                        received.append(args) or 0)
+    assert updates.bootstrap(fixture.current / "app", [user_relay.USER_RELAY_MODE], role="relay") == 0
+    assert received == [[user_relay.USER_RELAY_MODE]]
+
+
+def test_relay_bootstrap_without_relay_mode_refuses_before_gui(relay_bootstrap):
+    with pytest.raises(ValueError, match="explicit relay mode"):
+        updates.bootstrap(relay_bootstrap.current / "app", [], role="relay")
+    assert relay_bootstrap.launched == []

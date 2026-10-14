@@ -2616,6 +2616,11 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
 
 
 def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
+    if role == "relay":
+        if not arguments or arguments[0] not in {"--label-match-user-relay", "--label-match-direct-sync-relay"}:
+            raise ValueError("relay bootstrap requires an explicit relay mode")
+        from current_user_onboarding import _machine_worker_context
+        _machine_worker_context(app_root)
     import time
 
     control = control_root(app_root)
@@ -2645,15 +2650,15 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                 prepared = prepared_pending(control, policy, state)
                 action = startup_action(state, prepared_present=prepared)
                 active = read_json(control / "active.json")
-                gui_arguments = arguments[1:] if role == "relay" and arguments[:1] == ["--label-match-user-relay"] else arguments
+                startup_arguments = list(arguments)
                 if state and state["phase"] == "DEFERRED" and state.get("retained_candidate") is True:
                     if active["sha"] != recovery_sha(state, pointer_sha=active["sha"]):
                         action = "WAIT_FOR_RECOVERY"
                     else:
-                        return start_current(control, policy, state, active, gui_arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
+                        return start_current(control, policy, state, active, startup_arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
                 if state and state["phase"] in {"CONFIRMED", "ROLLED_BACK"} and saw_trial:
                     if state["phase"] == "ROLLED_BACK":
-                        return start_current(control, policy, state, active, gui_arguments, code="UPDATE_PREVIOUS_CONFIRMED", deadline=deadline)
+                        return start_current(control, policy, state, active, startup_arguments, code="UPDATE_PREVIOUS_CONFIRMED", deadline=deadline)
                     return 0  # The already-launched GUI owns input and its ordinary relay.
                 if state and state["phase"] == "DEFERRED" and requested_at and _utc(state["deferred_at"]) >= _utc(requested_at):
                     code = state.get("reason_code")
@@ -2719,7 +2724,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                                     if not any(process_matches_trial(row, state=state, sha=active["sha"], sid=policy["operator_sid"], role="relay") for row in process_snapshot(control)):
                                         raise ValueError("existing trial relay is absent")
                                 else:
-                                    pid = _launch_bootstrap_version(control, active["sha"], gui_arguments, nonce=state["nonce"], deadline=deadline)
+                                    pid = _launch_bootstrap_version(control, active["sha"], startup_arguments, nonce=state["nonce"], deadline=deadline)
                                     write_json_durable(Path(policy["staging_root"]) / "trial.json", {"pid": pid, "nonce": state["nonce"], "transition_id": state["transition_id"], "claimed_at": now_utc()})
                                     failed_role = "relay"
                                     # LM's user settings select both children's data root.
