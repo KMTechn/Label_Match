@@ -5665,6 +5665,7 @@ class Label_Match(tk.Tk):
                 return
         except Exception as exc:
             print(f"처리 오류 보관 실패: {type(exc).__name__}")
+        self._refuse_scans_behind_completion("broken")
         print(
             "Label Tk UI lane technical diagnostic: "
             f"{self._ui_lane_diagnostic_text(error)}"
