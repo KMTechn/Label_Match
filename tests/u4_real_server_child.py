@@ -61,6 +61,11 @@ def main():
                  'external_label':'spill-other-transfer-label','member_ids':other_members,
                  'membership_hash':membership_hash(other_members),
                  'scanned_barcodes':[row['normalized_barcode'] for row in other['members']]})
+            if sealed.status_code not in (200,201):
+                import re
+                code = str(sealed.get_json().get('error',{}).get('code','UNKNOWN'))
+                (state/'seed-seal-failure.safe.json').write_text(json.dumps({
+                    'status':sealed.status_code,'code':code if re.fullmatch('[A-Z_0-9]{1,80}',code) else 'MASKED'}))
             assert sealed.status_code in (200,201)
             extra['other_projection'] = app.test_client().get(
                 '/logistics/api/v1/bundles/'+SCOPE+'/spill-other-transfer',
