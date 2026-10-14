@@ -7,7 +7,7 @@
 
 - w9firstupdsub195 ①: 등록 도구의 관리자 회복·소유 키 연결 요구를 첫 설정의 고정 원인과 같은 사용자 안내로 보존한다. `SETUP_FAILED/ValueError`로 뭉개던 첫 실패와 등록 보고만 남은 재시작을 좁은 headless 회귀로 고정한다. 원 소유 키 자동 연결은 별도 ②이며 새 키의 관리자 승인 identity-recovery 입구는 첫 업데이트(11/1) 몫이다. 독립 검토와 실제 검사 5 수용은 1차가 진행한다.
 
-- w9firstupdsub195 ②: 로컬 신원 부재·원 current-user 키 보존의 409는 같은 enrollment admission/mutex 안에서 challenge·비공개 키 서명·reattach·새 세대 readback으로 잇는다. 105 실패 보고만 남은 명시적 재시작은 신원·주소 대조 후 challenge부터 재개한다. 다른 키·변조/만료 proof·다른 receipt·기존 신원/queue/spool은 거절한다. 검사 5 키 있음/current_user/원 작업자 open 가능은 관리자 readback 사실이고, 최종 106 stock의 READY/실제 업무 수용은 별도다. 길 B는 11/1로 보존한다.
+- w9firstupdsub195 ②: 로컬 신원 부재·원 current-user 키 보존의 409는 같은 enrollment admission/mutex 안에서 challenge·비공개 키 서명·reattach·새 세대 readback으로 잇는다. 105 실패 보고만 남은 명시적 재시작은 신원·주소 대조 후 challenge부터 재개한다. 다른 키·변조/만료 proof·다른 receipt·기존 신원/queue/spool은 거절한다. 검사 5 키 있음/current_user/원 작업자 open 가능은 관리자 readback 사실이고, 최종 107 stock의 READY/실제 업무 수용은 별도다(07:27 기준일 판 번호 정정). 길 B는 11/1로 보존한다.
 
 - w9firstupdsub193: 104 공개 기계 설치가 지원 제거 뒤 lifecycle 조회에서 script 범위의 없는 임대를 읽던 결함을 호출 helper의 명시적 임대 참조로 고친다. PS5.1/7 메모리 helper와 기존 fence/자식 실패 회귀를 확인한다. 설치/되돌림 코드의 독립 검토, 새 판 packet 빌드, 검사 6 지원 제거→공개 재설치→같은 작업자 READY 실측은 1차의 후속 확인 대상이다.
 
