@@ -1889,7 +1889,7 @@ function Remove-LabelEmptiedParents([string]$Path, [string[]]$Directories) {
     }
 }
 
-function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]]$ExcludeProcessIds = @()) {
+function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]]$ExcludeProcessIds = @(), [string[]]$AdditionalRetainedPaths = @()) {
     $current = Get-StrictFullPath $InstallRoot 'removal current'
     if ((Split-Path -Leaf $current) -cne 'current') { throw 'REMOVAL_CURRENT_PATH_INVALID' }
     $application = Get-StrictFullPath (Split-Path -Parent $current) 'removal application'
@@ -1966,6 +1966,15 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
         if (Test-Path -LiteralPath (Get-LabelRemovalIoPath $path) -ErrorAction Stop) {
             $remaining.retained_paths += $path
             $plan.decisions += @{path=$path;disposition='EMPTY_OWNED_PARENT_RETAINED'}
+        }
+    }
+    foreach ($path in @($AdditionalRetainedPaths | Sort-Object -Unique)) {
+        Assert-LabelRemovalBoundary $path
+        if (Test-Path -LiteralPath $path -ErrorAction Stop) {
+            $remaining.retained_paths += $path
+            $target = Join-Path $current 'launch-label-match.cmd'
+            $plan.decisions += @{path=$path; target_path=$target;
+                disposition=$(if(Test-Path -LiteralPath $target){'EMERGENCY_SHORTCUT_RETAINED_TARGET_RETAINED'}else{'EMERGENCY_SHORTCUT_RETAINED_TARGET_REMOVED'})}
         }
     }
     Write-LabelStartupUpdateRecord -Path $markerPath -Payload @{
@@ -2099,16 +2108,45 @@ if ($Uninstall.IsPresent) {
         $folder = $null
         if (-not $testOverride) { $scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\') }
         $emergencyRemovalFailure = $null
+        $emergencyEvidenceFailure = $null
+        $emergencyRetainedPaths = @()
         try { Remove-LabelEmergencyShortcut $installRootFull }
         catch {
             $emergencyRemovalFailure = $_
+            $emergencyPath = Get-LabelEmergencyShortcutPath $installRootFull
+            foreach ($path in @($emergencyPath, (Split-Path -Parent $emergencyPath))) {
+                if(Test-Path -LiteralPath $path -ErrorAction Stop){$emergencyRetainedPaths += $path}
+            }
+            try {
+                $emergencyEvidenceRoot = Join-Path $application 'removal-evidence'
+                Assert-LabelRemovalBoundary $emergencyEvidenceRoot
+                [void][IO.Directory]::CreateDirectory($emergencyEvidenceRoot)
+                Write-LabelStartupUpdateRecord -Path (Join-Path $emergencyEvidenceRoot ('emergency-failure-'+[guid]::NewGuid().ToString('N')+'.json')) -Payload @{
+                    schema='label-match-emergency-removal-failure-v1'; status='FAILED';
+                    exception_type=$emergencyRemovalFailure.Exception.GetType().FullName;
+                    hresult=$emergencyRemovalFailure.Exception.HResult; retained_paths=@($emergencyRetainedPaths)
+                }
+            } catch {$emergencyEvidenceFailure=$_}
             Write-Warning '포장 비상 바로 가기를 지우지 못했습니다. 나머지 제거를 계속합니다.'
         }
+        try {
         if ($WorkerShortcutRecordPath) {
             Invoke-LabelWorkerShortcutOperation $installRootFull 'Restore' $WorkerShortcutRecordPath `
                 $VerifiedWorkerShortcutHelperPath $ExpectedWorkerShortcutHelperSha256
         }
-        $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder
+        $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder -AdditionalRetainedPaths $emergencyRetainedPaths
+        } catch {
+            if ($null -eq $emergencyRemovalFailure) { throw }
+            $causes = @($emergencyRemovalFailure.Exception)
+            if($null -ne $emergencyEvidenceFailure){$causes += $emergencyEvidenceFailure.Exception}
+            $causes += $_.Exception
+            $combined = [AggregateException]::new('UNINSTALL_MULTIPLE_FAILURES',[Exception[]]$causes)
+            $combined.Data['emergency_retained_paths'] = $emergencyRetainedPaths
+            throw $combined
+        }
+        if($null -ne $emergencyEvidenceFailure){
+            throw [AggregateException]::new('UNINSTALL_EMERGENCY_EVIDENCE_FAILED',[Exception[]]@($emergencyRemovalFailure.Exception,$emergencyEvidenceFailure.Exception))
+        }
         if ($null -ne $emergencyRemovalFailure) { throw $emergencyRemovalFailure }
         'uninstall_status=PASS_CODE_REMOVED_STATE_PRESERVED'
         'application_root_status=RETAINED_FOR_EVIDENCE_AND_RETAINED_ITEMS'

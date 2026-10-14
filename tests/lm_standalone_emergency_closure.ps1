@@ -1,4 +1,4 @@
-﻿param([string]$Root)
+﻿param([string]$Root,[ValidateSet('none','link','directory')][string]$EmergencyFault='none')
 $ErrorActionPreference='Stop'
 $repo=Split-Path -Parent $PSScriptRoot
 $tokens=$null;$errors=$null
@@ -56,6 +56,16 @@ $DryRun=[Management.Automation.SwitchParameter]::new($false)
 $BootstrapIntegrityPreloaded=[Management.Automation.SwitchParameter]::new($false)
 $WriterFenceFunctionsPreloaded=[Management.Automation.SwitchParameter]::new($false)
 $WorkerShortcutRecordPath=''
+if($EmergencyFault -cne 'none'){
+    function Remove-Item {
+        [CmdletBinding()]param([string]$LiteralPath)
+        if(($EmergencyFault -ceq 'link' -and $LiteralPath -ieq $linkPath) -or
+           ($EmergencyFault -ceq 'directory' -and $LiteralPath -ieq (Split-Path -Parent $linkPath))){
+            throw [IO.IOException]::new('Injected emergency deletion refusal')
+        }
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -ErrorAction Stop
+    }
+}
 $bootstrapSelection=$ast.Find({param($node)
     $node -is [Management.Automation.Language.IfStatementAst] -and
     $node.Extent.Text.StartsWith('if (') -and

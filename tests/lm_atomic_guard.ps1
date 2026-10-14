@@ -32,8 +32,13 @@ if($SourceFile){
 }
 $exceptions=Get-Content -LiteralPath (Join-Path $HostRoot 'tests/fixtures/lm_atomic_directory_sites.json') -Raw | ConvertFrom-Json
 $used=@{};$forbidden=@()
-foreach($file in @(& git -C $HostRoot ls-files '*.ps1')){
-    if($file.StartsWith('tests/') -or $file.StartsWith('kmtech_shared/')){continue}
+$sharedExclusions = @{
+    'kmtech_shared/powershell/data_generation.ps1' = 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'
+    'kmtech_shared/powershell/portable.ps1' = '2fd1e3f4992f717ffb612e340d13ced046cde05933775e03d2f57acca3333607'
+    'kmtech_shared/powershell/ps51_module_prologue.ps1' = '9c5e083b8e332573f3368be3e9592a2e2409aa89891e15942026361be17d0b71'
+}
+foreach($file in @(& git -C $HostRoot ls-files --cached --others --exclude-standard '*.ps1' '*.psm1')){
+    if($file.StartsWith('tests/') -or $sharedExclusions.ContainsKey($file)){if ($sharedExclusions.ContainsKey($file) -and (Get-FileHash -LiteralPath (Join-Path $HostRoot $file) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sharedExclusions[$file]) { throw 'SHARED_ATOMIC_EXCLUSION_CHANGED' }; continue}
     foreach($site in @(Get-AtomicPublicationSites ([IO.File]::ReadAllText((Join-Path $HostRoot $file))))){
         if($file -ceq 'INSTALL_THIS_PC.ps1' -and $site.function -ceq 'Invoke-LabelAtomicReplace'){continue}
         $match=@($exceptions | Where-Object {$_.file -ceq $file -and $_.function -ceq $site.function -and $_.sha256 -ceq $site.sha256})

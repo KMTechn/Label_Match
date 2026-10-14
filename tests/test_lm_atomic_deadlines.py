@@ -85,16 +85,10 @@ def test_actual_powershell_retry_deadlines_and_access_classification(tmp_path, e
     assert child.stdout.strip() == b'PASS' and not child.stderr
 
 
-@pytest.mark.parametrize('source', [
-    'Move-Item -LiteralPath $source -Destination $target',
-    'Microsoft.PowerShell.Management\\Move-Item -LiteralPath $source -Destination $target',
-    'Rename-Item -LiteralPath $source -NewName $target',
-    '[System.IO.File]::Move($source,$target)',
-    '[IO.File]::Replace(\n $source,\n $target,\n $null)',
-    '[Native]::MoveFileExW($source,$target,9)',
-])
-def test_powershell_ast_guard_rejects_publication_spelling_variants(tmp_path, source):
-    candidate = tmp_path / 'candidate.ps1'
+@pytest.mark.parametrize('source', ['Move-Item -LiteralPath $source -Destination $target', 'Microsoft.PowerShell.Management\\Move-Item -LiteralPath $source -Destination $target', 'Rename-Item -LiteralPath $source -NewName $target', '[System.IO.File]::Move($source,$target)', '[IO.File]::Replace(\n $source,\n $target,\n $null)', '[Native]::MoveFileExW($source,$target,9)', "Microsoft.PowerShell.Management\\Rename-Item -LiteralPath 'temporary' -NewName 'live'", "[IO.File]::Move('temporary', 'live')", "[System.IO.File]::Replace('temporary', 'live', $null)"])
+@pytest.mark.parametrize('suffix', ['.ps1', '.psm1'])
+def test_powershell_ast_guard_rejects_publication_spelling_variants(tmp_path, source, suffix):
+    candidate = tmp_path / ("publication" + suffix)
     candidate.write_text(source, encoding='utf-8')
     child = subprocess.run([shutil.which('pwsh'), '-NoProfile', '-NonInteractive', '-File',
         str(ROOT / 'tests/lm_atomic_guard.ps1'), '-SourceFile', str(candidate)],

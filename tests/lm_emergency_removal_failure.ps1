@@ -1,4 +1,4 @@
-﻿param([string]$HostRoot,[string]$FixtureRoot)
+﻿param([string]$HostRoot,[string]$FixtureRoot,[ValidateSet('none','worker','core')][string]$NextFailure='none')
 $ErrorActionPreference='Stop';$WarningPreference='SilentlyContinue'
 $tokens=$null;$errors=$null
 $tree=[Management.Automation.Language.Parser]::ParseFile((Join-Path $HostRoot 'INSTALL_THIS_PC.ps1'),[ref]$tokens,[ref]$errors)
@@ -15,6 +15,7 @@ $WorkerShortcutRecordPath=Join-Path $FixtureRoot 'worker-shortcuts.json'
 $VerifiedWorkerShortcutHelperPath='';$ExpectedWorkerShortcutHelperSha256=''
 $script:events=[Collections.Generic.List[string]]::new()
 $script:original=[IO.IOException]::new('Injected emergency unlink refusal')
+$script:second=[IO.IOException]::new('Injected later removal refusal')
 $linkPath=Get-LabelEmergencyShortcutPath $installRootFull
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $linkPath))
 $shell=Microsoft.PowerShell.Utility\New-Object -ComObject WScript.Shell
@@ -29,9 +30,13 @@ function Remove-Item {
     if($LiteralPath -ieq $linkPath){$script:events.Add('emergency');throw $script:original}
     Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -ErrorAction Stop
 }
-function Invoke-LabelWorkerShortcutOperation {$script:events.Add('worker')}
+function Invoke-LabelWorkerShortcutOperation {
+    $script:events.Add('worker')
+    if($NextFailure -ceq 'worker'){throw $script:second}
+}
 function Invoke-LabelConvergentRemoval {
     $script:events.Add('core')
+    if($NextFailure -ceq 'core'){throw $script:second}
     return @{evidence_root=$FixtureRoot;retained_paths=@()}
 }
 $entry=$tree.Find({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and
@@ -40,8 +45,17 @@ $entry=$tree.Find({param($node) $node -is [Management.Automation.Language.IfStat
 if($null -eq $entry){throw 'Production uninstall branch absent'}
 $failure=$null;$output=@()
 try{$output=@(Invoke-Expression $entry.Extent.Text)}catch{$failure=$_}
-if($null -eq $failure -or $failure.Exception -ne $script:original){throw 'Emergency cause was not preserved'}
-if(($script:events -join ',') -cne 'emergency,worker,core'){throw 'Later uninstall stages did not run'}
+if($null -eq $failure){throw 'Emergency cause was not preserved'}
+if($NextFailure -ceq 'none'){
+    if($failure.Exception -ne $script:original){throw 'Emergency cause was not preserved'}
+}else{
+    $aggregate=$failure.Exception.GetBaseException()
+    if($aggregate -isnot [AggregateException] -or
+       -not $aggregate.InnerExceptions.Contains($script:original) -or
+       -not $aggregate.InnerExceptions.Contains($script:second)){throw 'Combined causes were not preserved'}
+}
+$wanted=if($NextFailure -ceq 'worker'){'emergency,worker'}else{'emergency,worker,core'}
+if(($script:events -join ',') -cne $wanted){throw 'Later uninstall stages did not run'}
 if(@($output|Where-Object {$_ -like '*PASS*'}).Count){throw 'False uninstall success'}
 if(-not[IO.File]::Exists($linkPath)){throw 'Injected refusal did not retain actual shortcut'}
 'PASS'
