@@ -121,6 +121,7 @@ def test_higher_saved_schema_is_refused_before_any_write_and_not_restamped(tmp_p
 def test_higher_schema_main_stops_and_publishes_administrator_notice(tmp_path, monkeypatch, capsys):
     import auto_update
     import startup_observation
+    monkeypatch.setattr(lm,'LABEL_MATCH_SCREEN_HOST',dict(lm.LABEL_MATCH_SCREEN_HOST))
     path = tmp_path/'future.sqlite3'
     PackageOutbox(path)
     with sqlite3.connect(path) as conn:

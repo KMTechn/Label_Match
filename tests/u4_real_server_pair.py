@@ -206,7 +206,12 @@ def test_real_refused_repack_remains_visible_after_cancel_replay_and_restart_wit
         assert server.sent.count(('CREATE_PACKAGE',original.package_bundle_id))==1
         assert ('CREATE_PACKAGE',repack.package_bundle_id) not in server.sent
         with sqlite3.connect(server.data['database']) as connection:
-            assert connection.execute("SELECT COUNT(*) FROM logistics_domain_events WHERE event_type='PACKAGE_REOPEN_REVIEW_REQUIRED'").fetchone()[0]==1
+            assert connection.execute("""SELECT COUNT(*) FROM w9scanonly_operator_reviews
+                WHERE idempotency_key=? AND entity_id=? AND reason_code='SOURCE_TRANSFER_CHANGED'""",
+                (cancellation['idempotency_key'],original.package_bundle_id)).fetchone()[0]==1
+            assert connection.execute("""SELECT COUNT(*) FROM w9scanonly_review_events WHERE review_id IN (
+                SELECT review_id FROM w9scanonly_operator_reviews WHERE idempotency_key=? AND entity_id=?)""",
+                (cancellation['idempotency_key'],original.package_bundle_id)).fetchone()[0]==1
             assert connection.execute("SELECT COUNT(*) FROM logistics_movements WHERE movement_type='CANCEL_PACKAGE_REOPEN_TRANSFER'").fetchone()[0]==0
 
 
