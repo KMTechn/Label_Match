@@ -956,7 +956,8 @@ function Restore-LabelStartupUpdatePreimage([string]$Root, [string]$Directory, [
         $target = Join-Path $control ([string]$item.name)
         Assert-NoReparsePoint $target 'startup update restore target'
         if (Test-Path -LiteralPath $target) {
-            Move-Item -LiteralPath $target -Destination (Join-Path $full ('failed-' + [guid]::NewGuid().ToString('N') + '-' + $item.name))
+            if ([IO.Directory]::Exists($target)) { Move-Item -LiteralPath $target -Destination (Join-Path $full ('failed-' + [guid]::NewGuid().ToString('N') + '-' + $item.name)) }
+            else { Invoke-LabelAtomicReplace -Source $target -Destination (Join-Path $full ('failed-' + [guid]::NewGuid().ToString('N') + '-' + $item.name)) -Mode Move }
         }
         if ($item.exists -isnot [bool]) { throw 'STARTUP_UPDATE_RESTORE_EXISTENCE_INVALID' }
         if ($item.exists) {
@@ -1848,7 +1849,7 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
             $arguments = '-I -B "' + (Join-Path $current 'app\main.py') + '"'
             if ((Test-SamePath $shortcut.TargetPath (Join-Path $current 'runtime\pythonw.exe')) -and
                 $shortcut.Arguments -ceq $arguments -and (Test-SamePath $shortcut.WorkingDirectory $current)) {
-                Move-Item -LiteralPath $shortcutPath -Destination (Join-Path $evidence 'machine-shortcut.lnk')
+                Invoke-LabelAtomicReplace -Source $shortcutPath -Destination (Join-Path $evidence 'machine-shortcut.lnk') -Mode Move
             }
         }
     }
@@ -1874,7 +1875,8 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
         $destinationIo = Get-LabelRemovalIoPath $destination
         New-Item -ItemType Directory -Path (Split-Path -Parent $destinationIo) -Force | Out-Null
         try {
-            Move-Item -LiteralPath (Get-LabelRemovalIoPath $path) -Destination $destinationIo -ErrorAction Stop
+            if ([IO.Directory]::Exists((Get-LabelRemovalIoPath $path))) { Move-Item -LiteralPath (Get-LabelRemovalIoPath $path) -Destination $destinationIo -ErrorAction Stop }
+            else { Invoke-LabelAtomicReplace -Source (Get-LabelRemovalIoPath $path) -Destination $destinationIo -Mode Move }
             if (Test-Path -LiteralPath (Get-LabelRemovalIoPath $path) -ErrorAction Stop) { throw 'REMOVAL_PATH_ABSENCE_NOT_PROVEN' }
         } finally {
             # A rename may succeed before the caller receives its exception.

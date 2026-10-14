@@ -128,12 +128,14 @@ def _isolated_writer_control_root(tmp_path):
 @pytest.fixture(autouse=True)
 def _inherited_child_profile_folders(monkeypatch, _isolated_writer_control_root):
     import os
+    from functools import wraps
 
     names = ("TEMP", "TMP", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA")
     isolated = {name: os.environ.get(name) for name in names}
     # Run after any headless wrapper has rebuilt the actual child environment.
     original = _NATIVE_POPEN.__init__
 
+    @wraps(original)
     def launch(process, *args, **kwargs):
         if kwargs.get("env") is not None:
             environment = dict(kwargs["env"])

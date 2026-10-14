@@ -12,6 +12,7 @@ import time
 import pytest
 
 import auto_update
+from tools.refresh_atomic_replace_declarations import CONSUMERS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -153,7 +154,7 @@ def test_app_atomic_calls_are_centralized_and_shared_copies_byte_pinned():
             Calls().visit(ast.parse(source))
         elif not name.startswith('tests/'):
             import re
-            if name in {'INSTALL_THIS_PC.ps1', 'tools/label_writer_fence.ps1', 'tools/label_worker_shortcuts.ps1'}:
+            if name in {'INSTALL_THIS_PC.ps1', 'tools/label_writer_fence.ps1', 'tools/label_worker_shortcuts.ps1', "INSTALL_CANONICAL_PORTABLE.ps1"}:
                 # Copies are generated from the one canonical function and
                 # validated above; pinned function strings are not direct calls.
                 source = source.replace(helper_body(ROOT), '')
@@ -164,10 +165,10 @@ def test_app_atomic_calls_are_centralized_and_shared_copies_byte_pinned():
     assert forbidden == []
 
 
-@pytest.mark.parametrize('consumer', ['tools/label_writer_fence.ps1', 'tools/label_worker_shortcuts.ps1'])
+@pytest.mark.parametrize("consumer", CONSUMERS)
 def test_atomic_powershell_body_pin_rejects_caller_drift(tmp_path, consumer):
     from tools.refresh_atomic_replace_declarations import validate
-    for name in ('INSTALL_THIS_PC.ps1', 'tools/label_writer_fence.ps1', 'tools/label_worker_shortcuts.ps1'):
+    for name in ("INSTALL_THIS_PC.ps1", *CONSUMERS):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / name, path)

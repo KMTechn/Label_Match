@@ -378,7 +378,9 @@ def _assert_portable_import_closure(
     tool_sources: Iterable[Path],
     python_executable: Path | None = None,
 ) -> None:
-    modules = ["current_user_onboarding", "label_match_product_host"]
+    modules = ["current_user_onboarding", "label_match_product_host",
+               "label_atomic_replace", "label_match_instance_win32", "label_native_policy",
+               "label_match_single_instance", "label_match_screen", "label_screen_bridge"]
     modules.extend(
         "tools."
         + ".".join(
@@ -390,7 +392,9 @@ def _assert_portable_import_closure(
         "import importlib,json,os,sys;"
         "app=sys.argv[1];"
         "sys.path[:0]=[app,os.path.join(app,'site-packages')];"
-        "[importlib.import_module(name) for name in json.loads(sys.argv[2])]"
+        "modules=[importlib.import_module(name) for name in json.loads(sys.argv[2])];"
+        "assert all(os.path.commonpath([os.path.realpath(app),os.path.realpath(m.__file__)])"
+        "==os.path.realpath(app) for m in modules)"
     )
     completed = subprocess.run(
         [

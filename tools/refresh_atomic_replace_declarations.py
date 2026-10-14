@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-CONSUMERS = ("tools/label_writer_fence.ps1", "tools/label_worker_shortcuts.ps1")
+CONSUMERS = ("tools/label_writer_fence.ps1", "tools/label_worker_shortcuts.ps1", "INSTALL_CANONICAL_PORTABLE.ps1")
 PIN = re.compile(r"(?m)(\$expectedAtomicBodySha256 = ')[0-9a-f]{64}(')")
 INLINE = re.compile(r"(?s)(# LABEL_ATOMIC_INLINE_START\n\$text = ')(.*?)('\n# LABEL_ATOMIC_INLINE_END)")
 
