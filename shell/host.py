@@ -10,6 +10,7 @@ import threading
 import time
 from concurrent.futures import Future
 from pathlib import Path
+from uuid import uuid4
 
 SHELL = Path(__file__).resolve().parent
 PACKAGED_SITE = SHELL.parent / 'site-packages'
@@ -17,8 +18,9 @@ if PACKAGED_SITE.is_dir():
     sys.path.insert(0, str(PACKAGED_SITE))
 sys.path.insert(1 if PACKAGED_SITE.is_dir() else 0, str(SHELL))
 
-from bridge import Bridge
+from bridge import Bridge, OWNER_JOIN_S
 import shell_fileio
+from shell_fileio import _guard
 
 SETTINGS = ('AreDevToolsEnabled', 'AreBrowserAcceleratorKeysEnabled',
             'AreDefaultContextMenusEnabled', 'IsZoomControlEnabled', 'IsPinchZoomEnabled',
@@ -35,6 +37,82 @@ BROWSER_PRESETS = {'none': '', 'lean': LEAN_ARGUMENTS,
 TRANSPORT_WAIT_SECONDS = 8
 TRANSPORT_STOP_MESSAGE = '화면 준비가 늦습니다 — 잠시 뒤 다시 엽니다'
 CLOSING_WAIT_SECONDS = 120
+READY_TIMEOUT_S = 30
+DESTROY_WAIT_S = 5
+STARTUP_DESTROY_WAIT_S = 2
+EXIT_WRITE_WAIT_S = 120
+EXIT_POLL_S = 5
+STARTUP_NOTICE_TEXT = '새 화면을 열지 못해 옛 화면으로 바꿉니다. 바로 가기를 한 번 더 누르세요. 그래도 열리지 않으면 현장 관리자에게 알리세요.'
+
+
+def web_allowed(data, version, *, write_guard=None):
+    """A failed version stays on its fallback screen until an update."""
+    fileio = shell_fileio.FileIO(write_guard)
+    data = Path(data).resolve()
+    app_root = Path(__file__).resolve().parents[1]
+    if data == app_root or app_root in data.parents:
+        import logging
+        logging.error('SHELL_DATA_IN_APP_ROOT')
+        return False
+    marker = data / 'shell-fallback.json'
+    try:
+        if not marker.exists():
+            return True
+        if marker.is_symlink() or marker.stat().st_size > 4096:
+            return False
+        saved = json.loads(marker.read_text(encoding='utf-8'))
+        if not isinstance(saved, dict) or set(saved) != {'code', 'at', 'version'}:
+            return False
+        if saved.get('version') == str(version):
+            return False
+        fileio.remove(marker, 'udf')
+        return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        import logging
+        logging.error('SHELL_FALLBACK_MARKER_UNAVAILABLE')
+        return False
+
+
+def _save_fallback(data, code, version, fileio=None):
+    fileio = fileio or shell_fileio.FileIO()
+    from datetime import datetime, timezone
+    marker = {'code': code, 'at': datetime.now(timezone.utc).isoformat(), 'version': str(version)}
+    fileio.replace_atomic(Path(data) / 'shell-fallback.json',
+                                (json.dumps(marker, ensure_ascii=False) + '\n').encode('utf-8'), 'udf', fsync=True)
+
+
+def show_startup_notice(title):
+    """Best-effort OS notice, bounded by MessageBoxTimeoutW's 30-second timeout."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        notice = ctypes.WinDLL('user32', use_last_error=True).MessageBoxTimeoutW
+        notice.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                           wintypes.UINT, wintypes.WORD, wintypes.DWORD]
+        notice.restype = ctypes.c_int
+        if not notice(None, STARTUP_NOTICE_TEXT, str(title), 0x00040040, 0, 30000):
+            raise OSError('SHELL_START_NOTICE_UNAVAILABLE')
+    except Exception:
+        import logging
+        logging.error('SHELL_START_NOTICE_UNAVAILABLE')
+
+
+def _wait_before_exit(before_exit, code):
+    if before_exit is None:
+        return
+    def drained(seconds):
+        try:
+            return bool(before_exit(code, seconds))
+        except Exception:
+            return False
+    if drained(EXIT_WRITE_WAIT_S):
+        return
+    import logging
+    logging.error('SHELL_EXIT_DEFERRED')
+    while True:
+        time.sleep(EXIT_POLL_S)
+        if drained(0):
+            return
 
 
 class ClosingWait:
@@ -566,7 +644,7 @@ class NativeHost:
 
 
 def test_controls(path, host, stop):
-    shell_fileio.make_dirs(path, 'test_control')
+    host.bridge.fileio.make_dirs(path, 'test_control')
     seen = set()
     while not stop.wait(0.05):
         for file in sorted(path.glob('cmd-*.json')):
@@ -594,7 +672,7 @@ def test_controls(path, host, stop):
                 ack = {'id': command['id'], 'op': op, 'ok': True, 'result': result}
             except Exception as error:
                 ack = {'id': command['id'], 'op': op, 'ok': False, 'error': type(error).__name__}
-            shell_fileio.replace_atomic(path / f'ack-{ident}.json', json.dumps(ack, ensure_ascii=False).encode('utf-8'), 'test_control')
+            host.bridge.fileio.replace_atomic(path / f'ack-{ident}.json', json.dumps(ack, ensure_ascii=False).encode('utf-8'), 'test_control')
             seen.add(file.name)
 
 
@@ -609,8 +687,9 @@ def main(argv=None):
     parser.add_argument('--browser-preset', choices=tuple(BROWSER_PRESETS), default='none')
     args = parser.parse_args(argv)
     title = 'KMTech 셸 시험 — ' + ('리워크' if args.profile == 'rw' else '검사') + args.title_suffix
-    return run_app(args.profile, args.data, udf=args.udf, pedal=args.pedal, title=title,
-                   browser_preset_name=args.browser_preset, test_control=args.test_control)
+    run_app(args.profile, args.data, udf=args.udf, pedal=args.pedal, title=title,
+            browser_preset_name=args.browser_preset, test_control=args.test_control)
+    return 0
 
 
 class OwnerExited(RuntimeError):
@@ -633,20 +712,52 @@ def wait_owner_start(bridge, owner_thread, timeout=None, poll=0.5):
             if deadline is not None and time.monotonic() >= deadline: raise
 
 
+class ShellDataRootError(RuntimeError):
+    """Safe startup error for the app bridge; never includes a raw path or native error."""
+    def __init__(self, code):
+        self.code = code
+        self.message = {
+            'SHELL_DATA_IN_APP_ROOT': '셸 자료 폴더·WebView2 자료 폴더는 작업자 %LOCALAPPDATA% 아래여야 합니다(받은 자리: 앱 설치 폴더 안)',
+            'SHELL_DATA_NOT_WRITABLE': '셸 자료 폴더에 쓸 수 없습니다 — 작업자 %LOCALAPPDATA% 아래여야 합니다',
+        }[code]
+        super().__init__(f'{code}: {self.message}')
+
+
+class ShellStartupError(RuntimeError):
+    """A fixed startup code, without the native exception or paths."""
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def check_data_roots(data, udf, fileio=None):
+    fileio = fileio or shell_fileio.FileIO()
+    app_root = Path(__file__).resolve().parents[1]
+    folders = tuple(dict.fromkeys((data, udf)))
+    # Check both resolved locations before even creating the external data folder.
+    if any(folder == app_root or app_root in folder.parents for folder in folders):
+        raise ShellDataRootError('SHELL_DATA_IN_APP_ROOT')
+    try:
+        for folder in folders:
+            fileio.make_dirs(folder, 'udf')
+            fileio.probe_writable(folder / ('.shell-write-probe-' + uuid4().hex), 'udf',
+                                        cleanup_limit=20 // len(folders))
+    except OSError:
+        raise ShellDataRootError('SHELL_DATA_NOT_WRITABLE') from None
+
+
 def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, processor_factory=None,
             owner_main=None, browser_preset_name='none', test_control=None, owner_timeout=None, root=None,
-            write_guard=None, closing_timeout=CLOSING_WAIT_SECONDS, on_force_exit=None):
-    """App entry (HOST-USE.md). Call on the main thread; returns when the window closes.
-    profile 'rw'|'iw' = scan framing; data = this app's shell folder (events/journal/sounds);
-    page = the app's index.html (default = shell test page); root = folder served as the local
-    http root (default = page's folder) so the page may load ../ shared files below root.
-    processor_factory() runs on our owner thread, or owner_main(bridge) runs on a new thread
-    that calls bridge.attach_owner(processor) and then bridge.pump() until it returns False.
-    write_guard(op, path, kind) -> context manager around each shell file write (the app's writer fence),
-    installed before the shell writes anything (shell_fileio.set_write_guard); None keeps plain writes.
-    on_force_exit() runs once on a daemon thread before a forced process exit, with a two-second wait;
-    None keeps the previous forced-exit path. Normal closing never calls it."""
-    if write_guard is not None: shell_fileio.set_write_guard(write_guard)
+            write_guard=None, closing_timeout=CLOSING_WAIT_SECONDS, on_force_exit=None,
+            version='unknown', before_exit=None):
+    """Run one shell screen. Startup failure after app creation drains and exits.
+
+    Recovery closes intake, records the version marker, attempts window destruction
+    for at most two seconds, drains accepted writes, then exits.
+    Only failures before application creation can return to the caller for Tk.
+    """
+    # The bootstrap/control-plane writer belongs to this invocation/bridge.
+    recovery_fileio = shell_fileio.FileIO(write_guard)
     if on_force_exit is not None and not callable(on_force_exit):
         raise TypeError('on_force_exit must be callable or None')
     if not math.isfinite(closing_timeout) or closing_timeout <= 0:
@@ -657,91 +768,25 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
         raise ValueError('page must be inside root')
     data = Path(data).resolve()
     udf = Path(udf or data / 'webview2').resolve()
-    shell_fileio.make_dirs(udf, 'udf')
+    check_data_roots(data, udf, recovery_fileio)
     bridge = Bridge(data, profile, test_control=bool(test_control), processor_factory=processor_factory,
-                    owner='external' if owner_main else 'thread')
+                    owner='external' if owner_main else 'thread', write_guard=write_guard)
     bridge.events.record('py', 'py_start', pid=os.getpid(), argv=sys.argv, profile=profile)
+    recovery_finished = threading.Event()
+    recovery_started = threading.Event()
+    bridge._startup_failure = None
+    bridge._startup_ready = False
+    bridge._app_created = False
     owner_thread = None
-    if owner_main:
-        owner_thread = threading.Thread(target=owner_main, args=(bridge,), name='app-owner', daemon=True)
-        owner_thread.start()
-        try: wait_owner_start(bridge, owner_thread, owner_timeout)
-        except Exception as error:
-            bridge.events.record('py', 'owner_start_failed', error=type(error).__name__)
-            bridge.close()
-            raise
-    browser_preset(browser_preset_name, bridge.events)
-    import webview
-    webview.settings['OPEN_EXTERNAL_LINKS_IN_BROWSER'] = False
-    webview.settings['ALLOW_DOWNLOADS'] = False
-    webview.settings['OPEN_DEVTOOLS_IN_DEBUG'] = False
-    url = str(page_path) + ('#test=1' if test_control else '')
-    api = API(bridge)
-    window = webview.create_window(title, url=url, js_api=api, width=1366, height=768,
-                                   text_select=False, zoomable=False, background_color='#F7F7F4')
-    window._callbacks = CallbackRegistry({ident:callback for ident,callback in window._callbacks.items() if callback is not None})
-    native = NativeHost(window, bridge, udf, test_control=bool(test_control))
-    api._on_ready = native.page_ready
-    window.events.before_load += native.before_load
-    window.events.loaded += native.loaded
-    bridge.set_notifier(native.notify_push)
-    bridge.set_exit_handler(window.destroy)
-    closing_wait = ClosingWait(bridge, lambda mode: native.show_closing(mode, closing_wait.choose), closing_timeout)
-    picker_closed = threading.Event()
-    def picker(title, kinds=None):
-        # A Future; the bridge drops it once the picker is detached (closing/closed).
-        return None if picker_closed.is_set() else native.pick_file(title, kinds)
-    def shown():
-        if not picker_closed.is_set(): bridge.set_file_picker(picker)
-    def detach_picker():
-        picker_closed.set()
-        bridge.set_file_picker(None)
-    def closing():
-        allowed = closing_wait.closing()
-        if allowed: detach_picker()
-        return allowed
-    window.events.shown += shown
-    window.events.closing += closing  # False cancels the X (pywebview 6.2.1 winforms on_closing).
-    window.events.closed += detach_picker
-    native.pause_page()
-    stop = threading.Event()
-    window.events.closed += stop.set
-    def started():
-        if pedal:
-            bridge.pedal.start()
-        if test_control:
-            threading.Thread(target=test_controls, args=(Path(test_control).resolve(), native, stop),
-                             name='shell-test-control', daemon=True).start()
-    code = 0
-    try:
-        # pywebview otherwise uses its fixed DEFAULT_HTTP_PORT in persistent
-        # mode. Reserve an ephemeral candidate so RW/IW can run side by side.
-        with socket.socket() as reservation:
-            reservation.bind(('127.0.0.1', 0))
-            http_port = reservation.getsockname()[1]
-        if root_path is not None:
-            # pywebview 6.2.1 serves the common folder of the window URLs (one window = the page's
-            # folder). Start its global server on root first; window._resolve_url then maps the page
-            # relative to root (webview/http.py start_global_server, window.py _resolve_url).
-            from webview import http as webview_http
-            webview_http.start_global_server(http_port=http_port, urls=[str(root_path)])
-        bridge.events.record('py', 'http_server', port=http_port, host='127.0.0.1', root=str(root_path or page_path.parent))
-        # private_mode=False binds storage to exactly --udf, avoiding the backend's
-        # temporary profile and automatic recursive cleanup. This contains no auth.
-        webview.start(started, gui='edgechromium', debug=False, private_mode=False,
-                      storage_path=str(udf), http_server=True, http_port=http_port)
-    except Exception:
-        code = 1
-        raise
-    finally:
-        stop.set()
-        closing_wait.close()
-        detach_picker()
-        native.close()
-        if closing_wait.forced:
-            # The user explicitly chose to end the process despite a stuck owner.
-            # bridge.close()/owner.join() could wait forever; non-daemon app threads
-            # must not leave a windowless process behind either.
+    window = native = closing_wait = None
+    stop, picker_closed = threading.Event(), threading.Event()
+    ready, watchdog_stop = threading.Event(), threading.Event()
+    failure_lock, close_lock, recovery_lock = (threading.Lock() for _ in range(3))
+    bridge_closed = False
+    force_requested, force_finished, normal_close_done = (threading.Event() for _ in range(3))
+
+    def force_exit():
+        try:
             if on_force_exit is not None:
                 errors = []
                 def finish_app():
@@ -760,10 +805,208 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
                     else: bridge.events.record('py', 'force_exit_done')
             bridge.events.record('py', 'exit', code=code, forced=True)
             os._exit(code)
+        finally:
+            force_finished.set()
+
+    def watch_force_exit():
+        while True:
+            if force_requested.is_set() or (closing_wait is not None and closing_wait.forced):
+                force_requested.set()
+                force_exit()
+                return
+            if normal_close_done.is_set():
+                return
+            force_requested.wait(0.01)
+
+    def fail_start(code):
+        with failure_lock:
+            if ready.is_set() or bridge._startup_failure:
+                return False
+            bridge._startup_failure = code
+            return True
+
+    def close_bridge():
+        nonlocal bridge_closed
+        with close_lock:
+            if bridge_closed:
+                return
+            bridge_closed = True
         bridge.close()
-        if owner_thread: owner_thread.join(5)
+
+    def recover_start(code):
+        with recovery_lock:
+            if recovery_started.is_set():
+                return
+            recovery_started.set()
+        try:
+            try:
+                bridge.close_intake()
+            except Exception:
+                bridge.events.record('py', 'shell_start_cleanup_failed')
+            try:
+                _save_fallback(data, code, version, recovery_fileio)
+            except Exception:
+                import logging
+                logging.error('SHELL_FALLBACK_MARK_FAILED')
+            destroyed = threading.Event()
+            def destroy_window():
+                try:
+                    if window is not None:
+                        bridge._exit_requested = True
+                        window.destroy()
+                except Exception:
+                    bridge.events.record('py', 'shell_start_cleanup_failed')
+                finally:
+                    destroyed.set()
+            threading.Thread(target=destroy_window, name='shell-start-destroy', daemon=True).start()
+            destroyed.wait(STARTUP_DESTROY_WAIT_S)
+            try:
+                show_startup_notice(title)
+            except Exception:
+                import logging
+                logging.error('SHELL_START_NOTICE_UNAVAILABLE')
+            _wait_before_exit(before_exit, code)
+            import logging
+            logging.error('%s', code)
+            os._exit(3)
+        finally:
+            recovery_finished.set()
+
+    def watch_start():
+        if watchdog_stop.wait(READY_TIMEOUT_S) or ready.is_set():
+            return
+        if fail_start('SHELL_START_TIMEOUT'):
+            recover_start('SHELL_START_TIMEOUT')
+
+    code = 0
+    try:
+        if owner_main:
+            def own():
+                try:
+                    owner_main(bridge)
+                except BaseException as error:
+                    if not bridge._initialized.done():
+                        bridge.fail_owner(error)
+                    else:
+                        fail_start('SHELL_START_FAILED')
+            owner_thread = threading.Thread(target=own, name='app-owner', daemon=True)
+            owner_thread.start()
+            try:
+                wait_owner_start(bridge, owner_thread, owner_timeout)
+                bridge._app_created = True
+            except Exception:
+                if not bridge._app_created:
+                    bridge.events.record('py', 'owner_start_failed')
+                    close_bridge()
+                    raise
+                fail_start('SHELL_START_FAILED')
+                recover_start('SHELL_START_FAILED')
+                return 'exit'
+        browser_preset(browser_preset_name, bridge.events)
+        import webview
+        webview.settings['OPEN_EXTERNAL_LINKS_IN_BROWSER'] = False
+        webview.settings['ALLOW_DOWNLOADS'] = False
+        webview.settings['OPEN_DEVTOOLS_IN_DEBUG'] = False
+        url = str(page_path) + ('#test=1' if test_control else '')
+        api = API(bridge)
+        threading.Thread(target=watch_start, name='shell-start-watch', daemon=True).start()
+        window = webview.create_window(title, url=url, js_api=api, width=1366, height=768,
+                                       text_select=False, zoomable=False, background_color='#F7F7F4')
+        if recovery_started.is_set():
+            raise ShellStartupError(bridge._startup_failure)
+        window._callbacks = CallbackRegistry({ident:callback for ident,callback in window._callbacks.items() if callback is not None})
+        native = NativeHost(window, bridge, udf, test_control=bool(test_control))
+        def page_ready(meta):
+            with failure_lock:
+                if bridge._startup_failure:
+                    return
+                native.page_ready(meta)
+                ready.set()
+                bridge._startup_ready = True
+                watchdog_stop.set()
+        api._on_ready = page_ready
+        window.events.before_load += native.before_load
+        window.events.loaded += native.loaded
+        bridge.set_notifier(native.notify_push)
+        bridge.set_exit_handler(window.destroy)
+        closing_wait = ClosingWait(bridge, lambda mode: native.show_closing(mode, closing_wait.choose), closing_timeout)
+        def picker(title, kinds=None):
+            return None if picker_closed.is_set() else native.pick_file(title, kinds)
+        def shown():
+            if not picker_closed.is_set(): bridge.set_file_picker(picker)
+        def detach_picker():
+            picker_closed.set()
+            bridge.set_file_picker(None)
+        def closing():
+            allowed = closing_wait.closing()
+            if allowed: detach_picker()
+            return allowed
+        window.events.shown += shown
+        window.events.closing += closing
+        window.events.closed += detach_picker
+        native.pause_page()
+        window.events.closed += stop.set
+        def started():
+            if pedal:
+                bridge.pedal.start()
+            if test_control:
+                threading.Thread(target=test_controls, args=(Path(test_control).resolve(), native, stop),
+                                 name='shell-test-control', daemon=True).start()
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            http_port = reservation.getsockname()[1]
+        if root_path is not None:
+            from webview import http as webview_http
+            webview_http.start_global_server(http_port=http_port, urls=[str(root_path)])
+        bridge.events.record('py', 'http_server', port=http_port, host='127.0.0.1', root=str(root_path or page_path.parent))
+        if bridge._startup_failure:
+            raise ShellStartupError(bridge._startup_failure)
+        webview.start(started, gui='edgechromium', debug=False, private_mode=False,
+                      storage_path=str(udf), http_server=True, http_port=http_port)
+        if not ready.is_set():
+            fail_start('SHELL_START_FAILED')
+    except Exception:
+        code = 1
+        if ready.is_set() or (owner_main and not bridge._app_created):
+            raise
+        fail_start('SHELL_START_FAILED')
+    finally:
+        watchdog_stop.set()
+        stop.set()
+        if bridge._startup_failure:
+            recover_start(bridge._startup_failure)
+            recovery_finished.wait()
+            return 'exit'  # Only reached by a headless replacement of os._exit.
+        else:
+            normal_owner_deadline = time.monotonic() + OWNER_JOIN_S
+            force_watch = threading.Thread(target=watch_force_exit, name='shell-force-exit', daemon=True)
+            force_watch.start()  # Arm before any potentially blocked owner close.
+            try:
+                close_bridge()
+            except TimeoutError:
+                bridge.events.record('py', 'owner_close_timeout', wait_seconds=OWNER_JOIN_S)
+            for cleanup in ((closing_wait.close if closing_wait is not None else None),
+                            lambda: bridge.set_file_picker(None),
+                            (native.close if native is not None else None)):
+                if cleanup is not None:
+                    try:
+                        cleanup()
+                    except Exception:
+                        bridge.events.record('py', 'shell_start_cleanup_failed')
+        picker_closed.set()
+        if not bridge._startup_failure:
+            normal_close_done.set()
+            force_watch.join(0.1)
+            if force_requested.is_set():
+                force_finished.wait()
+                return 'web'
+        if owner_thread:
+            owner_thread.join(max(0, normal_owner_deadline - time.monotonic()))
+            if owner_thread.is_alive():
+                import logging
+                logging.error('SHELL_OWNER_JOIN_TIMEOUT')
         bridge.events.record('py', 'exit', code=code)
-    return code
+    return 'exit' if bridge._startup_failure else 'web'
 
 
 if __name__ == '__main__':

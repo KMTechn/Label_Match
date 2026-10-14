@@ -4,6 +4,7 @@ import queue
 import runpy
 import sys
 import threading
+import time
 import types
 import weakref
 from pathlib import Path
@@ -98,8 +99,9 @@ def test_lane_constructor_failure_stops_the_real_worker():
     class FailedRoot(Root):
         def after(self, *_args):
             raise RuntimeError('scheduler failed')
-    with pytest.raises(RuntimeError, match='scheduler failed'):
-        TkSerialUiLane(FailedRoot(), worker_name='lm-assembly-constructor-failure')
+    lane = TkSerialUiLane(FailedRoot(), worker_name='lm-assembly-constructor-failure')
+    assert lane.state is LaneState.BROKEN
+    assert not lane.worker_thread.is_alive()
     assert not any(t.name == 'lm-assembly-constructor-failure' and t.is_alive() for t in threading.enumerate())
 
 
@@ -241,3 +243,128 @@ def test_real_portable_entry_and_bootstrap_admission_show_abandoned_guidance(mon
     assert entry['main']() == 1
     assert str(notices[0]) == '포장 다시 열기 — 한 번 더 여세요'
     assert capsys.readouterr().err.strip() == '포장 다시 열기 — 한 번 더 여세요'
+
+
+@pytest.mark.parametrize('failure', ['start_exception', 'unresponsive', 'marker_failure'])
+def test_accepted_shell_start_failure_drains_real_lane_and_next_start_uses_marker(monkeypatch, tmp_path, failure):
+    import host
+    import label_screen_bridge
+    from tests.test_screen_precreation_recovery import shell_runtime
+    original_processor = label_screen_bridge.LabelMatchScreenProcessor
+    original_write_guard = screen.shell_write_guard
+    processors, apps, windows, notices, exits = [], [], [], [], []
+    exited = threading.Event()
+
+    class Event:
+        def __init__(self):
+            self.handlers = []
+        def __iadd__(self, handler):
+            self.handlers.append(handler)
+            return self
+        def fire(self):
+            for handler in self.handlers:
+                handler()
+
+    class Window:
+        def __init__(self):
+            self.visible = True
+            self._callbacks = {}
+            self.events = types.SimpleNamespace(**{name: Event() for name in ('shown', 'closing', 'closed', 'before_load', 'loaded')})
+        def destroy(self):
+            self.visible = False
+            self.events.closed.fire()
+
+    class Native:
+        def __init__(self, *_a, **_kw):
+            pass
+        def __getattr__(self, _name):
+            return lambda *_a, **_kw: None
+
+    class App(FakeApp):
+        def __init__(self):
+            super().__init__()
+            self.callbacks = queue.Queue()
+            self._tk_shutdown_requested = False
+            self.ui_lane = TkSerialUiLane(self)
+            apps.append(self)
+        def after(self, _ms, callback):
+            self.callbacks.put(callback)
+            return 'callback'
+        def after_idle(self, callback):
+            return self.after(0, callback)
+        def after_cancel(self, _ident):
+            pass
+        def mainloop(self):
+            while not self._tk_shutdown_requested:
+                try:
+                    self.callbacks.get(timeout=0.1)()
+                except queue.Empty:
+                    pass
+                time.sleep(0.001)
+        def on_closing(self, _confirmed=False):
+            self._tk_shutdown_requested = True
+        def _finish_after_mainloop(self):
+            self.ui_lane.close_idle()
+        def deiconify(self):
+            pytest.fail('same-process Tk fallback after a visible web window')
+
+    def processor(app, bridge):
+        instance = original_processor(app, bridge, module=lm)
+        processors.append(instance)
+        return instance
+
+    def create_window(*_a, **_kw):
+        window = Window()
+        windows.append(window)
+        return window
+
+    def start(*_a, **_kw):
+        if failure == 'unresponsive':
+            assert exited.wait(5)
+        else:
+            raise RuntimeError('web start failed')
+
+    def exit_process(code):
+        exits.append(code)
+        exited.set()
+
+    # Keep the accepted run_app/Bridge/FileIO/recovery code. Only native UI and
+    # process termination are replaced; the processing lane is a real thread.
+    shell_runtime.__wrapped__(monkeypatch, tmp_path)
+    monkeypatch.setattr(screen, 'shell_write_guard', original_write_guard)
+    monkeypatch.setitem(sys.modules, 'host', host)
+    webview = sys.modules['webview']
+    webview.create_window = create_window
+    webview.start = start
+    webview.http = types.SimpleNamespace(start_global_server=lambda **_kw: None)
+    monkeypatch.setattr(host, 'NativeHost', Native)
+    monkeypatch.setattr(host, 'show_startup_notice', notices.append)
+    monkeypatch.setattr(host, 'READY_TIMEOUT_S', 0.05)
+    monkeypatch.setattr(host.os, '_exit', exit_process)
+    monkeypatch.setattr(label_screen_bridge, 'LabelMatchScreenProcessor', processor)
+    if failure == 'marker_failure':
+        monkeypatch.setattr(host, '_save_fallback', mock.Mock(side_effect=OSError('marker unavailable')))
+    module = types.SimpleNamespace(APP_VERSION=lm.APP_VERSION, LABEL_MATCH_SCREEN_HOST={'active': False, 'run': None})
+    module._run_label_match_application = lambda: module.LABEL_MATCH_SCREEN_HOST['run'](App())
+    try:
+        assert screen.screen_runner(module)() == 'exit'
+        assert exits == [3] and notices == ['포장']
+        assert len(windows) == 1 and not windows[0].visible
+        assert len(apps) == 1 and not apps[0].ui_lane.worker_thread.is_alive()
+        marker = tmp_path / 'screen' / 'shell-fallback.json'
+        if failure == 'marker_failure':
+            assert not marker.exists()
+        else:
+            assert host.web_allowed(tmp_path / 'screen', lm.APP_VERSION) is False
+            monkeypatch.setattr(fence, '_WRITER_EXIT_CLOSED', False)
+            with pytest.raises(screen.ScreenUnavailable) as denied:
+                screen._prepare_screen(lm.APP_VERSION)
+            assert denied.value.code == 'SHELL_FALLBACK_ACTIVE'
+            assert len(windows) == 1
+    finally:
+        for app in apps:
+            app._tk_shutdown_requested = True
+            app.ui_lane._signal_worker_stop()
+            app.ui_lane.worker_thread.join(2)
+        for instance in processors:
+            instance.uninstall()

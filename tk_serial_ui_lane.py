@@ -267,7 +267,10 @@ class TkSerialUiLane:
                 raise RuntimeError("Tk UI lane worker did not start")
             self._schedule_pump()
             if self.state is LaneState.BROKEN:
-                raise RuntimeError("Tk UI lane scheduler failed")
+                # Preserve the existing BROKEN result while giving its idle
+                # worker an exit path even when no pump was scheduled.
+                self._signal_worker_stop()
+                self.worker_thread.join(self._worker_join_timeout)
         except BaseException:
             self._signal_worker_stop()
             self.worker_thread.join(self._worker_join_timeout)

@@ -236,13 +236,18 @@ def wait_pushes(screen, count):
 
 
 def test_state_through_the_shell_matches_the_contract(screen):
+    # This counter belongs to the accepted shell transport, not the app state.
+    # Validate it explicitly and keep every app property/extra-field check.
+    state_schema = {**CONTRACT["state"],
+                    "properties": {**CONTRACT["state"]["properties"], "events_dropped": {"type": "integer", "minimum": 0}},
+                    "required": [*CONTRACT["state"]["required"], "events_dropped"]}
     empty = call(screen, screen.bridge.state)
-    assert schema_errors(CONTRACT["state"], empty) == []
+    assert schema_errors(state_schema, empty) == []
     assert empty["work"]["next"] == "현품표를 스캔하세요" and empty["work"]["scan_left"] == 5
     for seq, text in enumerate([MASTER, "A110LHD2610134821", "A110LHD2610134822"], 1):
         call(screen, screen.bridge.scan, text, meta(seq))
     state = call(screen, screen.bridge.state)
-    assert schema_errors(CONTRACT["state"], state) == []
+    assert schema_errors(state_schema, state) == []
     work = state["work"]
     assert (work["scan_done"], work["scan_total"], work["scan_left"]) == (3, 5, 2)
     assert work["next"] == "상단 제품 3번째를 스캔하세요"

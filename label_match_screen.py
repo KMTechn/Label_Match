@@ -55,14 +55,14 @@ def _prepare_screen(version=None):
         raise ScreenUnavailable("SHELL_IMPORT_FAILED") from error
     try:
         data = shell_data_dir()
-        shell_fileio.set_write_guard(shell_write_guard)
+        fileio = shell_fileio.set_write_guard(shell_write_guard)
         allowed = getattr(host, "web_allowed", None)
         if allowed is not None:
             with shell_write_guard("web_allowed", data, "udf"):
-                use_web = allowed(data, version)
+                use_web = allowed(data, version, write_guard=shell_write_guard)
             if not use_web:
                 raise ScreenUnavailable("SHELL_FALLBACK_ACTIVE")
-        shell_fileio.make_dirs(data / "webview2", "udf")
+        fileio.make_dirs(data / "webview2", "udf")
     except (WriterFenceError, ScreenUnavailable):
         raise
     except Exception as error:

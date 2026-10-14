@@ -1,8 +1,8 @@
 # Label_Match 데이터·통합 계약
 
-v2.0.101부터 인수 없이 시작하면 새 화면(셸 v3.16)을 엽니다. 비상 시작은 `--ui tk` 또는 `--old-screen`이며 그 실행에만 적용됩니다. `--new-screen`·`--ui web`은 새 화면과 같은 뜻이고, 모르는 `--ui` 값은 기본 새 화면을 사용합니다. 셸 가져오기·자료 폴더·WebView2 준비 등 창 생성 전 실패는 같은 프로세스의 Tk로 이어집니다. 시작 임대와 처리 층을 하나로 유지하며 고정 SHELL_* 원인 코드 한 줄을 기록합니다. 창 생성 뒤 화면 전환(⑭)은 제외합니다(관리자 10/14 05:00·08:51). 시작 확인·업데이트·한 개만·설치·자료 거절은 기존 순서를 따릅니다.
+v2.0.102 후보는 인수 없이 새 화면(셸 v3.16.2)을 엽니다. 비상 `--ui tk`·`--old-screen`은 셸을 가져오지 않습니다. `--new-screen`·`--ui web`과 모르는 `--ui` 값은 기본 새 화면을 고릅니다. 셸 가져오기·자료 폴더·WebView2 준비 실패는 같은 시작 임대 안에서 Tk로 이어집니다. 처리 층을 만든 뒤 시작 실패는 셸이 쓰기 문·창을 닫고 같은 판 표지를 기록하며 writer/lane 종료를 기다려 끝냅니다. 다음 실행은 `web_allowed`가 같은 판 표지를 보고 Tk를 고릅니다. 자동 재실행과 PID 기다림은 없습니다. 시작 확인·업데이트·한 개만·설치·자료 거절 순서는 유지합니다.
 
-조립 후보 v2.0.101은 앱·자료 판 번호를 함께 올리며 자료 꼴은 유지한다. v2.0.99 및 v2.0.100(32a95a6·645d910 어느 build든) 자료는 열고 v2.0.101 자료의 v2.0.100 되돌림은 거절한다. 같은 판의 다른 미검증 build는 자료 판 불명으로 거절하므로 자료가 남는 PC에 설치하는 다음 build는 자료 판보다 엄격히 높은 판을 사용한다. 별도 서명 호환 증명 없이 기본 자료 호환 하한은 자기 판 v2.0.101이며 자료 꼴·서명·검증은 바꾸지 않는다. 새 화면 셸 v3.16/READY와 기존 검사 런타임의 정확한 native 6개를 바이트로 고정한다. 두 설치기의 unsigned 허용은 없음(옛 판) 또는 정확한 3경로·해시이며, 빌더·설치기·패킷 핀이 다르면 빌드 실패다.
+조립 후보 v2.0.102는 앱·자료 판 번호를 함께 올리며 자료 꼴은 유지한다. v2.0.99·v2.0.100·v2.0.101 자료는 열고 v2.0.102 자료의 낮은 판 되돌림은 거절한다. 같은 판의 다른 미검증 build는 자료 판 불명으로 거절하므로 자료가 남는 PC에 설치하는 다음 build는 자료 판보다 엄격히 높은 판을 사용한다. 별도 서명 호환 증명 없이 기본 자료 호환 하한은 자기 판 v2.0.101이며 자료 꼴·서명·검증은 바꾸지 않는다. 새 화면 셸 v3.16/READY와 기존 검사 런타임의 정확한 native 6개를 바이트로 고정한다. 두 설치기의 unsigned 허용은 없음(옛 판) 또는 정확한 3경로·해시이며, 빌더·설치기·패킷 핀이 다르면 빌드 실패다.
 
 READY 판정과 살아 있는 relay 재사용은 설치기가 남긴 `update-control/worker-pending.json`의 명시적 `server_base_url`과 등록에 사용한 relay credential의 `endpoint_url`을 로컬에서 대조한다. 완료된 기계 표지도 사용하며 scheme·host·유효 port만 비교한다(대소문자·끝 슬래시·기본 port는 동등). 둘 다 판독 가능하고 다르면 `RECOVERY_REQUIRED`·`INSTALL_SERVER_ORIGIN_CHANGED`로 등록·relay 시작/재사용 전에 거절하고 로컬 자료·대기열을 보존한다. 환경 override와 서버가 반환한 logistics profile 주소는 비교하지 않는다. 주소가 없거나 판독 불가능한 옛 기록은 이 비교를 건너뛰며 기존 검증을 유지한다. 네트워크·새 대기·writer admission은 추가하지 않는다.
 
@@ -11,11 +11,11 @@ portable direct-sync relay 자식은 기존 시작 관문을 지난 뒤 `label_m
 <a id="new-screen-shell-write-guard"></a>
 v2.0.102 어댑터는 `web_allowed(data, version)` 판정과 `before_exit(code, deadline_s)`를 셸에 연결한다. 끝내기 admission과 lane 시작을 같은 잠금에서 닫고, normal writer 허가와 실제 worker 종료(BROKEN 포함)를 확인한다. 확인된 위임 허가는 worker 종료를 기준으로 한다. 창 생성 뒤 실패는 셸이 표지를 남기고 끝내며 다음 사람의 실행에서 Tk를 고른다. 자동 재실행·PID 기다림은 없다. 새 화면의 앱 마무리는 쓰기가 살아 있는 동안 강제 종료하지 않는다.
 
-새 화면 입구는 셸 import·WebView2 준비를 먼저 확인하고, `_prepare_screen`에서 `shell_fileio.set_write_guard(shell_write_guard)`를 설치한 뒤 첫 WebView2 프로필 폴더를 만든다. 이어 `run_app(write_guard=shell_write_guard)`에도 같은 담장을 전달한다. 셸의 events·journal·sound_cache·udf·test_control 쓰기는 `shell/shell_fileio.py`의 다섯 함수로 모이며, 각각 기존 `writer_admission("shell_fileio")` 안에서만 실행한다. 선언에는 이 위임을 `shell_fileio` 한 source로 기록한다. 허가는 한 번 쓰기 뒤 내려놓으며 화면·스캔·사람 응답·네트워크를 기다리는 동안 쥐지 않는다.
+새 화면 입구는 셸 import·WebView2 준비를 먼저 확인하고, `_prepare_screen`에서 `shell_fileio.set_write_guard(shell_write_guard)`가 돌려주는 private FileIO로 첫 WebView2 프로필 폴더를 만든다. 이어 `run_app(write_guard=shell_write_guard)`에도 같은 담장을 전달한다. 셸의 events·journal·sound_cache·udf·test_control 쓰기는 `shell/shell_fileio.py`의 다섯 함수로 모이며, 각각 기존 `writer_admission("shell_fileio")` 안에서만 실행한다. 선언에는 이 위임을 `shell_fileio` 한 source로 기록한다. 허가는 한 번 쓰기 뒤 내려놓으며 화면·스캔·사람 응답·네트워크를 기다리는 동안 쥐지 않는다.
 
-선언 생성기는 고정 `shell/SHELL-READY.json`(v3.16, SHA256 `0c3d7524e8c989b61f5f8da698847e6b5b61fc0939e6fd0fb8bd7faa51efeec8`)을 대조한다. 설치된 실행 스캐너는 후보의 `shell/SHELL-READY*.json` 하나와 파일 바이트·Python 파일 집합의 자기 일관, 앱 입구의 담장 설치를 확인하므로 다른 셸 판의 자기 일관 후보도 받는다. 거절된 events는 해당 진단 줄만 잃고 `events_dropped`로 센다. 처리 층 모드의 셸 journal 실패는 앱 저장 결과를 바꾸지 않고 다음 스캔과 최근 seq 중복 응답을 계속한다. 창 생성 전 일반 준비 실패(셸 import·WebView2·시작 폴더)는 고정 SHELL_* 원인 한 줄을 남기고 기존 시작 임대 안에서 같은 프로세스의 Tk로 이어진다. 이미 숨김 Tk가 있으면 그 처리 층을 재사용한다. writer 거절은 다시 던져 시작을 거절하며 Tk로 우회하지 않는다. 창 생성 뒤 오류도 다시 던진다.
+선언 생성기는 고정 `shell/SHELL-READY.json`(v3.16.2, SHA256 `8c3b35d4740a86481e2d011630bf78271316c38ca5f1e137de8109f320e1eb88`)을 대조한다. 설치된 실행 스캐너는 후보의 `shell/SHELL-READY*.json` 하나와 파일 바이트·Python 파일 집합의 자기 일관, 앱 입구의 담장 설치를 확인하므로 다른 셸 판의 자기 일관 후보도 받는다. 거절된 events는 해당 진단 줄만 잃고 `events_dropped`로 센다. 처리 층 모드의 셸 journal 실패는 앱 저장 결과를 바꾸지 않고 다음 스캔과 최근 seq 중복 응답을 계속한다. 창 생성 전 일반 준비 실패(셸 import·WebView2·시작 폴더)는 고정 SHELL_* 원인 한 줄을 남기고 기존 시작 임대 안에서 같은 프로세스의 Tk로 이어진다. 이미 숨김 Tk가 있으면 그 처리 층을 재사용한다. writer 거절은 다시 던져 시작을 거절하며 Tk로 우회하지 않는다. 처리 층 생성 뒤 시작 실패는 셸의 표지·끝내기 길로 간다.
 
-창 X는 0.3초 안에 처리 층 답이 없으면 취소하고 「끝내는 중」 띠를 보인다. 늦은 허용 답은 닫고 거절 답은 띠를 내린다. 셸의 기본 120초 뒤에는 저장 손실 경고와 「그래도 닫기 / 더 기다리기」를 보인다. 앱의 기존 마무리는 Tk 주인 전용이며 2초 안의 스레드 안전 마무리가 없어 `on_force_exit`는 기본 None이다. 앱의 60/105초 감시는 지연을 알리는 값이며 강제 마감 상한은 아니다(주인 몫 — 상한 필요).
+창 X는 0.3초 안에 처리 층 답이 없으면 취소하고 「끝내는 중」 띠를 보인다. 늦은 허용 답은 닫고 거절 답은 띠를 내린다. 셸의 기본 120초 뒤에는 저장 손실 경고와 「그래도 닫기 / 더 기다리기」를 보인다. 앱의 기존 마무리는 Tk 주인 전용이며 2초 안의 스레드 안전 마무리가 없어 `on_force_exit`는 기본 None이다. 새 화면의 앱 마무리는 지연을 알리며 강제 마감하지 않는다. before_exit는 120초까지 5초마다 writer 허가와 실제 lane 종료를 확인하고 False면 셸이 끝내기를 미룬다.
 
 설치기와 배포 helper의 조상·검증 대상 조회 및 패키지 자식 열거는 숨김 속성이 있는 ProgramData·AppData·설치 경로도 검사한다. 읽기 `-Force`는 숨김 항목만 포함하며 reparse·파일 종류·바인딩 거절과 삭제 조건은 유지한다.
 

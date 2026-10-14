@@ -12,18 +12,20 @@ import label_match_screen
 import writer_session_fence as fence
 from writer_sink_inventory import derive_writer_sink_inventory, WriterSinkInventoryError
 from tests.test_label_screen_bridge import call, meta, screen
+from tests.test_screen_precreation_recovery import shell_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
-READY_SHA256 = "0c3d7524e8c989b61f5f8da698847e6b5b61fc0939e6fd0fb8bd7faa51efeec8"
+ACTUAL_WRITE_GUARD = label_match_screen.shell_write_guard
+READY_SHA256 = "8c3b35d4740a86481e2d011630bf78271316c38ca5f1e137de8109f320e1eb88"
 
 
-def test_shell_copy_matches_v316_ready():
+def test_shell_copy_matches_v3162_ready():
     ready_path = ROOT / "shell/SHELL-READY.json"
     assert ready_path.is_file()
     raw = ready_path.read_bytes()
     assert hashlib.sha256(raw).hexdigest() == READY_SHA256
     ready = json.loads(raw)
-    assert ready["version"] == "v3.16"
+    assert ready["version"] == "v3.16.2"
     for entry in ready["files"]:
         path = ROOT / entry["path"]
         assert path.stat().st_size == entry["bytes"]
@@ -32,7 +34,7 @@ def test_shell_copy_matches_v316_ready():
         assert not (ROOT / entry["path"]).exists()
 
 
-def test_screen_runner_installs_the_admission_guard(monkeypatch, tmp_path):
+def test_screen_runner_installs_the_admission_guard(monkeypatch, tmp_path, shell_runtime):
     captured = {}
 
     def run_app(profile, data, *, write_guard, **options):
@@ -41,7 +43,7 @@ def test_screen_runner_installs_the_admission_guard(monkeypatch, tmp_path):
 
     monkeypatch.setitem(sys.modules, "host", types.SimpleNamespace(run_app=run_app))
     monkeypatch.setattr(label_match_screen, "shell_data_dir", lambda: tmp_path)
-    assert label_match_screen.screen_runner(types.SimpleNamespace())() == 0
+    assert label_match_screen.screen_runner(types.SimpleNamespace(APP_VERSION=__import__('Label_Match').APP_VERSION))() == 0
     assert captured["guard"] is label_match_screen.shell_write_guard
 
 
@@ -67,17 +69,17 @@ def test_each_shell_write_is_inside_app_admission(monkeypatch, tmp_path, operati
     original_guard = shell_fileio._guard
 
     @contextmanager
-    def observed_guard(op, target, kind):
-        with original_guard(op, target, kind):
+    def observed_guard(op, target, kind, *, owner=None):
+        with original_guard(op, target, kind, owner=owner):
             assert inside == [True]
             yield
 
     monkeypatch.setattr(label_match_screen, "writer_admission", admission)
-    monkeypatch.setattr(shell_fileio, "_guard_factory", label_match_screen.shell_write_guard)
+    fileio = shell_fileio.set_write_guard(label_match_screen.shell_write_guard)
     monkeypatch.setattr(shell_fileio, "_guard", observed_guard)
     args = {"make_dirs": (), "append_bytes": (b"after",), "create_new": (b"after",),
             "truncate": (2,), "replace_atomic": (b"after",)}[operation]
-    getattr(shell_fileio, operation)(path, *args, kind="test_control")
+    getattr(fileio, operation)(path, *args, kind="test_control")
     assert entered == ["shell_fileio"]
     assert inside == []
     assert path.is_dir() if operation == "make_dirs" else path.read_bytes() == (b"be" if operation == "truncate" else b"after")
@@ -87,10 +89,10 @@ def test_real_admission_denial_precedes_any_shell_mutation(monkeypatch, tmp_path
     import shell_fileio
 
     target = tmp_path / "not-created"
-    monkeypatch.setattr(shell_fileio, "_guard_factory", label_match_screen.shell_write_guard)
+    fileio = shell_fileio.set_write_guard(label_match_screen.shell_write_guard)
     monkeypatch.setattr(fence, "_acquire_named_mutex", lambda *args: None)
     with pytest.raises(fence.WriterFencedError):
-        shell_fileio.replace_atomic(target, b"after", "test_control")
+        fileio.replace_atomic(target, b"after", "test_control")
     assert not target.exists()
     assert not target.with_name(target.name + ".tmp").exists()
 
@@ -99,17 +101,27 @@ def test_real_admission_allows_a_bounded_shell_write(monkeypatch, tmp_path):
     import shell_fileio
 
     target = tmp_path / "admitted"
-    monkeypatch.setattr(shell_fileio, "_guard_factory", label_match_screen.shell_write_guard)
-    shell_fileio.replace_atomic(target, b"after", "test_control")
+    fileio = shell_fileio.set_write_guard(label_match_screen.shell_write_guard)
+    fileio.replace_atomic(target, b"after", "test_control")
     assert target.read_bytes() == b"after"
     assert getattr(fence._WRITER_LOCAL, "depth", 0) == 0
+
+
+def test_initial_profile_directory_is_not_created_when_admission_is_denied(monkeypatch, tmp_path, shell_runtime):
+    import bridge
+    monkeypatch.setitem(sys.modules, 'shell_fileio', bridge.shell_fileio)
+    monkeypatch.setattr(label_match_screen, 'shell_write_guard', ACTUAL_WRITE_GUARD)
+    monkeypatch.setattr(fence, '_acquire_named_mutex', lambda *_a: None)
+    with pytest.raises(fence.WriterFencedError):
+        label_match_screen._prepare_screen(__import__('Label_Match').APP_VERSION)
+    assert not (tmp_path / 'screen').exists()
 
 
 def test_denied_shell_writes_keep_the_screen_and_next_scan_running(screen, monkeypatch):
     import shell_fileio
 
     before = {path.name: path.read_bytes() for path in screen.data.glob("*") if path.is_file()}
-    monkeypatch.setattr(shell_fileio, "_guard_factory", label_match_screen.shell_write_guard)
+    monkeypatch.setattr(screen.bridge.fileio, "factory", label_match_screen.shell_write_guard)
     monkeypatch.setattr(fence, "_acquire_named_mutex", lambda *args: None)
     first = call(screen, lambda: screen.bridge.scan("first", meta(1)))
     second = call(screen, lambda: screen.bridge.scan("second", meta(2)))

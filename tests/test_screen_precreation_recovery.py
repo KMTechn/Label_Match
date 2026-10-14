@@ -31,7 +31,7 @@ def application(monkeypatch, tmp_path):
         def mainloop(self): calls.append("tk-loop")
         def _finish_after_mainloop(self): calls.append("finish")
     module.__dict__.update(
-        sys=sys, Path=Path, Label_Match=App, APP_VERSION=main.__globals__["APP_VERSION"],
+        sys=sys, Path=Path, Label_Match=App, APP_VERSION=__import__("Label_Match").APP_VERSION,
         LABEL_MATCH_SCREEN_HOST={"requested": True, "active": False,
                                  "run": None, "catalog_unconfirmed": False},
         _startup_app_stop_requested=lambda: False,
@@ -71,7 +71,7 @@ def shell_runtime(monkeypatch, tmp_path):
     host.run_app = lambda *a, **kw: pytest.fail("failed preparation must not start the owner or a shell window")
     monkeypatch.setitem(sys.modules, "host", host)
     fileio = types.ModuleType("shell_fileio")
-    fileio.set_write_guard = lambda guard: None
+    fileio.set_write_guard = lambda guard: types.SimpleNamespace(make_dirs=lambda *a: fileio.make_dirs(*a))
     fileio.make_dirs = lambda *a: None
     monkeypatch.setitem(sys.modules, "shell_fileio", fileio)
     webview = types.ModuleType("webview")

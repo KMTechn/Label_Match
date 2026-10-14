@@ -8,9 +8,11 @@ import time
 from concurrent.futures import Future, wait as wait_futures
 from collections import OrderedDict
 
+import shell_fileio
 from journal import Events, Journal
 from pedal import Pedal, read_physical_f12
 from sound import Sound
+OWNER_JOIN_S = 10
 
 
 class Bridge:
@@ -19,21 +21,25 @@ class Bridge:
     owner='thread' runs our own owner thread; owner='external' means the app calls
     attach_owner(processor) and then pump() from its own thread (e.g. a Tk thread)."""
     def __init__(self, data, profile, pedal=None, src='py', sound=None, physical_reader=None, test_control=False,
-                 processor_factory=None, owner='thread'):
+                 processor_factory=None, owner='thread', write_guard=None, fileio=None):
         if owner not in ('thread', 'external'): raise ValueError('owner must be thread or external')
         self.profile, self.src, self.data = profile, src, data
-        self.events = Events(data)
+        self._closed = False
+        self._writes_closed = False
+        self.fileio = fileio or shell_fileio.FileIO(write_guard)
+        self.fileio.closed = lambda: self._writes_closed
+        self.events = Events(data, fileio=self.fileio)
         self.pedal = pedal or Pedal()
         self._sound = sound
         self._physical_reader = physical_reader or read_physical_f12
         self._test_control = test_control
         self._processor_factory, self._processor, self._external = processor_factory, None, owner == 'external'
         self.owner_thread_id = None
+        self._external_owner_thread = None
         # Unbounded in-memory queues: put_nowait never fails and equals put (no file/network write).
         self._tasks, self._pushes = queue.Queue(), queue.Queue()
         self._intake_lock = threading.Lock()
         self._notify = None
-        self._closed = False
         self._owner_done = False
         self._exit_handler, self._exit_requested = None, False
         self._closing_future = None
@@ -57,6 +63,7 @@ class Bridge:
         if not self._external or self._initialized.done(): raise RuntimeError('attach_owner: external owner only, once')
         if idle is not None and not callable(idle): raise TypeError('idle must be callable or None')
         self._idle = idle
+        self._external_owner_thread = threading.current_thread()
         try: self._init_owner(processor)
         except Exception as error:
             self._initialized.set_exception(error)
@@ -409,8 +416,8 @@ class Bridge:
         self.owner_thread_id = threading.get_ident()
         self._recovered_startup = self.events.path.exists() and self.events.path.stat().st_size > 0
         self._receipt_offset = self.events.path.stat().st_size if self.events.path.exists() else 0
-        self.journal = Journal(self.data)
-        self._sound = self._sound or Sound(self.data)
+        self.journal = Journal(self.data, fileio=self.fileio)
+        self._sound = self._sound or Sound(self.data, fileio=self.fileio)
         self._last_seq = self.journal.state()['last_seq']
         self._intake_seq = self._last_seq
         self._next_seq = self._last_seq + 1
@@ -483,20 +490,42 @@ class Bridge:
             if not future.done(): future.set_exception(error)
         return True
 
+    def close_intake(self):
+        """Startup recovery only: close admission without waiting for the owner."""
+        self._closed = True
+        self._writes_closed = True
+        self._owner_done = True
+
     def close(self):
         with self._intake_lock:
             if self._closed: return
             self._closed = True
-            future = Future(); self._tasks.put_nowait(('close', None, future))
-        if self._external:
-            if threading.get_ident() == self.owner_thread_id: self.pump()
-            elif self._initialized.done() and self._initialized.exception() is None:
-                # An external owner that already stopped pumping must not hang shutdown.
-                try: future.result(5)
-                except Exception as error: self.events.record(self.src, 'owner_close_timeout', error=type(error).__name__)
-        else:
-            future.result()
-            self._owner.join(2)
-        self.pedal.close()
-        self._publisher_stop.set(); self._pushes.put_nowait(None)
-        self._publisher.join(2)
+            owner = self._external_owner_thread if self._external else self._owner
+            owner_alive = owner is not None and owner.is_alive()
+            future = None
+            if owner_alive:
+                future = Future(); self._tasks.put_nowait(('close', None, future))
+            else:
+                self._owner_done = True
+        deadline = time.monotonic() + OWNER_JOIN_S
+        try:
+            if future is None:
+                pass  # An ended owner cannot consume a Future; finish locally.
+            elif self._external:
+                if threading.get_ident() == self.owner_thread_id: self.pump()
+                elif self._initialized.done() and self._initialized.exception() is None:
+                    try: future.result(max(0, deadline - time.monotonic()))
+                    except TimeoutError:
+                        self.events.record(self.src, 'owner_close_timeout')
+                        raise
+                    except Exception as error: self.events.record(self.src, 'owner_close_timeout', error=type(error).__name__)
+            else:
+                future.result(max(0, deadline - time.monotonic()))
+                self._owner.join(max(0, deadline - time.monotonic()))
+                if self._owner.is_alive():
+                    raise TimeoutError('SHELL_OWNER_CLOSE_TIMEOUT')
+        finally:
+            self.pedal.close()
+            self._publisher_stop.set(); self._pushes.put_nowait(None)
+            self._publisher.join(2)
+            self._writes_closed = True

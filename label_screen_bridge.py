@@ -407,19 +407,31 @@ class LabelMatchScreenProcessor:
         item = next((row for row in app._package_recovery_candidates() if str(row["set_id"]) == target), None)
         if item is None or not item.get("pin_intent"):
             return {"ok": False, "result": {"kind": "warn", "text": "다시 확인할 관리자 요청이 없습니다"}}
+        admin_id, pin = str(args.get("admin_id") or "").strip(), str(args.get("pin") or "")
+        if bool(admin_id) != bool(pin):
+            return {"ok": False, "result": {"kind": "warn", "text": "관리자 ID 와 PIN 6자리를 넣으세요"}}
+        if admin_id:
+            app._screen_admin_credentials = (admin_id, pin)
         window = _ScreenWindow()
 
         def settle(value, ok):
+            app.__dict__.pop("_screen_admin_credentials", None)
             window.destroy()
             self._admin_result = {"action": "recovery_retry_pin", "ok": bool(ok),
                                   "text": _text(value or app.__dict__.get("_admin_pin_last_message") or "결과를 확인하지 못했습니다")}
             self._load_recovery()
             self._changed("recovery_retry_pin")
 
-        accepted = app._retry_package_pin_item(item, window=window, physical_qr=str(args.get("physical_qr") or "").strip(),
-                                              finish=lambda value: settle(value, value is not False),
-                                              fail=lambda _error: settle(None, False))
+        try:
+            accepted = app._retry_package_pin_item(item, window=window, physical_qr=str(args.get("physical_qr") or "").strip(),
+                                                  finish=lambda value: settle(value, value is not False),
+                                                  fail=lambda _error: settle(None, False))
+        except Exception:
+            app.__dict__.pop("_screen_admin_credentials", None)
+            window.destroy()
+            raise
         if not accepted:
+            app.__dict__.pop("_screen_admin_credentials", None)
             window.destroy()
         return {"ok": bool(accepted)}
 

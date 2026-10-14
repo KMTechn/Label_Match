@@ -7,11 +7,12 @@ import shell_fileio
 
 
 class Sound:
-    def __init__(self, data, player=None):
+    def __init__(self, data, player=None, fileio=None):
+        self.fileio = fileio or shell_fileio.FileIO()
         self.player = player
         self.paths = {}
         root = Path(data) / 'sounds'
-        try: shell_fileio.make_dirs(root, 'sound_cache')
+        try: self.fileio.make_dirs(root, 'sound_cache')
         except Exception: pass  # play() then fails and records sound ok=False; the scan flow continues
         for kind, frequency in (('ok', 1400), ('error', 600)):
             path = root / (kind + '.wav')
@@ -20,7 +21,7 @@ class Sound:
             # no file-like open here, the one write goes through shell_fileio.
             header = (b'RIFF' + struct.pack('<I', 36 + len(samples)) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16, 1, 1, 22050, 44100, 2, 16)
                       + b'data' + struct.pack('<I', len(samples)))
-            try: shell_fileio.replace_atomic(path, header + samples, 'sound_cache')
+            try: self.fileio.replace_atomic(path, header + samples, 'sound_cache')
             except Exception: pass  # same: a missing cue is recorded at play time
             self.paths[kind] = path
 
