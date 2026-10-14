@@ -9925,10 +9925,10 @@ class Label_Match(tk.Tk):
 
     @staticmethod
     def _package_repack_review_state(package):
-        if (not package or package.get("status") != "CONFLICT"
+        if (not package or (not package.get('recovery_pending') and (package.get("status") != "CONFLICT"
                 or not package.get("local_completion_committed")
                 or package.get("last_error_code") not in {
-                    "REPACK_REOPEN_REFUSED", "REPACK_PREDECESSOR_REVIEW_REQUIRED"}):
+                    "REPACK_REOPEN_REFUSED", "REPACK_PREDECESSOR_REVIEW_REQUIRED"}))):
             return None
         try:
             draft = json.loads(package.get("draft_json") or "{}")
@@ -9937,14 +9937,59 @@ class Label_Match(tk.Tk):
                 "source_external_label", "source_input_tag_id") if draft.get(name)), "")
         except (TypeError, ValueError, AttributeError):
             source = ""
+        if package.get('recovery_held'):
+            from package_recovery import HELD_NOTICE
+            return dict(label='회수 불가',source='현품표 '+source,
+                        message=HELD_NOTICE.split('\n')[0],instruction=HELD_NOTICE.split('\n')[1],notice=HELD_NOTICE)
         return {
             "label": "관리자 회수 대기", "source": "현품표 " + source,
             "message": ("회사 서버가 다시 포장을 거절했습니다"
-                        if package["last_error_code"] == "REPACK_REOPEN_REFUSED"
+                        if package.get('recovery_pending') or package["last_error_code"] == "REPACK_REOPEN_REFUSED"
                         else "이전 포장 순서를 확인할 수 없습니다"),
             "instruction": "웹 사무실에서 현장 관리자가 제품을 새 이적 묶음으로 회수해야 합니다",
             "notice": "아직 회수되지 않았습니다\n웹 사무실에서 회수한 뒤 다시 확인하세요",
         }
+
+    def _recheck_package_recovery(self, set_id, *, finish=None):
+        """Worker action: authenticated read and local CAS, with no PIN or old CREATE."""
+        from package_recovery import (AWAITING_NOTICE, RECOVERED_NOTICE, HELD_NOTICE, validate_recovery_read)
+        outbox = self.__dict__.get('package_outbox')
+        client = self.__dict__.get('package_logistics_client')
+        operator_name = str(self.__dict__.get('worker_name') or '').strip()
+        operator_id = str(self.__dict__.get('worker_id') or persistent_operator_name(operator_name)).strip() if operator_name else ''
+
+        def work():
+            try:
+                target = outbox.package_recovery_target(set_id) if outbox is not None else None
+                if target is None or client is None or not operator_id:
+                    return dict(state='AWAITING',text=AWAITING_NOTICE)
+                response = client.get_package_recovery(target['expected'])
+                state = validate_recovery_read(response,target['expected'])
+                if state == 'RECOVERED':
+                    closed = outbox.close_package_recovery(target,response,operator_id=operator_id,operator_name=operator_name)
+                    return dict(state='RECOVERED' if closed else 'AWAITING',text=RECOVERED_NOTICE if closed else AWAITING_NOTICE)
+                if state == 'HELD' and outbox.observe_package_recovery_held(
+                        target,response,operator_id=operator_id,operator_name=operator_name):
+                    return dict(state='HELD',text=HELD_NOTICE)
+            except Exception:
+                pass  # Absence, unknown/mismatched proof and I/O all preserve the hold.
+            return dict(state='AWAITING',text=AWAITING_NOTICE)
+
+        def present(result):
+            self._package_recovery_last_result = result
+            self._show_scanner_notice(*result['text'].split('\n',1))
+            if finish is not None:
+                finish(result)
+
+        if self.__dict__.get('ui_lane') is None:
+            # Headless test adapters have no serial lane; production always has one.
+            if not self.__dict__.get('run_tests'):
+                return False
+            result = work()
+            present(result)
+            return result
+        return self._submit_ui_lane_task(name='package-recovery-recheck',busy_text='회수 확인 중',
+            work=work,finish=present,fail=lambda _error: present(dict(state='AWAITING',text=AWAITING_NOTICE)))
 
     def _package_recovery_candidates(self):
         outbox = self.__dict__.get("package_outbox")
@@ -9996,6 +10041,7 @@ class Label_Match(tk.Tk):
                 row = rows.setdefault(set_id, {"set_id": set_id, "exchange": None,
                     "current": None, "held": outbox.get_workbench_hold(set_id)})
                 row["package"] = package
+                package['recovery_held'] = outbox.package_recovery_held(set_id)
                 row["repack_review"] = self._package_repack_review_state(package)
         for exchange in self.sealed_transfer_exchange_store.blocking_rows():
             set_id = str(exchange["set_id"] or "").strip()
@@ -12314,12 +12360,12 @@ class Label_Match(tk.Tk):
 
         listing.bind("<<ListboxSelect>>", show_details)
 
-        def selected():
+        def selected(*, allow_recovery=False):
             indexes = listing.curselection()
             item = candidates[indexes[0]] if indexes else None
-            if item and item.get("repack_review"):
+            if item and item.get("repack_review") and not allow_recovery:
                 status.set(item["repack_review"]["notice"])
-                return None  # No release/recheck action exists in the current server contract.
+                return None
             return item
 
         def pin_busy(item):
@@ -12336,7 +12382,10 @@ class Label_Match(tk.Tk):
 
         def recheck():
             try:
-                item = selected()
+                item = selected(allow_recovery=True)
+                if item and item.get('repack_review'):
+                    self._recheck_package_recovery(item['set_id'],finish=lambda result: show_result(result['text']))
+                    return
                 if item:
                     self._submit_package_pin_action(
                         "LABEL.RECHECK", item["set_id"], window=window, finish=show_result,
@@ -16139,6 +16188,10 @@ class Label_Match(tk.Tk):
                     return
                 if repack_review:
                     consume_input()
+                    if self.package_outbox.package_recovery_held(repack_review['set_id']):
+                        from package_recovery import HELD_NOTICE
+                        self._show_scanner_notice(*HELD_NOTICE.split('\n',1))
+                        return
                     self._show_scanner_notice(
                         "이 현품표는 관리자 회수 대기입니다",
                         "제품은 따로 두고 현장 관리자에게 알리세요\n다른 현품표 작업은 계속할 수 있습니다",

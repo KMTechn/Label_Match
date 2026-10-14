@@ -10,10 +10,29 @@ import uuid
 import ipaddress
 from datetime import datetime, timedelta, timezone
 
+def recovery_admin(app, database, patch, state):
+    import dataclasses, secrets
+    case = (app, database, app.test_client())
+    import admin_pin
+    from blueprints.logistics import dashboard
+    from test_logistics_p4_shipping import _actor, _csrf
+    from test_phs_shipment_cancel_dashboard import _real_pin_store
+    holder = {'actor': dataclasses.replace(_actor(roles=('auth_admin', 'desktop_admin')), provider='role_access_code', auth_method='role_access_code')}
+    patch.setattr(dashboard, 'require_actor', lambda: holder['actor'])
+    patch.setattr(admin_pin, 'current_actor', lambda: holder['actor'])
+    client = case[2]
+    csrf = _csrf(client)
+    personal_number = ''.join((str(secrets.randbelow(10)) for _ in range(6)))
+    state = (client, csrf, database, [], None, personal_number, holder, [])
+    _real_pin_store(state, state, patch)
+    cookie_name = app.config.get('SESSION_COOKIE_NAME', 'session')
+    cookie = client.get_cookie(cookie_name)
+    assert cookie is not None
+    return dict(recovery_admin_csrf=csrf, recovery_admin_cookie=cookie_name + '=' + cookie.value, recovery_admin_pin=personal_number)
 
 def main():
     source, state, ready, mode = sys.argv[1:]
-    source, state, ready = Path(source), Path(state), Path(ready)
+    source, state, ready = (Path(source), Path(state), Path(ready))
     state.mkdir(exist_ok=True)
     sys.path[:0] = [str(source), str(source / 'tests')]
     for name in tuple(sys.modules):
@@ -35,42 +54,28 @@ def main():
     if hasattr(profile, '__next__'):
         next(profile)
     extra = {}
-    if mode in ('legacy','spill'):
+    if mode in ('legacy', 'spill'):
         from test_logistics_api_v1 import _app, _headers, SCOPE
         from test_sealed_transfer_replacement import _seed
         app, database = _app(state, opening_qty=30)
         seed = _seed(app.test_client(), source_count=1, target_count=4)
-        target = next(value for value in seed.values()
-                      if isinstance(value, dict) and value.get('seal_qr_payload'))
-        projection_response = app.test_client().get(
-            '/logistics/api/v1/bundles/' + SCOPE + '/' + target['bundle_id'], headers=_headers())
+        target = next((value for value in seed.values() if isinstance(value, dict) and value.get('seal_qr_payload')))
+        projection_response = app.test_client().get('/logistics/api/v1/bundles/' + SCOPE + '/' + target['bundle_id'], headers=_headers())
         assert projection_response.status_code == 200
         projection = projection_response.get_json()['data']
         label = None
         headers = _headers(program='Label_Match')
         if mode == 'spill':
             from test_sealed_transfer_replacement import _complete_phs, _post, membership_hash
-            other_id, other_version, other_members = _complete_phs(
-                app.test_client(), session_id='spill-other-session', count=4,
-                label='spill-other-label', start_index=21)
-            other = app.test_client().get('/logistics/api/v1/bundles/'+SCOPE+'/'+other_id,
-                                          headers=_headers()).get_json()['data']
-            sealed = _post(app.test_client(), '/logistics/api/v1/transfers/seal',
-                'SEAL_TRANSFER_BUNDLE', 'spill-other-seal', {'bundle:'+other_id:other_version},
-                {'item_id':other.get('item_id') or other.get('item_code'),
-                 'source_bundle_id':other_id,'transfer_bundle_id':'spill-other-transfer',
-                 'external_label':'spill-other-transfer-label','member_ids':other_members,
-                 'membership_hash':membership_hash(other_members),
-                 'scanned_barcodes':[row['normalized_barcode'] for row in other['members']]})
-            if sealed.status_code not in (200,201):
+            other_id, other_version, other_members = _complete_phs(app.test_client(), session_id='spill-other-session', count=4, label='spill-other-label', start_index=21)
+            other = app.test_client().get('/logistics/api/v1/bundles/' + SCOPE + '/' + other_id, headers=_headers()).get_json()['data']
+            sealed = _post(app.test_client(), '/logistics/api/v1/transfers/seal', 'SEAL_TRANSFER_BUNDLE', 'spill-other-seal', {'bundle:' + other_id: other_version}, {'item_id': other.get('item_id') or other.get('item_code'), 'source_bundle_id': other_id, 'transfer_bundle_id': 'spill-other-transfer', 'external_label': 'spill-other-transfer-label', 'member_ids': other_members, 'membership_hash': membership_hash(other_members), 'scanned_barcodes': [row['normalized_barcode'] for row in other['members']]})
+            if sealed.status_code not in (200, 201):
                 import re
-                code = str(sealed.get_json().get('error',{}).get('code','UNKNOWN'))
-                (state/'seed-seal-failure.safe.json').write_text(json.dumps({
-                    'status':sealed.status_code,'code':code if re.fullmatch('[A-Z_0-9]{1,80}',code) else 'MASKED'}))
-            assert sealed.status_code in (200,201)
-            extra['other_projection'] = app.test_client().get(
-                '/logistics/api/v1/bundles/'+SCOPE+'/spill-other-transfer',
-                headers=_headers()).get_json()['data']
+                code = str(sealed.get_json().get('error', {}).get('code', 'UNKNOWN'))
+                (state / 'seed-seal-failure.safe.json').write_text(json.dumps({'status': sealed.status_code, 'code': code if re.fullmatch('[A-Z_0-9]{1,80}', code) else 'MASKED'}))
+            assert sealed.status_code in (200, 201)
+            extra['other_projection'] = app.test_client().get('/logistics/api/v1/bundles/' + SCOPE + '/spill-other-transfer', headers=_headers()).get_json()['data']
     else:
         from test_phs_label_exchange import ledger
         from test_phs_label_overlay_api import _app, _machine_headers
@@ -81,8 +86,7 @@ def main():
         if mode == 'spill-physical':
             import test_phs_package_work_group as physical_fixture
             ensure_balance = physical_fixture._ensure_transfer_balances
-            physical_fixture._ensure_transfer_balances = lambda path, **kwargs: ensure_balance(
-                path, **{**kwargs, 'total_qty': 8})
+            physical_fixture._ensure_transfer_balances = lambda path, **kwargs: ensure_balance(path, **{**kwargs, 'total_qty': 8})
         seed, label, _resolved = _seed_sealed_label(database, app.test_client(), suffix='U4', ordinal=1, unit_count=4)
         response = _resolve_package_source(app.test_client(), label)
         assert response.status_code == 200
@@ -91,6 +95,7 @@ def main():
         if mode == 'spill-physical':
             other_client = app.test_client()
             seed_post = other_client.post
+
             def traced_seed_post(*args, **kwargs):
                 response = seed_post(*args, **kwargs)
                 if response.status_code >= 400:
@@ -101,40 +106,30 @@ def main():
                     scanned = payload.get('scanned_barcodes') or []
                     import sqlite3
                     with sqlite3.connect(database) as connection:
-                        actual = [row[0] for row in connection.execute(
-                            'SELECT normalized_barcode FROM logistics_units WHERE unit_id IN ('
-                            + ','.join('?' for _ in selected) + ')', selected)] if selected else []
-                    (state/'physical-seed-failure.safe.json').write_text(json.dumps({
-                        'status': response.status_code,
-                        'code': code if re.fullmatch('[A-Z0-9_]{1,80}', code) else 'UNKNOWN',
-                        'selected_count': len(selected), 'scanned_count': len(scanned),
-                        'actual_count': len(actual), 'matching_scans': sorted(actual)==sorted(scanned)}))
+                        actual = [row[0] for row in connection.execute('SELECT normalized_barcode FROM logistics_units WHERE unit_id IN (' + ','.join(('?' for _ in selected)) + ')', selected)] if selected else []
+                    (state / 'physical-seed-failure.safe.json').write_text(json.dumps({'status': response.status_code, 'code': code if re.fullmatch('[A-Z0-9_]{1,80}', code) else 'UNKNOWN', 'selected_count': len(selected), 'scanned_count': len(scanned), 'actual_count': len(actual), 'matching_scans': sorted(actual) == sorted(scanned)}))
                 return response
             other_client.post = traced_seed_post
-            _other_seed, other_label, _other_resolved = _seed_sealed_label(
-                database, other_client, suffix='SPILL-PHYSICAL-OTHER', ordinal=2, unit_count=4, prepare_balance=False)
+            _other_seed, other_label, _other_resolved = _seed_sealed_label(database, other_client, suffix='SPILL-PHYSICAL-OTHER', ordinal=2, unit_count=4, prepare_balance=False)
             other_response = _resolve_package_source(app.test_client(), other_label)
             assert other_response.status_code == 200
             extra['other_evidence'] = other_response.get_json()['data']
     credential = uuid.uuid4().hex
-    if mode == 'spill-physical':
-        # Reuse the existing HTTP fixture's scoped machine policy and signer,
-        # retaining this app's real source resolver and real business routes.
+    if mode in ('spill-physical', 'recovery'):
         from test_operation_lease import _operation_http_app
         from operation_lease import OperationLeaseSigner, initialize_schema
+
         class PolicyOnly:
+
             def setattr(self, *args, **kwargs):
-                pass  # The fixture's synthetic source resolver is not installed.
-        policy_root = state/'lease-policy-fixture'
+                pass
+        policy_root = state / 'lease-policy-fixture'
         policy_root.mkdir()
         policy_app, _policy_db, _unused_snapshot, _unused_headers, _unused_body = _operation_http_app(PolicyOnly(), policy_root)
         policy = json.loads(policy_app.config['LOGISTICS_OPERATION_LEASE_MACHINE_POLICY_JSON'])
-        host, constraints = next((host, constraints) for host, constraints in policy['machines'].items()
-                                  if 'Label_Match' in constraints['programs'])
+        host, constraints = next(((host, constraints) for host, constraints in policy['machines'].items() if 'Label_Match' in constraints['programs']))
         constraints['authority_scope_ids'] = [projection['authority_scope_id']]
-        headers = {'X-Logistics-Source-Host-Id':host,
-                   'X-Logistics-Device-Id':constraints['device_ids'][0],
-                   'X-Logistics-Program':'Label_Match'}
+        headers = {'X-Logistics-Source-Host-Id': host, 'X-Logistics-Device-Id': constraints['device_ids'][0], 'X-Logistics-Program': 'Label_Match'}
         registry = json.loads(policy_app.config['LOGISTICS_API_TOKEN_REGISTRY_JSON'])
         entry = registry.get('tokens', registry)[host]
         credential = entry['token'] if isinstance(entry, dict) else entry
@@ -146,7 +141,9 @@ def main():
         import sqlite3
         with sqlite3.connect(database) as connection:
             initialize_schema(connection)
-    app.config['LOGISTICS_API_TOKEN'] = uuid.uuid4().hex if mode == 'spill-physical' else credential
+    app.config['LOGISTICS_API_TOKEN'] = uuid.uuid4().hex if mode in ('spill-physical', 'recovery') else credential
+    if mode == 'recovery':
+        extra.update(recovery_admin(app, database, patch, state))
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
@@ -154,39 +151,25 @@ def main():
     signer = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'localhost')])
     instant = datetime.now(timezone.utc)
-    certificate = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
-                   .public_key(signer.public_key()).serial_number(x509.random_serial_number())
-                   .not_valid_before(instant - timedelta(minutes=5)).not_valid_after(instant + timedelta(hours=2))
-                   .add_extension(x509.SubjectAlternativeName([
-                       x509.DNSName('localhost'), x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]), critical=False)
-                   .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-                   .sign(signer, hashes.SHA256()))
-    certificate_path, signer_path = state / 'ca.pem', state / 'tls-private.pem'
+    certificate = x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(signer.public_key()).serial_number(x509.random_serial_number()).not_valid_before(instant - timedelta(minutes=5)).not_valid_after(instant + timedelta(hours=2)).add_extension(x509.SubjectAlternativeName([x509.DNSName('localhost'), x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]), critical=False).add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True).sign(signer, hashes.SHA256())
+    certificate_path, signer_path = (state / 'ca.pem', state / 'tls-private.pem')
     certificate_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
-    signer_path.write_bytes(signer.private_bytes(serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    signer_path.write_bytes(signer.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     from werkzeug.serving import make_server, WSGIRequestHandler
 
     class Quiet(WSGIRequestHandler):
+
         def log(self, *args, **kwargs):
             pass
-
-    server = make_server('127.0.0.1', 0, app, request_handler=Quiet,
-                         ssl_context=(str(certificate_path), str(signer_path)))
-    metadata = {'port': server.server_port, 'database': str(database), 'projection': projection,
-                'seed': seed, 'label': label, 'headers': headers, 'credential': credential,
-                'tls_ca_bundle_path': str(certificate_path)}
+    server = make_server('127.0.0.1', 0, app, request_handler=Quiet, ssl_context=(str(certificate_path), str(signer_path)))
+    metadata = {'port': server.server_port, 'database': str(database), 'projection': projection, 'seed': seed, 'label': label, 'headers': headers, 'credential': credential, 'tls_ca_bundle_path': str(certificate_path)}
     metadata.update(extra)
     ready.write_text(json.dumps(metadata), encoding='utf-8')
     server.serve_forever()
-
-
 if __name__ == '__main__':
     try:
         main()
     except BaseException as error:
         target = Path(sys.argv[3]).with_suffix('.failure.json')
-        target.write_text(json.dumps({'type': type(error).__name__, 'frames': [
-            {'file': frame.filename, 'line': frame.lineno}
-            for frame in traceback.extract_tb(error.__traceback__)]}), encoding='utf-8')
+        target.write_text(json.dumps({'type': type(error).__name__, 'frames': [{'file': frame.filename, 'line': frame.lineno} for frame in traceback.extract_tb(error.__traceback__)]}), encoding='utf-8')
         raise SystemExit(1)

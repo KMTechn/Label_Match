@@ -54,7 +54,7 @@ def assert_visible(app, expected_ids, full_label):
         for row in visible:
             assert row['tag']=='관리자 회수 대기' and row['item']=='현품표 '+full_label
             assert row['status'] in {'회사 서버가 다시 포장을 거절했습니다\n웹 사무실에서 현장 관리자가 제품을 새 이적 묶음으로 회수해야 합니다','이전 포장 순서를 확인할 수 없습니다\n웹 사무실에서 현장 관리자가 제품을 새 이적 묶음으로 회수해야 합니다'}
-            assert row['actions']==[]
+            assert row['actions']==['LABEL.RECHECK']
     finally:
         processor.uninstall()
 

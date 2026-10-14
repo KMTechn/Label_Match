@@ -190,6 +190,46 @@ class PackageOutbox:
         from package_recovery_ledger import close_recovery
         return close_recovery(self, target, response, operator_id=operator_id, operator_name=operator_name)
 
+    @writer_sink('package_recovery_held_evidence')
+    def observe_package_recovery_held(self, target, response, *, operator_id, operator_name=''):
+        from package_recovery import CONTRACT_SHA256, validate_recovery_read
+        from package_recovery_ledger import recovery_target
+        if not operator_id or validate_recovery_read(response, target['expected']) != 'HELD':
+            return False
+        observed = canonical_json(dict(expected=target['expected'], response=response, contract_sha256=CONTRACT_SHA256))
+        with self._lock, self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            current = recovery_target(conn, target['review']['set_id'])
+            if current is None or canonical_json(current) != canonical_json(target):
+                return False
+            conn.execute('''INSERT INTO package_workbench_hold_audit
+                (set_id,action,manager_id,observed,recorded_at,operator_id,operator_name)
+                SELECT ?,'PACKAGE_RECOVERY_HELD_V1',?,?,?,?,?
+                WHERE NOT EXISTS (SELECT 1 FROM package_workbench_hold_audit
+                    WHERE set_id=? AND action='PACKAGE_RECOVERY_HELD_V1' AND observed=?)''',
+                (target['review']['set_id'],str(operator_id),observed,self._utc_now(),str(operator_id),
+                 str(operator_name),target['review']['set_id'],observed))
+            conn.commit()
+        return True
+
+    def package_recovery_held(self, set_id):
+        from package_recovery import CONTRACT_SHA256, validate_recovery_read
+        target = self.package_recovery_target(set_id)
+        if target is None:
+            return False
+        with self._connect() as conn:
+            rows = conn.execute('''SELECT observed FROM package_workbench_hold_audit
+                WHERE set_id=? AND action='PACKAGE_RECOVERY_HELD_V1' ORDER BY audit_id DESC''', (set_id,)).fetchall()
+        for row in rows:
+            try:
+                saved = json.loads(row['observed'])
+                if (saved['contract_sha256'] == CONTRACT_SHA256 and saved['expected'] == target['expected']
+                        and validate_recovery_read(saved['response'],target['expected']) == 'HELD'):
+                    return True
+            except (PackageLogisticsError, ValueError, KeyError, TypeError):
+                continue
+        return False
+
     def __init__(
         self,
         db_path: str | Path,

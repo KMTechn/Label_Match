@@ -235,6 +235,8 @@ class LabelMatchScreenProcessor:
                 "message": result["text"], "result": {"kind": result["kind"]}}
 
     def command(self, name, args):
+        if name == 'LABEL.RECHECK':
+            name = 'recovery_recheck'
         handler = getattr(self, f"_command_{name}", None)
         if not callable(handler):
             return {"ok": False, "result": {"kind": "warn", "text": "이 화면에서 쓰지 않는 명령입니다"}}
@@ -243,6 +245,10 @@ class LabelMatchScreenProcessor:
 
     def admin(self, name, args):
         args = dict(args or {})
+        if name == 'LABEL.RECHECK' and any(
+                row.get('repack_review') and str(row['set_id']) == str(args.get('target') or '')
+                for row in self.app._package_recovery_candidates()):
+            return self._command_recovery_recheck(dict(target=args.get('target')))
         admin_id, pin = str(args.get("admin_id") or "").strip(), str(args.get("pin") or "")
         if name not in SET_ACTIONS and name != "LABEL.PHS_LOOKUP":
             return {"ok": False, "result": {"kind": "warn", "text": "이 화면에서 쓰지 않는 관리자 동작입니다"}}
@@ -511,6 +517,18 @@ class LabelMatchScreenProcessor:
         self._admin_result = None
         self._load_recovery()
 
+    def _command_recovery_recheck(self, args):
+        target = str(args.get('target') or '')
+        if set(args) != {'target'} or not any(row.get('repack_review') and str(row['set_id']) == target
+                for row in self.app._package_recovery_candidates()):
+            return {'ok':False}
+        def settle(result):
+            self._admin_result = dict(action='LABEL.RECHECK',ok=result['state']=='RECOVERED',text=result['text'])
+            self._load_recovery()
+            self._changed('recovery_recheck')
+        result = self.app._recheck_package_recovery(target,finish=settle)
+        return {'ok':bool(getattr(result,'accepted',result))}
+
     def _command_recovery_park(self, args):
         app = self.app
         target = str(args.get("target") or "")
@@ -744,7 +762,8 @@ def _alerts(processor, view, notice):
         band = {"kind": BAND.get(str(notice.tone or "danger"), "warn"), "code": None,
                 "text": f"{_text(notice.title)} — {message}" if message else _text(notice.title)}
         if notice.kind == "scanner_notice" and notice.title in {
-                "이 현품표는 관리자 회수 대기입니다", "이 제품은 관리자 회수 대기 중입니다"}:
+                "이 현품표는 관리자 회수 대기입니다", "이 제품은 관리자 회수 대기 중입니다",
+                '회수 확인 완료','아직 회수되지 않았습니다','이 현품표는 회수할 수 없는 기록입니다'}:
             band["text"] = str(notice.title) + "\n" + str(notice.message)
         if (app.__dict__.get("_pending_workflow_error") or app.__dict__.get("_workflow_pending_error")
                 or callable(app.__dict__.get("_workflow_notice_action"))):
@@ -875,7 +894,7 @@ def _recovery_row(app, item):
     if review:
         return {"set_id": str(item["set_id"]), "tag": review["label"],
                 "item": review["source"],
-                "status": review["message"] + "\n" + review["instruction"], "actions": []}
+                "status": review["message"] + "\n" + review["instruction"], "actions": ['LABEL.RECHECK']}
     held = item.get("held") or {}
     reason = "이 건의 상태를 다시 확인하거나 보류로 두세요."
     if held:
