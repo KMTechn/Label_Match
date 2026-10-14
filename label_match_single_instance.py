@@ -71,6 +71,7 @@ def _try_update_shutdown_stall_notice(data_scope, *, stalled: bool) -> None:
 
 
 def _shutdown_stall_message(data_scope) -> str:
+    import sys
     try:
         path = Path(data_scope) / "label_match_shutdown_stall.json"
         with path.open("rb") as stream:
@@ -81,7 +82,8 @@ def _shutdown_stall_message(data_scope) -> str:
         pid, executable = notice["pid"], notice["executable"]
         if type(pid) is not int or not 0 < pid < 2**32 or not isinstance(executable, str) or not executable:
             return ""
-        if instance_win32.process_matches(pid, executable):
+        if (ntpath.normcase(ntpath.normpath(executable)) == ntpath.normcase(ntpath.normpath(sys.executable))
+                and instance_win32.process_matches(pid, sys.executable)):
             return "Label Match 종료 정리가 지연되고 있습니다. 앱이 닫히고 다시 안 켜지면 PC를 재시작하세요."
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         pass
@@ -315,7 +317,7 @@ def _validated_owner_notice(data_scope):
                 or not isinstance(executable, str) or not ntpath.isabs(executable)
                 or ntpath.normcase(ntpath.normpath(executable)) != ntpath.normcase(ntpath.normpath(sys.executable))
                 or (notice.get("closing") is not None and type(notice["closing"]) is not bool)
-                or not instance_win32.process_matches(pid, executable)):
+                or not instance_win32.process_matches(pid, sys.executable)):
             return None
         return notice
     except (OSError, ValueError, TypeError, KeyError, AttributeError, SingleInstanceError):

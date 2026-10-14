@@ -21,6 +21,7 @@ def test_default_window_actions_are_autouse_recordings(request):
 
 
 @pytest.mark.parametrize('bypass', ['notice', 'foreground', 'flash', 'windll_notice', 'flash_seam'])
+@pytest.mark.iwrun_real_window('MessageBoxTimeoutW', 'SetForegroundWindow', 'FlashWindowEx')
 def test_real_user32_bypass_fails_before_a_native_window_call(native_window_calls, bypass):
     with pytest.raises(AssertionError, match='NATIVE_WINDOW_CALL_BLOCKED'):
         if bypass == 'notice':

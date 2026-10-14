@@ -14,6 +14,8 @@ import label_match_instance_win32 as native
 import label_match_single_instance as instance
 import writer_session_fence as fence
 
+_ACTUAL_PROCESS_MATCHES = native.process_matches
+
 
 class Windows:
     def __init__(self, *, visible=True, foreground=True, minimized=True, pid=1234):
@@ -136,6 +138,62 @@ def test_stale_owner_notice_is_never_used_for_activation(ownership, stale):
                                          acquire=lambda _scope: instance.MutexLease(False,'duplicate')) == 0
     activation.assert_not_called()
     notice.assert_called_once_with(closing=None)
+
+
+def test_pid_probe_uses_the_callers_executable_not_marker_spelling(ownership):
+    scope, record, process, activation, notice = ownership
+    record['executable'] = sys.executable.swapcase()
+    assert record['executable'] != sys.executable
+    assert instance.run_guarded_entrypoint(lambda: pytest.fail('second app created'), data_scope=scope,
+        acquire=lambda _scope: instance.MutexLease(False, 'duplicate')) == 0
+    process.assert_called_once_with(record['pid'], sys.executable)
+    activation.assert_called_once_with(record['pid'])
+    notice.assert_not_called()
+
+
+@pytest.mark.parametrize('marker', ['foreign_image', 'forged_own_image', 'own_image'])
+def test_live_foreign_process_marker_never_activates_its_window(ownership, monkeypatch, marker):
+    scope, record, process, activation, notice = ownership
+    foreign = str(Path(sys.executable).with_name('other-live-program.exe'))
+    record['executable'] = foreign if marker == 'foreign_image' else sys.executable
+
+    class LiveKernel:
+        def __init__(self):
+            self.opened, self.closed = [], []
+        def OpenProcess(self, access, inherit, pid):
+            assert access == 0x1000 and inherit is False
+            self.opened.append(pid)
+            return 7
+        def GetExitCodeProcess(self, handle, code):
+            assert handle == 7
+            code._obj.value = 259
+            return True
+        def QueryFullProcessImageNameW(self, handle, flags, buffer, size):
+            assert handle == 7 and flags == 0
+            buffer.value = sys.executable if marker == 'own_image' else foreign
+            size._obj.value = len(buffer.value)
+            return True
+        def CloseHandle(self, handle):
+            self.closed.append(handle)
+            return True
+
+    kernel = LiveKernel()
+    probe = mock.Mock(side_effect=lambda pid, executable: _ACTUAL_PROCESS_MATCHES(pid, executable, kernel32=kernel))
+    monkeypatch.setattr(native, 'process_matches', probe)
+    start = mock.Mock()
+    assert instance.run_guarded_entrypoint(start, data_scope=scope,
+        acquire=lambda _scope: instance.MutexLease(False, 'duplicate')) == 0
+    start.assert_not_called()
+    if marker == 'own_image':
+        probe.assert_called_once_with(record['pid'], sys.executable)
+        activation.assert_called_once_with(record['pid'])
+        notice.assert_not_called()
+    else:
+        activation.assert_not_called()
+        notice.assert_called_once_with(closing=None)
+        assert probe.call_count == int(marker == 'forged_own_image')
+    assert kernel.opened == ([] if marker == 'foreign_image' else [record['pid']])
+    assert kernel.closed == ([] if marker == 'foreign_image' else [7])
 
 
 @pytest.mark.parametrize('owner_thread', ['main', 'web_owner'])
