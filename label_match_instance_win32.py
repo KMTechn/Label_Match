@@ -110,6 +110,30 @@ def set_foreground_window(hwnd, *, user32=None):
     return bool(user.SetForegroundWindow(hwnd))
 
 
+def show_window(hwnd, command, *, user32=None):
+    user = user32 if user32 is not None else ctypes.WinDLL("user32", use_last_error=True)
+    if user32 is None:
+        user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user.ShowWindow.restype = wintypes.BOOL
+    return user.ShowWindow(hwnd, command)
+
+
+def bring_window_to_top(hwnd, *, user32=None):
+    user = user32 if user32 is not None else ctypes.WinDLL("user32", use_last_error=True)
+    if user32 is None:
+        user.BringWindowToTop.argtypes = [wintypes.HWND]
+        user.BringWindowToTop.restype = wintypes.BOOL
+    return user.BringWindowToTop(hwnd)
+
+
+def set_focus(hwnd, *, user32=None):
+    user = user32 if user32 is not None else ctypes.WinDLL("user32", use_last_error=True)
+    if user32 is None:
+        user.SetFocus.argtypes = [wintypes.HWND]
+        user.SetFocus.restype = wintypes.HWND
+    return user.SetFocus(hwnd)
+
+
 def flash_window(hwnd, *, user32=None):
     user = user32 or ctypes.WinDLL("user32", use_last_error=True)
     class FlashInfo(ctypes.Structure):

@@ -39,7 +39,7 @@ def test_real_user32_bypass_fails_before_a_native_window_call(native_window_call
 def test_window_calls_exist_only_in_the_application_native_seam():
     root = Path(__file__).resolve().parents[1]
     paths = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z', '*.py']).decode().split('\0')
-    pattern = re.compile(r'\.\s*(?:SetForegroundWindow|FlashWindowEx|MessageBoxTimeoutW)\s*\('
+    pattern = re.compile(r'\.\s*(?:ShowWindow|BringWindowToTop|SetFocus|SetForegroundWindow|FlashWindowEx|MessageBoxTimeoutW)\s*\('
                          r'|getattr\([^\n]+[\"\x27](?:SetForegroundWindow|FlashWindowEx|MessageBoxTimeoutW)[\"\x27]\s*\)\s*\(')
     offenders = []
     for relative in paths:
@@ -48,3 +48,32 @@ def test_window_calls_exist_only_in_the_application_native_seam():
         if pattern.search((root / relative).read_text(encoding='utf-8-sig')):
             offenders.append(relative)
     assert offenders == []
+
+
+def test_capture_window_helpers_are_default_autouse_recordings(native_window_calls):
+    assert native.show_window(7, 9)
+    assert native.bring_window_to_top(7)
+    assert native.set_focus(7)
+    assert native_window_calls.calls == [("ShowWindow", (7, 9)), ("BringWindowToTop", (7,)), ("SetFocus", (7,))]
+
+
+@pytest.mark.parametrize("api", ["ShowWindow", "BringWindowToTop", "SetForegroundWindow", "SetFocus"])
+def test_capture_does_not_swallow_native_window_guard_assertions(api):
+    from tools.capture_label_operator_ui import _attempt_foreground_acquisition
+    class FakeUser32:
+        def __getattr__(self, name):
+            def action(*_args):
+                if name == api:
+                    raise AssertionError("native action guard")
+                return 0
+            return action
+    with pytest.raises(AssertionError, match="native action guard"):
+        _attempt_foreground_acquisition(FakeUser32(), target_hwnd=7, target_pid=2, phase="trial", ordinal=1)
+
+
+@pytest.mark.parametrize("api", ["ShowWindow", "BringWindowToTop", "SetFocus", "SetForegroundWindow"])
+@pytest.mark.iwrun_real_window("ShowWindow", "BringWindowToTop", "SetFocus", "SetForegroundWindow")
+def test_absolute_user32_loader_is_blocked_before_native_window_actions(api):
+    with pytest.raises(AssertionError, match="native window"):
+        function = getattr(ctypes.WinDLL("C:/Windows/System32/user32.dll"), api)
+        function(7, 9) if api == "ShowWindow" else function(7)

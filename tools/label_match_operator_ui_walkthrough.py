@@ -119,7 +119,7 @@ def _foreground_snapshot(target_hwnd: int) -> dict[str, Any]:
 def _bring_window_to_foreground(hwnd: int) -> dict[str, Any]:
     result: dict[str, Any] = {"target_hwnd": int(hwnd), "attempted": True}
     try:
-        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        __import__('label_match_instance_win32').show_window(hwnd, win32con.SW_RESTORE, user32=win32gui)
     except Exception as exc:
         result["show_window_error"] = repr(exc)
     try:

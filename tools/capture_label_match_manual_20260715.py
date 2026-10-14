@@ -487,7 +487,7 @@ def _force_foreground_window(hwnd: int) -> None:
                 if user32.AttachThreadInput(current_thread, thread_id, True):
                     attached.append(thread_id)
         try:
-            win32gui.ShowWindow(root_hwnd, win32con.SW_RESTORE)
+            __import__('label_match_instance_win32').show_window(root_hwnd, win32con.SW_RESTORE, user32=win32gui)
         except Exception:
             pass
         try:
@@ -505,7 +505,7 @@ def _force_foreground_window(hwnd: int) -> None:
         except Exception:
             pass
         try:
-            win32gui.BringWindowToTop(root_hwnd)
+            __import__('label_match_instance_win32').bring_window_to_top(root_hwnd, user32=win32gui)
         except Exception:
             pass
         # A synthetic ALT transition is the documented Windows-compatible way
@@ -523,7 +523,7 @@ def _force_foreground_window(hwnd: int) -> None:
         except Exception:
             pass
         try:
-            win32gui.SetFocus(root_hwnd)
+            __import__('label_match_instance_win32').set_focus(root_hwnd, user32=win32gui)
         except Exception:
             pass
     finally:

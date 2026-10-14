@@ -20,7 +20,8 @@ def native_window_calls(monkeypatch):
 
     calls = []
     original = SimpleNamespace(activate=native.activate_pid, foreground=native.set_foreground_window,
-                               flash=native.flash_window, notice=native.timed_notice)
+                               flash=native.flash_window, notice=native.timed_notice,
+                               show=native.show_window, bring=native.bring_window_to_top, focus=native.set_focus)
     protected = {"EnumWindows", "ShowWindow", "ShowWindowAsync", "SetForegroundWindow",
                  "FlashWindowEx", "MessageBoxW", "MessageBoxTimeoutW"}
 
@@ -39,8 +40,9 @@ def native_window_calls(monkeypatch):
         loader = ctypes.WinDLL
 
         def guarded_loader(name, *args, **kwargs):
+            import ntpath
             api = loader(name, *args, **kwargs)
-            return GuardedUser32(api) if str(name).lower() in {"user32", "user32.dll"} else api
+            return GuardedUser32(api) if ntpath.basename(str(name)).lower() in {"user32", "user32.dll"} else api
 
         monkeypatch.setattr(ctypes, "WinDLL", guarded_loader)
         monkeypatch.setattr(ctypes.windll, "user32", GuardedUser32(ctypes.windll.user32))
@@ -73,6 +75,16 @@ def native_window_calls(monkeypatch):
     monkeypatch.setattr(native, "set_foreground_window", foreground)
     monkeypatch.setattr(native, "flash_window", flash)
     monkeypatch.setattr(native, "timed_notice", notice)
+    def record_helper(name, implementation):
+        def action(*args, user32=None):
+            if user32 is not None:
+                return implementation(*args, user32=user32)
+            calls.append((name, args))
+            return True
+        return action
+    monkeypatch.setattr(native, "show_window", record_helper("ShowWindow", original.show))
+    monkeypatch.setattr(native, "bring_window_to_top", record_helper("BringWindowToTop", original.bring))
+    monkeypatch.setattr(native, "set_focus", record_helper("SetFocus", original.focus))
     return SimpleNamespace(calls=calls, original=original)
 
 
