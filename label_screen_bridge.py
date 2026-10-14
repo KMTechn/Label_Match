@@ -786,8 +786,10 @@ def _history_cancel_fields(app, iid):
         if state is not None:
             if cancellation.get("local_event_committed"):
                 fields["status"] = "cancelled"
-            text = {"pending": "취소 요청을 기록했습니다", "acknowledged": "중앙 취소를 확인했습니다",
-                    "review": "취소 요청에 중앙 충돌이 기록되었습니다"}[state]
+            text = {"pending": ("취소 요청을 회사 서버에 보내는 중입니다" if cancellation.get("status") == "SENDING"
+                                else "취소 요청을 회사 서버에 보내는 순서를 기다리고 있습니다"),
+                    "acknowledged": "회사 서버에서 기록 취소를 확인했습니다",
+                    "review": "회사 서버에서 기록 취소를 확인하지 못했습니다"}[state]
             fields["cancellation"] = {"state": state, "text": text}
     return fields
 

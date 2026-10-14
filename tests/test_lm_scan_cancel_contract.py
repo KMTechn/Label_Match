@@ -19,8 +19,9 @@ from tests.test_label_screen_bridge import Bridge, call, schema_errors
 from tests.test_lm_scan_cancel import app_for_delete
 
 
-CONTRACT_BYTES = (Path(__file__).parent / 'fixtures/lm_cancel_contract_c6d5f907.json').read_bytes()
+CONTRACT_BYTES = (Path(__file__).parent / 'fixtures/lm_cancel_contract_a624fa08.json').read_bytes()
 CONTRACT = json.loads(CONTRACT_BYTES)
+PREVIOUS_CONTRACT_BYTES = (Path(__file__).parent / 'fixtures/lm_cancel_contract_c6d5f907.json').read_bytes()
 
 
 def assert_state(state):
@@ -51,8 +52,10 @@ def command(screen, name, args):
     return result
 
 
-def test_exact_c6d5f907_schema_and_shell_completed_rows(cancel_screen):
-    assert hashlib.sha256(CONTRACT_BYTES).hexdigest() == 'fa255a368d378b43fe13fd670cd88eedb7a4fb9e0752c74093aab683db3cd862'
+def test_exact_a624fa08_schema_preserves_c6d5f907_and_shell_completed_rows(cancel_screen):
+    assert hashlib.sha256(CONTRACT_BYTES).hexdigest() == '86aa690d83ecd8a67f37e43780d00f02e657fb34450efd7f7a071887cdbc200a'
+    assert hashlib.sha256(PREVIOUS_CONTRACT_BYTES).hexdigest() == 'fa255a368d378b43fe13fd670cd88eedb7a4fb9e0752c74093aab683db3cd862'
+    assert CONTRACT['state'] == json.loads(PREVIOUS_CONTRACT_BYTES)['state']
     state = call(cancel_screen, cancel_screen.bridge.get_state)
     assert_state(state)
     assert type(state['events_dropped']) is int
