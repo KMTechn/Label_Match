@@ -135,7 +135,7 @@ def test_data_scope_fallback_matches_app_writer(
         expected = tmp_path / "env-data"
         monkeypatch.setenv("LABEL_MATCH_SAVE_DIR", str(expected))
     else:
-        expected = tmp_path / "program-data" / "KMTech" / "Label_Match" / "data"
+        expected = tmp_path / "local-app-data" / "KMTech" / "Label_Match" / "data"
         monkeypatch.delenv("LABEL_MATCH_SAVE_DIR", raising=False)
 
     app = object.__new__(app_module.Label_Match)
@@ -145,6 +145,8 @@ def test_data_scope_fallback_matches_app_writer(
 
     assert writer_root == str(expected)
     assert mutex_name_for_data_scope(guard_root) == mutex_name_for_data_scope(writer_root)
+
+    assert not (tmp_path / "program-data").exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="real Windows named mutex contract")
@@ -202,7 +204,7 @@ def test_conflicting_environment_roots_exclude_duplicate_writer(monkeypatch, tmp
     assert events == ["first-writer", "activated", "reopened-writer"]
 
 
-def test_data_scope_resolution_uses_config_then_program_data(tmp_path):
+def test_data_scope_resolution_uses_config_then_existing_program_data(tmp_path):
     settings = tmp_path / "app_settings.json"
     settings.write_text(
         json.dumps({"custom_save_path": r"D:\configured"}),
@@ -214,10 +216,22 @@ def test_data_scope_resolution_uses_config_then_program_data(tmp_path):
     ) == r"D:\configured"
 
     settings.write_text("{broken", encoding="utf-8")
+    program_data = tmp_path / "program-data"
+    local_app_data = tmp_path / "local-app-data"
+    with pytest.raises(SingleInstanceError):
+        resolve_data_scope(environment={"ProgramData": str(program_data)}, settings_path=settings)
+    assert not program_data.exists()
     assert resolve_data_scope(
-        environment={"ProgramData": str(tmp_path / "program-data")},
+        environment={"ProgramData": str(program_data), "LOCALAPPDATA": str(local_app_data)},
         settings_path=settings,
-    ) == str(tmp_path / "program-data" / "KMTech" / "Label_Match" / "data")
+    ) == str(local_app_data / "KMTech" / "Label_Match" / "data")
+    assert not program_data.exists()
+    # A machine installer may have provisioned this leaf; the user reuses it.
+    prepared = program_data / "KMTech" / "Label_Match" / "data"
+    prepared.mkdir(parents=True)
+    assert resolve_data_scope(
+        environment={"ProgramData": str(program_data)}, settings_path=settings,
+    ) == str(prepared)
 
 
 def test_legacy_root_read_failure_is_not_treated_as_absent(monkeypatch, tmp_path):

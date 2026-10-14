@@ -2635,7 +2635,7 @@ def test_durable_event_manifest_includes_completion_replacement_and_review():
     }
 
 
-def test_default_save_path_uses_programdata_durable_root(monkeypatch, tmp_path):
+def test_default_save_path_uses_user_root_when_machine_root_is_absent(monkeypatch, tmp_path):
     module = load_label_match_module()
     program_data = tmp_path / "ProgramData"
     monkeypatch.setenv("ProgramData", str(program_data))
@@ -2646,8 +2646,10 @@ def test_default_save_path_uses_programdata_durable_root(monkeypatch, tmp_path):
     app.app_settings = {"custom_save_path": ""}
 
     assert module.Label_Match._resolve_configured_save_path(app) == str(
-        program_data / "KMTech" / "Label_Match" / "data"
+        tmp_path / "local-app-data" / "KMTech" / "Label_Match" / "data"
     )
+
+    assert not program_data.exists()
 
 
 def test_configured_save_path_overrides_programdata_default(tmp_path):
