@@ -97,6 +97,9 @@ LEASE_BINDING_KEYS = frozenset(
         "expected_versions",
     }
 )
+DEFERRED_COMPLETION_KEYS = frozenset({
+    "deferred_reflection", "local_completion_id", "local_completed_at", "server_received_at",
+})
 KEYRING_KEYS = frozenset(
     {"contract_version", "site_id", "current_kid", "keys"}
 )
@@ -228,6 +231,47 @@ def parse_utc(value: Any, *, field: str) -> datetime:
     return datetime.strptime(_utc_text(value, field=field), "%Y-%m-%dT%H:%M:%SZ").replace(
         tzinfo=timezone.utc
     )
+
+
+def _deferred_completion_fields(value: Mapping[str, Any]) -> dict[str, Any]:
+    present = set(value) & DEFERRED_COMPLETION_KEYS
+    if not present:
+        return {}
+    if present != DEFERRED_COMPLETION_KEYS or value.get("deferred_reflection") is not True:
+        raise _error("OPERATION_LEASE_ARTIFACT_INVALID", "deferred completion fields are invalid")
+    identity = _bounded_text(value.get("local_completion_id"), field="local_completion_id", maximum=256)
+    if identity != value["local_completion_id"]:
+        raise _error("OPERATION_LEASE_ARTIFACT_INVALID", "deferred completion identity is not exact")
+    completed = value.get("local_completed_at")
+    _deferred_completion_time(completed)
+    return {"deferred_reflection": True, "local_completion_id": identity,
+            "local_completed_at": completed,
+            "server_received_at": _utc_text(value.get("server_received_at"), field="server_received_at")}
+
+
+def _deferred_completion_time(value: Any) -> datetime:
+    # Local durable completion retains its original ISO timestamp, including
+    # fractions/offset. Server timestamps and signed lease times remain UTC v1.
+    if not isinstance(value, str) or re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)", value) is None:
+        raise _error("OPERATION_LEASE_TIME_INVALID", "local_completed_at is invalid")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError as exc:
+        raise _error("OPERATION_LEASE_TIME_INVALID", "local_completed_at is invalid") from exc
+
+
+def _verify_deferred_completion_time(snapshot: Mapping[str, Any], claims: Mapping[str, Any]) -> None:
+    deferred = _deferred_completion_fields(snapshot)
+    if not deferred:
+        return
+    received = parse_utc(deferred["server_received_at"], field="server_received_at")
+    issued = parse_utc(claims["issued_at"], field="issued_at")
+    tolerance = timedelta(seconds=LEASE_CLOCK_SKEW_SECONDS)
+    if (abs(received - issued) > tolerance
+            or _deferred_completion_time(deferred["local_completed_at"]) > received + tolerance):
+        raise _error("OPERATION_LEASE_TIME_INVALID", "deferred completion time differs from its signed issue")
+    # Offline completion may predate issue by hours or days; it has no issue-time lower bound.
 
 
 def _expected_versions(value: Any) -> dict[str, int]:
@@ -506,6 +550,7 @@ class PinnedOperationLeaseKeyring:
             raise _error("OPERATION_LEASE_EXPIRED", "lease has expired")
         if canonical_sha256(dict(operation_snapshot)) != payload["snapshot_hash"]:
             raise _error("OPERATION_LEASE_SNAPSHOT_MISMATCH", "operation snapshot hash differs")
+        _verify_deferred_completion_time(operation_snapshot, payload)
         actual = {key: payload[key] for key in LEASE_BINDING_KEYS}
         if canonical_json_bytes(actual) != canonical_json_bytes(dict(expected)):
             mismatches = [key for key in sorted(LEASE_BINDING_KEYS) if canonical_json_bytes(actual.get(key)) != canonical_json_bytes(expected.get(key))]
@@ -939,6 +984,21 @@ class OperationLeaseStore:
     def attach_set(self, lease_id: str, set_id: str) -> dict[str, Any]:
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute("SELECT operation_snapshot_json FROM package_operation_leases WHERE lease_id=?",
+                                    (lease_id,)).fetchone()
+            if existing:
+                deferred = _deferred_completion_fields(json.loads(existing["operation_snapshot_json"]))
+                if deferred:
+                    if deferred["local_completion_id"] != set_id:
+                        raise _error("OPERATION_LEASE_BINDING_MISMATCH", "lease belongs to another local completion")
+                    try:
+                        completion = conn.execute("SELECT draft_json,local_completion_committed FROM package_command_outbox WHERE set_id=?",
+                                                  (set_id,)).fetchone()
+                    except sqlite3.Error as exc:
+                        raise _error("OPERATION_LEASE_STORE_INVALID", "original local completion is unavailable") from exc
+                    if (completion is None or completion["local_completion_committed"] != 1
+                            or json.loads(completion["draft_json"]).get("local_completed_at") != deferred["local_completed_at"]):
+                        raise _error("OPERATION_LEASE_BINDING_MISMATCH", "lease differs from the original durable completion")
             cursor = conn.execute("UPDATE package_operation_leases SET set_id=COALESCE(set_id,?),updated_at=? WHERE lease_id=? AND (set_id IS NULL OR set_id=?)", (set_id, self._now(), lease_id, set_id))
             if cursor.rowcount != 1:
                 conn.rollback()
@@ -956,12 +1016,15 @@ class OperationLeaseStore:
 
 def normalize_issue_artifact(value: Mapping[str, Any]) -> dict[str, Any]:
     required = {"contract_version", "lease_id", "status", "replayed", "token", "kid", "expires_at", "fence", "snapshot_hash", "operation_snapshot", "keyring"}
-    if not isinstance(value, Mapping) or set(value) != required:
+    if not isinstance(value, Mapping) or set(value) not in (required, required | DEFERRED_COMPLETION_KEYS):
         raise _error("OPERATION_LEASE_ARTIFACT_INVALID", "issue artifact fields are invalid")
     if value.get("contract_version") != ARTIFACT_CONTRACT_VERSION or value.get("status") != "ACTIVE":
         raise _error("OPERATION_LEASE_ARTIFACT_INVALID", "issue artifact is not active")
     if not isinstance(value.get("replayed"), bool) or not isinstance(value.get("operation_snapshot"), Mapping):
         raise _error("OPERATION_LEASE_ARTIFACT_INVALID", "issue artifact is invalid")
+    deferred = _deferred_completion_fields(value)
+    if deferred != _deferred_completion_fields(value["operation_snapshot"]):
+        raise _error("OPERATION_LEASE_ARTIFACT_MISMATCH", "deferred envelope differs from its signed snapshot")
     result = dict(value)
     result["lease_id"] = _bounded_text(
         value.get("lease_id"), field="lease_id", maximum=128
