@@ -78,7 +78,12 @@ def main():
         database = ledger.__wrapped__(state)
         app = _app(database, patch)[0]
         _allow_package_location_fixture(database, patch)
-        seed, label, _resolved = _seed_sealed_label(database, app.test_client(), suffix='U4', ordinal=1, unit_count=4, prepare_balance=mode != 'spill-physical')
+        if mode == 'spill-physical':
+            import test_phs_package_work_group as physical_fixture
+            ensure_balance = physical_fixture._ensure_transfer_balances
+            physical_fixture._ensure_transfer_balances = lambda path, **kwargs: ensure_balance(
+                path, **{**kwargs, 'total_qty': 8})
+        seed, label, _resolved = _seed_sealed_label(database, app.test_client(), suffix='U4', ordinal=1, unit_count=4)
         response = _resolve_package_source(app.test_client(), label)
         assert response.status_code == 200
         projection = response.get_json()['data']
@@ -86,8 +91,6 @@ def main():
         if mode == 'spill-physical':
             _other_seed, other_label, _other_resolved = _seed_sealed_label(
                 database, app.test_client(), suffix='spill-physical-other', ordinal=2, unit_count=4, prepare_balance=False)
-            from test_phs_label_overlay_api import _ensure_transfer_balances
-            _ensure_transfer_balances(database, item_id=projection['work_group_source']['item_id'], total_qty=8)
             other_response = _resolve_package_source(app.test_client(), other_label)
             assert other_response.status_code == 200
             extra['other_evidence'] = other_response.get_json()['data']
