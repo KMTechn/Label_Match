@@ -4,7 +4,7 @@ v2.0.100부터 인수 없이 시작하면 새 화면(셸 v3.16)을 엽니다. �
 
 v2.0.100 조립 빌더는 기존 호스트 Python312와 명시된 검사 빌더 venv의 site-packages를 분포별로 함께 사용한다(기존 분포 판·native 바이트 고정, 내려받기 없음). 패킷은 shell/와 pywebview/WebView2 의존성을 포함하며 manifest에 셸 v3.16·READY SHA를 기록한다. 끄기 추적은 해당 작업자의 Label_Match/screen-shell/webview2 UDF만 셈한다. 강제 닫기는 주인 스레드가 게시한 앱의 save_current_set_on_force_exit를 호출한다. 준비 상한·검증된 내구 스냅숏을 사용하며 디스크 정지의 전체 상한은 셸의 2초 join이 맡는다.
 
-새 화면 이음 가지의 셸 사본은 `shell/SHELL-READY.json` v3.16의 앱용 19파일과 바이트가 같으며, Tk 비교용 `tk_ab.py`는 앱 사본에 넣지 않는다. 새 화면 입구는 기존 시작 확인 뒤 셸 쓰기 담장을 설치한다([계약](contracts.md#new-screen-shell-write-guard)). 선언 생성기의 고정 READY 핀과 실행 스캐너의 후보 자기 일관 검사를 구분한다. 창 X의 늦은 답은 같은 창의 띠로 기다린다. 파일 쓰기 거절·진단 손실은 화면과 다음 스캔을 멈추지 않지만, 시작 때 자료·WebView2 프로필 폴더를 만들지 못하면 창 없이 실패한다.
+새 화면 이음 가지의 셸 사본은 `shell/SHELL-READY.json` v3.16의 앱용 19파일과 바이트가 같으며, Tk 비교용 `tk_ab.py`는 앱 사본에 넣지 않는다. 새 화면 입구는 기존 시작 확인과 셸 import·WebView2 준비 뒤, 첫 프로필 폴더 쓰기 전에 `_prepare_screen`에서 셸 쓰기 담장을 설치하고 `run_app`에도 같은 담장을 전달한다([계약](contracts.md#new-screen-shell-write-guard)). 선언 생성기의 고정 READY 핀과 실행 스캐너의 후보 자기 일관 검사를 구분한다. 창 X의 늦은 답은 같은 창의 띠로 기다린다. 열린 셸의 events 진단 손실·처리 층 journal 실패는 화면과 다음 스캔을 멈추지 않는다. 창 생성 전 일반 준비 실패는 원인 SHELL_* 한 줄과 함께 같은 프로세스·시작 임대 안에서 Tk로 이어지며, 이미 숨김 처리 층이 있으면 그대로 재사용한다. 준비 때 writer 거절과 창 생성 뒤 오류는 다시 던지고 Tk로 우회하지 않는다.
 
 이음 시험은 사본 SHA·실제 파일 쓰기의 허가 진입·거절 전 무변경·거절 뒤 state/다음 스캔/중복 응답을 확인한다. 화면 꾸러미의 `events_dropped` 계약과 지문을 함께 갱신하며, 원천 웹 판에 없는 사본 변경은 MANIFEST의 `dirty=true`로 표시한다. 실제 창·현장 PC·설치 packet은 조립판에서 별도 확인한다.
 

@@ -10,6 +10,7 @@ import pytest
 import auto_update as updates
 import user_relay
 from test_relay_second_start_admission import live_relay, OPERATOR, SHA
+from tests.label_screen_entry_double import fresh_screen_launch
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows relay admission")
 OTHER_OPERATOR = OPERATOR.rsplit("-", 1)[0] + "-" + str(int(OPERATOR.rsplit("-", 1)[1]) + 1)

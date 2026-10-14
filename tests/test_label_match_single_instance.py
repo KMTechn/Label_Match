@@ -17,6 +17,7 @@ from label_match_single_instance import (
     resolve_data_scope,
     run_guarded_entrypoint,
 )
+from tests.label_screen_entry_double import fresh_screen_launch
 
 
 class _FakeKernel32:
@@ -652,8 +653,10 @@ def test_main_reports_catalog_gate_without_sensitive_details(monkeypatch):
     ) in traces
 
 
+@pytest.mark.parametrize("ui_arguments", [(), ("--ui", "tk"), ("--old-screen",)])
 def test_main_warns_and_continues_with_verified_catalog_cache(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path,
+    ui_arguments,
 ):
     import Label_Match as app_module
 
@@ -723,7 +726,9 @@ def test_main_warns_and_continues_with_verified_catalog_cache(
 
     monkeypatch.setattr(app_module, "Label_Match", FakeLabelMatch)
 
-    assert app_module.main([]) == 0
+    from tests.label_screen_entry_double import install_screen_owner_double
+    screen_routes = install_screen_owner_double(monkeypatch, app_module)
+    assert app_module.main(ui_arguments) == 0
     assert calls[0] == ("main_enter", {})
     assert calls[1] == "catalog"
     assert calls[2] == (
@@ -744,10 +749,13 @@ def test_main_warns_and_continues_with_verified_catalog_cache(
     assert dialogs[0][0] == app_module.ITEM_CATALOG_CACHE_WARNING_TITLE
     assert "2026-08-28" in dialogs[0][1]
     assert "UNKNOWN" not in dialogs[0][1]
+    assert screen_routes == (["new"] if not ui_arguments else [])
 
 
+@pytest.mark.parametrize("ui_arguments", [(), ("--ui", "tk"), ("--old-screen",)])
 def test_main_warns_and_continues_when_selected_profile_conflicts_with_install(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path,
+    ui_arguments,
 ):
     import Label_Match as app_module
 
@@ -824,7 +832,9 @@ def test_main_warns_and_continues_when_selected_profile_conflicts_with_install(
 
     monkeypatch.setattr(app_module, "Label_Match", FakeLabelMatch)
 
-    assert app_module.main([]) == 0
+    from tests.label_screen_entry_double import install_screen_owner_double
+    screen_routes = install_screen_owner_double(monkeypatch, app_module)
+    assert app_module.main(ui_arguments) == 0
     assert warnings == []
     warnings = [(notice.title, notice.message) for notice in app_module._STARTUP_WORKFLOW_NOTICES]
     assert len(warnings) == 1
@@ -839,3 +849,4 @@ def test_main_warns_and_continues_when_selected_profile_conflicts_with_install(
     assert sensitive_marker not in repr(warnings)
     assert "client-created" in calls
     assert "mainloop" in calls
+    assert screen_routes == (["new"] if not ui_arguments else [])

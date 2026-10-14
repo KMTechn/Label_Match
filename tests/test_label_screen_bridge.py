@@ -23,6 +23,7 @@ import Label_Match  # noqa: E402
 from bridge import Bridge  # noqa: E402
 from label_screen_bridge import LabelMatchScreenProcessor, present_lm  # noqa: E402
 from ui.workflow_view_state import WorkflowNotice, WorkflowSnapshot, present_workflow  # noqa: E402
+from tests.label_screen_entry_double import fresh_screen_launch
 
 CONTRACT = json.loads((ROOT / "ui" / "parts" / "app" / "lm" / "contract.json").read_text(encoding="utf-8"))
 MASTER = "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=A110|CLC=C0325|LBL=L0325|HSH=0f3a9c2b7d1e4a56"

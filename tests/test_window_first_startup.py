@@ -17,6 +17,7 @@ from tests.test_onboarding_lifecycle_scope import managed_onboarding
 from tests.test_current_user_onboarding import isolated_data_generation_release
 from tests.test_relay_recent_fastpath import recent_relay
 from tests.test_relay_second_start_admission import live_relay
+from tests.label_screen_entry_double import fresh_screen_launch
 
 
 @pytest.fixture(autouse=True)
@@ -680,7 +681,8 @@ def test_hosted_child_writer_timeout_is_deferred_without_data_changes(tmp_path, 
     assert database.read_bytes() == b"durable-queue" and data.read_bytes() == b"local-source\n"
 
 
-def test_next_full_start_clears_orphan_only_after_checks_and_instance_admission(steady_start, monkeypatch):
+@pytest.mark.parametrize("ui_arguments", [(), ("--ui", "tk"), ("--old-screen",)])
+def test_next_full_start_clears_orphan_only_after_checks_and_instance_admission(steady_start, monkeypatch, ui_arguments):
     import Label_Match as gui
     from startup_send_gate import create_startup_send_hold, startup_send_deferred
     root = steady_start.paths.direct_sync_root
@@ -711,8 +713,11 @@ def test_next_full_start_clears_orphan_only_after_checks_and_instance_admission(
     monkeypatch.setattr(gui, "onboard_current_user", full)
     monkeypatch.setattr(gui, "run_guarded_entrypoint", admitted)
     monkeypatch.setattr(gui, "Label_Match", window)
-    assert gui.main([]) == 0
+    from tests.label_screen_entry_double import install_screen_owner_double
+    screen_routes = install_screen_owner_double(monkeypatch, gui)
+    assert gui.main(ui_arguments) == 0
     assert startup_send_deferred(root) is None
+    assert screen_routes == (["new"] if not ui_arguments else [])
 
 
 def test_full_relay_reuse_observes_unchanged_process_only_once(monkeypatch, recent_relay):
