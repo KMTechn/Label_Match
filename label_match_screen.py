@@ -120,10 +120,6 @@ def owner_main_for(module, *, app_holder=None, attempt=None):
                 attempt.owner_done.set()
 
     def run_on_owner(app, bridge, attached):
-        if app_holder is not None:
-            app_holder.append(app)
-        # The processing Tk root is hidden; the shell's ready receipt proves visibility.
-        app._startup_screen_visible = lambda: bridge._view_count > 0
         processor = None
 
         def pump():
@@ -143,6 +139,10 @@ def owner_main_for(module, *, app_holder=None, attempt=None):
                 app.on_closing(_confirmed=True)
 
         try:
+            if app_holder is not None:
+                app_holder.append(app)
+            # The processing Tk root is hidden; the shell's ready receipt proves visibility.
+            app._startup_screen_visible = lambda: bridge._view_count > 0
             processor = LabelMatchScreenProcessor(app, bridge)
             bridge.attach_owner(processor)
             attached.append(True)

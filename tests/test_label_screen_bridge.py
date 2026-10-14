@@ -184,6 +184,7 @@ class FakeApp:
         # 진짜 앱: 준비 → _prompt_package_admin_pin() → 적용. 여기선 PIN 묻는 자리만 진짜 메서드로.
         credentials = Label_Match.Label_Match._prompt_package_admin_pin(self)
         self.calls.append(("pin_action", action, set_id, physical_qr, credentials is not None, window.winfo_exists()))
+        self._admin_pin_result_outcome = "success"
         finish("다시 확인했습니다")
         return True
 

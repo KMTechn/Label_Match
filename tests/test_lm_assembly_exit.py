@@ -198,9 +198,9 @@ def test_recovery_commands_use_current_candidates_and_existing_processing_method
         app._park_unverified_pin_item.assert_not_called()
         assert processor.command('recovery_park', {'target': 'set-a'})['ok'] is True
         app._park_unverified_pin_item.assert_called_once_with('set-a')
-        assert processor.command('recovery_retry_pin', {'target': 'set-a'})['ok'] is True
+        assert processor.command('recovery_retry_pin', {'target': 'set-a', 'admin_id': 'review-admin', 'pin': __import__('secrets').token_hex(3)})['ok'] is True
         assert app._retry_package_pin_item.call_args.args == (item,)
-        app._retry_package_pin_item.call_args.kwargs['finish']('confirmed')
+        app._retry_package_pin_item.call_args.kwargs['finish'](True)
         assert processor.state()['admin']['result']['ok'] is True
     finally:
         processor.uninstall()

@@ -3742,7 +3742,7 @@ from label_data_generation import (
     CURRENT_VERSION, DataGenerationError, check_user_data_open,
     record_user_data_open, release_identity,
 )
-APP_VERSION = "v2.0.103"
+APP_VERSION = "v2.0.104"
 LABEL_MATCH_NEW_SCREEN_ARGUMENT = "--new-screen"
 # Set by label_match_screen before the app is built: the Tk root starts hidden.
 LABEL_MATCH_SCREEN_HOST = {"requested": False, "active": False, "run": None, "catalog_unconfirmed": False}
@@ -5413,13 +5413,22 @@ class Label_Match(tk.Tk):
             ),
             on_runner_fault=self._handle_ui_lane_fault,
         )
-        self._deferred_validation_lane_trigger = CoalescingTrigger(
-            self.ui_lane,
-            self._build_deferred_validation_lane_task,
-            on_admitted=self._on_deferred_validation_lane_admitted,
-            submit_task=self._submit_deferred_validation_lane_task,
-        )
-        _label_match_startup_trace("app_init_complete")
+        try:
+            self._deferred_validation_lane_trigger = CoalescingTrigger(
+                self.ui_lane,
+                self._build_deferred_validation_lane_task,
+                on_admitted=self._on_deferred_validation_lane_admitted,
+                submit_task=self._submit_deferred_validation_lane_task,
+            )
+            _label_match_startup_trace("app_init_complete")
+        except BaseException as error:
+            try:
+                self.ui_lane.stop_accepting()
+                self.ui_lane._signal_worker_stop()
+                self.ui_lane.close_idle()
+            except BaseException as cleanup_error:
+                error.add_note("Label Match lane cleanup: " + type(cleanup_error).__name__)
+            raise
 
     def _ui_lane_is_busy(self):
         lane = self.__dict__.get("ui_lane")
@@ -10963,6 +10972,7 @@ class Label_Match(tk.Tk):
             return admin_pin_message(exc.code, http_status=exc.http_status)
         if self._package_pin_effect(pending):
             store.transition(key, "APPLIED")
+            self._admin_pin_result_outcome = "success"
             return "같은 관리자 요청의 로컬 효과를 확인했습니다."
         if status in {"UNUSED", "EXPIRED"}:
             store.transition(key, "SUPERSEDED", error_code=status)
@@ -10999,6 +11009,7 @@ class Label_Match(tk.Tk):
                 active_pin_operation.reset(token)
             if self._package_pin_effect(pending):
                 store.transition(key, "APPLIED")
+                self._admin_pin_result_outcome = "success"
                 return True if pending["action"] in {"LABEL.F5_HOLD", "LABEL.SET_HOLD"} else result
             store.transition(key, "UNVERIFIED_OPERATOR_HOLD", error_code="EFFECT_UNVERIFIED")
         except AdminPinError as exc:
@@ -11221,6 +11232,7 @@ class Label_Match(tk.Tk):
 
     def _prepare_package_pin_action(self, action, set_id, physical_qr=""):
         """Read/reconcile the target before the UI asks for a fresh PIN."""
+        self._admin_pin_result_outcome = "unknown"
         try:
             self._package_pin_client()
         except DataGenerationError as exc:
@@ -11251,6 +11263,8 @@ class Label_Match(tk.Tk):
                     or store.get(pending["operation_key"])["state"] == "APPLIED"):
                 self._admin_pin_last_message = (str(result) if result else
                                                "관리자 확인을 마치지 못했습니다.")
+                if store.get(pending["operation_key"])["state"] == "APPLIED":
+                    self._admin_pin_result_outcome = "success"
                 return True, result
         if action in {"LABEL.F5_HOLD", "LABEL.SET_HOLD"}:
             try:
@@ -11357,6 +11371,7 @@ class Label_Match(tk.Tk):
             intent = store.pending(target["kind"], target["id"])
             if intent and self._package_pin_effect(intent):
                 store.transition(operation_key, "APPLIED")
+                self._admin_pin_result_outcome = "success"
                 if closing:
                     store.transition(closing["operation_key"], "HANDED_OFF_UNKNOWN",
                                      error_code="NO_KEYED_LEDGER_EFFECT")
@@ -24594,50 +24609,55 @@ def _run_label_match_application(*, relay_reuse_report=None, verified_hold=None)
     except Exception:
         pass
     app = Label_Match(startup_report=relay_reuse_report) if window_first else Label_Match()
-    if relay_reuse_report is not None:
-        _schedule_reused_relay_verification(app, relay_reuse_report)
-    from auto_update import trial_context, publish_gui_ready, trial_stop_requested, confirmed_trial
-    _update_trial = trial_context(Path(__file__).resolve().parent) is not None
-    if _update_trial:
-        app._startup_update_pending = True
-        app.attributes("-disabled", True)
-        def _update_readback():
-            if trial_stop_requested(Path(__file__).resolve().parent):
-                app.on_closing(_confirmed=True)
-                return
-            try:
-                _ready = publish_gui_ready(Path(__file__).resolve().parent)
-                _confirmed = _ready and confirmed_trial(Path(__file__).resolve().parent)
-            except Exception as error:
-                _confirmed = False
-                if not getattr(app, "_startup_update_readback_failed", False):
-                    _label_match_startup_trace("startup_update_ready_unproven", error_type=type(error).__name__)
-                    app._startup_update_readback_failed = True
-            if _confirmed:
-                app._startup_update_pending = False
-                app.attributes("-disabled", False)
-                return
-            app.after(200, _update_readback)
-        app.after(0, _update_readback)
-    app._item_catalog_unconfirmed = catalog_unconfirmed
-    if LABEL_MATCH_SCREEN_HOST["active"]:
-        return LABEL_MATCH_SCREEN_HOST["run"](app)
-    _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
-    _label_match_startup_trace("mainloop_enter")
+    screen_cleanup = False
     try:
+        if relay_reuse_report is not None:
+            _schedule_reused_relay_verification(app, relay_reuse_report)
+        from auto_update import trial_context, publish_gui_ready, trial_stop_requested, confirmed_trial
+        _update_trial = trial_context(Path(__file__).resolve().parent) is not None
+        if _update_trial:
+            app._startup_update_pending = True
+            app.attributes("-disabled", True)
+            def _update_readback():
+                if trial_stop_requested(Path(__file__).resolve().parent):
+                    app.on_closing(_confirmed=True)
+                    return
+                try:
+                    _ready = publish_gui_ready(Path(__file__).resolve().parent)
+                    _confirmed = _ready and confirmed_trial(Path(__file__).resolve().parent)
+                except Exception as error:
+                    _confirmed = False
+                    if not getattr(app, "_startup_update_readback_failed", False):
+                        _label_match_startup_trace("startup_update_ready_unproven", error_type=type(error).__name__)
+                        app._startup_update_readback_failed = True
+                if _confirmed:
+                    app._startup_update_pending = False
+                    app.attributes("-disabled", False)
+                    return
+                app.after(200, _update_readback)
+            app.after(0, _update_readback)
+        app._item_catalog_unconfirmed = catalog_unconfirmed
+        if LABEL_MATCH_SCREEN_HOST["active"]:
+            screen_cleanup = True
+            return LABEL_MATCH_SCREEN_HOST["run"](app)
+        _label_match_startup_trace("main_after_app_init", title=app.title(), state=app.state())
+        _label_match_startup_trace("mainloop_enter")
         app.mainloop()
         _label_match_startup_trace("mainloop_exit")
+        return 0
     finally:
         loop_error = sys.exc_info()[1]
         try:
-            app._finish_after_mainloop()
+            lane = app.__dict__.get("ui_lane")
+            if lane is not None:
+                lane.stop_accepting()
+                lane._signal_worker_stop()
+            if not screen_cleanup:
+                app._finish_after_mainloop()
         except BaseException as cleanup_error:
             if loop_error is None:
                 raise
-            loop_error.add_note(
-                "Label Match exit cleanup: " + type(cleanup_error).__name__
-            )
-    return 0
+            loop_error.add_note("Label Match exit cleanup: " + type(cleanup_error).__name__)
 
 
 def _first_run_server_base_url(pending_worker):

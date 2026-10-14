@@ -105,6 +105,7 @@ class LabelMatchScreenProcessor:
         self._recovery = None
         self._pending = None
         self._admin_result = None
+        self._admin_outcome = None
         self._register = None
         self._push_scheduled = False
         self._parts = _parts_fingerprint()
@@ -152,6 +153,17 @@ class LabelMatchScreenProcessor:
         app._render_operator_workbench = render_operator_workbench
         app._render_logistics_connection_footer = render_connection_footer
         app.open_settings_window = open_settings_window
+        self._installed["prompt"] = app.__dict__.get("_prompt_package_admin_pin")
+
+        def prompt_package_admin_pin():
+            credentials = app.__dict__.pop("_screen_admin_credentials", None)
+            if credentials is not None and all(credentials):
+                return credentials
+            app._admin_pin_last_message = "관리자 인증이 다시 필요합니다. 관리자 ID와 PIN을 입력해 다시 조회하세요."
+            app._admin_pin_result_outcome = "unknown"
+            return None
+
+        app._prompt_package_admin_pin = prompt_package_admin_pin
 
     def uninstall(self):
         """받이를 되돌림(시험 · 화면 판을 끝낼 때) — 모듈 messagebox · simpledialog 와 앱 메서드."""
@@ -159,7 +171,26 @@ class LabelMatchScreenProcessor:
             setattr(self.module, name, value)
         for name in self._installed.get("app", []):
             self.app.__dict__.pop(name, None)
+        original_prompt = self._installed.get("prompt")
+        if original_prompt is None:
+            self.app.__dict__.pop("_prompt_package_admin_pin", None)
+        else:
+            self.app._prompt_package_admin_pin = original_prompt
         self._installed = {}
+
+    def _completion_outcome(self, value):
+        if value is True:
+            outcome = "success"
+        elif value is False:
+            outcome = "failure"
+        elif self.app.__dict__.get("_admin_pin_result_outcome") == "success":
+            outcome = "success"
+        elif isinstance(value, str) and value:
+            outcome = "failure"
+        else:
+            outcome = "unknown"
+        self._admin_outcome = outcome
+        return outcome == "success"
 
     def _changed(self, reason):
         if self.bridge is None or self._push_scheduled:
@@ -233,11 +264,12 @@ class LabelMatchScreenProcessor:
             self._load_recovery()
             self._changed("admin")
 
+        app._admin_pin_result_outcome = "unknown"
         app._screen_admin_credentials = (admin_id, pin)
         try:
             accepted = app._submit_package_pin_action(
                 action, set_id, physical_qr, window=window,
-                finish=lambda value: settle(value, value is not False),
+                finish=lambda value: settle(value, self._completion_outcome(value)),
                 fail=lambda error: settle(None, False),
             )
         except Exception:
@@ -408,10 +440,10 @@ class LabelMatchScreenProcessor:
         if item is None or not item.get("pin_intent"):
             return {"ok": False, "result": {"kind": "warn", "text": "다시 확인할 관리자 요청이 없습니다"}}
         admin_id, pin = str(args.get("admin_id") or "").strip(), str(args.get("pin") or "")
-        if bool(admin_id) != bool(pin):
+        if not admin_id or not pin:
             return {"ok": False, "result": {"kind": "warn", "text": "관리자 ID 와 PIN 6자리를 넣으세요"}}
-        if admin_id:
-            app._screen_admin_credentials = (admin_id, pin)
+        app._admin_pin_result_outcome = "unknown"
+        app._screen_admin_credentials = (admin_id, pin)
         window = _ScreenWindow()
 
         def settle(value, ok):
@@ -424,7 +456,7 @@ class LabelMatchScreenProcessor:
 
         try:
             accepted = app._retry_package_pin_item(item, window=window, physical_qr=str(args.get("physical_qr") or "").strip(),
-                                                  finish=lambda value: settle(value, value is not False),
+                                                  finish=lambda value: settle(value, self._completion_outcome(value)),
                                                   fail=lambda _error: settle(None, False))
         except Exception:
             app.__dict__.pop("_screen_admin_credentials", None)
