@@ -16,6 +16,12 @@ $reference=if($WriterFails){$null}else{@{path='fixture-reference';sha256=('0'*64
 $Script:LabelPlacementChildFailure=@{placement_code='PLACEMENT_DIAGNOSTIC_UNAVAILABLE';phase='canonical_placement';exit_code=$ChildExit;full_exception_trace=$reference}
 $audit=[ordered]@{};$auditFile=Join-Path $FixtureRoot 'audit.json'
 function Save($Path,$Payload){[IO.File]::WriteAllText($Path,($Payload | ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))}
+function InvokeFrozenPlacementHelper($Frozen,$Parameters){
+    $path=Join-Path $FixtureRoot 'child-calls.json'
+    if([IO.File]::Exists($path)){throw 'SECOND_CHILD_LAUNCH'}
+    [IO.File]::WriteAllText($path,'{"calls":1,"shell_calls":0}')
+    return $ChildExit
+}
 # Exercise the product machine refusal, relevant catch/audit statements and
 # the unchanged top-level trap. Native placement is the child-exit seam.
 $machine=$branch[0].Parent
@@ -23,8 +29,11 @@ while($machine -isnot [Management.Automation.Language.FunctionDefinitionAst]){$m
 $try=@($machine.Body.FindAll({param($n)$n -is [Management.Automation.Language.TryStatementAst] -and $n.Body.Extent.Text.Contains('InvokeFrozenPlacementHelper $frozen $parameters')},$true))
 if($try.Count -ne 1){throw 'MACHINE_CATCH_COUNT'}
 $catch=$try[0].CatchClauses[0].Body.Statements
-$auditStatements=@($catch | Where-Object {$_.Extent.Text.StartsWith('$audit.status=') -or $_.Extent.Text.StartsWith('if ($originalFailure.Exception.Data.Contains')})
-if($auditStatements.Count -ne 2){throw 'MACHINE_AUDIT_COUNT'}
-$script=$traps[0].Extent.Text+"`n"+'try {'+"`n"+'$exit=$ChildExit'+"`n"+$branch[0].Extent.Text+"`n"+'} catch {'+"`n"+'$originalFailure=$_'+"`n"+($auditStatements.Extent.Text -join "`n")+"`n"+'Save $auditFile $audit'+"`n"+'throw $originalFailure'+"`n"+'}'
+$auditStatements=@($catch | Where-Object {$_.Extent.Text.StartsWith('$audit.status=') -or $_.Extent.Text.StartsWith('$audit.failure=') -or $_.Extent.Text.StartsWith('if ($originalFailure.Exception.Data.Contains')})
+if($auditStatements.Count -ne 3){throw 'MACHINE_AUDIT_COUNT'}
+$calls=@($machine.Body.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$exit' -and $n.Right.Extent.Text.Contains('InvokeFrozenPlacementHelper $frozen $parameters')},$true))
+if($calls.Count -ne 1){throw 'MACHINE_CALL_COUNT'}
+$frozen=$null;$parameters=@{}
+$script=$traps[0].Extent.Text+"`n"+'try {'+"`n"+$calls[0].Extent.Text+"`n"+$branch[0].Extent.Text+"`n"+'} catch {'+"`n"+'$originalFailure=$_'+"`n"+($auditStatements.Extent.Text -join "`n")+"`n"+'Save $auditFile $audit'+"`n"+'throw $originalFailure'+"`n"+'}'
 & ([scriptblock]::Create($script))
 throw 'FALSE_SUCCESS'

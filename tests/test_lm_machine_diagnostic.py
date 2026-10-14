@@ -25,6 +25,7 @@ def test_machine_placement_preserves_child_failure_in_audit_and_outer_trap(tmp_p
     assert child.stderr.strip().startswith(prefix)
     public=json.loads(child.stderr.strip()[len(prefix):])
     audit=json.loads((tmp_path / 'audit.json').read_bytes())
+    assert json.loads((tmp_path / 'child-calls.json').read_bytes()) == {'calls':1,'shell_calls':0}
     assert audit['status'] == 'RECOVERY_REQUIRED'
     assert audit['placement_child_failure']['exit_code'] == child_exit
     assert public['placement_code'] == audit['failure']['placement_code'] == 'PLACEMENT_DIAGNOSTIC_UNAVAILABLE'
