@@ -365,6 +365,7 @@ def test_pin_startup_deferral_explains_attempt_is_not_counted():
 
 @pytest.fixture
 def steady_start(managed_onboarding, monkeypatch):
+    import label_data_generation as generation
     paths, environment, control, helpers = managed_onboarding
     onboarding.apply_current_user_runtime_environment(paths, environ=environment)
     for name, value in environment.items():
@@ -374,7 +375,7 @@ def steady_start(managed_onboarding, monkeypatch):
     paths.settings_path.parent.mkdir(parents=True, exist_ok=True)
     paths.settings_path.write_text("{}", encoding="utf-8")
     manifest = updates.read_json(paths.app_root / "portable-manifest.json")
-    manifest.update(schema="label-match-portable-tree-v1", version="v2.0.100", startup_update_protocol=1)
+    manifest.update(schema="label-match-portable-tree-v1", version=generation.CURRENT_VERSION, startup_update_protocol=1)
     (paths.app_root / "portable-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     paths.onboarding_report_path.parent.mkdir(parents=True, exist_ok=True)
     paths.onboarding_report_path.write_text(json.dumps({
