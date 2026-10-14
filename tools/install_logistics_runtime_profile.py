@@ -93,6 +93,8 @@ LOGISTICS_CREDENTIAL_FIELDS = frozenset(
 MAX_PROTECTED_CREDENTIAL_BYTES = 65_536
 
 
+from label_atomic_replace import atomic_replace
+
 @dataclass(frozen=True)
 class _ResolvedTlsCaBundle:
     source_path: Path
@@ -292,7 +294,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        atomic_replace(temporary, path)
     finally:
         try:
             temporary.unlink(missing_ok=True)

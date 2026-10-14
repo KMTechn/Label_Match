@@ -35,6 +35,8 @@ RETRYABLE_DEAD_STATUSES = frozenset({RELAY_STATUS_FAILED_PERMANENT})
 SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
+from label_atomic_replace import atomic_replace
+
 def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -44,7 +46,7 @@ def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any])
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temp_path, target)
+    atomic_replace(temp_path, target)
 
 
 def _append_jsonl(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:

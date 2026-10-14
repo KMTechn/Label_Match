@@ -59,6 +59,8 @@ SENSITIVE_ASSIGNMENT_RE = re.compile(r"(?i)\b(secret|token|signature)\s*=\s*[^ \
 CONTROL_TEXT_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
 
+from label_atomic_replace import atomic_replace
+
 @dataclass(frozen=True)
 class DirectSyncRuntimeConfig:
     db_path: str | os.PathLike[str]
@@ -88,7 +90,7 @@ def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any])
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, target)
+        atomic_replace(temp_path, target)
     except Exception:
         try:
             temp_path.unlink()

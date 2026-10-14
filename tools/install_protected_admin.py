@@ -220,6 +220,8 @@ $entries = @(
 """
 
 
+from label_atomic_replace import atomic_replace
+
 def _checked_path(value: str | os.PathLike[str], *, label: str) -> Path:
     try:
         return assert_path_has_no_reparse_components(value, label=label)
@@ -543,7 +545,7 @@ def _atomic_write(path: Path, data: bytes, reader_principal: str) -> None:
     try:
         _checked_path(path, label="protected administrator profile")
         _checked_path(temporary, label="protected administrator temporary file")
-        os.replace(temporary, path)
+        atomic_replace(temporary, path)
         _checked_path(path, label="protected administrator profile")
     finally:
         try:
@@ -601,7 +603,7 @@ def _remove_or_invalidate_failed_profile(
                 handle.truncate(0)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(tombstone, checked)
+            atomic_replace(tombstone, checked)
             _checked_path(checked, label="protected administrator profile")
             if checked.stat().st_size != 0:
                 raise ProtectedAdminProfileError(
@@ -724,7 +726,7 @@ def install_protected_admin_profile(
         restore_error: Exception | None = None
         if replaced_target and backup is not None and backup.exists():
             try:
-                os.replace(backup, target)
+                atomic_replace(backup, target)
                 backup = None
                 _harden_profile_file(target, reader_principal)
                 restored = load_installed_profile(target)

@@ -29,6 +29,8 @@ HOSTED_RELAY_FAILURE_EXIT_CODE = 1
 BOOTSTRAP_INTEGRITY_WARNING_FILENAME = "bootstrap_integrity_warning.json"
 
 
+from label_atomic_replace import atomic_replace
+
 def is_portable_product_root(app_root: str | os.PathLike[str]) -> bool:
     root = Path(app_root).expanduser().resolve()
     return (
@@ -135,7 +137,7 @@ def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        atomic_replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 

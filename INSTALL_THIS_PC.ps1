@@ -845,8 +845,10 @@ function Get-LabelStartupUpdateTaskPreimage([string]$Root) {
 }
 
 
-function Write-LabelStartupUpdateRecord([string]$Path, $Payload) {
-    if (-not ('KMTechStartupUpdateAtomicFile' -as [type])) {
+function Invoke-LabelAtomicReplace {
+    param([string]$Source,[string]$Destination,[AllowNull()]$Backup = $null,
+          [ValidateSet('Move','Replace','WriteThrough')][string]$Mode = 'Move')
+    if ($Mode -ceq 'WriteThrough' -and -not ('KMTechStartupUpdateAtomicFile' -as [type])) {
         Add-Type -TypeDefinition @'
 using System.Runtime.InteropServices;
 public static class KMTechStartupUpdateAtomicFile {
@@ -855,12 +857,44 @@ public static class KMTechStartupUpdateAtomicFile {
 }
 '@
     }
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $firstError = $null
+    while ($true) {
+        try {
+            if ($Mode -ceq 'WriteThrough') {
+                if (-not [KMTechStartupUpdateAtomicFile]::MoveFileExW($Source,$Destination,9)) {
+                    throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+                }
+            } elseif ($Mode -ceq 'Replace') {
+                $replaceBackup = if ($null -eq $Backup) { [NullString]::Value } else { $Backup }
+                [IO.File]::Replace($Source,$Destination,$replaceBackup)
+            } else {
+                [IO.File]::Move($Source,$Destination)
+            }
+            return
+        } catch {
+            $cause = $_.Exception
+            while ($null -ne $cause.InnerException) { $cause = $cause.InnerException }
+            $code = if ($cause -is [ComponentModel.Win32Exception]) { $cause.NativeErrorCode }
+                    elseif ($cause -is [IO.IOException] -and ($cause.HResult -band 0xffff0000) -eq -2147024896) { $cause.HResult -band 0xffff }
+                    else { 0 }
+            if ($code -notin @(5,32)) { throw }
+            if ($null -eq $firstError) { $firstError = $_ }
+            $remaining = 1000 - $timer.Elapsed.TotalMilliseconds
+            if ($remaining -le 0) { throw $firstError }
+            Start-Sleep -Milliseconds ([Math]::Min(50,[Math]::Ceiling($remaining)))
+        }
+    }
+}
+# LABEL_ATOMIC_REPLACE_END
+
+function Write-LabelStartupUpdateRecord([string]$Path, $Payload) {
     Assert-NoReparsePoint $Path 'startup update record'
     $temporary = $Path + '.tmp.' + [guid]::NewGuid().ToString('N')
     $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($Payload | ConvertTo-Json -Depth 12) + "`n")
     $stream = New-Object IO.FileStream($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
     try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
-    if (-not [KMTechStartupUpdateAtomicFile]::MoveFileExW($temporary,$Path,9)) { throw 'STARTUP_UPDATE_DURABLE_RECORD_FAILED' }
+    Invoke-LabelAtomicReplace -Source $temporary -Destination $Path -Mode WriteThrough
 }
 
 

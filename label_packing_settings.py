@@ -45,6 +45,8 @@ _STORE_SCHEMA = "kmtech.label-match.packing-settings.v1"
 _PROGRAM = "Label_Match"
 
 
+from label_atomic_replace import atomic_replace
+
 class PackingSettingsReadError(Exception):
     """A settings read that the app replaces with its fallback value."""
 
@@ -287,7 +289,7 @@ def save_received(path: str | os.PathLike[str], result: Mapping[str, Any]) -> di
             json.dump(record, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        atomic_replace(temporary, target)
     finally:
         if temporary.exists():
             temporary.unlink()

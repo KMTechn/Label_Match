@@ -128,6 +128,8 @@ _LABEL_MATCH_SENSITIVE_TRACE_KEYS = frozenset({
 })
 
 
+from label_atomic_replace import atomic_replace
+
 def _label_match_safe_trace_value(value, *, key=""):
     if str(key or "").strip().lower() in _LABEL_MATCH_SENSITIVE_TRACE_KEYS:
         return "[redacted]"
@@ -1055,7 +1057,7 @@ def _label_match_write_json(path, payload, *, raise_on_error=False):
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, path)
+        atomic_replace(temp_path, path)
         temp_path = None
     except Exception as exc:
         if temp_path:
@@ -7229,7 +7231,7 @@ class Label_Match(tk.Tk):
                         json.dump(sanitized, handle, indent=4, ensure_ascii=False)
                         handle.flush()
                         os.fsync(handle.fileno())
-                    os.replace(temporary, self.app_settings_path)
+                    atomic_replace(temporary, self.app_settings_path)
                 finally:
                     try:
                         if os.path.exists(temporary):

@@ -26,6 +26,8 @@ _FORBIDDEN_EVIDENCE_KEY = re.compile(
 )
 
 
+from label_atomic_replace import atomic_replace
+
 class CanaryContractError(ValueError):
     """Raised when an adapter attempts to emit an unsafe or invalid report."""
 
@@ -163,7 +165,7 @@ def write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any]) 
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, report_path)
+        atomic_replace(temporary, report_path)
     finally:
         try:
             temporary.unlink()

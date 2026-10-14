@@ -478,7 +478,7 @@ def test_bootstrap_source_allows_static_operations_and_documentation(tmp_path, c
 
 
 @pytest.mark.parametrize("owner,api,dll", (
-    ("Write-LabelStartupUpdateRecord", "MoveFileExW", "kernel32.dll"),
+    ("Invoke-LabelAtomicReplace", "MoveFileExW", "kernel32.dll"),
     ("Open-LabelRunKey", "RegOpenKeyExW", "advapi32.dll"),
 ))
 def test_bootstrap_source_pins_only_fixed_native_declarations(owner, api, dll):
@@ -488,7 +488,7 @@ def test_bootstrap_source_pins_only_fixed_native_declarations(owner, api, dll):
     assert len(exceptions) == 1
     location, body, count = exceptions[0]
     expected = {
-        "Write-LabelStartupUpdateRecord": '''Add-Type -TypeDefinition @'
+        "Invoke-LabelAtomicReplace": '''Add-Type -TypeDefinition @'
 using System.Runtime.InteropServices;
 public static class KMTechStartupUpdateAtomicFile {
  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
@@ -515,7 +515,7 @@ public static class KmtechLabelRunRegistryNative {
 
 
 @pytest.mark.parametrize("owner,api", (
-    ("Write-LabelStartupUpdateRecord", "MoveFileExW"),
+    ("Invoke-LabelAtomicReplace", "MoveFileExW"),
     ("Open-LabelRunKey", "RegOpenKeyExW"),
 ))
 @pytest.mark.parametrize("damage", ("owner", "one-character", "other-owner", "body-code"))
@@ -527,7 +527,8 @@ def test_bootstrap_source_refuses_changed_native_declarations(tmp_path, owner, a
                 if location == "installer" and function == owner and body.startswith("Add-Type "))
     assert source.count(body) == 1
     if damage == "owner":
-        changed = source.replace("function " + owner + "(", "function " + owner + "Changed(", 1)
+        changed = source.replace("function " + owner, "function " + owner + "Changed", 1)
+        assert changed != source
     elif damage == "one-character":
         changed = source.replace(body, body.replace(api, api[:-1] + "A"), 1)
     elif damage == "other-owner":

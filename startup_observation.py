@@ -21,6 +21,8 @@ _identity = {}
 _unknown = []
 
 
+from label_atomic_replace import atomic_replace
+
 def begin_startup(identity=None, *, unknown=False):
     """Retain only the identity already checked by the normal entrypoint."""
     global _identity, _unknown
@@ -52,7 +54,7 @@ def write_startup_result(result):
         temporary = directory / ("." + destination.name + "." + uuid.uuid4().hex + ".tmp")
         with temporary.open("x", encoding="utf-8", newline="\n") as stream:
             stream.write(json.dumps(safe, ensure_ascii=True, separators=(",", ":")) + "\n")
-        os.replace(temporary, destination)
+        atomic_replace(temporary, destination)
         temporary = None
         return True
     except Exception:

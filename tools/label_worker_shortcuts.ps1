@@ -11,6 +11,63 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Invoke-LabelPinnedAtomicReplace {
+    param([string]$Source,[string]$Destination,[AllowNull()]$Backup = $null,
+          [ValidateSet('Move','Replace','WriteThrough')][string]$Mode = 'Move')
+    # The supported generator binds this copy to the one canonical function.
+    # Inline bytes also work in the attested in-memory installer scope.
+    $expectedAtomicBodySha256 = '11f76101125ea3083c8226bc36a1bc11508b3bb7fd4b0e999ab60f244629aaf0'
+# LABEL_ATOMIC_INLINE_START
+$text = 'function Invoke-LabelAtomicReplace {
+    param([string]$Source,[string]$Destination,[AllowNull()]$Backup = $null,
+          [ValidateSet(''Move'',''Replace'',''WriteThrough'')][string]$Mode = ''Move'')
+    if ($Mode -ceq ''WriteThrough'' -and -not (''KMTechStartupUpdateAtomicFile'' -as [type])) {
+        Add-Type -TypeDefinition @''
+using System.Runtime.InteropServices;
+public static class KMTechStartupUpdateAtomicFile {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ public static extern bool MoveFileExW(string source, string target, uint flags);
+}
+''@
+    }
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $firstError = $null
+    while ($true) {
+        try {
+            if ($Mode -ceq ''WriteThrough'') {
+                if (-not [KMTechStartupUpdateAtomicFile]::MoveFileExW($Source,$Destination,9)) {
+                    throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+                }
+            } elseif ($Mode -ceq ''Replace'') {
+                $replaceBackup = if ($null -eq $Backup) { [NullString]::Value } else { $Backup }
+                [IO.File]::Replace($Source,$Destination,$replaceBackup)
+            } else {
+                [IO.File]::Move($Source,$Destination)
+            }
+            return
+        } catch {
+            $cause = $_.Exception
+            while ($null -ne $cause.InnerException) { $cause = $cause.InnerException }
+            $code = if ($cause -is [ComponentModel.Win32Exception]) { $cause.NativeErrorCode }
+                    elseif ($cause -is [IO.IOException] -and ($cause.HResult -band 0xffff0000) -eq -2147024896) { $cause.HResult -band 0xffff }
+                    else { 0 }
+            if ($code -notin @(5,32)) { throw }
+            if ($null -eq $firstError) { $firstError = $_ }
+            $remaining = 1000 - $timer.Elapsed.TotalMilliseconds
+            if ($remaining -le 0) { throw $firstError }
+            Start-Sleep -Milliseconds ([Math]::Min(50,[Math]::Ceiling($remaining)))
+        }
+    }
+}'
+# LABEL_ATOMIC_INLINE_END
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { $actual = ([BitConverter]::ToString($algorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)))).Replace('-','').ToLowerInvariant() }
+    finally { $algorithm.Dispose() }
+    if ($actual -cne $expectedAtomicBodySha256) { throw 'Atomic replacement source pin differs.' }
+    . ([scriptblock]::Create($text))
+    Invoke-LabelAtomicReplace @PSBoundParameters
+}
+
 function Get-LabelWorkerShortcutFolders([switch]$CommonOnly, [switch]$UserOnly) {
     foreach ($name in @('Desktop', 'Programs', 'CommonDesktopDirectory', 'CommonPrograms')) {
         $common = $name.StartsWith('Common')
@@ -77,8 +134,8 @@ function Save-LabelShortcutRecord([string]$Path, $Record) {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($Record | ConvertTo-Json -Depth 12))
     $stream = [IO.File]::Open($temporary, 'CreateNew', 'Write', 'None')
     try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
-    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
-    else { [IO.File]::Move($temporary, $Path) }
+    if (Test-Path -LiteralPath $Path) { Invoke-LabelPinnedAtomicReplace -Source $temporary -Destination $Path -Backup ([NullString]::Value) -Mode Replace }
+    else { Invoke-LabelPinnedAtomicReplace -Source $temporary -Destination $Path -Mode Move }
 }
 
 function Get-LabelWorkerShortcutFiles($Folders) {

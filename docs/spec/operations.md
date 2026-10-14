@@ -1478,3 +1478,11 @@ PowerShell 원문은 byte I/O로 BOM과 줄 끝을 보존한다. 비ASCII PowerS
 The canonical unsigned native hashes are `label_native_policy.UNSIGNED_NATIVE_SHA256`. The portable builder checks both public installer copies and `tools/apply_prepared_update.ps1` against those exact pins and the actual bytes before building. Verify and update selection use the same `Assert-StartupUpdateVersion` check. The supported relay-stop release preflight uses the same Python policy. Each readback accepts the old empty list or exactly the three pinned files; duplicates, extra paths, absent files and changed hashes fail.
 
 Recovery card: 같은 작업자 지원 제거(main --remove-current-user-setup) → 관리자 INSTALL_THIS_PC.ps1 -Uninstall → 고친 v2.0.104 승인 키트 재설치 → 같은 작업자 첫 설정 READY 확인; 자료·설정·등록·전송 대기 보존.
+
+## Atomic file publication
+
+App-owned Python publishers call label_atomic_replace.atomic_replace. Only native WinError 5/32 retries, with a one-second deadline and the original first native exception on persistent refusal; other errors propagate immediately. Readers and writer admissions remain unchanged.
+
+PowerShell uses the canonical Invoke-LabelAtomicReplace in INSTALL_THIS_PC.ps1. tools/refresh_atomic_replace_declarations.py generates exact function-byte copies and their hash in the fence and shortcut callers so attested in-memory installation also works. The builder checks both copies before building; no caller resolves an ambient installer path. Move, Replace and write-through behavior retain their original API semantics.
+
+Range B excludes the ten name/SHA-pinned files in tests/fixtures/lm_atomic_exclusions.json (the kmtech_shared copy and shell/shell_fileio.py). Shared generation/raster/diagnostic publication remains upstream-owned. Version-directory rename is a separate, unchanged UNPROVEN case.

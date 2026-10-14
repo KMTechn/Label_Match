@@ -41,6 +41,8 @@ UPDATE_MUTEX_RECOVERY_MESSAGE = (
 )
 
 
+from label_atomic_replace import atomic_replace
+
 class UpdateMutexRecoveryRequired(RuntimeError):
     """An abandoned owner never grants permission to use unverified code."""
 
@@ -581,9 +583,6 @@ def load_policy(control: Path) -> dict[str, Any]:
 @writer_sink("auto_update_write_json_durable")
 def write_json_durable(path: Path, payload: Mapping[str, Any]) -> None:
     """Write-through replacement keeps the journal ahead of the active pointer."""
-    import ctypes
-    from ctypes import wintypes
-
     # failure-<uuid>.json is a diagnostic snapshot, never a recovery input.
     if re.fullmatch(r"failure-[0-9a-f]{32}\.json", path.name):
         from failure_redaction import redact_json_for_sink
@@ -600,14 +599,7 @@ def write_json_durable(path: Path, payload: Mapping[str, Any]) -> None:
         output.write(serialized)
         output.flush()
         os.fsync(output.fileno())
-    if os.name == "nt":
-        move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
-        move.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
-        move.restype = wintypes.BOOL
-        if not move(str(temporary), str(path), 0x1 | 0x8):
-            raise OSError(ctypes.get_last_error(), "update write-through replacement failed")
-    else:
-        os.replace(temporary, path)
+    atomic_replace(temporary, path, write_through=True)
 
 
 def control_root(app_root: Path) -> Path | None:
@@ -2172,7 +2164,7 @@ def stage_prepared_copies(attempt: Path, stage: Path) -> dict[str, Path]:
 @writer_sink("auto_update_publish_download")
 def publish_download(stage: Path, temps: dict[str, Path]) -> None:
     for name in ("manifest.json", "manifest.sig", "packet.zip"):
-        os.replace(temps[name], stage / name)
+        atomic_replace(temps[name], stage / name)
 
 
 def _discard_prepared_copies(stage: Path, temps: Mapping[str, Path]) -> None:

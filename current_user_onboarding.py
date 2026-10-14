@@ -71,6 +71,8 @@ CONFLICT_RECEIPT_PATH_ENV = "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_PATH"
 CONFLICT_RECEIPT_SHA256_ENV = "KMTECH_LABEL_CONFLICT_RESOLUTION_RECEIPT_SHA256"
 
 
+from label_atomic_replace import atomic_replace
+
 class CurrentUserOnboardingError(RuntimeError):
     def __init__(
         self,
@@ -504,7 +506,7 @@ def _write_json_bytes_atomic(path: Path, serialized: str) -> dict[str, str]:
             handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        atomic_replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
     return {"path": str(path), "sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest()}

@@ -111,6 +111,8 @@ INSTALL_IDENTITY_APP_ID = "label_match"
 INSTALL_IDENTITY_HASH_HEX_LENGTH = 32
 
 
+from label_atomic_replace import atomic_replace
+
 class ProducerEnrollmentHTTPError(DirectSyncPushError):
     """A structured server rejection from the enrollment endpoint."""
 
@@ -225,7 +227,7 @@ def _write_json(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> Non
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, target)
+        atomic_replace(temp_path, target)
     except Exception:
         try:
             temp_path.unlink()
@@ -1016,7 +1018,7 @@ def _write_dpapi_secret(
             handle.write(protected)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        atomic_replace(temporary, target)
     finally:
         try:
             temporary.unlink(missing_ok=True)

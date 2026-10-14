@@ -461,6 +461,14 @@ def _assert_installer_unsigned_pins(output: Path, app_root: Path) -> None:
             raise PortableBuildError(f"{name} unsigned native pins differ from the builder pins")
 
 
+def _assert_atomic_replace_helper_pins(output: Path) -> None:
+    from tools.refresh_atomic_replace_declarations import validate
+    try:
+        validate(output)
+    except (OSError, ValueError) as error:
+        raise PortableBuildError("atomic replacement helper pins differ") from error
+
+
 def _update_public_key_config(value: str) -> str | dict[str, object]:
     text = str(value or "").strip()
     if not text:
@@ -735,6 +743,7 @@ def build(
         _assert_portable_import_closure(output, repo_root, tool_sources)
         _assert_packet_file_pins(output)
         _assert_installer_unsigned_pins(output, app_root)
+        _assert_atomic_replace_helper_pins(output)
         if not (app_root / DATA_GENERATION_POWERSHELL_LEAF).is_file():
             raise PortableBuildError("shared data-generation PowerShell leaf is absent")
         from tools.refresh_first_update_declarations import validate_shell_ready_pin

@@ -115,6 +115,8 @@ AUTHORIZATION_HEADER_RE = re.compile(r"(?i)authorization\s*:\s*[^\r\n\t ]+(?:[ \
 CONTROL_TEXT_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
 
+from label_atomic_replace import atomic_replace
+
 class DirectSyncPushError(Exception):
     pass
 
@@ -612,7 +614,7 @@ def _restore_error_result(
 
 def _publish_restored_temp_file(temp_path: Path, destination: Path, *, overwrite: bool) -> str:
     if overwrite:
-        os.replace(temp_path, destination)
+        atomic_replace(temp_path, destination)
         return ""
     try:
         os.link(temp_path, destination)
@@ -820,7 +822,7 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, path)
+        atomic_replace(temp_path, path)
     except Exception:
         try:
             temp_path.unlink()
@@ -1866,7 +1868,7 @@ def _copy_file_atomic(source: Path, destination: Path) -> None:
             dst.write(chunk)
         dst.flush()
         os.fsync(dst.fileno())
-    os.replace(temp_path, destination)
+    atomic_replace(temp_path, destination)
 
 
 def _copy_spool_file_atomic(source: Path, destination: Path) -> None:

@@ -99,6 +99,8 @@ _CACHE_STATES = frozenset(
 )
 
 
+from label_atomic_replace import atomic_replace
+
 def _catalog_url_components(
     url: str,
     *,
@@ -665,7 +667,7 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
             temporary_path = Path(handle.name)
-        os.replace(temporary_path, path)
+        atomic_replace(temporary_path, path)
         temporary_path = None
     finally:
         if temporary_path is not None:

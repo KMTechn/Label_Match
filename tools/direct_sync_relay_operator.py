@@ -26,6 +26,8 @@ from direct_sync_operator import (  # noqa: E402
 from direct_sync_runtime import load_credentials_from_json, prepare_credentials_from_json  # noqa: E402
 
 
+from label_atomic_replace import atomic_replace
+
 def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -35,7 +37,7 @@ def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any])
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temp_path, target)
+    atomic_replace(temp_path, target)
 
 
 def _emit(report: Mapping[str, Any], report_path: str = "") -> int:

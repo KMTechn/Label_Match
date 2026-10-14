@@ -40,6 +40,8 @@ LABEL_MATCH_SOURCE_GLOB = "포장실작업이벤트로그_*.csv"
 LABEL_MATCH_WORKER_ID = "direct-sync-relay-label-match-current-user"
 
 
+from label_atomic_replace import atomic_replace
+
 class UserRelayError(RuntimeError):
     """Raised when current-user relay persistence cannot be proven."""
 
@@ -70,7 +72,7 @@ def _write_json_bytes_atomic(path: Path, serialized: str) -> None:
             handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        atomic_replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 

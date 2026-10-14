@@ -23,6 +23,8 @@ MAX_CACHE_BYTES = 2 * 1024 * 1024
 MAX_LOCAL_BYTES = 4 * 1024 * 1024
 
 
+from label_atomic_replace import atomic_replace
+
 def normalize_registration_name(value):
     if not isinstance(value, str):
         raise ValueError("이름을 적어 주세요.")
@@ -214,7 +216,7 @@ def _atomic_write(path, payload):
                       separators=(",", ":"), allow_nan=False)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        atomic_replace(temporary, path)
     finally:
         if temporary.exists():
             temporary.unlink()

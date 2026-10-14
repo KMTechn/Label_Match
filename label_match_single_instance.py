@@ -27,6 +27,8 @@ from label_match_instance_win32 import ActivationResult
 ERROR_ALREADY_EXISTS = 183
 
 
+from label_atomic_replace import atomic_replace
+
 class SingleInstanceError(RuntimeError):
     """Raised when ownership cannot be established safely."""
 
@@ -56,7 +58,7 @@ def _set_shutdown_stall_notice(data_scope, *, stalled: bool) -> None:
                 json.dump({"pid": os.getpid(), "executable": sys.executable}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, path)
+            atomic_replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
     else:
@@ -342,7 +344,7 @@ def _write_instance_owner_notice(lease, *, closing=False):
             json.dump(payload, stream)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        atomic_replace(temporary, path)
         pinned = instance_win32.pin_notice(path)
         lease._notice_handle = pinned
     finally:

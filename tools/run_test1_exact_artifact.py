@@ -21,6 +21,11 @@ SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 REPORT_VERSION = "kmtech-test1-exact-artifact-v1"
 
 
+import sys
+if str(Path(__file__).resolve().parents[1]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from label_atomic_replace import atomic_replace
+
 class ArtifactIdentityError(RuntimeError):
     """Raised when the approved package identity cannot be proven exactly."""
 
@@ -239,7 +244,7 @@ def write_identity_evidence(path: Path, identity: dict[str, Any]) -> None:
         json.dumps(identity, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    os.replace(temporary, path)
+    atomic_replace(temporary, path)
 
 
 def _stop_untrusted_process(process: Any) -> None:

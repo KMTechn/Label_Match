@@ -241,6 +241,8 @@ _OPERATOR_REASON_CODE_ALLOWLIST = frozenset(
 _TERMINAL_STATES = frozenset({"COMPLETED", "CANCELLED", "SUPERSEDED"})
 
 
+from label_atomic_replace import atomic_replace
+
 def label_partition_key(physical_qr_payload: str) -> str:
     """One ordering partition per physical label: FIFO holds inside a label,
     and one unfinished label never stops another. A label is its parsed
@@ -1531,7 +1533,7 @@ class DeferredIntentCaptureStore:
                 handle.write(protected)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp_path, path)
+            atomic_replace(temp_path, path)
             if self._unprotect_bytes(path.read_bytes()) != key:
                 raise DeferredIntentCaptureError(
                     "CAPTURE_SEAL_KEY_READBACK_FAILED",

@@ -6,7 +6,7 @@ $Script:LabelWriterFenceTupleVersion = 'label-match-deployment-session-authority
 $Script:LabelWriterFenceSessionMutexPrefix = 'Local\KMTech.LabelMatch.DeploymentSession.'
 $Script:LabelWriterFenceAdmissionMutexName = 'Local\KMTech.LabelMatch.WriterAdmission.v1'
 $Script:LabelWriterFenceAdmissionProductionRoot = ''
-$Script:LabelWriterFenceInventorySha256 = '2f7dd15c0ae68918fdaf60ca858714e9f831e078da8ec24e11d27091ca3ebf36'
+$Script:LabelWriterFenceInventorySha256 = '40c49acca1b4f21101ca1fcae547b872638d0b2eed529d17629c448cde44a011'
 $Script:LabelWriterFenceInstalledIdentity = $null
 $Script:LabelWriterFenceMaximumBytes = 262144
 $Script:LabelWriterFenceActiveFields = @(
@@ -16,6 +16,63 @@ $Script:LabelWriterFenceActiveFields = @(
     'delegation_sha256','delegated_sources','delegation_expires_at_utc',
     'activated_at_utc','secret_values_recorded'
 )
+
+function Invoke-LabelPinnedAtomicReplace {
+    param([string]$Source,[string]$Destination,[AllowNull()]$Backup = $null,
+          [ValidateSet('Move','Replace','WriteThrough')][string]$Mode = 'Move')
+    # The supported generator binds this copy to the one canonical function.
+    # Inline bytes also work in the attested in-memory installer scope.
+    $expectedAtomicBodySha256 = '11f76101125ea3083c8226bc36a1bc11508b3bb7fd4b0e999ab60f244629aaf0'
+# LABEL_ATOMIC_INLINE_START
+$text = 'function Invoke-LabelAtomicReplace {
+    param([string]$Source,[string]$Destination,[AllowNull()]$Backup = $null,
+          [ValidateSet(''Move'',''Replace'',''WriteThrough'')][string]$Mode = ''Move'')
+    if ($Mode -ceq ''WriteThrough'' -and -not (''KMTechStartupUpdateAtomicFile'' -as [type])) {
+        Add-Type -TypeDefinition @''
+using System.Runtime.InteropServices;
+public static class KMTechStartupUpdateAtomicFile {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ public static extern bool MoveFileExW(string source, string target, uint flags);
+}
+''@
+    }
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $firstError = $null
+    while ($true) {
+        try {
+            if ($Mode -ceq ''WriteThrough'') {
+                if (-not [KMTechStartupUpdateAtomicFile]::MoveFileExW($Source,$Destination,9)) {
+                    throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+                }
+            } elseif ($Mode -ceq ''Replace'') {
+                $replaceBackup = if ($null -eq $Backup) { [NullString]::Value } else { $Backup }
+                [IO.File]::Replace($Source,$Destination,$replaceBackup)
+            } else {
+                [IO.File]::Move($Source,$Destination)
+            }
+            return
+        } catch {
+            $cause = $_.Exception
+            while ($null -ne $cause.InnerException) { $cause = $cause.InnerException }
+            $code = if ($cause -is [ComponentModel.Win32Exception]) { $cause.NativeErrorCode }
+                    elseif ($cause -is [IO.IOException] -and ($cause.HResult -band 0xffff0000) -eq -2147024896) { $cause.HResult -band 0xffff }
+                    else { 0 }
+            if ($code -notin @(5,32)) { throw }
+            if ($null -eq $firstError) { $firstError = $_ }
+            $remaining = 1000 - $timer.Elapsed.TotalMilliseconds
+            if ($remaining -le 0) { throw $firstError }
+            Start-Sleep -Milliseconds ([Math]::Min(50,[Math]::Ceiling($remaining)))
+        }
+    }
+}'
+# LABEL_ATOMIC_INLINE_END
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { $actual = ([BitConverter]::ToString($algorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)))).Replace('-','').ToLowerInvariant() }
+    finally { $algorithm.Dispose() }
+    if ($actual -cne $expectedAtomicBodySha256) { throw 'Atomic replacement source pin differs.' }
+    . ([scriptblock]::Create($text))
+    Invoke-LabelAtomicReplace @PSBoundParameters
+}
 
 function Get-LabelWriterFenceStringSha256([string]$Value) {
     $algorithm = [Security.Cryptography.SHA256]::Create()
@@ -353,9 +410,9 @@ function Write-LabelWriterFenceAtomic([string]$ControlRoot, $Payload) {
         }
         finally { $stream.Dispose() }
         if (Test-Path -LiteralPath $path -PathType Leaf) {
-            [IO.File]::Replace($temporary, $path, $backup)
+            Invoke-LabelPinnedAtomicReplace -Source $temporary -Destination $path -Backup $backup -Mode Replace
         }
-        else { [IO.File]::Move($temporary, $path) }
+        else { Invoke-LabelPinnedAtomicReplace -Source $temporary -Destination $path -Mode Move }
     }
     finally {
         foreach ($cleanupPath in @($temporary, $backup)) {

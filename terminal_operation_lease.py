@@ -103,6 +103,8 @@ KEYRING_KEYS = frozenset(
 KEYRING_ENTRY_KEYS = frozenset(
     {"kid", "status", "public_jwk", "thumbprint"}
 )
+from label_atomic_replace import atomic_replace
+
 class OperationLeaseError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -449,7 +451,7 @@ class PinnedOperationLeaseKeyring:
                 handle.write(raw)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, self.path)
+            atomic_replace(temporary, self.path)
             temporary = ""
         finally:
             if temporary:

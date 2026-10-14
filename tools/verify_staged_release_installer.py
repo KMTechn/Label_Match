@@ -85,7 +85,7 @@ BOOTSTRAP_STATIC_SOURCE = {
         get-legacytaskbynamefailclosed get-ownedlegacytaskretirementsnapshot
         get-placementdataversion get-requiredexternalinteger get-scheduledtask
         get-strictfullpath initialize-labelprotectedinstallbase initialize-labelstartupupdate
-        install-currentusertlscabootstrap invoke-labelconvergentremoval
+        install-currentusertlscabootstrap invoke-labelconvergentremoval invoke-labelatomicreplace
         invoke-labelofficiallegacytasktransition invoke-labelstartupupdatetaskmutation join-path
         measure-object move-item new-item new-object open-labelrunkey out-null
         protect-kmtechcodeancestors protect-labelinstallerownerfile read-labelwriterfence
@@ -114,17 +114,18 @@ BOOTSTRAP_STATIC_SOURCE = {
     'static_methods': """
         [array]::sort [bitconverter]::tostring [byte[]]::new
         [collections.generic.list[object]]::new [componentmodel.win32exception]::new
-        [diagnostics.process]::getprocessbyid [environment]::expandenvironmentvariables
+        [diagnostics.process]::getprocessbyid [diagnostics.stopwatch]::startnew [environment]::expandenvironmentvariables
         [environment]::getfolderpath
         [guid]::newguid [intptr]::new [invalidoperationexception]::new
         [io.directory]::createdirectory [io.file]::appendalltext [io.file]::getattributes
         [io.file]::open [io.file]::openread [io.file]::readallbytes [io.file]::readalltext
-        [io.file]::writealltext [io.path]::changeextension [io.path]::getdirectoryname
+        [io.file]::writealltext [io.file]::replace [io.file]::move [io.path]::changeextension [io.path]::getdirectoryname
         [io.path]::getextension [io.path]::getfullpath [io.path]::getpathroot
         [io.path]::ispathrooted [io.streamreader]::new
         [kmtechlabelrunregistrynative]::regopenkeyexw
         [kmtechstartupupdateatomicfile]::movefileexw [microsoft.win32.registrykey]::fromhandle
-        [microsoft.win32.safehandles.saferegistryhandle]::new [regex]::match [regex]::matches
+        [microsoft.win32.safehandles.saferegistryhandle]::new [math]::min [math]::ceiling
+        [runtime.interopservices.marshal]::getlastwin32error [regex]::match [regex]::matches
         [regex]::replace [security.accesscontrol.filesystemaccessrule]::new
         [security.accesscontrol.rawsecuritydescriptor]::new
         [security.cryptography.sha256]::create [security.principal.ntaccount]::new
@@ -145,7 +146,7 @@ BOOTSTRAP_STATIC_SOURCE = {
 # Existing indirect calls and their variable bindings, keyed independently of lines.
 BOOTSTRAP_INDIRECT_SOURCE = {
     'calls': {
-        ('installer', 'Write-LabelStartupUpdateRecord', 'Add-Type -TypeDefinition @\'\nusing System.Runtime.InteropServices;\npublic static class KMTechStartupUpdateAtomicFile {\n [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]\n public static extern bool MoveFileExW(string source, string target, uint flags);\n}\n\'@'): 1,
+        ('installer', 'Invoke-LabelAtomicReplace', 'Add-Type -TypeDefinition @\'\nusing System.Runtime.InteropServices;\npublic static class KMTechStartupUpdateAtomicFile {\n [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]\n public static extern bool MoveFileExW(string source, string target, uint flags);\n}\n\'@'): 1,
         ('installer', 'Open-LabelRunKey', 'Add-Type -TypeDefinition @\'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class KmtechLabelRunRegistryNative {\n    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]\n    public static extern int RegOpenKeyExW(IntPtr root, string subKey, uint options, uint access, out IntPtr key);\n}\n\'@'): 1,
         ('installer', '', '. $BootstrapIntegrityFunctions -SharedCodeRoot $PSScriptRoot'): 1,
         ('installer', '', ". (Get-LabelSharedPortableLeafPath $PSScriptRoot 'data_generation.ps1')"): 1,
