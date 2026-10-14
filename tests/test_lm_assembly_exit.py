@@ -356,12 +356,20 @@ def test_accepted_shell_start_failure_drains_real_lane_and_next_start_uses_marke
     webview.start = start
     webview.http = types.SimpleNamespace(start_global_server=lambda **_kw: None)
     monkeypatch.setattr(host, 'NativeHost', Native)
-    monkeypatch.setattr(host, 'show_startup_notice', notices.append)
+    monkeypatch.setattr(host, "is_interactive_session", lambda: True)
+    monkeypatch.setattr(host, "show_startup_notice", lambda title, count=2: notices.append(title))
     monkeypatch.setattr(host, 'READY_TIMEOUT_S', 0.05)
+    monkeypatch.setattr(host, 'FIRST_RUN_READY_TIMEOUT_S', 0.05)
     monkeypatch.setattr(host.os, '_exit', exit_process)
     monkeypatch.setattr(label_screen_bridge, 'LabelMatchScreenProcessor', processor)
     if failure == 'marker_failure':
         monkeypatch.setattr(host, '_save_fallback', mock.Mock(side_effect=OSError('marker unavailable')))
+    # The accepted shell falls back after the second consecutive failure.
+    # Seed the preceding launch through its real, guarded retry writer.
+    data = screen.shell_data_dir()
+    data.mkdir(parents=True, exist_ok=True)
+    host._save_retry(data, "SHELL_START_FAILED", lm.APP_VERSION, 1, "OTHER",
+                     host.shell_fileio.FileIO(original_write_guard))
     module = types.SimpleNamespace(APP_VERSION=lm.APP_VERSION, LABEL_MATCH_SCREEN_HOST={'active': False, 'run': None})
     module._run_label_match_application = lambda: module.LABEL_MATCH_SCREEN_HOST['run'](App())
     try:
