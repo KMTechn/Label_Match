@@ -1456,8 +1456,9 @@ def onboard_current_user(
         if state.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED":
             report["action"] = "POSSESSION_PROOF_REATTACH_REQUIRED"
             report["recovery_action"] = "POSSESSION_PROOF_REATTACH_REQUIRED"
+            report["administrator_guidance"] = "현장 관리자: 관리자 계정으로 이 PC 등록 회복을 실행하세요"
             raise CurrentUserOnboardingError(
-                "이 PC 등록을 다시 연결하지 못했습니다\n현장 관리자에게 알리세요\n\n코드: POSSESSION_PROOF_REATTACH_REQUIRED",
+                "이 PC는 이미 등록돼 있습니다\n현장 관리자에게 알리세요\n\n코드: POSSESSION_PROOF_REATTACH_REQUIRED",
                 report_path=paths.onboarding_report_path,
                 status="RECOVERY_REQUIRED", cause_code="POSSESSION_PROOF_REATTACH_REQUIRED",
             )

@@ -24105,18 +24105,25 @@ FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
     "이 PC의 설치 및 사용자 설정을 관리자에게 확인받으세요. "
     "아래 보고서 경로를 IT 담당자에게 전달하세요."
 )
+FIRST_RUN_REGISTRATION_RECOVERY_CODES = frozenset({
+    "POSSESSION_PROOF_REATTACH_REQUIRED", "ADMIN_RECOVERY_ACTION",
+})
+FIRST_RUN_REGISTRATION_RECOVERY_MESSAGE = (
+    "이 PC는 이미 등록돼 있습니다\n현장 관리자에게 알리세요"
+)
+FIRST_RUN_REGISTRATION_RECOVERY_DETAIL = (
+    "현장 관리자: 관리자 계정으로 이 PC 등록 회복을 실행하세요"
+)
 INSTALLATION_RECOVERY_REQUIRED_MESSAGE = (
     "설치 또는 복구 상태를 확인해야 해 앱을 멈춘 상태로 유지합니다.\n\n"
     "자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
 )
 FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
     "POSSESSION_PROOF_REATTACH_REQUIRED": (
-        "이 PC 등록을 다시 연결하지 못했습니다\n현장 관리자에게 알리세요\n\n"
-        "코드: POSSESSION_PROOF_REATTACH_REQUIRED"
+        FIRST_RUN_REGISTRATION_RECOVERY_MESSAGE + "\n\n코드: POSSESSION_PROOF_REATTACH_REQUIRED"
     ),
     "ADMIN_RECOVERY_ACTION": (
-        "이 PC는 이미 등록돼 있습니다\n현장 관리자에게 알리세요\n\n"
-        "코드: ADMIN_RECOVERY_ACTION"
+        FIRST_RUN_REGISTRATION_RECOVERY_MESSAGE + "\n\n코드: ADMIN_RECOVERY_ACTION"
     ),
     "PENDING_WORKER_SID_MISMATCH": (
         "설치할 때 지정한 작업자 계정으로 다시 실행하세요.\n\n"
@@ -24167,7 +24174,40 @@ def _first_run_onboarding_enabled():
     return value in {"1", "true", "yes", "on", "enabled"}
 
 
+def _show_first_run_registration_recovery(cause):
+    """One bootstrap notice shared by both screens, before business UI opens."""
+    parent = None
+    try:
+        parent = tk.Tk()
+        parent.title("첫 설정 안내")
+        parent.resizable(False, False)
+        tk.Label(parent, text=FIRST_RUN_REGISTRATION_RECOVERY_MESSAGE,
+                 font=("맑은 고딕", 14), padx=24, pady=18).pack()
+        tk.Label(parent, text="코드: " + cause,
+                 font=("맑은 고딕", 10)).pack(pady=(0, 12))
+        detail = tk.Label(parent, text=FIRST_RUN_REGISTRATION_RECOVERY_DETAIL,
+                          font=("맑은 고딕", 10), padx=24)
+        def show_detail():
+            detail.pack(pady=(0, 12))
+        tk.Button(parent, text="자세히", command=show_detail, width=10).pack(pady=(0, 8))
+        tk.Button(parent, text="닫기", command=parent.destroy, width=10).pack(pady=(0, 16))
+        parent.attributes("-topmost", True)
+        parent.lift()
+        parent.focus_force()
+        parent.mainloop()
+    except Exception:
+        _label_match_startup_trace("current_user_onboarding_dialog_unavailable")
+    finally:
+        if parent is not None:
+            try:
+                parent.destroy()
+            except tk.TclError:
+                pass
+
+
 def _show_first_run_onboarding_error(failure):
+    cause = getattr(failure, "cause_code", "")
+    registration_recovery = cause in FIRST_RUN_REGISTRATION_RECOVERY_CODES
     if getattr(failure, "_startup_check_refusal", False):
         try:
             from startup_observation import observe_startup, onboarding_reason
@@ -24175,9 +24215,13 @@ def _show_first_run_onboarding_error(failure):
             reasons = [reason]
             if failure.status == "UNKNOWN":
                 reasons.append("UNKNOWN_DATA" if reason == "DATA_GENERATION_REFUSED" else "UNKNOWN_ACCOUNT")
-            observe_startup(reasons, refused=True)
+            observe_startup(reasons, refused=not registration_recovery)
         except Exception:
             pass
+        if not registration_recovery:
+            return
+    if registration_recovery:
+        _show_first_run_registration_recovery(cause)
         return
     parent = None
     try:

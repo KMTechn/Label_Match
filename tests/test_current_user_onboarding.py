@@ -99,6 +99,33 @@ def test_reattach_required_onboarding_preserves_classification_across_restart(tm
     assert not paths.identity_path.exists() and not paths.ledger_path.exists()
 
 
+@pytest.mark.parametrize("registration_status", [
+    "POSSESSION_PROOF_REATTACH_REQUIRED", "ADMIN_RECOVERY_REQUIRED",
+])
+def test_recovery_report_with_existing_credentials_never_enrolls_or_changes_bytes(tmp_path, registration_status):
+    env = {"LOCALAPPDATA": str(tmp_path / "local"), "APPDATA": str(tmp_path / "roaming")}
+    paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=env)
+    _ready_state(paths)
+    _write_json(paths.registration_report_path, {
+        "report_version": "label-match-worker-pc-registration-v1",
+        "status": registration_status, "recovery_action": registration_status,
+        "secret_material_persisted": False, "server_http_status": 409,
+    })
+    protected = (paths.credential_path, paths.identity_path, paths.producer_manifest_path,
+                 paths.logistics_profile_path, paths.logistics_secret_path, paths.registration_report_path)
+    before = {path: path.read_bytes() for path in protected}
+    for _ in range(2):
+        with pytest.raises(CurrentUserOnboardingError):
+            onboard_current_user(
+                paths.app_root, environ=env, require_bootstrap_integrity=False,
+                registration_runner=lambda _paths: pytest.fail("recovery decision must block enrollment"),
+                legacy_task_quiescence_reader=_legacy_task_quiescent,
+                autostart_installer=lambda _root: pytest.fail("recovery decision must block autostart"),
+            )
+        assert all(path.read_bytes() == expected for path, expected in before.items())
+    assert not paths.ledger_path.exists()
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

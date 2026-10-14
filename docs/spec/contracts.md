@@ -1,6 +1,6 @@
 # Label_Match 데이터·통합 계약
 
-등록 도구의 기존 신원 거절은 첫 설정의 `RECOVERY_REQUIRED`와 원 `recovery_action`으로 보존한다. 공개 고정 원인은 `ADMIN_RECOVERY_ACTION` 또는 `POSSESSION_PROOF_REATTACH_REQUIRED`이며 등록 보고만 남은 재시작에서도 동일하다. 원 신원·자료·대기열을 바꾸거나 Run/업무 자료 준비로 진행하지 않는다([첫 설정 안내](operations.md#onboarding-registration-recovery)).
+등록 도구의 기존 신원 거절은 첫 설정의 `RECOVERY_REQUIRED`와 원 `recovery_action`으로 보존한다. 공개 고정 원인은 `ADMIN_RECOVERY_ACTION` 또는 `POSSESSION_PROOF_REATTACH_REQUIRED`이며 등록 보고만 남은 재시작과 시작 거절 관측에서도 동일하다. 107은 길 A 없이 두 원인 모두 첫 설정의 고정 안내·작은 코드 줄·관리자용 자세히를 사용한다. 원 신원·자격·자료·대기열을 바꾸거나 다시 enroll하거나 Run/업무 자료 준비로 진행하지 않는다([첫 설정 안내](operations.md#onboarding-registration-recovery)).
 
 표지 PID의 실제 실행 파일은 두 번째 프로세스 자신의 실행 파일을 기준으로 대조해 다른 실행 파일을 거절한다. 다만 같은 실행 파일의 다른 프로세스와 자료 뿌리 mutex 소유자의 결속까지 증명하지 않으므로 같은 사용자 권한의 표지 위변조를 완전히 막는 것은 아니다.
 
