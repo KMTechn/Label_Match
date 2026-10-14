@@ -848,6 +848,7 @@ function Get-LabelStartupUpdateTaskPreimage([string]$Root) {
 function Invoke-LabelAtomicReplace {
     param([string]$Source,[string]$Destination,[AllowNull()]$Backup = $null,
           [ValidateSet('Move','Replace','WriteThrough')][string]$Mode = 'Move')
+    $timer = [Diagnostics.Stopwatch]::StartNew()
     if ($Mode -ceq 'WriteThrough' -and -not ('KMTechStartupUpdateAtomicFile' -as [type])) {
         Add-Type -TypeDefinition @'
 using System.Runtime.InteropServices;
@@ -857,9 +858,10 @@ public static class KMTechStartupUpdateAtomicFile {
 }
 '@
     }
-    $timer = [Diagnostics.Stopwatch]::StartNew()
+    if ($timer.Elapsed.TotalMilliseconds -ge 1000) { throw [TimeoutException]::new('Atomic publication preparation exceeded its deadline.') }
     $firstError = $null
     while ($true) {
+        if ($null -ne $firstError -and $timer.Elapsed.TotalMilliseconds -ge 1000) { throw $firstError }
         try {
             if ($Mode -ceq 'WriteThrough') {
                 if (-not [KMTechStartupUpdateAtomicFile]::MoveFileExW($Source,$Destination,9)) {
@@ -877,6 +879,7 @@ public static class KMTechStartupUpdateAtomicFile {
             while ($null -ne $cause.InnerException) { $cause = $cause.InnerException }
             $code = if ($cause -is [ComponentModel.Win32Exception]) { $cause.NativeErrorCode }
                     elseif ($cause -is [IO.IOException] -and ($cause.HResult -band 0xffff0000) -eq -2147024896) { $cause.HResult -band 0xffff }
+                    elseif ($cause -is [UnauthorizedAccessException] -and $cause.HResult -eq -2147024891) { 5 }
                     else { 0 }
             if ($code -notin @(5,32)) { throw }
             if ($null -eq $firstError) { $firstError = $_ }

@@ -6,7 +6,7 @@ $Script:LabelWriterFenceTupleVersion = 'label-match-deployment-session-authority
 $Script:LabelWriterFenceSessionMutexPrefix = 'Local\KMTech.LabelMatch.DeploymentSession.'
 $Script:LabelWriterFenceAdmissionMutexName = 'Local\KMTech.LabelMatch.WriterAdmission.v1'
 $Script:LabelWriterFenceAdmissionProductionRoot = ''
-$Script:LabelWriterFenceInventorySha256 = 'ba58ff9e38d6eb6f77c9e33aa39943125e34236fbfd131879309ce4efaa509a1'
+$Script:LabelWriterFenceInventorySha256 = 'b3b4be64986151180112e6fd324cf6897b4bd0f622b2422a251b4fa6899e2d8b'
 $Script:LabelWriterFenceInstalledIdentity = $null
 $Script:LabelWriterFenceMaximumBytes = 262144
 $Script:LabelWriterFenceActiveFields = @(
@@ -22,11 +22,12 @@ function Invoke-LabelPinnedAtomicReplace {
           [ValidateSet('Move','Replace','WriteThrough')][string]$Mode = 'Move')
     # The supported generator binds this copy to the one canonical function.
     # Inline bytes also work in the attested in-memory installer scope.
-    $expectedAtomicBodySha256 = '11f76101125ea3083c8226bc36a1bc11508b3bb7fd4b0e999ab60f244629aaf0'
+    $expectedAtomicBodySha256 = 'c13d9869332a9f14b763f1ffa8345453ab64bdc75d1c7605627194346a77791a'
 # LABEL_ATOMIC_INLINE_START
 $text = 'function Invoke-LabelAtomicReplace {
     param([string]$Source,[string]$Destination,[AllowNull()]$Backup = $null,
           [ValidateSet(''Move'',''Replace'',''WriteThrough'')][string]$Mode = ''Move'')
+    $timer = [Diagnostics.Stopwatch]::StartNew()
     if ($Mode -ceq ''WriteThrough'' -and -not (''KMTechStartupUpdateAtomicFile'' -as [type])) {
         Add-Type -TypeDefinition @''
 using System.Runtime.InteropServices;
@@ -36,9 +37,10 @@ public static class KMTechStartupUpdateAtomicFile {
 }
 ''@
     }
-    $timer = [Diagnostics.Stopwatch]::StartNew()
+    if ($timer.Elapsed.TotalMilliseconds -ge 1000) { throw [TimeoutException]::new(''Atomic publication preparation exceeded its deadline.'') }
     $firstError = $null
     while ($true) {
+        if ($null -ne $firstError -and $timer.Elapsed.TotalMilliseconds -ge 1000) { throw $firstError }
         try {
             if ($Mode -ceq ''WriteThrough'') {
                 if (-not [KMTechStartupUpdateAtomicFile]::MoveFileExW($Source,$Destination,9)) {
@@ -56,6 +58,7 @@ public static class KMTechStartupUpdateAtomicFile {
             while ($null -ne $cause.InnerException) { $cause = $cause.InnerException }
             $code = if ($cause -is [ComponentModel.Win32Exception]) { $cause.NativeErrorCode }
                     elseif ($cause -is [IO.IOException] -and ($cause.HResult -band 0xffff0000) -eq -2147024896) { $cause.HResult -band 0xffff }
+                    elseif ($cause -is [UnauthorizedAccessException] -and $cause.HResult -eq -2147024891) { 5 }
                     else { 0 }
             if ($code -notin @(5,32)) { throw }
             if ($null -eq $firstError) { $firstError = $_ }

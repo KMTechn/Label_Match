@@ -1,0 +1,72 @@
+[
+  {
+    "function": "Archive-PretransactionFailure",
+    "count": 1,
+    "sha256": "7b43ac1bc9b33a4439718869d989e6618c863b3a7242b855dedfe5087784227b",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_CANONICAL_PORTABLE.ps1"
+  },
+  {
+    "function": "Move-LegacyFirstRegistrationState",
+    "count": 1,
+    "sha256": "2982ded3cba86566ac1c76f1197c7da63187defd1fa2d0e06d6eb1b0f1889541",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_CANONICAL_PORTABLE.ps1"
+  },
+  {
+    "function": "Move-LegacyFirstRegistrationState",
+    "count": 1,
+    "sha256": "a103a1a5c9e6c69a698312ef15e6fa8a80d6fce6a65ed25c2dc7ab6532889926",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_CANONICAL_PORTABLE.ps1"
+  },
+  {
+    "function": "",
+    "count": 1,
+    "sha256": "4ccfa4fb5b4b733240046536856ea650da76fc768e15ed7d925144a5d6ed2c87",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_THIS_PC.ps1"
+  },
+  {
+    "function": "",
+    "count": 1,
+    "sha256": "560e01bae1147700e870caa8f44ace81e6cccbc274539bd24cc1e62470a2c8ac",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_THIS_PC.ps1"
+  },
+  {
+    "function": "",
+    "count": 2,
+    "sha256": "7c82b8595f706222f8865c70af5ca20caaba7e5a758be1ce7d060ebac27dd292",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_THIS_PC.ps1"
+  },
+  {
+    "function": "",
+    "count": 1,
+    "sha256": "e66b46d5f0dbb54e5994b998f1b3a71310eb95cb9e039e92405a2306cb8f17d8",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_THIS_PC.ps1"
+  },
+  {
+    "function": "",
+    "count": 1,
+    "sha256": "f25d1b040193769d99fc25dab5163527a5a5712cda78ef7f8c82064c826f7763",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_THIS_PC.ps1"
+  },
+  {
+    "function": "Invoke-LabelConvergentRemoval",
+    "count": 1,
+    "sha256": "736b41d67b419f85be23cfd10b2458aa62f26b7e5ce85aa89e08c0b69915e41d",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_THIS_PC.ps1"
+  },
+  {
+    "function": "Restore-LabelStartupUpdatePreimage",
+    "count": 1,
+    "sha256": "01732e3a2f354425721a765af5d4acd15f194801276c8368ab46a04ff59819c8",
+    "reason": "Existing directory rename; exact AST extent pinned.",
+    "file": "INSTALL_THIS_PC.ps1"
+  }
+]

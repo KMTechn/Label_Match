@@ -57,14 +57,14 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     _write_json_bytes_atomic(path, serialized)
 
 
-def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any], *, deadline=None) -> None:
     from failure_redaction import assert_machine_metadata_text
     serialized = json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     assert_machine_metadata_text(serialized)
-    _write_json_bytes_atomic(path, serialized)
+    _write_json_bytes_atomic(path, serialized, deadline=deadline)
 
 
-def _write_json_bytes_atomic(path: Path, serialized: str) -> None:
+def _write_json_bytes_atomic(path: Path, serialized: str, *, deadline=None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
@@ -72,7 +72,10 @@ def _write_json_bytes_atomic(path: Path, serialized: str) -> None:
             handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
-        atomic_replace(temporary, path)
+        if deadline is None:
+            atomic_replace(temporary, path)
+        else:
+            atomic_replace(temporary, path, deadline=deadline)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -261,11 +264,11 @@ def request_app_stop(direct_sync_root: str | os.PathLike[str], *, app_root=None,
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
     with writer_admission("app_stop_request"):
-        _write_machine_json_atomic(path, payload)
+        _write_machine_json_atomic(path, payload, deadline=deadline)
         if _read_json(path) != payload:
             raise UserRelayError("app stop request readback differs")
     # Do not retain the app-request admission while waiting for relay absence.
-    relay = request_user_relay_stop(root, timeout_seconds=0)
+    relay = request_user_relay_stop(root, timeout_seconds=0, deadline=deadline)
     remaining = None
     while True:
         try:
@@ -1059,12 +1062,16 @@ def request_user_relay_stop(
     direct_sync_root: str | os.PathLike[str],
     *,
     timeout_seconds: float = 10.0,
+    deadline: float | None = None,
     wait: Callable[[float], None] = time.sleep,
     lease_factory: Callable[[str | os.PathLike[str]], Any] = _acquire_relay_lease,
     marker_lease_factory: Callable[
         [str | os.PathLike[str]], Any
     ] = _acquire_relay_lease,
 ) -> dict[str, Any]:
+    wait_deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    deadline = wait_deadline if deadline is None else deadline
+    wait_deadline = min(wait_deadline, deadline)
     root = Path(direct_sync_root).expanduser().resolve()
     stop_path = user_relay_stop_path(root)
     request_id = uuid.uuid4().hex
@@ -1085,7 +1092,7 @@ def request_user_relay_stop(
                 "request_id": request_id,
                 "requested_at": requested_at,
             }
-        _write_machine_json_atomic(stop_path, marker_payload)
+        _write_machine_json_atomic(stop_path, marker_payload, deadline=deadline)
         marker_value, _marker_raw, marker_hash = read_stop_marker(stop_path)
         if marker_value != marker_payload:
             raise UserRelayError("relay stop marker readback differs")
@@ -1097,7 +1104,6 @@ def request_user_relay_stop(
         )
         if callable(close):
             close()
-    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     lease_key = root / "user-relay-instance"
     while True:
         lease = lease_factory(lease_key)
@@ -1115,7 +1121,7 @@ def request_user_relay_stop(
                     marker_payload.get("lineage_depth") or 0
                 ),
             }
-        if time.monotonic() >= deadline:
+        if time.monotonic() >= wait_deadline:
             return {
                 "status": "UNKNOWN",
                 "request_id": request_id,
@@ -1127,7 +1133,7 @@ def request_user_relay_stop(
                 ),
                 "reason": "relay process absence was not proven before timeout",
             }
-        wait(0.25)
+        wait(min(0.25, max(0.0, wait_deadline - time.monotonic())))
 
 
 @writer_sink("user_relay_stop_release")

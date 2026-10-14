@@ -152,17 +152,13 @@ def test_app_atomic_calls_are_centralized_and_shared_copies_byte_pinned():
                             forbidden.append((name, node.lineno))
                     self.generic_visit(node)
             Calls().visit(ast.parse(source))
-        elif not name.startswith('tests/'):
-            import re
-            if name in {'INSTALL_THIS_PC.ps1', 'tools/label_writer_fence.ps1', 'tools/label_worker_shortcuts.ps1', "INSTALL_CANONICAL_PORTABLE.ps1"}:
-                # Copies are generated from the one canonical function and
-                # validated above; pinned function strings are not direct calls.
-                source = source.replace(helper_body(ROOT), '')
-                source = source.replace(helper_body(ROOT).replace("'", "''"), '')
-            if re.search(r'::(?:MoveFileExW|ReplaceFileW)\s*\(|\[IO.File\]::(?:Replace|Move)\s*\(', source, re.I):
-                forbidden.append((name, 'native call'))
     assert seen_tests == named_tests
     assert forbidden == []
+    child = subprocess.run([shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-File",
+        str(ROOT / "tests/lm_atomic_guard.ps1"), "-HostRoot", str(ROOT)],
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert child.returncode == 0
+    assert json.loads(child.stdout)["status"] == "PASS"
 
 
 @pytest.mark.parametrize("consumer", CONSUMERS)

@@ -429,7 +429,15 @@ function Write-BootstrapUtf8Json {
     }
     Assert-KmtechMachineMetadataText -Text ($json + [Environment]::NewLine)
     [IO.File]::WriteAllText($temporary, $json + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $temporary -Destination $Path -Force | Out-Null
+    if (-not (Get-Command Invoke-LabelPinnedAtomicReplace -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot 'label_writer_fence.ps1')
+    }
+    try {
+        if ([IO.File]::Exists($Path)) { Invoke-LabelPinnedAtomicReplace $temporary $Path -Mode Replace }
+        else { Invoke-LabelPinnedAtomicReplace $temporary $Path -Mode Move }
+    } finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
 }
 
 function Write-BootstrapIntegrityRecord {

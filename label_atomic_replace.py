@@ -19,12 +19,14 @@ def _replace_once(source, destination, *, write_through):
         os.replace(source, destination)
 
 
-def atomic_replace(source, destination, *, write_through=False):
+def atomic_replace(source, destination, *, write_through=False, deadline=None):
     """Keep caller admission, temporary bytes and first native exception intact."""
-    deadline = time.monotonic() + RETRY_SECONDS
+    deadline = min(time.monotonic() + RETRY_SECONDS, deadline) if deadline is not None else time.monotonic() + RETRY_SECONDS
     first_error = None
     first_traceback = None
     while True:
+        if first_error is not None and time.monotonic() >= deadline:
+            raise first_error.with_traceback(first_traceback) from None
         try:
             return _replace_once(source, destination, write_through=write_through)
         except OSError as error:
