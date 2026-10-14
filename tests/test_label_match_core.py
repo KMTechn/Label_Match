@@ -4052,22 +4052,6 @@ def test_reload_today_history_blocks_during_background_work():
     assert "기록을 다시 불러올 수 없습니다" in app.status_label.kwargs["text"]
 
 
-def test_prompt_for_date_reload_blocks_during_background_work(monkeypatch):
-    module = load_label_match_module()
-    app = object.__new__(module.Label_Match)
-    app.initialized_successfully = True
-    app.is_running_simulation = False
-    app.is_generating_test_logs = True
-    app.run_tests = False
-    app.status_label = _FakeLabel()
-    app._load_history_and_rebuild_summary = lambda *args: (_ for _ in ()).throw(AssertionError("history should not reload"))
-    app._process_history_queue = lambda: (_ for _ in ()).throw(AssertionError("history queue should not process"))
-    monkeypatch.setattr(module.messagebox, "showwarning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "CalendarWindow", lambda parent: (_ for _ in ()).throw(AssertionError("calendar should not open")))
-
-    module.Label_Match._prompt_for_date_and_reload(app)
-
-    assert "기록을 다시 불러올 수 없습니다" in app.status_label.kwargs["text"]
 
 
 def test_reload_today_history_blocks_duplicate_active_history_load():
@@ -4086,23 +4070,6 @@ def test_reload_today_history_blocks_duplicate_active_history_load():
     assert "오늘 기록을 불러오는 중" in app.status_label.kwargs["text"]
 
 
-def test_prompt_for_date_reload_blocks_duplicate_active_history_load(monkeypatch):
-    module = load_label_match_module()
-    app = object.__new__(module.Label_Match)
-    app.initialized_successfully = True
-    app.is_running_simulation = False
-    app.is_generating_test_logs = False
-    app.history_active_load_pending = True
-    app.run_tests = False
-    app.status_label = _FakeLabel()
-    app._load_history_and_rebuild_summary = lambda *args: (_ for _ in ()).throw(AssertionError("history should not reload"))
-    app._process_history_queue = lambda: (_ for _ in ()).throw(AssertionError("history queue should not process"))
-    monkeypatch.setattr(module.messagebox, "showwarning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "CalendarWindow", lambda parent: (_ for _ in ()).throw(AssertionError("calendar should not open")))
-
-    module.Label_Match._prompt_for_date_and_reload(app)
-
-    assert "오늘 기록을 불러오는 중" in app.status_label.kwargs["text"]
 
 
 def test_test_log_generation_failure_clears_background_flag_and_restores_input():

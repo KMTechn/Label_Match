@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from label_history import HISTORY_LIMIT
+
 from tests.test_label_match_core import _FakeEntry, _FakeLabel, _RecordingTree, load_label_match_module
 
 
@@ -194,8 +196,10 @@ def test_large_history_deletes_inserts_and_summary_are_bounded_and_allow_input()
             assert accepted == ['accepted-during-paint']
             assert app.entry.deleted is True
     assert maximum < .1  # Baseline single callback exceeds 500 ms with this cost.
-    assert count > 100
-    assert set(app.history_tree.rows) == {f'set-{i}' for i in range(5000)}
+    # The display cap removes old insertions; each callback still does at most 100 operations.
+    assert count >= (len(operations) + 99) // 100
+    assert set(app.history_tree.rows) == {f'set-{i}' for i in range(5000 - HISTORY_LIMIT, 5000)}
+    assert len(app.set_details_map) == 5000
     assert len(app.summary_tree.rows) == 2000
 
 

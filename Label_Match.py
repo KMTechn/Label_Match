@@ -4554,39 +4554,6 @@ def resource_path(relative_path: str) -> str:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
 
-class CalendarWindow(ttk.Frame):
-    """Reuse the date picker inside history; it never grabs scanner focus."""
-
-    def __init__(self, parent):
-        from tkcalendar import Calendar
-
-        super().__init__(parent.history_detail_frame)
-        self.parent = parent
-        self.grid(row=2, column=0, sticky="ew", pady=(4, 0))
-        self.cal = Calendar(self, selectmode='day', year=datetime.now().year,
-                            month=datetime.now().month, day=datetime.now().day,
-                            locale='ko_KR', background="white", foreground="black",
-                            headersbackground="#EAEAEA")
-        self.cal.pack(fill="both", expand=True)
-        buttons = ttk.Frame(self)
-        buttons.pack(pady=(0, 4))
-        ttk.Button(buttons, text="선택", command=self.on_select).pack(side="left", padx=5)
-        ttk.Button(buttons, text="취소", command=self.destroy).pack(side="left", padx=5)
-        # Widget bindings run before Tk class bindings (Return/Space included).
-        pending = [self]
-        while pending:
-            widget = pending.pop()
-            widget.bind("<KeyPress>", parent._refuse_dialog_scan)
-            widget.bind("<KeyRelease>", lambda event: "break")
-            pending.extend(widget.winfo_children())
-        parent._focus_scan_entry_if_available()
-
-    def on_select(self):
-        selected_date = self.cal.selection_get()
-        self.destroy()
-        self.parent._prompt_for_date_and_reload(selected_date)
-        self.parent._focus_scan_entry_if_available()
-
 class DataManager(_DataManager):
     """Keep the application constructor and its live dependency bindings."""
 
@@ -8168,7 +8135,6 @@ class Label_Match(tk.Tk):
             )
         for button_name, compact_width, normal_width in (
             ("today_button", 5, 8),
-            ("date_search_button", 5, 8),
             ("decrease_font_button", 3, 4),
             ("increase_font_button", 3, 4),
         ):
@@ -8179,17 +8145,13 @@ class Label_Match(tk.Tk):
                     width=compact_width if compact else normal_width,
                 )
         today_button = self.__dict__.get("today_button")
-        date_button = self.__dict__.get("date_search_button")
         if today_button is not None:
             today_button.pack_configure(padx=(0, 4 if compact else 5))
-        if date_button is not None:
-            date_button.pack_configure(padx=(0, 8 if compact else 15))
         self._history_control_style_signature = signature
 
     def _normal_history_control_requested_width(
         self,
         _control_frame,
-        date_button,
         base_header_size,
     ):
         """Measure normal history controls once per font signature.
@@ -8211,8 +8173,6 @@ class Label_Match(tk.Tk):
         cached = cache.get(key)
         if cached is not None:
             return int(cached)
-        if date_button is not None and date_button.cget("text") != "날짜 조회":
-            date_button.configure(text="날짜 조회")
         self._configure_history_control_buttons(compact=False)
         requested = self._history_control_buttons_requested_width()
         cache[key] = requested
@@ -8251,7 +8211,6 @@ class Label_Match(tk.Tk):
         total = 0
         for name in (
             "today_button",
-            "date_search_button",
             "decrease_font_button",
             "increase_font_button",
         ):
@@ -8301,7 +8260,6 @@ class Label_Match(tk.Tk):
             control_frame = self.__dict__.get("hist_control_frame")
             control_width = 0
             if control_frame:
-                date_button = self.__dict__.get("date_search_button")
                 full_header_width = self._text_pixel_width(
                     self._history_header_text_options()[0],
                     (self.default_font_name, base_header_size, "bold"),
@@ -8314,7 +8272,6 @@ class Label_Match(tk.Tk):
                     normal_control_width = (
                         self._normal_history_control_requested_width(
                             control_frame,
-                            date_button,
                             base_header_size,
                         )
                     )
@@ -8322,9 +8279,6 @@ class Label_Match(tk.Tk):
                         full_header_width + normal_control_width + 18
                         > hist_header_width
                     )
-                date_text = "조회" if compact_controls else "날짜 조회"
-                if date_button is not None and date_button.cget("text") != date_text:
-                    date_button.configure(text=date_text)
                 self._configure_history_control_buttons(compact=compact_controls)
                 control_width = self._history_control_buttons_requested_width()
                 self._history_controls_compact = compact_controls
@@ -13090,7 +13044,10 @@ class Label_Match(tk.Tk):
         return bool(state.get('is_running_simulation', False) or state.get('is_generating_test_logs', False))
 
     def _load_history_and_rebuild_summary(self, target_date=None):
-        print(f"과거 기록 비동기 로드 시작... (대상 날짜: {target_date or '오늘'})")
+        if not self._history_load_updates_active_state(target_date):
+            raise ValueError("HISTORY_TODAY_ONLY")
+        target_date = None
+        print("오늘 기록 비동기 로드 시작...")
         self.history_load_generation += 1
         load_generation = self.history_load_generation
         while True:
@@ -13129,15 +13086,9 @@ class Label_Match(tk.Tk):
         # Keep the last display during the read. Deletion is chunked with
         # result application, and the read gate still protects active indexes.
 
-        if target_date:
-            date_str = target_date.strftime('%Y-%m-%d')
-            self._history_header_full_text = f"스캔 기록 ({date_str})"
-            self.hist_header_label.config(text=self._history_header_full_text)
-            self._set_summary_date_label(text=f"날짜 {date_str}")
-        else:
-            self._history_header_full_text = "스캔 기록 (오늘)"
-            self.hist_header_label.config(text=self._history_header_full_text)
-            self._set_summary_date_label(text=f"날짜 {datetime.now().strftime('%Y-%m-%d')}")
+        self._history_header_full_text = "스캔 기록 (오늘)"
+        self.hist_header_label.config(text=self._history_header_full_text)
+        self._set_summary_date_label(text=f"날짜 {datetime.now().strftime('%Y-%m-%d')}")
         self._apply_adaptive_header_fitting()
 
         loading_values = ("", "기록을 불러오는 중입니다...", *[""] * (self.TOTAL_SCAN_COUNT - 1), "", "")
@@ -13262,7 +13213,8 @@ class Label_Match(tk.Tk):
             ), tags=("error",))
             yield
             return
-        for index, (set_id, data) in enumerate(result['sorted_sets'], 1):
+        first_row = max(0, len(result['sorted_sets']) - label_history.HISTORY_LIMIT)
+        for index, (set_id, data) in enumerate(result['sorted_sets'][first_row:], first_row + 1):
             # A cancellation during painting removes the logical row first;
             # never resurrect it from the older display snapshot.
             removed = updates_active and str(set_id) in initial_ids and set_id not in self.set_details_map
@@ -13274,6 +13226,7 @@ class Label_Match(tk.Tk):
                                              values, details=self._history_details_for_iid(set_id)),
                                          tags=data['tags'])
             yield
+        self._trim_history_tree()
         if not self.__dict__.get('initialized_successfully', False):
             return
         counts = result['scan_count']
@@ -20130,6 +20083,7 @@ class Label_Match(tk.Tk):
         self.__dict__.setdefault("history_row_details_map", {})[set_id] = details
         values_to_display = self._history_values_for_display(values_to_display, details=details)
         self.history_tree.insert("", "end", iid=set_id, values=values_to_display, tags=("success",))
+        self._trim_history_tree()
         self.history_tree.yview_moveto(1.0)
 
     def _finalize_test_simulation(self, num_sets):
@@ -23492,35 +23446,6 @@ class Label_Match(tk.Tk):
         self._render_operator_workbench()
         self._apply_responsive_layout()
 
-    def _prompt_for_date_and_reload(self, selected_date=None):
-        if not self.initialized_successfully: return
-        if self._block_background_history_reload(parent=self):
-            return
-        if self._block_duplicate_history_load(parent=self):
-            return
-        
-        if selected_date is None:
-            if not self.run_tests:
-                calendar = self.__dict__.get("_history_date_calendar")
-                if calendar is None or not calendar.winfo_exists():
-                    self._history_date_calendar = CalendarWindow(self)
-            return
-
-        if selected_date:
-            try:
-                target_datetime = datetime.combine(selected_date, datetime.min.time())
-                self._load_history_and_rebuild_summary(target_datetime)
-                self._process_history_queue()
-            except Exception as e:
-                print(f"기록 조회 기술 진단: {e}")
-                if not self.run_tests:
-                    messagebox.showerror(
-                        "조회 오류",
-                        "기록을 조회하지 못했습니다. 다시 시도하고 계속 실패하면 "
-                        "관리자에게 확인을 요청하세요.",
-                        parent=self,
-                    )
-
     def _increase_tree_font(self):
         if not self.initialized_successfully: return
         self.tree_font_size = min(20, self.tree_font_size + 1)
@@ -24049,6 +23974,22 @@ class Label_Match(tk.Tk):
             button.config(text="교환", state="normal" if self.current_set_info.get("raw") else "disabled")
 
 
+    def _trim_history_tree(self):
+        current = self.__dict__.get("current_set_info") or {}
+        current_id = str(current.get("completion_identity") or current.get("id") or "")
+        rows = [iid for iid in self.history_tree.get_children()
+                if str(iid) not in {"loading", "history-error"}]
+        overflow = len(rows) - label_history.HISTORY_LIMIT
+        if overflow > 0:
+            completed = [iid for iid in rows if str(iid) != current_id]
+            # Replay order also includes completions added during an older
+            # display batch; table sorting must not discard those new rows.
+            order = {str(iid): index for index, iid in enumerate(
+                self.__dict__.get("set_details_map", {}))}
+            completed.sort(key=lambda iid: order.get(str(iid), len(order)))
+            for iid in completed[:overflow]:
+                self.history_tree.delete(iid)
+
     def _update_history_tree_in_progress(self):
         if not self.initialized_successfully: return
         if not self.history_view_updates_active_state: return
@@ -24083,6 +24024,7 @@ class Label_Match(tk.Tk):
             display_id = len(valid_rows) + 1
             display_values = (display_id, *display_values[1:])
             self.history_tree.insert("", 0, values=display_values, iid=set_id, tags=("in_progress",))
+        self._trim_history_tree()
         if set_id in self.history_tree.selection():
             self._render_history_detail(set_id)
         self.history_tree.yview_moveto(0)

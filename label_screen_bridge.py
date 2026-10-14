@@ -20,6 +20,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from label_history import HISTORY_LIMIT
+
 STATE_CONTRACT = "lm-state/1"
 PARTS_DIR = Path(__file__).resolve().parent / "ui" / "parts"
 SOUNDS = frozenset({"scan_master", "scan_1", "pass", "fail", "error"})
@@ -27,7 +29,6 @@ BAND = {"danger": "bad", "warning": "warn", "info": "quiet", "muted": "quiet", "
 FLASH = {"red": "bad", "green": "ok", "primary": "idle"}
 HIDDEN_BADGES = frozenset({"중앙 멤버십", "PHS2 서버 멤버십"})
 SET_ACTIONS = frozenset({"LABEL.RECHECK", "LABEL.SET_HOLD", "LABEL.F5_HOLD", "LABEL.SUPPORT_HANDOFF"})
-HISTORY_LIMIT = 100  # state 는 push 마다 화면으로 감 — 오늘 기록은 최근 100줄(4 GB PC)
 DIALOG_LIMIT = 2
 
 

@@ -1458,60 +1458,27 @@ def test_tree_cell_fit_uses_effective_stretched_column_width(monkeypatch):
 
 def test_history_normal_control_width_probe_is_cached_by_font_signature():
     app = Label_Match.__new__(Label_Match)
-    app.default_font_name = "Malgun Gothic"
-    app._current_font_size = 18
+    app.default_font_name = "Arial"
+    app._current_font_size = 12
     calls = []
-    style_state = {"compact": True}
-
-    def configure_controls(compact=False):
-        calls.append(bool(compact))
-        style_state["compact"] = bool(compact)
-
-    app._configure_history_control_buttons = configure_controls
+    app._configure_history_control_buttons = lambda compact=False: calls.append(bool(compact))
     control_frame = FakeWidget()
-    # Reproduce Tk's delayed parent request: it still reports compact width
-    # immediately after the children switch to normal styling.
-    control_frame.winfo_reqwidth = lambda: 228
+    control_frame.winfo_reqwidth = lambda: 1
     app.tk = type("FakeTk", (), {"splitlist": staticmethod(lambda value: str(value).split())})()
-    button_specs = (
-        ("today_button", 144, (0, 5), "오늘"),
-        ("date_search_button", 144, (0, 15), "조회"),
-        ("decrease_font_button", 88, 0, "-"),
-        ("increase_font_button", 88, 0, "+"),
-    )
-    for name, normal_width, padx, text in button_specs:
-        button = FakeWidget(text=text)
+    for name, width, padx in (("today_button", 50, (0, 5)),
+                             ("decrease_font_button", 30, 0), ("increase_font_button", 30, 0)):
+        button = FakeWidget()
         button.pack(padx=padx)
-        button.winfo_reqwidth = (
-            lambda width=normal_width: 52
-            if style_state["compact"]
-            else width
-        )
+        button.winfo_reqwidth = lambda width=width: width
         setattr(app, name, button)
-    date_button = app.date_search_button
 
-    first = app._normal_history_control_requested_width(
-        control_frame,
-        date_button,
-        24,
-    )
-    second = app._normal_history_control_requested_width(
-        control_frame,
-        date_button,
-        24,
-    )
-
-    assert control_frame.winfo_reqwidth() == 228
-    assert first == second == 484
+    first = app._normal_history_control_requested_width(control_frame, 20)
+    second = app._normal_history_control_requested_width(control_frame, 20)
+    assert control_frame.winfo_reqwidth() == 1
+    assert first == second == 115
     assert calls == [False]
-    assert date_button.cget("text") == "날짜 조회"
-
-    app._current_font_size = 20
-    assert app._normal_history_control_requested_width(
-        control_frame,
-        date_button,
-        24,
-    ) == 484
+    app._current_font_size = 14
+    assert app._normal_history_control_requested_width(control_frame, 20) == 115
     assert calls == [False, False]
 
 

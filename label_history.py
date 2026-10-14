@@ -8,6 +8,8 @@ from collections import defaultdict
 import csv
 import json
 
+HISTORY_LIMIT = 100
+
 
 def _label_match_summary_date(details):
     source = details or {}

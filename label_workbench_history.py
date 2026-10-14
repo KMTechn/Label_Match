@@ -34,13 +34,6 @@ def create_history_pane(
         command=self._reload_today_history,
     )
     self.today_button.pack(side=tk.LEFT, padx=(0, 4))
-    self.date_search_button = ttk.Button(
-        self.hist_control_frame,
-        text="조회",
-        style="Control.TButton",
-        command=self._prompt_for_date_and_reload,
-    )
-    self.date_search_button.pack(side=tk.LEFT, padx=(0, 4))
     self.decrease_font_button = ttk.Button(
         self.hist_control_frame,
         text="-",
@@ -126,6 +119,13 @@ def create_history_pane(
     self.history_detail_text.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
     self.history_detail_text.insert("1.0", "기록을 선택하면 스캔 원문을 확인할 수 있습니다.")
     self.history_detail_text.configure(state="disabled")
+
+    self.history_report_notice = ttk.Label(
+        history_card,
+        text="지난 기록은 회사 웹 리포트에서 봅니다",
+        style="Status.TLabel",
+    )
+    self.history_report_notice.grid(row=3, column=0, sticky="w", pady=(6, 0))
 
     self.history_context_menu = tk.Menu(self, tearoff=0, font=(self.default_font_name, 14))
     self.history_context_menu.add_command(label="바코드 원문 보기", command=self._show_selected_history_detail_window)

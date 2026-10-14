@@ -4,7 +4,7 @@
 
 자료 뿌리 범위의 한 개만 잠금은 소스·portable 입구에서 무거운 import·시작 준비·셸보다 먼저 잡는다. PID 표지는 같은 뿌리의 식별자를 이름으로 삼고 LOCALAPPDATA의 사용자 폴더에만 둔다. 표지 PID가 살아 있고 실행 파일 절대 경로가 같을 때만 그 PID의 보이는 최상위 창을 찾는다(제목 검색 없음). 최소화 창은 복원하고 foreground 거절 때 작업 표시줄을 깜박인다. 창이 있으면 안내 없이 rc0으로 끝난다. 창이 없으면 「포장」 제목·확인 단추 하나의 켜지는 중/닫는 중 안내를 5초 뒤 닫고 rc0으로 끝난다. 표지는 기존 writer sink 안에서 쓰고 DELETE_ON_CLOSE 핸들로 소유하므로 종료 admission을 닫은 뒤 새 쓰기 없이 정리한다. 운영 자식·relay·업데이트 helper는 기존 별도 진입을 유지한다.
 
-포장 PC의 새 화면 기록 판은 오늘 기록만 다시 불러온다. `history`는 빈 입력만 받으며 날짜가 있는 요청은 `HISTORY_TODAY_ONLY`로 거절한다. 지난 날짜 조회는 웹 관리 화면 몫이다. 옛 Tk 날짜 선택·조회는 그대로 유지한다. `scan_cancel({rows:[today.rows[].row]})`은 오늘 보이는 완료 통과·불량 줄 1–100개를 기존 선택 삭제와 pointer 승인 callback으로 보낸다. 진행 중 줄은 `SCAN_CANCEL_IN_PROGRESS`로 거절한다. 승인 대상의 행 ID·상세·표 값 snapshot을 다시 대조하며 새 삭제 업무 경로를 만들지 않는다. 삭제한 줄은 목록과 기존 기록 재조회에서 빠진다. 승인 응답은 실제 삭제 수와 saved 「기록을 취소했습니다」 또는 SCAN_CANCEL_*·warn을 돌려주며, 확인 대기만 result를 생략한다. 셸 응답에는 최신 state가 항상 있다. 남은 줄의 status/products는 실제 상세, cancellation은 실제 outbox에서 계산하며 text에는 사실만 담는다.
+포장 PC의 새 화면·비상 Tk 기록 판은 오늘 기록만 다시 불러온다. `history`는 빈 입력만 받으며 날짜가 있는 요청은 `HISTORY_TODAY_ONLY`로 거절한다. 비상 Tk는 날짜 단추·달력을 만들지 않으며 같은 오늘 판정 함수가 다른 날짜의 loader 호출을 상태 변경 전에 거절한다. 두 화면은 `label_history.HISTORY_LIMIT`의 최근 100줄을 보이고 기록 파일·전체 집계·중복·취소 색인은 보존한다. 기록 칸 아래에 「지난 기록은 회사 웹 리포트에서 봅니다」를 안내한다. `scan_cancel({rows:[today.rows[].row]})`은 오늘 보이는 완료 통과·불량 줄 1–100개를 기존 선택 삭제와 pointer 승인 callback으로 보낸다. 진행 중 줄은 `SCAN_CANCEL_IN_PROGRESS`로 거절한다. 승인 대상의 행 ID·상세·표 값 snapshot을 다시 대조하며 새 삭제 업무 경로를 만들지 않는다. 삭제한 줄은 목록과 기존 기록 재조회에서 빠진다. 승인 응답은 실제 삭제 수와 saved 「기록을 취소했습니다」 또는 SCAN_CANCEL_*·warn을 돌려주며, 확인 대기만 result를 생략한다. 셸 응답에는 최신 state가 항상 있다. 남은 줄의 status/products는 실제 상세, cancellation은 실제 outbox에서 계산하며 text에는 사실만 담는다.
 
 v2.0.104 후보는 인수 없이 새 화면(셸 v3.16.2)을 엽니다. 비상 `--ui tk`·`--old-screen`은 셸을 가져오지 않습니다. `--new-screen`·`--ui web`과 모르는 `--ui` 값은 기본 새 화면을 고릅니다. 셸 가져오기·자료 폴더·WebView2 준비 실패는 같은 시작 임대 안에서 Tk로 이어집니다. 처리 층을 만든 뒤 시작 실패는 셸이 쓰기 문·창을 닫고 같은 판 표지를 기록하며 writer/lane 종료를 기다려 끝냅니다. 다음 실행은 `web_allowed`가 같은 판 표지를 보고 Tk를 고릅니다. 자동 재실행과 PID 기다림은 없습니다. 한 개만 판정은 입구에서 먼저 수행하며, 기존 시작 확인·업데이트·설치·자료 거절의 상대 순서는 유지합니다.
 
@@ -512,7 +512,7 @@ U4 앱은 U3 취소 영수증의 `reopened_transfer_bundle_id`·`transfer_entity
 <a id="c-08"></a>
 ## C-08 이력 읽기 완전성
 
-- 이력 reload 시작 시 활성 `scan_count`, `global_scanned_set`, `set_details_map`을 지우지 않는다. 같은 generation의 완전한 오늘 결과만 세 색인을 교체한다. 과거 날짜 결과는 조회 전용이다.
+- 이력 reload 시작 시 활성 `scan_count`, `global_scanned_set`, `set_details_map`을 지우지 않는다. 같은 generation의 완전한 오늘 결과만 세 색인을 교체한다. 다른 날짜의 PC 조회는 상태 변경 전에 거절한다. 화면의 최근 100줄 제한은 세 색인이나 기록 파일을 줄이지 않는다.
 - 완전 결과 수신 후 논리 색인을 설치하고 오늘 읽기 gate를 해제한다. 화면 삭제·삽입·집계는 callback당 최대100회 연산 또는8ms 경과 후 after로 양보하며, 단일 위젯 연산·OS 스케줄링 시간을 강제 제한하는 계약은 아니다. 새 generation/종료는 남은 배치를 무시하고, 적용 중 들어온 완료·취소·집계 갱신을 오래된 화면 snapshot으로 덮지 않는다. 읽기 중/과거 조회 gate와 별도 read-only 창 분리는 유지/후속 범위다.
 - timestamp·JSON syntax/객체 shape·CSV/파일 읽기 오류가 있으면 부분 집계를 적용하지 않는다. 손상 행 수와 파일·행 위치(최대 20개)를 이력 상세에 남기고 오늘 조회 오류는 재조회 성공 전까지 작업을 차단한다. 로그 파일이 없는 날짜만 정상 빈 결과다.
 - 근거: [이력 회귀](../../tests/test_label_match_core.py) `test_history_reload_requires_complete_read_before_replacing_active_indexes`, `test_history_file_errors_are_not_confirmed_empty_history`; 취소·삭제·stale generation·과거 조회 계약을 유지한다.
