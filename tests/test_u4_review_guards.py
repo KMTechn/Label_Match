@@ -103,7 +103,7 @@ def test_higher_saved_schema_is_refused_before_any_write_and_not_restamped(tmp_p
     outbox = PackageOutbox(path)
     queued(outbox,_draft_for_set('preserved'))
     with sqlite3.connect(path) as conn:
-        conn.execute("UPDATE package_outbox_schema_info SET value='label-match-package-outbox-v13' WHERE key='schema_version'")
+        conn.execute("UPDATE package_outbox_schema_info SET value='label-match-package-outbox-v14' WHERE key='schema_version'")
     before = path.read_bytes()
     def forbidden(conn):
         pytest.fail('compatibility writes must not start for a newer schema')
@@ -115,7 +115,7 @@ def test_higher_saved_schema_is_refused_before_any_write_and_not_restamped(tmp_p
         assert '관리자' in str(failure.value) and 'DB 사본 복원' in str(failure.value)
         assert path.read_bytes() == before
     with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT value FROM package_outbox_schema_info WHERE key='schema_version'").fetchone()[0] == 'label-match-package-outbox-v13'
+        assert conn.execute("SELECT value FROM package_outbox_schema_info WHERE key='schema_version'").fetchone()[0] == 'label-match-package-outbox-v14'
 
 
 def test_higher_schema_main_stops_and_publishes_administrator_notice(tmp_path, monkeypatch, capsys):
@@ -125,7 +125,7 @@ def test_higher_schema_main_stops_and_publishes_administrator_notice(tmp_path, m
     path = tmp_path/'future.sqlite3'
     PackageOutbox(path)
     with sqlite3.connect(path) as conn:
-        conn.execute("UPDATE package_outbox_schema_info SET value='label-match-package-outbox-v13' WHERE key='schema_version'")
+        conn.execute("UPDATE package_outbox_schema_info SET value='label-match-package-outbox-v14' WHERE key='schema_version'")
     before = path.read_bytes()
     monkeypatch.setattr(auto_update,'startup_gate',lambda *a,**k: None)
     for name in ('dispatch_product_mode','validate_pending_worker_install','check_user_data_open',

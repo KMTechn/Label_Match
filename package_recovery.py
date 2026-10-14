@@ -55,11 +55,18 @@ def recovery_expectation(creation, cancellation):
     _require(isinstance(package, Mapping) and isinstance(cancel, Mapping))
     _require(cancel.get('reopen') is False)
     result = {name: _text(package.get(name)) for name in
-              ('authority_scope_id', 'ledger_plane', 'package_bundle_id', 'item_id', 'inbound_iin')}
-    result['plane_epoch'] = _positive(package.get('plane_epoch'))
+              ('package_bundle_id', 'item_id', 'inbound_iin')}
+    for name in ('authority_scope_id', 'ledger_plane', 'plane_epoch'):
+        value = creation.get(name, package.get(name))
+        result[name] = _positive(value) if name == 'plane_epoch' else _text(value)
+        if name in package:
+            _require(package[name] == value)
     result['cancel_receipt_id'] = _text(cancellation.get('receipt_id') or cancel.get('receipt_id'))
     for name in ('authority_scope_id', 'ledger_plane', 'plane_epoch', 'package_bundle_id'):
-        _require(cancel.get(name) == result[name])
+        value = cancellation.get(name, cancel.get(name))
+        _require(type(value) is type(result[name]) and value == result[name])
+        if name in cancel:
+            _require(cancel[name] == result[name])
     members = _members(package.get('member_ids'))
     _require(_members(cancel.get('member_ids')) == members)
     digest = membership_hash(members)
