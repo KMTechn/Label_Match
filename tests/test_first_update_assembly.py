@@ -71,6 +71,8 @@ def test_screen_force_hook_calls_the_published_apps_bounded_save(tmp_path, monke
         assert saved == []
         kwargs["owner_main"](bridge)
         kwargs["on_force_exit"]()
+    from tests.test_screen_precreation_recovery import shell_runtime
+    shell_runtime.__wrapped__(monkeypatch, tmp_path)
     monkeypatch.setitem(sys.modules, "host", SimpleNamespace(run_app=run_app))
     monkeypatch.setattr(label_screen_bridge, "LabelMatchScreenProcessor", lambda *_a: None)
     monkeypatch.setattr(screen, "shell_data_dir", lambda: tmp_path)
