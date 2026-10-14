@@ -41,6 +41,19 @@ def test_exact_bound_current_recovery_is_accepted_without_mutating_evidence():
     assert response == before
 
 
+def test_ack_receipt_plane_identity_uses_resolved_envelope_fields():
+    expected,response=evidence()
+    data={k:v for k,v in expected.items() if k not in ('cancel_receipt_id','authority_scope_id','ledger_plane','plane_epoch')}
+    envelope=dict(authority_scope_id=expected['authority_scope_id'],resolved_ledger_plane=expected['ledger_plane'],
+                  resolved_plane_epoch=expected['plane_epoch'])
+    creation=dict(envelope,receipt_id='creation-a',data=data)
+    cancellation=dict(envelope,receipt_id=expected['cancel_receipt_id'],data=dict(data,reopen=False))
+    assert recovery_expectation(creation,cancellation)==expected
+    cancellation['resolved_plane_epoch']+=1
+    with pytest.raises(PackageLogisticsError):
+        recovery_expectation(creation,cancellation)
+
+
 @pytest.mark.parametrize('field,value', [
     ('contract_version','package-recovery-read-v2'), ('cancel_receipt_id','another'),
     ('authority_scope_id','other'), ('plane_epoch',True), ('package_bundle_id','other'),

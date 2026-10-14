@@ -56,14 +56,16 @@ def recovery_expectation(creation, cancellation):
     _require(cancel.get('reopen') is False)
     result = {name: _text(package.get(name)) for name in
               ('package_bundle_id', 'item_id', 'inbound_iin')}
+    envelope_names = dict(ledger_plane='resolved_ledger_plane',plane_epoch='resolved_plane_epoch')
     for name in ('authority_scope_id', 'ledger_plane', 'plane_epoch'):
-        value = creation.get(name, package.get(name))
+        value = creation.get(envelope_names.get(name,name),creation.get(name,package.get(name)))
         result[name] = _positive(value) if name == 'plane_epoch' else _text(value)
-        if name in package:
-            _require(package[name] == value)
+        for source in (creation,package):
+            if name in source:
+                _require(type(source[name]) is type(value) and source[name] == value)
     result['cancel_receipt_id'] = _text(cancellation.get('receipt_id') or cancel.get('receipt_id'))
     for name in ('authority_scope_id', 'ledger_plane', 'plane_epoch', 'package_bundle_id'):
-        value = cancellation.get(name, cancel.get(name))
+        value = cancellation.get(envelope_names.get(name,name),cancellation.get(name,cancel.get(name)))
         _require(type(value) is type(result[name]) and value == result[name])
         if name in cancel:
             _require(cancel[name] == result[name])
