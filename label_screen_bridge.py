@@ -413,6 +413,47 @@ class LabelMatchScreenProcessor:
     def _command_history(self, _args):
         self.app._load_history_and_rebuild_summary(None)
 
+    def _command_scan_cancel(self, args):
+        app = self.app
+
+        def reply(ok, code, deleted=0):
+            return {"ok": ok, "code": code, "deleted": deleted,
+                    "result": {"kind": "saved" if ok else "warn",
+                               "text": "선택한 스캔 기록을 확인하세요." if ok else "기록을 새로 확인하고 다시 선택하세요."}}
+
+        rows = args.get("rows")
+        if (set(args) != {"rows"} or not isinstance(rows, list)
+                or not 0 < len(rows) <= HISTORY_LIMIT
+                or any(not isinstance(row, str) or not row for row in rows)
+                or len(rows) != len(set(rows))):
+            return reply(False, "SCAN_CANCEL_BAD_INPUT")
+        if _pointer_pending(app) is not None:
+            return reply(False, "SCAN_CANCEL_CONFIRMATION_PENDING")
+        if not app.__dict__.get("history_view_updates_active_state", True):
+            return reply(False, "SCAN_CANCEL_READ_ONLY")
+        if (app.__dict__.get("_app_close_in_progress") or app._ui_lane_is_busy()
+                or app.__dict__.get("history_active_load_pending")
+                or app.__dict__.get("_history_active_load_error")):
+            return reply(False, "SCAN_CANCEL_BUSY")
+        visible = {row["row"] for row in _history_rows(app)}
+        if any(row not in visible for row in rows):
+            return reply(False, "SCAN_CANCEL_TARGET_CHANGED")
+        before = len(self._dialogs)
+        app.history_tree.selection_set(rows)
+        try:
+            app._delete_selected_row()
+        except Exception:
+            deleted = sum(not app.history_tree.exists(row) for row in rows)
+            self._changed("scan_cancel")
+            return reply(False, "SCAN_CANCEL_FAILED", deleted)
+        deleted = sum(not app.history_tree.exists(row) for row in rows)
+        self._changed("scan_cancel")
+        if _pointer_pending(app) is not None:
+            return reply(True, "SCAN_CANCEL_CONFIRMATION_REQUIRED")
+        if any(row["kind"] == "bad" for row in self._dialogs[before:]):
+            return reply(False, "SCAN_CANCEL_FAILED", deleted)
+        return reply(bool(deleted), "SCAN_CANCEL_APPLIED" if deleted else "SCAN_CANCEL_NOT_APPLIED", deleted)
+
     def _command_refresh_progress(self, _args):
         self.app._refresh_logistics_progress()
 
