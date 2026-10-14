@@ -1398,6 +1398,35 @@ class PackageOutbox:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def list_repack_reviews(self, *, limit: int = 1000) -> list[dict[str, Any]]:
+        """Completed repacks remain visible until an explicit recovery contract exists."""
+        with self._connect() as conn:
+            return [dict(row) for row in conn.execute(
+                """SELECT * FROM package_command_outbox WHERE status='CONFLICT'
+                   AND local_completion_committed=1
+                   AND last_error_code IN ('REPACK_REOPEN_REFUSED','REPACK_PREDECESSOR_REVIEW_REQUIRED')
+                   ORDER BY created_at,idempotency_key LIMIT ?""", (max(0, int(limit)),)
+            ).fetchall()]
+
+    def repack_review_for_source(self, source_label: str, input_tag_id: str = ""):
+        """Read the durable review before admitting another scan of its physical source."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM package_command_outbox WHERE status='CONFLICT'
+                   AND local_completion_committed=1
+                   AND last_error_code IN ('REPACK_REOPEN_REFUSED','REPACK_PREDECESSOR_REVIEW_REQUIRED')
+                   AND json_valid(draft_json) AND (
+                       (?<>'' AND json_extract(draft_json,'$.source_input_tag_id')=?)
+                       OR (?<>'' AND ? IN (
+                           json_extract(draft_json,'$.scan_payload'),
+                           json_extract(draft_json,'$.source_active_label_qr_payload'),
+                           json_extract(draft_json,'$.source_canonical_input_tag_qr'),
+                           json_extract(draft_json,'$.source_external_label'))))
+                   ORDER BY created_at,idempotency_key LIMIT 1""",
+                (input_tag_id, input_tag_id, source_label, source_label),
+            ).fetchone()
+            return dict(row) if row else None
+
     def dismiss_recoverable_prewrite_conflict(
         self, key: str
     ) -> dict[str, Any]:

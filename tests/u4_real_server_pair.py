@@ -31,6 +31,7 @@ from tests.test_w9scanonly_packaging import packaging  # noqa: F401
 from tests.test_w9scanonly_central import central  # noqa: F401
 from datetime import datetime, timedelta, timezone
 from sealed_transfer_exchange import SealedTransferExchangeStore, SealedTransferExchangeCoordinator
+from tests.test_u4_repack_visibility import prepare_recovery_app, assert_visible, business_snapshot
 
 
 class LocalServer:
@@ -174,6 +175,39 @@ def test_real_repack_waits_for_lost_cancel_ack_recheck_without_reposting_cancel(
         assert cancel.drain()['acked'] == 1
         assert create.drain()['acked'] == 1
         assert server.sent.count(('CANCEL_PACKAGE', original.package_bundle_id)) == 1
+
+
+def test_real_refused_repack_remains_visible_after_cancel_replay_and_restart_without_release(tmp_path):
+    with local_server(tmp_path) as server:
+        app, create, cancel, original, master = pair(tmp_path, server)
+        # Existing backend refusal condition: source evidence changed after CREATE.
+        # This changes only the isolated fixture ledger, never a server response.
+        with sqlite3.connect(server.data['database']) as connection:
+            connection.execute('UPDATE logistics_bundles SET entity_version=entity_version+1 WHERE bundle_id=?',
+                               (server.source['bundle_id'],))
+        cancel_local(app,'f2')
+        assert cancel.drain()['acked']==1
+        cancellation=app.package_cancellation_outbox.get_by_set_id(original.set_id)[0]
+        frozen_receipt=json.loads(cancellation['receipt_json'])
+        assert frozen_receipt['data']['reopen'] is False
+        assert frozen_receipt['data']['reopen_reason']=='SOURCE_TRANSFER_CHANGED'
+        repack=draft_for(server,'review-only',master)
+        queued(app.package_outbox,repack)
+        assert create.drain()=={'acked':0,'retry':0,'conflict':0}
+        prepare_recovery_app(app,app.package_outbox,tmp_path/'empty-current')
+        before=business_snapshot(app.package_outbox)
+        assert_visible(app,[repack.set_id],master)
+        repeated=server.client.cancel_package(json.loads(cancellation['command_json']))
+        assert repeated==frozen_receipt
+        app.package_outbox=PackageOutbox(app.package_outbox.db_path)
+        assert_visible(app,[repack.set_id],master)
+        assert app.package_outbox.claim_next() is None
+        assert business_snapshot(app.package_outbox)==before
+        assert server.sent.count(('CREATE_PACKAGE',original.package_bundle_id))==1
+        assert ('CREATE_PACKAGE',repack.package_bundle_id) not in server.sent
+        with sqlite3.connect(server.data['database']) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM logistics_domain_events WHERE event_type='PACKAGE_REOPEN_REVIEW_REQUIRED'").fetchone()[0]==1
+            assert connection.execute("SELECT COUNT(*) FROM logistics_movements WHERE movement_type='CANCEL_PACKAGE_REOPEN_TRANSFER'").fetchone()[0]==0
 
 
 def create_effect_counts(server, draft):

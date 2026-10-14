@@ -868,6 +868,10 @@ def _settings(processor):
 
 def _recovery_row(app, item):
     """멈춘 작업 확인 줄 — 지금 창의 까닭 글(:11734–11742)과 같은 고르기."""
+    review = item.get("repack_review")
+    if review:
+        return {"set_id": str(item["set_id"]), "tag": review["label"],
+                "item": review["source"], "status": review["message"], "actions": []}
     held = item.get("held") or {}
     reason = "이 건의 상태를 다시 확인하거나 보류로 두세요."
     if held:

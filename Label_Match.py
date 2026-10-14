@@ -9923,6 +9923,28 @@ class Label_Match(tk.Tk):
         return any(row["source_path"] == str(current_path) and row["state"] == "RESTORED"
                    for row in store.changed_holds()) if store is not None else False
 
+    @staticmethod
+    def _package_repack_review_state(package):
+        if (not package or package.get("status") != "CONFLICT"
+                or not package.get("local_completion_committed")
+                or package.get("last_error_code") not in {
+                    "REPACK_REOPEN_REFUSED", "REPACK_PREDECESSOR_REVIEW_REQUIRED"}):
+            return None
+        try:
+            draft = json.loads(package.get("draft_json") or "{}")
+            source = next((str(draft.get(name) or "").strip() for name in (
+                "scan_payload", "source_active_label_qr_payload", "source_canonical_input_tag_qr",
+                "source_external_label", "source_input_tag_id") if draft.get(name)), "")
+        except (TypeError, ValueError, AttributeError):
+            source = ""
+        return {
+            "label": "확인 필요", "source": "현품표 " + source,
+            "message": ("회사 서버가 다시 포장을 거절했습니다"
+                        if package["last_error_code"] == "REPACK_REOPEN_REFUSED"
+                        else "이전 포장 순서를 확인할 수 없습니다"),
+            "notice": "회사 서버가 아직 다시 포장을 받지 않습니다\n웹 사무실에서 이 이적 묶음을 확인하세요",
+        }
+
     def _package_recovery_candidates(self):
         outbox = self.__dict__.get("package_outbox")
         if outbox is None:
@@ -9966,6 +9988,14 @@ class Label_Match(tk.Tk):
                 rows[set_id] = {"set_id": set_id, "package": package,
                                 "exchange": None, "current": None,
                                 "held": outbox.get_workbench_hold(set_id)}
+        list_repack_reviews = getattr(outbox, "list_repack_reviews", None)
+        for package in list_repack_reviews(limit=1000) if callable(list_repack_reviews) else ():
+            set_id = str(package.get("set_id") or "").strip()
+            if set_id:
+                row = rows.setdefault(set_id, {"set_id": set_id, "exchange": None,
+                    "current": None, "held": outbox.get_workbench_hold(set_id)})
+                row["package"] = package
+                row["repack_review"] = self._package_repack_review_state(package)
         for exchange in self.sealed_transfer_exchange_store.blocking_rows():
             set_id = str(exchange["set_id"] or "").strip()
             if set_id and set_id not in rows:
@@ -12264,6 +12294,10 @@ class Label_Match(tk.Tk):
                     reason = "관리자 요청 결과를 아직 모릅니다. 관리자 확인을 다시 조회하거나 지원 인계하세요."
                 if item.get("changed_hold"):
                     reason = "보류하는 동안 파일 내용이 바뀌었습니다. 원본을 확인한 뒤 복원하거나 보류로 두세요."
+                review = item.get("repack_review")
+                if review:
+                    reason = review["label"] + " · " + review["source"]
+                    detail_rows[-1] = "\n".join((review["label"], review["source"], review["message"]))
                 listing.insert(tk.END, f"{len(detail_rows)}. {reason}")
 
         def show_details(_event=None):
@@ -12272,13 +12306,20 @@ class Label_Match(tk.Tk):
             details.delete("1.0", tk.END)
             if indexes and indexes[0] < len(detail_rows):
                 details.insert(tk.END, detail_rows[indexes[0]])
+                review = candidates[indexes[0]].get("repack_review")
+                if review:
+                    status.set(review["notice"])
             details.configure(state="disabled")
 
         listing.bind("<<ListboxSelect>>", show_details)
 
         def selected():
             indexes = listing.curselection()
-            return candidates[indexes[0]] if indexes else None
+            item = candidates[indexes[0]] if indexes else None
+            if item and item.get("repack_review"):
+                status.set(item["repack_review"]["notice"])
+                return None  # No release/recheck action exists in the current server contract.
+            return item
 
         def pin_busy(item):
             if item["set_id"] in self.__dict__.get("_package_pin_pending_targets", ()):
@@ -16069,10 +16110,21 @@ class Label_Match(tk.Tk):
                         processed_input, str(new_label_data.get("LBL") or ""),
                         str(new_label_data.get("ITG") or ""),
                     ) if callable(lookup_label_hold) else None)
+                    lookup_repack_review = getattr(self.package_outbox, "repack_review_for_source", None)
+                    repack_review = (lookup_repack_review(
+                        processed_input, str(new_label_data.get("ITG") or ""),
+                    ) if callable(lookup_repack_review) else None)
                 except Exception as exc:
                     print(f"보류 현품표 조회 기술 진단: {exc}")
                     self._show_package_recovery_block(
                         "보류 현품표 목록을 읽지 못했습니다. 디스크 공간·폴더 권한·파일 잠금을 확인하세요."
+                    )
+                    return
+                if repack_review:
+                    consume_input()
+                    self._show_scanner_notice(
+                        "이 현품표는 확인이 필요합니다",
+                        "웹 사무실에서 이 이적 묶음을 확인하세요",
                     )
                     return
                 if held or label_hold:
