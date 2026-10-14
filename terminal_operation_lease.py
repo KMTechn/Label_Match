@@ -257,7 +257,7 @@ def _deferred_completion_time(value: Any) -> datetime:
         raise _error("OPERATION_LEASE_TIME_INVALID", "local_completed_at is invalid")
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-    except ValueError as exc:
+    except (ValueError, OverflowError) as exc:
         raise _error("OPERATION_LEASE_TIME_INVALID", "local_completed_at is invalid") from exc
 
 
@@ -269,7 +269,7 @@ def _verify_deferred_completion_time(snapshot: Mapping[str, Any], claims: Mappin
     issued = parse_utc(claims["issued_at"], field="issued_at")
     tolerance = timedelta(seconds=LEASE_CLOCK_SKEW_SECONDS)
     if (abs(received - issued) > tolerance
-            or _deferred_completion_time(deferred["local_completed_at"]) > received + tolerance):
+            or _deferred_completion_time(deferred["local_completed_at"]) - received > tolerance):
         raise _error("OPERATION_LEASE_TIME_INVALID", "deferred completion time differs from its signed issue")
     # Offline completion may predate issue by hours or days; it has no issue-time lower bound.
 
