@@ -63,7 +63,7 @@ def test_screen_force_hook_calls_the_published_apps_bounded_save(tmp_path, monke
                           save_current_set_on_force_exit=lambda: saved.append(True))
     bridge = SimpleNamespace(_view_count=1, attach_owner=lambda processor: None,
                              request_exit=lambda: None)
-    module = SimpleNamespace(LABEL_MATCH_SCREEN_HOST={})
+    module = SimpleNamespace(LABEL_MATCH_SCREEN_HOST={}, APP_VERSION=__import__('Label_Match').APP_VERSION)
     module._run_label_match_application = lambda: module.LABEL_MATCH_SCREEN_HOST["run"](app)
     def run_app(*_a, **kwargs):
         calls.append(kwargs)
