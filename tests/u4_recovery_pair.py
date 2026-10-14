@@ -82,7 +82,9 @@ def test_real_recovery_read_closes_once_then_same_physical_products_create_new_p
         import ssl
         from tests.test_u4_repack_visibility import prepare_recovery_app
         from pathlib import Path
+        idle_state=copy.deepcopy(app.current_set_info)
         prepare_recovery_app(app,app.package_outbox,Path(app.save_directory))
+        app.current_set_info=idle_state
         before = business_snapshot(app.package_outbox)
         target = app.package_outbox.package_recovery_target(original_set)
         assert target is not None
@@ -136,6 +138,8 @@ def test_real_recovery_read_closes_once_then_same_physical_products_create_new_p
         bind(fresh)
         reads = server.source_reads
         settled_scan(master)
+        assert app.current_set_info.get('raw')==[master]
+        assert app.current_set_info.get('scanner_only')
         for value in held_values:
             settled_scan(value)
         new_set = next(iter(app.set_details_map))
