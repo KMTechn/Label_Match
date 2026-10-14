@@ -15,7 +15,7 @@ from typing import Mapping
 from kmtech_shared.data_generation import probe_downgrade, record_generation, version_key
 from writer_session_fence import canonical_control_root, writer_sink
 
-CURRENT_VERSION = "v2.0.104"
+CURRENT_VERSION = "v2.0.105"
 APP_ID = "Label_Match"
 _RELEASE_IDENTITY_PASS: dict[tuple[Path, Path], dict[str, object]] = {}
 UNKNOWN_MESSAGE = (
