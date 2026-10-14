@@ -11,6 +11,7 @@ import ipaddress
 from datetime import datetime, timedelta, timezone
 
 def recovery_admin(app, database, patch, state):
+    admin_root = state
     import dataclasses, secrets
     case = (app, database, app.test_client())
     import admin_pin
@@ -24,7 +25,7 @@ def recovery_admin(app, database, patch, state):
     csrf = _csrf(client)
     personal_number = ''.join((str(secrets.randbelow(10)) for _ in range(6)))
     state = (client, csrf, database, [], None, personal_number, holder, [])
-    _real_pin_store(state, state, patch)
+    _real_pin_store(state, admin_root, patch)
     cookie_name = app.config.get('SESSION_COOKIE_NAME', 'session')
     cookie = client.get_cookie(cookie_name)
     assert cookie is not None
