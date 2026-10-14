@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import sys
 import time
@@ -102,6 +103,7 @@ class LabelMatchScreenProcessor:
         self._sound = None
         self._dialogs = []
         self._answers = []
+        self._scan_cancel_confirmation = None
         self._recovery = None
         self._pending = None
         self._admin_result = None
@@ -330,18 +332,35 @@ class LabelMatchScreenProcessor:
     def _command_escape(self, _args):
         self._dialogs = []
         self.app._handle_workflow_escape()
+        self._scan_cancel_confirmation = None
 
     def _command_approve(self, args):
         app = self.app
         pending = _pointer_pending(app)
+        cancellation = self._scan_cancel_confirmation
         if pending is None or _approval_id(pending) != str(args.get("id") or ""):
+            if cancellation is not None:
+                return self._scan_cancel_reply(False, "SCAN_CANCEL_TARGET_CHANGED")
             return {"ok": False, "result": {"kind": "warn", "text": "승인할 일이 바뀌었습니다 — 다시 확인하세요"}}
+        if cancellation is not None and pending is not cancellation[0]:
+            return self._scan_cancel_reply(False, "SCAN_CANCEL_TARGET_CHANGED")
         # _confirm_pointer_action(:21451) 의 실행 줄 — 단추 안 누름 · 뗌 확인은 화면(pointerdown/up)이 했다.
         app._pointer_confirmation = None
         app._workflow_notice_action = None
         app._workflow_notice_action_text = "확인"
         app._phs_label_guidance_notice = None
         app._render_operator_workbench()
+        if cancellation is not None:
+            self._scan_cancel_confirmation = None
+            _pending, rows, snapshot = cancellation
+            code = self._scan_cancel_target_code(rows)
+            if code:
+                return self._scan_cancel_reply(False, code)
+            if (tuple(app.history_tree.selection()) != rows
+                    or self._scan_cancel_snapshot(rows) != snapshot):
+                app._show_scanner_notice("선택 다시 필요", "선택한 기록이 바뀌었습니다. 다시 선택하여 확인하세요.")
+                return self._scan_cancel_reply(False, "SCAN_CANCEL_TARGET_CHANGED")
+            return self._run_scan_cancel(rows, pending[2])
         pending[2]()
         return {"ok": True}
 
@@ -355,6 +374,9 @@ class LabelMatchScreenProcessor:
         app._workflow_notice_action_text = "확인"
         app._phs_label_guidance_notice = None
         app._render_operator_workbench()
+        if self._scan_cancel_confirmation is not None:
+            self._scan_cancel_confirmation = None
+            return self._scan_cancel_reply(True, "SCAN_CANCEL_NOT_APPLIED", text="취소하지 않았습니다")
         return {"ok": True}
 
     def _command_close(self, _args):
@@ -418,46 +440,69 @@ class LabelMatchScreenProcessor:
                     "result": {"kind": "warn", "text": "지난 날짜 기록은 웹 관리 화면에서 확인하세요."}}
         self.app._load_history_and_rebuild_summary(None)
 
-    def _command_scan_cancel(self, args):
+    def _scan_cancel_reply(self, ok, code, deleted=0, *, text=None):
+        state = self.bridge.get_state() if self.bridge is not None else self.state()
+        reply = {"ok": ok, "code": code, "deleted": deleted, "state": state}
+        if code != "SCAN_CANCEL_CONFIRMATION_REQUIRED":
+            saved = ok and code == "SCAN_CANCEL_APPLIED"
+            reply["result"] = {"kind": "saved" if saved else "warn",
+                               "text": text or ("기록을 취소했습니다" if saved else "선택한 기록을 취소하지 못했습니다")}
+        return reply
+
+    def _scan_cancel_snapshot(self, rows):
+        return copy.deepcopy([(self.app._history_details_for_iid(row),
+                               tuple(self.app.history_tree.item(row, "values") or ())) for row in rows])
+
+    def _scan_cancel_target_code(self, rows):
         app = self.app
+        if not app.__dict__.get("history_view_updates_active_state", True):
+            return "SCAN_CANCEL_READ_ONLY"
+        if (app.__dict__.get("_app_close_in_progress") or app._ui_lane_is_busy()
+                or app.__dict__.get("history_active_load_pending")
+                or app.__dict__.get("_history_active_load_error")):
+            return "SCAN_CANCEL_BUSY"
+        visible = {row["row"]: row for row in _history_rows(app)}
+        if any(row not in visible for row in rows):
+            return "SCAN_CANCEL_TARGET_CHANGED"
+        if any(visible[row].get("status") == "in_progress" for row in rows):
+            return "SCAN_CANCEL_IN_PROGRESS"
+        if any(visible[row].get("status") != "completed" for row in rows):
+            return "SCAN_CANCEL_TARGET_CHANGED"
+        return None
 
-        def reply(ok, code, deleted=0):
-            return {"ok": ok, "code": code, "deleted": deleted,
-                    "result": {"kind": "saved" if ok else "warn",
-                               "text": "선택한 스캔 기록을 확인하세요." if ok else "기록을 새로 확인하고 다시 선택하세요."}}
+    def _run_scan_cancel(self, rows, callback):
+        app = self.app
+        before = len(self._dialogs)
+        try:
+            callback()
+        except Exception:
+            deleted = sum(not app.history_tree.exists(row) for row in rows)
+            self._changed("scan_cancel")
+            return self._scan_cancel_reply(False, "SCAN_CANCEL_FAILED", deleted)
+        deleted = sum(not app.history_tree.exists(row) for row in rows)
+        self._changed("scan_cancel")
+        pending = _pointer_pending(app)
+        if pending is not None:
+            self._scan_cancel_confirmation = (pending, tuple(rows), self._scan_cancel_snapshot(rows))
+            return self._scan_cancel_reply(True, "SCAN_CANCEL_CONFIRMATION_REQUIRED", deleted)
+        if any(row["kind"] == "bad" for row in self._dialogs[before:]) or 0 < deleted < len(rows):
+            return self._scan_cancel_reply(False, "SCAN_CANCEL_FAILED", deleted)
+        return self._scan_cancel_reply(bool(deleted), "SCAN_CANCEL_APPLIED" if deleted else "SCAN_CANCEL_NOT_APPLIED", deleted)
 
+    def _command_scan_cancel(self, args):
         rows = args.get("rows")
         if (set(args) != {"rows"} or not isinstance(rows, list)
                 or not 0 < len(rows) <= HISTORY_LIMIT
                 or any(not isinstance(row, str) or not row for row in rows)
                 or len(rows) != len(set(rows))):
-            return reply(False, "SCAN_CANCEL_BAD_INPUT")
-        if _pointer_pending(app) is not None:
-            return reply(False, "SCAN_CANCEL_CONFIRMATION_PENDING")
-        if not app.__dict__.get("history_view_updates_active_state", True):
-            return reply(False, "SCAN_CANCEL_READ_ONLY")
-        if (app.__dict__.get("_app_close_in_progress") or app._ui_lane_is_busy()
-                or app.__dict__.get("history_active_load_pending")
-                or app.__dict__.get("_history_active_load_error")):
-            return reply(False, "SCAN_CANCEL_BUSY")
-        visible = {row["row"] for row in _history_rows(app)}
-        if any(row not in visible for row in rows):
-            return reply(False, "SCAN_CANCEL_TARGET_CHANGED")
-        before = len(self._dialogs)
-        app.history_tree.selection_set(rows)
-        try:
-            app._delete_selected_row()
-        except Exception:
-            deleted = sum(not app.history_tree.exists(row) for row in rows)
-            self._changed("scan_cancel")
-            return reply(False, "SCAN_CANCEL_FAILED", deleted)
-        deleted = sum(not app.history_tree.exists(row) for row in rows)
-        self._changed("scan_cancel")
-        if _pointer_pending(app) is not None:
-            return reply(True, "SCAN_CANCEL_CONFIRMATION_REQUIRED")
-        if any(row["kind"] == "bad" for row in self._dialogs[before:]):
-            return reply(False, "SCAN_CANCEL_FAILED", deleted)
-        return reply(bool(deleted), "SCAN_CANCEL_APPLIED" if deleted else "SCAN_CANCEL_NOT_APPLIED", deleted)
+            return self._scan_cancel_reply(False, "SCAN_CANCEL_BAD_INPUT")
+        if _pointer_pending(self.app) is not None:
+            return self._scan_cancel_reply(False, "SCAN_CANCEL_CONFIRMATION_PENDING")
+        code = self._scan_cancel_target_code(rows)
+        if code:
+            return self._scan_cancel_reply(False, code)
+        self.app.history_tree.selection_set(rows)
+        return self._run_scan_cancel(rows, self.app._delete_selected_row)
 
     def _command_refresh_progress(self, _args):
         self.app._refresh_logistics_progress()
@@ -709,6 +754,44 @@ def _alerts(processor, view, notice):
     return alerts[:4]
 
 
+def _history_cancel_fields(app, iid):
+    reader = getattr(type(app), "_history_details_for_iid", None)
+    if reader is None:
+        return {}  # An old snapshot has no business details and remains display-only.
+    details = app._history_details_for_iid(iid) or {}
+    result = details.get("final_result") or details.get("result_display") or details.get("result")
+    results = app.Results
+    if result == results.IN_PROGRESS:
+        status = "in_progress"
+    elif result in {results.PASS, results.FAIL_MISMATCH, results.FAIL_INPUT_ERROR}:
+        status = "completed"
+    else:
+        return {}
+    raw = details.get("scanned_product_barcodes")
+    if not isinstance(raw, (list, tuple)):
+        return {}
+    fields = {"status": status, "products": sum(bool(value) for value in raw[1:])}
+    outbox = app.__dict__.get("package_cancellation_outbox")
+    if outbox is None:
+        return fields
+    try:
+        cancellations = outbox.get_by_set_id(str(details.get("set_id") or iid))
+    except Exception:
+        return fields
+    if cancellations:
+        cancellation = cancellations[-1]  # The outbox API orders oldest first.
+        states = {"DEFERRED": "pending", "PENDING": "pending", "SENDING": "pending",
+                  "ACKED": "acknowledged", "CONFLICT": "review"}
+        state = states.get(cancellation.get("status"))
+        if state is not None:
+            if cancellation.get("local_event_committed"):
+                fields["status"] = "cancelled"
+            text = {"pending": "취소 요청을 기록했습니다", "acknowledged": "중앙 취소를 확인했습니다",
+                    "review": "취소 요청에 중앙 충돌이 기록되었습니다"}[state]
+            fields["cancellation"] = {"state": state, "text": text}
+    return fields
+
+
 def _history_rows(app):
     tree = app.__dict__.get("history_tree")
     if tree is None:
@@ -729,7 +812,8 @@ def _history_rows(app):
             kind = "ok" if result.startswith("통과") else "warn" if result.startswith("진행") or "부족" in result else "bad"
             rows.append({"row": str(iid), "no": int(values[0]) if values[0].isdigit() else number,
                          "time": _text(app._operator_session_time_text(values[2 + total])),
-                         "tag": _text(values[1]), "item": "", "result": result, "kind": kind, "scans": len(scans), "raw": scans})
+                         "tag": _text(values[1]), "item": "", "result": result, "kind": kind, "scans": len(scans), "raw": scans,
+                         **_history_cancel_fields(app, iid)})
     except Exception:
         return []
     return rows[::-1]  # 새것 먼저

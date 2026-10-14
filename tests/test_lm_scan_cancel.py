@@ -56,6 +56,9 @@ def app_for_delete(root, *, central=True):
     app.open_settings_window = lambda: None
     app._start_package_outbox_drain = lambda: None
     app._refresh_package_cancellation_status = lambda: None
+    app._workflow_view_source = lambda: dict(app.current_set_info)
+    app._worker_roster_choices = lambda: []
+    app._roster_worker_allowed = lambda: False
     if central:
         app.package_outbox = PackageOutbox(root/'outbox.sqlite3')
         _ack_package_creation(app.package_outbox, _draft())
@@ -89,7 +92,11 @@ def test_web_and_tk_delete_have_identical_counts_audit_and_outbox(tmp_path, monk
         result = processor.command('scan_cancel', {'rows': ['SET-1']})
         assert result['ok'] is True and result['code'] == 'SCAN_CANCEL_CONFIRMATION_REQUIRED'
         assert result['deleted'] == 0 and 'SET-1' in web.set_details_map
-        assert processor.command('approve', {'id': _approval_id(_pointer_pending(web))})['ok'] is True
+        approved = processor.command('approve', {'id': _approval_id(_pointer_pending(web))})
+        assert approved['ok'] is True
+        assert approved['deleted'] == 1
+        assert approved['result'] == {'kind': 'saved', 'text': '기록을 취소했습니다'}
+        assert 'SET-1' not in {row['row'] for row in approved['state']['today']['rows']}
         expected, actual = snapshot(old), snapshot(web)
         # IDs/timestamps of independently queued receipts are evidence, not quantities.
         for value in (expected, actual):
@@ -117,7 +124,10 @@ def test_changed_selection_after_web_confirmation_preserves_rows(tmp_path):
         pending = _pointer_pending(app)
         app.set_details_map['SET-1']['item_code'] = 'CHANGED'
         app._show_scanner_notice = mock.Mock()
-        processor.command('approve', {'id': _approval_id(pending)})
+        result = processor.command('approve', {'id': _approval_id(pending)})
+        assert result['ok'] is False and result['code'] == 'SCAN_CANCEL_TARGET_CHANGED'
+        assert result['deleted'] == 0 and result['result']['kind'] == 'warn'
+        assert result['state']['approval'] is None
         assert len(app.history_tree.rows) == 2 and len(app.set_details_map) == 2
         assert app.data_manager.events == []
         assert app.package_cancellation_outbox.get_by_set_id('SET-1') == []
@@ -145,7 +155,10 @@ def test_scan_cancel_durable_outbox_failure_preserves_row_and_reports_failure(tm
     monkeypatch.setattr(app.package_cancellation_outbox, 'enqueue', mock.Mock(side_effect=OSError('outbox unavailable')))
     try:
         assert processor.command('scan_cancel', {'rows': ['SET-1']})['ok'] is True
-        processor.command('approve', {'id': _approval_id(_pointer_pending(app))})
+        result = processor.command('approve', {'id': _approval_id(_pointer_pending(app))})
+        assert result['ok'] is False and result['code'] == 'SCAN_CANCEL_FAILED'
+        assert result['deleted'] == 0 and result['result']['kind'] == 'warn'
+        assert len(result['state']['today']['rows']) == 2
         assert len(app.history_tree.rows) == 2 and len(app.global_scanned_set) == 2
         assert app.data_manager.events == []
         assert any(row['kind'] == 'bad' for row in processor._dialogs)
