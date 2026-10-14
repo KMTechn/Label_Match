@@ -21,8 +21,8 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLED_REFS = ("d9160b6", "89155f17233fb1c8b5bae2a9e470832772a4d785")
-SHELL_READY_VERSION = "v3.16.2"
-SHELL_READY_SHA256 = "8c3b35d4740a86481e2d011630bf78271316c38ca5f1e137de8109f320e1eb88"
+SHELL_READY_VERSION = "v3.16.3"
+SHELL_READY_SHA256 = "a8183b660932778c08ebdf1ee24f137b4c2540a66207850afeff9990bbfb3198"
 
 
 def validate_shell_ready_pin(root: Path) -> None:

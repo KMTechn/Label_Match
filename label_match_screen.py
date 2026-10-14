@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 from writer_session_fence import EXIT_WRITE_WAIT_S, WriterFenceError, close_and_wait_writers, writer_admission
@@ -172,16 +174,48 @@ def screen_runner(module):
         run_app, webview, data = _prepare_screen(module.APP_VERSION)
         attempt = _ScreenAttempt()
         app_holder = []
+        started_at = time.monotonic()
+        observations = []
+        start_error = None
+
+        def observe_host(kind, error=None):
+            host = getattr(module, "LABEL_MATCH_SCREEN_HOST", {})
+            host_error = host.get("error") if isinstance(host, dict) else None
+            observations.append({"kind": kind, "elapsed_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+                                 "error_type": type(error).__name__ if error is not None else None,
+                                 "host_error_type": type(host_error).__name__ if host_error is not None else None})
+            del observations[:-8]
+            try:
+                import shell_fileio
+                shell_fileio.FileIO(shell_write_guard).replace_atomic(
+                    data / "shell-start-observation.json",
+                    (json.dumps(observations, ensure_ascii=True) + "\n").encode("utf-8"), "udf", fsync=True)
+            except Exception:
+                pass  # Diagnostic refusal must not prevent the app's writer drain.
 
         def on_force_exit():
             if app_holder:
                 app_holder[0].save_current_set_on_force_exit()
 
         def before_exit(_code, deadline_s):
+            observe_host("before_exit", start_error)
             return close_and_wait_writers(min(EXIT_WRITE_WAIT_S, max(0.0, float(deadline_s))))
 
         create_window = webview.create_window
         previous_windows = tuple(webview.windows)
+        original_start = getattr(webview, "start", None)
+
+        def observe_start(*args, **kwargs):
+            nonlocal start_error
+            observe_host("start_entered")
+            try:
+                value = original_start(*args, **kwargs)
+            except BaseException as error:
+                start_error = error
+                observe_host("start_exception", error)
+                raise
+            observe_host("start_returned")
+            return value
 
         def create_once(*args, **kwargs):
             window = create_window(*args, **kwargs)
@@ -189,10 +223,12 @@ def screen_runner(module):
             return window
 
         webview.create_window = create_once
+        if callable(original_start):
+            webview.start = observe_start
         try:
             return run_app("rw", data, root=PARTS, page=PAGE, title="포장", owner_main=owner_main_for(module, app_holder=app_holder, attempt=attempt),
                            on_force_exit=on_force_exit, pedal=False, browser_preset_name="none", write_guard=shell_write_guard,
-                           version=module.APP_VERSION, before_exit=before_exit)
+                           version=module.APP_VERSION, before_exit=before_exit, udf=data / "webview2")
         except WriterFenceError:
             raise
         except Exception as error:
@@ -210,5 +246,7 @@ def screen_runner(module):
             raise ScreenUnavailable("SHELL_WINDOW_FAILED") from error
         finally:
             webview.create_window = create_window
+            if callable(original_start):
+                webview.start = original_start
 
     return run

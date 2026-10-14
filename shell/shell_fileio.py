@@ -10,6 +10,7 @@ Other shell modules must not write files (sub-1/test_v314.py checks this statica
 import contextlib
 import os
 import re
+import time
 from pathlib import Path
 
 SHELL_WRITE_SITES = ('append_bytes', 'create_new', 'truncate', 'replace_atomic', 'make_dirs', 'probe_writable', 'remove')
@@ -130,4 +131,18 @@ def replace_atomic(path, data, kind, fsync=False, *, fileio=None):
             stream.write(data)
             if fsync:
                 stream.flush(); os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        first_error = None
+        delays = iter((0.1, 0.2, 0.4, 0.8))
+        while True:
+            try:
+                os.replace(temporary, path)
+                break
+            except OSError as error:
+                if getattr(error, 'winerror', None) not in (5, 32):
+                    raise
+                if first_error is None:
+                    first_error = error
+                delay = next(delays, None)
+                if delay is None:
+                    raise first_error
+                time.sleep(delay)

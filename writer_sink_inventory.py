@@ -187,6 +187,15 @@ def _powershell_inventory(path: Path, root: Path) -> list[WriterSinkEvidence]:
     return rows
 
 
+def _shell_file_relative(ready, relative):
+    """Map the published kit prefix to the installed shell without changing READY."""
+    parts = Path(relative).parts
+    prefix = "shell-" + str(ready.get("version") or "")
+    if len(parts) < 2 or parts[0] not in ("shell", prefix) or ".." in parts:
+        raise ValueError("invalid shell file path")
+    return (Path("shell") / Path(*parts[1:])).as_posix()
+
+
 def _validate_shell_write_guard(root: Path) -> None:
     """A self-consistent candidate delegates its file operations to app admission."""
     shell = root / "shell"
@@ -202,7 +211,7 @@ def _validate_shell_write_guard(root: Path) -> None:
             raise ValueError("empty shell file list")
         listed = set()
         for entry in files:
-            relative = entry["path"]
+            relative = _shell_file_relative(ready, entry["path"])
             path = root / relative
             if relative in listed or not path.resolve().is_relative_to(shell.resolve()):
                 raise ValueError("ambiguous shell file path")
@@ -211,7 +220,7 @@ def _validate_shell_write_guard(root: Path) -> None:
                 raise WriterSinkInventoryError("shell file differs from SHELL-READY: " + relative)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise WriterSinkInventoryError("shell SHELL-READY manifest is invalid") from exc
-    expected_python = {entry["path"] for entry in ready["files"] if entry["path"].endswith(".py")}
+    expected_python = {_shell_file_relative(ready, entry["path"]) for entry in ready["files"] if entry["path"].endswith(".py")}
     actual_python = {path.relative_to(root).as_posix() for path in shell.rglob("*.py")}
     if actual_python != expected_python:
         raise WriterSinkInventoryError("shell Python file set differs from SHELL-READY")

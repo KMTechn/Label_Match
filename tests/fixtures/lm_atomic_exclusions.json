@@ -38,7 +38,7 @@
     },
     {
       "path": "shell/shell_fileio.py",
-      "sha256": "d6a97d78927be4be7312105507a46adf26d1ad2520c86bd81139683403a68266"
+      "sha256": "b1d993c466d1df5161330c25389c35bd295b7f02a6c566b544bdac3072968101"
     }
   ],
   "test_doubles": [

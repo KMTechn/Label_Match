@@ -38,11 +38,55 @@ TRANSPORT_WAIT_SECONDS = 8
 TRANSPORT_STOP_MESSAGE = '화면 준비가 늦습니다 — 잠시 뒤 다시 엽니다'
 CLOSING_WAIT_SECONDS = 120
 READY_TIMEOUT_S = 30
+FIRST_RUN_READY_TIMEOUT_S = 90
 DESTROY_WAIT_S = 5
 STARTUP_DESTROY_WAIT_S = 2
 EXIT_WRITE_WAIT_S = 120
 EXIT_POLL_S = 5
 STARTUP_NOTICE_TEXT = '새 화면을 열지 못해 옛 화면으로 바꿉니다. 바로 가기를 한 번 더 누르세요. 그래도 열리지 않으면 현장 관리자에게 알리세요.'
+FIRST_STARTUP_NOTICE_TEXT = '새 화면을 열지 못했습니다. 바로 가기를 한 번 더 누르면 새 화면을 다시 엽니다. 또 열리지 않으면 옛 화면으로 엽니다.'
+STARTUP_CAUSES = ('RUNTIME_MISSING', 'WEBVIEW_ENV_FAILED', 'WEBVIEW_NO_READY', 'READY_TIMEOUT', 'OWNER_START_FAILED', 'OTHER')
+
+
+def _read_retry(data):
+    marker = Path(data) / 'shell-start-retry.json'
+    try:
+        if marker.is_symlink():
+            return None
+        size = marker.stat().st_size
+        if size > 4096:
+            return None
+        with marker.open('rb') as stream:
+            raw = stream.read(4097)
+        if len(raw) > 4096:
+            return None
+        saved = json.loads(raw)
+        keys = {'code', 'at', 'version', 'count', 'cause'}
+        if not isinstance(saved, dict) or set(saved) not in (keys, keys | {'detail'}):
+            return None
+        if any(not isinstance(saved[key], str) for key in ('code', 'at', 'version')):
+            return None
+        if (type(saved['count']) is not int or saved['count'] < 0
+                or saved['cause'] not in STARTUP_CAUSES):
+            return None
+        if 'detail' in saved and (not isinstance(saved['detail'], str)
+                or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}(?: 0x[0-9A-Fa-f]{8})?', saved['detail'])):
+            return None
+        return saved
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _save_retry(data, code, version, count, cause, fileio, *, detail=None):
+    from datetime import datetime, timezone
+    marker = {'code': code, 'at': datetime.now(timezone.utc).isoformat(), 'version': str(version),
+              'count': count, 'cause': cause}
+    if detail is not None:
+        marker['detail'] = detail
+    raw = (json.dumps(marker, ensure_ascii=False) + '\n').encode('utf-8')
+    if len(raw) > 4096:
+        raise ValueError('SHELL_RETRY_MARKER_UNAVAILABLE')
+    fileio.replace_atomic(Path(data) / 'shell-start-retry.json', raw, 'udf', fsync=True)
 
 
 def web_allowed(data, version, *, write_guard=None):
@@ -81,7 +125,83 @@ def _save_fallback(data, code, version, fileio=None):
                                 (json.dumps(marker, ensure_ascii=False) + '\n').encode('utf-8'), 'udf', fsync=True)
 
 
-def show_startup_notice(title):
+def _clear_retry(data, fileio):
+    try:
+        marker = Path(data) / 'shell-start-retry.json'
+        if marker.is_symlink() or marker.exists():
+            fileio.remove(marker, 'udf')
+    except Exception as error:
+        import logging
+        logging.error('SHELL_RETRY_CLEAR_FAILED %s', type(error).__name__)
+
+
+def is_interactive_session():
+    """API failure keeps the normal interactive behavior."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        session = wintypes.DWORD()
+        query = kernel.ProcessIdToSessionId
+        query.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        query.restype = wintypes.BOOL
+        if not query(os.getpid(), ctypes.byref(session)):
+            return True
+        if session.value == 0:
+            return False
+        user = ctypes.WinDLL('user32', use_last_error=True)
+        station = user.GetProcessWindowStation
+        station.argtypes, station.restype = [], wintypes.HANDLE
+        handle = station()
+        if not handle:
+            return True
+        class Flags(ctypes.Structure):
+            _fields_ = [('inherit', wintypes.BOOL), ('reserved', wintypes.BOOL), ('flags', wintypes.DWORD)]
+        flags, needed = Flags(), wintypes.DWORD()
+        info = user.GetUserObjectInformationW
+        info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                         wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        info.restype = wintypes.BOOL
+        if not info(handle, 1, ctypes.byref(flags), ctypes.sizeof(flags), ctypes.byref(needed)):
+            return True
+        return bool(flags.flags & 1)
+    except Exception:
+        return True
+
+
+def _startup_cause(error, default='OTHER'):
+    # Native exceptions can wrap the WebView2 runtime-not-found exception.
+    for _ in range(4):
+        if error is None:
+            break
+        if type(error).__name__ == 'WebView2RuntimeNotFoundException':
+            return 'RUNTIME_MISSING'
+        try:
+            inner = getattr(error, 'InnerException', None)
+            error = inner if inner is not None else getattr(error, '__cause__', None)
+        except Exception:
+            break
+    return default
+
+
+def _startup_detail(error):
+    if error is None:
+        return None
+    name = type(error).__name__
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}', name):
+        name = 'Exception'
+    try:
+        value = getattr(error, 'HResult', None)
+        if value is None:
+            value = getattr(error, 'hresult', None)
+        if type(value) is int and -(1 << 31) <= value < (1 << 32):
+            return name + ' 0x' + format(value & 0xffffffff, '08X')
+    except Exception:
+        pass
+    return name
+
+
+def show_startup_notice(title, count=2):
     """Best-effort OS notice, bounded by MessageBoxTimeoutW's 30-second timeout."""
     try:
         import ctypes
@@ -90,7 +210,8 @@ def show_startup_notice(title):
         notice.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
                            wintypes.UINT, wintypes.WORD, wintypes.DWORD]
         notice.restype = ctypes.c_int
-        if not notice(None, STARTUP_NOTICE_TEXT, str(title), 0x00040040, 0, 30000):
+        text = FIRST_STARTUP_NOTICE_TEXT if count < 2 else STARTUP_NOTICE_TEXT
+        if not notice(None, text, str(title), 0x00040040, 0, 30000):
             raise OSError('SHELL_START_NOTICE_UNAVAILABLE')
     except Exception:
         import logging
@@ -570,6 +691,9 @@ class NativeHost:
             self.ui(configure)
         except Exception as error:
             self.bridge.events.record('py', 'native_setup_failed', reason=type(error).__name__)
+            if not getattr(self.bridge, '_startup_ready', False) and not getattr(self.bridge, '_startup_failure', None):
+                self.bridge._startup_cause = _startup_cause(error, 'WEBVIEW_ENV_FAILED')
+                self.bridge._startup_detail = _startup_detail(error)
 
     def process_failed(self, sender, args):
         kind = str(args.ProcessFailedKind)
@@ -767,7 +891,10 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
     if root_path is not None and root_path not in page_path.parents:
         raise ValueError('page must be inside root')
     data = Path(data).resolve()
+    first_profile = udf is not None and not (Path(udf).resolve() / 'EBWebView').exists()
     udf = Path(udf or data / 'webview2').resolve()
+    ready_timeout_s = FIRST_RUN_READY_TIMEOUT_S if first_profile else READY_TIMEOUT_S
+    interactive = is_interactive_session()
     check_data_roots(data, udf, recovery_fileio)
     bridge = Bridge(data, profile, test_control=bool(test_control), processor_factory=processor_factory,
                     owner='external' if owner_main else 'thread', write_guard=write_guard)
@@ -775,6 +902,8 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
     recovery_finished = threading.Event()
     recovery_started = threading.Event()
     bridge._startup_failure = None
+    bridge._startup_cause = None
+    bridge._startup_detail = None
     bridge._startup_ready = False
     bridge._app_created = False
     owner_thread = None
@@ -818,11 +947,20 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
                 return
             force_requested.wait(0.01)
 
-    def fail_start(code):
+    def fail_start(code, cause='OTHER', error=None):
         with failure_lock:
             if ready.is_set() or bridge._startup_failure:
                 return False
             bridge._startup_failure = code
+            bridge._startup_cause = cause
+            if error is not None:
+                bridge._startup_detail = _startup_detail(error)
+            fields = {'cause': cause if interactive else 'NONINTERACTIVE'}
+            if error is not None:
+                fields['error'] = type(error).__name__
+            if bridge._startup_detail is not None:
+                fields['detail'] = bridge._startup_detail
+            bridge.events.record('py', 'shell_start_failed', **fields)
             return True
 
     def close_bridge():
@@ -843,11 +981,26 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
                 bridge.close_intake()
             except Exception:
                 bridge.events.record('py', 'shell_start_cleanup_failed')
-            try:
-                _save_fallback(data, code, version, recovery_fileio)
-            except Exception:
+            count = 2 if bridge._startup_cause == 'RUNTIME_MISSING' else 1
+            if interactive:
+                saved = _read_retry(data)
+                if saved is not None and saved['version'] == str(version):
+                    count = max(count, saved['count'] + 1)
+                try:
+                    _save_retry(data, code, version, count, bridge._startup_cause or 'OTHER', recovery_fileio,
+                                detail=bridge._startup_detail)
+                except Exception:
+                    import logging
+                    logging.error('SHELL_RETRY_MARK_FAILED')
+                if count >= 2:
+                    try:
+                        _save_fallback(data, code, version, recovery_fileio)
+                    except Exception:
+                        import logging
+                        logging.error('SHELL_FALLBACK_MARK_FAILED')
+            else:
                 import logging
-                logging.error('SHELL_FALLBACK_MARK_FAILED')
+                logging.error('SHELL_START_FAILED cause=NONINTERACTIVE')
             destroyed = threading.Event()
             def destroy_window():
                 try:
@@ -860,11 +1013,12 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
                     destroyed.set()
             threading.Thread(target=destroy_window, name='shell-start-destroy', daemon=True).start()
             destroyed.wait(STARTUP_DESTROY_WAIT_S)
-            try:
-                show_startup_notice(title)
-            except Exception:
-                import logging
-                logging.error('SHELL_START_NOTICE_UNAVAILABLE')
+            if interactive:
+                try:
+                    show_startup_notice(title, count)
+                except Exception:
+                    import logging
+                    logging.error('SHELL_START_NOTICE_UNAVAILABLE')
             _wait_before_exit(before_exit, code)
             import logging
             logging.error('%s', code)
@@ -873,12 +1027,13 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
             recovery_finished.set()
 
     def watch_start():
-        if watchdog_stop.wait(READY_TIMEOUT_S) or ready.is_set():
+        if watchdog_stop.wait(ready_timeout_s) or ready.is_set():
             return
-        if fail_start('SHELL_START_TIMEOUT'):
+        if fail_start('SHELL_START_TIMEOUT', bridge._startup_cause or 'READY_TIMEOUT'):
             recover_start('SHELL_START_TIMEOUT')
 
     code = 0
+    startup_phase = 'OTHER'
     try:
         if owner_main:
             def own():
@@ -888,18 +1043,18 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
                     if not bridge._initialized.done():
                         bridge.fail_owner(error)
                     else:
-                        fail_start('SHELL_START_FAILED')
+                        fail_start('SHELL_START_FAILED', 'OWNER_START_FAILED', error)
             owner_thread = threading.Thread(target=own, name='app-owner', daemon=True)
             owner_thread.start()
             try:
                 wait_owner_start(bridge, owner_thread, owner_timeout)
                 bridge._app_created = True
-            except Exception:
+            except Exception as error:
                 if not bridge._app_created:
                     bridge.events.record('py', 'owner_start_failed')
                     close_bridge()
                     raise
-                fail_start('SHELL_START_FAILED')
+                fail_start('SHELL_START_FAILED', 'OWNER_START_FAILED', error)
                 recover_start('SHELL_START_FAILED')
                 return 'exit'
         browser_preset(browser_preset_name, bridge.events)
@@ -910,6 +1065,7 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
         url = str(page_path) + ('#test=1' if test_control else '')
         api = API(bridge)
         threading.Thread(target=watch_start, name='shell-start-watch', daemon=True).start()
+        startup_phase = 'WEBVIEW_ENV_FAILED'
         window = webview.create_window(title, url=url, js_api=api, width=1366, height=768,
                                        text_select=False, zoomable=False, background_color='#F7F7F4')
         if recovery_started.is_set():
@@ -924,6 +1080,7 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
                 ready.set()
                 bridge._startup_ready = True
                 watchdog_stop.set()
+                _clear_retry(data, recovery_fileio)
         api._on_ready = page_ready
         window.events.before_load += native.before_load
         window.events.loaded += native.loaded
@@ -946,7 +1103,34 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
         window.events.closed += detach_picker
         native.pause_page()
         window.events.closed += stop.set
+        observed_controls = set()
+        def observe_initialization():
+            # The start callback can run before WinForms creates window.native.
+            # before_show provides a second chance without trusting MSHTML as proof
+            # that the runtime is absent (.NET selection can also cause that fallback).
+            control = getattr(getattr(getattr(window, 'native', None), 'browser', None), 'webview', None)
+            event = getattr(control, 'CoreWebView2InitializationCompleted', None)
+            if event is None:
+                return
+            with failure_lock:
+                if id(control) in observed_controls:
+                    return
+                observed_controls.add(id(control))
+            def initialized(sender, args):
+                with failure_lock:
+                    if not args.IsSuccess and not ready.is_set() and not bridge._startup_failure:
+                        error = args.InitializationException
+                        bridge._startup_cause = _startup_cause(error, 'WEBVIEW_ENV_FAILED')
+                        bridge._startup_detail = _startup_detail(error)
+                        bridge.events.record('py', 'shell_webview_init_failed',
+                                             cause=bridge._startup_cause, detail=bridge._startup_detail)
+            control.CoreWebView2InitializationCompleted += initialized
+            native.refs.append(initialized)
+        before_show = getattr(window.events, 'before_show', None)
+        if before_show is not None:
+            window.events.before_show += observe_initialization
         def started():
+            observe_initialization()
             if pedal:
                 bridge.pedal.start()
             if test_control:
@@ -964,12 +1148,12 @@ def run_app(profile, data, *, udf=None, pedal=False, title='KMTech', page=None, 
         webview.start(started, gui='edgechromium', debug=False, private_mode=False,
                       storage_path=str(udf), http_server=True, http_port=http_port)
         if not ready.is_set():
-            fail_start('SHELL_START_FAILED')
-    except Exception:
+            fail_start('SHELL_START_FAILED', bridge._startup_cause or 'WEBVIEW_NO_READY')
+    except Exception as error:
         code = 1
         if ready.is_set() or (owner_main and not bridge._app_created):
             raise
-        fail_start('SHELL_START_FAILED')
+        fail_start('SHELL_START_FAILED', _startup_cause(error, startup_phase), error)
     finally:
         watchdog_stop.set()
         stop.set()

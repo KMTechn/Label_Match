@@ -10,24 +10,24 @@ import pytest
 
 import label_match_screen
 import writer_session_fence as fence
-from writer_sink_inventory import derive_writer_sink_inventory, WriterSinkInventoryError
+from writer_sink_inventory import derive_writer_sink_inventory, WriterSinkInventoryError, _shell_file_relative
 from tests.test_label_screen_bridge import call, meta, screen
 from tests.test_screen_precreation_recovery import shell_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTUAL_WRITE_GUARD = label_match_screen.shell_write_guard
-READY_SHA256 = "8c3b35d4740a86481e2d011630bf78271316c38ca5f1e137de8109f320e1eb88"
+READY_SHA256 = "a8183b660932778c08ebdf1ee24f137b4c2540a66207850afeff9990bbfb3198"
 
 
-def test_shell_copy_matches_v3162_ready():
+def test_shell_copy_matches_v3163_ready():
     ready_path = ROOT / "shell/SHELL-READY.json"
     assert ready_path.is_file()
     raw = ready_path.read_bytes()
     assert hashlib.sha256(raw).hexdigest() == READY_SHA256
     ready = json.loads(raw)
-    assert ready["version"] == "v3.16.2"
+    assert ready["version"] == "v3.16.3"
     for entry in ready["files"]:
-        path = ROOT / entry["path"]
+        path = ROOT / _shell_file_relative(ready, entry["path"])
         assert path.stat().st_size == entry["bytes"]
         assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"]
     for entry in ready["kit_only_files"]:

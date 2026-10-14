@@ -1,103 +1,103 @@
 {
-  "created_utc": "2026-10-14T05:02:13.992837+00:00",
+  "created_utc": "2026-10-15T00:36:00.432015+09:00",
   "files": [
     {
-      "path": "shell/bridge.py",
+      "path": "shell-v3.16.3/bridge.py",
       "bytes": 28977,
       "sha256": "61654de8e21ba4652e2b56ca9eb4a8e0881bfff6f20c6bb1c6d2325ebaafcd29"
     },
     {
-      "path": "shell/event_order.py",
+      "path": "shell-v3.16.3/event_order.py",
       "bytes": 2443,
       "sha256": "48075f599c33bef1b9a3a283717d31f50f00ac2e71b1ebeb6970620b2275c146"
     },
     {
-      "path": "shell/host.py",
-      "bytes": 48266,
-      "sha256": "d9181dc40e2f54a548d88f45b069a0b59b74ff7cfd01101577e9b2b395b8def9"
+      "path": "shell-v3.16.3/host.py",
+      "bytes": 58115,
+      "sha256": "1e3029ce38a7faad952aa56431076bf4d51c0d626f072968f1f07d73768f54b1"
     },
     {
-      "path": "shell/journal.py",
+      "path": "shell-v3.16.3/journal.py",
       "bytes": 4155,
       "sha256": "5d486cde397f93d1b8d651fec273e667399c5860d1481cc86232341bb1a0aa4d"
     },
     {
-      "path": "shell/pedal.py",
+      "path": "shell-v3.16.3/pedal.py",
       "bytes": 3437,
       "sha256": "fe19337649eddcc804398f410e022fce91bead708159ae3f82ae01dc790312f9"
     },
     {
-      "path": "shell/scan_rules.py",
+      "path": "shell-v3.16.3/scan_rules.py",
       "bytes": 1259,
       "sha256": "a07e19eaac003b775adbe93fac86ce1536cf1e83729f7c654279e5f0c09f1504"
     },
     {
-      "path": "shell/shell_fileio.py",
-      "bytes": 5358,
-      "sha256": "d6a97d78927be4be7312105507a46adf26d1ad2520c86bd81139683403a68266"
+      "path": "shell-v3.16.3/shell_fileio.py",
+      "bytes": 5868,
+      "sha256": "b1d993c466d1df5161330c25389c35bd295b7f02a6c566b544bdac3072968101"
     },
     {
-      "path": "shell/sound.py",
+      "path": "shell-v3.16.3/sound.py",
       "bytes": 1578,
       "sha256": "a007064433046d9b1debfb183d1db28fb88f585230dcaa2937d175993f308504"
     },
     {
-      "path": "shell/web/app.css",
+      "path": "shell-v3.16.3/web/app.css",
       "bytes": 1080,
       "sha256": "6a4da30da94dd1f891bdfdbeed8a077a20dc43579be3df3114cde6bad46c4ed8"
     },
     {
-      "path": "shell/web/app.js",
+      "path": "shell-v3.16.3/web/app.js",
       "bytes": 9992,
       "sha256": "fbc1691ae9ad2e6431352c0d1799789f2fa12042cf6f095398c24e9ad6839ab6"
     },
     {
-      "path": "shell/web/core/fonts/Pretendard-Bold.subset.woff2",
+      "path": "shell-v3.16.3/web/core/fonts/Pretendard-Bold.subset.woff2",
       "bytes": 270784,
       "sha256": "78eb71c33101ee7d4f8d1b777d193a12d00f8a296e712a8c417cf27abe946397"
     },
     {
-      "path": "shell/web/core/fonts/Pretendard-OFL.txt",
+      "path": "shell-v3.16.3/web/core/fonts/Pretendard-OFL.txt",
       "bytes": 4419,
       "sha256": "b04538c9abec39a3db75108cf0af0fd9c77032fe8aa2cf38345b4d250e98e38e"
     },
     {
-      "path": "shell/web/core/fonts/Pretendard-Regular.subset.woff2",
+      "path": "shell-v3.16.3/web/core/fonts/Pretendard-Regular.subset.woff2",
       "bytes": 267096,
       "sha256": "01dd73155fdfab7ce9b25224523e85a96927e21aef97f21957d41f1bfa7e3878"
     },
     {
-      "path": "shell/web/core/fonts/Pretendard-SemiBold.subset.woff2",
+      "path": "shell-v3.16.3/web/core/fonts/Pretendard-SemiBold.subset.woff2",
       "bytes": 268752,
       "sha256": "4247dc5e260b92640c2cbd0e75091154647b71e1d5884116655e2903468c54cc"
     },
     {
-      "path": "shell/web/core/parts.css",
+      "path": "shell-v3.16.3/web/core/parts.css",
       "bytes": 18015,
       "sha256": "460658d8d1f7f19b42231b6d450595c8cd21745f1d71c992c3e3630bb0c36d60"
     },
     {
-      "path": "shell/web/core/tokens.css",
+      "path": "shell-v3.16.3/web/core/tokens.css",
       "bytes": 7542,
       "sha256": "bd8520ff68ea5e5616ab1b4916e11faf5895bc7a6bdd0498b5978b3ef70476c4"
     },
     {
-      "path": "shell/web/index.html",
+      "path": "shell-v3.16.3/web/index.html",
       "bytes": 1771,
       "sha256": "7cc107d19fda6d064f3758eeb26f53ed9ffba320ad9c8953bdbea12227245367"
     },
     {
-      "path": "shell/web/sink.js",
+      "path": "shell-v3.16.3/web/sink.js",
       "bytes": 12165,
       "sha256": "41c7980af9ae8ac3f8ca7811a5babe1efb881f225fa4ab11d2d6c3bfda0f6f2c"
     },
     {
-      "path": "shell/web/transport.js",
+      "path": "shell-v3.16.3/web/transport.js",
       "bytes": 3216,
       "sha256": "fdb207a3b596271368fe67a4781d0cbb81c28619bd98057f12487f605b64c07a"
     }
   ],
-  "version": "v3.16.2",
+  "version": "v3.16.3",
   "status": "source ready; headless shell tests PROVEN; actual native windows and app adapters NOT TESTED",
   "run_commands": [
     "<python> -I -B app/shell/host.py --profile rw --data <isolated-data> --udf <isolated-udf> --test-control <control-dir>",
@@ -153,12 +153,12 @@
   "bundle_root": "run_app(root=<bundle>, page=<bundle>/app/<app>/index.html): pywebview global server started on root before webview.start so ../ shared files load; page outside root -> ValueError before anything starts",
   "kit_only_files": [
     {
-      "path": "shell/tk_ab.py",
+      "path": "shell-v3.16.3/tk_ab.py",
       "bytes": 6897,
       "sha256": "ac9272790f77ae7b8bbed96110443d58ffcccc6716154406190671057a05a356"
     }
   ],
-  "local_writes": "Every shell local file write stays inside shell_fileio._guard. SHELL_WRITE_SITES: append_bytes, create_new, truncate, replace_atomic, make_dirs, probe_writable, remove. FileIO guard is private to each Bridge; set_write_guard returns a private writer and installs no global state. Closed bridge, expired owner or owner read failure refuses writes. Startup make_dirs/exclusive probe/remove and fallback marker use the supplied guard. Empty regular .shell-write-probe-<32 lowercase hex> files are swept completely, without age/count limit; links, other names and nonempty files remain. Delete failure refuses this startup. Static/guard regression: sub-1/test_v314.py, test_data_guard.py, test_start_guard_v3162.py. App writer inventories require assembly-owner validation for this version.",
+  "local_writes": "Every shell local file write stays inside shell_fileio._guard. SHELL_WRITE_SITES: append_bytes, create_new, truncate, replace_atomic, make_dirs, probe_writable, remove. FileIO guard is private to each Bridge; set_write_guard returns a private writer and installs no global state. Closed bridge, expired owner or owner read failure refuses writes. Startup make_dirs/exclusive probe/remove and fallback marker use the supplied guard. Empty regular .shell-write-probe-<32 lowercase hex> files are swept completely, without age/count limit; links, other names and nonempty files remain. Delete failure refuses this startup. Static/guard regression: sub-1/test_v314.py, test_data_guard.py, test_start_guard_v3162.py. App writer inventories require assembly-owner validation for this version. v3.16.3 adds guarded startup retry-marker replace and READY removal, both kind udf, through existing FileIO sites; no new unguarded file write. replace_atomic retries only WinError 5/32 with four sleeps totalling 1.5s; persistent refusal raises the first exception.",
   "data_root_outside_app_root": {
     "status": "PROVEN",
     "tests": [
@@ -248,14 +248,15 @@
       "test_notice_v3162.NoticeTests.test_os_notice_api_failure_logs_and_returns"
     ],
     "test_files": [
-      "sub-1/test_start_guard_v3162.py",
-      "sub-1/test_notice_v3162.py"
+      "work/program/w9shellv3163/tests/test_start_guard_v3162.py",
+      "work/program/w9shellv3163/tests/test_notice_v3162.py"
     ],
-    "contract": "Startup after app creation: nonblocking close_intake -> fsync fallback marker -> best-effort destroy (2s) -> OS MessageBoxTimeoutW notice (30000ms, adapter title) -> before_exit -> os._exit(3). Same-version marker selects Tk on next manual start. Marker save failure logs SHELL_FALLBACK_MARK_FAILED with zero retry; notice API absence/failure logs SHELL_START_NOTICE_UNAVAILABLE and continues. Guard expiry fails closed.",
+    "contract": "Startup failure: nonblocking close_intake -> interactive retry marker fsync -> legacy three-key fallback marker only on count>=2 or RUNTIME_MISSING -> best-effort destroy (2s) -> OS MessageBoxTimeoutW notice (30000ms, adapter title, first/second-failure text) -> before_exit -> os._exit(3). Noninteractive failure writes neither marker and shows no notice, logging NONINTERACTIVE. READY removes retry marker of any version; cleanup failure only logs. web_allowed and _save_fallback are unchanged v3.16.2 functions. Before app creation failures retain existing caller behavior; guard expiry remains fail-closed. Optional retry detail: exception class and numeric HRESULT only; no same-start retry under pinned-library safety exception.",
     "ready_timeout_s": 30,
     "startup_destroy_wait_s": 2,
     "os_notice_timeout_ms": 30000,
-    "limits": "No actual OS notice/WebView2/Tk window tested; fake OS API and process exit."
+    "limits": "No actual OS notice/WebView2/Tk window tested; fake OS API and process exit.",
+    "first_run_ready_timeout_s": 90
   },
   "exit_guard": {
     "status": "PROVEN",
@@ -276,8 +277,8 @@
       "test_start_guard_v3162.GuardTests.test_f5_notice_failure_after_timeout_still_exits"
     ],
     "test_files": [
-      "sub-1/test_forced_exit_v3162.py",
-      "sub-1/test_start_guard_v3162.py"
+      "work/program/w9shellv3163/tests/test_forced_exit_v3162.py",
+      "work/program/w9shellv3163/tests/test_start_guard_v3162.py"
     ],
     "contract": "Normal close: ended owner no Future; live owner max OWNER_JOIN_S then normal adapter cleanup; timeout never auto-forces. Explicit user force watcher armed before close, existing on_force_exit join(2). Startup recovery does not call Bridge.close or wait for stopped owner. before_exit False/exception defers until True; in-process borrow0 and all lane(BROKEN included)/audit/delivery workers dead, lifetime is retained until process exit.",
     "owner_join_s": 10,
@@ -296,44 +297,189 @@
   "adapter_limits": "App-specific startup gates/worker stop/before_exit/S01 proof belong to five assembly owners. Owner stuck inside initialization is outside this adapter change. Actual native windows/install/update and portable builder NOT TESTED — assembly 613.",
   "startup_regression": {
     "before": {
-      "tests": 245,
-      "pass": 245,
-      "failures": 0,
-      "errors": 0,
-      "seconds": 87.687,
-      "evidence": "before-summary.json"
-    },
-    "after": {
       "tests": 278,
       "pass": 278,
       "failures": 0,
       "errors": 0,
+      "assembly": "273 pass in discovery + 5 fixture-location repairs pass; original errors preserved",
+      "evidence": [
+        "baseline-summary.json",
+        "baseline-repaired-summary.json"
+      ]
+    },
+    "after": {
+      "tests": 325,
+      "pass": 325,
+      "failures": 0,
+      "errors": 0,
       "skipped": 0,
       "head_only_failures": 0,
-      "seconds": 87.719,
+      "seconds": 94.203,
+      "assembly": "325 pass in full discovery after final product edit. Test-only library renderer cleanup afterward verified by final 52-test policy/host pack.",
       "evidence": [
-        "fix5-all-summary.json",
-        "fix5-probe-summary.json"
-      ],
-      "assembly": "274 completed PASS in full discovery + 4 existing probe tests PASS after restoring unchanged kit-tools import support; import failure preserved, passing tests not repeated"
+        "final-all-summary.json",
+        "final-focused-summary.json",
+        "regression-summary.json"
+      ]
     },
-    "new_test_executions": 33,
+    "new_test_executions": 47,
     "missing_baseline_tests": [],
-    "environment": "Windows, Python 3.12, fixed existing venv; E temporary data; prodblock first + Tk shim; capped_run --time-min 30; OS notice/API and root exit mocked; legacy isolated child processes retained",
+    "unique_test_ids": {
+      "before": 261,
+      "after": 308,
+      "duplicate_executions_preserved": 17
+    },
+    "environment": "Windows/Python 3.12.10, existing venv; E temporary data; prodblock first + Tk shim; capped_run --time-min 30",
     "limits": [
-      "Actual WebView2/Tk and MessageBoxTimeoutW window NOT TESTED",
-      "App adapters/S01 native fence/actual lane lifecycle NOT TESTED by shell lane; callback contract emulated",
-      "Five app repositories unchanged; portable builder NOT TESTED — assembly 613",
-      "M88 timing information from manager field evidence, not measured in this lane"
+      "Fake webview/Tk/session/OS notice/process exit; actual windows and native installation NOT TESTED",
+      "Symlink flag and read refusal injected; actual file symlink creation NOT TESTED",
+      "Actual WebView2 asynchronous initialization event timing NOT TESTED",
+      "Five app assembly, portable builder, S01/native owner cleanup and server/VM NOT TESTED",
+      "Same-start retry j/k NOT TESTED / not implemented under explicit M121b conditional exception"
     ]
   },
   "source_comparison": {
-    "commit": "2371be9da93c53cb2b47122e619cc6febf9308b6",
+    "baseline_version": "v3.16.2",
+    "baseline_ready_sha256": "8c3b35d4740a86481e2d011630bf78271316c38ca5f1e137de8109f320e1eb88",
+    "baseline_origin_commit": "2371be9da93c53cb2b47122e619cc6febf9308b6",
     "files": 19,
-    "same": 19,
-    "different": 0,
-    "different_lines": 0,
-    "evidence": "work/program/w9shellv3162/fix5-comparison.json",
-    "method": "Fresh patch from verified v3.16.1, compared against git show committed webshell bytes, then canonical readback"
+    "same": 17,
+    "different": 2,
+    "different_files": [
+      "host.py",
+      "shell_fileio.py"
+    ],
+    "kit_only_file_unchanged": true,
+    "unchanged_functions": [
+      "web_allowed",
+      "_save_fallback"
+    ],
+    "evidence": "work/program/w9shellv3163/file-deltas.json"
+  },
+  "fallback_policy": {
+    "status": "PROVEN",
+    "design": "Claude Opus 5.5 max — M121/M121a/M121b/M110",
+    "implementation_tests": "Codex gpt-6.1-sol xhigh",
+    "retry_file": "shell-start-retry.json",
+    "retry_keys": [
+      "code",
+      "at",
+      "version",
+      "cause",
+      "count"
+    ],
+    "fallback_file": "shell-fallback.json",
+    "fallback_keys": [
+      "code",
+      "at",
+      "version"
+    ],
+    "marker_limit_bytes": 4096,
+    "contract": "Count 1 writes retry only; count>=2 writes retry and legacy fallback. RUNTIME_MISSING starts at 2. Same version increments count; changed version starts at 1. Invalid/unreadable/symlink retry means no previous failure. READY removes retry of any version. Legacy fallback reader/writer unchanged; original v3.16.2 allows retry-only data. Session 0 or invisible station is noninteractive; API failure is interactive. Explicit udf without EBWebView uses 90s; existing EBWebView or udf=None uses 30s. Optional detail contains only exception class and optional eight-digit hexadecimal HRESULT. WEBVIEW_NO_READY identifies return without READY. MSHTML alone is not proof of runtime absence. Same-start retry intentionally omitted under M121b library-safety condition; failures counted per launch.",
+    "causes": [
+      "RUNTIME_MISSING",
+      "WEBVIEW_ENV_FAILED",
+      "WEBVIEW_NO_READY",
+      "READY_TIMEOUT",
+      "OWNER_START_FAILED",
+      "OTHER"
+    ],
+    "tests": [
+      "test_fallback_policy_v3163.LibraryCompatibilityTests.test_partial_start_keeps_failed_master_and_next_window_is_child",
+      "test_fallback_policy_v3163.PolicyTests.test_async_environment_failure_is_retained_at_watchdog_timeout",
+      "test_fallback_policy_v3163.PolicyTests.test_async_hresult_failure_after_start_callback_is_observed_before_show",
+      "test_fallback_policy_v3163.PolicyTests.test_async_missing_runtime_is_retained_at_watchdog_timeout",
+      "test_fallback_policy_v3163.PolicyTests.test_detail_ignores_non_numeric_hresult_and_failing_property",
+      "test_fallback_policy_v3163.PolicyTests.test_existing_ebwebview_profile_uses_thirty_seconds",
+      "test_fallback_policy_v3163.PolicyTests.test_fast_failures_are_not_retried_under_library_safety_exception",
+      "test_fallback_policy_v3163.PolicyTests.test_first_failure_retries_web_and_ready_clears_retry",
+      "test_fallback_policy_v3163.PolicyTests.test_first_notice_uses_new_text_and_same_os_timeout",
+      "test_fallback_policy_v3163.PolicyTests.test_first_profile_absent_uses_ninety_seconds_even_when_udf_exists",
+      "test_fallback_policy_v3163.PolicyTests.test_hresult_detail_keeps_only_exception_class_and_hex_number",
+      "test_fallback_policy_v3163.PolicyTests.test_invalid_count_and_cause_are_not_previous_failures",
+      "test_fallback_policy_v3163.PolicyTests.test_invalid_detail_is_not_a_previous_failure",
+      "test_fallback_policy_v3163.PolicyTests.test_invisible_station_failure_keeps_both_markers_absent",
+      "test_fallback_policy_v3163.PolicyTests.test_legacy_same_version_marker_still_selects_tk",
+      "test_fallback_policy_v3163.PolicyTests.test_malformed_retry_is_overwritten_as_first_failure",
+      "test_fallback_policy_v3163.PolicyTests.test_missing_runtime_writes_both_markers_on_first_failure",
+      "test_fallback_policy_v3163.PolicyTests.test_mshtml_fallback_alone_does_not_prove_missing_runtime",
+      "test_fallback_policy_v3163.PolicyTests.test_new_version_discards_legacy_marker_and_resets_retry_count",
+      "test_fallback_policy_v3163.PolicyTests.test_noninteractive_failure_preserves_existing_markers_byte_for_byte",
+      "test_fallback_policy_v3163.PolicyTests.test_noninteractive_failure_writes_no_marker_and_no_notice",
+      "test_fallback_policy_v3163.PolicyTests.test_noninteractive_fast_failure_never_retries",
+      "test_fallback_policy_v3163.PolicyTests.test_noninteractive_missing_runtime_does_not_write_either_marker",
+      "test_fallback_policy_v3163.PolicyTests.test_owner_exception_after_attach_has_owner_cause",
+      "test_fallback_policy_v3163.PolicyTests.test_owner_failure_never_retries_and_records_class_only",
+      "test_fallback_policy_v3163.PolicyTests.test_ready_cleanup_failure_is_logged_and_web_start_succeeds",
+      "test_fallback_policy_v3163.PolicyTests.test_ready_removes_retry_from_any_version",
+      "test_fallback_policy_v3163.PolicyTests.test_rollback_original_v3162_allows_retry_only_data",
+      "test_fallback_policy_v3163.PolicyTests.test_second_failure_saves_legacy_marker_even_if_retry_save_fails",
+      "test_fallback_policy_v3163.PolicyTests.test_second_notice_keeps_proven_v3162_text",
+      "test_fallback_policy_v3163.PolicyTests.test_session_zero_failure_keeps_both_markers_absent",
+      "test_fallback_policy_v3163.PolicyTests.test_symlink_check_treats_retry_as_no_previous_failure",
+      "test_fallback_policy_v3163.PolicyTests.test_timeout_failure_never_retries",
+      "test_fallback_policy_v3163.PolicyTests.test_two_failures_write_legacy_marker_and_select_tk",
+      "test_fallback_policy_v3163.PolicyTests.test_unreadable_retry_is_not_a_previous_failure",
+      "test_fallback_policy_v3163.PolicyTests.test_unspecified_udf_uses_thirty_seconds",
+      "test_fallback_policy_v3163.PolicyTests.test_valid_optional_detail_is_accepted_and_counted",
+      "test_fallback_policy_v3163.PolicyTests.test_webview_return_before_ready_has_no_ready_cause",
+      "test_fallback_policy_v3163.PolicyTests.test_wrapped_runtime_exception_is_classified_without_exception_text",
+      "test_fallback_policy_v3163.ReplaceTests.test_other_errors_are_not_retried",
+      "test_fallback_policy_v3163.ReplaceTests.test_persistent_sharing_or_access_error_preserves_first_exception",
+      "test_fallback_policy_v3163.ReplaceTests.test_retry_does_not_repeat_guard_or_temporary_write",
+      "test_fallback_policy_v3163.ReplaceTests.test_sharing_or_access_error_then_success_retries_only_replace",
+      "test_fallback_policy_v3163.SessionTests.test_api_failures_preserve_interactive_behavior",
+      "test_fallback_policy_v3163.SessionTests.test_invisible_window_station_is_noninteractive",
+      "test_fallback_policy_v3163.SessionTests.test_session_zero_is_noninteractive",
+      "test_fallback_policy_v3163.SessionTests.test_visible_user_session_is_interactive"
+    ],
+    "test_file": "work/program/w9shellv3163/tests/test_fallback_policy_v3163.py",
+    "evidence": [
+      "work/program/w9shellv3163/final-all-summary.json",
+      "work/program/w9shellv3163/final-focused-summary.json",
+      "work/program/w9shellv3163/negative-final-summary.json",
+      "work/program/w9shellv3163/same-start-compatibility.json"
+    ],
+    "limits": [
+      "Fake webview/Tk/session/OS notice/process exit; actual windows and native installation NOT TESTED",
+      "Symlink flag and read refusal injected; actual file symlink creation NOT TESTED",
+      "Actual WebView2 asynchronous initialization event timing NOT TESTED",
+      "Five app assembly, portable builder, S01/native owner cleanup and server/VM NOT TESTED",
+      "Same-start retry j/k NOT TESTED / not implemented under explicit M121b conditional exception"
+    ],
+    "optional_retry_keys": [
+      "detail"
+    ],
+    "same_start_retry": {
+      "version": "6.2.1",
+      "same_start_retry": "NOT_IMPLEMENTED",
+      "conditional_authority": "IMPL-program-w9shellv3163 addendum 2 / M121b",
+      "reason": "Partial start can retain failed master in global windows; another window becomes a child; child startup depends on shown/instances of the earlier window. Uniform safe retry is not established.",
+      "source_references": [
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\__init__.py:209",
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\__init__.py:281",
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\__init__.py:290",
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\__init__.py:303",
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\__init__.py:377",
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\__init__.py:413",
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\platforms\\winforms.py:389",
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\platforms\\winforms.py:734",
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\platforms\\winforms.py:837",
+        "E:\\KMTech\\w9appshell1012-tmp\\venv\\Lib\\site-packages\\webview\\platforms\\winforms.py:1039"
+      ],
+      "bridge_references": [
+        "shell/bridge.py:63",
+        "shell/bridge.py:205",
+        "shell/bridge.py:270"
+      ],
+      "source_sha256": {
+        "__init__.py": "53a631a579ce342fb45efbe4ef024b28deabb34f061bcf058fd818ce27aa7e80",
+        "platforms/winforms.py": "e3962a59e74532d9266f08d1efb086519877b2d322ea83900036f59794db4b4d",
+        "platforms/edgechromium.py": "f3f9168ecb39f7447566112fd14c5ec55830eddf02053eafef0d86fac509a3a4"
+      },
+      "headless_test": "test_fallback_policy_v3163.LibraryCompatibilityTests.test_partial_start_keeps_failed_master_and_next_window_is_child",
+      "test_status": "PROVEN",
+      "limits": "Real WinForms second-start behavior NOT TESTED; native backend mocked. j/k retry-success/two-attempt scenarios NOT TESTED because retry is intentionally omitted."
+    }
   }
 }

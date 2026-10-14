@@ -9,7 +9,7 @@ import types
 
 import pytest
 
-from writer_sink_inventory import derive_writer_sink_inventory, WriterSinkInventoryError
+from writer_sink_inventory import derive_writer_sink_inventory, WriterSinkInventoryError, _shell_file_relative
 from tools.refresh_first_update_declarations import validate_shell_ready_pin
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +29,7 @@ def shell_candidate(tmp_path):
 def test_installed_scanner_accepts_another_self_consistent_shell(shell_candidate, ready_name):
     ready_path = shell_candidate / "shell/SHELL-READY.json"
     ready = json.loads(ready_path.read_bytes())
+    ready["files"] = [dict(entry, path=_shell_file_relative(ready, entry["path"])) for entry in ready["files"]]
     ready["version"] = "vNext"
     path = shell_candidate / "shell/bridge.py"
     path.write_bytes(path.read_bytes() + b"\n# candidate revision\n")
@@ -67,6 +68,7 @@ def test_declaration_generator_keeps_the_reviewed_ready_pin(shell_candidate):
     validate_shell_ready_pin(ROOT)
     path = shell_candidate / "shell/SHELL-READY.json"
     ready = json.loads(path.read_bytes())
+    ready["files"] = [dict(entry, path=_shell_file_relative(ready, entry["path"])) for entry in ready["files"]]
     ready["version"] = "vNext"
     path.write_text(json.dumps(ready), encoding="utf-8")
     assert derive_writer_sink_inventory(shell_candidate)
