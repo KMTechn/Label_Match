@@ -162,7 +162,36 @@ def test_ambiguous_migration_also_preserves_and_reviews_the_local_completed_leas
     reviewed = leases.get(lease_id=draft.operation_lease_id)
     assert reviewed['status'] == 'OPERATOR_REVIEW'
     assert reviewed['last_error_code'] == 'REPACK_PREDECESSOR_REVIEW_REQUIRED'
-    for field in ('operation_result_id','operation_completed_at','consume_idempotency_key','token_json','operation_snapshot_json'):
-        if field in original:
-            assert reviewed[field] == original[field]
+    for field in ('operation_result_id','operation_completed_at','consume_idempotency_key',
+                  'token','artifact_json','binding_json','operation_snapshot_json','snapshot_hash','fence'):
+        assert reviewed[field] == original[field]
     assert outbox.claim_next() is None
+
+
+@pytest.mark.parametrize('saved_status', ['ACKED','CONFLICT'])
+def test_unknown_legacy_history_also_blocks_a_later_repack_without_changing_old_delivery(tmp_path, saved_status):
+    outbox = PackageOutbox(tmp_path/'history.sqlite3')
+    drafts = [_draft_for_set(name) for name in ('old-A','old-B','old-C')]
+    for draft in reversed(drafts):
+        outbox.enqueue(draft)
+    for draft in drafts:
+        outbox.mark_local_completion_committed(outbox.get_by_set_id(draft.set_id)['idempotency_key'])
+    with sqlite3.connect(outbox.db_path) as conn:
+        conn.execute('DROP INDEX ix_package_local_completion_order')
+        conn.execute('ALTER TABLE package_command_outbox DROP COLUMN predecessor_package_key')
+        conn.execute('ALTER TABLE package_command_outbox DROP COLUMN local_completion_order')
+        conn.execute("UPDATE package_outbox_schema_info SET value='label-match-package-outbox-v11' WHERE key='schema_version'")
+        conn.execute("UPDATE package_command_outbox SET status=?,last_error_code='PRESERVED_DELIVERY_EVIDENCE',receipt_json=?", (saved_status,'{}'))
+    reopened = PackageOutbox(outbox.db_path)
+    old = [reopened.get_by_set_id(draft.set_id) for draft in drafts]
+    assert all(row['status']==saved_status and row['local_completion_order'] is None for row in old)
+    later = _draft_for_set('later')
+    queued(reopened,later)
+    assert reopened.claim_next() is None
+    row = reopened.get_by_set_id(later.set_id)
+    assert row['status']=='CONFLICT' and row['last_error_code']=='REPACK_PREDECESSOR_REVIEW_REQUIRED'
+    assert row['predecessor_package_key'] is None and row['attempt_count']==0
+    assert [reopened.get_by_set_id(draft.set_id) for draft in drafts] == old
+    events = reopened.list_post_review_csv_pending()
+    PackageOutbox(outbox.db_path)
+    assert reopened.get_by_set_id(later.set_id)==row and reopened.list_post_review_csv_pending()==events

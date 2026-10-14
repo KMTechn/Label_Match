@@ -137,8 +137,10 @@ def _apply_repack_review_guards(conn, now, post_review_event_payload):
             THEN 'REPACK_REOPEN_REFUSED' ELSE 'REPACK_PREDECESSOR_REVIEW_REQUIRED' END AS guard_code
         FROM packages AS current WHERE current.status='PENDING'
           AND current.local_completion_committed=1 AND (
-            EXISTS (SELECT 1 FROM packages AS previous WHERE previous.status='CONFLICT'
-                AND previous.last_error_code IN ('REPACK_PREDECESSOR_REVIEW_REQUIRED','REPACK_REOPEN_REFUSED')
+            EXISTS (SELECT 1 FROM packages AS previous WHERE previous.idempotency_key<>current.idempotency_key
+                AND ((previous.status='CONFLICT'
+                    AND previous.last_error_code IN ('REPACK_PREDECESSOR_REVIEW_REQUIRED','REPACK_REOPEN_REFUSED'))
+                  OR (previous.local_completion_committed=1 AND previous.local_completion_order IS NULL))
                 AND """ + _PACKAGE_SOURCE_MATCH + """ )
             OR EXISTS (SELECT 1 FROM package_cancellation_outbox AS cancel
                 WHERE cancel.package_idempotency_key=current.predecessor_package_key
