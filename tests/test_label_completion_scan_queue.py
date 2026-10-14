@@ -288,6 +288,9 @@ def test_a_work_change_before_the_held_scans_run_refuses_them_aloud(tmp_path, mo
 def test_a_lane_fault_during_the_save_refuses_the_held_scans_aloud(tmp_path, monkeypatch):
     module, app, root, entered, release = _completion_app(tmp_path, monkeypatch)
     _record_events(app)
+    # Exercise the terminal refusal when durable quarantine cannot recover.
+    # Successful quarantine/restart has its own fault-recovery regressions.
+    monkeypatch.setattr(app, '_resume_broken_ui_lane', lambda _error: False)
     try:
         _save_first_set(app, root, entered)
         _scanner(app, NEXT_SET[0])
