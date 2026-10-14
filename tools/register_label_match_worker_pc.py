@@ -94,12 +94,6 @@ ADMIN_RECOVERY_AUTHORIZATION_STATES = frozenset(
     {"LOGISTICS_READY", "OPERATION_PENDING"}
 )
 POSSESSION_KEY_SCOPE = SCOPE_CURRENT_USER
-REATTACH_CHALLENGE_REQUEST_VERSION = "producer-reattach-challenge-request-v1"
-REATTACH_CHALLENGE_VERSION = "producer-reattach-challenge-v1"
-REATTACH_PROOF_VERSION = "producer-reattach-proof-v1"
-REATTACH_COMPLETE_VERSION = "producer-reattach-complete-v1"
-REATTACH_AUDIENCE = "worker-analysis-producer-reattach-v1"
-REATTACH_PATH = "/api/producer-ingest/v2/reattach"
 CRYPTPROTECT_LOCAL_MACHINE = 0x4
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 LABEL_MATCH_APP = "LabelMatch"
@@ -180,23 +174,15 @@ class _AdminRecoveryProgress:
         self.producer_credential_finalized = False
         self.local_documents_finalized = False
         self.authorization_file_deleted = False
-        self.possession_reattach_attempted = False
-        self.possession_reattach_completion_requested = False
 
     def redacted_summary(self) -> dict[str, bool]:
-        summary = {
+        return {
             "server_credential_rotated": self.server_credential_rotated,
             "logistics_credential_finalized": self.logistics_credential_finalized,
             "producer_credential_finalized": self.producer_credential_finalized,
             "local_documents_finalized": self.local_documents_finalized,
             "authorization_file_deleted": self.authorization_file_deleted,
         }
-        if self.possession_reattach_attempted:
-            summary.update({
-                "possession_reattach_attempted": True,
-                "possession_reattach_completion_requested": self.possession_reattach_completion_requested,
-            })
-        return summary
 
 
 def _canonical_raw_event_names() -> list[str]:
@@ -822,7 +808,6 @@ def _enroll(
     enrollment_token: str,
     timeout_seconds: int,
     tls_ca_bundle_path: str = "",
-    session: requests.Session | None = None,
 ) -> dict[str, Any]:
     require_enrollment_mutex_owned()
     headers = {"X-Producer-Enrollment-Token": enrollment_token} if enrollment_token else {}
@@ -835,9 +820,7 @@ def _enroll(
     selected_ca = str(tls_ca_bundle_path or "").strip()
     if selected_ca:
         request_kwargs["verify"] = selected_ca
-    if session is not None:
-        request_kwargs["allow_redirects"] = False
-    response = (session.post if session is not None else requests.post)(enrollment_url, **request_kwargs)
+    response = requests.post(enrollment_url, **request_kwargs)
     try:
         response_payload = response.json()
     except ValueError as exc:
@@ -859,145 +842,7 @@ def _enroll(
         )
     if not isinstance(response_payload, dict):
         raise DirectSyncPushError("self-enroll response must be a JSON object")
-    if session is not None and not 200 <= response.status_code <= 299:
-        raise DirectSyncPushError("reattach response must not redirect to another endpoint")
     return response_payload
-
-
-def _validate_reattach_response(response: Mapping[str, Any], manifest: Mapping[str, Any],
-                                credential: Mapping[str, Any], descriptor: Mapping[str, Any]) -> None:
-    epoch = response.get("credential_epoch")
-    expected = {
-        "contract_version": REATTACH_COMPLETE_VERSION,
-        "status": "reattached", "identity_action": "REATTACHED",
-        "producer_id": credential["producer_id"],
-        "producer_install_id": manifest["pc_identity"]["producer_install_id"],
-        "source_host_id": manifest["pc_identity"]["source_host_id"],
-        "endpoint_url": credential["endpoint_url"],
-        "active_manifest_hashes": [manifest_hash(manifest)],
-    }
-    if (any(response.get(k) != v for k, v in expected.items())
-            or type(epoch) is not int or epoch < 2
-            or response.get("authorization_state") not in ADMIN_RECOVERY_AUTHORIZATION_STATES
-            or not isinstance(response.get("key_id"), str) or not response["key_id"].strip()
-            or response.get("possession_key") != {
-                "contract_version": POSSESSION_KEY_CONTRACT_VERSION,
-                "fingerprint": descriptor["fingerprint"],
-            }):
-        raise DirectSyncPushError("reattach response identity or possession binding differs")
-    receipt = response.get("client_receipt")
-    expected_receipt = {**expected, "receipt_schema_version": "producer-self-enrollment-client-receipt-v1",
-                        "credential_epoch": epoch,
-                        "possession_key_fingerprint": descriptor["fingerprint"]}
-    if (not isinstance(receipt, Mapping)
-            or any(receipt.get(k) != v for k, v in expected_receipt.items())
-            or any(receipt.get(k) != response.get(k) for k in (
-                "authorization_state", "key_id", "secret_fingerprint_sha256"))):
-        raise DirectSyncPushError("reattach client receipt binding differs")
-
-
-@writer_sink("worker_enrollment_network")
-@remote_request()
-def _reattach(args: argparse.Namespace, manifest: Mapping[str, Any], credential: Mapping[str, Any],
-              descriptor: Mapping[str, Any], token: str, progress: _AdminRecoveryProgress) -> dict[str, Any]:
-    """Recover absent local identity using only the server-bound existing key."""
-    require_enrollment_mutex_owned()
-    if getattr(args, "credential_scope", "") != SCOPE_CURRENT_USER:
-        raise DirectSyncPushError("reattach requires current_user credential scope")
-    progress.possession_reattach_attempted = True
-    data_dir = Path(credential["secret_data_dir"])
-    targets = _admin_recovery_local_targets(args, manifest, credential, data_dir / "reattach-input")
-    report_path = _resolved_output_path(getattr(args, "report_path", ""),
-                                        data_dir / "status" / DEFAULT_REPORT_FILENAME)
-    ca_target = Path(args.logistics_profile_path).parent / TLS_CA_BUNDLE_RELATIVE_PATH
-    if any(path.exists() for path in targets if path not in {report_path, ca_target}):
-        raise DirectSyncPushError("reattach requires absent local identity; preserve existing state and use supported recovery")
-    queue_paths = [data_dir / name for name in (
-        "queue", "spool", "relay_queue", "relay_state.sqlite3",
-        "relay_state.sqlite3-wal", "relay_state.sqlite3-shm", "relay_state.sqlite3-journal")]
-    queue_paths.extend(Path(manifest["sync"]["queue"][name]) for name in ("queue_dir", "client_state_db"))
-    if any(os.path.lexists(path) for path in queue_paths):
-        raise DirectSyncPushError("reattach cannot replace an existing local queue or spool")
-    print("이 PC 등록을 다시 연결하는 중입니다\n잠시 기다려 주세요")
-    identity = manifest["pc_identity"]
-    expected = {
-        "producer_id": credential["producer_id"], "source_host_id": identity["source_host_id"],
-        "producer_install_id": identity["producer_install_id"], "manifest_hash": manifest_hash(manifest),
-    }
-    endpoint = urlparse(credential["endpoint_url"])
-    url = endpoint._replace(path=REATTACH_PATH, params="", query="", fragment="").geturl()
-    session = _open_admin_recovery_session(str(getattr(args, "tls_ca_bundle_path", "") or ""))
-    try:
-        challenge = _enroll(
-            {"contract_version": REATTACH_CHALLENGE_REQUEST_VERSION, **expected},
-            enrollment_url=url + "/challenge", enrollment_token=token,
-            timeout_seconds=args.enrollment_timeout_seconds, session=session,
-        )
-        proof = challenge.get("proof_payload")
-        fields = {"contract_version", "challenge_id", "nonce", "expires_at", "audience", *expected}
-        if (challenge.get("contract_version") != REATTACH_CHALLENGE_VERSION
-                or not isinstance(proof, dict) or set(proof) != fields
-                or proof.get("contract_version") != REATTACH_PROOF_VERSION
-                or proof.get("audience") != REATTACH_AUDIENCE
-                or any(proof.get(k) != v for k, v in expected.items())
-                or not all(isinstance(proof.get(k), str) and proof[k] for k in ("challenge_id", "nonce", "expires_at"))):
-            raise DirectSyncPushError("reattach challenge binding differs")
-        if challenge.get("possession_key_fingerprint") != descriptor["fingerprint"]:
-            raise PossessionKeyRecoveryRequired("reattach", {
-                "scope": POSSESSION_KEY_SCOPE, "reason": "registered_possession_key_differs"})
-        try:
-            if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", proof["expires_at"]) is None:
-                raise ValueError("noncanonical UTC")
-            expires = _dt.datetime.strptime(proof["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc)
-        except ValueError as exc:
-            raise DirectSyncPushError("reattach challenge expiry is invalid") from exc
-        if expires <= _dt.datetime.now(_dt.timezone.utc):
-            raise DirectSyncPushError("reattach challenge is expired")
-        try:
-            with PersistentPossessionKey.open_existing(scope=POSSESSION_KEY_SCOPE) as key:
-                if key.descriptor().as_dict()["fingerprint"] != descriptor["fingerprint"]:
-                    raise DirectSyncPushError("reattach local possession key changed")
-                key.assert_non_exportable()
-                signature = b64url_encode(key.sign_es256(canonical_json_bytes(proof)))
-        except AdminRecoveryRequired as exc:
-            raise PossessionKeyRecoveryRequired("reattach", exc.public_state()) from exc
-        progress.possession_reattach_completion_requested = True
-        response = _enroll(
-            {"contract_version": REATTACH_COMPLETE_VERSION, "proof": proof, "signature": signature,
-             "manifest": dict(manifest), "endpoint_url": credential["endpoint_url"]},
-            enrollment_url=url, enrollment_token=token,
-            timeout_seconds=args.enrollment_timeout_seconds, session=session,
-        )
-        _validate_reattach_response(response, manifest, credential, descriptor)
-        progress.server_credential_rotated = True
-        progress.fresh_local_state = True
-        return response
-    finally:
-        session.close()
-
-
-def _prior_reattach_requested(args: argparse.Namespace, manifest: Mapping[str, Any],
-                              credential: Mapping[str, Any]) -> bool:
-    path = _resolved_output_path(getattr(args, "report_path", ""),
-        Path(credential["secret_data_dir"]) / "status" / DEFAULT_REPORT_FILENAME)
-    if not path.is_file():
-        return False
-    if path.stat().st_size > 65_536 or path.stat().st_nlink != 1:
-        raise DirectSyncPushError("registration retry report is not a bounded regular file")
-    previous = _load_json_no_duplicate_keys(path.read_bytes())
-    if not isinstance(previous, dict):
-        raise DirectSyncPushError("registration retry report is not an object")
-    if (previous.get("report_version") != "label-match-worker-pc-registration-v1"
-            or previous.get("status") != "POSSESSION_PROOF_REATTACH_REQUIRED"
-            or previous.get("recovery_action") != "POSSESSION_PROOF_REATTACH_REQUIRED"
-            or previous.get("secret_material_persisted") is not False):
-        return False
-    expected = {"endpoint_url": credential["endpoint_url"], "producer_id": credential["producer_id"],
-                "producer_install_id": manifest["pc_identity"]["producer_install_id"],
-                "source_host_id": manifest["pc_identity"]["source_host_id"]}
-    if any(previous.get(k) != v for k, v in expected.items()):
-        raise DirectSyncPushError("registration retry report identity or server origin differs")
-    return True
 
 
 def _validate_v2_enrollment_response(
@@ -2185,38 +2030,26 @@ def _apply_registration_locked(
             "possession_public_jwk": dict(possession_key["public_jwk"]),
             "producer_id": credential["producer_id"],
         }
-        reattached = (report.get("producer_identity_source") == "generated"
-                      and _prior_reattach_requested(args, manifest, credential))
-        if reattached:
-            progress.possession_reattach_attempted = True
-            response_payload = _reattach(args, manifest, credential, possession_key, token, progress)
-        else:
-            try:
-                response_payload = _enroll(
-                    enrollment_payload, enrollment_url=enrollment_url, enrollment_token=token,
-                    timeout_seconds=args.enrollment_timeout_seconds,
-                    tls_ca_bundle_path=str(getattr(args, "tls_ca_bundle_path", "") or "").strip(),
-                )
-            except ProducerEnrollmentHTTPError as exc:
-                if (exc.status_code != 409 or exc.error_code != "reattach_proof_required"
-                        or report.get("producer_identity_source") != "generated"):
-                    raise
-                progress.possession_reattach_attempted = True
-                response_payload = _reattach(args, manifest, credential, possession_key, token, progress)
-                reattached = True
-        if not reattached:
-            _validate_v2_enrollment_response(
-                response_payload,
-                expected_fingerprint=str(possession_key["fingerprint"]),
-                expected_producer_id=str(credential["producer_id"]),
-                expected_install_id=str(report["producer_install_id"]),
-                expected_source_host_id=str(report["source_host_id"]),
-                expected_endpoint_url=str(credential["endpoint_url"]),
-                expected_manifest_hash=str(report["manifest_hash"]),
-            )
-        registration_contract_version = REATTACH_COMPLETE_VERSION if reattached else ENROLLMENT_CONTRACT_VERSION
-        registration_url = (urlparse(credential["endpoint_url"])._replace(
-            path=REATTACH_PATH, params="", query="", fragment="").geturl() if reattached else enrollment_url)
+        response_payload = _enroll(
+            enrollment_payload,
+            enrollment_url=enrollment_url,
+            enrollment_token=token,
+            timeout_seconds=args.enrollment_timeout_seconds,
+            tls_ca_bundle_path=str(
+                getattr(args, "tls_ca_bundle_path", "") or ""
+            ).strip(),
+        )
+        _validate_v2_enrollment_response(
+            response_payload,
+            expected_fingerprint=str(possession_key["fingerprint"]),
+            expected_producer_id=str(credential["producer_id"]),
+            expected_install_id=str(report["producer_install_id"]),
+            expected_source_host_id=str(report["source_host_id"]),
+            expected_endpoint_url=str(credential["endpoint_url"]),
+            expected_manifest_hash=str(report["manifest_hash"]),
+        )
+        registration_contract_version = ENROLLMENT_CONTRACT_VERSION
+        registration_url = enrollment_url
     possession_fingerprint = str(possession_key["fingerprint"])
     report.update(
         {
@@ -2343,14 +2176,10 @@ def _apply_registration_locked(
             "credential_epoch": response_payload.get("credential_epoch"),
             "possession_binding_verified": True,
             "v2_client_receipt_verified": True,
-            **({"automatic_possession_reattach_attempted": True,
-                "reattach_progress": progress.redacted_summary()}
-               if registration_contract_version == REATTACH_COMPLETE_VERSION else {}),
             "machine_profiles": {"logistics": machine_profile} if machine_profile else {},
             "registration_action": (
                 "admin_recovery"
                 if admin_recovery_requested
-                else "possession_reattach" if registration_contract_version == REATTACH_COMPLETE_VERSION
                 else "initial_enrollment"
             ),
             "registration_contract_version": registration_contract_version,
@@ -2733,15 +2562,6 @@ def main(argv: list[str] | None = None, *, defer_canonical_data_open: bool = Fal
             "secret_material_persisted": False,
         }
         blocked.update({key: value for key, value in report_context.items() if value is not None})
-        if recovery_progress.possession_reattach_attempted:
-            blocked.update({
-                "status": "POSSESSION_PROOF_REATTACH_REQUIRED",
-                "recovery_action": "POSSESSION_PROOF_REATTACH_REQUIRED",
-                "automatic_possession_reattach_attempted": True,
-                "automatic_credential_replay_performed": False,
-                "existing_identity_preserved": True,
-                "reattach_progress": recovery_progress.redacted_summary(),
-            })
         if isinstance(exc, EnrollmentMutexError):
             blocked.update(
                 {

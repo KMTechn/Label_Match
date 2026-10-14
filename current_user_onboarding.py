@@ -865,11 +865,7 @@ def inspect_current_user_state(
             and report.get("recovery_action") == "POSSESSION_PROOF_REATTACH_REQUIRED"
             and report.get("secret_material_persisted") is False
         ):
-            # An explicit next startup can retry with the existing possession
-            # key. Registration consumes this report through challenge/complete,
-            # rather than replaying initial enrollment or any root credential.
-            return {"status": "ABSENT_RETRYABLE", "present": present,
-                    "recovery_action": "POSSESSION_PROOF_REATTACH_REQUIRED"}
+            return {"status": "POSSESSION_PROOF_REATTACH_REQUIRED", "present": present}
         if str(report.get("status") or "") in {"BLOCKED", "FAILED", "UNKNOWN"}:
             return {"status": "ABSENT_RETRYABLE", "present": present}
         if (
@@ -1603,10 +1599,6 @@ def onboard_current_user(
                             registration_failure = _read_json(
                                 paths.registration_report_path, "registration failure report"
                             )
-                            if (registration_failure.get("report_version") == "label-match-worker-pc-registration-v1"
-                                    and registration_failure.get("recovery_action") == "POSSESSION_PROOF_REATTACH_REQUIRED"
-                                    and registration_failure.get("secret_material_persisted") is False):
-                                require_registration_recovery({"status": "POSSESSION_PROOF_REATTACH_REQUIRED"})
                             if (
                                 registration_failure.get("report_version")
                                 == "label-match-worker-pc-registration-v1"
