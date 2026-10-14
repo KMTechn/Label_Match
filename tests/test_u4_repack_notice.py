@@ -22,7 +22,7 @@ def test_repack_review_notice_reads_ack_without_changing_receipt_or_local_comple
     if mode == 'new':
         receipt['data'].update(reopened_transfer_bundle_id=original.source_bundle_id, transfer_entity_version=9, reversal_movement_id='REVERSAL-U4')
     elif mode == 'refused':
-        receipt['data'].update(reopen=False, reason='REOPEN_LINEAGE_AMBIGUOUS')
+        receipt['data'].update(reopen=False, reopen_reason='REOPEN_LINEAGE_AMBIGUOUS')
     cancels.mark_acked(cancel['idempotency_key'], receipt)
     frozen = cancels.get_by_event_id(intent.cancellation_event_id)['receipt_json']
     repack = _draft_for_set('REPACK')
