@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import subprocess
 import sys
 import threading
 import types
@@ -235,12 +236,38 @@ def wait_pushes(screen, count):
         threading.Event().wait(0.005)
 
 
+def test_actual_shell_state_uses_the_unmodified_receipted_contract(screen):
+    old_commit = "ac980126f2d3976be65c8cee9f8347e9f27883b2"
+
+    def old_json(relative):
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "show", f"{old_commit}:{relative}"],
+            capture_output=True, check=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return json.loads(result.stdout)
+
+    assert old_json("ui/parts/MANIFEST.json")["commit"] == "c7e51fc19d74611ff9a7b6b6340208ae57d7b8a5"
+    old_schema = old_json("ui/parts/app/lm/contract.json")["state"]
+    assert "events_dropped" not in old_schema["properties"]
+    before = screen.bridge.events.dropped
+    with mock.patch.object(screen.bridge.events.fileio, "append_bytes", side_effect=OSError):
+        screen.bridge.events.record("test", "contract_probe")
+    state = call(screen, screen.bridge.get_state)
+    assert type(state["events_dropped"]) is int and state["events_dropped"] == before + 1
+    old_errors = schema_errors(old_schema, state)
+    assert len(old_errors) == 1 and "events_dropped" in old_errors[0]
+    # Validate the actual response against the receipt, without editing either.
+    assert schema_errors(CONTRACT["state"], state) == []
+    assert CONTRACT["state"]["properties"]["events_dropped"] == {"type": "integer", "minimum": 0}
+    for invalid in (-1, 1.5, True):
+        errors = schema_errors(CONTRACT["state"], {**state, "events_dropped": invalid})
+        assert errors and all("events_dropped" in error for error in errors)
+    assert schema_errors(CONTRACT["state"], {**state, "unlisted_shell_field": None})
+
+
 def test_state_through_the_shell_matches_the_contract(screen):
-    # This counter belongs to the accepted shell transport, not the app state.
-    # Validate it explicitly and keep every app property/extra-field check.
-    state_schema = {**CONTRACT["state"],
-                    "properties": {**CONTRACT["state"]["properties"], "events_dropped": {"type": "integer", "minimum": 0}},
-                    "required": [*CONTRACT["state"]["required"], "events_dropped"]}
+    state_schema = CONTRACT["state"]
     empty = call(screen, screen.bridge.state)
     assert schema_errors(state_schema, empty) == []
     assert empty["work"]["next"] == "현품표를 스캔하세요" and empty["work"]["scan_left"] == 5

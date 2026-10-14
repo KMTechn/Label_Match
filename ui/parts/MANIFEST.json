@@ -1,10 +1,10 @@
 {
  "schema": "ui-parts/1",
  "source": "WorkerAnalysisGUI-web",
- "commit": "c7e51fc19d74611ff9a7b6b6340208ae57d7b8a5",
+ "commit": "97efc8e733ba8d73c3d4c8d8a486cad5c3d8d531",
  "dirty": false,
  "app": "lm",
- "parts_fingerprint": "93accd38751e623a",
+ "parts_fingerprint": "65b1b241ad7e2f34",
  "files": [
   {
    "path": "app/frame.css",
@@ -20,9 +20,9 @@
   },
   {
    "path": "app/lm/contract.json",
-   "sha256": "255d4153f08d3db15215683acfc5788c4afb1a69d29cb71b921cc8908a9e1233",
-   "bytes": 30126,
-   "gzip": 8106
+   "sha256": "25de7b2aec3e848dd52b740ad778491734f1893a57b44006a98ec8f737eb1fa3",
+   "bytes": 30185,
+   "gzip": 8123
   },
   {
    "path": "app/lm/fixtures/about.json",

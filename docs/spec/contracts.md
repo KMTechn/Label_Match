@@ -1,15 +1,15 @@
 # Label_Match 데이터·통합 계약
 
-v2.0.102 후보는 인수 없이 새 화면(셸 v3.16.2)을 엽니다. 비상 `--ui tk`·`--old-screen`은 셸을 가져오지 않습니다. `--new-screen`·`--ui web`과 모르는 `--ui` 값은 기본 새 화면을 고릅니다. 셸 가져오기·자료 폴더·WebView2 준비 실패는 같은 시작 임대 안에서 Tk로 이어집니다. 처리 층을 만든 뒤 시작 실패는 셸이 쓰기 문·창을 닫고 같은 판 표지를 기록하며 writer/lane 종료를 기다려 끝냅니다. 다음 실행은 `web_allowed`가 같은 판 표지를 보고 Tk를 고릅니다. 자동 재실행과 PID 기다림은 없습니다. 시작 확인·업데이트·한 개만·설치·자료 거절 순서는 유지합니다.
+v2.0.103 후보는 인수 없이 새 화면(셸 v3.16.2)을 엽니다. 비상 `--ui tk`·`--old-screen`은 셸을 가져오지 않습니다. `--new-screen`·`--ui web`과 모르는 `--ui` 값은 기본 새 화면을 고릅니다. 셸 가져오기·자료 폴더·WebView2 준비 실패는 같은 시작 임대 안에서 Tk로 이어집니다. 처리 층을 만든 뒤 시작 실패는 셸이 쓰기 문·창을 닫고 같은 판 표지를 기록하며 writer/lane 종료를 기다려 끝냅니다. 다음 실행은 `web_allowed`가 같은 판 표지를 보고 Tk를 고릅니다. 자동 재실행과 PID 기다림은 없습니다. 시작 확인·업데이트·한 개만·설치·자료 거절 순서는 유지합니다.
 
-조립 후보 v2.0.102는 앱·자료 판 번호를 함께 올리며 자료 꼴은 유지한다. v2.0.99·v2.0.100·v2.0.101 자료는 열고 v2.0.102 자료의 낮은 판 되돌림은 거절한다. 같은 판의 다른 미검증 build는 자료 판 불명으로 거절하므로 자료가 남는 PC에 설치하는 다음 build는 자료 판보다 엄격히 높은 판을 사용한다. 별도 서명 호환 증명 없이 기본 자료 호환 하한은 자기 판 v2.0.102이며 자료 꼴·서명·검증은 바꾸지 않는다. 새 화면 셸 v3.16.2/READY와 기존 검사 런타임의 정확한 native 6개를 바이트로 고정한다. 두 설치기의 unsigned 허용은 없음(옛 판) 또는 정확한 3경로·해시이며, 빌더·설치기·패킷 핀이 다르면 빌드 실패다.
+조립 후보 v2.0.103는 앱·자료 판 번호를 함께 올리며 자료 꼴은 유지한다. v2.0.99·v2.0.100·v2.0.101·v2.0.102 자료는 열고 v2.0.103 자료의 낮은 판 되돌림은 거절한다. 같은 판의 다른 미검증 build는 자료 판 불명으로 거절하므로 자료가 남는 PC에 설치하는 다음 build는 자료 판보다 엄격히 높은 판을 사용한다. 별도 서명 호환 증명 없이 기본 자료 호환 하한은 자기 판 v2.0.103이며 자료 꼴·서명·검증은 바꾸지 않는다. 새 화면 셸 v3.16.2/READY와 기존 검사 런타임의 정확한 native 6개를 바이트로 고정한다. 두 설치기의 unsigned 허용은 없음(옛 판) 또는 정확한 3경로·해시이며, 빌더·설치기·패킷 핀이 다르면 빌드 실패다.
 
 READY 판정과 살아 있는 relay 재사용은 설치기가 남긴 `update-control/worker-pending.json`의 명시적 `server_base_url`과 등록에 사용한 relay credential의 `endpoint_url`을 로컬에서 대조한다. 완료된 기계 표지도 사용하며 scheme·host·유효 port만 비교한다(대소문자·끝 슬래시·기본 port는 동등). 둘 다 판독 가능하고 다르면 `RECOVERY_REQUIRED`·`INSTALL_SERVER_ORIGIN_CHANGED`로 등록·relay 시작/재사용 전에 거절하고 로컬 자료·대기열을 보존한다. 환경 override와 서버가 반환한 logistics profile 주소는 비교하지 않는다. 주소가 없거나 판독 불가능한 옛 기록은 이 비교를 건너뛰며 기존 검증을 유지한다. 네트워크·새 대기·writer admission은 추가하지 않는다.
 
 portable direct-sync relay 자식은 기존 시작 관문을 지난 뒤 `label_match_product_host.dispatch_product_mode`를 호출하며 `Label_Match` 앱 모듈을 적재하지 않는다. host의 `startup_gate(role="relay")`·업데이트 trial/판 확인·자료 세대·credential 준비·writer sink·인수·종료/오류 계약과 별도 자식 프로세스는 유지한다. 일반 GUI와 다른 제품 인수의 진입 경로는 그대로다.
 
 <a id="new-screen-shell-write-guard"></a>
-v2.0.102 어댑터는 `web_allowed(data, version)` 판정과 `before_exit(code, deadline_s)`를 셸에 연결한다. 끝내기 admission과 lane 시작을 같은 잠금에서 닫고, normal writer 허가와 실제 worker 종료(BROKEN 포함)를 확인한다. 확인된 위임 허가는 worker 종료를 기준으로 한다. 창 생성 뒤 실패는 셸이 표지를 남기고 끝내며 다음 사람의 실행에서 Tk를 고른다. 자동 재실행·PID 기다림은 없다. 새 화면의 앱 마무리는 쓰기가 살아 있는 동안 강제 종료하지 않는다.
+v2.0.103 어댑터는 `web_allowed(data, version)` 판정과 `before_exit(code, deadline_s)`를 셸에 연결한다. 끝내기 admission과 lane 시작을 같은 잠금에서 닫고, normal writer 허가와 실제 worker 종료(BROKEN 포함)를 확인한다. 확인된 위임 허가는 worker 종료를 기준으로 한다. 창 생성 뒤 실패는 셸이 표지를 남기고 끝내며 다음 사람의 실행에서 Tk를 고른다. 자동 재실행·PID 기다림은 없다. 새 화면의 앱 마무리는 쓰기가 살아 있는 동안 강제 종료하지 않는다.
 
 새 화면 입구는 셸 import·WebView2 준비를 먼저 확인하고, `_prepare_screen`에서 `shell_fileio.set_write_guard(shell_write_guard)`가 돌려주는 private FileIO로 첫 WebView2 프로필 폴더를 만든다. 이어 `run_app(write_guard=shell_write_guard)`에도 같은 담장을 전달한다. 셸의 events·journal·sound_cache·udf·test_control 쓰기는 `shell/shell_fileio.py`의 다섯 함수로 모이며, 각각 기존 `writer_admission("shell_fileio")` 안에서만 실행한다. 선언에는 이 위임을 `shell_fileio` 한 source로 기록한다. 허가는 한 번 쓰기 뒤 내려놓으며 화면·스캔·사람 응답·네트워크를 기다리는 동안 쥐지 않는다.
 
