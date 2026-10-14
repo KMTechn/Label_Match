@@ -27,8 +27,13 @@ NATIVE_CLOCK = time.monotonic
 
 
 @pytest.fixture
-def managed_onboarding(base_managed_onboarding):
+def managed_onboarding(base_managed_onboarding, monkeypatch):
     paths, environment, control, helpers = base_managed_onboarding
+    operator_sid = updates.load_policy(control)["operator_sid"]
+    monkeypatch.setattr(updates, "process_security", lambda _pid: {
+        "sid": operator_sid, "elevated": False,
+        "integrity_rid": 8192, "session_id": 1,
+    })
     stage = control.parent / 'startup-stage'
     stage.mkdir()
     policy = updates.read_json(control / 'policy.json')
