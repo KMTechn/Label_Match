@@ -61,7 +61,7 @@ def test_ack_receipt_plane_identity_uses_resolved_envelope_fields():
     ('inbound_iin','other'), ('transfer_state','CONSUMED'), ('transfer_entity_version',True),
     ('package_source_ready',False), ('current_transfer_member_ids',['unit-a']),
     ('current_transfer_projection_ids',['unit-a']), ('current_transfer_membership_hash','wrong'),
-    ('recovery_receipt_id',''), ('recovery_state','RESOLVED'), ('reopen',True),
+    ('recovery_receipt_id',''), ('recovery_receipt_id','cancel-a'), ('recovery_state','RESOLVED'), ('reopen',True),
 ])
 def test_unknown_mismatched_or_consumed_evidence_cannot_release(field,value):
     expected,response=evidence()

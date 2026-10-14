@@ -97,3 +97,25 @@ def test_v12_migration_is_additive_repeatable_and_corrupt_recovery_stays_closed(
         conn.execute("UPDATE package_recovery_evidence SET contract_sha256='unknown'")
     with pytest.raises(PackageLogisticsError):
         PackageOutbox(outbox.db_path)
+
+
+def test_physical_cancel_cannot_close_without_current_label_proof(tmp_path):
+    outbox,original,blocked,response=held(tmp_path)
+    with sqlite3.connect(outbox.db_path) as conn:
+        receipt=json.loads(conn.execute('SELECT receipt_json FROM package_command_outbox WHERE set_id=?',(original.set_id,)).fetchone()[0])
+        receipt['data']['phs_work_group']={'group_id':'group'}
+        conn.execute('UPDATE package_command_outbox SET receipt_json=? WHERE set_id=?',(json.dumps(receipt),original.set_id))
+    response['current_labels']=[]
+    before=immutable(outbox)
+    assert not outbox.close_package_recovery(outbox.package_recovery_target(blocked.set_id),response,operator_id='worker-a')
+    assert immutable(outbox)==before and outbox.list_repack_reviews()
+
+
+@pytest.mark.parametrize('field',['package_key','cancel_receipt_id','recovery_receipt_id'])
+def test_stored_recovery_relational_identity_must_match_its_evidence(tmp_path,field):
+    outbox,_,blocked,response=held(tmp_path)
+    assert outbox.close_package_recovery(outbox.package_recovery_target(blocked.set_id),response,operator_id='worker-a')
+    with sqlite3.connect(outbox.db_path) as conn:
+        conn.execute('UPDATE package_recovery_evidence SET '+field+'=?',('unrelated',))
+    with pytest.raises(PackageLogisticsError):
+        PackageOutbox(outbox.db_path)

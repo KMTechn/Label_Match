@@ -6,6 +6,12 @@ from package_errors import PackageLogisticsError
 from package_recovery import CONTRACT_SHA256, recovery_expectation, validate_recovery_read
 
 
+def _physical_label_proof_present(package, response):
+    receipt = json.loads(package['receipt_json'])
+    physical = isinstance(receipt.get('data',receipt).get('phs_work_group'),dict)
+    return not physical or bool(response.get('current_labels'))
+
+
 def initialize_recovery_schema(conn, *, validate=True):
     conn.execute('''CREATE TABLE IF NOT EXISTS package_recovery_evidence (
         cancel_key TEXT PRIMARY KEY, package_key TEXT NOT NULL,
@@ -22,9 +28,17 @@ def initialize_recovery_schema(conn, *, validate=True):
     # A corrupted record must never become authority to skip a product/source hold.
     for row in conn.execute('SELECT * FROM package_recovery_evidence').fetchall():
         expected = expectation_for_cancel(conn, row['cancel_key'])
+        package = conn.execute('''SELECT package.* FROM package_command_outbox AS package
+            JOIN package_cancellation_outbox AS cancel ON cancel.package_idempotency_key=package.idempotency_key
+            WHERE cancel.idempotency_key=?''', (row['cancel_key'],)).fetchone()
+        response = json.loads(row['evidence_json'])
         if (expected is None or canonical_json(expected) != row['expectation_json']
+                or package is None or package['idempotency_key'] != row['package_key']
+                or expected['cancel_receipt_id'] != row['cancel_receipt_id']
+                or response.get('recovery_receipt_id') != row['recovery_receipt_id']
                 or row['contract_sha256'] != CONTRACT_SHA256
-                or validate_recovery_read(json.loads(row['evidence_json']), expected) != 'RECOVERED'):
+                or validate_recovery_read(response, expected) != 'RECOVERED'
+                or not _physical_label_proof_present(package,response)):
             raise PackageLogisticsError('PACKAGE_RECOVERY_STORED_EVIDENCE_INVALID')
     if conn.execute('''SELECT 1 FROM package_recovery_review_closures AS closure
         LEFT JOIN package_recovery_evidence AS proof ON proof.cancel_key=closure.cancel_key
@@ -86,6 +100,8 @@ def close_recovery(store, target, response, *, operator_id, operator_name):
     if not str(operator_id or '').strip():
         raise PackageLogisticsError('PACKAGE_RECOVERY_OPERATOR_REQUIRED')
     if validate_recovery_read(response, target['expected']) != 'RECOVERED':
+        return False
+    if not _physical_label_proof_present(target['package'],response):
         return False
     with store._lock, store._connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
