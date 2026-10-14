@@ -80,6 +80,9 @@ def test_real_recovery_read_closes_once_then_same_physical_products_create_new_p
         from urllib.error import HTTPError
         from urllib.parse import urlencode
         import ssl
+        from tests.test_u4_repack_visibility import prepare_recovery_app
+        from pathlib import Path
+        prepare_recovery_app(app,app.package_outbox,Path(app.save_directory))
         before = business_snapshot(app.package_outbox)
         target = app.package_outbox.package_recovery_target(original_set)
         assert target is not None
