@@ -169,8 +169,12 @@ def _draft(*, mode="INHERIT_ALL", exact=()):
     )
 
 
-def _draft_for_set(set_id):
+def _draft_for_set(set_id, *, independent_source=False):
     draft = _draft()
+    if independent_source:
+        source_id = TRANSFER + "-" + set_id
+        draft = replace(draft, source_bundle_id=source_id,
+                        source_external_label=draft.source_external_label.replace(TRANSFER, source_id))
     return replace(
         draft,
         set_id=set_id,
@@ -246,6 +250,7 @@ def _receipt(draft):
 
 
 def _ack_package_creation(outbox, draft):
+    source_id = draft.source_bundle_id
     row = outbox.enqueue(draft)
     outbox.mark_local_completion_committed(row["idempotency_key"])
     claimed = outbox.claim_next()
@@ -258,15 +263,18 @@ def _ack_package_creation(outbox, draft):
         "ledger_plane": "AUTHORITATIVE",
         "plane_epoch": 3,
         "idempotency_key": row["idempotency_key"],
-        "expected_versions": {f"bundle:{TRANSFER}": 7},
+        "expected_versions": {f"bundle:{source_id}": 7},
         "payload": {
-            "source_bundle_id": TRANSFER,
+            "source_bundle_id": source_id,
             "package_bundle_id": draft.package_bundle_id,
             "source_evidence": _source_evidence(),
         },
     }
-    outbox.save_command(row["idempotency_key"], TRANSFER, command)
-    outbox.mark_acked(row["idempotency_key"], _receipt(draft))
+    outbox.save_command(row["idempotency_key"], source_id, command)
+    receipt = _receipt(draft)
+    receipt["data"]["source_bundle_id"] = source_id
+    receipt["entity_versions"] = {f"bundle:{source_id}": 8, f"bundle:{draft.package_bundle_id}": 1}
+    outbox.mark_acked(row["idempotency_key"], receipt)
     return outbox.get_by_set_id(draft.set_id)
 
 
@@ -1010,7 +1018,7 @@ def test_real_v2_five_state_migration_preserves_every_state_and_payload(
     statuses = ("DEFERRED", "PENDING", "SENDING", "ACKED", "CONFLICT")
     expected = {}
     for index, status in enumerate(statuses, 1):
-        draft = _draft_for_set(f"V2-SET-{index}")
+        draft = _draft_for_set(f"V2-SET-{index}", independent_source=True)
         _ack_package_creation(package_outbox, draft)
         intent = _cancellation_intent(draft)
         queued = cancellation_outbox.enqueue(intent)
@@ -1178,7 +1186,7 @@ def test_stale_sending_lease_is_reclaimed_by_claim_next_not_initializer(tmp_path
 def test_separate_process_cannot_reclaim_recent_live_create_or_cancel_claim(tmp_path):
     db_path = tmp_path / "cross-process-live-leases.sqlite3"
     package_outbox = PackageOutbox(db_path)
-    cancellation_draft = _draft_for_set("LIVE-CANCEL-SET")
+    cancellation_draft = _draft_for_set("LIVE-CANCEL-SET", independent_source=True)
     _ack_package_creation(package_outbox, cancellation_draft)
     cancellation_outbox = PackageCancellationOutbox(db_path)
     intent = _cancellation_intent(cancellation_draft)
@@ -1186,7 +1194,7 @@ def test_separate_process_cannot_reclaim_recent_live_create_or_cancel_claim(tmp_
     cancellation_outbox.mark_local_event_committed(intent.cancellation_event_id)
     assert cancellation_outbox.claim_next()["status"] == "SENDING"
 
-    create_draft = _draft_for_set("LIVE-CREATE-SET")
+    create_draft = _draft_for_set("LIVE-CREATE-SET", independent_source=True)
     create_row = package_outbox.enqueue(create_draft)
     package_outbox.mark_local_completion_committed(
         create_row["idempotency_key"]

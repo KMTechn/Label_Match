@@ -514,6 +514,25 @@ class PackageOutbox:
                 """SELECT * FROM package_command_outbox
                      WHERE status='PENDING'
                        AND local_completion_committed=1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM package_cancellation_outbox AS cancel
+                           JOIN package_command_outbox AS previous
+                             ON previous.idempotency_key=cancel.package_idempotency_key
+                           WHERE previous.idempotency_key<>package_command_outbox.idempotency_key
+                             AND (cancel.status<>'ACKED' OR EXISTS (
+                                 SELECT 1 FROM package_receipt_rechecks AS recheck
+                                 WHERE recheck.outbox_kind='cancel'
+                                   AND recheck.idempotency_key=cancel.idempotency_key
+                                   AND recheck.verified_at IS NULL))
+                             AND (
+                                 (NULLIF(json_extract(previous.draft_json,'$.source_input_tag_id'),'')
+                                  =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_input_tag_id'),''))
+                                 OR (NULLIF(json_extract(previous.draft_json,'$.source_bundle_id'),'')
+                                     =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_bundle_id'),''))
+                                 OR (NULLIF(previous.resolved_source_bundle_id,'')
+                                     =NULLIF(json_extract(package_command_outbox.draft_json,'$.source_bundle_id'),''))
+                                 OR (NULLIF(previous.resolved_source_bundle_id,'')
+                                     =NULLIF(package_command_outbox.resolved_source_bundle_id,''))))
                        AND NOT EXISTS (SELECT 1 FROM package_receipt_rechecks AS recheck
                            WHERE recheck.outbox_kind='create'
                              AND recheck.idempotency_key=package_command_outbox.idempotency_key
