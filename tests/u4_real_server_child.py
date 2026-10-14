@@ -117,7 +117,36 @@ def main():
             assert other_response.status_code == 200
             extra['other_evidence'] = other_response.get_json()['data']
     credential = uuid.uuid4().hex
-    app.config['LOGISTICS_API_TOKEN'] = credential
+    if mode == 'spill-physical':
+        # Reuse the existing HTTP fixture's scoped machine policy and signer,
+        # retaining this app's real source resolver and real business routes.
+        from test_operation_lease import _operation_http_app
+        from operation_lease import OperationLeaseSigner, initialize_schema
+        class PolicyOnly:
+            def setattr(self, *args, **kwargs):
+                pass  # The fixture's synthetic source resolver is not installed.
+        policy_root = state/'lease-policy-fixture'
+        policy_root.mkdir()
+        policy_app, _policy_db, _unused_snapshot, _unused_headers, _unused_body = _operation_http_app(PolicyOnly(), policy_root)
+        policy = json.loads(policy_app.config['LOGISTICS_OPERATION_LEASE_MACHINE_POLICY_JSON'])
+        host, constraints = next((host, constraints) for host, constraints in policy['machines'].items()
+                                  if 'Label_Match' in constraints['programs'])
+        constraints['authority_scope_ids'] = [projection['authority_scope_id']]
+        headers = {'X-Logistics-Source-Host-Id':host,
+                   'X-Logistics-Device-Id':constraints['device_ids'][0],
+                   'X-Logistics-Program':'Label_Match'}
+        registry = json.loads(policy_app.config['LOGISTICS_API_TOKEN_REGISTRY_JSON'])
+        entry = registry.get('tokens', registry)[host]
+        credential = entry['token'] if isinstance(entry, dict) else entry
+        app.config['LOGISTICS_API_TOKEN_REGISTRY_JSON'] = json.dumps(registry)
+        app.config['LOGISTICS_OPERATION_LEASE_MACHINE_POLICY_JSON'] = json.dumps(policy)
+        for name, value in policy_app.extensions.items():
+            if isinstance(value, OperationLeaseSigner):
+                app.extensions[name] = value
+        import sqlite3
+        with sqlite3.connect(database) as connection:
+            initialize_schema(connection)
+    app.config['LOGISTICS_API_TOKEN'] = uuid.uuid4().hex if mode == 'spill-physical' else credential
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
