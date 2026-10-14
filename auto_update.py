@@ -2515,7 +2515,10 @@ def launch_version(control: Path, sha: str, arguments: list[str], *, nonce: str 
     if deferred_at:
         _utc(deferred_at)
         environment["KMTECH_LM_UPDATE_DEFERRED_AT"] = deferred_at
-    process = start_ordinary_process([str(bundle / "runtime/pythonw.exe"), "-I", "-B", str(bundle / "app/main.py"), *arguments], cwd=str(bundle), environment=environment)
+    entrypoint = "app/label_match_relay_entry.py" if arguments[:1] and arguments[0] in {
+        "--label-match-user-relay", "--label-match-direct-sync-relay"
+    } else "app/main.py"
+    process = start_ordinary_process([str(bundle / "runtime/pythonw.exe"), "-I", "-B", str(bundle / entrypoint), *arguments], cwd=str(bundle), environment=environment)
     return process.pid
 
 
@@ -2803,7 +2806,13 @@ def main(arguments: list[str] | None = None) -> int:
         return apply_prepared(expected)
     if options.bootstrap:
         args = options.arguments[1:] if options.arguments[:1] == ["--"] else options.arguments
+        if options.role == "relay":
+            from current_user_onboarding import _machine_worker_context
+            _machine_worker_context(Path(__file__).resolve().parent)
         if control_root(Path(__file__).resolve().parent) is None:
+            if options.role == "relay":
+                from label_match_relay_entry import main as relay_main
+                return relay_main(args)
             from Label_Match import main as application_main
 
             return int(application_main(args) or 0)

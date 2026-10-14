@@ -380,7 +380,8 @@ def _assert_portable_import_closure(
 ) -> None:
     modules = ["current_user_onboarding", "label_match_product_host",
                "label_atomic_replace", "label_match_instance_win32", "label_native_policy",
-               "label_match_single_instance", "label_match_screen", "label_screen_bridge"]
+               "label_match_single_instance", "label_match_screen", "label_screen_bridge",
+               "label_match_relay_entry"]
     modules.extend(
         "tools."
         + ".".join(

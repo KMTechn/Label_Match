@@ -853,7 +853,7 @@ if($env:LM_MACHINE_OUTCOME -ceq 'helper-unproven'){
 $pending=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if($script:placed -ne 1 -or $script:released -ne 1 -or
  $audit.schema -cne 'label-match-canonical-portable-install-v1' -or $audit.status -cne 'PASS_MACHINE_WORKER_PENDING' -or
-  $audit.worker_setup -cne $(if($env:LM_MACHINE_OUTCOME -ceq 'same-worker'){'PROFILE_READY_SESSION_PENDING'}else{'PENDING'}) -or $pending.target_sid -cne $worker.sid -or
+  $audit.worker_setup -cne 'PENDING' -or $script:userSetup -ne 0 -or $pending.target_sid -cne $worker.sid -or
  $pending.inventory_sha256 -cne $worker.inventory_sha256 -or $pending.source_commit -cne $manifest.source_commit -or
  $pending.install_id -cne $audit.run_id -or $audit.worker_pending.path -cne (Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json')){throw 'Machine pending evidence differs'}
 'PASS'

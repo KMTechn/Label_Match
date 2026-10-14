@@ -89,7 +89,7 @@ def test_portable_commands_use_signed_runtime_and_explicit_app_root(tmp_path):
     (app_root / "app").mkdir()
     (app_root / "runtime" / "python.exe").write_bytes(b"runtime")
     (app_root / "runtime" / "pythonw.exe").write_bytes(b"runtime")
-    (app_root / "app" / "main.py").write_text("pass\n", encoding="utf-8")
+    (app_root / "app" / "label_match_relay_entry.py").write_text("pass\n", encoding="utf-8")
 
     persistent = user_relay.build_user_relay_command(app_root)
     scheduled = user_relay.build_session_direct_sync_command(
@@ -105,7 +105,7 @@ def test_portable_commands_use_signed_runtime_and_explicit_app_root(tmp_path):
         str((app_root / "runtime" / "pythonw.exe").resolve()),
         "-I",
         "-B",
-        str((app_root / "app" / "main.py").resolve()),
+        str((app_root / "app" / "label_match_relay_entry.py").resolve()),
     ]
     assert persistent[-1] == user_relay.USER_RELAY_MODE
     assert "--app-root" not in persistent
@@ -113,7 +113,7 @@ def test_portable_commands_use_signed_runtime_and_explicit_app_root(tmp_path):
         str((app_root / "runtime" / "python.exe").resolve()),
         "-I",
         "-B",
-        str((app_root / "app" / "main.py").resolve()),
+        str((app_root / "app" / "label_match_relay_entry.py").resolve()),
     ]
     assert user_relay.LABEL_MATCH_WORKER_ID in scheduled
     assert (

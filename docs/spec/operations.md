@@ -1485,6 +1485,12 @@ Recovery card: 같은 작업자 지원 제거(main --remove-current-user-setup) 
 
 App-owned Python publishers call label_atomic_replace.atomic_replace. Only native WinError 5/32 retries, with a one-second deadline and the original first native exception on persistent refusal; other errors propagate immediately. Readers and writer admissions remain unchanged.
 
-PowerShell uses the canonical Invoke-LabelAtomicReplace in INSTALL_THIS_PC.ps1. tools/refresh_atomic_replace_declarations.py generates exact function-byte copies and their hash in the fence and shortcut callers so attested in-memory installation also works. The builder checks both copies before building; no caller resolves an ambient installer path. Move, Replace and write-through behavior retain their original API semantics.
+PowerShell uses the canonical Invoke-LabelAtomicReplace in INSTALL_THIS_PC.ps1. tools/refresh_atomic_replace_declarations.py generates exact function-byte copies and their hash in the fence, shortcut and public installer callers so attested in-memory installation also works. The builder checks all three copies before building; no caller resolves an ambient installer path. Move, Replace and write-through behavior retain their original API semantics.
 
 Range B excludes the ten name/SHA-pinned files in tests/fixtures/lm_atomic_exclusions.json (the kmtech_shared copy and shell/shell_fileio.py). Shared generation/raster/diagnostic publication remains upstream-owned. Version-directory rename is a separate, unchanged UNPROVEN case.
+
+## Worker first setup and headless relay
+
+Operational installation requires an explicit WorkerAccount. Machine completion releases its writer fence and installs the worker shortcut while keeping setup PENDING; it never prepares a profile or starts GUI/relay inside that transaction. After completion, only a caller with the worker's SID and a positive process session may request the ordinary worker's first setup.
+
+First setup and relay commands use label_match_relay_entry.py. Native worker context must match the protected policy SID, be non-elevated with medium integrity, and have a positive session before relay launch/reuse. Source recovery keeps its existing lifecycle without adding a new identity store. GUI entry remains the default manual program launch. Shell fallback markers and shared shell bytes are owned by the pinned shell.

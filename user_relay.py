@@ -297,7 +297,7 @@ def _application_command(
     if executable.is_file():
         return [str(executable)]
     portable_runtime = root / "runtime" / ("python.exe" if console else "pythonw.exe")
-    portable_entrypoint = root / "app" / "main.py"
+    portable_entrypoint = root / "app" / "label_match_relay_entry.py"
     if portable_runtime.is_file() and portable_entrypoint.is_file():
         return [
             str(portable_runtime),
@@ -305,7 +305,7 @@ def _application_command(
             "-B",
             str(portable_entrypoint),
         ]
-    source_entrypoint = root / "Label_Match.py"
+    source_entrypoint = root / "label_match_relay_entry.py"
     if source_entrypoint.is_file() and not getattr(sys, "frozen", False):
         runtime = Path(sys.executable).resolve()
         if not console:
@@ -675,6 +675,8 @@ def reuse_or_start_user_relay_process(
     ownership check. The relay releases writer admission while its child waits on network
     (run_persistent_relay_loop), so the start probe must not gate reuse.
     """
+    from current_user_onboarding import _machine_worker_context
+    _machine_worker_context(app_root)
     if launcher is None and os.name == "nt":
         from current_user_onboarding import resolve_current_user_onboarding_paths
 
@@ -733,6 +735,8 @@ def start_user_relay_process(
     bootstrap_readiness_seconds: float = 75.0,
     wait: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
+    from current_user_onboarding import _machine_worker_context
+    _machine_worker_context(app_root)
     command = build_user_relay_command(app_root)
     if launcher is not None:
         return {"status": "START_REQUESTED", "launcher_result": launcher(command)}

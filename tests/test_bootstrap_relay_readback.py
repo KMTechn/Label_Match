@@ -29,6 +29,10 @@ def relay_bootstrap(monkeypatch, tmp_path):
     }}
     policy = {"operator_sid": "operator", "staging_root": str(tmp_path / "stage")}
     monkeypatch.setattr(updates, "load_policy", lambda _: policy)
+    monkeypatch.setattr(updates, "process_security", lambda _: {
+        "sid": policy["operator_sid"], "elevated": False,
+        "integrity_rid": 8192, "session_id": 2,
+    })
     monkeypatch.setattr(updates, "read_json", lambda path: records[path.name])
     monkeypatch.setattr(updates, "optional_record", lambda path: records.get(path.name))
     monkeypatch.setattr(updates, "ordinary_user_context", lambda *_: True)

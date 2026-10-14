@@ -1107,6 +1107,28 @@ def _pending_server_origin(value: Any) -> bool:
     return match is not None and (match.group(1) is None or int(match.group(1)) <= 65535)
 
 
+def _machine_worker_context(app_root: str | os.PathLike[str]) -> dict[str, Any] | None:
+    """Require the designated ordinary worker in a positive Windows session."""
+    if os.name != "nt":
+        return None
+    from auto_update import installation_root, load_policy, process_security
+    managed = installation_root(_resolved(app_root))
+    expected_sid = None
+    if managed is not None and (managed / "update-control/policy.json").is_file():
+        expected_sid = load_policy(managed / "update-control")["operator_sid"]
+    identity = process_security(os.getpid())
+    if (identity.get("elevated") is not False
+            or type(identity.get("integrity_rid")) is not int or identity["integrity_rid"] != 8192
+            or type(identity.get("session_id")) is not int or identity["session_id"] <= 0
+            or not isinstance(identity.get("sid"), str) or not identity["sid"]
+            or (expected_sid is not None and identity["sid"] != expected_sid)):
+        raise CurrentUserOnboardingError(
+            "작업자 계정의 일반 사용자 세션에서 프로그램을 실행하세요.",
+            report_path=_resolved(app_root) / "worker-context-refusal.json",
+        )
+    return identity
+
+
 def validate_pending_worker_install(app_root: str | os.PathLike[str]) -> dict[str, Any] | None:
     """Read the machine marker before any business-data or current-user write."""
     from auto_update import installation_root, current_process_sid
@@ -1350,6 +1372,8 @@ def onboard_current_user(
 ) -> dict[str, Any]:
     from auto_update import installation_root, assert_registration_storage
     from writer_session_fence import onboarding_lifecycle_context
+    if not (defer_machine_worker_relay_start or defer_canonical_relay_start):
+        _machine_worker_context(app_root)
     pending_worker = validate_pending_worker_install(app_root)
     if defer_machine_worker_relay_start:
         from auto_update import process_security
