@@ -41,6 +41,8 @@ class LocalServer:
         self.online = True
         self.fail_create_once = False
         self.sent = []
+        self.create_posts = []
+        self.lost_create_receipt = None
         self.resolved_versions = []
         self.source_reads = 0
         headers = data['headers']
@@ -56,9 +58,7 @@ class LocalServer:
         if not self.online:
             raise PackageTransportError('isolated offline fault')
         assert urlsplit(url).hostname == '127.0.0.1'
-        if self.fail_create_once and method == 'POST' and urlsplit(url).path == '/logistics/api/v1/packages':
-            self.fail_create_once = False
-            raise PackageTransportError('offline original CREATE post')
+        lose_response = self.fail_create_once and method == "POST" and urlsplit(url).path == "/logistics/api/v1/packages"
         response = logistics._default_transport(method, url, headers, body, timeout,
                                                tls_ca_bundle_path=self.config.tls_ca_bundle_path)
         if method == 'GET' and urlsplit(url).path == '/logistics/api/v1/bundles/resolve':
@@ -67,9 +67,17 @@ class LocalServer:
                 '/logistics/api/v1/packages', '/logistics/api/v1/packages/cancel'):
             command = json.loads(body.decode('utf-8'))
             self.sent.append((command['command_type'], command['payload']['package_bundle_id']))
+            if command["command_type"] == "CREATE_PACKAGE":
+                self.create_posts.append(copy.deepcopy(command))
         data = response.get('data', {})
         if method == 'GET' and 'entity_version' in data:
             self.resolved_versions.append(data['entity_version'])
+        if lose_response:
+            # The real API returned only after its transaction committed.
+            self.fail_create_once = False
+            self.lost_create_receipt = copy.deepcopy(response["data"])
+            self.online = False
+            raise PackageTransportError("CREATE committed; response and connection lost")
         return response
 
 
@@ -168,6 +176,14 @@ def test_real_repack_waits_for_lost_cancel_ack_recheck_without_reposting_cancel(
         assert server.sent.count(('CANCEL_PACKAGE', original.package_bundle_id)) == 1
 
 
+def create_effect_counts(server, draft):
+    with sqlite3.connect(server.data["database"]) as connection:
+        package = connection.execute("SELECT COUNT(*) FROM logistics_bundles WHERE bundle_id=?", (draft.package_bundle_id,)).fetchone()[0]
+        movement = connection.execute("SELECT COUNT(*) FROM logistics_movements WHERE bundle_id=? AND reversal_of_movement_id IS NULL", (draft.package_bundle_id,)).fetchone()[0]
+        event = connection.execute("SELECT COUNT(*) FROM logistics_domain_events WHERE event_type='PACKAGE_CREATED' AND aggregate_id=?", (draft.package_bundle_id,)).fetchone()[0]
+        return package, movement, event
+
+
 def test_real_two_offline_repacks_restart_and_retry_original_create(tmp_path):
     with local_server(tmp_path) as server:
         outbox = PackageOutbox(tmp_path / 'chain.db')
@@ -184,20 +200,37 @@ def test_real_two_offline_repacks_restart_and_retry_original_create(tmp_path):
         assert PackageOutboxProcessor(outbox, server.client).drain()['retry'] == 1
         original_command = outbox.get_by_set_id('A')['command_json']
         assert original_command
+        original_row = outbox.get_by_set_id(drafts[0].set_id)
+        assert original_row["status"] == "PENDING" and original_row["receipt_json"] is None
+        assert server.create_posts == [json.loads(original_command)]
+        assert create_effect_counts(server, drafts[0]) == (1, 1, 1)
+        committed_receipt = copy.deepcopy(server.lost_create_receipt)
         outbox = PackageOutbox(outbox.db_path)
         cancels = PackageCancellationOutbox(outbox.db_path)
         create = PackageOutboxProcessor(outbox, server.client)
         cancel = PackageCancellationOutboxProcessor(cancels, server.client)
+        assert outbox.get_by_set_id(drafts[0].set_id)["command_json"] == original_command
+        server.online = True
+        # Retry the restarted outbox's immutable command through the real app HTTP client.
+        # Normal drain then confirms this receipt before sending the next cancel.
+        recovered = server.client.create_package(json.loads(outbox.get_by_set_id(drafts[0].set_id)["command_json"]))
+        assert recovered == committed_receipt
+        assert server.create_posts == [json.loads(original_command)] * 2
+        assert create_effect_counts(server, drafts[0]) == (1, 1, 1)
         for _ in range(2):
             assert create.drain() == {'acked': 1, 'retry': 0, 'conflict': 0}
             assert cancel.drain()['acked'] == 1
         assert create.drain() == {'acked': 1, 'retry': 0, 'conflict': 0}
-        assert server.sent == [('CREATE_PACKAGE', drafts[0].package_bundle_id), ('CANCEL_PACKAGE', drafts[0].package_bundle_id),
-                               ('CREATE_PACKAGE', drafts[1].package_bundle_id), ('CANCEL_PACKAGE', drafts[1].package_bundle_id),
-                               ('CREATE_PACKAGE', drafts[2].package_bundle_id)]
+        assert server.sent == [
+            ("CREATE_PACKAGE",drafts[0].package_bundle_id), ("CREATE_PACKAGE",drafts[0].package_bundle_id),
+            ("CANCEL_PACKAGE",drafts[0].package_bundle_id), ("CREATE_PACKAGE",drafts[1].package_bundle_id),
+            ("CANCEL_PACKAGE",drafts[1].package_bundle_id), ("CREATE_PACKAGE",drafts[2].package_bundle_id)]
         assert [outbox.get_by_set_id(draft.set_id)['status'] for draft in drafts] == ['ACKED'] * 3
         assert [outbox.get_by_set_id(draft.set_id)['attempt_count'] for draft in drafts] == [2, 1, 1]
         assert outbox.get_by_set_id('A')['command_json'] == original_command
+        assert json.loads(outbox.get_by_set_id(drafts[0].set_id)["receipt_json"]) == committed_receipt
+        assert all(create_effect_counts(server, draft) == (1, 1, 1) for draft in drafts)
+        assert len(server.create_posts) == 4
         with sqlite3.connect(server.data['database']) as connection:
             assert connection.execute("SELECT COUNT(*) FROM logistics_domain_events WHERE event_type='PACKAGE_REOPENED_TO_TRANSFER'").fetchone()[0] == 2
             assert connection.execute("SELECT COUNT(*) FROM logistics_movements WHERE movement_type='PACKAGE_REOPENED_TO_TRANSFER'").fetchone()[0] == 2
