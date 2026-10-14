@@ -259,6 +259,11 @@ class LabelMatchScreenProcessor:
         return True
 
     # ── 명령(지금 Tk 단추 · 단축키와 같은 입구) ──
+    def _command_start_retry(self, _args):
+        if not self.app._retry_initial_load():
+            return {"ok": False, "result": {"kind": "warn", "text": "지금은 다시 시도할 수 없습니다"}}
+        self._changed("start_retry")
+
     def _command_undo(self, _args):
         self.app._handle_workflow_shortcut("undo")
 
@@ -382,6 +387,41 @@ class LabelMatchScreenProcessor:
     def _command_recovery_list(self, _args):
         self._admin_result = None
         self._load_recovery()
+
+    def _command_recovery_park(self, args):
+        app = self.app
+        target = str(args.get("target") or "")
+        item = next((row for row in app._package_recovery_candidates() if str(row["set_id"]) == target), None)
+        if item is None or target in app.__dict__.get("_package_pin_pending_targets", ()) or app._ui_lane_is_busy():
+            return {"ok": False, "result": {"kind": "warn", "text": "지금은 이 건을 보류할 수 없습니다"}}
+        parked = app._park_unverified_pin_item(target)
+        self._admin_result = {"action": "recovery_park", "ok": bool(parked),
+                              "text": _text(app.__dict__.get("_admin_pin_last_message") or "보류하지 못했습니다")}
+        self._load_recovery()
+        self._changed("recovery_park")
+        return {"ok": bool(parked)}
+
+    def _command_recovery_retry_pin(self, args):
+        app = self.app
+        target = str(args.get("target") or "")
+        item = next((row for row in app._package_recovery_candidates() if str(row["set_id"]) == target), None)
+        if item is None or not item.get("pin_intent"):
+            return {"ok": False, "result": {"kind": "warn", "text": "다시 확인할 관리자 요청이 없습니다"}}
+        window = _ScreenWindow()
+
+        def settle(value, ok):
+            window.destroy()
+            self._admin_result = {"action": "recovery_retry_pin", "ok": bool(ok),
+                                  "text": _text(value or app.__dict__.get("_admin_pin_last_message") or "결과를 확인하지 못했습니다")}
+            self._load_recovery()
+            self._changed("recovery_retry_pin")
+
+        accepted = app._retry_package_pin_item(item, window=window, physical_qr=str(args.get("physical_qr") or "").strip(),
+                                              finish=lambda value: settle(value, value is not False),
+                                              fail=lambda _error: settle(None, False))
+        if not accepted:
+            window.destroy()
+        return {"ok": bool(accepted)}
 
     def _command_pending_status(self, _args):
         app = self.app
@@ -679,7 +719,9 @@ def present_lm(processor):
     notice = _display_notice(app, view)
     pointer = _pointer_pending(app)
     start = None
-    if view is None or not app.__dict__.get("initialized_successfully", False):
+    if app.__dict__.get("_startup_catalog_error") is not None:
+        start = {"phase": "catalog_failed", "title": "품목 목록 확인 실패", "text": "연결을 확인하고 다시 시도하세요", "retry": True}
+    elif view is None or not app.__dict__.get("initialized_successfully", False):
         start = {"phase": "loading", "title": "시작 준비 중", "text": "포장 프로그램을 준비하고 있습니다", "retry": False}
     elif app.__dict__.get("_startup_update_pending", False):
         start = {"phase": "update_check", "title": "새 판 확인 중", "text": "업데이트 시험을 준비하고 있습니다 — 잠시 기다리세요", "retry": False}

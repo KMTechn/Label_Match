@@ -71,7 +71,15 @@ def main() -> int:
             _show_first_run_onboarding_error(exc)
             return ONBOARDING_EXIT_CODE
     from auto_update import startup_gate
-    result = startup_gate(APP_ROOT, list(sys.argv[1:]))
+    from writer_session_fence import WriterFenceError
+    try:
+        result = startup_gate(APP_ROOT, list(sys.argv[1:]))
+    except WriterFenceError as error:
+        if error.code != "WRITER_GATE_ABANDONED":
+            raise
+        from Label_Match import _show_installation_recovery_required
+        _show_installation_recovery_required(error)
+        return 1
     if result is not None:
         return result
     if sys.argv[1:2] == ["--label-match-direct-sync-relay"]:

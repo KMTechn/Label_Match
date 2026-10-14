@@ -1,4 +1,4 @@
-- 새 화면 이음: 셸 v3.16 사본·`shell_fileio` 쓰기 허가·후보 자기 일관/담장 정적 확인 구현됨. 처리 층 마감의 강제 상한은 주인 몫 — 상한 필요. 실제 창·현장 PC·조립판 설치 packet은 확인 대기다([계약](contracts.md#new-screen-shell-write-guard)).
+- 새 화면 이음: v2.0.102 후보의 writer/lane 끝내기·초기화 예외 정리·시작 재시도·건별 관리자 재조회/보류·관리자 비상 링크를 구현한다. 셸 v3.16.2 READY·최종 UI 4차 SHA를 합친 뒤 빌드한다. 실제 창·현장 PC·조립판 설치 packet은 확인 대기다([계약](contracts.md#new-screen-shell-write-guard)).
 
 - v2.0.101 조립: 셸 v3.16·패킷 native 핀 검증은 빌더 몫. 상한 있는 다른 스레드용 저장 함수의 on_force_exit 연결을 확인한다. 실제 WebView2/스캐너/현장 설치·넓은 회귀는 inspection6 담당이며 headless PASS로 대체하지 않는다.
 - LM-7 B: 이름만 등록·내구 outbox·동명 확인·다음 트레이 신원 대응 구현됨. `stage_a=false`, 숨김 없음. 실제 화면과 회사 서버 확인은 별도다. [등록 B 계약](worker-roster-b.md).

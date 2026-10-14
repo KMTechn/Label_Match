@@ -19,6 +19,8 @@ from pathlib import Path
 import re
 import secrets
 import threading
+import time
+import weakref
 from typing import Any, Callable, Iterator, Mapping, ParamSpec, TypeVar
 import unicodedata
 
@@ -42,7 +44,7 @@ TEST_MODE_ENV = "KMTECH_LABEL_WRITER_TEST_MODE"
 
 # The code-derived scanner normalizes this literal to zero before hashing its
 # own source closure, so updating the pin is deterministic rather than cyclic.
-WRITER_INVENTORY_SHA256 = "90ec205b020b08d9458f4a4fed8f9b65be4c5c9af275f6edece40c9e4f7756a3"
+WRITER_INVENTORY_SHA256 = "b99ae803ef0380ef4d6f2a5071cf7e01831b75b88b6670b6d878ff76749b5542"
 
 DELEGATION_TOKEN_ENV = "KMTECH_LABEL_WRITER_DELEGATION_TOKEN"
 DELEGATION_SESSION_ENV = "KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID"
@@ -52,6 +54,62 @@ DELEGATION_TRANSACTION_ENV = "KMTECH_LABEL_WRITER_DELEGATION_TRANSACTION_ID"
 _HEX_32 = re.compile(r"^[0-9a-f]{32}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _WRITER_LOCAL = threading.local()
+_WRITER_EXIT_CONDITION = threading.Condition()
+_WRITER_EXIT_CLOSED = False
+_WRITER_EXIT_COUNT = 0
+_LANE_WORKERS = weakref.WeakSet()
+EXIT_WRITE_WAIT_S = 120
+EXIT_POLL_S = 5
+
+
+def start_lane_worker(worker: threading.Thread) -> None:
+    """Track every lane worker, including one whose lane later becomes BROKEN."""
+    with _WRITER_EXIT_CONDITION:
+        if _WRITER_EXIT_CLOSED:
+            raise WriterFencedError("WRITER_EXIT_CLOSED", "lane worker admission is closed for exit")
+        _LANE_WORKERS.add(worker)
+        worker.start()
+
+
+def close_and_wait_writers(timeout_seconds: float) -> bool:
+    """Close admissions; wait for writes and every lane worker's actual exit."""
+    global _WRITER_EXIT_CLOSED
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    with _WRITER_EXIT_CONDITION:
+        _WRITER_EXIT_CLOSED = True
+    # A receipt-bound delegation/maintenance session has no normal admission
+    # token to drain. Reuse the existing capability validation, not env presence.
+    delegated = False
+    try:
+        active = active_fence(canonical_control_root())
+        delegated = active is not None and any(
+            _delegation_matches(active, source=source, environ=os.environ)
+            for source in active["delegated_sources"]
+        )
+    except WriterFenceError:
+        pass  # Unproven delegation retains the normal exit criterion.
+    with _WRITER_EXIT_CONDITION:
+        while (not delegated and _WRITER_EXIT_COUNT) or any(worker.is_alive() for worker in tuple(_LANE_WORKERS)):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _WRITER_EXIT_CONDITION.wait(min(EXIT_POLL_S, remaining))
+    if delegated:
+        return True
+    try:
+        lease = _acquire_named_mutex(
+            writer_admission_mutex_name(canonical_control_root()),
+            max(0.0, deadline - time.monotonic()),
+        )
+    except WriterFenceError:
+        return False
+    if lease is None:
+        return False
+    try:
+        return not lease.abandoned
+    finally:
+        lease.release()
+
 
 ACTIVE_FIELDS = frozenset(
     {
@@ -768,6 +826,30 @@ def _check_onboarding_lifecycle(root: Path, values: Mapping[str, str]) -> bool:
 
 @contextmanager
 def writer_admission(
+    source: str,
+    *,
+    control_root: str | os.PathLike[str] | None = None,
+    timeout_seconds: float = 5.0,
+    environ: Mapping[str, str] | None = None,
+) -> Iterator[None]:
+    global _WRITER_EXIT_COUNT
+    nested = bool(getattr(_WRITER_LOCAL, "depth", 0))
+    with _WRITER_EXIT_CONDITION:
+        if _WRITER_EXIT_CLOSED and not nested:
+            raise WriterFencedError("WRITER_EXIT_CLOSED", "writer admission is closed for exit")
+        _WRITER_EXIT_COUNT += 1
+    try:
+        with _writer_admission(source, control_root=control_root,
+                               timeout_seconds=timeout_seconds, environ=environ):
+            yield
+    finally:
+        with _WRITER_EXIT_CONDITION:
+            _WRITER_EXIT_COUNT -= 1
+            _WRITER_EXIT_CONDITION.notify_all()
+
+
+@contextmanager
+def _writer_admission(
     source: str,
     *,
     control_root: str | os.PathLike[str] | None = None,

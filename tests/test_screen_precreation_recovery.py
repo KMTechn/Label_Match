@@ -31,7 +31,7 @@ def application(monkeypatch, tmp_path):
         def mainloop(self): calls.append("tk-loop")
         def _finish_after_mainloop(self): calls.append("finish")
     module.__dict__.update(
-        sys=sys, Path=Path, Label_Match=App,
+        sys=sys, Path=Path, Label_Match=App, APP_VERSION=main.__globals__["APP_VERSION"],
         LABEL_MATCH_SCREEN_HOST={"requested": True, "active": False,
                                  "run": None, "catalog_unconfirmed": False},
         _startup_app_stop_requested=lambda: False,

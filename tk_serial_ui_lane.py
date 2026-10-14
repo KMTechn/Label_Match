@@ -260,10 +260,18 @@ class TkSerialUiLane:
             name=str(worker_name or "label-match-tk-ui-lane"),
             daemon=False,
         )
-        self.worker_thread.start()
-        if not self._worker_started.wait(timeout=2.0):
-            raise RuntimeError("Tk UI lane worker did not start")
-        self._schedule_pump()
+        from writer_session_fence import start_lane_worker
+        start_lane_worker(self.worker_thread)
+        try:
+            if not self._worker_started.wait(timeout=2.0):
+                raise RuntimeError("Tk UI lane worker did not start")
+            self._schedule_pump()
+            if self.state is LaneState.BROKEN:
+                raise RuntimeError("Tk UI lane scheduler failed")
+        except BaseException:
+            self._signal_worker_stop()
+            self.worker_thread.join(self._worker_join_timeout)
+            raise
 
     @property
     def state(self) -> LaneState:

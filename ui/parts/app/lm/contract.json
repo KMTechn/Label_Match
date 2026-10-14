@@ -13,7 +13,7 @@
   "approval_input": "pointer",
   "sheets": {
     "admin": "관리자 ▾ 메뉴(틀) — 상단 확인 수 보기 칸 · 멈춘 작업 확인 · 대기 현황 · 바코드 원문 · 정보",
-    "history": "오늘 기록(날짜 고르기 · 품목별 합계)",
+    "history": "오늘 기록(품목별 합계)",
     "progress": "진행 현황(출고 계획 대비)",
     "settings": "작업자 고르기(같은 이름 후보 줄 포함)",
     "register": "새 이름 등록(form — 이름 칸)",
@@ -42,7 +42,6 @@
       "profile": {"type": "string", "description": "셸이 씀('rw' 꼴 받이)"},
       "pedal": {"type": "object", "description": "셸이 씀(포장은 발판 없음)"},
       "journal_uncertain": {"type": "boolean", "description": "셸이 씀"},
-      "events_dropped": {"type": "integer", "minimum": 0, "description": "셸 v3.14가 씀: 담장 거절·실패로 잃은 진단 줄 수"},
       "owner_thread_id": {"type": ["integer", "null"], "description": "셸이 씀"},
       "cache_sizes": {"type": "object", "description": "셸이 씀"},
       "processor_error": {"type": "string", "description": "셸이 씀 — state() 가 예외였을 때 예외 이름"},

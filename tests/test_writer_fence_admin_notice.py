@@ -69,6 +69,10 @@ def test_startup_fence_error_keeps_app_stopped_and_explains_recovery(
         "run_guarded_entrypoint": run_application,
         "_run_label_match_application": lambda: None,
     }
+    # Supply the current entry's globals while retaining the explicit mocks
+    # above and every existing fence/refusal assertion.
+    import Label_Match
+    namespace = {**Label_Match.__dict__, **namespace}
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), "exec"), namespace)
     assert namespace["main"]([]) == exit_code
     assert calls == (["onboarding"] if failure_stage == "onboarding" else ["onboarding", "application"])

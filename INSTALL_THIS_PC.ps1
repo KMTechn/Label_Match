@@ -1994,6 +1994,7 @@ if ($Uninstall.IsPresent) {
             Invoke-LabelWorkerShortcutOperation $installRootFull 'Restore' $WorkerShortcutRecordPath `
                 $VerifiedWorkerShortcutHelperPath $ExpectedWorkerShortcutHelperSha256
         }
+        Remove-LabelEmergencyShortcut $installRootFull
         $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder
         'uninstall_status=PASS_CODE_REMOVED_STATE_PRESERVED'
         'application_root_status=RETAINED_FOR_EVIDENCE_AND_RETAINED_ITEMS'
@@ -2201,6 +2202,9 @@ try {
             --activate-supported-commit $nextCommit })
         if ($LASTEXITCODE -ne 0) { throw ('SUPPORTED_ACTIVATION_FAILED:' + ($activation -join "`n")) }
     } else { Initialize-LabelStartupUpdate $placementRoot }
+    if ([IO.File]::Exists((Join-Path $installRootFull 'launch-label-match.cmd'))) {
+        [void](Install-LabelEmergencyShortcut $installRootFull)
+    }
     $tlsCaBootstrap = Install-CurrentUserTlsCaBootstrap $TlsCaBundlePath $OperatorLocalAppDataRoot
     if ($null -eq $tlsCaBootstrap) { Write-Output "tls_ca_bootstrap_status=ABSENT" }
     else { Write-Output "tls_ca_bootstrap_status=PASS"; Write-Output "tls_ca_bootstrap_path=$tlsCaBootstrap" }

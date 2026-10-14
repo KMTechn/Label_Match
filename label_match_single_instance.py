@@ -110,6 +110,21 @@ def mutex_name_for_data_scope(path: str | os.PathLike[str]) -> str:
     return rf"Global\KMTech.LabelMatch.{digest[:32]}"
 
 
+def prepare_user_directory(path: str | os.PathLike[str]) -> None:
+    """User writers may use prepared machine folders, never create them."""
+    folder = Path(path).expanduser().resolve(strict=False)
+    machine_roots = {Path(r"C:\ProgramData").resolve(strict=False)}
+    for name in ("ProgramData", "PROGRAMDATA"):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            machine_roots.add(Path(value).expanduser().resolve(strict=False))
+    if any(folder == root or root in folder.parents for root in machine_roots):
+        if not folder.is_dir():
+            raise SingleInstanceError("포장 기계 자료 폴더가 준비되지 않았습니다. 관리자에게 설치 확인을 요청하세요.")
+        return
+    folder.mkdir(parents=True, exist_ok=True)
+
+
 def resolve_data_scope(
     *,
     environment: Mapping[str, str] | None = None,
@@ -200,10 +215,13 @@ def resolve_data_scope(
         elif legacy_data_exists:
             # Preserve the fallback only for standalone use without onboarding.
             selected, rule = str(legacy_root), "existing_program_data"
-        elif legacy_root is not None:
+        elif legacy_root is not None and legacy_root.is_dir():
             selected, rule = str(legacy_root), "legacy_standalone_default"
+        elif local_app_data:
+            selected = str(Path(local_app_data) / "KMTech" / "Label_Match" / "data")
+            rule = "new_current_user_data"
         else:
-            raise SingleInstanceError("ProgramData is empty")
+            raise SingleInstanceError("포장 자료 폴더가 준비되지 않았습니다. 관리자에게 설치 확인을 요청하세요.")
     if (
         for_onboarding
         and not str(env.get("LOCALAPPDATA") or "").strip()

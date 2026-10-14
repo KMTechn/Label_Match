@@ -485,21 +485,19 @@ def test_owner_that_cannot_build_the_app_ends_the_start_wait_without_a_window():
     bridge.attach_owner.assert_not_called()
 
 
-def test_screen_runner_leaves_the_owner_wait_unbounded(monkeypatch, tmp_path):
-    import inspect
+def test_screen_runner_passes_bounded_before_exit_and_release_version(monkeypatch, tmp_path):
     import label_match_screen
-    sys.path.insert(0, str(label_match_screen.SHELL_DIR))
-    try:
-        import host as real_host
-    finally:
-        sys.path.remove(str(label_match_screen.SHELL_DIR))
-    assert inspect.signature(real_host.run_app).parameters["owner_timeout"].default is None
     passed = {}
     fake = types.ModuleType("host")
     fake.run_app = lambda *args, **kwargs: passed.update(kwargs) or 0
     from tests.test_screen_precreation_recovery import shell_runtime
     shell_runtime.__wrapped__(monkeypatch, tmp_path)
     monkeypatch.setitem(sys.modules, "host", fake)
+    waits = []
+    monkeypatch.setattr(label_match_screen, "close_and_wait_writers", lambda seconds: waits.append(seconds) or True)
     assert label_match_screen.screen_runner(Label_Match)() == 0
-    assert "owner_timeout" not in passed  # 셸 v3.12: 느린 PC 에서도 앱을 끝까지 만든 뒤 창(daemon 주인을 끊지 않음)
+    assert passed["version"] == Label_Match.APP_VERSION
+    assert passed["before_exit"]("SHELL_START_FAILED", 240) is True
+    assert passed["before_exit"]("SHELL_START_FAILED", 0) is True
+    assert waits == [120, 0]
     assert passed["root"] == label_match_screen.PARTS

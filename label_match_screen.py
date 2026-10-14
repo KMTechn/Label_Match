@@ -13,7 +13,7 @@ import sys
 import threading
 from pathlib import Path
 
-from writer_session_fence import WriterFenceError, writer_admission
+from writer_session_fence import EXIT_WRITE_WAIT_S, WriterFenceError, close_and_wait_writers, writer_admission
 
 APP_ROOT = Path(__file__).resolve().parent
 SHELL_DIR = APP_ROOT / "shell"
@@ -44,13 +44,29 @@ class ScreenUnavailable(RuntimeError):
         self.code = code
 
 
-def _prepare_screen():
+def _prepare_screen(version=None):
     # Resolve dependencies before run_app starts the processing Tk owner.
     try:
+        import host
         from host import run_app
+        import shell_fileio
         import webview
     except Exception as error:
         raise ScreenUnavailable("SHELL_IMPORT_FAILED") from error
+    try:
+        data = shell_data_dir()
+        shell_fileio.set_write_guard(shell_write_guard)
+        allowed = getattr(host, "web_allowed", None)
+        if allowed is not None:
+            with shell_write_guard("web_allowed", data, "udf"):
+                use_web = allowed(data, version)
+            if not use_web:
+                raise ScreenUnavailable("SHELL_FALLBACK_ACTIVE")
+        shell_fileio.make_dirs(data / "webview2", "udf")
+    except (WriterFenceError, ScreenUnavailable):
+        raise
+    except Exception as error:
+        raise ScreenUnavailable("SHELL_DATA_DIR_FAILED") from error
     try:
         from webview.guilib import initialize
         backend = initialize("edgechromium")
@@ -61,15 +77,6 @@ def _prepare_screen():
             raise RuntimeError("WebView2 is unavailable")
     except Exception as error:
         raise ScreenUnavailable("SHELL_WEBVIEW2_UNAVAILABLE") from error
-    try:
-        import shell_fileio
-        data = shell_data_dir()
-        shell_fileio.set_write_guard(shell_write_guard)
-        shell_fileio.make_dirs(data / "webview2", "udf")
-    except WriterFenceError:
-        raise
-    except Exception as error:
-        raise ScreenUnavailable("SHELL_DATA_DIR_FAILED") from error
     return run_app, webview, data
 
 
@@ -117,9 +124,7 @@ def owner_main_for(module, *, app_holder=None, attempt=None):
             app_holder.append(app)
         # The processing Tk root is hidden; the shell's ready receipt proves visibility.
         app._startup_screen_visible = lambda: bridge._view_count > 0
-        processor = LabelMatchScreenProcessor(app, bridge)
-        bridge.attach_owner(processor)
-        attached.append(True)
+        processor = None
 
         def pump():
             if app.__dict__.get("_tk_destroy_complete") or app.__dict__.get("_tk_shutdown_requested"):
@@ -137,8 +142,11 @@ def owner_main_for(module, *, app_holder=None, attempt=None):
             else:  # 창이 먼저 닫힘(셸 closing 무답 등) — 지금 끝내기 길로 저장을 마치고 닫음
                 app.on_closing(_confirmed=True)
 
-        app.after(PUMP_MS, pump)
         try:
+            processor = LabelMatchScreenProcessor(app, bridge)
+            bridge.attach_owner(processor)
+            attached.append(True)
+            app.after(PUMP_MS, pump)
             app.mainloop()
         except BaseException as error:
             if attempt is not None:
@@ -146,6 +154,10 @@ def owner_main_for(module, *, app_holder=None, attempt=None):
             raise
         finally:
             try:
+                lane = app.__dict__.get("ui_lane")
+                if lane is not None:
+                    lane.stop_accepting()
+                    lane._signal_worker_stop()
                 app._finish_after_mainloop()
             finally:
                 bridge.request_exit()
@@ -157,13 +169,16 @@ def screen_runner(module):
     def run():
         if str(SHELL_DIR) not in sys.path:
             sys.path.insert(0, str(SHELL_DIR))
-        run_app, webview, data = _prepare_screen()
+        run_app, webview, data = _prepare_screen(module.APP_VERSION)
         attempt = _ScreenAttempt()
         app_holder = []
 
         def on_force_exit():
             if app_holder:
                 app_holder[0].save_current_set_on_force_exit()
+
+        def before_exit(_code, deadline_s):
+            return close_and_wait_writers(min(EXIT_WRITE_WAIT_S, max(0.0, float(deadline_s))))
 
         create_window = webview.create_window
         previous_windows = tuple(webview.windows)
@@ -176,7 +191,8 @@ def screen_runner(module):
         webview.create_window = create_once
         try:
             return run_app("rw", data, root=PARTS, page=PAGE, title="포장", owner_main=owner_main_for(module, app_holder=app_holder, attempt=attempt),
-                           on_force_exit=on_force_exit, pedal=False, browser_preset_name="none", write_guard=shell_write_guard)
+                           on_force_exit=on_force_exit, pedal=False, browser_preset_name="none", write_guard=shell_write_guard,
+                           version=module.APP_VERSION, before_exit=before_exit)
         except WriterFenceError:
             raise
         except Exception as error:

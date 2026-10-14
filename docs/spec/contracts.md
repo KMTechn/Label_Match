@@ -9,6 +9,8 @@ READY 판정과 살아 있는 relay 재사용은 설치기가 남긴 `update-con
 portable direct-sync relay 자식은 기존 시작 관문을 지난 뒤 `label_match_product_host.dispatch_product_mode`를 호출하며 `Label_Match` 앱 모듈을 적재하지 않는다. host의 `startup_gate(role="relay")`·업데이트 trial/판 확인·자료 세대·credential 준비·writer sink·인수·종료/오류 계약과 별도 자식 프로세스는 유지한다. 일반 GUI와 다른 제품 인수의 진입 경로는 그대로다.
 
 <a id="new-screen-shell-write-guard"></a>
+v2.0.102 어댑터는 `web_allowed(data, version)` 판정과 `before_exit(code, deadline_s)`를 셸에 연결한다. 끝내기 admission과 lane 시작을 같은 잠금에서 닫고, normal writer 허가와 실제 worker 종료(BROKEN 포함)를 확인한다. 확인된 위임 허가는 worker 종료를 기준으로 한다. 창 생성 뒤 실패는 셸이 표지를 남기고 끝내며 다음 사람의 실행에서 Tk를 고른다. 자동 재실행·PID 기다림은 없다. 새 화면의 앱 마무리는 쓰기가 살아 있는 동안 강제 종료하지 않는다.
+
 새 화면 입구는 셸 import·WebView2 준비를 먼저 확인하고, `_prepare_screen`에서 `shell_fileio.set_write_guard(shell_write_guard)`를 설치한 뒤 첫 WebView2 프로필 폴더를 만든다. 이어 `run_app(write_guard=shell_write_guard)`에도 같은 담장을 전달한다. 셸의 events·journal·sound_cache·udf·test_control 쓰기는 `shell/shell_fileio.py`의 다섯 함수로 모이며, 각각 기존 `writer_admission("shell_fileio")` 안에서만 실행한다. 선언에는 이 위임을 `shell_fileio` 한 source로 기록한다. 허가는 한 번 쓰기 뒤 내려놓으며 화면·스캔·사람 응답·네트워크를 기다리는 동안 쥐지 않는다.
 
 선언 생성기는 고정 `shell/SHELL-READY.json`(v3.16, SHA256 `0c3d7524e8c989b61f5f8da698847e6b5b61fc0939e6fd0fb8bd7faa51efeec8`)을 대조한다. 설치된 실행 스캐너는 후보의 `shell/SHELL-READY*.json` 하나와 파일 바이트·Python 파일 집합의 자기 일관, 앱 입구의 담장 설치를 확인하므로 다른 셸 판의 자기 일관 후보도 받는다. 거절된 events는 해당 진단 줄만 잃고 `events_dropped`로 센다. 처리 층 모드의 셸 journal 실패는 앱 저장 결과를 바꾸지 않고 다음 스캔과 최근 seq 중복 응답을 계속한다. 창 생성 전 일반 준비 실패(셸 import·WebView2·시작 폴더)는 고정 SHELL_* 원인 한 줄을 남기고 기존 시작 임대 안에서 같은 프로세스의 Tk로 이어진다. 이미 숨김 Tk가 있으면 그 처리 층을 재사용한다. writer 거절은 다시 던져 시작을 거절하며 Tk로 우회하지 않는다. 창 생성 뒤 오류도 다시 던진다.

@@ -2,6 +2,122 @@
 Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 
+function Get-LabelEmergencyFullPath([string]$Path,[string]$Label) {
+    if(-not [IO.Path]::IsPathRooted($Path)){throw 'Emergency shortcut path must be absolute.'}
+    return [IO.Path]::GetFullPath($Path).TrimEnd('\')
+}
+
+function Assert-LabelEmergencyPath([string]$Path,[string]$Label,[switch]$PathOnly) {
+    $cursor=Get-LabelEmergencyFullPath $Path $Label
+    while($cursor){
+        if((Test-Path -LiteralPath $cursor) -and ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){
+            throw 'Emergency shortcut path contains a reparse point.'
+        }
+        $cursor=[IO.Path]::GetDirectoryName($cursor)
+    }
+}
+
+function Get-LabelEmergencyShortcutPath([string]$InstallRoot) {
+    $root=Get-LabelEmergencyFullPath $InstallRoot 'emergency install root'
+    $parent=Get-LabelEmergencyFullPath (Split-Path -Parent $root) 'emergency application folder'
+    return Join-Path (Join-Path $parent '관리용') '포장 옛 화면 (비상).lnk'
+}
+
+function Test-LabelEmergencyShortcutDirectory([string]$Path) {
+    $directory=Split-Path -Parent $Path
+    Assert-LabelEmergencyPath $directory
+    if(-not (Test-Path -LiteralPath $directory)){return $true}
+    $item=Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+    if(-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){return $false}
+    # Even an owned link is left alone when this directory contains foreign data.
+    foreach($entry in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)){
+        if($entry.FullName -ine $Path -or $entry.PSIsContainer -or
+            ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)){return $false}
+    }
+    return $true
+}
+
+function Test-LabelEmergencyShortcutOwner($Link,[string]$Launcher) {
+    return ([string]$Link.TargetPath -ieq $Launcher -and [string]$Link.Arguments -ceq '--ui tk' -and
+        [string]$Link.Description -ceq 'KMTech.LabelMatch.EmergencyTk.v1')
+}
+
+function Install-LabelEmergencyShortcut([string]$InstallRoot) {
+    $root=Get-LabelEmergencyFullPath $InstallRoot 'emergency install root'
+    $launcher=Join-Path $root 'launch-label-match.cmd'
+    $icon=(Join-Path $root 'app\assets\logo.ico')+',0'
+    $path=Get-LabelEmergencyShortcutPath $root
+    Assert-LabelEmergencyPath $root 'emergency shortcut root' -PathOnly
+    if(-not [IO.File]::Exists($launcher)){throw 'Emergency shortcut entrypoint is absent.'}
+    Assert-LabelEmergencyPath $launcher 'emergency shortcut entrypoint' -PathOnly
+    if(-not (Test-LabelEmergencyShortcutDirectory $path)){
+        Write-Warning '포장 비상 바로 가기나 관리용 폴더에 다른 파일이 있어 그대로 둡니다.'
+        return [pscustomobject]@{status='PRESERVED_FOREIGN'}
+    }
+    $directory=Split-Path -Parent $path
+    $shell=New-Object -ComObject WScript.Shell
+    try{
+        if(Test-Path -LiteralPath $path){
+            Assert-LabelEmergencyPath $path 'emergency shortcut prestate' -PathOnly
+            try{$link=$shell.CreateShortcut($path)}catch{
+                Write-Warning '포장 비상 바로 가기는 다른 파일이어서 그대로 둡니다.'
+                return [pscustomobject]@{status='PRESERVED_FOREIGN'}
+            }
+            if(-not (Test-LabelEmergencyShortcutOwner $link $launcher)){
+                Write-Warning '포장 비상 바로 가기는 다른 파일이어서 그대로 둡니다.'
+                return [pscustomobject]@{status='PRESERVED_FOREIGN'}
+            }
+            if([string]$link.WorkingDirectory -ieq $root -and [string]$link.IconLocation -ieq $icon -and $link.WindowStyle -eq 7){
+                return [pscustomobject]@{status='RETAINED'}
+            }
+            $status='UPDATED'
+        }else{
+            $status='CREATED'
+            [void][IO.Directory]::CreateDirectory($directory)
+            Assert-LabelEmergencyPath $directory 'emergency shortcut directory' -PathOnly
+            $link=$shell.CreateShortcut($path)
+        }
+        $link.TargetPath=$launcher;$link.Arguments='--ui tk';$link.WorkingDirectory=$root
+        $link.IconLocation=$icon
+        $link.WindowStyle=7;$link.Description='KMTech.LabelMatch.EmergencyTk.v1';$link.Save()
+        $readback=$shell.CreateShortcut($path)
+        if(-not [IO.File]::Exists($path) -or [string]$readback.TargetPath -ine $launcher -or
+            [string]$readback.Arguments -cne '--ui tk' -or [string]$readback.WorkingDirectory -ine $root -or
+            [string]$readback.IconLocation -ine $icon -or $readback.WindowStyle -ne 7 -or
+            [string]$readback.Description -cne 'KMTech.LabelMatch.EmergencyTk.v1'){
+            throw 'Emergency shortcut readback failed.'
+        }
+        return [pscustomobject]@{status=$status}
+    }finally{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
+}
+
+function Remove-LabelEmergencyShortcut([string]$InstallRoot) {
+    $root=Get-LabelEmergencyFullPath $InstallRoot 'emergency install root'
+    $path=Get-LabelEmergencyShortcutPath $root
+    if(-not (Test-LabelEmergencyShortcutDirectory $path)){
+        Write-Warning '포장 비상 바로 가기나 관리용 폴더에 다른 파일이 있어 그대로 둡니다.';return
+    }
+    $directory=Split-Path -Parent $path
+    if(-not (Test-Path -LiteralPath $path)){
+        if([IO.Directory]::Exists($directory)){Remove-Item -LiteralPath $directory -ErrorAction Stop}
+        return
+    }
+    Assert-LabelEmergencyPath $path 'emergency shortcut removal' -PathOnly
+    $shell=New-Object -ComObject WScript.Shell
+    try{
+        try{$link=$shell.CreateShortcut($path)}catch{
+            Write-Warning '포장 비상 바로 가기는 다른 파일이어서 그대로 둡니다.';return
+        }
+        if(-not (Test-LabelEmergencyShortcutOwner $link (Join-Path $root 'launch-label-match.cmd'))){
+            Write-Warning '포장 비상 바로 가기는 다른 파일이어서 그대로 둡니다.';return
+        }
+        Remove-Item -LiteralPath $path -ErrorAction Stop
+        if(Test-Path -LiteralPath $path){throw 'Emergency shortcut removal readback failed.'}
+        if(@(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop).Count -eq 0){Remove-Item -LiteralPath $directory -ErrorAction Stop}
+    }finally{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
+}
+
+
 function Test-KmtechPrivilegedOwnerSid([string]$Sid) {
     return $Sid -cin @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 }

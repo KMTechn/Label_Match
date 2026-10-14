@@ -57,7 +57,7 @@ from protected_admin import (
 )
 from label_match_single_instance import (
     _retain_current_instance_lease, _try_update_shutdown_stall_notice,
-    resolve_data_scope, run_guarded_entrypoint,
+    SingleInstanceError, prepare_user_directory, resolve_data_scope, run_guarded_entrypoint,
 )
 from current_user_onboarding import (
     CurrentUserOnboardingError,
@@ -894,11 +894,13 @@ def _label_match_direct_sync_context(
     )
     if not program_data_root:
         program_data_root = os.path.join(
-            os.environ.get("ProgramData", r"C:\ProgramData"),
+            os.environ.get("LOCALAPPDATA", ""),
             "KMTech",
             "DirectSync",
             "label_match",
         )
+        if not os.environ.get("LOCALAPPDATA", "").strip():
+            raise SingleInstanceError("포장 사용자 자료 폴더를 확인할 수 없습니다. 관리자에게 알려 주세요.")
     program_data_root = os.path.abspath(program_data_root)
     scan_source_dir = os.path.abspath(scan_source_dir)
     task_name = os.environ.get(LABEL_MATCH_DIRECT_SYNC_TASK_NAME_ENV, "").strip()
@@ -1040,7 +1042,7 @@ def _label_match_write_json(path, payload, *, raise_on_error=False):
     temp_path = None
     try:
         directory = os.path.dirname(path) or "."
-        os.makedirs(directory, exist_ok=True)
+        prepare_user_directory(directory)
         temp_path = os.path.join(
             directory,
             f".{os.path.basename(path)}.tmp-{os.getpid()}-{uuid.uuid4().hex}",
@@ -3740,7 +3742,7 @@ from label_data_generation import (
     CURRENT_VERSION, DataGenerationError, check_user_data_open,
     record_user_data_open, release_identity,
 )
-APP_VERSION = "v2.0.101"
+APP_VERSION = "v2.0.102"
 LABEL_MATCH_NEW_SCREEN_ARGUMENT = "--new-screen"
 # Set by label_match_screen before the app is built: the Tk root starts hidden.
 LABEL_MATCH_SCREEN_HOST = {"requested": False, "active": False, "run": None, "catalog_unconfirmed": False}
@@ -6653,6 +6655,23 @@ class Label_Match(tk.Tk):
             self.initial_load_queue.put({"error": str(e)})
             _label_match_startup_trace("async_initial_load_error", error=str(e))
 
+    def _retry_initial_load(self):
+        """Retry the existing catalog/load path on the Tk owner thread."""
+        if self.__dict__.get("_tk_shutdown_requested") or self.__dict__.get("_startup_catalog_error") is None:
+            return False
+        worker = self.__dict__.get("_initial_load_thread")
+        if worker is not None and worker.is_alive():
+            return False
+        self.__dict__.pop("_startup_catalog_error", None)
+        self._initial_load_thread = threading.Thread(
+            target=self._async_initial_load,
+            args=(self._initial_load_startup_report,),
+            name="label-match-initial-load", daemon=True)
+        self._initial_load_thread.start()
+        self._initial_load_after_id = self.after(100, self._process_initial_load_queue)
+        self._render_operator_workbench()
+        return True
+
     def _process_initial_load_queue(self):
         self._initial_load_after_id = None
         if self.__dict__.get("_tk_shutdown_requested", False):
@@ -6662,16 +6681,16 @@ class Label_Match(tk.Tk):
             _label_match_startup_trace("initial_load_queue_result", keys=sorted(result.keys()))
             if "catalog_error" in result:
                 # Keep Tk dialogs and retries on the owner thread.
+                if LABEL_MATCH_SCREEN_HOST["active"]:
+                    self._startup_catalog_error = result["catalog_error"]
+                    self._render_operator_workbench()
+                    return
                 if not _offer_item_catalog_startup_retry(result["catalog_error"]):
                     self.hide_loading_overlay()
                     self.destroy()
                     return
-                self._initial_load_thread = threading.Thread(
-                    target=self._async_initial_load,
-                    args=(self._initial_load_startup_report,),
-                    name="label-match-initial-load", daemon=True)
-                self._initial_load_thread.start()
-                self._initial_load_after_id = self.after(100, self._process_initial_load_queue)
+                self._startup_catalog_error = result["catalog_error"]
+                self._retry_initial_load()
                 return
             if "error" in result:
                 self.hide_loading_overlay()
@@ -7144,7 +7163,7 @@ class Label_Match(tk.Tk):
         self.base_path = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
         self.app_settings_path = _default_label_match_settings_path()
         self.config_directory = os.path.dirname(self.app_settings_path)
-        os.makedirs(self.config_directory, exist_ok=True)
+        prepare_user_directory(self.config_directory)
         if not os.path.isfile(self.app_settings_path):
             template_path = resource_path(os.path.join("config", self.FILES.SETTINGS))
             if (
@@ -7161,7 +7180,7 @@ class Label_Match(tk.Tk):
 
     def _update_save_directory(self):
         self.save_directory = self.custom_save_path
-        os.makedirs(self.save_directory, exist_ok=True)
+        prepare_user_directory(self.save_directory)
 
     def _resolve_configured_save_path(self):
         return resolve_data_scope(settings=self.app_settings)
@@ -8814,6 +8833,9 @@ class Label_Match(tk.Tk):
         # while the live window can still accept work; this runs only after
         # mainloop returned. The next start replays state/outbox normally.
         state = self.__dict__
+        if LABEL_MATCH_SCREEN_HOST["active"]:
+            self._mark_app_close_stall()
+            return
         if state.get("_app_close_forcing_exit") or state.get("_tk_destroy_complete"):
             return
         state["_app_close_forcing_exit"] = True
@@ -8835,7 +8857,7 @@ class Label_Match(tk.Tk):
         # Reserve 15 seconds for the small durable notice. If its writer or
         # diagnostic I/O also stalls, process cleanup still has a 60s ceiling.
         def final_exit():
-            if not state.get("_tk_destroy_complete", False):
+            if not LABEL_MATCH_SCREEN_HOST["active"] and not state.get("_tk_destroy_complete", False):
                 os._exit(1)
         exit_watchdog = threading.Timer(
             LABEL_MATCH_APP_CLOSE_PROCESS_TIMEOUT_SECONDS + LABEL_MATCH_APP_CLOSE_EXIT_GRACE_SECONDS,
@@ -11401,6 +11423,27 @@ class Label_Match(tk.Tk):
         self._admin_pin_last_message = admin_pin_message(code, http_status=http_status)
         return False
 
+    def _retry_package_pin_item(self, item, *, window, finish, fail, physical_qr=""):
+        """Retry the saved manager intent through the existing action lane."""
+        if not item or not item.get("pin_intent"):
+            return False
+        if item["set_id"] in self.__dict__.get("_package_pin_pending_targets", ()):
+            self._show_ui_lane_rejection("busy")
+            return False
+        intent = item["pin_intent"]
+        if intent["action"] == "LABEL.PHS_LOOKUP" and not physical_qr:
+            return False
+        resume_input = physical_qr
+        if intent["action"] == "LABEL.RECHECK" and item.get("changed_hold"):
+            try:
+                target, _ = self._package_pin_target("LABEL.RECHECK", item["set_id"], "__RESTORE_CHANGED_PIN_FILE__")
+                if target["state_fingerprint"] == intent["target_fingerprint"]:
+                    resume_input = "__RESTORE_CHANGED_PIN_FILE__"
+            except Exception:
+                pass
+        return self._submit_package_pin_action(
+            intent["action"], item["set_id"], resume_input, window=window, finish=finish, fail=fail)
+
     def _park_unverified_pin_item(self, set_id):
         """Explicitly quarantine one item when PIN verification is unavailable."""
         action = "LABEL.F5_HOLD" if str(set_id).startswith("F5:") else "LABEL.SET_HOLD"
@@ -12316,19 +12359,8 @@ class Label_Match(tk.Tk):
             if intent["action"] == "LABEL.PHS_LOOKUP":
                 scan_physical()
                 return
-            resume_input = ""
-            if intent["action"] == "LABEL.RECHECK" and item.get("changed_hold"):
-                try:
-                    target, _ = self._package_pin_target(
-                        "LABEL.RECHECK", item["set_id"], "__RESTORE_CHANGED_PIN_FILE__"
-                    )
-                    if target["state_fingerprint"] == intent["target_fingerprint"]:
-                        resume_input = "__RESTORE_CHANGED_PIN_FILE__"
-                except Exception:
-                    pass
-            self._submit_package_pin_action(
-                intent["action"], item["set_id"], resume_input,
-                window=window, finish=show_result,
+            self._retry_package_pin_item(
+                item, window=window, finish=show_result,
                 fail=lambda _error: status.set(
                     "결과 확인을 끝내지 못했습니다. 해당 보류를 유지하고 다시 시도하세요."),
             )
@@ -24186,22 +24218,24 @@ def _show_first_run_onboarding_error(failure):
 
 
 def _show_installation_recovery_required(error):
+    code = str(getattr(error, "code", ""))
+    message = ("포장 다시 열기 — 한 번 더 여세요" if code == "WRITER_GATE_ABANDONED"
+               else INSTALLATION_RECOVERY_REQUIRED_MESSAGE)
     failure = CurrentUserOnboardingError(
-        INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
+        message,
         report_path=_label_match_runtime_app_root(),
         status="BLOCKED",
         cause_code="INSTALLATION_RECOVERY_REQUIRED",
     )
     failure._startup_check_refusal = True
-    code = str(getattr(error, "code", ""))
     failure._startup_check_reason = ("UNKNOWN_FENCE" if "UNKNOWN" in code else
                                     "MACHINE_DEPLOY_FENCE" if "MACHINE" in code else "ACTIVE_WRITER_FENCE")
     _label_match_startup_trace(
         "installation_recovery_required",
         guard_code=error.code,
-        user_message=INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
+        user_message=message,
     )
-    print(INSTALLATION_RECOVERY_REQUIRED_MESSAGE, file=sys.stderr)
+    print(message, file=sys.stderr)
     _show_first_run_onboarding_error(failure)
 
 
