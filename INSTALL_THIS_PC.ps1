@@ -1997,7 +1997,13 @@ if ($WorkerSid) {
     Assert-AlreadyElevated
     if ($WorkerSid -cnotmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -or
         $WorkerSid -cne $DataGenerationSubjectSid -or -not $OperatorLocalAppDataRoot -or $TlsCaBundlePath) {
-        throw 'Machine worker placement binding differs.'
+        $mismatchKinds = @()
+        if($WorkerSid -cnotmatch '^S-1-5-21-\d+-\d+-\d+-\d+$'){$mismatchKinds += 'WorkerSid 형식'}
+        if($WorkerSid -cne $DataGenerationSubjectSid){$mismatchKinds += '작업자 SID 대조'}
+        if(-not $OperatorLocalAppDataRoot){$mismatchKinds += '작업자 자료 위치 누락'}
+        if($TlsCaBundlePath){$mismatchKinds += 'TLS CA 인수 조합'}
+        throw ('이 인수 조합은 지원 안 됨 — 관리자 제거는 -WorkerSid 없이. 어긋난 종류: ' +
+            ($mismatchKinds -join ', ') + '. 다음: 관리자 코드 전용 -Uninstall을 -WorkerSid 없이 다시 실행하세요.')
     }
     $OperatorSid = $WorkerSid
 }
@@ -2025,8 +2031,9 @@ if (
     (Test-CurrentUserRelayPersistencePresent)
 ) {
     throw (
-        "Run Label_Match.exe --remove-current-user-setup as the current user " +
-        "before removing hardened code."
+        "작업자의 자동 전송 설정이 남아 있어 코드 제거를 멈췄습니다. " +
+        "다음: 같은 작업자 계정에서 main --remove-current-user-setup을 마친 뒤, " +
+        "관리자가 -Uninstall을 -WorkerSid 없이 다시 실행하세요."
     )
 }
 if (
