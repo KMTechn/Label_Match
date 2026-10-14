@@ -169,6 +169,24 @@ def test_direct_sync_default_and_json_refuse_unprepared_machine_folder(monkeypat
     assert not (tmp_path / 'machine').exists()
 
 
+@pytest.mark.parametrize('target', ['root', 'sibling', 'explicit_direct_sync'])
+def test_entire_machine_root_refuses_user_mkdir_including_explicit_sync(monkeypatch, tmp_path, target):
+    machine = tmp_path / 'machine'
+    monkeypatch.setenv('ProgramData', str(machine))
+    monkeypatch.setenv('PROGRAMDATA', str(machine))
+    if target == 'explicit_direct_sync':
+        monkeypatch.setenv(lm.LABEL_MATCH_DIRECT_SYNC_ROOT_ENV, str(machine / 'OtherVendor' / 'sync'))
+        monkeypatch.setattr(lm, '_label_match_direct_sync_source_host_id', lambda: 'test-host')
+        context = lm._label_match_direct_sync_context(str(tmp_path / 'scan'))
+        assert context['program_data_root'] == str(machine / 'OtherVendor' / 'sync')
+        with pytest.raises(SingleInstanceError):
+            lm._label_match_write_session_direct_sync_result(context, reason='TEST', result={})
+    else:
+        with pytest.raises(SingleInstanceError):
+            prepare_user_directory(machine if target == 'root' else machine / 'OtherVendor' / 'data')
+    assert not machine.exists()
+
+
 def test_start_retry_reuses_initial_load_and_reports_catalog_failure(monkeypatch):
     app = FakeApp()
     app._startup_catalog_error = RuntimeError('catalog unavailable')
