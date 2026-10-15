@@ -83,7 +83,7 @@ from package_command_draft import (
 )
 
 
-OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v12"
+OUTBOX_SCHEMA_VERSION = "label-match-package-outbox-v13"
 POST_REVIEW_EVENT_VERSION = "label-match-post-review-required-v1"
 PACKAGE_CANCELLATION_EVENT_TYPES = {"SET_DELETED", "TRAY_COMPLETION_CANCELLED"}
 PACKAGE_HTTP_USER_AGENT = "KMTech-Worker-ClaimClient/1.0 LabelMatch"
@@ -486,6 +486,8 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         """
         + DEFERRED_INTENT_SCHEMA_SQL
     )
+    from package_recovery_ledger import initialize_recovery_schema
+    initialize_recovery_schema(conn, validate=False)
     command_columns = {
         str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
         for row in conn.execute("PRAGMA table_info(package_command_outbox)").fetchall()
@@ -639,6 +641,8 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
         evidence_json TEXT NOT NULL,observed_at TEXT NOT NULL,
         verified_at TEXT,previous_status TEXT,previous_error_code TEXT,previous_error_message TEXT,receipt_json TEXT,
         PRIMARY KEY(outbox_kind,idempotency_key))""")
+    from package_recovery_ledger import initialize_recovery_schema
+    initialize_recovery_schema(conn)
     _apply_repack_review_guards(conn, utc_now(), _post_review_event_payload)
     # Stamp the version only after every table/column/index is present.
     conn.execute(
@@ -2426,6 +2430,16 @@ class PackageLogisticsClient:
             if exc.status_code == 404 or exc.code == "RECEIPT_NOT_FOUND":
                 return None
             raise
+
+    def get_package_recovery(self, expected: Mapping[str, Any]) -> dict[str, Any]:
+        """Read only the original cancel receipt's recovery evidence."""
+        scope = str(expected['authority_scope_id'])
+        self._assert_authority(scope, ledger_plane=expected['ledger_plane'],
+                               plane_epoch=expected['plane_epoch'])
+        path = ('/logistics/api/v1/packages/' + quote(scope, safe='') + '/'
+                + quote(expected['package_bundle_id'], safe='')
+                + '/recovery?cancel_receipt_id=' + quote(expected['cancel_receipt_id'], safe=''))
+        return self._data(self._request('GET', path))
 
     def _request(self, method: str, path: str, *, body: bytes | None = None, key: str = ""):
         from startup_send_gate import startup_send_request

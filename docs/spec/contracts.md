@@ -506,6 +506,8 @@ authoritative 부재 뒤 기존 capability·target/seal·donor 검증으로 계�
 
 U4 앱은 U3 취소 영수증의 `reopened_transfer_bundle_id`·`transfer_entity_version`·`reversal_movement_id` 추가 칸을 보존한다. 이 칸이 없는 옛 서버는 위 SHIPPING-WAIT 계약이며, 다시 포장 충돌의 로컬 완료·원 영수증을 유지하고 「회사 서버가 취소한 현품표의 다시 포장을 지원하지 않습니다」를 덧붙인다. `reopen:false`이면 되돌리지 못했다는 안내를 구분한다. 이 판의 U3 응답 검증은 계약 대역이며 실제 서버의 원 이적 반환·새 포장 출고는 별도 수용이다. F2 결과는 기존 취소 대기/반출 보류 안내와 함께 「같은 현품표로 다시 포장할 수 있습니다」를 알린다.
 
+U4 재포장 확인 상태(`REPACK_REOPEN_REFUSED`·`REPACK_PREDECESSOR_REVIEW_REQUIRED`)는 완료 marker=1이어도 새·옛 화면의 복구 목록에 「확인 필요」와 원 현품표 전체 코드로 나타난다. 같은 현품표의 재스캔은 「이 현품표는 확인이 필요합니다」·「웹 사무실에서 이 이적 묶음을 확인하세요」를 보이며 새 포장을 접수하지 않는다. 현재 U3에는 거절을 수락으로 바꾸는 재개 API가 없으므로 이 행은 표시만 하며 다시 확인 단추·확인 해소·CREATE 재개는 제공하지 않는다. 원본·키·완료 marker·영수증·감사는 그대로 유지한다. 새 화면은 기존 recovery row의 tag/item/status와 빈 actions를 사용하고 화면 글·모양은 M125b의 확정 범위를 따른다.
+
 <a id="c-07"></a>
 ## C-07 저장된 F5 현품표 출력·활성화 복구
 

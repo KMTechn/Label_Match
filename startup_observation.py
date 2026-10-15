@@ -67,15 +67,19 @@ def write_startup_result(result):
                 pass
 
 
-def show_startup_blocked_notice():
-    """A single sentence and close button, only after an existing refusal."""
+def show_startup_blocked_notice(notice=None):
+    """Fixed wording and a close button, only after an existing refusal."""
     parent = None
     try:
         import tkinter as tk
         parent = tk.Tk()
         parent.title("프로그램 시작 안내")
         parent.resizable(False, False)
-        tk.Label(parent, text=STARTUP_BLOCKED_MESSAGE, padx=20, pady=18).pack()
+        message = STARTUP_BLOCKED_MESSAGE if notice is None else notice.message
+        tk.Label(parent, text=message, padx=20, pady=18).pack()
+        if notice is not None:
+            tk.Label(parent, text=notice.code_message, font="TkSmallCaptionFont").pack(pady=(0, 8))
+            tk.Label(parent, text=notice.details, padx=20).pack(pady=(0, 16))
         tk.Button(parent, text="닫기", command=parent.destroy, width=10).pack(pady=(0, 16))
         parent.attributes("-topmost", True)
         parent.lift()
@@ -91,7 +95,7 @@ def show_startup_blocked_notice():
                 pass
 
 
-def observe_startup(reasons=(), *, identity=None, refused=False):
+def observe_startup(reasons=(), *, identity=None, refused=False, notice=None):
     """Formatting/writing failures cannot change the existing startup decision."""
     try:
         started = time.monotonic()
@@ -113,7 +117,10 @@ def observe_startup(reasons=(), *, identity=None, refused=False):
         pass
     if refused:
         try:
-            show_startup_blocked_notice()
+            if notice is None:
+                show_startup_blocked_notice()
+            else:
+                show_startup_blocked_notice(notice)
         except Exception:
             pass
     return result

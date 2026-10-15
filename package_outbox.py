@@ -14,7 +14,7 @@ import threading
 from typing import Any, Callable, Iterator, Mapping
 
 from deferred_intent_capture import supersede_for_legacy_outbox
-from package_command_draft import PackageCommandDraft, canonical_json, stable_id
+from package_command_draft import PackageCommandDraft, canonical_barcodes, canonical_json, stable_id
 from package_errors import PackageLogisticsError, _bounded_retry_after_seconds
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 from label_admin_pin import active_pin_operation
@@ -82,6 +82,9 @@ def _record_receipt_recheck(conn, kind, row, receipt, now):
     )
 
 
+_RECOVERED_PACKAGE_KEYS = """(SELECT review_key FROM package_recovery_review_closures
+    UNION SELECT package_key FROM package_recovery_evidence)"""
+
 _PACKAGE_SOURCE_MATCH = """(
     NULLIF(json_extract(previous.source_json,'$.source_input_tag_id'),'')
     =NULLIF(json_extract(current.source_json,'$.source_input_tag_id'),'')
@@ -141,6 +144,7 @@ def _apply_repack_review_guards(conn, now, post_review_event_payload):
                 AND ((previous.status='CONFLICT'
                     AND previous.last_error_code IN ('REPACK_PREDECESSOR_REVIEW_REQUIRED','REPACK_REOPEN_REFUSED'))
                   OR (previous.local_completion_committed=1 AND previous.local_completion_order IS NULL))
+                AND previous.idempotency_key NOT IN """ + _RECOVERED_PACKAGE_KEYS + """
                 AND """ + _PACKAGE_SOURCE_MATCH + """ )
             OR EXISTS (SELECT 1 FROM package_cancellation_outbox AS cancel
                 WHERE cancel.package_idempotency_key=current.predecessor_package_key
@@ -164,6 +168,7 @@ def _record_completion_predecessor(conn: sqlite3.Connection, key: str, order: in
              ON previous.local_completion_committed=1
             AND previous.local_completion_order<?
            WHERE current.idempotency_key=? AND """ + _PACKAGE_SOURCE_MATCH + """
+             AND previous.idempotency_key NOT IN """ + _RECOVERED_PACKAGE_KEYS + """
            ORDER BY previous.local_completion_order DESC LIMIT 1""",
         (order, key),
     ).fetchone()
@@ -175,6 +180,56 @@ def _record_completion_predecessor(conn: sqlite3.Connection, key: str, order: in
     )
 
 class PackageOutbox:
+    def package_recovery_target(self, set_id):
+        from package_recovery_ledger import recovery_target
+        with self._connect() as conn:
+            return recovery_target(conn, set_id)
+
+    @writer_sink('package_recovery_confirm')
+    def close_package_recovery(self, target, response, *, operator_id, operator_name=''):
+        from package_recovery_ledger import close_recovery
+        return close_recovery(self, target, response, operator_id=operator_id, operator_name=operator_name)
+
+    @writer_sink('package_recovery_held_evidence')
+    def observe_package_recovery_held(self, target, response, *, operator_id, operator_name=''):
+        from package_recovery import CONTRACT_SHA256, validate_recovery_read
+        from package_recovery_ledger import recovery_target
+        if not operator_id or validate_recovery_read(response, target['expected']) != 'HELD':
+            return False
+        observed = canonical_json(dict(expected=target['expected'], response=response, contract_sha256=CONTRACT_SHA256))
+        with self._lock, self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            current = recovery_target(conn, target['review']['set_id'])
+            if current is None or canonical_json(current) != canonical_json(target):
+                return False
+            conn.execute('''INSERT INTO package_workbench_hold_audit
+                (set_id,action,manager_id,observed,recorded_at,operator_id,operator_name)
+                SELECT ?,'PACKAGE_RECOVERY_HELD_V1',?,?,?,?,?
+                WHERE NOT EXISTS (SELECT 1 FROM package_workbench_hold_audit
+                    WHERE set_id=? AND action='PACKAGE_RECOVERY_HELD_V1' AND observed=?)''',
+                (target['review']['set_id'],str(operator_id),observed,self._utc_now(),str(operator_id),
+                 str(operator_name),target['review']['set_id'],observed))
+            conn.commit()
+        return True
+
+    def package_recovery_held(self, set_id):
+        from package_recovery import CONTRACT_SHA256, validate_recovery_read
+        target = self.package_recovery_target(set_id)
+        if target is None:
+            return False
+        with self._connect() as conn:
+            rows = conn.execute('''SELECT observed FROM package_workbench_hold_audit
+                WHERE set_id=? AND action='PACKAGE_RECOVERY_HELD_V1' ORDER BY audit_id DESC''', (set_id,)).fetchall()
+        for row in rows:
+            try:
+                saved = json.loads(row['observed'])
+                if (saved['contract_sha256'] == CONTRACT_SHA256 and saved['expected'] == target['expected']
+                        and validate_recovery_read(saved['response'],target['expected']) == 'HELD'):
+                    return True
+            except (PackageLogisticsError, ValueError, KeyError, TypeError):
+                continue
+        return False
+
     def __init__(
         self,
         db_path: str | Path,
@@ -1397,6 +1452,90 @@ class PackageOutbox:
                 (max(0, int(limit)),),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def list_repack_reviews(self, *, limit: int = 1000) -> list[dict[str, Any]]:
+        """Include immutable original refused cancels, even without a later completion."""
+        with self._connect() as conn:
+            rows = [dict(row) for row in conn.execute(
+                """SELECT * FROM package_command_outbox WHERE status='CONFLICT'
+                   AND local_completion_committed=1
+                   AND last_error_code IN ('REPACK_REOPEN_REFUSED','REPACK_PREDECESSOR_REVIEW_REQUIRED')
+                   AND idempotency_key NOT IN """ + _RECOVERED_PACKAGE_KEYS + """
+                   ORDER BY created_at,idempotency_key LIMIT ?""", (max(0, int(limit)),)
+            ).fetchall()]
+            original = conn.execute('''SELECT package.* FROM package_command_outbox AS package
+                JOIN package_cancellation_outbox AS cancel ON cancel.package_idempotency_key=package.idempotency_key
+                WHERE package.status='ACKED' AND cancel.status='ACKED'
+                AND json_valid(cancel.receipt_json)
+                AND (json_type(cancel.receipt_json,'$.data.reopen')='false'
+                     OR json_type(cancel.receipt_json,'$.reopen')='false')
+                AND package.idempotency_key NOT IN ''' + _RECOVERED_PACKAGE_KEYS + '''
+                AND NOT EXISTS (SELECT 1 FROM package_command_outbox AS review
+                    WHERE review.predecessor_package_key=package.idempotency_key AND review.status='CONFLICT'
+                    AND review.last_error_code IN ('REPACK_REOPEN_REFUSED','REPACK_PREDECESSOR_REVIEW_REQUIRED')
+                    AND review.idempotency_key NOT IN ''' + _RECOVERED_PACKAGE_KEYS + ''')
+                ORDER BY package.created_at,package.idempotency_key LIMIT ?''', (max(0,int(limit)),)).fetchall()
+            rows.extend(dict(row, recovery_pending=True) for row in original)
+            return rows
+
+    def repack_review_for_source(self, source_label: str, input_tag_id: str = ""):
+        """Read the durable review before admitting another scan of its physical source."""
+        for row in self.list_repack_reviews():
+            draft = json.loads(row['draft_json'])
+            if ((input_tag_id and draft.get('source_input_tag_id') == input_tag_id)
+                    or (source_label and source_label in [draft.get(name) for name in
+                        ('scan_payload','source_active_label_qr_payload','source_canonical_input_tag_qr','source_external_label')])):
+                return row
+        return None
+
+    def cancelled_package_for_barcode(self, barcode: str):
+        """Read known members of packages whose acknowledged cancel refused reopening.
+
+        ACKed commands prove their QA/exact scans. Hydrated source rows additionally
+        identify unscanned members, restricted to the actual package receipt IDs.
+        Missing barcode evidence never stands in for an entire item or source.
+        """
+        normalized = canonical_barcodes((barcode,))
+        if not normalized:
+            return None
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT package.idempotency_key,package.set_id,package.command_json,
+                          package.draft_json,package.receipt_json
+                   FROM package_command_outbox AS package
+                   JOIN package_cancellation_outbox AS cancel
+                     ON cancel.package_idempotency_key=package.idempotency_key
+                   WHERE package.status='ACKED' AND cancel.status='ACKED'
+                     AND NOT EXISTS (SELECT 1 FROM package_recovery_evidence AS recovered
+                         WHERE recovered.cancel_key=cancel.idempotency_key)
+                     AND (json_type(CASE WHEN json_valid(cancel.receipt_json)
+                                    THEN cancel.receipt_json ELSE '{}' END,'$.data.reopen')='false'
+                       OR json_type(CASE WHEN json_valid(cancel.receipt_json)
+                                    THEN cancel.receipt_json ELSE '{}' END,'$.reopen')='false')
+                   ORDER BY cancel.created_at,cancel.idempotency_key"""
+            )
+            for row in rows:
+                command = json.loads(row['command_json'] or '{}')
+                draft = json.loads(row['draft_json'] or '{}')
+                receipt = json.loads(row['receipt_json'] or '{}')
+                data = receipt.get('data', receipt)
+                payload = command.get('payload', {})
+                known = []
+                for evidence in (payload, data):
+                    for field in ('sample_barcodes', 'exact_rescan_barcodes'):
+                        values = evidence.get(field)
+                        if isinstance(values, list):
+                            known.extend(value for value in values if isinstance(value, str))
+                member_ids = set(data.get('member_ids') or ())
+                source = draft.get('work_group_source') or {}
+                for member in source.get('members') or ():
+                    if isinstance(member, Mapping) and member.get('unit_id') in member_ids:
+                        value = member.get('normalized_barcode')
+                        if isinstance(value, str):
+                            known.append(value)
+                if normalized[0] in canonical_barcodes(known):
+                    return {'idempotency_key': row['idempotency_key'], 'set_id': row['set_id']}
+        return None
 
     def dismiss_recoverable_prewrite_conflict(
         self, key: str

@@ -308,3 +308,11 @@ v2.0.104 후보는 인수 없이 새 화면(셸 v3.16.2)을 엽니다. 비상 `-
 |---|---|---|
 | `postcut/firstupd-lm-w5` · 557f96a | README :314 「건별 관리자 동작은 기존 UI lane에서 … 복구 창이 닫혀도 이미 승인 중인 요청의 내구 적용은 계속」 | §3-3 둘째 줄(현장 말 요지). 기술 상세는 그 가지의 operations.md `#package-admin-pin-ui-lane` |
 | `postcut/firstupd-lm-w5` · 557f96a | BACKLOG :3 「LM-W5: 건별 복구의 관리자 PIN 요청…」 | BACKLOG 는 기존 줄을 지우지 않으므로 그 줄은 그대로 남는다. 이 가지의 새 절은 맨 위에 넣었고, 병합 때 둘 다 둔다 |
+
+## 107 회수 증거의 시작 판정
+
+107은 거절 길의 논리 내용 그대로를 보존한다. 원 업무 행·CREATE/CANCEL 영수증·완료 표지·회수 증거를 지우거나 다시 써서 시작을 허용하지 않는다. 기존 연결 정리의 WAL checkpoint 경로는 유지하며, 물리 파일 보존을 위한 읽기 전용 admission 분리는 첫 업데이트 범위다.
+
+JSON·관계·자료형·필수 키 실패는 `PACKAGE_RECOVERY_STORED_EVIDENCE_INVALID`, 정상 증거 조회 중 저장소 실패는 별도 `PACKAGE_RECOVERY_STORAGE_UNAVAILABLE`로 거절한다. SQL에 넘길 snapshot 식별자는 조회 전에 검사한다. 저장소 오류는 「작업 기록을 읽지 못했습니다」/「잠시 후 프로그램을 다시 켜세요」와 작은 줄 「코드: PACKAGE_RECOVERY_STORAGE_UNAVAILABLE」를 보인다. 기존 안내에는 자세히 칸이 없어 「다시 켜도 같으면 현장 관리자에게 알리세요」를 보조 줄로 표시한다(WMX0008–0009). 원 오류 내용은 안내에 넣지 않는다. 두 코드는 기존 시작 거절 관측과 정해진 종료로 연결한다.
+
+정상 회수 증거의 양성 회귀는 실제 `main`·guarded callback·store admission을 지나며 UI·네트워크·외부 상태만 격리한다. 실제 GUI 수용 회차를 대신하지 않는다. 읽기 계약의 정본은 별도 [package-recovery.md](package-recovery.md)의 지정 바이트 그대로 유지한다.

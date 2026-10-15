@@ -601,16 +601,17 @@ def _validate_work_group_source(
     package_external_label = str(
         source.get("package_external_label") or ""
     ).strip()
-    expected_package_id = (
-        "PACKAGE-WORK-"
-        + canonical_sha256(
-            {
-                "group_id": group_id,
-                "label_id": label_id,
-                "member_ids": list(members),
-            }
-        )[:24].upper()
-    )
+    package_identity = dict(group_id=group_id,label_id=label_id,member_ids=list(members))
+    recovery_receipts = []
+    for source_spec in sources:
+        if source_spec.get('origin_receipt_contract_version') == 'PACKAGE_RECOVERY_TRANSFER_V1':
+            receipt_id = source_spec.get('origin_receipt_id')
+            if not isinstance(receipt_id,str) or not receipt_id.strip() or receipt_id != receipt_id.strip():
+                raise PackageLogisticsError('package recovery source receipt is missing')
+            recovery_receipts.append(receipt_id)
+    if recovery_receipts:
+        package_identity['package_recovery_receipt_ids'] = sorted(set(recovery_receipts))
+    expected_package_id = 'PACKAGE-WORK-' + canonical_sha256(package_identity)[:24].upper()
     if (
         package_id != expected_package_id
         or not package_external_label
