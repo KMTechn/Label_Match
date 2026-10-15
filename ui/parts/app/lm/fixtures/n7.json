@@ -14,10 +14,10 @@
     "work": {
       "stage": "product_5",
       "stage_label": "제품5",
-      "next": "상단 제품 5번째를 스캔하세요",
+      "next": "표본 제품을 스캔하세요",
       "next_sub": [
         {
-          "text": "7번째를 찍으면 저절로 끝납니다",
+          "text": "7번째를 스캔하면 자동으로 완료합니다",
           "mark": "plain"
         }
       ],
@@ -103,7 +103,7 @@
       ],
       "result": {
         "kind": "ok",
-        "text": "제품4 맞음",
+        "text": "표본 확인 4/6",
         "sub": "…4824 · 방금",
         "sound": "scan_master",
         "code": null

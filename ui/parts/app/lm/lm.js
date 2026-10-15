@@ -6,24 +6,24 @@
 // 아무것도 안 하고, 같은 단추 안에서 왼쪽 단추를 누르고 뗄 때만 숨은 단추로 command approve 를 보낸다(Label_Match.py:21437–21472 와 같은 규칙).
 'use strict';
 (() => {
-  const { el, $, icon, drawResult } = window.AppFrame;
+  const { el, $, icon, code, drawResult } = window.AppFrame;
   const SOUND = { scan_master: '성공음', scan_1: '성공음', pass: '완료음', fail: '오류음', error: '오류음' };
   const SOURCE = { server: '웹에서 바꿈', last_saved: '마지막 받은 값 · 웹에서 바꿈', default: '기본값 · 웹에서 바꿈' };
-  const ENDED = { full: '다 찼습니다', partial: '모자란 채로 끝남', failed: '실패로 끝남' };
+  const ENDED = { full: '완료했습니다', partial: '부분 제출 완료', failed: '처리하지 못했습니다\n잠시 후 다시 시도하세요' };
   const MARK = { complete: 'check', current: 'now', swap: 'swap', error: 'alert' };
   const ACTION = { 'LABEL.RECHECK': '다시 확인', 'LABEL.SET_HOLD': '보류 후 계속', 'LABEL.F5_HOLD': '보류 후 계속', 'LABEL.SUPPORT_HANDOFF': '지원 인계' };
-  const PROGRESS = { loading: '진행 현황을 받는 중입니다', offline: '회사 서버에 닿지 않아 받지 못했습니다 — 작업은 그대로 하세요', none: '아직 받지 않았습니다' };
+  const PROGRESS = { loading: '진행 현황을 받는 중입니다', offline: '회사 서버에 닿지 않아 받지 못했습니다\n작업은 그대로 하세요', none: '아직 받지 않았습니다' };
   const CANCEL_ERROR = {
-    SCAN_CANCEL_BAD_INPUT: '기록이 바뀌었습니다 · 목록을 다시 보고 고르세요',
-    SCAN_CANCEL_TARGET_CHANGED: '기록이 바뀌었습니다 · 목록을 다시 보고 고르세요',
+    SCAN_CANCEL_BAD_INPUT: '기록이 바뀌었습니다\n목록을 다시 보고 선택하세요',
+    SCAN_CANCEL_TARGET_CHANGED: '기록이 바뀌었습니다\n목록을 다시 보고 선택하세요',
     SCAN_CANCEL_IN_PROGRESS: '진행 중인 묶음은 「방금 스캔 되돌리기」 로 고치세요',
-    SCAN_CANCEL_BUSY: '지금은 처리 중입니다 · 잠시 뒤 다시 누르세요',
-    SCAN_CANCEL_READ_ONLY: '지난 기록은 여기서 취소할 수 없습니다 · 관리자에게 알리세요',
+    SCAN_CANCEL_BUSY: '지금은 처리 중입니다\n잠시 후 다시 누르세요',
+    SCAN_CANCEL_READ_ONLY: '지난 기록은 여기서 취소할 수 없습니다\n현장 관리자에게 알리세요',
     SCAN_CANCEL_CONFIRMATION_PENDING: '열린 확인을 먼저 끝내세요',
-    SCAN_CANCEL_NOT_APPLIED: '취소되지 않았습니다 · 관리자에게 알리세요',
-    SCAN_CANCEL_FAILED: '취소 중 오류가 났습니다 · 관리자에게 알리세요',
+    SCAN_CANCEL_NOT_APPLIED: '취소되지 않았습니다\n현장 관리자에게 알리세요',
+    SCAN_CANCEL_FAILED: '취소 중 오류가 났습니다\n현장 관리자에게 알리세요',
   };
-  const CANCEL_STATE = { pending: '취소됨 · 회사 서버에 알리는 중', acknowledged: '취소됨', review: '취소됨 · 확인 필요 — 관리자에게 알리세요' };
+  const CANCEL_STATE = { pending: '취소됨 · 회사 서버에 알리는 중', acknowledged: '취소됨', review: '취소됨\n확인 필요 — 현장 관리자에게 알리세요' };
   let cancelBusy = false, cancelSending = false, cancelTarget = null, cancelApprovalId = null, cancelApprovalBefore = null, cancelAwaitingApproval = false, cancelWaitTimer = null, cancelRequest = 0, cancelNotice = null;
   const cancellable = (s, row) => s.today.is_today && !s.today.loading && row && row.status === 'completed' && !row.cancellation && Number.isInteger(row.products) && row.products >= 0;
   const pin = (title, go, lead, fields) => ({ kind: 'pin', tag: 'PIN', title, go, lead, fields });
@@ -31,7 +31,7 @@
   const sheets = {
     history: { kind: 'list', title: '오늘 기록', rows: [] },
     progress: { kind: 'list', title: '진행 현황', load: 'refresh_progress', rows: [] },
-    settings: { kind: 'list', title: '작업자 고르기', rows: [], actions: [{ text: '새 이름 등록', go: 'open:register' }] },
+    settings: { kind: 'list', title: '작업자 선택', rows: [], actions: [{ text: '새 이름 등록', go: 'open:register' }] },
     register: { kind: 'form', title: '새 이름 등록', lead: '명단에 없는 이름을 이 PC 에 등록합니다', fields: [{ name: 'name', label: '이름', placeholder: '이름을 넣으세요' }], go: '등록', command: 'register_worker' },
     cancel_completed: { kind: 'form', title: '완료 트레이 취소', lead: '취소할 트레이의 현품표를 스캔하거나 입력하세요', fields: [{ name: 'label', label: '현품표', placeholder: '현품표를 스캔하세요' }], go: '찾기', command: 'cancel_completed' },
     recovery: { kind: 'list', tag: '관리자', title: '멈춘 작업 확인', load: 'recovery_list', rows: [] },
@@ -42,9 +42,18 @@
     'LABEL.SET_HOLD': pin('보류 후 계속', '보류'),
     'LABEL.F5_HOLD': pin('보류 후 계속', '보류'),
     'LABEL.SUPPORT_HANDOFF': pin('지원 인계', '인계'),
-    'LABEL.PHS_LOOKUP': pin('실물 현품표 조회', '조회', '실물 현품표를 찍고 관리자 ID · PIN 을 넣으세요',
+    'LABEL.PHS_LOOKUP': pin('실물 현품표 조회', '조회', '실물 현품표를 스캔하고 관리자 ID\nPIN 을 넣으세요',
       [{ name: 'physical_qr', label: '실물 현품표', placeholder: '현품표를 스캔하세요' }]),
   };
+
+  const SHEET_PIN = {"admin": true, "history": false, "progress": false, "settings": false, "register": false, "cancel_completed": true, "recovery": false, "LABEL.RECHECK": true, "LABEL.SET_HOLD": false, "LABEL.F5_HOLD": false, "LABEL.SUPPORT_HANDOFF": false, "LABEL.PHS_LOOKUP": false, "pending": false, "raw": false, "about": false};
+  for (const [name, sheet] of Object.entries(sheets)) {
+    if (SHEET_PIN[name] === false) {
+      sheet.tag = '작업';
+      if (sheet.kind === 'pin') Object.assign(sheet, { kind: 'form', command: name });
+    }
+  }
+  sheets['LABEL.PHS_LOOKUP'].lead = '실물 현품표를 스캔하세요';
 
   /* 판 내용 중 state 에서 오는 것 — 판이 열려 있으면 render 가 그 판을 같은 state 로 다시 채운다 */
   const LIVE = {
@@ -53,7 +62,7 @@
       const selected = t.rows.find((row) => row.row === sheet.target);
       return {
         lead: t.loading ? '기록을 불러오는 중입니다' : t.is_today ? `오늘 ${t.date}` : '오늘 기록을 다시 불러오세요',
-        facts: t.summary.length ? t.summary.map((row) => [row.item, `${row.count}개`]) : undefined,
+        facts: undefined,
         rows: t.rows.map((row) => ({ title: `${row.no}. ${row.time} · ${row.status === 'cancelled' || row.cancellation ? CANCEL_STATE[row.cancellation?.state] || CANCEL_STATE.review : row.result}`,
           text: `${row.tag} ${row.item} · 스캔 ${row.scans}번` })),
         actions: cancellable(s, selected) && !s.approval ? [{ text: cancelBusy ? '처리 중…' : '이 기록 취소', danger: true }] : [],
@@ -63,30 +72,25 @@
       const p = s.progress;
       return {
         lead: p.state === 'ok' ? `${p.date} · 받은 시각 ${p.fetched_at || '—'}` : PROGRESS[p.state],
-        rows: p.rows.map((row) => ({ title: row.item, text: `계획 ${row.plan} · 포장 ${row.packed} · 남은 ${row.left}${row.left_boxes == null ? '' : ` (${row.left_boxes}상자)`}` })),
+        rows: p.rows.map((row) => ({ title: row.item, text: `계획 ${row.plan} · 포장 ${row.packed} · 남은 ${row.left}${row.left_boxes == null ? '' : ` (${row.left_boxes}트레이)`}` })),
       };
     },
     register(s) { // 같은 이름 후보가 있으면 이 판이 후보 줄로 바뀜(처리 층 답 sheet) — 없으면 이름 칸
       const reg = s.settings.register;
       if (!reg) return { kind: 'form', lead: s.settings.note || sheets.register.lead, rows: undefined };
       return { kind: 'list', lead: `${reg.text} — 등록하려는 이름: ${reg.name}`,
-        rows: reg.candidates.map((c) => ({ title: c.label, text: '같은 분이면 이 줄을 고르세요', actions: [{ text: '같은 사람', go: `command:register_same:${c.id}` }] }))
+        rows: reg.candidates.map((c) => ({ title: c.label, text: '같은 분이면 이 줄을 선택하세요', actions: [{ text: '같은 사람', go: `command:register_same:${c.id}` }] }))
           .concat({ title: '다른 분입니다', text: '구분할 이름으로 다시 등록합니다', actions: [{ text: '다른 사람', go: 'command:register_other', quiet: true }] }) };
     },
     settings(s) {
       const set = s.settings;
-      const rows = [];
-      for (const worker of set.workers) {
-        const now = worker.name === set.selected;
-        rows.push({ title: worker.name, text: now ? '지금 작업자' : '', actions: now ? [] : [{ text: '이 사람으로', go: `command:select_worker:${worker.name}` }] });
-      }
-      return { lead: set.note || (set.required ? '작업자를 고른 뒤 스캔하세요' : '트레이 시작 때 이름이 정해집니다'), rows };
+      return { lead: set.note || (set.required ? '작업자를 선택한 뒤 스캔하세요' : '트레이 시작 때 이름이 정해집니다'), rows: [] };
     },
     recovery(s) {
       const r = s.admin.recovery;
       const result = s.admin.result;
       return {
-        lead: result ? result.text : r && r.loading ? '목록을 받는 중입니다' : '동작마다 관리자 ID 와 PIN 6자리를 넣습니다',
+        lead: result ? result.text : r && r.loading ? '목록을 받는 중입니다' : '멈춘 작업을 선택하세요',
         rows: (r ? r.rows : []).map((row) => ({ title: `${row.tag} ${row.item}`, text: row.status,
           actions: row.actions.map((name) => ({ text: ACTION[name], go: `open:${name}:${row.set_id}` })) })),
       };
@@ -96,7 +100,7 @@
       return { lead: rows.length ? '' : '대기 중인 것이 없습니다', rows: rows.map((row) => ({ title: `${row.text} · ${row.count}건`, text: row.kind })) };
     },
     raw(s) {
-      return { lead: '찍은 원문 그대로 — 복사는 이 PC 의 붙여넣기 칸으로',
+      return { lead: '스캔한 원문 그대로 — 복사는 이 PC 의 붙여넣기 칸으로',
         rows: s.today.rows.map((row) => ({ title: `${row.no}. ${row.time} · ${row.tag}`, text: row.raw.join('\n'), actions: [{ text: '복사', go: `command:copy_raw:${row.row}`, quiet: true }] })) };
     },
     about(s) {
@@ -107,16 +111,16 @@
   for (const name of ['LABEL.RECHECK', 'LABEL.SET_HOLD', 'LABEL.F5_HOLD', 'LABEL.SUPPORT_HANDOFF']) {
     LIVE[name] = (s, sheet) => {
       const row = ((s.admin.recovery && s.admin.recovery.rows) || []).find((item) => item.set_id === sheet.target);
-      return { lead: row ? `${row.tag} ${row.item} · ${row.status}` : '멈춘 작업 확인 목록에서 고른 트레이' };
+      return { lead: row ? `${row.tag} ${row.item} · ${row.status}` : '멈춘 작업 확인 목록에서 선택한 트레이' };
     };
   }
 
   function slotValue(slot, w) {
-    if (slot.state === 'current') return '지금 찍을 칸';
+    if (slot.state === 'current') return '지금 스캔할 칸';
     if (slot.state === 'swap') return '교환 중';
     if (!slot.filled) return slot.state === 'error' ? '틀림' : '—';
-    if (slot.role === 'master_label') return w.tag ? w.tag.code : '확인됨';
-    return `…${slot.value.slice(-4)}`;
+    if (slot.role === 'master_label') return slot.value || (w.tag ? w.tag.code : '확인됨');
+    return slot.value;
   }
 
   function drawTop(s, w) {
@@ -124,7 +128,7 @@
     if (w.tag) {
       const parts = [w.tag.item, w.tag.spec, w.tag.phase, w.quantity].filter(Boolean);
       tag.replaceChildren(el('b', '', w.tag.code), ` ${parts.join(' · ')}`);
-    } else tag.textContent = '현품표를 찍으면 품목이 여기 나옵니다';
+    } else tag.textContent = '현품표를 스캔하면 품목이 여기 나옵니다';
     const legacy = $('[data-legacy]');
     legacy.hidden = !w.legacy.enabled;
     legacy.textContent = w.legacy.enabled ? w.legacy.text || '옛 현품표 받기 켬' : '';
@@ -148,7 +152,8 @@
     nextSet.hidden = w.next_set_top_scan_count == null;
     nextSet.textContent = nextSet.hidden ? '' : `다음 세트부터 상단 ${w.next_set_top_scan_count}개`;
 
-    drawResult($('[data-result]'), { ...w.result, sound: w.result.sound ? SOUND[w.result.sound] : null });
+    AppFrame.exchange($('[data-next]').parentElement, w.exchange && 'remove' in w.exchange && 'insert' in w.exchange ? { phase: ({ target: 'remove', replacement: 'insert' })[w.exchange.phase] || w.exchange.phase, remove: w.exchange.remove.code, insert: w.exchange.insert.code, error: w.result.kind === 'bad' } : null);
+    drawResult($('[data-result]'), { ...w.result, sound: w.result.sound ? SOUND[w.result.sound] : null }, true);
 
     const steps = $('[data-steps]');
     steps.style.setProperty('--slots', String(w.slots.length));
@@ -161,7 +166,7 @@
         holder.append(icon(MARK[slot.state], 22));
         li.append(holder);
       }
-      li.append(el('span', 'lm-step__val', slotValue(slot, w)));
+      li.append(slot.filled ? code(slotValue(slot, w), 'lm-step__val') : el('span', 'lm-step__val', slotValue(slot, w)));
       return li;
     }));
 
@@ -175,9 +180,7 @@
     $('[data-work]').classList.toggle('lm-starting', !!start);
     $('[data-start]').hidden = !start;
     if (!start) return;
-    $('[data-start-title]').textContent = start.title;
-    $('[data-start-text]').textContent = start.text;
-    $('[data-start-retry]').hidden = !start.retry;
+    AppFrame.startup($('[data-start]'), { name: '포장', status: start.title, sub: start.text, busy: !start.retry, error: !!start.retry, retry: start.retry ? 'start_retry' : null });
   }
 
   let approvalId = null;
@@ -237,7 +240,7 @@
     go.disabled = no.disabled = cancelSending;
     if (a.id === cancelApprovalId && cancelTarget) {
       $('[data-approval-title]').textContent = '이 기록을 취소할까요?';
-      $('[data-approval-text]').textContent = `현품표 ${cancelTarget.tag.slice(-12)} · 제품 ${cancelTarget.products}개 · ${cancelTarget.time} — 이 묶음 전체가 취소되고 되돌릴 수 없습니다.`;
+      $('[data-approval-text]').textContent = `이 트레이 기록 전체가 취소되며 되돌릴 수 없습니다\n자세히: 현품표 ${cancelTarget.tag.slice(-12)} · 제품 ${cancelTarget.products}개 · ${cancelTarget.time}`;
       go.textContent = '취소 확인';
       no.textContent = '그만두기';
     }
@@ -274,6 +277,16 @@
         detail.textContent = row.cancellation.text;
       } else detail?.remove();
     });
+    let cards = box.querySelector('.today-items');
+    if (!cards) { cards = el('div'); box.prepend(cards); }
+    AppFrame.today(cards, s.today.summary.map(r => ({ item: r.item, trays: r.count, products: r.products })));
+    const list = box.querySelector('.sheet__list');
+    let timeline = box.querySelector('.today-timeline');
+    if (!timeline) {
+      timeline = el('details', 'today-timeline'); list.before(timeline); timeline.append(el('summary', '', '시간순 목록'), list);
+      timeline.addEventListener('toggle', () => { ui.historyExpanded = timeline.open; });
+    }
+    timeline.open = ui.sheet.target != null || !!ui.historyExpanded;
     const cancel = box.querySelector(':scope > .sheet__btns button');
     if (cancel) { cancel.dataset.historyCancel = ''; cancel.disabled = cancelBusy; }
     let notice = box.querySelector('[data-history-result]');
@@ -288,7 +301,7 @@
       if (notice.textContent !== cancelNotice.text) notice.textContent = cancelNotice.text;
     } else notice?.remove();
     if (!box.querySelector('[data-history-note]')) {
-      const note = el('p', 'sheet__note', '잘못 찍은 기록은 줄을 눌러 취소합니다 · 지난 기록은 회사 웹 리포트에서 봅니다');
+      const note = el('p', 'sheet__note', '잘못 스캔한 기록은 줄을 눌러 취소합니다\n지난 기록은 회사 웹 리포트에서 봅니다');
       note.dataset.historyNote = '';
       box.append(note);
     }
@@ -302,7 +315,7 @@
     else if (!chosen && !box.contains(document.activeElement)) {
       const title = $('[data-sheet-title]');
       title.tabIndex = -1;
-      (box.querySelector('[data-history-row]') || title).focus();
+      (timeline.open ? box.querySelector('[data-history-row]') || title : timeline.querySelector('summary')).focus();
     }
   }
 
@@ -392,11 +405,13 @@
       cancelBusy = false;
       cancelTarget = null;
     }
+    if (ui.sheet?.name !== 'history') ui.historyExpanded = false;
     const focused = document.activeElement;
     const historyFocus = focused?.hasAttribute('data-history-cancel') ? 'cancel' : focused?.dataset.historyRow;
     $('[data-sheet-body]').classList.remove('lm-history');
     const w = s.work;
     drawTop(s, w);
+    AppFrame.menu($('[data-admin]'), SHEET_PIN);
     drawStart(s.start);
     drawWork(w);
     drawApproval(s.approval);
@@ -404,6 +419,14 @@
     if (ui.sheet?.name === 'history' && !s.today.rows.some((row) => row.row === ui.sheet.target)) ui.sheet.target = undefined;
     if (ui.sheet && LIVE[ui.sheet.name]) ui.sheet = { ...ui.sheet, ...LIVE[ui.sheet.name](s, ui.sheet) };
     if (ui.sheet?.name === 'history') queueMicrotask(() => drawHistory(s, ui, historyFocus));
+  }
+
+  function afterPaint(s, ui) {
+    if (ui.sheet?.name !== 'settings' || s.sheet?.modal || s.confirm?.kind === 'partial_submit') return;
+    const body = $('[data-sheet-body]');
+    let picker = body.querySelector('.worker-picker');
+    if (!picker) { picker = el('div'); body.querySelector('.sheet__list')?.replaceWith(picker); }
+    AppFrame.workers(picker, s.settings.workers.map(w => ({ id: w.name, label: w.name, recent: w.name === s.settings.selected, go: `command:select_worker:${w.name}` })));
   }
 
   /* 승인 — 같은 승인 단추 안에서 왼쪽 단추를 누르고 뗄 때만(뗄 때 단추 밖이면 없음). 보내기는 틀의 단추 길(숨은 단추의 data-go) */
@@ -424,5 +447,5 @@
   });
   document.addEventListener('pointercancel', () => { pressed = null; });
 
-  AppFrame.start({ render, sheets, keys: { F1: 'command:cancel_current', F2: 'open:cancel_completed', F4: 'command:exchange', Escape: 'command:escape', Enter: 'command:empty_enter' } });
+  AppFrame.start({ render, sheets, afterPaint, keys: { F1: 'command:cancel_current', F2: 'open:cancel_completed', F4: 'command:exchange', Escape: 'command:escape', Enter: 'command:empty_enter' } });
 })();

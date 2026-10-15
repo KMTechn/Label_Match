@@ -12,21 +12,21 @@
   },
   "approval_input": "pointer",
   "sheets": {
-    "admin": "관리자 ▾ 메뉴(틀) — 상단 확인 수 보기 칸 · 멈춘 작업 확인 · 대기 현황 · 바코드 원문 · 정보",
-    "history": "오늘 기록(품목별 합계) — 끝난 줄 하나 고르기 → 이 기록 취소 → 기존 마우스 승인. 지난 기록은 회사 웹 리포트에서 봅니다",
-    "progress": "진행 현황(출고 계획 대비)",
-    "settings": "작업자 고르기(같은 이름 후보 줄 포함)",
-    "register": "새 이름 등록(form — 이름 칸)",
-    "cancel_completed": "완료 트레이 취소(F2, form — 현품표 칸) → 마우스 승인",
-    "recovery": "멈춘 작업 확인 목록 — 줄마다 동작(open:<동작>:<set_id>)",
-    "LABEL.RECHECK": "PIN 판 — 같은 요청 다시 확인",
-    "LABEL.SET_HOLD": "PIN 판 — 보류 후 계속",
-    "LABEL.F5_HOLD": "PIN 판 — 보류 후 계속",
-    "LABEL.SUPPORT_HANDOFF": "PIN 판 — 지원 인계",
-    "LABEL.PHS_LOOKUP": "PIN 판 — 실물 현품표 조회(현품표 칸)",
-    "pending": "대기 현황(관리자)",
-    "raw": "바코드 원문 보기 · 복사(관리자)",
-    "about": "정보(판 · 단축키)"
+    "admin": {"description": "관리자 ▾ 메뉴(틀) — 상단 확인 수 보기 칸 · 멈춘 작업 확인 · 대기 현황 · 바코드 원문 · 정보", "pin": true},
+    "history": {"description": "오늘 기록(품목별 합계) — 끝난 줄 하나 고르기 → 이 기록 취소 → 기존 마우스 승인. 지난 기록은 회사 웹 리포트에서 봅니다", "pin": false},
+    "progress": {"description": "진행 현황(출고 계획 대비)", "pin": false},
+    "settings": {"description": "작업자 고르기(같은 이름 후보 줄 포함)", "pin": false},
+    "register": {"description": "새 이름 등록(form — 이름 칸)", "pin": false},
+    "cancel_completed": {"description": "완료 트레이 취소(F2, form — 현품표 칸) → 마우스 승인", "pin": true},
+    "recovery": {"description": "멈춘 작업 확인 목록 — 줄마다 동작(open:<동작>:<set_id>)", "pin": false},
+    "LABEL.RECHECK": {"description": "PIN 판 — 같은 요청 다시 확인", "pin": true},
+    "LABEL.SET_HOLD": {"description": "PIN 판 — 보류 후 계속", "pin": false},
+    "LABEL.F5_HOLD": {"description": "PIN 판 — 보류 후 계속", "pin": false},
+    "LABEL.SUPPORT_HANDOFF": {"description": "PIN 판 — 지원 인계", "pin": false},
+    "LABEL.PHS_LOOKUP": {"description": "PIN 판 — 실물 현품표 조회(현품표 칸)", "pin": false},
+    "pending": {"description": "대기 현황(관리자)", "pin": false},
+    "raw": {"description": "바코드 원문 보기 · 복사(관리자)", "pin": false},
+    "about": {"description": "정보(판 · 단축키)", "pin": false}
   },
   "state": {
     "type": "object",
@@ -143,7 +143,9 @@
             "description": "제품 교환 단계 — 시작 :15848 · 불량 대상 :15874 · 대체품 :15884",
             "additionalProperties": false,
             "required": ["phase", "target"],
-            "properties": {"phase": {"enum": [null, "target", "replacement"]}, "target": {"type": ["string", "null"]}}
+            "properties": {"phase": {"enum": [null, "target", "replacement", "remove", "insert", "done"]}, "target": {"type": ["string", "null"]},
+              "remove": {"type": "object", "additionalProperties": false, "required": ["code"], "properties": {"code": {"type": ["string", "null"]}}},
+              "insert": {"type": "object", "additionalProperties": false, "required": ["code"], "properties": {"code": {"type": ["string", "null"]}}}}
           },
           "short": {
             "type": "object",
@@ -323,7 +325,8 @@
               "type": "object",
               "additionalProperties": false,
               "required": ["item", "count"],
-              "properties": {"item": {"type": "string", "description": "품번 차수(지금 품목별 합계 표 :23253 의 줄)"}, "count": {"type": "integer", "minimum": 0}}
+              "properties": {"item": {"type": "string", "description": "품번 차수(지금 품목별 합계 표 :23253 의 줄)"}, "count": {"type": "integer", "minimum": 0},
+                "products": {"type": "integer", "minimum": 0, "description": "그 품목 전체 제품 수. count는 완료 트레이 수, rows[].products는 기존 표본 수."}}
             }
           }
         }
@@ -440,7 +443,8 @@
         "additionalProperties": false,
         "required": ["built_at", "parts"],
         "properties": {"built_at": {"type": ["string", "null"]}, "parts": {"type": ["string", "null"], "description": "화면 부품 지문(MANIFEST parts_fingerprint)"}}
-      }
+      },
+      "confirm": {"type": ["object", "null"], "additionalProperties": false, "required": ["kind", "total", "done", "short"], "properties": {"kind": {"const": "partial_submit"}, "total": {"type": "integer", "minimum": 0}, "done": {"type": "integer", "minimum": 0}, "short": {"type": "integer", "minimum": 0}}}
     }
   },
   "calls": {
@@ -635,7 +639,13 @@
       "recovery_list": {"args": {}, "source": "_show_package_recovery_workbench :11649 목록 — PIN 없이(동작마다 ID + PIN)", "keys": ["멈춘 작업 확인 판 열 때(load)"], "approval": null},
       "pending_status": {"args": {}, "source": "대기 현황 탭(F-50) → state.admin.pending", "keys": ["대기 현황 판 열 때(load)"], "approval": null},
       "copy_raw": {"args": {"id": "string — today.rows[].row"}, "source": "원문 복사 :19970(clipboard)", "keys": ["바코드 원문 판 줄 「복사」"], "approval": null},
-      "start_retry": {"args": {}, "source": "시작 순서 품목 목록 다시 받기(시작 화면 「다시 시도」)", "keys": ["시작 화면"], "approval": null}
+      "start_retry": {"args": {}, "source": "시작 순서 품목 목록 다시 받기(시작 화면 「다시 시도」)", "keys": ["시작 화면"], "approval": null},
+      "partial_submit": {"args": {}, "does": "부분 제출 확정(즉시 release)"},
+      "partial_continue": {"args": {}, "does": "부분 제출 확인만 닫고 계속 작업"},
+      "LABEL.SET_HOLD": {"args": {"target": "기존 복구 원본 ID"}, "does": "같은 이름의 기존 동작. pin:false 작업자 시트에서 기존 대상과 입력을 보존하여 PIN 없이 호출한다. 관리자 효과는 기존 관리자 경로를 유지한다."},
+      "LABEL.F5_HOLD": {"args": {"target": "기존 복구 원본 ID"}, "does": "같은 이름의 기존 동작. pin:false 작업자 시트에서 기존 대상과 입력을 보존하여 PIN 없이 호출한다. 관리자 효과는 기존 관리자 경로를 유지한다."},
+      "LABEL.SUPPORT_HANDOFF": {"args": {"target": "기존 복구 원본 ID"}, "does": "같은 이름의 기존 동작. pin:false 작업자 시트에서 기존 대상과 입력을 보존하여 PIN 없이 호출한다. 관리자 효과는 기존 관리자 경로를 유지한다."},
+      "LABEL.PHS_LOOKUP": {"args": {"physical_qr": "string"}, "does": "같은 이름의 기존 동작. pin:false 작업자 시트에서 기존 대상과 입력을 보존하여 PIN 없이 호출한다. 관리자 효과는 기존 관리자 경로를 유지한다."}
     },
     "admin": {
       "LABEL.RECHECK": {"args": {"admin_id": "string", "pin": "6자리 숫자", "target": "string — admin.recovery.rows[].set_id"}, "source": "_submit_package_pin_action :10597(:11776) — 같은 요청 다시 확인"},

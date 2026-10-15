@@ -14,10 +14,10 @@
     "work": {
       "stage": "product_3",
       "stage_label": "제품3",
-      "next": "상단 제품 3번째를 스캔하세요",
+      "next": "표본 확인 — 제품 3번째를 스캔하세요",
       "next_sub": [
         {
-          "text": "5번째를 찍으면 저절로 끝납니다",
+          "text": "5번째를 스캔하면 자동으로 완료합니다",
           "mark": "plain"
         }
       ],
@@ -85,7 +85,7 @@
       ],
       "result": {
         "kind": "ok",
-        "text": "제품2 맞음",
+        "text": "표본 확인 2/4",
         "sub": "…4822 · 방금",
         "sound": "scan_master",
         "code": null
@@ -128,7 +128,7 @@
       "id": "cancel-record-1",
       "action": "scan_cancel",
       "title": "이 기록을 취소할까요?",
-      "message": "현품표 A110 · 제품 4개 · 08:12 — 이 묶음 전체가 취소되고 되돌릴 수 없습니다.",
+      "message": "이 트레이 기록 전체가 취소되며 되돌릴 수 없습니다\n자세히: 현품표 A110 · 제품 4개 · 08:12",
       "confirm": "취소 확인",
       "cancel": "그만두기"
     },

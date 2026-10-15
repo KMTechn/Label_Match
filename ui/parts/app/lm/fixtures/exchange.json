@@ -14,7 +14,7 @@
     "work": {
       "stage": "product_3",
       "stage_label": "제품3",
-      "next": "교환 — 불량 제품을 스캔하세요",
+      "next": "교환 — 빼는 제품(불량)을 스캔하세요",
       "next_sub": [
         {
           "text": "불량 제품",
@@ -25,7 +25,7 @@
           "mark": "plain"
         },
         {
-          "text": "대체 제품",
+          "text": "대체 양품",
           "mark": "off"
         }
       ],
@@ -93,7 +93,7 @@
       ],
       "result": {
         "kind": "idle",
-        "text": "교환을 시작했습니다 — 이 트레이의 불량 제품 하나를 찍으세요",
+        "text": "교환을 시작했습니다\n이 트레이의 불량 제품 하나를 스캔하세요",
         "sub": null,
         "sound": "scan_1",
         "code": null

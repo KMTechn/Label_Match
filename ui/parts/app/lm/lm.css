@@ -4,7 +4,7 @@
 /* ── 수 카드 덧: 상태 표시 · 다음 세트부터 ── */
 .lm-badges { display: inline-flex; gap: 6px; margin-left: 10px; vertical-align: middle; }
 .lm-badge { padding: 2px 10px; border-radius: 999px; background: var(--tint-2); color: var(--ink-2); font-size: var(--s2); font-weight: 600; }
-.lm-nextset { align-self: flex-start; margin-top: 10px; padding: 4px 14px; border-radius: 999px; background: var(--tint); font-size: clamp(var(--s3), 6cqh, 26px); font-weight: 600; color: var(--ink-2); }
+.lm-nextset { align-self: flex-start; margin-top: 10px; padding: 4px 14px; border-radius: 999px; background: var(--tint); font-size: var(--s4); font-weight: 600; color: var(--ink-2); }
 .lm-held { margin-left: 12px; padding: 2px 10px; border-radius: 999px; background: var(--amber-soft); color: var(--amber-text); font-weight: 600; }
 
 /* ── 칸 줄: 현품표 → 제품 1…N — 칸 수는 state 의 slots 수(--slots, 2–7) ── */
@@ -17,6 +17,8 @@
   gap: 10px;
   container-type: size; /* 칸 글이 줄 높이를 따라 큼 */
 }
+
+
 .lm-step {
   min-height: 84px;
   padding: 12px 14px;
@@ -28,10 +30,10 @@
   grid-template-rows: auto 1fr;
   gap: 4px 8px;
 }
-.lm-step__name { font-size: clamp(var(--s4), 22cqh, 34px); font-weight: 600; }
+.lm-step__name { font-size: var(--s5); font-weight: 600; }
 .lm-step__icon { grid-row: 1 / span 2; grid-column: 2; align-self: center; }
 .lm-step__icon svg { width: clamp(22px, 22cqh, 40px); height: clamp(22px, 22cqh, 40px); }
-.lm-step__val { grid-column: 1; grid-row: 2; font-size: clamp(var(--s4), 20cqh, 30px); font-variant-numeric: tabular-nums; align-self: end; }
+.lm-step__val { grid-column: 1; grid-row: 2; font-size: var(--s2); font-variant-numeric: tabular-nums; align-self: end; }
 .lm-step--complete { background: var(--pri-soft); color: var(--pri-strong); }
 .lm-step--complete .lm-step__val { color: var(--ink-2); }
 .lm-step--current { background: var(--surface); color: var(--pri-strong); box-shadow: inset 0 0 0 2px var(--pri); }
@@ -46,7 +48,7 @@
 /* ── 시작 · 대기(품목 목록 받는 중 · 못 받음) — 작업 칸 자리를 통째로 씀 ── */
 .work.lm-starting > :not(.lm-start) { display: none; }
 .lm-start { grid-column: 1 / -1; grid-row: 1 / -1; align-self: center; justify-self: center; max-width: 720px; display: grid; gap: 14px; text-align: center; }
-.lm-start__title { margin: 0; font-size: clamp(var(--s6), 4vw, 48px); font-weight: 700; color: var(--ink); }
+.lm-start__title { margin: 0; font-size: var(--s6); font-weight: 700; color: var(--ink); }
 .lm-start__text { margin: 0; font-size: var(--s5); line-height: 1.5; color: var(--ink-2); }
 .lm-start .act { justify-self: center; height: 56px; padding: 0 32px; }
 
@@ -57,13 +59,14 @@
 .lm-approval .sheet__btns { flex-wrap: wrap; }
 .lm-history .sheet__list { grid-template-columns: minmax(0, 1fr); }
 .lm-history .sheet__list li { min-width: 0; padding: 0; }
-.lm-history__row { width: 100%; min-width: 0; padding: 12px 14px; border: 0; border-radius: var(--r-card); background: transparent; color: var(--ink); text-align: left; display: grid; gap: 6px; overflow-wrap: anywhere; }
+.lm-history__row { width: 100%; min-width: 0; padding: 12px 14px; border: 0; border-radius: var(--r-card); background: transparent; color: var(--ink); text-align: left; display: grid; gap: 6px; overflow-wrap: normal; }
 .lm-history__row[aria-pressed="true"] { background: var(--pri-soft); box-shadow: inset 0 0 0 2px var(--pri); }
 .lm-history__row--cancelled, .lm-history__row--cancelled p { color: var(--ink-3); }
 .lm-history__row.lm-history__row--review { background: var(--amber-soft); color: var(--amber-text); }
 .lm-history__row--review p { color: var(--amber-text); }
 .lm-history [data-history-detail] { padding: 0 14px 12px; }
-.lm-history .sheet__lead { overflow-wrap: anywhere; }
+.lm-history .sheet__lead { overflow-wrap: normal; }
+.lm-history .sheet__lead, .lm-history .sheet__note, .lm-history .result, .lm-history__row :is(b, p) { white-space: pre-line; }
 
 /* ── 폰 폭(390) — 같은 자리 차례(다음에 찍을 것 → 수 카드 → 방금 결과 → 칸 줄 → 단추) ── */
 @media (max-width: 600px) {
@@ -78,4 +81,22 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .lm-step { transition: background-color var(--dur-tint) var(--ease-standard), color var(--dur-tint) var(--ease-standard); }
+}
+
+@media (min-width: 601px) {
+  .work { grid-template-rows: auto minmax(0, 1fr) minmax(calc(110 * var(--app-unit) * var(--app-font-scale)), .3fr) auto; }
+  .sheet { top: calc(var(--hdr-h) + 12px); max-height: calc(100vh - var(--hdr-h) - var(--status-h) - 24px); padding-block: 8px; }
+  .count-card { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 4px 16px; padding-top: 4px; padding-bottom: 4px; }
+  .count-card__label { line-height: 1.15; }
+  .count-card__label { grid-column: 2; grid-row: 1; align-self: end; }
+  .lm-nextset { grid-column: 1 / -1; }
+  .count-card__n { grid-column: 1; grid-row: 1 / span 2; line-height: 1.2; font-size: calc(170 * var(--app-unit) * var(--app-font-scale)); }
+  .count-card__left { grid-column: 2; grid-row: 2; align-self: start; }
+  .lm-step { padding-top: 8px; padding-bottom: 8px; }
+  .work:has(.lm-step:nth-child(7)) { grid-template-rows: auto minmax(0, 1fr) minmax(calc(116 * var(--app-unit) * var(--app-font-scale)), .3fr) auto; }
+}
+
+@media (min-width: 601px) {
+  .sheet:has(.worker-picker) { height: calc(100vh - var(--hdr-h) - var(--status-h) - 24px); grid-template-rows: auto minmax(0, 1fr); }
+  .sheet:has(.worker-picker) .sheet__body { min-height: 0; align-content: start; }
 }
