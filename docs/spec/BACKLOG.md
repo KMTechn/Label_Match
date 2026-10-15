@@ -1,5 +1,7 @@
 - w9firstupdsub244 / B28: 배치 진단 공개 변환에서 선택 필드가 없어도 최초 자식 종료 코드·있는 예외 종류를 보존하도록 고쳤다. 불완전한 보호 보고서는 미검증으로 남기며 원 진단·권한·디스크 형식은 바꾸지 않는다. [운영 계약](operations.md)과 PS5.1/PS7 선택 필드 회귀 시험을 연결한다.
 
+- w9firstupdsub244 / B16·B26: 기존 검토된 공개 셸 결과 `web`/`exit` → 앱 종료 코드 0/3을 [셸 계약](contracts.md#new-screen-shell-write-guard)에 명시했다. 구현·종료 순서·fallback 판정 변경 없이 명세 빈칸만 보완했다.
+
 - w9firstupdsub208 / 기준일 107: UI a1b37ce2(76파일·551f9c24957b974a), 다리 글·원문 코드·교환 두 칸·전체 제품 합계, 부분 제출 확인과 기존 결정 즉시 release, PIN 없는 작업자 네 동작을 구현했다. 아래의 60초 미달 Undo 유예는 이 확인 계약으로 대체된다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다. 부분 제출·PIN의 좁은 독립 검토와 실제 화면/PC 수용은 1차·관리자 인계다.
 
 - 새 화면 이음: v2.0.104 후보의 writer/lane 끝내기·초기화 예외 정리·시작 재시도·건별 관리자 재조회/보류·관리자 비상 링크를 구현한다. 셸 v3.16.2 READY 19/19와 최종 UI 4차 97efc8e7 52/52를 합쳤다. 실제 창·현장 PC·조립판 설치 packet은 확인 대기다([계약](contracts.md#new-screen-shell-write-guard)).
