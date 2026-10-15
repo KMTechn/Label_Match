@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
-@pytest.mark.parametrize("scenario", ["ready", "timeout"])
+@pytest.mark.parametrize("scenario", ['ready', 'timeout', 'absent'])
 def test_public_installer_outer_failure_handler_keeps_relay_proof(tmp_path, engine, scenario):
     executable = shutil.which(engine)
     assert executable is not None
