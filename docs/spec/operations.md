@@ -1500,3 +1500,6 @@ Range B excludes the ten name/SHA-pinned files in tests/fixtures/lm_atomic_exclu
 Operational installation requires an explicit WorkerAccount. Machine completion releases its writer fence and installs the worker shortcut while keeping setup PENDING; it never prepares a profile or starts GUI/relay inside that transaction. After completion, only a caller with the worker's SID and a positive process session may request the ordinary worker's first setup.
 
 First setup and relay commands use label_match_relay_entry.py. Native worker context must match the protected policy SID, be non-elevated with medium integrity, and have a positive session before relay launch/reuse. Source recovery keeps its existing lifecycle without adding a new identity store. GUI entry remains the default manual program launch. Shell fallback markers and shared shell bytes are owned by the pinned shell.
+
+
+관리자 SSH/Session 0 machine-worker 길은 다른 작업자 세션으로 relay를 실행하지 않는다. 성공은 PASS_MACHINE_WORKER_PENDING/첫 일반 실행을 유지한다. 실패에는 코드·startup preimage·담장 자동 복원 사실과 값 없는 작업자 안내를 남기며, 끝 relay READY 의무는 일반 작업자·같은 세션 설치 길에만 적용한다. 현장 지원은 코드 전용 제거 후 새 설치, 업데이트는 apply_prepared를 사용한다.

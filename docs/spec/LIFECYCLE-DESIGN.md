@@ -37,3 +37,6 @@ managed 등록은 actual active code를 사용한다. 새 자료·설정·direct
 headless 독립 clone과 실제 NTFS 파일/잠금/정션 함수 조각만 검증한다. scheduler/CIM/ACL/credential/GUI/relay 기동은 seam을 주입한다. 버전·환경·수치·원 FAILED는 sub-128 REPORT.md와 로그에 보존한다. 규칙 구현과 실제 설치 성공을 구별한다. 동결 뒤 LM 고유 exact 선언·inventory/fence/companion/source digest 갱신, 독립 검토, stock/전체 및 실제 Windows 수용은 중앙 OPEN이다.
 
 후속 sub-130 source 회귀는 REPORT.md와 실제 XML에 연결한다. archive 기반 후보는 clean committed HEAD만 사용하며 DIRTY working tree 결과와 다른 HEAD의 archive 결과를 한 판으로 집계하지 않는다. 선언 대기는 사용자 제거/URL 교정의 GREEN과 분리하며 기대값을 선언에 맞춰 약화하지 않는다.
+
+
+관리자 SSH/Session 0 machine-worker 길은 다른 작업자 세션으로 relay를 실행하지 않는다. 성공은 PASS_MACHINE_WORKER_PENDING/첫 일반 실행을 유지한다. 실패에는 코드·startup preimage·담장 자동 복원 사실과 값 없는 작업자 안내를 남기며, 끝 relay READY 의무는 일반 작업자·같은 세션 설치 길에만 적용한다. 현장 지원은 코드 전용 제거 후 새 설치, 업데이트는 apply_prepared를 사용한다.

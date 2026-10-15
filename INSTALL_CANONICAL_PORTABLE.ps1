@@ -3601,6 +3601,7 @@ function Invoke-LabelSourceDataAdmission([string]$ProductRoot, [string]$Source,
     }
     catch {
         $admissionFailure = $_
+        if(@(Relays).Count -eq 0){Write-LabelInstallerRelayRecoveryGuidance}
         Write-LabelPreparationFailure $admissionFailure $Source $Inventory $AuditRoot $ExternalEvidencePath
         throw $admissionFailure
     }
@@ -4575,6 +4576,46 @@ function Invoke-LabelResumeRollback {
     }
 }
 
+function Write-LabelInstallerRelayRecoveryGuidance([switch]$MachineWorker,[bool]$Existing=$true) {
+    if ($MachineWorker -and -not $Existing) {
+        'worker_setup_guidance=처음 설치: 지정 작업자 계정의 첫 일반 실행에서 준비를 마치세요.'
+    } else {
+        'relay_recovery_guidance=relay 되살림: 같은 작업자 일반 세션에서 --remove-current-user-setup → --onboard-current-user 순서로 실행하세요.'
+    }
+}
+
+function Stop-LabelInstallerRelayPreimage([object[]]$Expected,[string]$StateRoot,[string]$CodeRoot,[string]$SubjectSid) {
+    $live=@(Assert-RollbackRelayPreimage $Expected)
+    if($Expected.Count -eq 0){return}
+    if($Expected.Count -ne 1){throw 'Installer relay preimage count differs.'}
+    $caller=Get-CanonicalRelaySecurity $PID
+    if([string]$caller.sid -cne $SubjectSid -or [int]$caller.session_id -le 0){throw 'Installer relay caller differs.'}
+    $security=Get-CanonicalRelaySecurity ([int]$live[0].ProcessId)
+    if($live[0].ProcessId -ne $Expected[0].ProcessId -or
+        ([DateTime]$live[0].CreationDate).ToUniversalTime() -ne ([DateTime]$Expected[0].CreationDate).ToUniversalTime() -or
+        [string]$security.sid -cne $SubjectSid -or [bool]$security.elevated -or
+        [int]$security.integrity_rid -ne 8192 -or [int]$security.session_id -ne [int]$caller.session_id){
+        throw 'Installer relay native preimage differs.'
+    }
+    $probe=@'
+import json, pathlib, sys
+root, state = map(pathlib.Path, sys.argv[1:3])
+sys.path[:0] = [str(root / 'app'), str(root / 'app/site-packages')]
+from user_relay import request_user_relay_stop
+proof = request_user_relay_stop(state, timeout_seconds=15.0)
+if proof['status'] != 'ABSENT':
+    raise RuntimeError('candidate relay did not stop normally')
+print(json.dumps(proof, sort_keys=True))
+'@
+    $bytes=[Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n","`n"))
+    $output=Invoke-LabelPinnedProbe -Python (Join-Path $CodeRoot 'runtime/python.exe') -ProbeBytes $bytes `
+        -ExpectedSha256 'b0944e7a09135c3079da4c115fea3609434841a94739fa5615ab88e6254d4529' `
+        -ProbeArguments @($CodeRoot,$StateRoot) -FailureMessage 'Installer normal relay stop failed: '
+    $proof=($output -join "`n")|ConvertFrom-Json
+    if([string]$proof.status -cne 'ABSENT'){throw 'Installer normal relay stop is unproven.'}
+    Wait-LabelRelayPreimageExit $Expected
+}
+
 function Stop-LabelRollbackCandidateRelay {
     $audit.rollback.new_relay_stop = $null
     $live = @(Relays)
@@ -5360,7 +5401,10 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
     # Only a non-elevated same-SID caller can prepare its own profile.
     Assert-LabelMachineEvidencePath
     if ($SourceManifest.startup_update_protocol -ne 1) { throw 'Machine worker installation requires managed portable code.' }
-    if (@(UnquiescedProductWriters).Count) { throw 'Canonical product writers must exit before machine placement.' }
+    if (@(UnquiescedProductWriters).Count) {
+        Write-LabelInstallerRelayRecoveryGuidance -MachineWorker -Existing:(Test-Path -LiteralPath $Install -PathType Container)
+        throw 'Canonical product writers must exit before machine placement.'
+    }
     $receipt = PortableInventory $Source
     $existing = Test-Path -LiteralPath $Install -PathType Container
     $priorRoot = if ($null -ne $Lifecycle -and $Lifecycle.lifecycle_state -ceq 'INSTALLED') { [string]$Lifecycle.active_code_root } else { $Install }
@@ -5503,6 +5547,7 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
             }
         } catch { $audit.preimage_capture_failure=Get-LabelLaunchFailure $_ 'machine_preimage_capture' }
         $audit.status='RECOVERY_REQUIRED';$audit.failure=Get-LabelLaunchFailure $originalFailure 'machine_placement'
+        Write-LabelInstallerRelayRecoveryGuidance -MachineWorker -Existing:$existing
         if ($originalFailure.Exception.Data.Contains('placement_child_failure')) {
             $audit.placement_child_failure=$originalFailure.Exception.Data['placement_child_failure']
         }
@@ -5774,7 +5819,10 @@ if (Test-Path -LiteralPath $install) {
         $placement = 'REUSED_VERIFIED'
     }
 }
-$writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $lifecycleInstalled } else { $source })
+try { $writerTransition = Assert-WriterTransition $source $(if ($existingVerified) { $lifecycleInstalled } else { $source }) } catch {
+    if(@(Relays).Count -eq 0){Write-LabelInstallerRelayRecoveryGuidance}
+    throw
+}
 Invoke-LabelSourceDataAdmission $generationProductRoot $source $receiptSource `
     (Join-Path $lad 'KMTech\Label_Match\install-audit') $EvidencePath $onboardingArguments
 # Preparation must publish a known failure even before a preimage audit exists.
@@ -5783,6 +5831,12 @@ $archiveRoot = ''
 $retainedAuditPath = ''
 try {
 $old = @(Relays)
+$Script:LabelInstallerHadRelayPreimage=($old.Count -gt 0)
+foreach($writer in @(UnquiescedProductWriters)){
+    if(@($old | Where-Object {$_.ProcessId -eq $writer.ProcessId -and $_.CreationDate -eq $writer.CreationDate}).Count -ne 1){
+        throw 'An unrelated product writer prevents installation.'
+    }
+}
 $scheduledTasksAtPreflight = @(
     Get-LabelCurrentUserScheduledTasks | Where-Object {
         [StringComparer]::OrdinalIgnoreCase.Equals(
@@ -6290,6 +6344,8 @@ try {
         $writerAttemptId `
         $writerTransactionId
 
+    Stop-LabelInstallerRelayPreimage $old $defaultDirectSyncRoot $source $generationSubjectSid
+
     if ($legacyFirstRegistration) {
         # Repeat absence under writer admission before placement. Fence files
         # live in control/writer-session, outside the authentication residue set.
@@ -6521,6 +6577,7 @@ try {
 
     if ([string]$onboarding.relay_start.status -cne 'DEFERRED_CANONICAL_INSTALL') { throw 'Canonical relay was not deferred.' }
     $activeCodeRoot = Join-Path (Join-Path (Split-Path -Parent $install) 'versions') ([string]$installedManifest.source_commit)
+    $relayStartedAt=[DateTime]::UtcNow
     $pidValue = StartRaw (Command $activeCodeRoot)
     $audit.relay_launch_security = Get-CanonicalRelaySecurity $pidValue
     Start-Sleep -Seconds 5
@@ -6533,7 +6590,7 @@ try {
         -not (Same ([string]$process.ExecutablePath) (Join-Path $activeCodeRoot 'runtime\pythonw.exe'))
     ) { throw 'Relay process proof failed.' }
 
-    $deadline = (Get-Date).AddSeconds(75)
+    $deadline = $relayStartedAt.AddSeconds(75)
     $relay = $null
     $relayPersistentRetry = $false
     while ((Get-Date) -lt $deadline) {
@@ -6550,6 +6607,9 @@ try {
     if ($null -eq $relay -or -not $relayPersistentRetry) {
         throw 'Fresh relay status proof failed.'
     }
+    $remainingReadySeconds=75-([DateTime]::UtcNow-$relayStartedAt).TotalSeconds
+    if($remainingReadySeconds -le 0){throw 'Fresh relay readiness deadline expired.'}
+    [void](Wait-LabelRollbackRelayReady @($process) $relayPath ([string]$installedManifest.source_commit) $relayStartedAt $remainingReadySeconds)
 
     $officialFinal=Get-LabelOfficialLegacyTaskSnapshot
     if($null -ne $officialFinal -and $officialFinal.enabled){throw 'LEGACY_RELAY_DISABLED_READBACK_FAILED'}
@@ -6589,6 +6649,8 @@ try {
 }
 catch {
     $forwardFailure = $_
+    if((Get-Variable -Name LabelInstallerHadRelayPreimage -Scope Script -ErrorAction SilentlyContinue) -and
+        -not $Script:LabelInstallerHadRelayPreimage){Write-LabelInstallerRelayRecoveryGuidance}
     $unprovenRegistration = $false
     $unprovenHelper = $false
     for ($cause=$forwardFailure.Exception; $null -ne $cause; $cause=$cause.InnerException) {
