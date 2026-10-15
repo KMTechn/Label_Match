@@ -1519,3 +1519,6 @@ First setup and relay commands use label_match_relay_entry.py. Native worker con
 ## v2.0.107 조립 관문
 
 v2.0.107 조립의 앱 판·자료 판·data_compatible_min_version 하한은 모두 v2.0.107이다. 빌드 --auto-update-settings 입력은 w9mgrweb/field-update-feed-1015/label_match.auto-update-settings.json 원본 파일 그대로이며 SHA256 b8b0cfa0bdc90cb123299a01a9143a723c528ebb32c70a4104e76e7885b101a7에 결속한다. feed_url=https://worker.kmtecherp.com/static/update-feed/channels/label_match/stable/latest.json, channel=stable, profile_auth=true. 내보낼 ZIP을 E:에 풀어 app/auto-update-settings.json을 입력 파일과 바이트로 대조하고 그 runtime으로 import·탐침 관문을 실행한다.
+
+
+운영 portable 출시 빌더는 --auto-update-settings에 승인 정본 파일을 반드시 받고, 빈 object·빈 feed·정본 raw SHA 불일치는 출력 생성 전에 거절한다. 설치본 app/auto-update-settings.json에는 입력 원바이트를 보존한다. 비정본 시험 패킷은 명시적인 --test-only-custom-update-settings 인수로만 허용하며 manifest의 release_update_settings_qualified=false로 출시 미검증을 기록한다.

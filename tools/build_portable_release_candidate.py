@@ -591,6 +591,46 @@ def _data_generation_version(repo_root: Path) -> str:
     return values[0]
 
 
+RELEASE_AUTO_UPDATE_SETTINGS_SHA256 = "b8b0cfa0bdc90cb123299a01a9143a723c528ebb32c70a4104e76e7885b101a7"
+
+
+def _release_update_settings(settings, *, test_only=False):
+    """Bind the approved file before creating any release output."""
+    raw = None
+    if isinstance(settings, (str, Path)):
+        path = Path(settings)
+        if not 0 < path.stat().st_size <= 1024 * 1024:
+            raise PortableBuildError("RELEASE_UPDATE_SETTINGS_INVALID")
+        with path.open("rb") as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise PortableBuildError("RELEASE_UPDATE_SETTINGS_INVALID")
+        try:
+            value = json.loads(raw.decode("utf-8-sig"))
+        except (UnicodeError, ValueError) as error:
+            raise PortableBuildError("RELEASE_UPDATE_SETTINGS_INVALID") from error
+    elif test_only and (settings is None or isinstance(settings, dict)):
+        value = settings or {}
+    else:
+        raise PortableBuildError("RELEASE_UPDATE_SETTINGS_REQUIRED")
+    if not isinstance(value, dict):
+        raise PortableBuildError("RELEASE_UPDATE_SETTINGS_INVALID")
+    if not test_only and (not value.get("feed_url") or value.get("channel") != "stable"
+                          or value.get("profile_auth") is not True):
+        raise PortableBuildError("RELEASE_UPDATE_FEED_REQUIRED")
+    if not test_only and hashlib.sha256(raw).hexdigest() != RELEASE_AUTO_UPDATE_SETTINGS_SHA256:
+        raise PortableBuildError("RELEASE_UPDATE_SETTINGS_SHA256_DIFFERS")
+    from auto_update import policy_from_settings
+    policy = policy_from_settings(value)
+    if raw is None:
+        raw = (json.dumps(policy, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    return raw, policy
+
+
+def _write_auto_update_settings(app_root: Path, raw: bytes) -> None:
+    (app_root / "auto-update-settings.json").write_bytes(raw)
+
+
 def build(
     repo_root: Path,
     python_home: Path,
@@ -599,10 +639,12 @@ def build(
     update_manifest_public_key_config: str,
     data_generation_update_manifest: Path | None = None,
     data_generation_update_signature: Path | None = None,
-    auto_update_settings: dict[str, object] | None = None,
+    auto_update_settings: Path | dict[str, object] | None = None,
+    test_only_custom_update_settings: bool = False,
 ) -> dict[str, object]:
-    from auto_update import policy_from_settings, source_version_literal
-    startup_policy=policy_from_settings(auto_update_settings or {})
+    startup_settings_bytes, startup_policy = _release_update_settings(
+        auto_update_settings, test_only=test_only_custom_update_settings)
+    from auto_update import source_version_literal
     repo_root = repo_root.resolve()
     python_home = python_home.resolve()
     output = output.resolve()
@@ -733,7 +775,7 @@ def build(
             output / WRITER_FENCE_CONTRACT,
         )
         shutil.copy2(repo_root / "tools/apply_prepared_update.ps1", output / "tools/apply_prepared_update.ps1")
-        (app_root / "auto-update-settings.json").write_text(json.dumps(startup_policy, sort_keys=True, indent=2)+"\n", encoding="utf-8", newline="\n")
+        _write_auto_update_settings(app_root, startup_settings_bytes)
         native = _app_native_inventory(app_root)
         forbidden_roots = [
             name
@@ -762,6 +804,8 @@ def build(
             "version": data_version,
             "data_compatible_min_version": data_floor,
             "startup_update_protocol": 1,
+            "release_update_settings_qualified": not test_only_custom_update_settings,
+            "auto_update_settings_source_sha256": hashlib.sha256(startup_settings_bytes).hexdigest(),
             "startup_update_helper_sha256": _sha256(output / "tools/apply_prepared_update.ps1"),
             "helper_sha256": _sha256(output / "INSTALL_THIS_PC.ps1"),
             "integrity_helper_sha256": _sha256(output / "tools/bootstrap_integrity.ps1"),
@@ -810,6 +854,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--update-manifest-public-key-config", default=None)
     parser.add_argument("--auto-update-settings", type=Path)
+    parser.add_argument("--test-only-custom-update-settings", action="store_true",
+                        help="test fixtures only; marks the output as unqualified for release")
     parser.add_argument("--data-generation-update-manifest", type=Path)
     parser.add_argument("--data-generation-update-signature", type=Path)
     return parser.parse_args(argv)
@@ -822,7 +868,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         args.python_home,
         args.output,
         update_manifest_public_key_config=(args.update_manifest_public_key_config or json.dumps(json.loads((args.repo_root / "config/update-manifest-key-config.json").read_text(encoding="utf-8-sig"))["manifest_public_key"])),
-        auto_update_settings=(json.loads(args.auto_update_settings.read_text(encoding="utf-8-sig")) if args.auto_update_settings else None),
+        auto_update_settings=args.auto_update_settings,
+        test_only_custom_update_settings=args.test_only_custom_update_settings,
         data_generation_update_manifest=args.data_generation_update_manifest,
         data_generation_update_signature=args.data_generation_update_signature,
     )

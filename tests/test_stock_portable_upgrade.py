@@ -45,7 +45,7 @@ def stock_packages(tmp_path_factory):
                            check=True, capture_output=True, timeout=180)
         else:
             builder.build(source, Path(sys.base_prefix), package,
-                          update_manifest_public_key_config="11" * 32)
+                          update_manifest_public_key_config="11" * 32, test_only_custom_update_settings=True)
         packages.append((source, package))
     return packages
 
