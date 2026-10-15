@@ -522,7 +522,7 @@ def test_screen_runner_passes_bounded_before_exit_and_release_version(monkeypatc
     import label_match_screen
     passed = {}
     fake = types.ModuleType("host")
-    fake.run_app = lambda *args, **kwargs: passed.update(kwargs) or 0
+    fake.run_app = lambda *args, **kwargs: passed.update(kwargs) or 'web'
     from tests.test_screen_precreation_recovery import shell_runtime
     shell_runtime.__wrapped__(monkeypatch, tmp_path)
     monkeypatch.setitem(sys.modules, "host", fake)

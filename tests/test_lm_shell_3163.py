@@ -67,7 +67,7 @@ def test_adapter_passes_exact_udf_and_records_only_types_and_elapsed_ms(tmp_path
     def start(*args, **kwargs):
         if failure:
             raise original_error
-        return 'completed'
+        return 'web'
     view = SimpleNamespace(start=start, windows=[], create_window=lambda *args, **kwargs: None)
     drains, options = [], []
     def run_app(profile, data, **kwargs):
@@ -83,7 +83,7 @@ def test_adapter_passes_exact_udf_and_records_only_types_and_elapsed_ms(tmp_path
         with pytest.raises(screen.ScreenUnavailable):
             screen.screen_runner(module)()
     else:
-        assert screen.screen_runner(module)() == 'completed'
+        assert screen.screen_runner(module)() == 0
     assert options[0]['udf'] == tmp_path / 'webview2'
     assert view.start is start and drains == [0.2]
     records = json.loads((tmp_path / 'shell-start-observation.json').read_bytes())

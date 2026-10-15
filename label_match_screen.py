@@ -218,9 +218,12 @@ def screen_runner(module):
         if callable(original_start):
             webview.start = observe_start
         try:
-            return run_app("rw", data, root=PARTS, page=PAGE, title="포장", owner_main=owner_main_for(module, app_holder=app_holder, attempt=attempt),
+            outcome = run_app("rw", data, root=PARTS, page=PAGE, title="포장", owner_main=owner_main_for(module, app_holder=app_holder, attempt=attempt),
                            on_force_exit=on_force_exit, pedal=False, browser_preset_name="none", write_guard=shell_write_guard,
                            version=module.APP_VERSION, before_exit=before_exit, udf=data / "webview2")
+            # HOST-USE 4-0: a displayed web window closed normally; "exit"
+            # represents startup failure (the live shell already exits with 3).
+            return 0 if outcome == "web" else 3
         except WriterFenceError:
             raise
         except Exception as error:

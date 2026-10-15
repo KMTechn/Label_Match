@@ -106,7 +106,7 @@ def test_precreation_failure_uses_one_tk_inside_one_lease(application, shell_run
     else:
         guilib.initialize = lambda *a: types.SimpleNamespace(renderer="mshtml")
         accepted=[]
-        host.run_app=lambda *a, **kw: accepted.append(True) or 0
+        host.run_app=lambda *a, **kw: accepted.append(True) or 'web'
         assert module._test_main([]) == 0
         assert accepted == [True]
         assert not any(item.startswith("SHELL_") for item in calls)
