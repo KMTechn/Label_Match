@@ -3922,7 +3922,12 @@ function Get-LabelLaunchFailure($Failure, [string]$Phase) {
     $fields.location_module='INSTALL_CANONICAL_PORTABLE.ps1';$fields.location_function=$locationFunction;$fields.location_line=$locationLine
     if ($null -ne $placementFailure) {
         $fields.placement_code=[string]$placementFailure.placement_code
-        $fields.location_function=[string]$placementFailure.location_function
+        $placementLocation = if ($placementFailure -is [Collections.IDictionary]) { $placementFailure['location_function'] }
+            elseif ($placementFailure.PSObject.Properties['location_function']) { $placementFailure.location_function }
+            else { $null }
+        if (-not [string]::IsNullOrEmpty([string]$placementLocation)) {
+            $fields.location_function=[string]$placementLocation
+        }
         $placementTrace=$null
         if ($placementFailure -is [Collections.IDictionary] -and $placementFailure.Contains('report_path')) {
             $placementTrace=@{path=$placementFailure.report_path;sha256=$placementFailure.report_sha256}
