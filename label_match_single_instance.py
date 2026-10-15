@@ -371,6 +371,11 @@ def activate_existing_label_window(*, data_scope):
 
 
 def _duplicate_entry(data_scope, activate=None):
+    try:
+        from startup_observation import observe_startup
+        observe_startup(["ALREADY_RUNNING"])
+    except Exception:
+        pass  # Diagnostics never add a duplicate-instance refusal or notice.
     notice = _validated_owner_notice(data_scope)
     try:
         result = (activate() if activate is not None else

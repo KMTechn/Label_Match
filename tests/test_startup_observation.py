@@ -366,7 +366,9 @@ def test_actual_update_gate_reports_after_ownership_and_keeps_bootstrap(
     monkeypatch.setattr(update, "load_policy", lambda root: {"operator_sid": ""})
     monkeypatch.setattr(update, "ordinary_user_context", lambda *a: case != "account")
     @contextmanager
-    def lock(*a):
+    def lock(*a, **kwargs):
+        assert set(kwargs) == {"abandoned_check"}
+        assert callable(kwargs["abandoned_check"])
         held.append(True)
         try:
             yield
