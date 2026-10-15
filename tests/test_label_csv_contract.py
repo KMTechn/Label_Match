@@ -1,6 +1,9 @@
 import csv
+import json
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 import Label_Match as label_module
 from event_stream_policy import (
@@ -9,6 +12,85 @@ from event_stream_policy import (
 )
 from package_logistics import PackageOutbox
 from tools.direct_sync_relay_runner import _scan_source_files
+
+
+@pytest.mark.parametrize("event_type", ["APP_CLOSE_CANCELLED", "멈춤 요청 미룸"])
+@pytest.mark.parametrize("legacy_route", [False, True], ids=["local-audit", "historical-quarantine"])
+def test_close_audits_preserve_local_evidence_and_do_not_block_relay(
+    tmp_path, monkeypatch, event_type, legacy_route,
+):
+    import direct_sync_push as push
+    import label_data_manager
+    from producer_runtime_client import RuntimePreparation
+    from tests.test_direct_sync_push import FakeResponse, FakeSession, make_credentials, make_manifest
+
+    if legacy_route:
+        monkeypatch.setattr(label_data_manager, "LOCAL_ONLY_EVENT_TYPES", frozenset())
+    monkeypatch.setattr(push, "prepare_runtime_metadata", lambda **kwargs: RuntimePreparation(metadata=dict(kwargs["metadata"])))
+    monkeypatch.setattr(push, "client_runtime_lease_mode", lambda _credentials: "observe")
+    scan_dir = tmp_path / "Label_Match/data"
+    manager = label_module.DataManager(str(scan_dir), "포장실", "audit-operator", "AUDIT-PC")
+    try:
+        manager.log_event(event_type, {"message": "close postponed"})
+        manager.log_event("SCAN_OK", {"set_id": "business-control"})
+    finally:
+        manager.close(timeout=5)
+    selected, deferred = _scan_source_files(str(scan_dir), ["*.csv"], max_files=100)
+    assert deferred == 0
+    assert len(selected) == 1
+    events = _events(selected[0])
+    root = Path(__file__).resolve().parents[1]
+    catalogs = [
+        json.loads((root / "tests/fixtures/server_stream_catalog_8544774e.json").read_bytes()),
+        json.loads((root / "kmtech_factory_contracts/bundle/v1/catalogs/canonical-stream-catalog.json").read_bytes()),
+    ]
+    quarantined_counts = []
+    for catalog in catalogs:
+        accepted = next(row["raw_event_names"] for row in catalog["streams"] if row["app_id"] == "label_match")
+        quarantined_counts.append(sum(event not in accepted for event in events))
+    assert quarantined_counts[0] == quarantined_counts[1]
+    quarantined = quarantined_counts[0]
+    manifest, manifest_path = make_manifest(tmp_path)
+    credentials = make_credentials()
+    db_path = tmp_path / "relay.sqlite3"
+    row = push.enqueue_source_file_for_relay(
+        db_path=db_path, spool_dir=tmp_path / "spool", source_file_path=selected[0],
+        producer_manifest_path=manifest_path, credentials=credentials,
+    )
+    # Model the server's catalog dispatch and quarantine-derived disposition;
+    # the CSV writer, source selector, receipt validation and relay DB are real.
+    receipt = {
+        "request_id": "close-audit-regression", "client_batch_id": row.relay_id,
+        "server_source_file_id": f"{manifest['pc_identity']['source_host_id']}/label_match/label_match_events/{row.relative_path}",
+        "committed": True, "status": "accepted", "retryable": False, "next_retry_after": None,
+        "projection_disposition": "UNKNOWN" if quarantined else "COMPLETE",
+        "totals": {"inserted": len(events) - quarantined, "replayed": 0, "quarantined": quarantined, "errors": 0},
+    }
+    result = push.drain_one_relay_batch(
+        db_path=db_path, credentials=credentials,
+        session=FakeSession(FakeResponse(200, receipt)), status_dir=tmp_path / "status",
+    )
+    assert result is not None
+    counts = push.relay_queue_status(db_path)["counts"]
+    if legacy_route:
+        assert quarantined == 1
+        assert result.success is False
+        assert result.error_code == "producer_projection_incomplete"
+        assert counts[push.RELAY_STATUS_OPERATOR_REVIEW] == 1
+        assert Path(row.spooled_file_path).is_file()
+    else:
+        assert result.success is True
+        assert quarantined == 0
+        assert counts[push.RELAY_STATUS_ACKED] == 1
+        assert events == ["SCAN_OK"]
+        local_files = list((tmp_path / "Label_Match/local_events").glob("*.csv"))
+        assert len(local_files) == 1
+        assert _events(local_files[0]) == [event_type]
+        # Reopening the store must preserve the already written audit bytes.
+        before = local_files[0].read_bytes()
+        reopened = label_module.DataManager(str(scan_dir), "포장실", "audit-operator", "AUDIT-PC")
+        reopened.close(timeout=5)
+        assert local_files[0].read_bytes() == before
 
 
 def _events(path: Path) -> list[str]:

@@ -1,5 +1,9 @@
+import ast
+import hashlib
 import json
 from pathlib import Path
+
+import pytest
 
 from event_stream_policy import (
     AUDITED_OUT_OF_CATALOG_EVENT_TYPES,
@@ -26,6 +30,8 @@ EXPECTED_LOCAL_ONLY = frozenset(
         "EXACT_RESCAN_STARTED",
         "EXACT_RESCAN_OK",
         "EXACT_RESCAN_COMPLETED",
+        "APP_CLOSE_CANCELLED",
+        "멈춤 요청 미룸",
     }
 )
 
@@ -37,7 +43,7 @@ def test_audited_label_csv_values_have_one_frozen_disposition():
     assert AUDITED_OUT_OF_CATALOG_EVENT_TYPES == (
         EXPECTED_CONTRACT_CANDIDATES | EXPECTED_LOCAL_ONLY
     )
-    assert len(AUDITED_OUT_OF_CATALOG_EVENT_TYPES) == 8
+    assert len(AUDITED_OUT_OF_CATALOG_EVENT_TYPES) == 10
     assert not (CONTRACT_CANDIDATE_EVENT_TYPES & LOCAL_ONLY_EVENT_TYPES)
 
 
@@ -78,10 +84,54 @@ def test_catalog_stream_does_not_admit_local_only_events():
     assert not (catalog_events & CONTRACT_CANDIDATE_EVENT_TYPES)
 
 
-def test_all_eight_reviewed_values_remain_present_in_label_source():
+def test_all_reviewed_values_remain_present_in_label_source():
     source = (
         Path(__file__).resolve().parents[1] / "Label_Match.py"
     ).read_text(encoding="utf-8")
 
     for event_type in AUDITED_OUT_OF_CATALOG_EVENT_TYPES:
         assert event_type in source
+
+
+def _production_event_types():
+    root = Path(__file__).resolve().parents[1]
+    events = set()
+    for path in root.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "Events":
+                events.update(
+                    assignment.value.value
+                    for assignment in node.body
+                    if isinstance(assignment, ast.Assign)
+                    and isinstance(assignment.value, ast.Constant)
+                    and isinstance(assignment.value.value, str)
+                )
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"log_event", "prepare_audit_event"}
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                events.add(node.args[0].value)
+    return events
+
+
+@pytest.mark.parametrize("current_server", [False, True], ids=["legacy", "current-server"])
+def test_production_emitters_are_closed_by_catalog_or_local_policy(current_server):
+    root = Path(__file__).resolve().parents[1]
+    if current_server:
+        # Exact server catalog bytes at both a52db7c and 8544774e, read-only audit.
+        raw = (root / "tests/fixtures/server_stream_catalog_8544774e.json").read_bytes()
+        assert hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest() == "e280369b00b149f7956df196166daaaec6612c658bae4398cb397a3974d0f6ae"
+    else:
+        raw = (root / "kmtech_factory_contracts/bundle/v1/catalogs/canonical-stream-catalog.json").read_bytes()
+    catalog = json.loads(raw)
+    stream = next(row for row in catalog["streams"] if row["app_id"] == "label_match")
+    accepted = set(stream["raw_event_names"])
+    # Historical candidates need the current server catalog; they are not an
+    # exemption from checking the actual receiving server's accepted names.
+    reviewed = LOCAL_ONLY_EVENT_TYPES | (CONTRACT_CANDIDATE_EVENT_TYPES if not current_server else set())
+    assert not (_production_event_types() - accepted - reviewed)
