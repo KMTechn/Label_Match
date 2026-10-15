@@ -5061,7 +5061,8 @@ function Invoke-LabelCanonicalRollback {
         ) { throw 'registry restore failed' }
         }
         }
-        $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted -and $rollbackRelayProof.ready
+        $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted -and ($audit.rollback.relay_readiness -cin @('PROVEN','NO_RELAY_PREIMAGE'))
+        $audit.rollback.autostart_restored = [bool]$rollbackStartupProven
         if ($writerFenceStarted) {
             $audit.rollback.guidance = '복원 정합을 확인하지 못해 전송을 멈췄습니다. 자료와 복구 기록을 보존하세요. 같은 새 판을 다시 시작하거나 호환 수정판을 설치하려면 관리자 PowerShell에서 INSTALL_CANONICAL_PORTABLE.ps1 -ResumeRollbackAuditPath <감사 파일> -ExpectedRollbackAuditSha256 <감사 SHA256> 를 실행하세요.'
         }
@@ -6651,7 +6652,8 @@ catch {
             Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
         }
         $audit.rollback.applied = $mutated
-        $audit.rollback.runtime_restored = $true
+        $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted -and ($audit.rollback.relay_readiness -cin @('PROVEN','NO_RELAY_PREIMAGE'))
+        $audit.rollback.autostart_restored = [bool]$rollbackStartupProven
         $audit.failure_type = $original.Exception.GetType().Name
         $audit.failure_details = Get-LabelLaunchFailure $original 'forward'
         Save $auditPath $audit
@@ -6663,7 +6665,8 @@ catch {
             $audit.status = if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }
             $audit.code_state = if ($null -ne $Script:LabelPlacementSession -and $Script:LabelPlacementSession.child_exit_unproven) { 'UNKNOWN' } elseif (Test-Path -LiteralPath $install) { 'PRESENT' } else { 'ABSENT' }
             $audit.rollback.applied = $mutated
-            $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted
+            $audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted -and ($audit.rollback.relay_readiness -cin @('PROVEN','NO_RELAY_PREIMAGE'))
+        $audit.rollback.autostart_restored = [bool]$rollbackStartupProven
             $audit.rollback.failure_type = $rollbackFailure.Exception.GetType().Name
             $audit.rollback.failure_details = Get-LabelLaunchFailure $rollbackFailure 'rollback'
             $runReadback=Snapshot
