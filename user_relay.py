@@ -124,7 +124,7 @@ def app_stop_request_path(direct_sync_root: str | os.PathLike[str]) -> Path:
 def _app_stop_process_snapshot(*, timeout_seconds=10.0) -> list[dict[str, Any]]:
     """Read candidate identities without exposing their command lines in receipts."""
     from auto_update import system_executable
-    script = r"""+$ErrorActionPreference='Stop'+$rows=@(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe' OR Name='Label_Match.exe' OR Name='msedgewebview2.exe'" | ForEach-Object {
+    script = r"""$ErrorActionPreference='Stop';$rows=@(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe' OR Name='Label_Match.exe' OR Name='msedgewebview2.exe'" | ForEach-Object {
  $owner=''
  if (-not $_.ExecutablePath) {
   try { $o=Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid; if($o.ReturnValue -eq 0){$owner=[string]$o.Sid} } catch {}
@@ -179,9 +179,23 @@ def _webview_user_data_dir(command: str) -> str | None:
     return None
 
 
+def _app_stop_managed_root(app_root):
+    bundle = Path(app_root).resolve()
+    leaf, parent = bundle.name.casefold(), bundle.parent
+    if leaf == "current":
+        return parent
+    if (parent.name.casefold() == "versions" and len(leaf) == 40
+            and all(character in "0123456789abcdef" for character in leaf)):
+        return parent.parent
+    return None
+
+
 def _owned_app_stop_processes(rows, app_root, webview_root, known, *, operator_sid="", own_pid=None):
-    runtime = _app_stop_path(Path(app_root) / "runtime")
-    executable = _app_stop_path(Path(app_root) / "Label_Match.exe")
+    bundle = _app_stop_path(app_root)
+    runtime = ntpath.join(bundle, "runtime")
+    executable = ntpath.join(bundle, "label_match.exe")
+    managed_root = _app_stop_managed_root(app_root)
+    managed = _app_stop_path(managed_root) if managed_root is not None else None
     udf = _app_stop_path(webview_root)
     live = {}
     own_pid = os.getpid() if own_pid is None else own_pid
@@ -201,7 +215,15 @@ def _owned_app_stop_processes(rows, app_root, webview_root, known, *, operator_s
                     continue
                 raise UserRelayError("possible app stop process image is unavailable")
             normalized = _app_stop_path(image)
-            if normalized == executable or (ntpath.dirname(normalized) == runtime
+            image_runtime = ntpath.dirname(normalized)
+            version_runtime = False
+            if managed and image_runtime.startswith(managed + "\\"):
+                parts = image_runtime[len(managed) + 1:].split("\\")
+                version_runtime = (parts == ["current", "runtime"] or len(parts) == 3
+                    and parts[0] == "versions" and parts[2] == "runtime"
+                    and len(parts[1]) == 40
+                    and all(character in "0123456789abcdef" for character in parts[1]))
+            if normalized == executable or ((image_runtime == runtime or version_runtime)
                                              and name in ("python.exe", "pythonw.exe")):
                 owned[pid] = row
         elif name == "msedgewebview2.exe":
@@ -246,7 +268,8 @@ def request_app_stop(direct_sync_root: str | os.PathLike[str], *, app_root=None,
                 and root.parent.parent.name.casefold() == "kmtech"):
             owner_environment["LOCALAPPDATA"] = str(root.parents[2])
         webview_root = shell_data_dir(environ=owner_environment) / "webview2"
-    policy = _read_json(app_root.parent / "update-control" / "policy.json") or {}
+    policy_root = _app_stop_managed_root(app_root) or app_root.parent
+    policy = _read_json(policy_root / "update-control" / "policy.json") or {}
     operator_sid = str(policy.get("operator_sid") or "")
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     known = {}

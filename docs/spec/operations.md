@@ -1407,10 +1407,10 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 <a id="remote-app-stop"></a>
 ### 원격 정상 멈춤
 
-업무 밖에 설치 소유자의 실제 relay root를 지정하여 기존 설치의 콘솔 Python으로 요청한다. 이 관리 명령은 GUI·relay 기동, 등록, 자격 준비를 수행하지 않는다.
+업무 밖에 설치 작업자 본인의 일반 권한으로, 보호된 update-control/active.json에서 확인한 활성 SHA의 runtime·script·app-root와 설치 소유자의 실제 relay root를 지정하여 요청한다. `<active_sha>` 세 곳에는 같은 검증된 활성 SHA를 넣는다. 이 관리 명령은 GUI·relay 기동, 등록, 자격 준비를 수행하지 않는다.
 
 ```powershell
-& '<설치>/current/runtime/python.exe' -B '<설치>/current/app/user_relay.py' --request-app-stop --app-root '<설치>/current' --direct-sync-root '<설치 소유자의 relay root>'
+& '<설치>/versions/<active_sha>/runtime/python.exe' -B '<설치>/versions/<active_sha>/app/user_relay.py' --request-app-stop --app-root '<설치>/versions/<active_sha>' --direct-sync-root '<설치 소유자의 relay root>'
 ```
 
 GUI는 품목 첫 적재부터 별도 0.5초 주기로 멈춤 요청을 확인한다. 설치 확인·첫 설정·품목 확인 중 요청은 진행 중인 저장 단위가 끝난 경계에서 처리하며, 품목 재시도 창에서도 확인한다. 닫기가 중단되면 감시를 다시 예약한다. 작업 중에는 `멈춤 요청 미룸`과 checkpoint를 한 번 기록하고 「관리자가 프로그램 종료를 요청했습니다. 지금 트레이를 마친 뒤 [종료] 를 누르세요.」를 계속 표시한다. 스캔을 계속 받아 트레이를 마친 뒤 현장의 `[종료]`를 누른다. 작업 완료만으로 자동 종료하지 않으며 기존 확인이 있으면 그 동작을 먼저 마친다. 미룬 요청 파일은 실제 Tk 종료 뒤 같은 ID만 정리한다.
