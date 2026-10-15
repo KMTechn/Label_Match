@@ -2,11 +2,56 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 from pathlib import Path
 import subprocess
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def assert_distribution_encoding(root: Path) -> int:
+    """Check actual payload bytes, including PowerShell leaves in nested ZIPs.
+
+    Archive traversal is bounded and never extracts or executes a member.
+    Paths and source text are deliberately absent from failure messages.
+    """
+    checked = 0
+    remaining = 128 * 1024 * 1024
+
+    def inspect(name: str, raw: bytes, depth: int) -> None:
+        nonlocal checked, remaining
+        remaining -= len(raw)
+        if remaining < 0 or depth > 8:
+            raise ValueError("POWERSHELL_ENCODING_SCAN_LIMIT")
+        suffix = Path(name).suffix.casefold()
+        if suffix in (".ps1", ".psm1", ".psd1"):
+            try:
+                source = raw.decode("utf-8-sig")
+            except UnicodeError:
+                raise ValueError("POWERSHELL_UTF8_REQUIRED") from None
+            if any(ord(char) > 127 for char in source) and not raw.startswith(b"\xef\xbb\xbf"):
+                raise ValueError("POWERSHELL_UTF8_BOM_REQUIRED")
+            checked += 1
+        elif suffix == ".zip":
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                for member in archive.infolist():
+                    if member.is_dir() or Path(member.filename).suffix.casefold() not in (
+                        ".ps1", ".psm1", ".psd1", ".zip"
+                    ):
+                        continue
+                    if member.file_size > remaining:
+                        raise ValueError("POWERSHELL_ENCODING_SCAN_LIMIT")
+                    inspect(member.filename, archive.read(member), depth + 1)
+
+    paths = root.rglob("*") if root.is_dir() else [root]
+    for path in paths:
+        if path.is_file() and path.suffix.casefold() in (".ps1", ".psm1", ".psd1", ".zip"):
+            if path.stat().st_size > remaining:
+                raise ValueError("POWERSHELL_ENCODING_SCAN_LIMIT")
+            inspect(path.name, path.read_bytes(), 0)
+    return checked
 
 
 def git(*args):

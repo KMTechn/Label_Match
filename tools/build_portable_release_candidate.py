@@ -776,6 +776,8 @@ def build(
         )
         shutil.copy2(repo_root / "tools/apply_prepared_update.ps1", output / "tools/apply_prepared_update.ps1")
         _write_auto_update_settings(app_root, startup_settings_bytes)
+        from tools.check_powershell_source_encoding import assert_distribution_encoding
+        assert_distribution_encoding(output)
         native = _app_native_inventory(app_root)
         forbidden_roots = [
             name

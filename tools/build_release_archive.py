@@ -943,6 +943,8 @@ def validate_release_evidence(
     source_epoch: int,
 ) -> dict[str, object]:
     _assert_no_reparse_points(package_root)
+    from tools.check_powershell_source_encoding import assert_distribution_encoding
+    assert_distribution_encoding(package_root)
     identity = _validate_release_identity(package_root, expected_tag=expected_tag)
     staged = _validate_staged_installer(package_root)
     probe_sha = _validate_probe_identities(
