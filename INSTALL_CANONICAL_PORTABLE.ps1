@@ -888,7 +888,7 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/sealed_transfer_exchange.py': ({'f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2'},
                                      'b98ade7d58c3b05d6d543e50235a6511829074718bde16d56bda4f7a6b47d3a2'),
  'app/user_relay.py': ({'07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7'},
-                       'bdff8c027068a1662b0e0dffbb55164e3e88088177f17cbd7899d1ecce2c4ed9'),
+                       '80a5ec8b2f7761dd75e0d5633411eb24bf85651a41b9b301397599fae7ca33b4'),
  'app/writer_session_fence.py': ({'7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', 'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', 'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50'},
                                  'd1a40f894c8d2d0eb6ca54331dec726eca876fb4c30a4160fb9dc4f7a4374409')}
 remote_transport_transition = (
@@ -2704,15 +2704,29 @@ function Confirm-LabelCanonicalPlacement($Onboarding, [string]$ExpectedRun, [str
 
 function ConvertTo-LabelPlacementPublicFailure($Record) {
     if($null -eq $Record){return $null}
-    $phase=[string]$Record.phase
+    # The child reader accepts schema/exit_code before optional diagnostic fields.
+    # Missing properties must not replace its exit or first cause under StrictMode.
+    $readField={param($Value,[string]$Name)
+        if($null -eq $Value){return $null}
+        if($Value -is [Collections.IDictionary]){return $Value[$Name]}
+        $property=$Value.PSObject.Properties[$Name]
+        if($null -ne $property){return $property.Value}
+        return $null
+    }
+    $phase=[string](& $readField $Record 'phase')
     if($phase -cnotmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,127}$'){$phase='PLACEMENT_CHILD'}
-    $result=[ordered]@{status='FAILED';stage='SUPPORT';placement_code=[string]$Record.placement_code;
-        exit_code=[int]$Record.exit_code;exception_type=[string]$Record.exception_type;
+    $placementCode=[string](& $readField $Record 'placement_code')
+    if([string]::IsNullOrEmpty($placementCode)){$placementCode='PLACEMENT_DIAGNOSTIC_UNAVAILABLE'}
+    $exceptionType=[string](& $readField $Record 'exception_type')
+    if([string]::IsNullOrEmpty($exceptionType)){$exceptionType='System.InvalidOperationException'}
+    $result=[ordered]@{status='FAILED';stage='SUPPORT';placement_code=$placementCode;
+        exit_code=[int]$Record.exit_code;exception_type=$exceptionType;
         location_module='INSTALL_THIS_PC.ps1';location_function=$phase;report_status='REPORT_UNAVAILABLE'}
-    $trace=if($Record -is [Collections.IDictionary]){$Record['full_exception_trace']}
-        elseif($Record.PSObject.Properties['full_exception_trace']){$Record.full_exception_trace}else{$null}
-    if($null -ne $trace -and [string]$trace.sha256 -cmatch '^[0-9a-f]{64}$'){
-        $result.Remove('report_status');$result.report_path=[string]$trace.path;$result.report_sha256=[string]$trace.sha256
+    $trace=& $readField $Record 'full_exception_trace'
+    $tracePath=[string](& $readField $trace 'path')
+    $traceSha=[string](& $readField $trace 'sha256')
+    if(-not [string]::IsNullOrEmpty($tracePath) -and $traceSha -cmatch '^[0-9a-f]{64}$'){
+        $result.Remove('report_status');$result.report_path=$tracePath;$result.report_sha256=$traceSha
     }
     return ConvertTo-KmtechPublicRecord $result
 }
@@ -3636,7 +3650,10 @@ function Invoke-LabelSourceDataAdmission([string]$ProductRoot, [string]$Source,
     }
     catch {
         $admissionFailure = $_
-        if(@(Relays).Count -eq 0){Write-LabelInstallerRelayRecoveryGuidance}
+        # A recovery hint cannot replace the first source-admission failure.
+        try {
+            if(@(Relays).Count -eq 0){Write-LabelInstallerRelayRecoveryGuidance}
+        } catch { }
         Write-LabelPreparationFailure $admissionFailure $Source $Inventory $AuditRoot $ExternalEvidencePath
         throw $admissionFailure
     }
@@ -3922,7 +3939,12 @@ function Get-LabelLaunchFailure($Failure, [string]$Phase) {
     $fields.location_module='INSTALL_CANONICAL_PORTABLE.ps1';$fields.location_function=$locationFunction;$fields.location_line=$locationLine
     if ($null -ne $placementFailure) {
         $fields.placement_code=[string]$placementFailure.placement_code
-        $fields.location_function=[string]$placementFailure.location_function
+        $placementLocation = if ($placementFailure -is [Collections.IDictionary]) { $placementFailure['location_function'] }
+            elseif ($placementFailure.PSObject.Properties['location_function']) { $placementFailure.location_function }
+            else { $null }
+        if (-not [string]::IsNullOrEmpty([string]$placementLocation)) {
+            $fields.location_function=[string]$placementLocation
+        }
         $placementTrace=$null
         if ($placementFailure -is [Collections.IDictionary] -and $placementFailure.Contains('report_path')) {
             $placementTrace=@{path=$placementFailure.report_path;sha256=$placementFailure.report_sha256}
