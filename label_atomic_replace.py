@@ -29,16 +29,16 @@ def atomic_replace(source, destination, *, write_through=False, deadline=None):
         if first_error is not None and time.monotonic() >= deadline:
             raise first_error.with_traceback(first_traceback) from None
         try:
+            source_path, destination_path = os.fspath(source), os.fspath(destination)
+            if time.monotonic() >= deadline:
+                if first_error is not None:
+                    raise first_error.with_traceback(first_traceback) from None
+                raise TimeoutError("Atomic publication deadline exceeded")
             if move is not None:
-                source_path, destination_path = os.fspath(source), os.fspath(destination)
-                if time.monotonic() >= deadline:
-                    if first_error is not None:
-                        raise first_error.with_traceback(first_traceback) from None
-                    raise TimeoutError("Atomic native preparation exceeded its deadline")
                 if not move(source_path, destination_path, 0x1 | 0x8):
                     raise ctypes.WinError(ctypes.get_last_error())
                 return None
-            return _replace_once(source, destination, write_through=write_through)
+            return _replace_once(source_path, destination_path, write_through=write_through)
         except OSError as error:
             if getattr(error, "winerror", None) not in (5, 32):
                 raise
