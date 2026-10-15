@@ -1,5 +1,7 @@
 # 포장 지원 설치·제거 수명주기
 
+107 설치·업데이트 실패 복구는 파일/포인터 복원이나 PID 존재로 끝나지 않는다. 공개 설치기는 최초 파일 집합 검사를 자료 admission·relay 중지 전에 끝내고, 실패 뒤 기존 코드·표식·persistence를 복원한 다음 이전 relay의 fresh RUNNING cycle과 정확한 native PID/생성 시각·실행 경로를 확인한다. SYSTEM 자동 적용은 이전 판 포인터 복원 뒤 `ROLLBACK_PENDING_READY`로 두며 ordinary bootstrap의 역할별 READY와 relay 하나를 관측해야 `ROLLED_BACK`으로 끝난다. 이전에 확인된 판이라는 이유로 준비 신호를 생략하던 E6 완료 규칙은 이 확인으로 대체한다. SYSTEM은 사용자 프로세스를 시작하거나 자격 저장소를 읽지 않는다. bootstrap은 자기 nonce가 아닌 target claim·native role/PID/판/SID/생성 시각에 결속해 기존 relay의 데이터 읽기 검사를 수행하고 READY를 게시한다. GUI initialized 확인은 GUI trial에 그대로 남는다.
+
 요구 기준은 w9setupprep sub-109/119/122/124, 본보기는 검사 앱 3f96bd2다. 자동 적용의 엄격한 결속은 유지하고 지원 제거의 출구에는 control 기록을 전제하지 않는다.
 
 ## 설치·등록

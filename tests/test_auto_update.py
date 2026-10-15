@@ -139,7 +139,10 @@ def test_startup_failure_returns_to_previous_code_only_after_writer_absence():
     assert rollback["trial_started_at"] is None
     # D-16/E6: the already-confirmed previous code needs no second READY.
     assert updates.recovery_sha(rollback, pointer_sha=NEW) == OLD
-    result = rollback
+    assert rollback["phase"] == "ROLLBACK_PENDING_READY"
+    bound = updates.bind_trial(rollback, sha=OLD, pid=123, ordinary_user=True, now=LATER)
+    receipt = {**ready(bound), "pid":123, "sha":OLD, "role":"gui", "ready_at":LATER}
+    result = updates.confirm_transition(bound, receipt, process_matches=True, relay_matches=True, now=LATER)
     assert result["phase"] == "ROLLED_BACK"
     assert result["failed_shas"] == [NEW]
     with pytest.raises(ValueError, match="failed version"):
