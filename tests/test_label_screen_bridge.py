@@ -278,7 +278,7 @@ def test_state_through_the_shell_matches_the_contract(screen):
     assert schema_errors(state_schema, state) == []
     work = state["work"]
     assert (work["scan_done"], work["scan_total"], work["scan_left"]) == (3, 5, 2)
-    assert work["next"] == "상단 제품 3번째를 스캔하세요"
+    assert work["next"] == '표본 확인 — 제품 3번째를 스캔하세요'
     assert [slot["role"] for slot in work["slots"]] == ["master_label", "product", "product", "product", "last_product"]
     assert work["slots"][-1]["key"] == "final_label"
     assert work["result"]["kind"] == "ok" and work["result"]["sound"] == "scan_master"

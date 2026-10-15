@@ -40,7 +40,7 @@ def _parts_fingerprint():
 
 
 def _text(value):
-    return " ".join(str(value or "").split())
+    return "\n".join(" ".join(line.split()) for line in str(value or "").splitlines()).strip()
 
 
 class _ScreenWindow:
@@ -162,7 +162,7 @@ class LabelMatchScreenProcessor:
             credentials = app.__dict__.pop("_screen_admin_credentials", None)
             if credentials is not None and all(credentials):
                 return credentials
-            app._admin_pin_last_message = "관리자 인증이 다시 필요합니다. 관리자 ID와 PIN을 입력해 다시 조회하세요."
+            app._admin_pin_last_message = '관리자 인증이 다시 필요합니다.\n관리자 ID와 PIN을 입력해 다시 조회하세요.'
             app._admin_pin_result_outcome = "unknown"
             return None
 
@@ -258,9 +258,9 @@ class LabelMatchScreenProcessor:
         target = str(args.get("target") or "")
         physical_qr = str(args.get("physical_qr") or "").strip()
         if name in SET_ACTIONS and not target:
-            return {"ok": False, "result": {"kind": "warn", "text": "멈춘 작업 확인 목록에서 고른 트레이가 없습니다"}}
+            return {"ok": False, "result": {"kind": "warn", "text": '멈춘 작업 확인 목록에서 선택한 트레이가 없습니다'}}
         if name == "LABEL.PHS_LOOKUP" and not physical_qr:
-            return {"ok": False, "result": {"kind": "warn", "text": "실물 현품표를 찍으세요"}}
+            return {"ok": False, "result": {"kind": "warn", "text": '실물 현품표를 스캔하세요'}}
         action = name
         if name in {"LABEL.SET_HOLD", "LABEL.F5_HOLD"}:  # 지금 창과 같게 F5: 대상은 F5 보류(:11788)
             action = "LABEL.F5_HOLD" if target.startswith("F5:") else "LABEL.SET_HOLD"
@@ -288,7 +288,7 @@ class LabelMatchScreenProcessor:
             raise
         if not accepted:
             app.__dict__.pop("_screen_admin_credentials", None)
-            return {"ok": False, "result": {"kind": "warn", "text": "지금은 관리자 요청을 받지 못했습니다 — 잠시 뒤 다시 하세요"}}
+            return {"ok": False, "result": {"kind": "warn", "text": '지금은 관리자 요청을 받지 못했습니다\n잠시 후 다시 하세요'}}
         return {"ok": True, "result": {"kind": "saved", "text": "회사 서버에서 확인하는 중입니다",
                                        "sub": "결과는 멈춘 작업 확인 판 맨 위에 나옵니다 — 창을 닫아도 끝까지 진행됩니다"}}
 
@@ -348,7 +348,7 @@ class LabelMatchScreenProcessor:
         if pending is None or _approval_id(pending) != str(args.get("id") or ""):
             if cancellation is not None:
                 return self._scan_cancel_reply(False, "SCAN_CANCEL_TARGET_CHANGED")
-            return {"ok": False, "result": {"kind": "warn", "text": "승인할 일이 바뀌었습니다 — 다시 확인하세요"}}
+            return {"ok": False, "result": {"kind": "warn", "text": '승인할 일이 바뀌었습니다\n다시 확인하세요'}}
         if cancellation is not None and pending is not cancellation[0]:
             return self._scan_cancel_reply(False, "SCAN_CANCEL_TARGET_CHANGED")
         # _confirm_pointer_action(:21451) 의 실행 줄 — 단추 안 누름 · 뗌 확인은 화면(pointerdown/up)이 했다.
@@ -365,7 +365,7 @@ class LabelMatchScreenProcessor:
                 return self._scan_cancel_reply(False, code)
             if (tuple(app.history_tree.selection()) != rows
                     or self._scan_cancel_snapshot(rows) != snapshot):
-                app._show_scanner_notice("선택 다시 필요", "선택한 기록이 바뀌었습니다. 다시 선택하여 확인하세요.")
+                app._show_scanner_notice("선택 다시 필요", '선택한 기록이 바뀌었습니다.\n다시 선택하여 확인하세요.')
                 return self._scan_cancel_reply(False, "SCAN_CANCEL_TARGET_CHANGED")
             return self._run_scan_cancel(rows, pending[2])
         pending[2]()
@@ -413,7 +413,7 @@ class LabelMatchScreenProcessor:
         except ValueError as exc:
             return {"ok": False, "result": {"kind": "warn", "text": str(exc)}}
         except (OSError, self.module.WriterFenceError):
-            return {"ok": False, "result": {"kind": "warn", "text": "이름을 저장하지 못했습니다. 입력은 남아 있습니다. 다시 등록하세요."}}
+            return {"ok": False, "result": {"kind": "warn", "text": '이름을 저장하지 못했습니다\n다시 등록하세요\n자세히: 입력은 남아 있습니다'}}
         self._register = None
         return {"ok": True}
 
@@ -422,17 +422,17 @@ class LabelMatchScreenProcessor:
         chosen = next((row for row in register.get("candidates", []) if str(row.get("worker_id")) == str(args.get("id"))), None)
         roster = app.__dict__.get("_roster_b")
         if chosen is None or roster is None:
-            return {"ok": False, "result": {"kind": "warn", "text": "이름이 바뀌었습니다. 새 이름 등록을 다시 하세요."}}
+            return {"ok": False, "result": {"kind": "warn", "text": '이름이 바뀌었습니다.\n새 이름 등록을 다시 하세요.'}}
         try:
             current = roster.duplicate_workers(register["name"])
         except ValueError:
             current = []
         if not any(roster.same_person(row["worker_id"], chosen["worker_id"]) for row in current):
-            return {"ok": False, "result": {"kind": "warn", "text": "이름이 바뀌었습니다. 새 이름 등록을 다시 하세요."}}
+            return {"ok": False, "result": {"kind": "warn", "text": '이름이 바뀌었습니다.\n새 이름 등록을 다시 하세요.'}}
         try:
             app._register_worker_name(register["name"], existing_worker_id=chosen["worker_id"])
         except (OSError, ValueError, self.module.WriterFenceError):
-            return {"ok": False, "result": {"kind": "warn", "text": "이름을 저장하지 못했습니다. 다시 등록하세요."}}
+            return {"ok": False, "result": {"kind": "warn", "text": '이름을 저장하지 못했습니다.\n다시 등록하세요.'}}
         self._register = None
         return {"ok": True}
 
@@ -580,7 +580,7 @@ class LabelMatchScreenProcessor:
     def _command_pending_status(self, _args):
         app = self.app
         self._pending = {"rows": [
-            {"kind": "회사 서버", "count": int(app.__dict__.get("_logistics_pending_transmissions") or 0), "text": "회사 서버로 보낼 것"},
+            {"kind": "회사 서버", "count": int(app.__dict__.get("_logistics_pending_transmissions") or 0), "text": '전송 대기'},
             {"kind": "관리자", "count": int(app.__dict__.get("_logistics_admin_review_count") or 0), "text": "관리자 확인 필요"},
         ]}
 
@@ -597,7 +597,7 @@ class LabelMatchScreenProcessor:
             candidates = self.app._package_recovery_candidates()
         except Exception:
             self._recovery = {"loading": False, "rows": []}
-            self._admin_result = {"action": "recovery_list", "ok": False, "text": "복구 목록을 확인하지 못했습니다. 저장 폴더를 확인하고 다시 시도하세요."}
+            self._admin_result = {"action": "recovery_list", "ok": False, "text": '복구 목록을 확인하지 못했습니다.\n저장 폴더를 확인하고 다시 시도하세요.'}
             return
         self._recovery = {"loading": False, "rows": [_recovery_row(self.app, item) for item in candidates]}
 
@@ -645,12 +645,12 @@ def _result(processor, view, source):
         return {"kind": "bad", "text": title, "sub": _text(app._compact_operator_notice_message(notice.message)) if notice is not None else None,
                 "sound": sound, "code": None}
     if view.completion_kind == "full":
-        return {"kind": "ok", "text": "트레이 완료 · 이 PC에 저장됨", "sub": None, "sound": sound, "code": None}
+        return {"kind": "ok", "text": '오프라인 저장 — 이 PC에 저장했습니다', "sub": None, "sound": sound, "code": None}
     if flash and flash[1]:
         return {"kind": FLASH.get(flash[2], "idle"), "text": _text(flash[1]), "sub": None, "sound": sound, "code": None}
     if view.qa_completed or view.completion_kind in {"full", "partial"}:
         last = str(view.last_normal_scan or "")
-        return {"kind": "ok", "text": "맞음", "sub": f"…{last[-4:]}" if last else None, "sound": sound, "code": None}
+        return {"kind": "ok", "text": '확인', "sub": f"…{last[-4:]}" if last else None, "sound": sound, "code": None}
     return {"kind": "idle", "text": "아직 찍은 것이 없습니다", "sub": None, "sound": sound, "code": None}
 
 
@@ -703,14 +703,14 @@ def _next(app, view, source, notice):
     raw = source.get("raw") or []
     exchange = source.get("scanner_exchange_phase")
     if exchange == "target":
-        return "교환할 불량 제품을 스캔하세요", [{"text": "불량 제품", "mark": "on"}, {"text": " · ", "mark": "plain"}, {"text": "대체 제품", "mark": "off"}]
+        return '빼는 제품(불량)을 스캔하세요', [{"text": "불량 제품", "mark": "on"}, {"text": " · ", "mark": "plain"}, {"text": '대체 양품', "mark": "off"}]
     if exchange == "replacement":
-        return "검사실의 대체 제품을 스캔하세요", [{"text": "불량 제품", "mark": "off"}, {"text": " · ", "mark": "plain"}, {"text": "대체 제품", "mark": "on"}]
+        return '검사실의 대체 양품을 스캔하세요', [{"text": "불량 제품", "mark": "off"}, {"text": " · ", "mark": "plain"}, {"text": '대체 양품', "mark": "on"}]
     total = view.qa_total
     if not raw:
-        return "현품표를 스캔하세요", [{"text": f"현품표 1번 + 상단 제품 {total - 1}번 = {total}번 찍으면 저절로 끝납니다", "mark": "plain"}]
+        return "현품표를 스캔하세요", [{"text": f"현품표 1장 + 표본 확인 {total - 1}개 = {total}번 스캔하면 자동 완료됩니다", "mark": "plain"}]
     if view.notice is None and 0 < view.qa_completed < total and view.exact_rescan.status != "active":
-        return f"상단 제품 {view.qa_completed}번째를 스캔하세요", [{"text": f"{total}번째를 찍으면 저절로 끝납니다", "mark": "plain"}]
+        return f"""표본 확인 — 제품 {view.qa_completed}번째를 스캔하세요""", [{"text": f"""{total}번째를 스캔하면 자동으로 완료합니다""", "mark": "plain"}]
     sub = [{"text": _text(view.notice.message), "mark": "plain"}] if view.notice is not None and view.completion_kind else []
     return _text(view.next_action), sub
 
@@ -901,14 +901,14 @@ def _recovery_row(app, item):
     held = item.get("held") or {}
     reason = "이 건의 상태를 다시 확인하거나 보류로 두세요."
     if held:
-        reason = "보류한 건입니다. 다시 확인하거나 보류로 두고 다른 작업을 계속하세요."
+        reason = '보류한 건입니다.\n다시 확인하거나 보류로 두고 다른 작업을 계속하세요.'
     if (item.get("unverified") or item.get("orphan_path")
             or app.__dict__.get("_package_recovery_file_issues", {}).get(item["set_id"])):
-        reason = "저장 파일을 확인하지 못했습니다. 이 건만 보류하고 다시 확인하세요."
+        reason = '저장 파일을 확인하지 못했습니다.\n이 건만 보류하고 다시 확인하세요.'
     if item.get("prior_pin_unknown"):
-        reason = "관리자 요청 결과를 아직 모릅니다. 관리자 확인을 다시 조회하거나 지원 인계하세요."
+        reason = '관리자 요청 결과를 아직 모릅니다.\n관리자 확인을 다시 조회하거나 지원 인계하세요.'
     if item.get("changed_hold"):
-        reason = "보류하는 동안 파일 내용이 바뀌었습니다. 원본을 확인한 뒤 복원하거나 보류로 두세요."
+        reason = '보류하는 동안 파일 내용이 바뀌었습니다.\n원본을 확인한 뒤 복원하거나 보류로 두세요.'
     set_id = str(item["set_id"])
     hold = "LABEL.F5_HOLD" if set_id.startswith("F5:") else "LABEL.SET_HOLD"
     package = item.get("package") or {}
@@ -928,7 +928,7 @@ def present_lm(processor):
     elif view is None or not app.__dict__.get("initialized_successfully", False):
         start = {"phase": "loading", "title": "시작 준비 중", "text": "포장 프로그램을 준비하고 있습니다", "retry": False}
     elif app.__dict__.get("_startup_update_pending", False):
-        start = {"phase": "update_check", "title": "새 판 확인 중", "text": "업데이트 시험을 준비하고 있습니다 — 잠시 기다리세요", "retry": False}
+        start = {"phase": "update_check", "title": '업데이트 확인 중', "text": '업데이트 시험을 준비하고 있습니다\n잠시 기다리세요', "retry": False}
     work = _work(processor, view, source, notice) if view is not None else _empty_work()
     worker = app.__dict__.get("worker_name")
     return {

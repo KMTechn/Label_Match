@@ -15,7 +15,7 @@ from tests.test_w9scanonly_packaging import completions, packaging, products, sc
 from tests.test_w9scanonly_short_tray import scanner_clock  # noqa: F401
 
 
-NOTICE = "모자란 상자: 대체품으로 채워 정상 마감 — 못 채우면 마감하지 말고 따로 두고 관리자에게"
+NOTICE = '수량이 부족합니다\n검사실에서 양품을 가져와 스캔하세요'
 
 
 @pytest.fixture(autouse=True)

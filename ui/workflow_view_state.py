@@ -46,8 +46,7 @@ def slot_definitions_for(top_scan_count: int) -> tuple[tuple[str, str], ...]:
         ("final_label", f"제품{count}"),
     )
 LEGACY_LABEL_TRANSITION_OFF_CAUSE = (
-    "이 현품표는 새 포장 이력(PHS2)이 없는 옛 방식입니다. 과도기 모드가 꺼져 있어 "
-    "이 PC에서는 제품을 이어서 스캔할 수 없습니다."
+    '옛 현품표라 제품 스캔을 계속할 수 없습니다\n현장 관리자에게 알리세요\n코드: PHS2'
 )
 
 _OPERATOR_INTERNAL_LANGUAGE = (
@@ -99,7 +98,7 @@ _OPERATOR_SHA256_TOKEN = re.compile(r"(?i)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])"
 def operator_safe_message(message: object, *, fallback: str) -> str:
     """Return worker guidance without central/API diagnostic evidence."""
 
-    safe_fallback = str(fallback or "다시 확인해 주세요.").strip() or "다시 확인해 주세요."
+    safe_fallback = str(fallback or '다시 확인하세요.').strip() or '다시 확인하세요.'
     candidate = str(message or "").strip()
     if not candidate:
         return safe_fallback
@@ -459,7 +458,7 @@ def _primary_view(
     if snapshot.history_readonly:
         notice = WorkflowNotice(
             "과거 기록 조회",
-            "조회 전용입니다. 오늘 기록으로 돌아오세요.",
+            '조회 전용입니다.\n오늘 기록으로 돌아오세요.',
             kind="history_readonly",
             tone="info",
         )
@@ -520,8 +519,7 @@ def _primary_view(
         notice = WorkflowNotice(
             "옛 방식 현품표 · 5단계 포장 불가",
             LEGACY_LABEL_TRANSITION_OFF_CAUSE
-            + " 새 현품표 QR이 손상된 경우에만 F4로 이적 화면의 실제 TRANSFER ID를 "
-            "스캔하세요. 그 밖에는 F1로 취소하고 관리자에게 알리세요.",
+            + ' 현품표 QR이 손상됐으면 F4 키를 누르고 이적 화면의 TRANSFER ID를 스캔하세요\n아니면 F1 키로 취소하고 현장 관리자에게 알리세요',
             kind="legacy_label_blocked",
             tone="danger",
         )
@@ -564,7 +562,7 @@ def _completion_view(
         notice = WorkflowNotice(
             "통과 완료",
             (
-                "서버 전체 멤버십 상속 포장을 기록했습니다."
+                '이적 제품 전체의 포장을 기록했습니다'
                 if central_inherit_all
                 else f"정상 {qa_total}단계를 기록했습니다."
             ),
@@ -581,7 +579,7 @@ def _completion_view(
     if completion_kind == "partial":
         notice = WorkflowNotice(
             "부분 완료",
-            "F3 소량 예외를 기록했습니다.",
+            '부분 제출을 기록했습니다',
             kind="completion_partial",
             tone="warning",
         )
@@ -594,7 +592,7 @@ def _completion_view(
         )
     notice = WorkflowNotice(
         "오류 처리 완료",
-        "실패 트레이를 기록했습니다. 실물을 확인하세요.",
+        '실패 트레이를 기록했습니다.\n실물을 확인하세요.',
         kind="completion_failed",
         tone="danger",
     )
@@ -623,7 +621,7 @@ def _exact_rescan_view(
             completed=0,
             target=0,
             progress_text="서버 상속",
-            message="sealed 이적 QR의 exact membership을 상속합니다.",
+            message='이적 현품표의 제품 전체를 포장합니다\n코드: sealed · exact · membership',
         )
     if active:
         return ExactRescanView(
@@ -647,7 +645,7 @@ def _exact_rescan_view(
             completed=0,
             target=0,
             progress_text="시작 전",
-            message="QA 제품 스캔 전에 F4 전체 재스캔을 시작할 수 있습니다.",
+            message='표본 확인 전에 F4 키를 눌러 전체 재스캔을 시작할 수 있습니다\n코드: QA',
         )
     return ExactRescanView(
         status="not_started",
@@ -680,9 +678,9 @@ def _badges(snapshot: WorkflowSnapshot, exact_rescan: ExactRescanView) -> tuple[
     if snapshot.recovered:
         badges.append("복구됨")
     if snapshot.sealed_transfer:
-        badges.append("중앙 멤버십")
+        badges.append('회사 서버 제품 목록')
     elif snapshot.central_inherit_all:
-        badges.append("PHS2 서버 멤버십")
+        badges.append('현품표 제품 목록\n코드: PHS2')
     if exact_rescan.status == "active":
         badges.append(f"F4 {exact_rescan.progress_text}")
     elif exact_rescan.status == "complete":
@@ -712,10 +710,9 @@ def _normalized_notice(notice: WorkflowNotice) -> WorkflowNotice:
         else "작업 확인 필요"
     )
     message_fallback = (
-        "중앙 제출 상태를 자동으로 확인하지 못했습니다. 현재 세트를 유지하고 "
-        "재시도하세요. 계속 실패하면 관리자에게 확인을 요청하세요."
+        '포장 제출 결과를 확인하지 못했습니다\n현재 작업을 유지하고 다시 시도하세요\n자세히: 계속되면 현장 관리자에게 알리세요.'
         if kind == "submission_blocked"
-        else "현재 작업을 유지하고 관리자에게 확인을 요청하세요."
+        else '현재 작업 상태는 확인이 필요합니다\n현장 관리자에게 알리세요\n자세히: 현재 작업을 유지하세요.'
     )
     return WorkflowNotice(
         title=operator_safe_message(title, fallback=title_fallback),

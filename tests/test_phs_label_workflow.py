@@ -214,7 +214,7 @@ class _Renderer:
 @pytest.mark.parametrize("bad_date", ["../outside", "..\\outside", "CON", "2026-99-99", "bad\x00date"])
 def test_renderer_rejects_unsafe_business_date_before_filesystem_access(tmp_path, bad_date):
     renderer = PHSLabelRenderer(tmp_path / "root")
-    with pytest.raises(PHSLabelWorkflowError, match="날짜 형식"):
+    with pytest.raises(PHSLabelWorkflowError, match='입력한 값을 확인하세요'):
         renderer.render({}, {
             "label_id": "LBL-A", "qr_payload": TARGET_QR,
             "business_date": bad_date, "worker_code": "WORKER-A",

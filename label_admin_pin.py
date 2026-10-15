@@ -27,8 +27,7 @@ CONTRACT_VERSION = "admin-pin.v1"
 # company server (Cloudflare 1010) before the request reaches the web app.
 ADMIN_PIN_HTTP_USER_AGENT = "KMTech-LabelMatch-AdminPin/1.0"
 FAILURE_MESSAGE = (
-    "관리자 확인에 실패했습니다. ID와 PIN을 확인하세요. "
-    "잠긴 경우 최상위 관리자에게 해제를 요청하세요."
+    '관리자 확인에 실패했습니다\nID와 PIN을 확인하세요\n자세히: 계정이 잠겼으면 현장 관리자에게 알리세요.'
 )
 active_pin_operation: ContextVar[tuple[str, str, str, str, str, str, str] | None] = (
     ContextVar("label_active_pin_operation", default=None)
@@ -51,22 +50,22 @@ def unverified_hold_allowed(code: str) -> bool:
 
 def operator_message(code: str, *, http_status: int = 0) -> str:
     if code.startswith("STARTUP_VERIFICATION_"):
-        return "서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요. 이 건만 보류 — 틀린 횟수로 세지 않음"
+        return '서버 보내기 확인 중입니다\n잠시 후 다시 시도하세요\n자세히: 이 건만 보류합니다. 틀린 횟수로 세지 않습니다'
     if code == "VERIFY_UNAVAILABLE":
         if http_status >= 500:
-            return f"회사 서버 오류({http_status})가 발생했습니다. 이 건만 보류하고 잠시 뒤 다시 확인하세요."
+            return f"""회사 서버 오류({http_status})가 발생했습니다.\n이 건만 보류하고 잠시 후 다시 확인하세요."""
         if http_status >= 400:
-            return f"회사 서버 거절({http_status})로 관리자 확인을 받지 못했습니다. 이 건만 보류하고 관리자에게 알리세요."
+            return f"""회사 서버 거절({http_status})로 관리자 확인을 받지 못했습니다.\n이 건만 보류하고 현장 관리자에게 알리세요."""
     if code == "TARGET_CHANGED":
-        return "대상 또는 작업자가 바뀌었습니다. 다시 조회하세요."
+        return '대상 또는 작업자가 바뀌었습니다.\n다시 조회하세요.'
     if code == "AUDIT_UNAVAILABLE":
-        return "관리자 확인 기록을 저장할 수 없습니다. 원본을 유지하고 저장 상태를 확인한 뒤 다시 시도하세요."
+        return '관리자 확인 기록을 저장할 수 없습니다.\n원본을 유지하고 저장 상태를 확인한 뒤 다시 시도하세요.'
     if code in {"PIN_INVALID", "PROOF_INVALID", "PROOF_REVOKED"}:
         message = FAILURE_MESSAGE
     elif code == "CENTRAL_ACTION_UNAVAILABLE":
         message = "이 관리자 동작의 서버 확인을 사용할 수 없습니다."
     elif code in {"PIN_BUSY", "PIN_RATE_LIMITED"}:
-        message = "관리자 확인이 바쁩니다. 잠시 뒤 다시 확인하세요."
+        message = '관리자 확인이 바쁩니다.\n잠시 후 다시 확인하세요.'
     else:
         message = "관리자 확인 결과를 알 수 없습니다."
     if unverified_hold_allowed(code):
