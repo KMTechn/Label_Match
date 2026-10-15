@@ -2895,7 +2895,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                     # The task may already have settled or switched this journal.
                     # Release ownership and reread it before creating a trial.
                     continue
-                if action == "REQUEST_TRIAL":
+                if action in {"REQUEST_TRIAL", "WAIT_FOR_TRIAL"}:
                     # The first launcher claims its own role; both roles retain
                     # durable-data checks and exactly one ordinary target relay.
                     with update_lock(control, policy["operator_sid"], trial=True):
