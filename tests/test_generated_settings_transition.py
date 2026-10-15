@@ -47,7 +47,19 @@ def test_all_sixteen_generated_settings_additions_and_historical_before_pins():
     assert len(expected) == 16 and actual == expected
     assert len(current['startup_release_replacements']) == 23
     for revision, paths in before_fix['startup_release_replacements'].items():
-        assert set(paths) == set(current['startup_release_replacements'][revision])
+        assert (
+            (reviewed_parents := (
+                declarations("ebeb1ef368355a8dceebf7d33f9d1270d8cbda3d")["startup_release_replacements"][revision],
+                declarations("732b0a536f30d582cd95602b243bb34a57d8b473")["startup_release_replacements"][revision],
+            ))
+            and set(current["startup_release_replacements"][revision])
+            == set().union(*reviewed_parents)
+            and all(
+                current["startup_release_replacements"][revision][relative][0] == pair[0]
+                for parent in reviewed_parents
+                for relative, pair in parent.items()
+            )
+        )
         for relative, pair in paths.items():
             assert current['startup_release_replacements'][revision][relative][0] == pair[0]
     for revision in expected:
