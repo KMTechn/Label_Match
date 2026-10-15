@@ -1522,3 +1522,6 @@ v2.0.107 조립의 앱 판·자료 판·data_compatible_min_version 하한은 �
 
 
 운영 portable 출시 빌더는 --auto-update-settings에 승인 정본 파일을 반드시 받고, 빈 object·빈 feed·정본 raw SHA 불일치는 출력 생성 전에 거절한다. 설치본 app/auto-update-settings.json에는 입력 원바이트를 보존한다. 비정본 시험 패킷은 명시적인 --test-only-custom-update-settings 인수로만 허용하며 manifest의 release_update_settings_qualified=false로 출시 미검증을 기록한다.
+
+
+v2.0.99/100 → 107 제자리 교체는 미지원이다(app/site-packages/qrcode/tests 10파일 차이로 WRITER_TRANSITION_SOURCE_SET_DIFFERS 거절). 지원은 코드 전용 제거 → 새로 깔기이며, 파일 집합 관문과 기존 before 핀은 유지한다.

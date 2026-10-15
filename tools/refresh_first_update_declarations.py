@@ -94,14 +94,29 @@ def application_layout(source: Path, target: Path) -> dict[str, str]:
     site_packages = target / "app/site-packages"
     site_packages.mkdir()
     builder._copy_third_party(site_packages)
-    result = {
-        file.relative_to(target).as_posix(): digest(file.read_bytes())
-        for file in (target / "app").rglob("*") if file.is_file()
-    }
     build_tree = ast.parse(builder_path.read_text(encoding="utf-8-sig"))
     build_node = next(n for n in build_tree.body if isinstance(n, ast.FunctionDef) and n.name == "build")
     build_names = {n.id for n in ast.walk(build_node) if isinstance(n, ast.Name)}
     build_strings = {n.value for n in ast.walk(build_node) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    settings_publisher = getattr(builder, "_write_auto_update_settings", None)
+    publishes_settings = "_write_auto_update_settings" in build_names
+    if publishes_settings or "auto-update-settings.json" in build_strings:
+        policy_tree = ast.parse((source / "auto_update.py").read_text(encoding="utf-8-sig"))
+        policy = next(n for n in policy_tree.body if isinstance(n, ast.FunctionDef) and n.name == "policy_from_settings")
+        namespace = {"Mapping": Mapping, "Any": Any, "re": re}
+        exec(compile(ast.Module(body=[policy], type_ignores=[]), "<stock policy>", "exec"), namespace)
+        settings_raw = (json.dumps(namespace["policy_from_settings"]({}), sort_keys=True, indent=2) + "\n").encode()
+        if publishes_settings:
+            # Run the same publisher as build, then inventory its actual output.
+            # Do not infer its output filename from strings in the caller AST.
+            settings_publisher(target / "app", settings_raw)
+        else:
+            # Immutable revisions before the publisher helper wrote inline.
+            (target / "app/auto-update-settings.json").write_bytes(settings_raw)
+    result = {
+        file.relative_to(target).as_posix(): digest(file.read_bytes())
+        for file in (target / "app").rglob("*") if file.is_file()
+    }
     bootstrap = {"INSTALL_THIS_PC.ps1"}
     for constant in ("BOOTSTRAP_INTEGRITY_HELPER", "WRITER_FENCE_HELPER", "WRITER_FENCE_CONTRACT",
                      "WORKER_SHORTCUT_HELPER", "FAILURE_SINK_DATA"):
@@ -115,14 +130,6 @@ def application_layout(source: Path, target: Path) -> dict[str, str]:
         bootstrap.add("tools/apply_prepared_update.ps1")
     for name in bootstrap:
         result[name] = digest((source / name).read_bytes())
-    if "auto-update-settings.json" in build_strings:
-        policy_tree = ast.parse((source / "auto_update.py").read_text(encoding="utf-8-sig"))
-        policy = next(n for n in policy_tree.body if isinstance(n, ast.FunctionDef) and n.name == "policy_from_settings")
-        namespace = {"Mapping": Mapping, "Any": Any, "re": re}
-        exec(compile(ast.Module(body=[policy], type_ignores=[]), "<stock policy>", "exec"), namespace)
-        result["app/auto-update-settings.json"] = digest(
-            (json.dumps(namespace["policy_from_settings"]({}), sort_keys=True, indent=2) + "\n").encode()
-        )
     return result
 
 
