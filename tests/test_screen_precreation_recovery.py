@@ -105,6 +105,12 @@ def test_precreation_failure_uses_one_tk_inside_one_lease(application, shell_run
         fileio.make_dirs = fail
     else:
         guilib.initialize = lambda *a: types.SimpleNamespace(renderer="mshtml")
+        accepted=[]
+        host.run_app=lambda *a, **kw: accepted.append(True) or 0
+        assert module._test_main([]) == 0
+        assert accepted == [True]
+        assert not any(item.startswith("SHELL_") for item in calls)
+        return
     result = module._test_main([])
     assert result == 0
     for event in ("lease-enter", "lease-exit", "hold", "processing", "visible-tk", "tk-loop", "finish", "verify"):

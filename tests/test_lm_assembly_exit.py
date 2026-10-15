@@ -263,7 +263,7 @@ def test_real_portable_entry_and_bootstrap_admission_show_abandoned_guidance(mon
     assert capsys.readouterr().err.strip() == '포장 다시 열기 — 한 번 더 여세요'
 
 
-@pytest.mark.parametrize('failure', ['start_exception', 'unresponsive', 'marker_failure'])
+@pytest.mark.parametrize('failure', ['start_exception', 'unresponsive', 'marker_failure', "retry_sequence"])
 def test_accepted_shell_start_failure_drains_real_lane_and_next_start_uses_marker(monkeypatch, tmp_path, failure):
     import host
     import label_screen_bridge
@@ -368,11 +368,31 @@ def test_accepted_shell_start_failure_drains_real_lane_and_next_start_uses_marke
     # Seed the preceding launch through its real, guarded retry writer.
     data = screen.shell_data_dir()
     data.mkdir(parents=True, exist_ok=True)
-    host._save_retry(data, "SHELL_START_FAILED", lm.APP_VERSION, 1, "OTHER",
-                     host.shell_fileio.FileIO(original_write_guard))
+    if failure != "retry_sequence":
+        host._save_retry(data, "SHELL_START_FAILED", lm.APP_VERSION, 1, "OTHER",
+                         host.shell_fileio.FileIO(original_write_guard))
     module = types.SimpleNamespace(APP_VERSION=lm.APP_VERSION, LABEL_MATCH_SCREEN_HOST={'active': False, 'run': None})
     module._run_label_match_application = lambda: module.LABEL_MATCH_SCREEN_HOST['run'](App())
     try:
+        if failure == "retry_sequence":
+            host.show_startup_notice=lambda title, count=2: notices.append(count)
+            assert screen.screen_runner(module)() == 'exit'
+            first = host._read_retry(data)
+            assert first["count"] == 1 and first["cause"] == "WEBVIEW_ENV_FAILED"
+            assert first["detail"] == "RuntimeError"
+            assert host.web_allowed(data, lm.APP_VERSION) is True
+            assert notices == [1] and exits == [3]
+            # A new invocation owns fresh process-local admission state; the
+            # actual shell retry files remain from the preceding invocation.
+            fresh_exit_state.__wrapped__(monkeypatch)
+            assert screen.screen_runner(module)() == 'exit'
+            second = host._read_retry(data)
+            assert second["count"] == 2 and second["detail"] == first["detail"]
+            assert notices == [1, 2] and exits == [3, 3]
+            assert host.web_allowed(data, lm.APP_VERSION) is False
+            assert len(windows) == 2 and len(apps) == 2
+            assert all(not app.ui_lane.worker_thread.is_alive() for app in apps)
+            return
         assert screen.screen_runner(module)() == 'exit'
         assert exits == [3] and notices == ['포장']
         assert len(windows) == 1 and not windows[0].visible

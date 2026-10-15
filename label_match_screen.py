@@ -69,16 +69,8 @@ def _prepare_screen(version=None):
         raise
     except Exception as error:
         raise ScreenUnavailable("SHELL_DATA_DIR_FAILED") from error
-    try:
-        from webview.guilib import initialize
-        backend = initialize("edgechromium")
-        if backend.renderer != "edgechromium":
-            raise RuntimeError("WebView2 is unavailable")
-        from Microsoft.Web.WebView2.Core import CoreWebView2Environment
-        if not CoreWebView2Environment.GetAvailableBrowserVersionString(webview.settings["WEBVIEW2_RUNTIME_PATH"]):
-            raise RuntimeError("WebView2 is unavailable")
-    except Exception as error:
-        raise ScreenUnavailable("SHELL_WEBVIEW2_UNAVAILABLE") from error
+    # The pinned shell owns backend preparation, error details and retry marks.
+    # An adapter probe must not select Tk before run_app observes the failure.
     return run_app, webview, data
 
 

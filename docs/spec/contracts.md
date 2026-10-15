@@ -15,6 +15,8 @@ READY 판정과 살아 있는 relay 재사용은 설치기가 남긴 `update-con
 portable direct-sync relay 자식은 기존 시작 관문을 지난 뒤 `label_match_product_host.dispatch_product_mode`를 호출하며 `Label_Match` 앱 모듈을 적재하지 않는다. host의 `startup_gate(role="relay")`·업데이트 trial/판 확인·자료 세대·credential 준비·writer sink·인수·종료/오류 계약과 별도 자식 프로세스는 유지한다. 일반 GUI와 다른 제품 인수의 진입 경로는 그대로다.
 
 <a id="new-screen-shell-write-guard"></a>
+107 조립의 어댑터는 셸 v3.16.3의 공개 `web_allowed → run_app` 순서로 시작한다. 어댑터에서 backend 초기화·renderer·Core import·runtime 판 문자열을 먼저 검사해 Tk를 고르지 않는다. 셸이 실제 시작 실패의 원인·예외 종류/HResult와 재시도 횟수를 기록한다. 첫 일반 시작 실패는 안내와 count 1로 끝나며 다음 실행은 새 화면을 다시 시도한다. 연속 둘째 실패는 count 2와 fallback 표지를 남겨 다음 실행에서 Tk를 고른다. runtime 부재의 별도 셸 판정도 그대로 따른다.
+
 v2.0.104 어댑터는 `web_allowed(data, version)` 판정과 `before_exit(code, deadline_s)`를 셸에 연결한다. 끝내기 admission과 lane 시작을 같은 잠금에서 닫고, normal writer 허가와 실제 worker 종료(BROKEN 포함)를 확인한다. 확인된 위임 허가는 worker 종료를 기준으로 한다. 창 생성 뒤 실패는 셸이 표지를 남기고 끝내며 다음 사람의 실행에서 Tk를 고른다. 자동 재실행·PID 기다림은 없다. 새 화면의 앱 마무리는 쓰기가 살아 있는 동안 강제 종료하지 않는다.
 
 새 화면 입구는 셸 import·WebView2 준비를 먼저 확인하고, `_prepare_screen`에서 `shell_fileio.set_write_guard(shell_write_guard)`가 돌려주는 private FileIO로 첫 WebView2 프로필 폴더를 만든다. 이어 `run_app(write_guard=shell_write_guard)`에도 같은 담장을 전달한다. 셸의 events·journal·sound_cache·udf·test_control 쓰기는 `shell/shell_fileio.py`의 다섯 함수로 모이며, 각각 기존 `writer_admission("shell_fileio")` 안에서만 실행한다. 선언에는 이 위임을 `shell_fileio` 한 source로 기록한다. 허가는 한 번 쓰기 뒤 내려놓으며 화면·스캔·사람 응답·네트워크를 기다리는 동안 쥐지 않는다.
