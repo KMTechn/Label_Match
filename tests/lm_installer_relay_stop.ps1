@@ -4,7 +4,7 @@ trap {[IO.File]::WriteAllText((Join-Path $Root 'failure-site.json'),(@{type=$_.E
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $Repo 'INSTALL_CANONICAL_PORTABLE.ps1'),[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'SOURCE_PARSE_FAILED'}
-foreach($name in @('Stop-LabelInstallerRelayPreimage','Write-LabelInstallerRelayRecoveryGuidance','Normalize-RelayExecutableQuoting','Assert-RollbackRelayPreimage','Wait-LabelRollbackRelayReady')){
+foreach($name in @('Assert-LabelInstallerRelayPreimageSession','Stop-LabelInstallerRelayPreimage','Write-LabelInstallerRelayRecoveryGuidance','Normalize-RelayExecutableQuoting','Assert-RollbackRelayPreimage','Wait-LabelRollbackRelayReady')){
     $node=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
     if($node.Count -ne 1){throw 'FUNCTION_SELECTION_FAILED'}
     . ([scriptblock]::Create($node[0].Extent.Text))

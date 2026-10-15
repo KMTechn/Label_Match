@@ -3845,7 +3845,8 @@ function Start-CanonicalLimitedRelay([string]$Line, [string]$UserSid, [int]$Sess
     Initialize-CanonicalUserProcessApi
     return [LabelMatchCanonicalUserProcess]::StartLimited($Line, $UserSid, $SessionId)
 }
-function StartRaw([string]$Line) {
+function StartRaw([string]$Line, [switch]$TrackRollbackCandidate, [string]$CandidateCodeRoot='') {
+    $launchedAt=[DateTime]::UtcNow
     $caller = Get-CanonicalRelaySecurity $PID
     if ([int]$caller.session_id -le 0) { throw 'Canonical relay requires an interactive user session.' }
     if ([bool]$caller.elevated) {
@@ -3862,6 +3863,16 @@ function StartRaw([string]$Line) {
     if ([bool]$security.elevated -or [int]$security.integrity_rid -ne 8192 -or [string]$security.sid -cne [string]$caller.sid -or
         [int]$security.session_id -le 0 -or [int]$security.session_id -ne [int]$caller.session_id) {
         throw 'Canonical relay normal-user security readback failed.'
+    }
+    if ($TrackRollbackCandidate) {
+        $row=Get-CimInstance Win32_Process -Filter "ProcessId = $newPid" -ErrorAction Stop
+        if (-not $CandidateCodeRoot -or $null -eq $row -or [int]$row.ProcessId -ne $newPid -or $null -eq $row.CreationDate -or
+            -not (Same ([string]$row.ExecutablePath) (Join-Path $CandidateCodeRoot 'runtime\pythonw.exe')) -or
+            ([DateTime]$row.CreationDate).ToUniversalTime() -lt $launchedAt.AddSeconds(-1) -or
+            (Normalize-RelayExecutableQuoting ([string]$row.CommandLine) ([string]$row.ExecutablePath)) -cne $Line) {
+            throw 'Candidate relay launch identity is unproven.'
+        }
+        $Script:LabelRollbackCandidateRelays=@($row)
     }
     return [int]$newPid
 }
@@ -4623,9 +4634,9 @@ function Write-LabelInstallerRelayRecoveryGuidance([switch]$MachineWorker,[bool]
     }
 }
 
-function Stop-LabelInstallerRelayPreimage([object[]]$Expected,[string]$StateRoot,[string]$CodeRoot,[string]$SubjectSid) {
+function Assert-LabelInstallerRelayPreimageSession([object[]]$Expected,[string]$SubjectSid) {
     $live=@(Assert-RollbackRelayPreimage $Expected)
-    if($Expected.Count -eq 0){return}
+    if($Expected.Count -eq 0){return @()}
     if($Expected.Count -ne 1){throw 'Installer relay preimage count differs.'}
     $caller=Get-CanonicalRelaySecurity $PID
     if([string]$caller.sid -cne $SubjectSid -or [int]$caller.session_id -le 0){throw 'Installer relay caller differs.'}
@@ -4636,6 +4647,12 @@ function Stop-LabelInstallerRelayPreimage([object[]]$Expected,[string]$StateRoot
         [int]$security.integrity_rid -ne 8192 -or [int]$security.session_id -ne [int]$caller.session_id){
         throw 'Installer relay native preimage differs.'
     }
+    return @($live)
+}
+
+function Stop-LabelInstallerRelayPreimage([object[]]$Expected,[string]$StateRoot,[string]$CodeRoot,[string]$SubjectSid) {
+    [void](Assert-LabelInstallerRelayPreimageSession $Expected $SubjectSid)
+    if($Expected.Count -eq 0){return}
     $probe=@'
 import json, pathlib, sys
 root, state = map(pathlib.Path, sys.argv[1:3])
@@ -4659,10 +4676,8 @@ function Stop-LabelRollbackCandidateRelay {
     $audit.rollback.new_relay_stop = $null
     $live = @(Relays)
     if ($live.Count -eq 0) { return }
-    foreach ($row in $live) {
-        $security = Get-CanonicalRelaySecurity ([int]$row.ProcessId)
-        if ([string]$security.sid -cne $generationSubjectSid) { throw 'Candidate relay owner is unproven.' }
-    }
+    if (@($Script:LabelRollbackCandidateRelays).Count -ne 1) { throw 'Candidate relay launch is unproven.' }
+    [void](Assert-LabelInstallerRelayPreimageSession @($Script:LabelRollbackCandidateRelays) $generationSubjectSid)
     $probe = @'
 import json, pathlib, sys
 root, state = map(pathlib.Path, sys.argv[1:3])
@@ -6441,6 +6456,7 @@ catch {
     throw $pretransactionFailure
 }
 $mutated = $false
+$Script:LabelRollbackCandidateRelays = @()
 $replacementRollbackRoot = if ($null -ne $firstRegistrationResume) { [string]$firstRegistrationResume.code_backup_root } else { '' }
 $replacementBackupsBefore = @()
 $placementAttempted = $false
@@ -6472,6 +6488,9 @@ $Script:LabelPlacementSession = $null
 $Script:LabelPlacementSessionLaunchAttempted = $false
 $Script:LabelCanonicalConfirmation = 'UNATTEMPTED'
 try {
+    # Native session/PID/birth admission is read-only and precedes all fence
+    # publication, orphan-fence retirement and mutated=true branches.
+    [void](Assert-LabelInstallerRelayPreimageSession $old $generationSubjectSid)
     $writerAuthority = Enter-LabelWriterSessionAuthority `
         -SessionId $writerSessionId `
         -AttemptId $writerAttemptId `
@@ -6782,7 +6801,7 @@ try {
     if ([string]$onboarding.relay_start.status -cne 'DEFERRED_CANONICAL_INSTALL') { throw 'Canonical relay was not deferred.' }
     $activeCodeRoot = Join-Path (Join-Path (Split-Path -Parent $install) 'versions') ([string]$installedManifest.source_commit)
     $relayStartedAt=[DateTime]::UtcNow
-    $pidValue = StartRaw (Command $activeCodeRoot)
+    $pidValue = StartRaw (Command $activeCodeRoot) -TrackRollbackCandidate -CandidateCodeRoot $activeCodeRoot
     $audit.relay_launch_security = Get-CanonicalRelaySecurity $pidValue
     Start-Sleep -Seconds 5
     $process = Get-CimInstance `
@@ -6793,6 +6812,7 @@ try {
         $null -eq $process -or
         -not (Same ([string]$process.ExecutablePath) (Join-Path $activeCodeRoot 'runtime\pythonw.exe'))
     ) { throw 'Relay process proof failed.' }
+    [void](Assert-LabelInstallerRelayPreimageSession @($process) $generationSubjectSid)
 
     $deadline = $relayStartedAt.AddSeconds(75)
     $relay = $null
