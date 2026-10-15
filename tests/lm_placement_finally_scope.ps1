@@ -57,6 +57,14 @@ function Set-LabelWriterFenceDelegation {$script:binding=[pscustomobject]@{statu
 function Write-LabelWriterFenceAtomic {param($Control,$Before) $script:binding=$Before;$script:restored++}
 function Assert-NoReparsePoint {}
 function Initialize-LabelStartupUpdate {}
+function Save-LabelStartupUpdatePreimage {}
+function Write-LabelProtectedReusedProof {}
+$WorkerSid=''
+
+function Save-LabelStartupUpdatePreimage {}
+function Write-LabelProtectedReusedProof {}
+$WorkerSid=''
+
 $machine=Join-Path $Root 'machine';$sourceRootFull=Join-Path $Root 'source'
 [void][IO.Directory]::CreateDirectory($machine);[void][IO.Directory]::CreateDirectory($sourceRootFull)
 $installRootFull=Join-Path $machine 'current'

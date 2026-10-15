@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def tmp_path(tmp_path_factory):
-    root = tmp_path_factory.getbasetemp().parents[1] / "p" / uuid.uuid4().hex[:6]
+    root = tmp_path_factory.getbasetemp().parent / "p" / uuid.uuid4().hex[:6]
     root.mkdir(parents=True)
     return root
 

@@ -44,7 +44,7 @@ TEST_MODE_ENV = "KMTECH_LABEL_WRITER_TEST_MODE"
 
 # The code-derived scanner normalizes this literal to zero before hashing its
 # own source closure, so updating the pin is deterministic rather than cyclic.
-WRITER_INVENTORY_SHA256 = "27f2554390d101a30e641b58f8c982cf47f75740f61110d9bbcc1a21f7c0fc6f"
+WRITER_INVENTORY_SHA256 = "8989bcd65cf7a807aa9ecf6a625d7498468c8f24179aacf639d77d68e01eee83"
 
 DELEGATION_TOKEN_ENV = "KMTECH_LABEL_WRITER_DELEGATION_TOKEN"
 DELEGATION_SESSION_ENV = "KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID"
@@ -186,6 +186,9 @@ def _normalized_control_root(value: str | os.PathLike[str]) -> str:
 
 
 def canonical_control_root(environ: Mapping[str, str] | None = None) -> Path:
+    bound = getattr(_WRITER_LOCAL, "installer_authority_root", None)
+    if bound is not None:
+        return bound
     values = os.environ if environ is None else environ
     override = str(values.get(CONTROL_ROOT_OVERRIDE_ENV) or "").strip()
     if override:
@@ -622,6 +625,82 @@ def _installer_process_exited(pid: int, started: str) -> bool:
         return str(creation) == started and int(kernel.WaitForSingleObject(handle, 0)) == 0
     finally:
         kernel.CloseHandle(handle)
+
+
+def _installer_process_live(pid: int, started: str) -> bool:
+    """Positive native identity; absence, PID reuse and unknown all refuse."""
+    from ctypes import wintypes as w
+    if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF or not isinstance(started, str) or not re.fullmatch(r"[1-9][0-9]{0,18}", started):
+        return False
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
+    kernel.GetProcessTimes.argtypes = [w.HANDLE, *([ctypes.POINTER(w.FILETIME)] * 4)]
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    handle = kernel.OpenProcess(0x00101000, False, pid)
+    if not handle:
+        return False
+    try:
+        created, exited, system, user = (w.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(system), ctypes.byref(user)):
+            return False
+        birth = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        return str(birth) == started and int(kernel.WaitForSingleObject(handle, 0)) == 0x102
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _validate_installer_authority(root: Path, owner_path: Path, install_root: Path, source: str):
+    """Use the protected owner record, never a production environment override."""
+    _assert_no_reparse_components(root)
+    _assert_no_reparse_components(owner_path)
+    _assert_protected_owner_path(owner_path)
+    _assert_protected_owner_path(root / ACTIVE_FILENAME)
+    owner = _bounded_json(owner_path)
+    active = active_fence(root)
+    run = owner.get("run_id")
+    if (owner_path.parent != _installer_owner_root().absolute()
+            or owner.get("schema") != _INSTALLER_OWNER_SCHEMA
+            or not isinstance(run, str) or re.fullmatch(r"[0-9]{8}T[0-9]{9}Z-[0-9a-f]{32}", run) is None
+            or active is None
+            or not isinstance(owner.get("control_root"), str) or not Path(owner["control_root"]).is_absolute()
+            or not isinstance(owner.get("install_root"), str) or not Path(owner["install_root"]).is_absolute()
+            or owner_path.name != ".installer-owner-" + active["session_id"] + "-" + run.rsplit("-", 1)[-1] + ".json"
+            or any(owner.get(name) != active[name] for name in _INSTALLER_TUPLE_FIELDS)
+            or _normalized_control_root(owner.get("control_root", "")) != _normalized_control_root(root)
+            or _normalized_control_root(owner.get("install_root", "")) != _normalized_control_root(install_root / "current")
+            or not _installer_process_live(owner.get("owner_process_id"), owner.get("owner_process_started_at_filetime"))
+            or not _delegation_matches(active, source=source, environ=os.environ)):
+        raise WriterFenceError("INSTALLER_AUTHORITY_INVALID", "installer lifecycle authority is unproven")
+    return owner, active
+
+
+@contextmanager
+def installer_lifecycle_authority(root, owner_record, install_root, *, source):
+    root, owner_path, install_root = (Path(value).absolute() for value in (root, owner_record, install_root))
+    before = _validate_installer_authority(root, owner_path, install_root, source)
+    previous = getattr(_WRITER_LOCAL, "installer_authority_root", None)
+    failure = None
+    _WRITER_LOCAL.installer_authority_root = root
+    try:
+        yield
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        try:
+            if _validate_installer_authority(root, owner_path, install_root, source) != before:
+                raise WriterFenceError("INSTALLER_AUTHORITY_CHANGED", "installer authority changed during lifecycle")
+        except BaseException:
+            if failure is None:
+                raise
+            failure.add_note("INSTALLER_AUTHORITY_RECHECK_FAILED")
+        finally:
+            if previous is None:
+                del _WRITER_LOCAL.installer_authority_root
+            else:
+                _WRITER_LOCAL.installer_authority_root = previous
 
 
 def _failed_installer_removal_sources(

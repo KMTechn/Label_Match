@@ -845,10 +845,19 @@ def supported_lifecycle_transition(root: Path, *, expected_from_commit: str, can
                 raise ValueError("supported candidate trust/settings differ from fixed bootstrap")
         if read_json(control / "active.json") != pointer or read_json(control / "transition.json") != state:
             raise ValueError("supported lifecycle changed during placement")
+        if candidate_commit == context["from_commit"]:
+            # Verify above includes the actual selected inventory and fixed
+            # trust/settings. Same identity never grants a new transition.
+            return {**context, "code_replaced": False}
         next_state = dict(schema=SCHEMA, phase="DEFERRED", failed_shas=list(state.get("failed_shas", [])),
                           deferred_at=now_utc(), reason="supported placement", transition_id=uuid.uuid4().hex)
         persist_switch(control, next_state, candidate_commit)
         return resolve_lifecycle_context(root, expected_from_commit=candidate_commit)
+
+
+def _assert_canonical_lifecycle_root(root: Path) -> None:
+    if root.absolute() != Path("C:/KMTech/Apps/Label_Match").absolute():
+        raise ValueError("supported lifecycle requires the canonical installation")
 
 
 def lifecycle_context_main(arguments: list[str]) -> int:
@@ -858,19 +867,37 @@ def lifecycle_context_main(arguments: list[str]) -> int:
     parser.add_argument("--expected-from-commit")
     parser.add_argument("--operation", default="inspect")
     parser.add_argument("--activate-supported-commit")
+    parser.add_argument("--machine-installer-authority", action="store_true")
+    parser.add_argument("--installer-authority-root", type=Path)
+    parser.add_argument("--installer-owner-record", type=Path)
     args = parser.parse_args(arguments)
     try:
-        if args.install_root.absolute() != Path("C:/KMTech/Apps/Label_Match").absolute():
-            raise ValueError("supported lifecycle requires the canonical installation")
-        if args.activate_supported_commit:
-            result = supported_lifecycle_transition(args.install_root,
-                expected_from_commit=args.expected_from_commit, candidate_commit=args.activate_supported_commit)
-        else:
-            result = resolve_lifecycle_context(args.install_root,
-                expected_from_commit=args.expected_from_commit, operation=args.operation)
+        _assert_canonical_lifecycle_root(args.install_root)
+        from contextlib import nullcontext
+        from writer_session_fence import installer_lifecycle_authority
+        if args.machine_installer_authority and (args.installer_authority_root is None or args.installer_owner_record is None):
+            raise ValueError("machine installer authority is required")
+        if (args.installer_authority_root is None) != (args.installer_owner_record is None):
+            raise ValueError("installer lifecycle authority arguments are incomplete")
+        authority = (installer_lifecycle_authority(args.installer_authority_root, args.installer_owner_record,
+            args.install_root, source="canonical_placement" if args.activate_supported_commit else "auto_update_fixed_helper")
+            if args.installer_authority_root is not None else nullcontext())
+        with authority:
+            if args.activate_supported_commit:
+                result = supported_lifecycle_transition(args.install_root,
+                    expected_from_commit=args.expected_from_commit, candidate_commit=args.activate_supported_commit)
+            else:
+                result = resolve_lifecycle_context(args.install_root,
+                    expected_from_commit=args.expected_from_commit, operation=args.operation)
     except Exception as error:
         from failure_redaction import emit_support_failure
-        emit_support_failure(error, prefix="LABEL_MATCH_LIFECYCLE_FAILURE")
+        try:
+            emit_support_failure(error, prefix="LABEL_MATCH_LIFECYCLE_FAILURE")
+        except Exception:
+            # Evidence failure must still preserve native rc and a fixed stderr
+            # record; no raw exception or authority enters the public channel.
+            print("LABEL_MATCH_LIFECYCLE_FAILURE=" + json.dumps({"status":"FAILED", "stage":"SUPPORT", "reason_code":"INSTALLER_FAILED",
+                "exit_code":1, "report_status":"REPORT_UNAVAILABLE"}), file=sys.stderr, flush=True)
         return 1
     print(json.dumps(result, ensure_ascii=True))
     return 0

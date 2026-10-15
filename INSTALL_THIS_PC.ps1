@@ -292,6 +292,82 @@ function Enter-LabelCanonicalPlacement([int]$TimeoutMilliseconds = 5000) {
         -TimeoutMilliseconds $TimeoutMilliseconds
 }
 
+function Save-LabelLifecycleChannel([string]$Path,[string]$Text) {
+    Assert-NoReparsePoint $Path 'lifecycle diagnostic channel'
+    $stream=[IO.File]::Open($Path,'CreateNew','Write','Read')
+    try {
+        Protect-LabelInstallerOwnerFile $Path
+        $bytes=[Text.Encoding]::UTF8.GetBytes($Text)
+        $stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)
+    } finally {$stream.Dispose()}
+}
+
+function Invoke-LabelPlacementLifecycleProcess([string]$Python,[object[]]$Arguments) {
+    $quoted=@()
+    foreach($argument in @($Arguments)+@($lifecycleAuthorityArguments)){
+        $value=[string]$argument
+        $value=[regex]::Replace($value,'(\\*)"','$1$1\"')
+        $value=[regex]::Replace($value,'(\\+)$','$1$1')
+        $quoted+=('"'+$value+'"')
+    }
+    $info=[Diagnostics.ProcessStartInfo]::new()
+    $info.FileName=$Python;$info.Arguments=($quoted -join ' ')
+    $info.UseShellExecute=$false;$info.CreateNoWindow=$true
+    $info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+    $info.StandardOutputEncoding=[Text.UTF8Encoding]::new($false)
+    $info.StandardErrorEncoding=[Text.UTF8Encoding]::new($false)
+    $process=[Diagnostics.Process]::Start($info)
+    $nativeCode=$null
+    try {
+        $outTask=$process.StandardOutput.ReadToEndAsync();$errTask=$process.StandardError.ReadToEndAsync()
+        # The existing guardian owns the execution deadline. Never unwind the
+        # placement lease while an unobserved lifecycle child could still write.
+        $process.WaitForExit();$nativeCode=[int]$process.ExitCode
+        $stdout=$outTask.GetAwaiter().GetResult();$stderr=$errTask.GetAwaiter().GetResult()
+        $base=Join-Path $WriterFenceControlRoot ('.lifecycle-'+[Guid]::NewGuid().ToString('N'))
+        $metadata=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exit_code=$nativeCode;report_status='REPORT_UNAVAILABLE'}
+        try {
+            Save-LabelLifecycleChannel ($base+'.stdout') $stdout
+            Save-LabelLifecycleChannel ($base+'.stderr') $stderr
+            $Script:LabelLifecycleChannels=[ordered]@{stdout_path=($base+'.stdout');stdout_sha256=(Get-FileSha256 ($base+'.stdout'));stderr_path=($base+'.stderr');stderr_sha256=(Get-FileSha256 ($base+'.stderr'))}
+            if($nativeCode -ne 0){
+                $match=[regex]::Match($stderr,'(?m)^LABEL_MATCH_LIFECYCLE_FAILURE=(\{[^\r\n]+\})\r?$')
+                if($match.Success){
+                    $record=$match.Groups[1].Value|ConvertFrom-Json
+                    foreach($name in @('status','stage','reason_code','exception_type')){
+                        if($record.PSObject.Properties[$name]){$metadata[$name]=$record.$name}
+                    }
+                    if($record.PSObject.Properties['report_path'] -and $record.PSObject.Properties['report_sha256']){
+                        $path=[string]$record.report_path
+                        Assert-NoReparsePoint $path 'lifecycle protected failure'
+                        Assert-ProtectedCodeAncestors $path
+                        if((Get-Item -LiteralPath $path).Length -le 1048576 -and
+                            (Get-FileSha256 $path) -ceq [string]$record.report_sha256){
+                            $metadata.Remove('report_status');$metadata.report_path=$path;$metadata.report_sha256=[string]$record.report_sha256
+                        }
+                    }
+                }
+            }
+        } catch {
+            $metadata=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exit_code=$nativeCode;report_status='REPORT_UNAVAILABLE'}
+        }
+        $Script:LabelPlacementLifecycleFailure=ConvertTo-KmtechPublicRecord $metadata
+        if($stdout){return @($stdout -split '\r?\n'|Where-Object{$_ -ne ''})}
+    } finally {
+        $process.Dispose()
+        if($null -ne $nativeCode){$global:LASTEXITCODE=$nativeCode}
+    }
+}
+
+function Throw-LabelPlacementLifecycleFailure([string]$Code) {
+    $failure=[InvalidOperationException]::new($Code)
+    $failure.Data['child_output']=$Script:LabelPlacementLifecycleFailure
+    if(Get-Variable -Name LabelLifecycleChannels -Scope Script -ErrorAction SilentlyContinue){
+        $failure.Data['lifecycle_channels']=$Script:LabelLifecycleChannels
+    }
+    throw $failure
+}
+
 function Invoke-LabelPlacementLifecycleChild([scriptblock]$Action, [switch]$Activate, [ref]$Lease) {
     # A delegated child still needs the native admission mutex. Keep the session
     # fence while lending only this call's sources, then restore the exact grant.
@@ -303,6 +379,12 @@ function Invoke-LabelPlacementLifecycleChild([scriptblock]$Action, [switch]$Acti
         -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId `
         -ReplacementTransactionId $WriterFenceReplacementTransactionId `
         -DelegationToken $WriterFenceDelegationToken -Source 'canonical_placement'
+    $lifecycleAuthorityArguments=@()
+    if($WorkerSid){
+        $ownerRecord=Join-Path (Split-Path -Parent $installRootFull) ('.installer-owner-'+$WriterFenceSessionId+'-'+($InstallerRunId -split '-')[-1]+'.json')
+        $lifecycleAuthorityArguments=@('--machine-installer-authority','--installer-authority-root',$WriterFenceControlRoot,'--installer-owner-record',$ownerRecord)
+    }
+    $Script:LabelPlacementLifecycleFailure=$null
     $names = @('KMTECH_LABEL_WRITER_DELEGATION_TOKEN','KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID',
         'KMTECH_LABEL_WRITER_DELEGATION_ATTEMPT_ID','KMTECH_LABEL_WRITER_DELEGATION_TRANSACTION_ID')
     $environmentBefore = New-Object object[] $names.Count
@@ -815,6 +897,40 @@ function Write-LabelInstallerOwnerRecord([string]$InstallRoot) {
         Protect-LabelInstallerOwnerFile $path
         if ((Get-Content -LiteralPath $path -Raw -Encoding UTF8) -cne $json) { throw 'INSTALLER_OWNER_READBACK_DIFFERS' }
     } finally { Exit-LabelWriterAdmission $lease }
+}
+
+function Write-LabelProtectedReusedProof([string]$PlacementRoot) {
+    if([string]$supportedContext.from_commit -cne $nextCommit -or $nextCommit -cne $ExpectedActiveCommit){throw 'REUSED_ACTIVE_IDENTITY_DIFFERS'}
+    [void](Assert-BootstrapIntegrityRecord $PlacementRoot)
+    $sourceManifestHash=Get-FileSha256 (Join-Path $sourceRootFull 'portable-manifest.json')
+    $installedManifestHash=Get-FileSha256 (Join-Path $PlacementRoot 'portable-manifest.json')
+    $installedAggregate=Get-InventoryAggregate @(Get-CodeInventory $PlacementRoot)
+    if($sourceManifestHash -cne $installedManifestHash -or
+        $installedAggregate -cne $sourceAggregate -or
+        (Get-InventoryAggregate @(Get-CodeInventory $sourceRootFull)) -cne $sourceAggregate){throw 'REUSED_CODE_IDENTITY_DIFFERS'}
+    foreach($name in @('update-manifest-key-config.json','auto-update-settings.json')){
+        $expected=Get-FileSha256 (Join-Path $installRootFull ('app/'+$name))
+        if((Get-FileSha256 (Join-Path $sourceRootFull ('app/'+$name))) -cne $expected -or
+            (Get-FileSha256 (Join-Path $PlacementRoot ('app/'+$name))) -cne $expected){throw 'REUSED_TRUST_SETTINGS_DIFFER'}
+    }
+    $active=Assert-LabelWriterFenceOwner -ControlRoot $WriterFenceControlRoot -SessionId $WriterFenceSessionId `
+        -AttemptId $WriterFenceAttemptId -ReplacementTransactionId $WriterFenceReplacementTransactionId `
+        -DelegationToken $WriterFenceDelegationToken -Source 'canonical_placement'
+    $process=[Diagnostics.Process]::GetCurrentProcess()
+    try{$birth=$process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}finally{$process.Dispose()}
+    $record=[ordered]@{schema='label-match-protected-reused-v1';status='PASS';code_replaced=$false;
+        run_id=$InstallerRunId;helper_process_id=[int]$PID;helper_process_started_at_filetime=$birth;
+        helper_sha256=$ExpectedBootstrapScriptSha256;source_commit=$nextCommit;
+        source_root=$sourceRootFull;installed_root=$PlacementRoot;
+        source_manifest_sha256=$sourceManifestHash;installed_manifest_sha256=$installedManifestHash;
+        source_aggregate_sha256=$sourceAggregate;installed_aggregate_sha256=$installedAggregate;
+        source_file_count=[int]$ExpectedSourceFileCount;source_byte_count=[uint64]$ExpectedSourceByteCount;
+        startup_readback='VERIFIED_LIFECYCLE'}
+    foreach($name in @('session_id','attempt_id','replacement_transaction_id','writer_inventory_sha256','orchestrator_sha256','writer_contract_sha256')){$record[$name]=$active.$name}
+    $path=Join-Path (Split-Path -Parent $installRootFull) ('.installer-reused-'+$InstallerRunId+'-'+$PID+'.json')
+    Save-LabelLifecycleChannel $path ($record|ConvertTo-Json -Depth 5 -Compress)
+    $check=Get-Content -LiteralPath $path -Raw -Encoding UTF8|ConvertFrom-Json
+    if($check.helper_process_started_at_filetime -cne $birth -or $check.source_aggregate_sha256 -cne $sourceAggregate){throw 'REUSED_PROOF_READBACK_DIFFERS'}
 }
 
 function Assert-LabelStartupUpdateTrust([string]$Root) {
@@ -2141,7 +2257,7 @@ if ($LegacyRelayTransition -or $StartupUpdateRestorePreimage) {
         $directory=Join-Path (Split-Path -Parent $installRootFull) ('.legacy-relay.'+$WriterFenceAttemptId)
     } else {
         if ($testOverride -or $DryRun -or $Uninstall) { throw 'Startup update restore mode differs.' }
-        $OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        if(-not $WorkerSid){$OperatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value}
     }
     # Both preimages use the same existing admission source; inventory stays 59.
     $lease = Enter-LabelWriterDelegatedOperation -ControlRoot $WriterFenceControlRoot -SessionId $WriterFenceSessionId -AttemptId $WriterFenceAttemptId -ReplacementTransactionId $WriterFenceReplacementTransactionId -DelegationToken $WriterFenceDelegationToken -Source 'auto_update_restore_preimage'
@@ -2277,10 +2393,12 @@ $applicationParent = Split-Path -Parent $installRootFull
 $supportedContext = $null
 if (-not $testOverride -and ((Test-Path -LiteralPath (Join-Path $applicationParent 'update-control')) -or
     (Test-Path -LiteralPath (Join-Path $applicationParent 'removed.json')))) {
-    $healthOutput = @(Invoke-LabelPlacementLifecycleChild -Lease ([ref]$writerFenceLease) -Action { & (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
-        (Join-Path $sourceRootFull 'app\main.py') --label-match-lifecycle-context `
-        --install-root $applicationParent --operation install })
-    if ($LASTEXITCODE -ne 0) { throw ('자료와 등록 및 전송 대기를 보존하고 지원 제거를 먼저 실행한 뒤 다시 설치하세요. ' + ($healthOutput -join "`n")) }
+    $healthOutput = @(Invoke-LabelPlacementLifecycleChild -Lease ([ref]$writerFenceLease) -Action {
+        Invoke-LabelPlacementLifecycleProcess -Python (Join-Path $sourceRootFull 'runtime/python.exe') -Arguments @(
+            '-I','-B',(Join-Path $sourceRootFull 'app/main.py'),'--label-match-lifecycle-context',
+            '--install-root',$applicationParent,'--operation','install')
+    })
+    if ($LASTEXITCODE -ne 0) { Throw-LabelPlacementLifecycleFailure 'SUPPORTED_LIFECYCLE_FAILED' }
     $supportedContext = ($healthOutput -join "`n") | ConvertFrom-Json
     if ([string]$supportedContext.status -cne 'PASS') { throw 'SUPPORTED_REMOVAL_REQUIRED' }
 }
@@ -2413,12 +2531,17 @@ New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
     Write-Output "code_root=$placementRoot"
     Write-Output "release_layout=$releaseLayout"
     Write-Output "integrity_record=$(Join-Path $placementRoot $IntegrityFileName)"
-    if ($versionedPlacement) {
-        $activation = @(Invoke-LabelPlacementLifecycleChild -Lease ([ref]$writerFenceLease) -Activate -Action { & (Join-Path $sourceRootFull 'runtime\python.exe') -I -B `
-            (Join-Path $sourceRootFull 'app\main.py') --label-match-lifecycle-context `
-            --install-root $applicationParent --expected-from-commit $ExpectedActiveCommit `
-            --activate-supported-commit $nextCommit })
-        if ($LASTEXITCODE -ne 0) { throw ('SUPPORTED_ACTIVATION_FAILED:' + ($activation -join "`n")) }
+    if ($versionedPlacement -and [string]$supportedContext.from_commit -ceq $nextCommit) {
+        Write-LabelProtectedReusedProof $placementRoot
+    } elseif ($versionedPlacement) {
+        $Script:StartupUpdatePreimage = Save-LabelStartupUpdatePreimage $installRootFull 'install'
+        $activation = @(Invoke-LabelPlacementLifecycleChild -Lease ([ref]$writerFenceLease) -Activate -Action {
+            Invoke-LabelPlacementLifecycleProcess -Python (Join-Path $sourceRootFull 'runtime/python.exe') -Arguments @(
+                '-I','-B',(Join-Path $sourceRootFull 'app/main.py'),'--label-match-lifecycle-context',
+                '--install-root',$applicationParent,'--expected-from-commit',$ExpectedActiveCommit,
+                '--activate-supported-commit',$nextCommit)
+        })
+        if ($LASTEXITCODE -ne 0) { Throw-LabelPlacementLifecycleFailure 'SUPPORTED_ACTIVATION_FAILED' }
     } else { Initialize-LabelStartupUpdate $placementRoot }
     if ([IO.File]::Exists((Join-Path $installRootFull 'launch-label-match.cmd'))) {
         [void](Install-LabelEmergencyShortcut $installRootFull)

@@ -61,7 +61,13 @@ def test_placement_lifecycle_child_preserves_fence_and_parent_grant(tmp_path, mo
     statement = '$activation' if mode == 'activate' else '$healthOutput'
     installer = ROOT / 'INSTALL_THIS_PC.ps1'
     harness = tmp_path / 'placement.ps1'
-    harness.write_text(f"""
+    harness.write_text(
+        __import__('tests.test_startup_update_installer', fromlist=['functions']).functions(
+            'INSTALL_THIS_PC.ps1', ['Get-EarlyFileSha256', 'Get-FileSha256', 'Save-LabelLifecycleChannel',
+                                  'Invoke-LabelPlacementLifecycleProcess', 'Throw-LabelPlacementLifecycleFailure'])
+        + "function Protect-LabelInstallerOwnerFile {}\n"
+        + ". '" + str(ROOT / 'tools/failure_redaction.ps1').replace("'", "''") + "'\n"
+        + "$WorkerSid=''\ntrap { [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'failure-site.json'),(@{type=$_.Exception.GetType().Name;line=$_.InvocationInfo.ScriptLineNumber;locations=@($_.ScriptStackTrace -split '\\r?\\n'|ForEach-Object{if($_ -match ': line (\\d+)'){$Matches[1]}})}|ConvertTo-Json -Compress));exit 1 }\n" + f"""
 $ErrorActionPreference='Stop'
 . {quote(ROOT / 'tools/label_writer_fence.ps1')}
 $tokens=$null;$errors=$null
@@ -75,7 +81,7 @@ $node=@($tree.FindAll({{param($a) $a -is [Management.Automation.Language.Assignm
 if($node.Count -ne 1){{throw 'child assignment differs'}}
 $childAssignment=$node[0].Extent.Text
 function Join-Path([string]$Path,[string]$ChildPath){{
- if($ChildPath -ceq 'runtime\\python.exe'){{return {quote(sys.executable)}}}
+ if($ChildPath.Replace('/', [IO.Path]::DirectorySeparatorChar) -ceq 'runtime\\python.exe'){{return {quote(sys.executable)}}}
  Microsoft.PowerShell.Management\\Join-Path -Path $Path -ChildPath $ChildPath
 }}
 $sourceRootFull={quote(packet)};$applicationParent={quote(machine)}
@@ -160,7 +166,13 @@ def test_placement_child_scope_rechecks_fence_and_unwinds_exceptions(tmp_path, m
     if damage == 'missing_environment':
         env.pop(fence.DELEGATION_SESSION_ENV, None)
     harness = tmp_path / 'scope.ps1'
-    harness.write_text("$ErrorActionPreference='Stop'\n" +
+    harness.write_text(
+        __import__('tests.test_startup_update_installer', fromlist=['functions']).functions(
+            'INSTALL_THIS_PC.ps1', ['Get-EarlyFileSha256', 'Get-FileSha256', 'Save-LabelLifecycleChannel',
+                                  'Invoke-LabelPlacementLifecycleProcess', 'Throw-LabelPlacementLifecycleFailure'])
+        + "function Protect-LabelInstallerOwnerFile {}\n"
+        + ". '" + str(ROOT / 'tools/failure_redaction.ps1').replace("'", "''") + "'\n"
+        + "$WorkerSid=''\ntrap { [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'failure-site.json'),(@{type=$_.Exception.GetType().Name;line=$_.InvocationInfo.ScriptLineNumber;locations=@($_.ScriptStackTrace -split '\\r?\\n'|ForEach-Object{if($_ -match ': line (\\d+)'){$Matches[1]}})}|ConvertTo-Json -Compress));exit 1 }\n" + "$ErrorActionPreference='Stop'\n" +
         f". {quote(ROOT / 'tools/label_writer_fence.ps1')}\n" +
         functions('INSTALL_THIS_PC.ps1', ['Enter-LabelCanonicalPlacement', 'Invoke-LabelPlacementLifecycleChild']) +
         f"""
