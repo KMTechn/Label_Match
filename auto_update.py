@@ -2848,6 +2848,14 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                         return start_current(control, policy, state, active, startup_arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
                 if state and state["phase"] in {"CONFIRMED", "ROLLED_BACK"} and saw_trial:
                     if state["phase"] == "ROLLED_BACK":
+                        if role == "relay" and state.get("trial_role", "gui") == "relay":
+                            if (state.get("trial_sha") == active["sha"]
+                                    and wait_current_relay(control, policy, active["sha"],
+                                        started_at=state["trial_started_at"], deadline=deadline,
+                                        pid=state["trial_pid"])):
+                                return 0
+                            emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS"}, stage="update_apply")
+                            return 20
                         return start_current(control, policy, state, active, startup_arguments, code="UPDATE_PREVIOUS_CONFIRMED", deadline=deadline)
                     if role == "gui" and state.get("trial_role", "gui") == "relay":
                         return start_current(control, policy, state, active, startup_arguments,

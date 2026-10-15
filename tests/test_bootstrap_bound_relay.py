@@ -15,7 +15,7 @@ from user_relay import user_relay_status_path
 
 @pytest.fixture
 def bound_relay(tmp_path, monkeypatch):
-    def build(phase, proof, *, real_terminal=False):
+    def build(phase, proof, *, real_terminal=False, after_confirm=None):
         state = pending(phase)
         control, stage = tmp_path / "control", tmp_path / "stage"
         sha = state["previous_sha"] if phase == "ROLLBACK_PENDING_READY" else state["candidate_sha"]
@@ -39,7 +39,7 @@ def bound_relay(tmp_path, monkeypatch):
         monkeypatch.setattr(updates, "version_manifest", lambda root: {"source_commit": sha})
         monkeypatch.setattr(updates, "write_json_durable", write)
         monkeypatch.setattr(updates, "update_lock", lambda *a, **k: nullcontext())
-        monkeypatch.setattr(updates, "apply_claim_status", lambda root: "LIVE")
+        monkeypatch.setattr(updates, "apply_claim_status", lambda root: ("LIVE" if updates.read_json(control / "transition.json")["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"} else "ABSENT"))
         monkeypatch.setattr(updates, "prepared_pending", lambda *a: False)
         monkeypatch.setattr(updates, "request_apply_task", lambda *a: None)
         monkeypatch.setattr(updates, "record_confirmed_transition", lambda root, value: value)
@@ -88,6 +88,8 @@ def bound_relay(tmp_path, monkeypatch):
                     write(user_relay_status_path(paths.direct_sync_root), payload)
             elif confirmed:
                 events.append(state["phase"])
+                if after_confirm is not None:
+                    after_confirm(paths, rows)
 
         monkeypatch.setattr(updates.time, "sleep", system_observe)
         return SimpleNamespace(app=app, control=control, stage=stage, policy=policy,
@@ -111,3 +113,22 @@ def test_bound_claim_still_publishes_actual_readiness(bound_relay, phase, proof)
     else:
         assert result == 20 and state["phase"] == phase
         assert not (trial.stage / "ready.json").exists()
+
+
+@pytest.mark.parametrize("recheck", ["valid", "missing", "pid", "sha"])
+def test_rollback_bootstrap_reuses_only_the_confirmed_ready_pid(bound_relay, recheck):
+    def after_confirm(paths, rows):
+        status = user_relay_status_path(paths.direct_sync_root)
+        if recheck == "missing":
+            status.unlink()
+        elif recheck in {"pid", "sha"}:
+            payload = updates.read_json(status)
+            payload["process_id" if recheck == "pid" else "source_commit"] = (
+                33334 if recheck == "pid" else "f" * 40)
+            write(status, payload)
+    trial = bound_relay("ROLLBACK_PENDING_READY", "valid", real_terminal=True, after_confirm=after_confirm)
+    result = updates._bootstrap(trial.app, ["--label-match-user-relay"], role="relay")
+    assert result == (0 if recheck == "valid" else 20)
+    assert trial.events == ["SYSTEM_BOUND_BEFORE_RUNNING", "ROLLED_BACK"]
+    assert updates.read_json(trial.control / "transition.json")["trial_pid"] == 33333
+    assert len(trial.launches) == 1 and trial.rows[0]["pid"] == 33333
