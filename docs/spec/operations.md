@@ -1354,6 +1354,8 @@ Archive-PretransactionFailure는 판정한 목록에서 이번 run의 정확한 
 
 배치 자식의 pin·전송·실행 실패는 고정 placement_code, 단계, native 종료 코드와 보호 진단 경로/SHA256을 남긴다. 전송의 신뢰 코드가 로드되기 전에는 예외 종류/HResult만 보존하고 원문·payload·환경 값을 진단으로 복사하지 않는다. 자식이 진단 없이 종료해도 부모가 같은 시도 종료 코드의 보호 기록을 남긴다. pin으로 검증된 canonical 배치에서 helper의 자체 trap은 원 예외를 바깥 reporter로 전달하며 단독 설치기 실패 안내는 유지한다. 복구 단계 stack은 거래마다 초기화하며 StrictMode 아래에서도 첫 단계와 중첩 단계가 이어진다. 지원 재개는 기존 replacement 여부를 같은 배치 매개변수 계약으로 전달한다.
 
+공개 배치 진단 변환은 기존 reader가 받는 선택 필드 부재에도 자식 종료 코드와 있는 최초 예외 종류를 보존한다. 단계가 없으면 `PLACEMENT_CHILD`, 코드가 없으면 `PLACEMENT_DIAGNOSTIC_UNAVAILABLE`, 예외 종류가 없으면 `System.InvalidOperationException`을 쓴다. 보호 보고서의 경로와 SHA256이 함께 확인되지 않으면 `REPORT_UNAVAILABLE`로 남긴다. 원 진단·보호 증거와 디스크 형식·권한 판정은 그대로다.
+
 일반 ROLLBACK_FAILED 지원 재개는 같은 작업 사용자의 관리자 PowerShell에서 동일 stock의 `INSTALL_CANONICAL_PORTABLE.ps1 -SourceRoot <stock 루트> -InstallRoot <원 설치 루트> -ResumeRollbackAuditPath <install-audit JSON> -ExpectedRollbackAuditSha256 <파일 SHA256>`로 실행한다. 감사 파일과 보호 preimage를 보존하고 실제 파일 SHA256을 먼저 계산한다. 소스 커밋·orchestrator/contract pin·사용자·원 session/attempt/transaction·보호 경로가 다르면 거절한다. 기존 canonical 복원 함수를 같은 순서로 재사용하므로 이미 복원된 단계도 재검사하며, 코드·G·runtime 정합 증명 뒤에만 fence를 해제한다. 미증명 상태에는 fence와 정지를 유지하고 같은 새 판 재시작 또는 호환 수정판 설치 및 이 지원 진입점을 한국어로 안내한다. 랩 실행 단계는 [sub-274 LAB-RECOVERY](D:/KMTech/program-improvement-20260912/work/program/w9setupprep/sub-274/REPORT.md)에 기록하며 호스트 실행은 금지한다.
 
 pin으로 검증한 메모리 배치 런처는 공개 기록 변환과 machine metadata 비밀값 거절 함수도 함께 담는다. 공유 bootstrap의 integrity JSON 기록은 이 prelude를 사용하며 파일 경로가 없는 ScriptBlock의 PSScriptRoot로 helper를 다시 찾지 않는다. VM-02 배치에서 관측한 누락 함수/빈 Path 오류와 교정 결과는 sub-353 REPORT에 결속한다.

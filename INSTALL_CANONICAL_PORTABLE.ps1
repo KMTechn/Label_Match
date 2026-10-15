@@ -2704,15 +2704,29 @@ function Confirm-LabelCanonicalPlacement($Onboarding, [string]$ExpectedRun, [str
 
 function ConvertTo-LabelPlacementPublicFailure($Record) {
     if($null -eq $Record){return $null}
-    $phase=[string]$Record.phase
+    # The child reader accepts schema/exit_code before optional diagnostic fields.
+    # Missing properties must not replace its exit or first cause under StrictMode.
+    $readField={param($Value,[string]$Name)
+        if($null -eq $Value){return $null}
+        if($Value -is [Collections.IDictionary]){return $Value[$Name]}
+        $property=$Value.PSObject.Properties[$Name]
+        if($null -ne $property){return $property.Value}
+        return $null
+    }
+    $phase=[string](& $readField $Record 'phase')
     if($phase -cnotmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,127}$'){$phase='PLACEMENT_CHILD'}
-    $result=[ordered]@{status='FAILED';stage='SUPPORT';placement_code=[string]$Record.placement_code;
-        exit_code=[int]$Record.exit_code;exception_type=[string]$Record.exception_type;
+    $placementCode=[string](& $readField $Record 'placement_code')
+    if([string]::IsNullOrEmpty($placementCode)){$placementCode='PLACEMENT_DIAGNOSTIC_UNAVAILABLE'}
+    $exceptionType=[string](& $readField $Record 'exception_type')
+    if([string]::IsNullOrEmpty($exceptionType)){$exceptionType='System.InvalidOperationException'}
+    $result=[ordered]@{status='FAILED';stage='SUPPORT';placement_code=$placementCode;
+        exit_code=[int]$Record.exit_code;exception_type=$exceptionType;
         location_module='INSTALL_THIS_PC.ps1';location_function=$phase;report_status='REPORT_UNAVAILABLE'}
-    $trace=if($Record -is [Collections.IDictionary]){$Record['full_exception_trace']}
-        elseif($Record.PSObject.Properties['full_exception_trace']){$Record.full_exception_trace}else{$null}
-    if($null -ne $trace -and [string]$trace.sha256 -cmatch '^[0-9a-f]{64}$'){
-        $result.Remove('report_status');$result.report_path=[string]$trace.path;$result.report_sha256=[string]$trace.sha256
+    $trace=& $readField $Record 'full_exception_trace'
+    $tracePath=[string](& $readField $trace 'path')
+    $traceSha=[string](& $readField $trace 'sha256')
+    if(-not [string]::IsNullOrEmpty($tracePath) -and $traceSha -cmatch '^[0-9a-f]{64}$'){
+        $result.Remove('report_status');$result.report_path=$tracePath;$result.report_sha256=$traceSha
     }
     return ConvertTo-KmtechPublicRecord $result
 }
