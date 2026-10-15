@@ -6,6 +6,9 @@ $productRoot=Join-Path $Root 'current';$foreignRoot=Join-Path $Root 'other'
 $desktop=Join-Path $Root 'desktop';$menu=Join-Path $Root 'programs'
 foreach($folder in @($productRoot,$foreignRoot,$desktop,$menu,(Join-Path $productRoot 'app/assets'))){[void][IO.Directory]::CreateDirectory($folder)}
 [IO.File]::WriteAllText((Join-Path $productRoot 'launch-label-match.cmd'),'qualification')
+[void][IO.Directory]::CreateDirectory((Join-Path $productRoot 'runtime'))
+[IO.File]::WriteAllText((Join-Path $productRoot 'runtime/pythonw.exe'),'fixture')
+[IO.File]::WriteAllText((Join-Path $productRoot 'app/main.py'),'fixture')
 [IO.File]::WriteAllText((Join-Path $productRoot 'app/assets/logo.ico'),'qualification')
 $other=Join-Path $foreignRoot 'other.exe';[IO.File]::WriteAllText($other,'qualification')
 function Get-LabelWorkerShortcutFolders {

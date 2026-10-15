@@ -42,6 +42,9 @@ function Get-LabelWorkerShortcutFolders {param([switch]$CommonOnly,[switch]$User
 }
 [void][IO.Directory]::CreateDirectory((Join-Path $install 'app/assets'))
 [IO.File]::WriteAllText((Join-Path $install 'launch-label-match.cmd'),'never execute')
+[void][IO.Directory]::CreateDirectory((Join-Path $install 'runtime'))
+[IO.File]::WriteAllText((Join-Path $install 'runtime/pythonw.exe'),'never execute')
+[IO.File]::WriteAllText((Join-Path $install 'app/main.py'),'never execute')
 [IO.File]::WriteAllBytes((Join-Path $install 'app/assets/logo.ico'),[byte[]]@(0))
 $manifest=[pscustomobject]@{launcher='launch-label-match.cmd'}
 $shell=New-Object -ComObject WScript.Shell
@@ -80,7 +83,7 @@ if($case -eq 'write_failure'){
 }
 $failed=$false
 try{$proof=Install-LabelWorkerShortcuts $install $manifest $record}catch{$failed=$true;$failure=$_}
-if($case -in @('collision','write_failure')){
+if($case -eq 'write_failure'){
  if(-not $failed){throw 'Expected safe refusal'}
  foreach($path in $originals.Keys){if((Get-FileHash -LiteralPath $path).Hash -ne $originals[$path]){throw 'Original link changed on refusal'}}
  if($case -eq 'write_failure' -and (Test-Path -LiteralPath (Join-Path $root 'CommonDesktop/포장.lnk'))){throw 'Partial new link survived'}
@@ -88,12 +91,12 @@ if($case -in @('collision','write_failure')){
 }
 if($failed){throw $failure}
 $journal=Get-Content -LiteralPath $record -Raw -Encoding UTF8|ConvertFrom-Json
-$wantedCount=if($case -in @('broken','broken_forward_path','drift')){4}else{2}
+$wantedCount=if($case -in @('broken','broken_forward_path','drift')){4}elseif($case -eq 'collision'){1}else{2}
 if(@($journal.entries).Count -ne $wantedCount){throw 'Wrong owned link count'}
 foreach($entry in $journal.entries){
  $props=Get-LabelShortcutProperties $entry.path
- if($props.target_path -ne (Join-Path $install $manifest.launcher) -or $props.arguments -ne '' -or
-    $props.window_style -ne 7 -or $props.icon_location -ne ((Join-Path $install 'app/assets/logo.ico')+',0')){throw 'Installed shortcut mismatch'}
+ if($props.target_path -ne (Join-Path $install 'runtime/pythonw.exe') -or $props.arguments -cne ('-I -B "'+(Join-Path $install 'app/main.py')+'"') -or
+    $props.window_style -ne 1 -or $props.icon_location -ne ((Join-Path $install 'app/assets/logo.ico')+',0')){throw 'Installed shortcut mismatch'}
  if($null -ne $entry.original -and ($props.description -cne $entry.original.description -or
     $props.hotkey -cne $entry.original.hotkey)){throw 'Unrequested shortcut properties changed'}
 }
@@ -160,6 +163,9 @@ foreach($name in @('Desktop','Programs','CommonDesktop','CommonPrograms','Apps/L
  [void][IO.Directory]::CreateDirectory((Join-Path $root $name))
 }
 [IO.File]::WriteAllText((Join-Path $install 'launch-label-match.cmd'),'never execute')
+[void][IO.Directory]::CreateDirectory((Join-Path $install 'runtime'))
+[IO.File]::WriteAllText((Join-Path $install 'runtime/pythonw.exe'),'never execute')
+[IO.File]::WriteAllText((Join-Path $install 'app/main.py'),'never execute')
 [IO.File]::WriteAllBytes((Join-Path $install 'app/assets/logo.ico'),[byte[]]@(0))
 [IO.File]::WriteAllText((Join-Path $install 'portable-manifest.json'),'{'+'"launcher":"launch-label-match.cmd"'+'}')
 $private=Join-Path $root 'Desktop/old.lnk'
@@ -194,7 +200,7 @@ $expectedCalls=if($env:LM_SHORTCUT_PLACEMENT -ceq 'REUSED_VERIFIED'){1}else{0}
 if($script:commonCalls -ne $expectedCalls -or -not $parameters.ReplaceExistingVerifiedPortable){throw 'Common reuse boundary differs'}
 if($shortcuts.user_readback.status -cne 'PASS' -or $shortcuts.common_record_sha256 -cne (Sha $commonRecord) -or
  $shortcuts.user_record_sha256 -cne (Sha $userRecord)){throw 'Canonical receipt readback differs'}
-if($shell.CreateShortcut($private).TargetPath -ne (Join-Path $install 'launch-label-match.cmd')){throw 'Worker step missed private link'}
+if($shell.CreateShortcut($private).TargetPath -ne (Join-Path $install 'runtime/pythonw.exe')){throw 'Worker step missed private link'}
 $operation=@{InstallRoot=$install;RecordPath=$userRecord;UserOnly=$true}
 $operation[$env:LM_SHORTCUT_REMOVAL]=$true
 & $env:LM_SHORTCUT_HELPER @operation
