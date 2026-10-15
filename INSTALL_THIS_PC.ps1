@@ -48,14 +48,33 @@ trap {
     if ($BootstrapIntegrityPreloaded.IsPresent -and $WriterFenceFunctionsPreloaded.IsPresent) {
         throw $_
     }
-    $record=[ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE';location_module='INSTALL_THIS_PC.ps1';location_function='ScriptBlock';location_line=[int]$_.InvocationInfo.ScriptLineNumber}
+    $publicReason='INSTALLER_FAILED';$publicGuidance=''
+    for($cause=$_.Exception;$null -ne $cause;$cause=$cause.InnerException){
+        if($cause.Data['label_installer_reason_code'] -ceq 'UNSUPPORTED_WORKER_ARGUMENTS'){
+            $publicReason='UNSUPPORTED_WORKER_ARGUMENTS'
+            $kinds=@($cause.Data['label_installer_mismatch_kinds'] | Where-Object {
+                $_ -cin @('WorkerSid 형식','작업자 SID 대조','작업자 자료 위치 누락','TLS CA 인수 조합')
+            })
+            $publicGuidance='이 인수 조합은 지원 안 됨 — 관리자 제거는 -WorkerSid 없이. 어긋난 종류: '+($kinds -join ', ')+'. 다음: 관리자 코드 전용 -Uninstall을 -WorkerSid 없이 다시 실행하세요.'
+            break
+        }
+        if($cause.Data['label_installer_reason_code'] -ceq 'CURRENT_USER_RELAY_SETUP_PRESENT'){
+            $publicReason='CURRENT_USER_RELAY_SETUP_PRESENT'
+            $publicGuidance='작업자의 자동 전송 설정이 남아 있어 코드 제거를 멈췄습니다. 다음: 같은 작업자 계정에서 main --remove-current-user-setup을 마친 뒤, 관리자가 -Uninstall을 -WorkerSid 없이 다시 실행하세요.'
+            break
+        }
+    }
+    $record=[ordered]@{status='FAILED';reason_code=$publicReason;report_status='REPORT_UNAVAILABLE';location_module='INSTALL_THIS_PC.ps1';location_function='ScriptBlock';location_line=[int]$_.InvocationInfo.ScriptLineNumber}
+    if($publicGuidance){$record.guidance=$publicGuidance}
     if (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue) {
-        $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';exception_type=$_.Exception.GetType().FullName;guidance=[string]$Script:KmtechRedactionRules.safe_messages[0];report_status='REPORT_UNAVAILABLE';location_module='INSTALL_THIS_PC.ps1';location_function='ScriptBlock';location_line=[int]$_.InvocationInfo.ScriptLineNumber}
+        $fields=[ordered]@{status='FAILED';stage='SUPPORT';reason_code=$publicReason;exception_type=$_.Exception.GetType().FullName;guidance=$(if($publicGuidance){$publicGuidance}else{[string]$Script:KmtechRedactionRules.safe_messages[0]});report_status='REPORT_UNAVAILABLE';location_module='INSTALL_THIS_PC.ps1';location_function='ScriptBlock';location_line=[int]$_.InvocationInfo.ScriptLineNumber}
         try {
             $reference=Write-KmtechProtectedFailureSidecar -Text $_.Exception.ToString()
             $fields.Remove('report_status');$fields.report_path=$reference.path;$fields.report_sha256=$reference.sha256
         } catch { }
-        $record=ConvertTo-KmtechPublicRecord $fields
+        $record=ConvertTo-KmtechPublicRecord $fields `
+            -AllowedCodes @($Script:KmtechRedactionRules.allowed_codes + @('UNSUPPORTED_WORKER_ARGUMENTS','CURRENT_USER_RELAY_SETUP_PRESENT')) `
+            -SafeMessages @($Script:KmtechRedactionRules.safe_messages + @($publicGuidance))
     }
     [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($record | ConvertTo-Json -Compress))
     exit 1
@@ -2028,8 +2047,12 @@ if ($WorkerSid) {
         if($WorkerSid -cne $DataGenerationSubjectSid){$mismatchKinds += '작업자 SID 대조'}
         if(-not $OperatorLocalAppDataRoot){$mismatchKinds += '작업자 자료 위치 누락'}
         if($TlsCaBundlePath){$mismatchKinds += 'TLS CA 인수 조합'}
-        throw ('이 인수 조합은 지원 안 됨 — 관리자 제거는 -WorkerSid 없이. 어긋난 종류: ' +
+        $refusal=[InvalidOperationException]::new(('이 인수 조합은 지원 안 됨 — 관리자 제거는 -WorkerSid 없이. 어긋난 종류: ' +
             ($mismatchKinds -join ', ') + '. 다음: 관리자 코드 전용 -Uninstall을 -WorkerSid 없이 다시 실행하세요.')
+        )
+        $refusal.Data['label_installer_reason_code']='UNSUPPORTED_WORKER_ARGUMENTS'
+        $refusal.Data['label_installer_mismatch_kinds']=$mismatchKinds
+        throw $refusal
     }
     $OperatorSid = $WorkerSid
 }
@@ -2056,11 +2079,13 @@ if (
     -not $testOverride -and
     (Test-CurrentUserRelayPersistencePresent)
 ) {
-    throw (
+    $refusal=[InvalidOperationException]::new((
         "작업자의 자동 전송 설정이 남아 있어 코드 제거를 멈췄습니다. " +
         "다음: 같은 작업자 계정에서 main --remove-current-user-setup을 마친 뒤, " +
         "관리자가 -Uninstall을 -WorkerSid 없이 다시 실행하세요."
-    )
+    ))
+    $refusal.Data['label_installer_reason_code']='CURRENT_USER_RELAY_SETUP_PRESENT'
+    throw $refusal
 }
 if (
     -not $DryRun.IsPresent -and
