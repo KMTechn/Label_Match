@@ -216,8 +216,11 @@ try {{
     return result.returncode, json.loads(result.stdout)
 
 
-@pytest.mark.parametrize('mutation', ['none', 'missing', 'tampered', 'unexpected-existing'])
-def test_actual_assert_writer_transition_with_approved_generated_settings(transition_layouts, mutation):
+TRANSITION_MUTATIONS = ['none', 'missing', 'tampered', 'unexpected-existing']
+
+
+@pytest.mark.parametrize("mutation", TRANSITION_MUTATIONS)
+def test_actual_assert_writer_transition_with_approved_generated_settings(transition_layouts, mutation, evidence_cases=None):
     installed, candidate, ps_root = transition_layouts
     settings = candidate / SETTINGS
     unexpected = installed / 'app/unexpected-existing.txt'
@@ -240,13 +243,16 @@ def test_actual_assert_writer_transition_with_approved_generated_settings(transi
                 assert payload['codes'] == ['WRITER_TRANSITION_ADDED_ASSET_DIFFERS']
             elif mutation == 'unexpected-existing':
                 assert payload['codes'] == ['WRITER_TRANSITION_SOURCE_SET_DIFFERS']
+        if evidence_cases is not None:
+            kind = ("approved", "missing_settings", "tampered_settings", "unexpected_existing_settings")[TRANSITION_MUTATIONS.index(mutation)]
+            evidence_cases.append(transition_case(kind, returncode, payload))
     finally:
         settings.write_bytes(original)
         unexpected.unlink(missing_ok=True)
 
 
 @pytest.mark.parametrize('revision', UNTRIMMED_REVISIONS)
-def test_untrimmed_99_100_inputs_are_intentionally_rejected(transition_layouts, revision):
+def test_untrimmed_99_100_inputs_are_intentionally_rejected(transition_layouts, revision, evidence_cases=None):
     _, candidate, ps_root = transition_layouts
     root = ps_root.parent
     source = root / ('old-source-' + revision)
@@ -262,3 +268,97 @@ def test_untrimmed_99_100_inputs_are_intentionally_rejected(transition_layouts, 
     assert all(name.startswith('app/site-packages/qrcode/tests/') and name.endswith('.py') for name in extra)
     returncode, payload = actual_transition(installed, candidate, ps_root)
     assert returncode == 7 and payload == {'status': 'REJECTED', 'codes': ['WRITER_TRANSITION_SOURCE_SET_DIFFERS']}
+
+    if evidence_cases is not None:
+        kind = ("untrimmed_first", "untrimmed_second")[UNTRIMMED_REVISIONS.index(revision)]
+        evidence_cases.append(transition_case(kind, returncode, payload))
+
+
+EXPECTED_TRANSITION_CODES = {
+    "approved": "PINNED_STARTUP_UPDATE_BOOTSTRAP",
+    # Missing file fails before the probe emits a WRITER_TRANSITION_* code.
+    # Preserve that fact with a fixed evidence code, rather than inventing one.
+    "missing_settings": "NO_FIXED_PROBE_CODE",
+    "tampered_settings": "WRITER_TRANSITION_ADDED_ASSET_DIFFERS",
+    "unexpected_existing_settings": "WRITER_TRANSITION_SOURCE_SET_DIFFERS",
+    "untrimmed_first": "WRITER_TRANSITION_SOURCE_SET_DIFFERS",
+    "untrimmed_second": "WRITER_TRANSITION_SOURCE_SET_DIFFERS",
+}
+
+
+def transition_case(kind, returncode, payload):
+    status = "PASS" if returncode == 0 else "REJECTED"
+    assert payload["status"] == status
+    if status == "PASS":
+        code = payload["compatibility"]
+    else:
+        codes = payload["codes"]
+        assert isinstance(codes, list) and len(codes) <= 1
+        code = codes[0] if codes else "NO_FIXED_PROBE_CODE"
+    assert code == EXPECTED_TRANSITION_CODES[kind]
+    return {"kind": kind, "status": status, "code": code}
+
+
+def validate_transition_evidence(evidence, source_sha256):
+    assert set(evidence) == {"schema", "test_source_sha256", "cases", "passed_count", "rejected_count"}
+    assert evidence["schema"] == 1 and evidence["test_source_sha256"] == source_sha256
+    cases = evidence["cases"]
+    assert len(cases) == 6
+    assert {case["kind"] for case in cases} == set(EXPECTED_TRANSITION_CODES)
+    for case in cases:
+        assert set(case) == {"kind", "status", "code"}
+        assert case["code"] == EXPECTED_TRANSITION_CODES[case["kind"]]
+        assert case["status"] == ("PASS" if case["kind"] == "approved" else "REJECTED")
+    assert evidence["passed_count"] == sum(case["status"] == "PASS" for case in cases) == 1
+    assert evidence["rejected_count"] == sum(case["status"] == "REJECTED" for case in cases) == 5
+
+
+def write_transition_evidence(path, cases):
+    source_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    evidence = {
+        "schema": 1, "test_source_sha256": source_sha256,
+        "cases": sorted(cases, key=lambda case: case["kind"]),
+        "passed_count": sum(case["status"] == "PASS" for case in cases),
+        "rejected_count": sum(case["status"] == "REJECTED" for case in cases),
+    }
+    validate_transition_evidence(evidence, source_sha256)
+    path.write_text(json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    validate_transition_evidence(json.loads(path.read_bytes()), source_sha256)
+
+
+def test_retained_actual_transition_evidence(transition_layouts):
+    cases = []
+    installed, candidate, ps_root = transition_layouts
+    replay_ps = ps_root.parent / "evidence-replay" / "ps"
+    replay_ps.mkdir(parents=True)
+    replay_layouts = installed, candidate, replay_ps
+    for mutation in TRANSITION_MUTATIONS:
+        test_actual_assert_writer_transition_with_approved_generated_settings(replay_layouts, mutation, cases)
+    for revision in UNTRIMMED_REVISIONS:
+        test_untrimmed_99_100_inputs_are_intentionally_rejected(replay_layouts, revision, cases)
+    target = Path(os.environ["KMTECH_TEST_CA_EVIDENCE_ROOT"]) / "actual-transition-results.json"
+    write_transition_evidence(target, cases)
+
+
+@pytest.mark.parametrize("damage", ["empty", "code", "status", "counter", "source"])
+def test_transition_evidence_rejects_incomplete_or_unbound_collection(tmp_path, damage):
+    cases = [{"kind": kind, "status": "PASS" if kind == "approved" else "REJECTED", "code": code}
+             for kind, code in EXPECTED_TRANSITION_CODES.items()]
+    target = tmp_path / "evidence.json"
+    if damage == "empty":
+        with pytest.raises(AssertionError):
+            write_transition_evidence(target, [])
+        assert not target.exists()
+        return
+    write_transition_evidence(target, cases)
+    evidence = json.loads(target.read_bytes())
+    if damage == "code":
+        evidence["cases"][1]["code"] = "WRONG_FIXED_CODE"
+    elif damage == "status":
+        evidence["cases"][1]["status"] = "PASS"
+    elif damage == "counter":
+        evidence["passed_count"] = 0
+    elif damage == "source":
+        evidence["test_source_sha256"] = "0" * 64
+    with pytest.raises(AssertionError):
+        validate_transition_evidence(evidence, hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
