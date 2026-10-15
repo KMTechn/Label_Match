@@ -1,3 +1,5 @@
+- w9firstupdsub208 / 기준일 107: UI a1b37ce2(76파일·551f9c24957b974a), 다리 글·원문 코드·교환 두 칸·전체 제품 합계, 부분 제출 확인과 기존 결정 즉시 release, PIN 없는 작업자 네 동작을 구현했다. 아래의 60초 미달 Undo 유예는 이 확인 계약으로 대체된다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다. 부분 제출·PIN의 좁은 독립 검토와 실제 화면/PC 수용은 1차·관리자 인계다.
+
 - 새 화면 이음: v2.0.104 후보의 writer/lane 끝내기·초기화 예외 정리·시작 재시도·건별 관리자 재조회/보류·관리자 비상 링크를 구현한다. 셸 v3.16.2 READY 19/19와 최종 UI 4차 97efc8e7 52/52를 합쳤다. 실제 창·현장 PC·조립판 설치 packet은 확인 대기다([계약](contracts.md#new-screen-shell-write-guard)).
 
 - v2.0.101 조립: 셸 v3.16·패킷 native 핀 검증은 빌더 몫. 상한 있는 다른 스레드용 저장 함수의 on_force_exit 연결을 확인한다. 실제 WebView2/스캐너/현장 설치·넓은 회귀는 inspection6 담당이며 headless PASS로 대체하지 않는다.

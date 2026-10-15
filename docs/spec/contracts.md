@@ -1,5 +1,7 @@
 # Label_Match 데이터·통합 계약
 
+기준일 화면 계약(w9firstupdsub208): 최근 결과 sub와 today.rows[].raw는 축약 Tk 값 대신 원문, work.exchange는 remove/insert/done과 remove.code·insert.code를 보낸다. today.summary[].count는 트레이 수이고 optional products는 완료 metadata의 전체 제품 수 합계다. 근거가 빠지면 생략하며 today.rows[].products의 표본 수/취소 자격 뜻을 유지한다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다.
+
 등록 도구의 기존 신원 거절은 첫 설정의 `RECOVERY_REQUIRED`와 원 `recovery_action`으로 보존한다. 공개 고정 원인은 `ADMIN_RECOVERY_ACTION` 또는 `POSSESSION_PROOF_REATTACH_REQUIRED`이며 등록 보고만 남은 재시작과 시작 거절 관측에서도 동일하다. 107은 길 A 없이 두 원인 모두 첫 설정의 고정 안내·작은 코드 줄·관리자용 자세히를 사용한다. 원 신원·자격·자료·대기열을 바꾸거나 다시 enroll하거나 Run/업무 자료 준비로 진행하지 않는다([첫 설정 안내](operations.md#onboarding-registration-recovery)).
 
 표지 PID의 실제 실행 파일은 두 번째 프로세스 자신의 실행 파일을 기준으로 대조해 다른 실행 파일을 거절한다. 다만 같은 실행 파일의 다른 프로세스와 자료 뿌리 mutex 소유자의 결속까지 증명하지 않으므로 같은 사용자 권한의 표지 위변조를 완전히 막는 것은 아니다.
@@ -116,7 +118,7 @@ mainloop가 예외나 직접 반환으로 끝나도 기존 종료 drain·내구 
 
 현품표 1장 + 상단 제품 4개를 받아 다섯 번째에서 자동 내구 완료한다. 새 PHS2의 네 제품 자리는 같은 품목·중복·알려진 구성원을 검사하며 마지막 자리에 추가 길이·생산일자 조건을 두지 않는다. 옛 현품표의 과도기 조건은 유지한다. 중앙 조회는 배경이고 무응답·단절에도 스캔과 로컬 완료를 받는다. 로컬 intent → 완료 CSV flush → commit marker → 표시 순서를 지키고 같은 key로 교환 ACK → source 확인 → 서명 lease → CREATE_PACKAGE를 배경 전송한다. 늦은 표본 불일치는 해당 outbox만 OPERATOR_REVIEW로 남기며 로컬 완료를 취소하지 않는다.
 
-KMCMD:EXCHANGE/교환 단추는 불량 대상 → 대체품을 받아 연결된 로컬 교환 기록을 먼저 저장한다. KMCMD:UNDO/취소 단추는 미완료 세트의 마지막 입력을 되돌린다. 같은 현품표 재스캔은 제품이 하나 이상 있을 때 미달을 확정하며 직전 같은 현품표의 3초 이내 중복 읽기는 짧은 소리로 무시한다. 미달은 다른 소리와 큰 글씨 부족 N개로 확정을 표시한다. 다음 현품표·작업자 변경·정상 종료 또는 60초 무입력 중 먼저 온 경계에서 UNDO 유예를 끝내고 기존 outbox로 전송한다. 실행 중 유예는 Tk owner의 단조 시계로 재며 새 스레드·화면을 만들지 않는다. current-state의 선택 필드 shortage_confirmed_at을 확정 결정·완료 checkpoint에 내구 저장한다. 재시작은 확정 시각부터 경과한 시간이 60초 이상이면 바로 release하고, 아니면 남은 시간 뒤 release한다. 필드 없는 옛 상태는 읽기 호환을 유지하고 현재 시각을 내구 저장한 뒤 60초 유예를 준다. UNDO·앞선 경계는 예약 callback을 무효화하며 release의 원 key·감사·writer guard를 보존한다. UNDO를 받아들이면 취소 내구 단계 전에 타이머를 무효화하며 후속 상태 저장이 실패해도 취소된 완료를 전송하지 않는다. 완료 저장이 60초를 넘겨 즉시 release한 경우에도 확정 호출자가 만료된 UNDO를 다시 설치하지 않는다. 기록 삭제·UNKNOWN 재분류는 하지 않는다. F3 수동 완료·확인 창·F4 교체 창·새 봉인 QR 물리 확인은 제거했다. 시작 경고 세 종류와 과도기 안내는 작업 화면 안내와 기존 소리로 표시한다.
+KMCMD:EXCHANGE/교환 단추는 불량 대상 → 대체 양품을 받아 연결된 로컬 교환을 먼저 저장한다. KMCMD:UNDO는 부분 제출 전 미완료 세트의 마지막 제품/교환만 되돌린다. 같은 현품표 재스캔은 기존 부족 조건을 검사하고 state.confirm={kind:partial_submit,total,done,short}를 메모리에만 둔다. 같은 현품표·빈 Enter·partial_submit은 기존 미달 결정(shortage_confirmation_pending·shortage_undo_snapshot·shortage_confirmed_at)을 먼저 내구 저장한 뒤 기존 완료와 release_pending → outbox를 유예 없이 수행한다. partial_continue·Esc는 확인만 내리고 기록하지 않는다. 제품·다른 현품표는 확인을 내린 뒤 기존 스캔으로 처리한다. 결정 이후에는 Undo가 없으며 결과는 「부분 제출 완료 — M개(K개 부족)」다. 옛 snapshot·결정 저장/완료/release 사이 중단은 다음 시작에 같은 완료 ID·멱등 키·감사로 즉시 재개하고, 같은 outbox 효과를 중복하지 않는다. 확인 자체는 저장하지 않아 재시작 때 다시 묻는다. 기존 3초 중복 읽기 억제·목표 수량 자동 완료·일반 교환·완료 기록 취소는 유지한다.
 
 확정 계약은 w9scanonly CONTRACT.md v1.4(SHA256 2D69CD99913329E28A6C3CBDAFE0F64D6CCECAD0F00D779324070D04BED49EA6)이다. 요청 공통 필드는 원본 scan_payload, local_completion_id, local_completed_at, deferred_reflection=true이며 포장은 short_confirmed, sample_barcodes, exchange_idempotency_keys를 추가한다. 교환은 SCAN_REGISTER_GOOD와 old_barcode/new_barcode, exchanged_at을 전송하며 기존 전체 대상 구성원·CAS·봉인 증거를 보존한다. 응답의 pairs에는 old/new_unit_id, new_source_bundle_id, new_source_kind가 있고 source_membership_changes는 최상위에 둔다. UPSTREAM_COMPLETION_PENDING+retryable=true는 동일 key 재시도, COMPLETION_REVIEW_REQUIRED는 그 건의 확인 상태다.
 
@@ -126,9 +128,9 @@ KMCMD:EXCHANGE/교환 단추는 불량 대상 → 대체품을 받아 연결된 
 
 포장 상단 확인 수(w9firstupd sub-151, 서버 계약 packing-settings-v1 v1.1): 위의 「제품 4개·다섯 번째」와 미달 「1–3」은 기본값 N=4일 때의 값이다. 앱은 시작과 작업자 저장(작업 세션 시작) 때 `GET /inbound/api/packing-settings.json`을 item-catalog와 같은 profile·Bearer·신뢰 origin으로 배경 스레드에서 읽고(화면 스레드는 기다리지 않음), 받은 값을 `packing-settings.json`(app_settings 옆, writer sink `label_packing_settings_save`)에 둔다. 못 읽음(전송·4xx/5xx·profile 없음·믿을 수 없는 URL)은 `PACKING_SETTINGS_UNAVAILABLE`, 계약 이름·범위(1–6)·형식 오류는 `PACKING_SETTINGS_INVALID`이며 둘 다 마지막 받은 값(없으면 4)으로 계속하고 작업 화면 안내 줄에 경고(오류음 없음)를 보인다. 세트가 열릴 때(첫 스캔) N과 판을 current_set_info에 고정하고 그 세트는 끝까지·이어 열기에서도 그 N(스캔 N+1, 마지막 자리 = 제품N, 미달 1–(N−1))을 쓴다. N=4·판 0은 키를 쓰지 않아(없음 = 4·판 0) 지금 기록·초안 바이트가 같다. 스캐너 포장 확정 payload에는 늘 `packing_settings_version`(세트의 판)을 싣고, 400 `PACKING_SETTINGS_VERSION_INVALID`만은 그 확정을 보류하지 않고 설정을 다시 읽어 같은 key·새 판으로 다시 보낸다. 옛 QA 표본(비스캐너) 수는 공용 상한 3을 넘지 않는다. 앱에서 값을 바꾸는 길은 없다.
 
-미달 완료 제한(LM-17): 옛 수동 마감(PARTIAL)은 LOCAL·ONLINE 모두 거절한다. 새 현품표 재스캔은 회사 서버에서 확인한 현재 작업군 멤버 수가 1–3이고 찍은 제품 수와 같을 때만 완료한다(원 TRANSFER 봉인 수와 구별). 멤버 수를 모르면 「서버 연결 뒤 마감」, 수가 다르면 「모자란 상자: 대체품으로 채워 정상 마감 — 못 채우면 마감하지 말고 따로 두고 관리자에게」를 보이고 현재 상자를 유지한다. 제품 4개 정상 완료와 옛 현품표의 재스캔 미달 완료·60초 되돌리기는 유지한다.
+부분 제출 조건(LM-17): 옛 수동 마감(PARTIAL)은 LOCAL·ONLINE 모두 거절한다. 새 현품표는 회사 서버에서 확인한 현재 작업군 제품 수가 1–(이 세트 표본 수−1)이고 찍은 제품 수와 같을 때만 부분 제출을 묻는다(원 TRANSFER 봉인 수와 구별). 제품 수 미확인·불일치는 현재 트레이를 유지하고 기존 거절 안내를 보인다. 옛 현품표는 제품 하나 이상·표본 수 미만에서 같은 확인을 쓴다. 기존 60초 미달 Undo 유예는 위 확인/즉시 release 계약으로 대체한다.
 
-LOCAL 완료 안내(LM-1): PC 안에서만 끝나 PACKAGE가 없는 새 현품표(PHS=2) 상자는 완료 안내·이번 작업 목록·스캔 기록·기록 상세에 「출고 전 관리자 보충 필요」를 표시한다. 기록을 다시 읽어도 기존 완료 상태에서 같은 안내를 계산한다. 전송 대기·ACK·충돌·미달 되돌리기 유예는 기존 상태를 표시한다. 옛 현품표(LEGACY) 상자는 과도기 옛 상자 출고 길을 사용하므로 이 안내를 표시하지 않는다. 통과 판정·집계·수량은 기존 완료 기록을 사용한다.
+LOCAL 완료 안내(LM-1): PC 안에서만 끝나 PACKAGE가 없는 새 현품표(PHS=2) 상자는 완료 안내·이번 작업 목록·스캔 기록·기록 상세에 「출고 전 관리자 보충 필요」를 표시한다. 기록을 다시 읽어도 기존 완료 상태에서 같은 안내를 계산한다. 전송 대기·ACK·충돌·부분 제출는 기존 상태를 표시한다. 옛 현품표(LEGACY) 상자는 과도기 옛 상자 출고 길을 사용하므로 이 안내를 표시하지 않는다. 통과 판정·집계·수량은 기존 완료 기록을 사용한다.
 
 <a id="legacy-label-transition"></a>
 
