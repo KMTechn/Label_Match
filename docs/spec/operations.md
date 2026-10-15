@@ -1419,7 +1419,7 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 
 GUI는 품목 첫 적재부터 별도 0.5초 주기로 멈춤 요청을 확인한다. 설치 확인·첫 설정·품목 확인 중 요청은 진행 중인 저장 단위가 끝난 경계에서 처리하며, 품목 재시도 창에서도 확인한다. 닫기가 중단되면 감시를 다시 예약한다. 작업 중에는 `멈춤 요청 미룸`과 checkpoint를 한 번 기록하고 「관리자가 프로그램 종료를 요청했습니다. 지금 트레이를 마친 뒤 [종료] 를 누르세요.」를 계속 표시한다. 스캔을 계속 받아 트레이를 마친 뒤 현장의 `[종료]`를 누른다. 작업 완료만으로 자동 종료하지 않으며 기존 확인이 있으면 그 동작을 먼저 마친다. 미룬 요청 파일은 실제 Tk 종료 뒤 같은 ID만 정리한다.
 
-요청 명령은 최대 150초(셸 대기 120초 + 정리 여유 30초) 동안 relay lease와 이 설치 runtime의 Python·앱 실행 파일 및 앱 자료의 `webview2` UDF에 귀속된 WebView2 나무 부재를 함께 확인한다. UDF 없는 자식은 살아 있는 부모·생성 시각·세션으로 귀속하고, 이미 확인한 자식은 부모 종료 뒤에도 같은 PID·생성 시각으로 추적한다. 요청 CLI 자신의 PID는 제외한다. 모두 사라지면 즉시 `STOPPED`, rc 0이며 잔류·관측 불명은 `UNKNOWN`, rc 1과 잔류 수(불명이면 null)를 반환한다. 다른 앱 WebView2를 이름만으로 포함하거나 따로 끝내지 않는다. 키트의 자료 DB WAL/SHM 확인은 유지한다.
+대기 0(숫자·문자열)은 첫 프로세스 관찰 뒤 앱·relay가 공유하는 1.5초 예산으로 두 요청을 원자 게시하고 종료를 기다리지 않는다. 부재를 입증하지 못하면 `UNKNOWN`을 유지한다. 양수 대기와 원자 게시의 첫 native 기한 검사는 유지한다. 요청 명령은 최대 150초(셸 대기 120초 + 정리 여유 30초) 동안 relay lease와 이 설치 runtime의 Python·앱 실행 파일 및 앱 자료의 `webview2` UDF에 귀속된 WebView2 나무 부재를 함께 확인한다. UDF 없는 자식은 살아 있는 부모·생성 시각·세션으로 귀속하고, 이미 확인한 자식은 부모 종료 뒤에도 같은 PID·생성 시각으로 추적한다. 요청 CLI 자신의 PID는 제외한다. 모두 사라지면 즉시 `STOPPED`, rc 0이며 잔류·관측 불명은 `UNKNOWN`, rc 1과 잔류 수(불명이면 null)를 반환한다. 다른 앱 WebView2를 이름만으로 포함하거나 따로 끝내지 않는다. 키트의 자료 DB WAL/SHM 확인은 유지한다.
 
 mainloop가 반환한 뒤 정리는 45초 기다린다(기존 로그 10초·스레드 5초·lane join 2초에 여유 포함). 상한 뒤 원자 교체·fsync한 `label_match_shutdown_stall.json` 표지를 남기고 프로세스를 rc 1로 끝낸다. 표지·진단 I/O도 멈추면 추가 15초 뒤(전체 60초) 프로세스를 끝낸다. 저장 장치 고장으로 표지를 쓸 수 없는 경우 표지 보존은 보장하지 못한다. 화면이 살아 있는 작업 중에는 이 상한을 적용하지 않는다. 다음 시작은 표지를 읽어 안내한 뒤 기존 세트·outbox 복구를 진행한다. 이미 내구 저장된 스캔·완료·전송 대기는 보존하며 WAL/SHM을 직접 지우지 않는다.
 
@@ -1503,6 +1503,8 @@ Recovery card: 같은 작업자 지원 제거(main --remove-current-user-setup) 
 기계 `RECOVERY_REQUIRED`의 지원 복구는 원 감사·자료·등록·대기를 보존하고 실제 작업자 persistence·제품/자식 종료·fence 상태를 확인한 뒤 승인 packet의 `INSTALL_THIS_PC.ps1 -Uninstall -InstallRoot <canonical>` 코드 전용 제거를 사용한다. 이 틀에는 `-WorkerSid`를 추가하지 않는다. 제거 readback 뒤 고친 packet을 공개 기계 입구로 새 거래에 설치하고 같은 작업자의 첫 설정 READY를 별도로 확인한다. 감사 수정·수동 fence 해제·일반 rollback-resume로 상태를 바꾸지 않는다. PS5.1/7의 격리 메모리 helper 회귀는 현장 재설치·READY의 성공 증거와 구별한다.
 
 ## Atomic file publication
+
+Stop calls normalize numeric and string timeouts alike. A zero timeout requests publication without waiting: after the initial process observation, app and relay controls share a 1.5-second publication budget. Relay-only requests also receive that publication budget. Unproven absence stays `UNKNOWN`; positive waiting deadlines and the first native publication deadline check remain unchanged.
 
 App-owned Python publishers call label_atomic_replace.atomic_replace. Only native WinError 5/32 retries, with a one-second deadline and the original first native exception on persistent refusal; other errors propagate immediately. Readers and writer admissions remain unchanged.
 

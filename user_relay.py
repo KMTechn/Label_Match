@@ -271,7 +271,8 @@ def request_app_stop(direct_sync_root: str | os.PathLike[str], *, app_root=None,
     policy_root = _app_stop_managed_root(app_root) or app_root.parent
     policy = _read_json(policy_root / "update-control" / "policy.json") or {}
     operator_sid = str(policy.get("operator_sid") or "")
-    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    timeout_seconds = max(0.0, float(timeout_seconds))
+    deadline = time.monotonic() + timeout_seconds
     known = {}
     # Capture live parent identities before asking the GUI/relay to exit.
     observation_error = None
@@ -280,6 +281,8 @@ def request_app_stop(direct_sync_root: str | os.PathLike[str], *, app_root=None,
                                  operator_sid=operator_sid)
     except Exception as error:
         observation_error = type(error).__name__
+    # Request-only calls still publish after the initial process observation.
+    publication_deadline = deadline if timeout_seconds > 0 else time.monotonic() + 1.5
     path = app_stop_request_path(root)
     payload = {
         "schema_version": APP_STOP_SCHEMA,
@@ -287,11 +290,11 @@ def request_app_stop(direct_sync_root: str | os.PathLike[str], *, app_root=None,
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
     with writer_admission("app_stop_request"):
-        _write_machine_json_atomic(path, payload, deadline=deadline)
+        _write_machine_json_atomic(path, payload, deadline=publication_deadline)
         if _read_json(path) != payload:
             raise UserRelayError("app stop request readback differs")
     # Do not retain the app-request admission while waiting for relay absence.
-    relay = request_user_relay_stop(root, timeout_seconds=0, deadline=deadline)
+    relay = request_user_relay_stop(root, timeout_seconds=0, deadline=publication_deadline)
     remaining = None
     while True:
         try:
@@ -1092,8 +1095,10 @@ def request_user_relay_stop(
         [str | os.PathLike[str]], Any
     ] = _acquire_relay_lease,
 ) -> dict[str, Any]:
-    wait_deadline = time.monotonic() + max(0.0, float(timeout_seconds))
-    deadline = wait_deadline if deadline is None else deadline
+    timeout_seconds = max(0.0, float(timeout_seconds))
+    wait_deadline = time.monotonic() + timeout_seconds
+    if deadline is None:
+        deadline = wait_deadline if timeout_seconds > 0 else time.monotonic() + 1.5
     wait_deadline = min(wait_deadline, deadline)
     root = Path(direct_sync_root).expanduser().resolve()
     stop_path = user_relay_stop_path(root)
