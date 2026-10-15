@@ -3650,7 +3650,10 @@ function Invoke-LabelSourceDataAdmission([string]$ProductRoot, [string]$Source,
     }
     catch {
         $admissionFailure = $_
-        if(@(Relays).Count -eq 0){Write-LabelInstallerRelayRecoveryGuidance}
+        # A recovery hint cannot replace the first source-admission failure.
+        try {
+            if(@(Relays).Count -eq 0){Write-LabelInstallerRelayRecoveryGuidance}
+        } catch { }
         Write-LabelPreparationFailure $admissionFailure $Source $Inventory $AuditRoot $ExternalEvidencePath
         throw $admissionFailure
     }
