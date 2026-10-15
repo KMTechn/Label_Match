@@ -54,7 +54,7 @@ def machine(tmp_path,monkeypatch):
     protected=[]
     # The factory filesystem is not a production protected code directory.
     # Keep all authority/owner/delegation logic; replace only its native ACL facet.
-    monkeypatch.setattr(fence,"_assert_protected_owner_path",lambda path:protected.append(path))
+    monkeypatch.setattr(fence,"_assert_protected_owner_path",lambda path, **kwargs:protected.append(path))
     monkeypatch.setattr(fence,"_named_mutex_held_by_other",lambda name:True)
     monkeypatch.setenv(fence.DELEGATION_TOKEN_ENV,marker)
     for env,key in ((fence.DELEGATION_SESSION_ENV,"session_id"),(fence.DELEGATION_ATTEMPT_ENV,"attempt_id"),
@@ -111,7 +111,7 @@ def test_machine_authority_failure_cannot_fall_back_to_user_root(machine,monkeyp
     if damage=="owner":m["record"]["owner_process_id"]=0;write(m["owner"],m["record"])
     if damage=="birth":m["record"]["owner_process_started_at_filetime"]="1";write(m["owner"],m["record"])
     if damage=="mutex":monkeypatch.setattr(fence,"_named_mutex_held_by_other",lambda name:False)
-    if damage=="acl":monkeypatch.setattr(fence,"_assert_protected_owner_path",lambda path:(_ for _ in ()).throw(PermissionError()))
+    if damage=="acl":monkeypatch.setattr(fence,"_assert_protected_owner_path",lambda path, **kwargs:(_ for _ in ()).throw(PermissionError()))
     if damage=="reparse":monkeypatch.setattr(fence,"_assert_no_reparse_components",lambda path:(_ for _ in ()).throw(fence.WriterFenceError("FENCE_REPARSE","fixture")))
     if damage=="settings":(m["candidate"]/"app/auto-update-settings.json").write_bytes(b"changed")
     if damage!="missing":arguments += ["--installer-authority-root",str(root),"--installer-owner-record",str(m["owner"])]

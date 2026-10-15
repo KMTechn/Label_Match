@@ -617,3 +617,6 @@ CLI의 요청 시각은 마이크로초를 유지한 UTC aware 값이다. GUI는
 ## v2.0.107 조립 관문
 
 v2.0.107 조립의 앱 판·자료 판·data_compatible_min_version 하한은 모두 v2.0.107이다. 빌드 --auto-update-settings 입력은 w9mgrweb/field-update-feed-1015/label_match.auto-update-settings.json 원본 파일 그대로이며 SHA256 b8b0cfa0bdc90cb123299a01a9143a723c528ebb32c70a4104e76e7885b101a7에 결속한다. feed_url=https://worker.kmtecherp.com/static/update-feed/channels/label_match/stable/latest.json, channel=stable, profile_auth=true. 내보낼 ZIP을 E:에 풀어 app/auto-update-settings.json을 입력 파일과 바이트로 대조하고 그 runtime으로 import·탐침 관문을 실행한다.
+
+
+기계 installer authority는 OS KnownFolder의 ProgramData 아래 KMTech/Label_Match/install-audit/machine-writer-<run>에 결속한다. ProgramData와 그 위는 특권 owner 종류만, 그 아래 공용 조상은 rename·삭제·DACL·owner 변경 mask 0x500D0040으로 검사한다. 회차별 fence root는 생성 직후 상속을 끊고 SYSTEM/Administrators만 쓰도록 보호하며, root와 active 기록은 기존 엄격한 쓰기 거절을 적용한다. C:/KMTech/Apps의 installer owner record는 이 예외 없이 기존 판정을 유지한다. 부모의 배치·복원 readback 두 호출은 이번 회차 위임 네 이름을 자식 환경에만 전달하고 finally 복원한다.

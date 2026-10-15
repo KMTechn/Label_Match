@@ -96,7 +96,7 @@ if machine_arguments:
     # Native privileged ACL observation and canonical location are the host
     # facets; native owner PID/birth, mutex, tuple and the actual CLI stay real.
     fence._installer_owner_root = lambda: machine.absolute()
-    fence._assert_protected_owner_path = lambda _path: None
+    fence._assert_protected_owner_path = lambda _path, **kwargs: None
 active = fence.active_fence(diagnostic_control)
 foreign_environment = dict(os.environ)
 foreign_environment[fence.CONTROL_ROOT_OVERRIDE_ENV] = str(diagnostic_control)

@@ -86,7 +86,7 @@ def failed_install(tmp_path, monkeypatch):
         install_root=CANONICAL, control_root=str(control), **record['writer_fence'])
     (protected / ('.installer-owner-' + payload['session_id'] + '-' + record['run_id'].rsplit('-', 1)[-1] + '.json')).write_text(json.dumps(trusted), encoding='utf-8')
     monkeypatch.setattr(fence, '_installer_owner_root', lambda: protected, raising=False)
-    monkeypatch.setattr(fence, '_assert_protected_owner_path', lambda path: None, raising=False)
+    monkeypatch.setattr(fence, '_assert_protected_owner_path', lambda path, **kwargs: None, raising=False)
     yield control, payload, audit, record
 
 

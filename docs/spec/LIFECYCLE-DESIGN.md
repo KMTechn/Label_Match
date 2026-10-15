@@ -12,6 +12,9 @@
 
 배치 중 Python 수명주기 분류·활성화 자식은 호출마다 새 120초 위임을 받는다. 분류는 고정 helper만, 활성화는 기존 전환·포인터 저장 sink와 canonical 검증만 허용한다. 부모는 session authority와 fence를 유지하고 자식 실행 동안 admission만 내려놓는다. 종료·실패 뒤 admission을 다시 얻어 위임 기록 전체가 같은지 확인하고 원래 위임·환경을 복원한다. 다른 writer는 계속 거절하며 기록이 바뀌면 덮어 복원하지 않고 멈춘다.
 
+기계 installer authority는 OS KnownFolder의 ProgramData 아래 KMTech/Label_Match/install-audit/machine-writer-<run>에 결속한다. ProgramData와 그 위는 특권 owner 종류만, 그 아래 공용 조상은 rename·삭제·DACL·owner 변경 mask 0x500D0040으로 검사한다. 회차별 fence root는 생성 직후 상속을 끊고 SYSTEM/Administrators만 쓰도록 보호하며, root와 active 기록은 기존 엄격한 쓰기 거절을 적용한다. C:/KMTech/Apps의 installer owner record는 이 예외 없이 기존 판정을 유지한다. 부모의 배치·복원 readback 두 호출은 이번 회차 위임 네 이름을 자식 환경에만 전달하고 finally 복원한다.
+
+
 제거 뒤 current에 파일·directory·reparse 등 항목이 남으면 설치가 이를 덮지 않으며 경로를 알려 멈춘다. 남긴 미상 version/packet은 제거 표식과 보존 경로를 이용해 식별하며 새 C 목적지의 충돌은 별도로 거절한다. 기존 옛 포장 위 첫 등록의 정확한 code/data 부재 판정과 배포 위임 경계를 유지한다.
 
 managed 등록은 actual active code를 사용한다. 새 자료·설정·direct-sync·profile·ledger 및 직접 등록 도구의 출력 경로는 current/versions/update-control/removal-evidence/removed.json과 모든 깊이에서 겹칠 수 없다. 기본 사용자 onboarding 자료는 LOCALAPPDATA/KMTech/Label_Match/data이며 standalone 등록의 ProgramData 자료와 DirectSync 기본 경로는 코드 바깥이다. 사용자 제거는 자기 Run/relay 정지만 수행하고 machine control을 해석하지 않으며 신원·profile·원장·대기 전송을 보존한다.

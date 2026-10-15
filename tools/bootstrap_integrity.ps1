@@ -1,4 +1,4 @@
-﻿param([string]$SharedCodeRoot = "")
+param([string]$SharedCodeRoot = "")
 Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 
@@ -279,8 +279,49 @@ function Protect-KmtechCodeAncestors([string]$CodeParent,[switch]$AdmissionOnly,
     return [pscustomobject]@{status='VERIFIED';records=$records;rollback_restores_ancestor_permissions=$false}
 }
 
-function Assert-LabelProtectedInstallPath([string]$Path,[switch]$AllowSupportedPreparation) {
+function Get-LabelMachineProgramDataRoot {
+    return [IO.Path]::GetFullPath([Environment]::GetFolderPath('CommonApplicationData')).TrimEnd('\')
+}
+
+function Get-LabelMachineFencePathScope([string]$MachineFenceRoot) {
+    $programData=Get-LabelMachineProgramDataRoot
+    $boundary=[IO.Path]::GetFullPath($MachineFenceRoot).TrimEnd('\')
+    $expected=Join-Path $programData 'KMTech\Label_Match\install-audit'
+    if([IO.Path]::GetDirectoryName($boundary) -ine $expected -or
+        [IO.Path]::GetFileName($boundary) -cnotmatch '^machine-writer-[0-9]{8}T[0-9]{9}Z-[0-9a-f]{32}$'){
+        throw 'MACHINE_FENCE_PATH_INVALID'
+    }
+    return @{program_data=$programData;root=$boundary}
+}
+
+function Initialize-LabelMachineWriterRoot([string]$ControlRoot) {
+    $scope=Get-LabelMachineFencePathScope $ControlRoot
+    $parent=[IO.Path]::GetDirectoryName($scope.root)
+    Assert-LabelProtectedInstallPath $parent -MachineFenceRoot $scope.root
+    if(Test-Path -LiteralPath $scope.root){throw 'MACHINE_FENCE_ROOT_ALREADY_EXISTS'}
+    [void](New-Item -ItemType Directory -Path $scope.root -ErrorAction Stop)
+    $acl=Get-Acl -LiteralPath $scope.root -ErrorAction Stop
+    if(-not(Test-KmtechPrivilegedOwnerSid ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value))){throw 'MACHINE_FENCE_OWNER_INVALID'}
+    $protected=[Security.AccessControl.DirectorySecurity]::new()
+    $protected.SetOwner($acl.GetOwner([Security.Principal.SecurityIdentifier]))
+    $protected.SetAccessRuleProtection($true,$false)
+    foreach($sid in @('S-1-5-18','S-1-5-32-544')){
+        $protected.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+    }
+    Set-Acl -LiteralPath $scope.root -AclObject $protected -ErrorAction Stop
+    if(@(Get-ChildItem -Force -LiteralPath $scope.root -ErrorAction Stop).Count){throw 'MACHINE_FENCE_ROOT_NOT_EMPTY'}
+    Assert-LabelProtectedInstallPath $scope.root -MachineFenceRoot $scope.root
+}
+
+function Assert-LabelProtectedInstallPath([string]$Path,[switch]$AllowSupportedPreparation,[string]$MachineFenceRoot='') {
+    $machineScope=if($MachineFenceRoot){Get-LabelMachineFencePathScope $MachineFenceRoot}else{$null}
     $full=[IO.Path]::GetFullPath($Path);$leaf=$true
+    if($null -ne $machineScope -and $full.TrimEnd('\') -ine $machineScope.root -and
+        -not $full.StartsWith(([string]$machineScope.root)+'\',[StringComparison]::OrdinalIgnoreCase) -and
+        -not ([string]$machineScope.root).StartsWith($full.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){
+        throw 'MACHINE_FENCE_PATH_INVALID'
+    }
     if($full -ne [IO.Path]::GetPathRoot($full)){$full=$full.TrimEnd([char[]]'\/')}
     while($full) {
         $shared=$full -in @('C:\KMTech','C:\KMTech\Apps')
@@ -307,6 +348,15 @@ function Assert-LabelProtectedInstallPath([string]$Path,[switch]$AllowSupportedP
             $failure.Data['installation_preparation_exit_code']=63;throw $failure
         }
         $mask=if($leaf){0x500D0156}else{0x500D0150}
+        if($null -ne $machineScope){
+            $aboveProgramData=([string]$machineScope.program_data).StartsWith($full.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)
+            $insideFence=$full.StartsWith(([string]$machineScope.root)+'\',[StringComparison]::OrdinalIgnoreCase)
+            if($full -ieq $machineScope.program_data -or $aboveProgramData){$mask=0}
+            elseif($full -ieq $machineScope.root -or $insideFence){
+                $mask=if($leaf -or $full -ieq $machineScope.root){0x500D0156}else{0x500D0150}
+                if($full -ieq $machineScope.root -and -not $acl.AreAccessRulesProtected){throw 'MACHINE_FENCE_DACL_UNPROTECTED'}
+            }else{$mask=0x500D0040}
+        }
         foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
             if($rule.AccessControlType -eq 'Allow' -and
                 -not($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and

@@ -1,6 +1,7 @@
 param([string]$Repo,[string]$Root,[string]$Python,[ValidateSet('proof','channels','rollback','rollback_failure','rollback_fence_failure')][string]$Case)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+$WorkerSid=''
 trap {
     [IO.File]::WriteAllText((Join-Path $Root 'failure-site.json'),(@{type=$_.Exception.GetType().Name;line=$_.InvocationInfo.ScriptLineNumber;locations=@($_.ScriptStackTrace -split '\r?\n'|ForEach-Object{if($_ -match ': line (\d+)'){$Matches[1]}})}|ConvertTo-Json -Compress))
     exit 1

@@ -722,7 +722,11 @@ def test_machine_install_uses_pinned_helper_and_never_writes_profiles(tmp_path, 
     profile_members = {name: {p.relative_to(tmp_path / name) for p in (tmp_path / name).rglob("*")}
                        for name in ("worker", "admin", "other", "legacy")}
     originals = {p: p.read_bytes() for p in tmp_path.rglob("*.dat")}
-    result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "New-LabelMachineWorkerPendingMarker", "Assert-LabelMachineEvidencePath", "Save", "Save-LabelMachineMetadata", "ByteSha", "Same"], r'''
+    result = run_functions(tmp_path, INSTALLER, ["Invoke-LabelMachineWorkerInstall", "New-LabelMachineWorkerPendingMarker", "Assert-LabelMachineEvidencePath", "Save", "Save-LabelMachineMetadata", "ByteSha", "Same", "Invoke-LabelMachinePlacementRollback"], r'''
+trap {
+ [IO.File]::WriteAllText((Join-Path $env:LM_MACHINE_ROOT 'machine-fixture-failure.json'),(@{type=$_.Exception.GetType().Name;line=$_.InvocationInfo.ScriptLineNumber;source=[IO.Path]::GetFileName($_.InvocationInfo.ScriptName);locations=@([regex]::Matches($_.ScriptStackTrace,'line ([0-9]+)')|ForEach-Object{[int]$_.Groups[1].Value})}|ConvertTo-Json -Compress))
+ exit 1
+}
 $testMode=$true
 $program=Join-Path $env:LM_MACHINE_ROOT 'program';$env:PROGRAMDATA=$program
 [void][IO.Directory]::CreateDirectory($program)
@@ -748,6 +752,9 @@ function Read-CanonicalStartupLifecycle($source,$root){
  return [pscustomobject]@{active_code_root=$root}
 }
 function Assert-WriterTransition($candidate,$installed){return [pscustomobject]@{compatibility='fixture';candidate_inventory_sha256=('d'*64);installed_inventory_sha256=('d'*64)}}
+function Initialize-LabelMachineWriterRoot {}
+function Get-LabelManagedEmergencyPublished {return @()}
+function Write-LabelInstallerRelayRecoveryGuidance {}
 function FreezePlacementHelper($root,$auditRoot,$run,$critical){
  $frozen=Join-Path $auditRoot 'frozen';[void](New-Item -ItemType Directory -Path (Join-Path $frozen 'tools'))
  [IO.File]::WriteAllText((Join-Path $frozen 'tools\bootstrap_integrity.ps1'),'param($SharedCodeRoot)')
@@ -773,7 +780,7 @@ function Install-LabelMachineWorkerShortcut($root,$menu){
   if($env:LM_MACHINE_OUTCOME -ceq 'report-failure'){function script:Save($Path,$Value){throw 'Synthetic report failure'}}
   throw 'Synthetic shortcut readback failure'
  }
- return [ordered]@{path=$path;sha256=('2'*64)}
+ return [ordered]@{path=$path;sha256=('2'*64);published=@()}
 }
 function Product($Root,$Mode,$Arguments){
  if($env:LM_MACHINE_OUTCOME -cne 'same-worker' -or $Mode -cne '--onboard-current-user' -or
@@ -845,7 +852,7 @@ if($env:LM_MACHINE_OUTCOME -in @('shortcut-failure','report-failure','restore-ex
 }
 $audit=Get-Content -LiteralPath $EvidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
 if($env:LM_MACHINE_OUTCOME -ceq 'helper-unproven'){
- if(-not $failed -or $audit.status -cne 'RECOVERY_REQUIRED' -or $audit.code_state -cne 'UNKNOWN' -or
+ if(-not $failed -or $audit.status -cne 'ROLLBACK_FAILED' -or $audit.code_state -cne 'UNKNOWN' -or
     $script:released -ne 0 -or $script:authorityReleased -ne 1 -or $Script:LabelPlacementSessionRequested -or
     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $install) 'update-control\worker-pending.json'))){throw 'Unproven child custody lost'}
  'PASS';exit 0

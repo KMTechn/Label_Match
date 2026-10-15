@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [switch]$DryRun,
     [switch]$Uninstall,
@@ -296,7 +296,8 @@ function Save-LabelLifecycleChannel([string]$Path,[string]$Text) {
     Assert-NoReparsePoint $Path 'lifecycle diagnostic channel'
     $stream=[IO.File]::Open($Path,'CreateNew','Write','Read')
     try {
-        Protect-LabelInstallerOwnerFile $Path
+        if($WorkerSid){Protect-LabelInstallerOwnerFile $Path -MachineFenceRoot $WriterFenceControlRoot}
+        else{Protect-LabelInstallerOwnerFile $Path}
         $bytes=[Text.Encoding]::UTF8.GetBytes($Text)
         $stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)
     } finally {$stream.Dispose()}
@@ -847,10 +848,11 @@ function Initialize-LabelProtectedInstallBase([string]$InstallRoot) {
 }
 
 
-function Protect-LabelInstallerOwnerFile([string]$Path) {
+function Protect-LabelInstallerOwnerFile([string]$Path,[string]$MachineFenceRoot='') {
     & (Join-Path ([Environment]::SystemDirectory) 'icacls.exe') $Path '/setowner' '*S-1-5-32-544' '/L' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'INSTALLER_OWNER_PROTECTION_FAILED' }
-    Assert-ProtectedCodeAncestors $Path
+    if($MachineFenceRoot){Assert-LabelProtectedInstallPath $Path -MachineFenceRoot $MachineFenceRoot}
+    else{Assert-ProtectedCodeAncestors $Path}
 }
 
 function Write-LabelInstallerOwnerRecord([string]$InstallRoot) {

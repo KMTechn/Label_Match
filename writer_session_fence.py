@@ -44,7 +44,7 @@ TEST_MODE_ENV = "KMTECH_LABEL_WRITER_TEST_MODE"
 
 # The code-derived scanner normalizes this literal to zero before hashing its
 # own source closure, so updating the pin is deterministic rather than cyclic.
-WRITER_INVENTORY_SHA256 = "724e4e74924a9bd9b8193ee9fdbe7b20caa01b381aa00f06e640bf71cad6d7de"
+WRITER_INVENTORY_SHA256 = "708a206c84ba01a020e0052285139ad0dbe2cfd91f7640e89b3f2f75bd1351e2"
 
 DELEGATION_TOKEN_ENV = "KMTECH_LABEL_WRITER_DELEGATION_TOKEN"
 DELEGATION_SESSION_ENV = "KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID"
@@ -525,7 +525,21 @@ def _installer_owner_root() -> Path:
     return Path(r"C:\KMTech\Apps\Label_Match")
 
 
-def _assert_protected_owner_path(path: Path) -> None:
+def _installer_program_data_root() -> Path:
+    from ctypes import wintypes as w
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    shell.SHGetFolderPathW.argtypes = [w.HWND, ctypes.c_int, w.HANDLE, w.DWORD, w.LPWSTR]
+    shell.SHGetFolderPathW.restype = ctypes.c_long
+    buffer = ctypes.create_unicode_buffer(32768)
+    if shell.SHGetFolderPathW(None, 0x23, None, 0, buffer) != 0:
+        raise OSError("Machine ProgramData cannot be observed")
+    path = Path(buffer.value)
+    if not path.is_absolute():
+        raise OSError("Machine ProgramData is not absolute")
+    return path.absolute()
+
+
+def _assert_protected_owner_path(path: Path, *, machine_fence_root: Path | None = None) -> None:
     """Observe held native objects under the existing installer trust rule."""
     from ctypes import wintypes as w
 
@@ -546,6 +560,17 @@ def _assert_protected_owner_path(path: Path) -> None:
     advapi.GetAce.argtypes = [w.LPVOID, w.DWORD, ctypes.POINTER(w.LPVOID)]
     kernel.GetFileInformationByHandleEx.argtypes = [w.HANDLE, ctypes.c_int, w.LPVOID, w.DWORD]
     handles = []
+    boundary = program_data = None
+    if machine_fence_root is not None:
+        boundary = Path(machine_fence_root).absolute()
+        program_data = _installer_program_data_root()
+        expected_parent = program_data / "KMTech" / "Label_Match" / "install-audit"
+        if (boundary.parent != expected_parent
+                or re.fullmatch(r"machine-writer-[0-9]{8}T[0-9]{9}Z-[0-9a-f]{32}", boundary.name) is None
+                or boundary not in path.absolute().parents):
+            raise OSError("Machine installer fence path is outside its authority")
+    advapi.GetSecurityDescriptorControl.argtypes = [w.LPVOID, ctypes.POINTER(w.WORD), ctypes.POINTER(w.DWORD)]
+    advapi.GetSecurityDescriptorControl.restype = w.BOOL
 
     def sid_text(sid):
         text = w.LPWSTR()
@@ -576,9 +601,22 @@ def _assert_protected_owner_path(path: Path) -> None:
                 if advapi.GetSecurityInfo(handle, 1, 5, ctypes.byref(owner), None,
                     ctypes.byref(dacl), None, ctypes.byref(descriptor)):
                     raise OSError("Protected installer record ACL cannot be observed")
-                if sid_text(owner) not in _PRIVILEGED_OWNER_SIDS or not dacl:
+                mutation_mask = 0x500D0156 if leaf else 0x500D0150
+                if boundary is not None:
+                    if component == program_data or component in program_data.parents:
+                        mutation_mask = 0  # OS-managed base: privileged owner only.
+                    elif component == boundary or boundary in component.parents:
+                        mutation_mask = 0x500D0156 if leaf or component == boundary else 0x500D0150
+                    else:
+                        mutation_mask = 0x500D0040  # Shared ancestor rename/ACL/owner threats.
+                if sid_text(owner) not in _PRIVILEGED_OWNER_SIDS or (mutation_mask and not dacl):
                     raise OSError("Protected installer record has untrusted owner or null DACL")
-                count = ctypes.cast(dacl, ctypes.POINTER(Acl)).contents.count
+                if component == boundary:
+                    control, revision = w.WORD(), w.DWORD()
+                    if (not advapi.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision))
+                            or not control.value & 0x1000):
+                        raise OSError("Machine installer fence DACL is not protected")
+                count = ctypes.cast(dacl, ctypes.POINTER(Acl)).contents.count if mutation_mask else 0
                 for index in range(count):
                     ace = w.LPVOID()
                     if not advapi.GetAce(dacl, index, ctypes.byref(ace)):
@@ -591,7 +629,7 @@ def _assert_protected_owner_path(path: Path) -> None:
                     if header[1] & 8 and not leaf:  # INHERIT_ONLY, existing ancestor rule
                         continue
                     mask = w.DWORD.from_address(ace.value + 4).value
-                    if sid_text(ace.value + 8) not in {"S-1-5-18", "S-1-5-32-544"} and mask & (0x500D0156 if leaf else 0x500D0150):
+                    if sid_text(ace.value + 8) not in {"S-1-5-18", "S-1-5-32-544"} and mask & mutation_mask:
                         raise OSError("Protected installer record is user mutable")
             finally:
                 if descriptor:
@@ -656,7 +694,7 @@ def _validate_installer_authority(root: Path, owner_path: Path, install_root: Pa
     _assert_no_reparse_components(root)
     _assert_no_reparse_components(owner_path)
     _assert_protected_owner_path(owner_path)
-    _assert_protected_owner_path(root / ACTIVE_FILENAME)
+    _assert_protected_owner_path(root / ACTIVE_FILENAME, machine_fence_root=root)
     owner = _bounded_json(owner_path)
     active = active_fence(root)
     run = owner.get("run_id")
