@@ -1,3 +1,7 @@
+- 첫 업데이트(11/1): A-PREP 빈 catch가 2차 오류를 남기지 않음(sub-147 P3-1).
+- 첫 업데이트(11/1): profile 별칭을 등록 origin과 견줘 정상 재사용이 FULL로 떨어짐(같은 꼴 장부 G06, P2).
+- 첫 업데이트(11/1): frozen 릴리스 길(verify_frozen_release_assets) 시험 17 — frozen 길을 다시 쓰기 전 정리 필수(관리자 06:0x).
+
 - w9firstupdsub244 / B28: 배치 진단 공개 변환에서 선택 필드가 없어도 최초 자식 종료 코드·있는 예외 종류를 보존하도록 고쳤다. 불완전한 보호 보고서는 미검증으로 남기며 원 진단·권한·디스크 형식은 바꾸지 않는다. [운영 계약](operations.md)과 PS5.1/PS7 선택 필드 회귀 시험을 연결한다.
 
 - w9firstupdsub244 / B16·B26: 기존 검토된 공개 셸 결과 `web`/`exit` → 앱 종료 코드 0/3을 [셸 계약](contracts.md#new-screen-shell-write-guard)에 명시했다. 구현·종료 순서·fallback 판정 변경 없이 명세 빈칸만 보완했다.
