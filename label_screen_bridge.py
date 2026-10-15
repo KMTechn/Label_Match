@@ -644,13 +644,13 @@ def _result(processor, view, source):
         title = _text(notice.title) if notice is not None else "틀림"
         return {"kind": "bad", "text": title, "sub": _text(app._compact_operator_notice_message(notice.message)) if notice is not None else None,
                 "sound": sound, "code": None}
+    last = next((str(value) for value in reversed(source.get("raw") or ()) if value), None)
     if view.completion_kind == "full":
-        return {"kind": "ok", "text": '오프라인 저장 — 이 PC에 저장했습니다', "sub": None, "sound": sound, "code": None}
+        return {"kind": "ok", "text": '오프라인 저장 — 이 PC에 저장했습니다', "sub": last, "sound": sound, "code": None}
     if flash and flash[1]:
-        return {"kind": FLASH.get(flash[2], "idle"), "text": _text(flash[1]), "sub": None, "sound": sound, "code": None}
+        return {"kind": FLASH.get(flash[2], "idle"), "text": _text(flash[1]), "sub": last, "sound": sound, "code": None}
     if view.qa_completed or view.completion_kind in {"full", "partial"}:
-        last = str(view.last_normal_scan or "")
-        return {"kind": "ok", "text": '확인', "sub": f"…{last[-4:]}" if last else None, "sound": sound, "code": None}
+        return {"kind": "ok", "text": '확인', "sub": last, "sound": sound, "code": None}
     return {"kind": "idle", "text": "아직 찍은 것이 없습니다", "sub": None, "sound": sound, "code": None}
 
 
@@ -817,6 +817,14 @@ def _history_cancel_fields(app, iid):
     return fields
 
 
+def _history_details(app, iid):
+    reader = getattr(type(app), "_history_details_for_iid", None)
+    if reader is not None:
+        return app._history_details_for_iid(iid) or {}
+    return (app.__dict__.get("history_row_details_map", {}).get(str(iid))
+            or app.__dict__.get("set_details_map", {}).get(str(iid)) or {})
+
+
 def _history_rows(app):
     tree = app.__dict__.get("history_tree")
     if tree is None:
@@ -831,17 +839,34 @@ def _history_rows(app):
             values = [str(value) for value in (tree.item(iid, "values") or ())]
             if len(values) < total + 3:
                 continue
-            scans = [value for value in values[1:1 + total] if value]
+            raw = _history_details(app, iid).get("scanned_product_barcodes")
+            scans = [str(value) for value in raw if value] if isinstance(raw, (list, tuple)) else []
             result = _text(values[1 + total])
             # 결과 글 = 지금 표 그대로(통과 · 불일치 · 입력오류 · 진행중..., Label_Match.Results)
             kind = "ok" if result.startswith("통과") else "warn" if result.startswith("진행") or "부족" in result else "bad"
             rows.append({"row": str(iid), "no": int(values[0]) if values[0].isdigit() else number,
                          "time": _text(app._operator_session_time_text(values[2 + total])),
-                         "tag": _text(values[1]), "item": "", "result": result, "kind": kind, "scans": len(scans), "raw": scans,
+                         "tag": scans[0] if scans else "", "item": "", "result": result, "kind": kind, "scans": len(scans), "raw": scans,
                          **_history_cancel_fields(app, iid)})
     except Exception:
         return []
     return rows[::-1]  # 새것 먼저
+
+
+def _summary_product_totals(app):
+    totals = {}
+    details_by_id = dict(app.__dict__.get("set_details_map") or {})
+    details_by_id.update(app.__dict__.get("history_row_details_map") or {})
+    passed = getattr(getattr(app, "Results", None), "PASS", None)
+    for details in details_by_id.values():
+        if passed is None or details.get("final_result") != passed:
+            continue
+        key = (str(details.get("item_code") or ""), str(details.get("phase") or "-"))
+        trays, products, complete = totals.get(key, (0, 0, True))
+        quantity = (details.get("package_logistics") or {}).get("expected_member_count")
+        known = type(quantity) is int and quantity > 0
+        totals[key] = trays + 1, products + (quantity if known else 0), complete and known
+    return totals
 
 
 def _summary_rows(app):
@@ -849,11 +874,18 @@ def _summary_rows(app):
     if tree is None:
         return []
     rows = []
+    totals = _summary_product_totals(app)
     try:
         for iid in tree.get_children():
             values = [str(value) for value in (tree.item(iid, "values") or ())]
             if len(values) >= 3:
-                rows.append({"item": _text(f"{values[0]} {values[1]}"), "count": int(str(values[2]).replace(",", "") or 0)})
+                row = {"item": _text(f"{values[0]} {values[1]}"), "count": int(str(values[2]).replace(",", "") or 0)}
+                original = app.__dict__.get("summary_row_raw_values", {}).get(iid)
+                key = (str(original[1]), str(original[2])) if original else (values[0], values[1])
+                trays, products, complete = totals.get(key, (0, 0, False))
+                if complete and trays == row["count"]:
+                    row["products"] = products
+                rows.append(row)
     except Exception:
         return []
     return rows
@@ -962,11 +994,27 @@ def _empty_work():
     return {"stage": "initializing", "stage_label": "초기화 중", "next": "잠시 기다리세요", "next_sub": [], "tag": None, "quantity": None,
             "legacy": {"enabled": False, "text": None}, "top_scan_count": total - 1, "scan_total": total, "scan_done": 0, "scan_left": total,
             "slots": [], "result": {"kind": "idle", "text": "준비 중입니다", "sub": None, "sound": None, "code": None}, "completion": None,
-            "badges": [], "readonly": False, "exchange": {"phase": None, "target": None}, "short": {"pending": False, "remaining_s": None},
+            "badges": [], "readonly": False, "exchange": _exchange_state({}), "short": {"pending": False, "remaining_s": None},
             "exact_rescan": {"status": "not_started", "completed": 0, "target": 0}, "held_scans": 0,
             "top_scan_setting": {"value": total - 1, "source": "default", "version": 0, "updated_at": None, "fetched_at": None},
             "next_set_top_scan_count": None, "manual_complete_hint": "", "allow": {"undo": False, "exchange": False, "f1": False, "f2": False},
             "scan_enabled": False}
+
+
+def _exchange_state(source):
+    phase = source.get("scanner_exchange_phase")
+    remove = source.get("scanner_exchange_target")
+    insert = None
+    phase = {"target": "remove", "replacement": "insert"}.get(phase)
+    if phase is None:
+        key = source.get("scanner_undo_exchange")
+        pair = next((row for row in reversed(source.get("scanner_exchanges") or ())
+                     if key and row.get("idempotency_key") == key), None)
+        if pair:
+            phase, remove, insert = "done", pair.get("target_barcode"), pair.get("replacement_barcode")
+    return {"phase": phase, "target": str(remove) if remove else None,
+            "remove": {"code": str(remove) if remove else None},
+            "insert": {"code": str(insert) if insert else None}}
 
 
 def _work(processor, view, source, notice):
@@ -975,7 +1023,6 @@ def _work(processor, view, source, notice):
     done = total if view.completion_kind == "full" else view.qa_completed  # 지금 Tk 수 줄(:22088)과 같게
     next_text, next_sub = _next(app, view, source, notice)
     deadline = app.__dict__.get("_shortage_confirmation_deadline")
-    exchange = source.get("scanner_exchange_phase")
     return {
         "stage": str(view.current_stage), "stage_label": _text(view.current_stage_label),
         "next": next_text, "next_sub": next_sub,
@@ -987,8 +1034,7 @@ def _work(processor, view, source, notice):
         "completion": view.completion_kind,
         "badges": [badge for badge in view.badges if badge not in HIDDEN_BADGES],
         "readonly": bool(view.readonly),
-        "exchange": {"phase": exchange if exchange in {"target", "replacement"} else None,
-                     "target": str(source.get("scanner_exchange_target")) if source.get("scanner_exchange_target") else None},
+        "exchange": _exchange_state(source),
         "short": {"pending": deadline is not None,
                   "remaining_s": max(0, int(deadline - time.monotonic())) if deadline is not None else None},
         "exact_rescan": {"status": view.exact_rescan.status, "completed": view.exact_rescan.completed, "target": view.exact_rescan.target},

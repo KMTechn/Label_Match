@@ -88,6 +88,7 @@ class FakeApp:
         self.idle = []
         self.clipboard = []
         self.history_tree = FakeTree([("r1", ("1", "A110", "x1", "x2", "x3", "x4", "통과", "2026-10-13 08:12:00"))])
+        self.history_row_details_map = {str(iid): {"scanned_product_barcodes": list(values[1:1 + self.TOTAL_SCAN_COUNT])} for iid, values in self.history_tree.rows}
         self.summary_tree = FakeTree([("s1", ("A110", "1차", "4"))])
         self._render_operator_workbench()
 
