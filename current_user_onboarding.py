@@ -1229,7 +1229,12 @@ def window_first_release_identity(app_root):
     if report is None or _resolved(app_root) != report["paths"].app_root:
         return None
     for path, raw in report["inputs"].items():
-        if path.read_bytes() != raw:
+        assert_path_has_no_reparse_components(path, label="startup verification input")
+        try:
+            actual = path.read_bytes()
+        except FileNotFoundError:
+            actual = None
+        if actual != raw:
             raise DataGenerationError("startup verification input changed")
     return dict(report["identity"])
 
@@ -1238,7 +1243,7 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
     """Read steady local evidence, then atomically hold all new DirectSync sends."""
     global _WINDOW_FIRST_START
     from auto_update import (control_root, load_policy, read_json, ordinary_user_context,
-                             prepared_pending, _sha, recovery_sha)
+                             prepared_pending, _sha, recovery_sha, read_settled_apply_claim_input)
     from startup_send_gate import read_startup_send_hold
     from user_relay import _existing_user_relay_owner, _reuse_existing_user_relay
     from label_data_generation import portable_release_identity
@@ -1270,7 +1275,9 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
             return miss("TRANSITION_SCHEMA")
         if state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
             return miss("TRANSITION_PHASE")
-        if (control / "apply-claim.json").exists():
+        try:
+            claim_input = read_settled_apply_claim_input(control)
+        except (OSError, ValueError, TypeError, WriterFenceError):
             return miss("APPLY_CLAIM")
         if prepared_pending(control, policy, state):
             return miss("PREPARED_PENDING")
@@ -1309,7 +1316,7 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
             profile = _read_json(paths.logistics_profile_path, "logistics profile")
             if str(profile.get("base_url") or "").rstrip("/") != str(registered_origin).rstrip("/"):
                 return miss("REGISTRATION_ORIGIN")
-        observed = {}
+        observed = {control / "apply-claim.json": claim_input}
         for path in (*state_paths, root / "portable-manifest.json", *(control / name for name in ("policy.json", "active.json", "transition.json"))):
             assert_path_has_no_reparse_components(path, label="startup verification input")
             if path.stat().st_size > BOOTSTRAP_INTEGRITY_MAX_BYTES:

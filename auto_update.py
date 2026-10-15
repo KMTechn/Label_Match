@@ -1193,6 +1193,33 @@ def new_apply_claim() -> dict[str, Any]:
             "started_at": now_utc()}
 
 
+def read_settled_apply_claim_input(control: Path) -> bytes | None:
+    """Read FAST evidence once; RUNNING never triggers an owner probe here."""
+    path = control / "apply-claim.json"
+    _assert_no_reparse_components(path)
+    maximum = 1024 * 1024
+    for attempt in range(3):
+        try:
+            if path.stat().st_size > maximum:
+                raise ValueError("apply claim is oversized")
+            with path.open("rb") as source:
+                raw = source.read(maximum + 1)
+            break
+        except FileNotFoundError:
+            return None
+        except PermissionError:
+            if attempt == 2:
+                raise
+            time.sleep(0.05)
+    if len(raw) > maximum:
+        raise ValueError("apply claim is oversized")
+    claim = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique_object)
+    if (not isinstance(claim, dict) or claim.get("schema") != "code-update-apply-claim-v1"
+            or claim.get("status") != "SETTLED"):
+        raise ValueError("apply claim is not settled")
+    return raw
+
+
 def apply_claim_status(control: Path) -> str:
     """A protected claim is progress evidence, never pointer or READY authority."""
     try:

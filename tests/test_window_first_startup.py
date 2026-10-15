@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import json
 import os
@@ -387,12 +387,24 @@ def steady_start(managed_onboarding, monkeypatch):
         "bootstrap_integrity": {"status": "VERIFIED"},
     }), encoding="utf-8")
     policy = updates.load_policy(control)
-    status = dict(status="RUNNING", worker_id=user_relay.LABEL_MATCH_WORKER_ID,
-                  process_id=os.getpid(), app_root=str(control.parent / "current"),
-                  code_root=str(paths.app_root), direct_sync_root=str(paths.direct_sync_root),
-                  updated_at=datetime.now(timezone.utc).isoformat(), source_commit=manifest["source_commit"],
-                  sid=policy["operator_sid"], ordinary_user=True)
-    user_relay.user_relay_status_path(paths.direct_sync_root).write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(updates, "current_process_sid", lambda: policy["operator_sid"])
+    metadata = dict(process_id=os.getpid(), worker_id=user_relay.LABEL_MATCH_WORKER_ID,
+                    app_root=str(control.parent / "current"), code_root=str(paths.app_root),
+                    direct_sync_root=str(paths.direct_sync_root), queue_dir=str(paths.direct_sync_root / "queue"),
+                    **updates.relay_ready_metadata(paths.app_root / "app"))
+    class Published(Exception):
+        pass
+    def published(_seconds):
+        raise Published
+    # Only admission is a facade; keep the real atomic status publisher.
+    with monkeypatch.context() as publisher:
+        publisher.setattr(user_relay, "writer_admission", lambda *_a, **_k: nullcontext())
+        with pytest.raises(Published):
+            user_relay.run_persistent_relay_loop(lambda: {"status": "READY"},
+                status_path=user_relay.user_relay_status_path(paths.direct_sync_root),
+                interval_seconds=1, metadata=metadata, wait=published)
+    status = updates.read_json(user_relay.user_relay_status_path(paths.direct_sync_root))
+    assert status["status"] == "RUNNING"
     monkeypatch.setattr(user_relay, "_acquire_relay_lease", lambda _: None)
     monkeypatch.setattr(updates, "native_process_identity", lambda pid: {
         "status": "LIVE", "creation_identity": str(pid),
@@ -400,12 +412,39 @@ def steady_start(managed_onboarding, monkeypatch):
     return SimpleNamespace(paths=paths, environment=environment, control=control, helpers=helpers, status=status)
 
 
-def test_fast_start_has_no_helpers_and_records_shared_hold(steady_start, monkeypatch, record_testsuite_property):
+def _product_apply_claim(item, monkeypatch, *, settled=True):
+    # Use the actual durable writer with isolated authority, not host authority.
+    with monkeypatch.context() as writer:
+        writer.setattr(updates, "write_json_durable", updates.write_json_durable.__wrapped__)
+        updates.write_json_durable(item.control / "apply-claim.json", updates.new_apply_claim())
+        if settled:
+            updates.complete_apply_claim(item.control)
+    assert updates.read_json(item.control / "apply-claim.json")["status"] == ("SETTLED" if settled else "RUNNING")
+
+
+def _watch_window_front(monkeypatch):
+    def forbidden(*_a, **_k):
+        pytest.fail("full verification or registration before window")
+    for name in ("fixed_helper", "_run_fixed_helper", "lifecycle_task_observation",
+                 "version_writer_inventory_sha256", "native_process_identity"):
+        monkeypatch.setattr(updates, name, forbidden)
+    for name in ("verify_bootstrap_integrity", "_calculate_code_root_hash", "_file_sha256", "_registration_runner"):
+        monkeypatch.setattr(onboarding, name, forbidden)
+    import requests
+    monkeypatch.setattr(requests.sessions.Session, "request", forbidden)
+
+
+@pytest.mark.parametrize("settled_claim", [False, True], ids=["absent", "product-settled"])
+def test_fast_start_has_no_helpers_and_records_shared_hold(steady_start, monkeypatch, record_testsuite_property, settled_claim):
     from startup_send_gate import startup_send_deferred, startup_send_hold_path
     monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: pytest.fail("child before window"))
     monkeypatch.setattr(onboarding, "verify_bootstrap_integrity", lambda *_a, **_k: pytest.fail("hash before window"))
+    if settled_claim:
+        _product_apply_claim(steady_start, monkeypatch)
     started = time.perf_counter()
-    result = onboarding.try_window_first_start(steady_start.paths.app_root, environ=steady_start.environment)
+    with monkeypatch.context() as front:
+        _watch_window_front(front)
+        result = onboarding.try_window_first_start(steady_start.paths.app_root, environ=steady_start.environment)
     elapsed = time.perf_counter() - started
     assert elapsed < 2
     record_testsuite_property("window_first_admission_ms", round(elapsed * 1000, 3))
@@ -542,8 +581,12 @@ def test_writer_inventory_reuses_only_identical_bytes(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-def test_fast_main_skips_full_checks_and_reports_top_level_path(steady_start, monkeypatch):
+@pytest.mark.parametrize("settled_claim", [False, True], ids=["absent", "product-settled"])
+def test_fast_main_skips_full_checks_and_reports_top_level_path(steady_start, monkeypatch, settled_claim):
     import Label_Match as gui
+    if settled_claim:
+        _product_apply_claim(steady_start, monkeypatch)
+    _watch_window_front(monkeypatch)
     traces = []
     monkeypatch.setattr(gui, "_label_match_runtime_app_root", lambda: steady_start.paths.app_root)
     monkeypatch.setattr(gui, "_first_run_onboarding_enabled", lambda: True)
