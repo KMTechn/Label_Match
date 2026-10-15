@@ -173,6 +173,8 @@ def test_fast_catalog_retry_runs_on_ui_thread_with_same_start_report(steady_star
     app.after = lambda delay, callback: scheduled.append(callback)
     app.hide_loading_overlay = lambda: None
     app.destroy = lambda: destroyed.append(True)
+    app._render_operator_workbench = lambda: None
+    app._retry_initial_load = lambda: gui.Label_Match._retry_initial_load(app)
     gui.Label_Match._async_initial_load(app, report)
     assert prompts == []
     onboarding._WINDOW_FIRST_START = None

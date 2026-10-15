@@ -16,6 +16,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from startup_timing import startup_timed, startup_timing_step
 from typing import Any, Mapping
 
 if __name__ == "__main__":
@@ -635,6 +636,7 @@ def version_bundle(control: Path, sha: str) -> Path:
 _VERSION_WRITER_INVENTORY_PASS = {}
 
 
+@startup_timed("full_inventory")
 def version_writer_inventory_sha256(bundle: Path) -> str:
     from writer_sink_inventory import _runtime_files
     from writer_session_fence import remote_request
@@ -714,6 +716,7 @@ def assert_registration_storage(code_root: Path, paths) -> None:
                     raise ValueError(f"등록 자료 경로가 코드 또는 control 영역과 겹칩니다: {candidate}")
 
 
+@startup_timed("full_observe_lifecycle")
 def lifecycle_task_observation(root: Path) -> dict[str, Any]:
     """External supported stock can observe task absence after code removal."""
     import subprocess
@@ -1059,7 +1062,7 @@ def update_lock(control: Path, operator_sid: str, *, trial: bool = False, abando
 def fixed_helper(control: Path, mode: str, *, code_root: Path | None = None) -> str:
     if mode == "Verify":
         from writer_session_fence import remote_request
-        with remote_request():
+        with startup_timing_step("full_lifecycle_verify"), remote_request():
             return _run_fixed_helper(control, mode, code_root=code_root)
     return _run_fixed_helper(control, mode, code_root=code_root)
 

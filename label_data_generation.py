@@ -11,6 +11,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 from typing import Mapping
+from startup_timing import startup_timed
 
 from kmtech_shared.data_generation import probe_downgrade, record_generation, version_key
 from writer_session_fence import canonical_control_root, writer_sink
@@ -420,6 +421,7 @@ def _authenticated_support_removal_source(app_root: Path):
         check(last_probe[0], last_probe[1], environ=last_probe[2])
 
 
+@startup_timed("full_data_generation")
 def check_user_data_open(app_root: Path, data_roots=(), *, environ=None):
     return _check_user_data_open(app_root, data_roots, environ=environ,
                                 identity_resolver=_installed_identity)

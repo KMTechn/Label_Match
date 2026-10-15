@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 import stat
 import sys
+import time
 from typing import Any, Callable, Mapping, MutableMapping
 from urllib.parse import urlsplit
 import uuid
@@ -48,6 +49,7 @@ from user_relay import (
 )
 from writer_session_fence import writer_admission, writer_sink
 from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
+from startup_timing import startup_timing_event, startup_timing_step, startup_timed
 
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
@@ -644,6 +646,7 @@ _BOOTSTRAP_INTEGRITY_PASS = {}
 _WINDOW_FIRST_START = None
 
 
+@startup_timed("full_bootstrap_bytes")
 def verify_bootstrap_integrity(paths: CurrentUserOnboardingPaths, *, required: bool) -> dict[str, Any]:
     from writer_session_fence import remote_request
     if not required or not paths.bootstrap_integrity_path.exists():
@@ -1240,63 +1243,84 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
     from user_relay import _existing_user_relay_owner, _reuse_existing_user_relay
     from label_data_generation import portable_release_identity
     from writer_session_fence import WriterFenceError
-    if arguments:
+    started = time.monotonic()
+
+    def miss(code):
+        startup_timing_event("fast_window_first_miss", code, started)
         return None
+
+    if arguments:
+        return miss("ARGUMENTS")
     try:
         root = _resolved(app_root)
         if root.name.casefold() == "app":
             root = root.parent
         control = control_root(root / "app")
-        if control is None or root.parent != control.parent / "versions":
-            return None
+        if control is None:
+            return miss("CONTROL_ABSENT")
+        if root.parent != control.parent / "versions":
+            return miss("VERSION_LAYOUT")
         policy = load_policy(control)
         if not ordinary_user_context(policy["operator_sid"]):
-            return None
+            return miss("ORDINARY_USER_CONTEXT")
         active, state = read_json(control / "active.json"), read_json(control / "transition.json")
-        if (active.get("schema") != "label-match-startup-update-v1"
-                or state.get("schema") != "label-match-startup-update-v1"
-                or state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}
-                or (control / "apply-claim.json").exists()
-                or prepared_pending(control, policy, state)):
-            return None
+        if active.get("schema") != "label-match-startup-update-v1":
+            return miss("ACTIVE_SCHEMA")
+        if state.get("schema") != "label-match-startup-update-v1":
+            return miss("TRANSITION_SCHEMA")
+        if state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
+            return miss("TRANSITION_PHASE")
+        if (control / "apply-claim.json").exists():
+            return miss("APPLY_CLAIM")
+        if prepared_pending(control, policy, state):
+            return miss("PREPARED_PENDING")
         manifest = _read_json(root / "portable-manifest.json", "startup manifest")
         identity = portable_release_identity(manifest)
-        if (manifest.get("startup_update_protocol") != 1 or identity["build_id"] != _sha(active["sha"])
-                or root.name != active["sha"]
-                or (state.get("candidate_sha") is not None and recovery_sha(state, pointer_sha=active["sha"]) != active["sha"])):
-            return None
+        if manifest.get("startup_update_protocol") != 1:
+            return miss("STARTUP_PROTOCOL")
+        if identity["build_id"] != _sha(active["sha"]):
+            return miss("ACTIVE_BUILD")
+        if root.name != active["sha"]:
+            return miss("VERSION_DIRECTORY")
+        if state.get("candidate_sha") is not None and recovery_sha(state, pointer_sha=active["sha"]) != active["sha"]:
+            return miss("RECOVERY_IDENTITY")
         paths = resolve_current_user_onboarding_paths(root, environ=environ)
-        if (user_relay_stop_path(paths.direct_sync_root).exists()
-                or read_startup_send_hold(paths.direct_sync_root) is not None):
-            return None
+        if user_relay_stop_path(paths.direct_sync_root).exists():
+            return miss("RELAY_STOP")
+        if read_startup_send_hold(paths.direct_sync_root) is not None:
+            return miss("SEND_HOLD")
         previous = _read_json(paths.onboarding_report_path, "onboarding report")
-        if previous.get("status") != "READY" or previous.get("state_scope") != "current_user":
-            return None
+        if previous.get("status") != "READY":
+            return miss("ONBOARDING_STATUS")
+        if previous.get("state_scope") != "current_user":
+            return miss("ONBOARDING_SCOPE")
         for field in ("data_root", "direct_sync_root", "ledger_path", "settings_path", "logistics_profile_path"):
             if _resolved(previous.get(field) or "") != getattr(paths, field):
-                return None
+                return miss("ONBOARDING_PATH")
         state_paths = (paths.identity_path, paths.producer_manifest_path, paths.credential_path,
                        paths.registration_report_path, paths.logistics_profile_path, paths.logistics_secret_path)
         if not all(path.is_file() for path in (*state_paths, paths.ledger_path, paths.settings_path)):
-            return None
+            return miss("REQUIRED_FILE")
         registration = _read_json(paths.registration_report_path, "registration report")
         if registration.get("server_registration_verified") is not True:
-            return None
+            return miss("REGISTRATION_UNVERIFIED")
         registered_origin = registration.get("server_base_url")
         if registered_origin:
             profile = _read_json(paths.logistics_profile_path, "logistics profile")
             if str(profile.get("base_url") or "").rstrip("/") != str(registered_origin).rstrip("/"):
-                return None
+                return miss("REGISTRATION_ORIGIN")
         observed = {}
         for path in (*state_paths, root / "portable-manifest.json", *(control / name for name in ("policy.json", "active.json", "transition.json"))):
             assert_path_has_no_reparse_components(path, label="startup verification input")
             if path.stat().st_size > BOOTSTRAP_INTEGRITY_MAX_BYTES:
-                return None
+                return miss("INPUT_SIZE")
             observed[path] = path.read_bytes()
         owner = _existing_user_relay_owner(root, paths.direct_sync_root, is_bootstrap=True,
                                           allow_fast_path=True, fast_only=True)
-        if owner is None or owner.get("fast_path") is not True:
-            return None
+        if owner is None:
+            return miss("RELAY_OWNER_ABSENT")
+        if owner.get("fast_path") is not True:
+            return miss("RELAY_NOT_FAST")
         relay = _reuse_existing_user_relay(lambda: owner, 0, lambda _: None)
         report = {"status": "READY", "start_path": "FAST_WINDOW_FIRST", "app_root": root,
                   "paths": paths, "inputs": observed, "identity": identity,
@@ -1309,7 +1333,7 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
         apply_current_user_runtime_environment(paths, environ=environ)
         return report
     except (OSError, ValueError, TypeError, KeyError, CurrentUserOnboardingError, DataGenerationError, WriterFenceError):
-        return None
+        return miss("INPUT_UNREADABLE")
 
 
 def admit_window_first_start(report):
@@ -1493,26 +1517,27 @@ def onboard_current_user(
             }
         stop_marker_released = False
     try:
-        report["legacy_task_quiescence"] = dict(legacy_task_quiescence_reader())
-        legacy_quiescence = report["legacy_task_quiescence"]
-        if (
-            legacy_quiescence.get("schema") != LEGACY_TASK_QUIESCENCE_VERSION
-            or legacy_quiescence.get("required_state")
-            != LEGACY_TASK_REQUIRED_STATE
-            or legacy_quiescence.get("read_only") is not True
-            or legacy_quiescence.get("task_or_process_mutated") is not False
-        ):
-            raise ValueError("legacy scheduled-task quiescence evidence is invalid")
-        if legacy_quiescence.get("status") != "PASS":
-            reason = str(
-                legacy_quiescence.get("reason_code")
-                or "LEGACY_TASK_QUIESCENCE_FAILED"
-            )
-            remediation = str(
-                legacy_quiescence.get("remediation")
-                or "disable or remove the legacy Label scheduled task"
-            )
-            raise ValueError(f"{reason}: {remediation}")
+        with startup_timing_step("full_legacy_task_query"):
+            report["legacy_task_quiescence"] = dict(legacy_task_quiescence_reader())
+            legacy_quiescence = report["legacy_task_quiescence"]
+            if (
+                legacy_quiescence.get("schema") != LEGACY_TASK_QUIESCENCE_VERSION
+                or legacy_quiescence.get("required_state")
+                != LEGACY_TASK_REQUIRED_STATE
+                or legacy_quiescence.get("read_only") is not True
+                or legacy_quiescence.get("task_or_process_mutated") is not False
+            ):
+                raise ValueError("legacy scheduled-task quiescence evidence is invalid")
+            if legacy_quiescence.get("status") != "PASS":
+                reason = str(
+                    legacy_quiescence.get("reason_code")
+                    or "LEGACY_TASK_QUIESCENCE_FAILED"
+                )
+                remediation = str(
+                    legacy_quiescence.get("remediation")
+                    or "disable or remove the legacy Label scheduled task"
+                )
+                raise ValueError(f"{reason}: {remediation}")
         try:
             report["bootstrap_integrity"] = verify_bootstrap_integrity(
                 paths,
@@ -1656,10 +1681,11 @@ def onboard_current_user(
                 raise CurrentUserOnboardingError(str(exc), report_path=paths.onboarding_report_path,
                     status="UNKNOWN", cause_code="DATA_GENERATION_REFUSED") from exc
             business_open_in_progress = True
-            with writer_admission(ONBOARDING_WRITER_SOURCE):
-                ledger_factory(paths.ledger_path)
-            if not paths.ledger_path.is_file():
-                raise ValueError("current-user business ledger readback failed")
+            with startup_timing_step("full_db_open"):
+                with writer_admission(ONBOARDING_WRITER_SOURCE):
+                    ledger_factory(paths.ledger_path)
+                if not paths.ledger_path.is_file():
+                    raise ValueError("current-user business ledger readback failed")
             report["ledger_status"] = "READY"
             with writer_admission(ONBOARDING_WRITER_SOURCE):
                 report["settings"] = dict(settings_factory(paths))
@@ -1686,17 +1712,18 @@ def onboard_current_user(
             )
         if autostart_status != "PASS":
             raise ValueError("current-user relay autostart was not proven")
-        with writer_admission(remove_current_user_scheduled_task.__label_writer_sink__):
-            report["scheduled_task_migration"] = dict(scheduled_task_remover(setup_root))
-        migration_status = str(report["scheduled_task_migration"].get("status") or "")
-        if migration_status in {"", "UNKNOWN"}:
-            raise CurrentUserOnboardingError(
-                "historical scheduled-task retirement result is UNKNOWN",
-                report_path=paths.onboarding_report_path,
-                status="UNKNOWN",
-            )
-        if migration_status not in {"ABSENT", "DISABLED_RETAINED_OFFICIAL"}:
-            raise ValueError("historical current-user scheduled task retirement was not proven")
+        with startup_timing_step("full_task_retirement"):
+            with writer_admission(remove_current_user_scheduled_task.__label_writer_sink__):
+                report["scheduled_task_migration"] = dict(scheduled_task_remover(setup_root))
+            migration_status = str(report["scheduled_task_migration"].get("status") or "")
+            if migration_status in {"", "UNKNOWN"}:
+                raise CurrentUserOnboardingError(
+                    "historical scheduled-task retirement result is UNKNOWN",
+                    report_path=paths.onboarding_report_path,
+                    status="UNKNOWN",
+                )
+            if migration_status not in {"ABSENT", "DISABLED_RETAINED_OFFICIAL"}:
+                raise ValueError("historical current-user scheduled task retirement was not proven")
         # The marker is a safety fence.  It is released only after canonical
         # install ownership, HKCU, and historical task absence all read back.
         if report["stop_marker_release"].get("marker_present"):
@@ -1715,30 +1742,31 @@ def onboard_current_user(
         else:
             release = {"status": "NOT_REQUIRED"}
         report["stop_marker_release"]["release"] = release
-        if defer_canonical_relay_start or defer_machine_worker_relay_start:
-            report["relay_start"] = {"status": "DEFERRED_WORKER_SESSION" if defer_machine_worker_relay_start else "DEFERRED_CANONICAL_INSTALL"}
-        else:
-            from startup_send_gate import read_startup_send_hold
-            if relay_launcher is reuse_or_start_user_relay_process and (
-                (_startup and start_path != "FAST_WINDOW_FIRST")
-                or read_startup_send_hold(paths.direct_sync_root) is not None
-            ):
-                report["relay_start"] = dict(relay_launcher(paths.app_root, allow_recent_reuse=False))
+        with startup_timing_step("full_relay_reuse"):
+            if defer_canonical_relay_start or defer_machine_worker_relay_start:
+                report["relay_start"] = {"status": "DEFERRED_WORKER_SESSION" if defer_machine_worker_relay_start else "DEFERRED_CANONICAL_INSTALL"}
             else:
-                report["relay_start"] = dict(relay_launcher(paths.app_root))
-        relay_start_status = str(report["relay_start"].get("status") or "")
-        report["existing_relay_reused"] = report["relay_start"].get("existing_relay_reused") is True
-        report["fast_path"] = report["relay_start"].get("fast_path") is True
-        if relay_start_status in {"", "UNKNOWN"}:
-            raise CurrentUserOnboardingError(
-                "current-user relay launch result is UNKNOWN",
-                report_path=paths.onboarding_report_path,
-                status="UNKNOWN",
-            )
-        expected_relay_status = ("DEFERRED_WORKER_SESSION" if defer_machine_worker_relay_start else
-                                 "DEFERRED_CANONICAL_INSTALL" if defer_canonical_relay_start else "ALIVE")
-        if relay_start_status != expected_relay_status:
-            raise ValueError("current-user relay survival was not proven")
+                from startup_send_gate import read_startup_send_hold
+                if relay_launcher is reuse_or_start_user_relay_process and (
+                    (_startup and start_path != "FAST_WINDOW_FIRST")
+                    or read_startup_send_hold(paths.direct_sync_root) is not None
+                ):
+                    report["relay_start"] = dict(relay_launcher(paths.app_root, allow_recent_reuse=False))
+                else:
+                    report["relay_start"] = dict(relay_launcher(paths.app_root))
+            relay_start_status = str(report["relay_start"].get("status") or "")
+            report["existing_relay_reused"] = report["relay_start"].get("existing_relay_reused") is True
+            report["fast_path"] = report["relay_start"].get("fast_path") is True
+            if relay_start_status in {"", "UNKNOWN"}:
+                raise CurrentUserOnboardingError(
+                    "current-user relay launch result is UNKNOWN",
+                    report_path=paths.onboarding_report_path,
+                    status="UNKNOWN",
+                )
+            expected_relay_status = ("DEFERRED_WORKER_SESSION" if defer_machine_worker_relay_start else
+                                     "DEFERRED_CANONICAL_INSTALL" if defer_canonical_relay_start else "ALIVE")
+            if relay_start_status != expected_relay_status:
+                raise ValueError("current-user relay survival was not proven")
         # Helpers, child launch and survival ran without admission. Reacquire
         # and recheck the fence before applying the environment or READY.
         with writer_admission(ONBOARDING_WRITER_SOURCE):

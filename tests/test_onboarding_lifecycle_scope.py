@@ -21,6 +21,14 @@ _STOCK_FIXED_HELPER = auto_update.fixed_helper
 _STOCK_TASK_OBSERVATION = auto_update.lifecycle_task_observation
 
 
+def _ordinary_worker_context(monkeypatch, app_root):
+    control = auto_update.control_root(app_root / "app")
+    sid = auto_update.load_policy(control)["operator_sid"] if control else "S-1-5-21-fixture"
+    monkeypatch.setattr(auto_update, "process_security", lambda _pid: {
+        "sid": sid, "session_id": 1, "elevated": False, "integrity_rid": 8192,
+    })
+
+
 def _stock_helper_counter(monkeypatch, helpers, *, native=False):
     """Retain stock decorators; replace only external helper payloads."""
     actual_run = subprocess.run
@@ -106,6 +114,9 @@ def managed_onboarding(tmp_path, monkeypatch):
     monkeypatch.setattr(fence, "__file__", str(selected / "app/writer_session_fence.py"))
     monkeypatch.setattr(auto_update, "runtime_matches", lambda _root: True)
     monkeypatch.setattr(auto_update, "ordinary_user_context", lambda *_args: True)
+    # This fixture models the ordinary worker even when the host runner is
+    # elevated or in Session 0; keep the product's OS-context gate intact.
+    _ordinary_worker_context(monkeypatch, selected)
     helpers = []
 
     _stock_helper_counter(monkeypatch, helpers)
@@ -230,6 +241,7 @@ def test_stock_helper_decorator_hold_with_native_powershell_counter(monkeypatch,
     monkeypatch.setattr(auto_update, "ordinary_user_context", lambda *_args: True)
     helpers = []
     holds = _stock_helper_counter(monkeypatch, helpers, native=True)
+    _ordinary_worker_context(monkeypatch, selected)
     started = time.monotonic()
     report = _onboard(paths, environment,
                       relay_launcher=lambda _root: {"status": "ALIVE", "process_id": 77})
@@ -275,6 +287,7 @@ def test_next_start_reuses_registration_after_fence_interrupts_before_ready(tmp_
         paths = onboarding.resolve_current_user_onboarding_paths(app_root, environ=environment)
 
     marker = user_relay.user_relay_stop_path(paths.direct_sync_root)
+    _ordinary_worker_context(monkeypatch, app_root)
     assert marker.exists() is existing_stop
     registrations, autostarts, stored_run = [], [], {}
     control = fence.canonical_control_root()

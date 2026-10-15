@@ -146,6 +146,7 @@ def _label_match_safe_trace_value(value, *, key=""):
 
 
 def _label_match_startup_trace(stage, **details):
+    from startup_timing import VALUE_FREE_STAGES
     payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "pid": os.getpid(),
@@ -155,6 +156,9 @@ def _label_match_startup_trace(stage, **details):
         "executable": sys.executable,
         "cwd": os.getcwd(),
     }
+    if stage in VALUE_FREE_STAGES:
+        payload.pop("executable")
+        payload.pop("cwd")
     payload.update(
         {
             str(key): _label_match_safe_trace_value(value, key=str(key))
@@ -24833,7 +24837,12 @@ def _onboarding_refusal_codes(exc):
     return codes
 
 
+from startup_timing import observe_startup_timing
+
+
+@observe_startup_timing(lambda *args, **kwargs: _label_match_startup_trace(*args, **kwargs))
 def main(argv=None):
+    _label_match_startup_trace("main_function_enter")
     arguments = list(sys.argv[1:] if argv is None else argv)
     # UI selection is per launch; all remaining arguments keep their startup order.
     old_screen = "--old-screen" in arguments
