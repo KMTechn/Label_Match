@@ -333,6 +333,15 @@ class LabelMatchScreenProcessor:
     def _command_empty_enter(self, _args):  # 받이 버퍼가 빈 Enter — Tk 입력 칸의 빈 Enter 와 같은 문
         self.app.intake_scan("")
 
+    def _command_partial_submit(self, _args):
+        return {"ok": not _args and bool(self.app._submit_partial_scanner())}
+
+    def _command_partial_continue(self, _args):
+        if _args:
+            return {"ok": False}
+        self.app._clear_partial_submit_confirmation()
+        return {"ok": True}
+
     def _command_ack(self, _args):
         self.app._acknowledge_workflow_notice()
 
@@ -970,6 +979,7 @@ def present_lm(processor):
         "worker": {"name": str(worker), "label": _text(module.display_operator_name(worker))} if worker else None,
         "start": start,
         "work": work,
+        "confirm": app._partial_submit_confirm_state() if hasattr(type(app), "_partial_submit_confirm_state") else None,
         "approval": None if pointer is None else {
             "id": _approval_id(pointer), "action": _text(app.__dict__.get("_workflow_notice_action_text") or "확인"),
             "title": _text(pointer[0].title), "message": str(pointer[0].message or "").strip(),
@@ -1022,7 +1032,6 @@ def _work(processor, view, source, notice):
     total = view.qa_total
     done = total if view.completion_kind == "full" else view.qa_completed  # 지금 Tk 수 줄(:22088)과 같게
     next_text, next_sub = _next(app, view, source, notice)
-    deadline = app.__dict__.get("_shortage_confirmation_deadline")
     return {
         "stage": str(view.current_stage), "stage_label": _text(view.current_stage_label),
         "next": next_text, "next_sub": next_sub,
@@ -1035,8 +1044,7 @@ def _work(processor, view, source, notice):
         "badges": [badge for badge in view.badges if badge not in HIDDEN_BADGES],
         "readonly": bool(view.readonly),
         "exchange": _exchange_state(source),
-        "short": {"pending": deadline is not None,
-                  "remaining_s": max(0, int(deadline - time.monotonic())) if deadline is not None else None},
+        "short": {"pending": False, "remaining_s": None},
         "exact_rescan": {"status": view.exact_rescan.status, "completed": view.exact_rescan.completed, "target": view.exact_rescan.target},
         "held_scans": len(app.__dict__.get("_scans_behind_completion") or ()),
         # 상단 확인 수 웹 설정(UI-SHAPE-LM-TOPSCAN-1016)은 sub-151 처리 층이 들어오면 그 값 — 이 바탕(9de2c05)은 4 고정.

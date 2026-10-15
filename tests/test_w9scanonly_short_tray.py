@@ -78,14 +78,14 @@ def test_shortage_confirmation_has_distinct_sound_and_large_missing_count(packag
         scan(app, value)
     scanner_clock[0] += 5
     scan(app, MASTER)
+    assert app._partial_submit_confirm_state() is not None
+    scan(app, MASTER)
     rows = completions(app)
     assert len(rows) == 2 and rows[-1][1]["final_result"] == app.Results.PASS, (
         "repeating the same label after two products must durably confirm the short tray"
     )
     assert rows[-1][1]["scanned_product_barcodes"] == [MASTER, *values[:2]]
-    assert any("부족 2개로 확정" in text for text in display), (
-        "large display must state how many of the four product samples are missing"
-    )
+    assert any(text.startswith("부분 제출 완료 —") for text in display)
     assert app.sounds and app.sounds[-1] != normal_completion_sound, (
         "shortage confirmation must sound different from ordinary completion"
     )
@@ -99,6 +99,8 @@ def test_duplicate_label_after_shortage_confirmation_does_not_start_a_new_tray(p
     scan(app, products()[0])
     scanner_clock[0] += 5
     scan(app, MASTER)
+    assert app._partial_submit_confirm_state() is not None
+    scan(app, MASTER)
     rows = completions(app)
     assert len(rows) == 1 and rows[0][1]["final_result"] == app.Results.PASS, (
         "shortage confirmation is a prerequisite for checking the duplicate read"
@@ -110,25 +112,23 @@ def test_duplicate_label_after_shortage_confirmation_does_not_start_a_new_tray(p
     assert dialogs == []
 
 
-def test_undo_before_the_next_label_restores_the_short_tray_and_scan_order(packaging, scanner_clock):
+def test_undo_during_confirmation_is_a_normal_product_undo(packaging, scanner_clock):
     app, dialogs = packaging
     values = products()
     for value in [MASTER, *values[:2]]:
-        scanner_clock[0] += 5
+        scanner_clock[0] += 3.1
         scan(app, value)
     before = copy.deepcopy(app.current_set_info)
-    scanner_clock[0] += 5
     scan(app, MASTER)
-    scanner_clock[0] += 5
+    assert app._partial_submit_confirm_state() is not None
     scan(app, "KMCMD:UNDO")
-    assert app.current_set_info["raw"] == before["raw"], (
-        "UNDO before the next label must restore the short tray's accepted scans"
-    )
-    assert app.current_set_info["id"] == before["id"]
-    for value in values[2:]:
-        scanner_clock[0] += 5
+    assert app._partial_submit_confirm_state() is None
+    assert app.current_set_info["raw"] == before["raw"][:-1]
+    assert app.current_set_info["parsed"] == before["parsed"][:-1]
+    for value in values[1:]:
+        scanner_clock[0] += 3.1
         scan(app, value)
     rows = completions(app)
-    assert rows[-1][1]["final_result"] == app.Results.PASS
-    assert rows[-1][1]["scanned_product_barcodes"] == [MASTER, *values]
+    assert len(rows) == 1 and rows[0][1]["final_result"] == app.Results.PASS
+    assert rows[0][1]["scanned_product_barcodes"] == [MASTER, *values]
     assert dialogs == []

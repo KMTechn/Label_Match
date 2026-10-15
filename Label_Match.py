@@ -12637,7 +12637,7 @@ class Label_Match(tk.Tk):
                     self.current_set_info["start_time"] = datetime.fromisoformat(self.current_set_info["start_time"])
                 self._package_pin_ui(self._finalize_set, self.Results.PASS, on_closed=True)
                 return
-            self._package_pin_ui(self.update_big_display, "부족 확정 · 취소 카드로 되돌리거나 다음 현품표를 스캔하세요.", "primary")
+            self._package_pin_ui(self.update_big_display, "부분 제출 기록을 마무리하고 있습니다", "primary")
             self._package_pin_ui(self._arm_shortage_confirmation_timeout)
             return
         if state_data:
@@ -15944,6 +15944,11 @@ class Label_Match(tk.Tk):
         self._replay_scanner_audits()
         previous_scan = self.__dict__.get("_scanner_previous_scan") or ("", 0.0)
         self._scanner_previous_scan = (raw_input, time.monotonic())
+        partial_label, partial_at = self.__dict__.get("_scanner_last_partial_submit", ("", 0.0))
+        if raw_input == partial_label and time.monotonic() - partial_at < 3:
+            consume_input()
+            self._play_sound("scan_master")
+            return
         if raw_input.startswith("KMCMD:"):
             consume_input()
             if self.current_set_info.get("scanner_exchange_phase"):
@@ -15986,7 +15991,7 @@ class Label_Match(tk.Tk):
             if len(self.current_set_info["raw"]) == 1:
                 self._play_sound("scan_master")
                 return
-            return self._confirm_scanner_shortage()
+            return self._request_scanner_shortage()
         if self.current_set_info.get("exact_rescan_active"):
             consume_input()
             self._process_exact_rescan_product(raw_input)
@@ -16562,9 +16567,11 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
             self.update_big_display("교환 기록됨 · 다음 제품을 스캔하세요.", "green")
 
-    def _confirm_scanner_shortage(self):
+    def _scanner_shortage_allowed(self):
         current = self.current_set_info
         raw = list(current.get("raw") or [])
+        if not (1 <= len(raw) - 1 <= _label_match_set_product_sample_count(current)):
+            return False
         shape, _reasons, _item = label_transition.classify_start_label(
             raw[0] if raw else "",
             parse_sealed=_label_match_parse_sealed_transfer_qr,
@@ -16579,6 +16586,49 @@ class Label_Match(tk.Tk):
             if not (1 <= len(raw) - 1 == member_count <= _label_match_set_product_sample_count(current)):
                 self._show_scanner_notice('수량 부족', LABEL_MATCH_SHORTAGE_NOTICE)
                 return False
+        return True
+
+    def _clear_partial_submit_confirmation(self):
+        self.__dict__.pop("_partial_submit_confirmation", None)
+        self.__dict__.pop("_partial_submit_target", None)
+
+    def _partial_submit_confirm_state(self):
+        current = self.__dict__.get("current_set_info") or {}
+        target = (current.get("id"), tuple(current.get("raw") or ()))
+        if self.__dict__.get("_partial_submit_target") != target:
+            self._clear_partial_submit_confirmation()
+        return copy.deepcopy(self.__dict__.get("_partial_submit_confirmation"))
+
+    def _request_scanner_shortage(self):
+        if not self._scanner_shortage_allowed():
+            return False
+        current = self.current_set_info
+        total = _label_match_set_total_scan_count(current) - 1
+        done = len(current["raw"]) - 1
+        self._partial_submit_target = (current.get("id"), tuple(current["raw"]))
+        self._partial_submit_confirmation = {
+            "kind": "partial_submit", "total": total, "done": done, "short": total - done,
+        }
+        self.update_big_display(
+            f"수량 부족 — 부분 제출하시겠습니까?\n{total}개 중 {done}개({total - done}개 부족)", "primary")
+        return True
+
+    def _submit_partial_scanner(self):
+        if self._partial_submit_confirm_state() is None:
+            return False
+        if self._ui_lane_is_busy() or self.__dict__.get("_app_close_in_progress", False):
+            return False
+        if self.__dict__.get("operator_workbench_ready"):
+            view = self._render_operator_workbench()
+            if view is None or not view.scan_input_enabled:
+                return False
+        self._clear_partial_submit_confirmation()
+        return self._confirm_scanner_shortage()
+
+    def _confirm_scanner_shortage(self):
+        if not self._scanner_shortage_allowed():
+            return False
+        current = self.current_set_info
         previous = copy.deepcopy(self.current_set_info)
         self.current_set_info.setdefault("local_completed_at", datetime.now(timezone.utc).isoformat())
         self.current_set_info["shortage_confirmed_at"] = datetime.fromtimestamp(
@@ -16592,13 +16642,11 @@ class Label_Match(tk.Tk):
             self.current_set_info.update(previous)
             return self._publish_durable_commit_block(PackageLogisticsError("short confirmation decision save failed"))
         self._scanner_shortage_undo = snapshot
-        self._shortage_confirmation_deadline = time.monotonic() + 60.0
-        if self._finalize_set(self.Results.PASS) and self.__dict__.get("_scanner_shortage_undo"):
-            details = self.set_details_map[str(snapshot.get("completion_identity") or snapshot["id"])]
-            self.current_set_info["shortage_undo_snapshot"] = snapshot
-            self.current_set_info["shortage_completion_details"] = details
+        if self._finalize_set(self.Results.PASS) and not self.__dict__.get("_scanner_shortage_undo"):
             self._play_sound("scan_master")
-            self.update_big_display(f"부족 {missing}개로 확정", "primary")
+            self.update_big_display(f"부분 제출 완료 — {len(snapshot['raw']) - 1}개({missing}개 부족)", "primary")
+            return True
+        return False
 
     def _cancel_shortage_confirmation_timeout(self):
         state = self.__dict__
@@ -16612,49 +16660,10 @@ class Label_Match(tk.Tk):
                 pass
 
     def _arm_shortage_confirmation_timeout(self):
-        """Use durable wall time once on recovery, then the owner's monotonic clock."""
-        state = self.__dict__
-        current = state.get("current_set_info") or {}
-        snapshot = state.get("_scanner_shortage_undo") or current.get("shortage_undo_snapshot")
-        if not snapshot or state.get("_shortage_confirmation_token") is not None:
-            return
-        stamp = current.get("shortage_confirmed_at") or snapshot.get("shortage_confirmed_at")
-        if not stamp:
-            stamp = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
-        if not current.get("shortage_confirmed_at"):
-            current["shortage_confirmed_at"] = stamp
-            if not self.data_manager.save_current_state({"current_set_info": current}):
-                current.pop("shortage_confirmed_at", None)
-                self._publish_durable_commit_block(PackageLogisticsError("short confirmation time save failed"))
-                return
-        if state.get("_shortage_confirmation_deadline") is None:
-            confirmed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-            if confirmed.tzinfo is None:
-                confirmed = confirmed.replace(tzinfo=timezone.utc)
-            age = max(0.0, time.time() - confirmed.timestamp())
-            remaining = 0.0 if current.get("shortage_release_pending") else max(0.0, 60.0 - age)
-            state["_shortage_confirmation_deadline"] = time.monotonic() + remaining
-        token = state["_shortage_confirmation_token"] = object()
-        self._expire_shortage_confirmation(token)
+        """Replay a durable shortage decision immediately, including old snapshots."""
+        self._cancel_shortage_confirmation_timeout()
+        return self._release_shortage_confirmation()
 
-    def _expire_shortage_confirmation(self, token):
-        state = self.__dict__
-        if state.get("_shortage_confirmation_token") is not token:
-            return
-        state.pop("_shortage_confirmation_after_id", None)
-        remaining = state["_shortage_confirmation_deadline"] - time.monotonic()
-        if remaining > 0:
-            state["_shortage_confirmation_after_id"] = self.after(
-                max(1, int(remaining * 1000 + 0.999)),
-                lambda: self._expire_shortage_confirmation(token))
-            return
-        if self._release_shortage_confirmation():
-            if state.get("operator_workbench_ready"):
-                self._render_operator_workbench()
-        else:
-            # Preserve the original decision/key when a durable release fails.
-            state["_shortage_confirmation_after_id"] = self.after(
-                1000, lambda: self._expire_shortage_confirmation(token))
 
     def _release_shortage_confirmation(self):
         current = self.__dict__.get("current_set_info") or {}
@@ -16685,6 +16694,7 @@ class Label_Match(tk.Tk):
                 raise PackageLogisticsError("short confirmation release state save failed")
             self.current_set_info.clear()
             self.current_set_info.update(checkpoint)
+            self._scanner_last_partial_submit = ((released.get("raw") or [""])[0], time.monotonic())
             self.__dict__.pop("_scanner_shortage_undo", None)
             self._cancel_shortage_confirmation_timeout()
             if released.get("scanner_only"):
@@ -16699,54 +16709,9 @@ class Label_Match(tk.Tk):
             return
         current = self.current_set_info
         snapshot = self.__dict__.get("_scanner_shortage_undo") or current.get("shortage_undo_snapshot")
-        if current.get("shortage_release_pending"):
-            return self._ignore_product_scan("KMCMD:UNDO", "이미 다음 작업으로 넘긴 미달 확정입니다.")
-        if (not current.get("raw") or current.get("shortage_confirmed")) and snapshot:
-            set_id = str(snapshot.get("completion_identity") or snapshot["id"])
-            details = self.set_details_map.get(set_id) or current.get("shortage_completion_details")
-            if not details:
-                return self._ignore_product_scan("KMCMD:UNDO", "되돌릴 미달 확정이 없습니다.")
-            # Once UNDO starts, a partially durable cancellation must never
-            # race the timer into releasing the cancelled completion.
-            self._cancel_shortage_confirmation_timeout()
-            try:
-                log_details = {"cancelled_set_id": set_id, "details": details, "reason": "SHORTAGE_UNDO"}
-                self._commit_package_cancellation_local_event(
-                    event_type=self.Events.TRAY_COMPLETION_CANCELLED,
-                    local_event_details=log_details, cancellation=None)
-                restored = copy.deepcopy(snapshot)
-                restored["completion_identity"] = f"{set_id}-undo"
-                restored["transition_row_key"] = ""
-                restored.pop("local_completed_at", None)
-                restored.pop("shortage_confirmed_at", None)
-                self._cancel_deferred_capture_for_set(snapshot)
-                restored.pop("deferred_intent_id", None)
-                if restored.get("scanner_only"):
-                    captured = self._capture_or_resume_central_phs2_scan(
-                        restored["raw"][0], restored["parsed"][0], restored["completion_identity"], None)
-                    restored["deferred_intent_id"] = captured.intent_id
-                if not self.data_manager.save_current_state({"current_set_info": restored}):
-                    raise PackageLogisticsError("shortage undo state save failed")
-            except Exception as error:
-                return self._publish_durable_commit_block(error)
-            self.set_details_map.pop(set_id, None)
-            self.__dict__.get("history_row_details_map", {}).pop(set_id, None)
-            summary_date = _label_match_summary_date(details)
-            key = (details.get("item_code"), details.get("phase") or "-")
-            counts = self.scan_count.get(summary_date, {})
-            if counts.get(key, 0):
-                counts[key] -= 1
-                if not counts[key]:
-                    del counts[key]
-                if not counts:
-                    self.scan_count.pop(summary_date, None)
-            if self.history_tree.exists(set_id):
-                self.history_tree.delete(set_id)
-            self._rebuild_global_scanned_set_from_details()
-            self.current_set_info = restored
-            self.__dict__.pop("_scanner_shortage_undo", None)
-            self._update_summary_tree()
-        elif current.get("raw"):
+        if snapshot or current.get("shortage_confirmed"):
+            return self._ignore_product_scan("KMCMD:UNDO", "부분 제출한 기록은 되돌릴 수 없습니다.")
+        if current.get("raw"):
             restored = copy.deepcopy(current)
             if restored.get("scanner_exchange_phase"):
                 restored.pop("scanner_exchange_phase", None)
@@ -19528,6 +19493,7 @@ class Label_Match(tk.Tk):
             self._deferred_capture_ui = None
 
     def _reset_current_set(self, full_reset=False, from_finalize=False):
+        self._clear_partial_submit_confirmation()
         if self.is_blinking: return False
         if full_reset and not from_finalize and self._csv_completed_set_blocks_edit("KMCMD:UNDO"):
             return False
@@ -22806,9 +22772,9 @@ class Label_Match(tk.Tk):
         except PHSLabelWorkflowError:
             phs_label_recovery_pending = True
         for name, enabled in (
-            ("manual_complete_button", bool(view.cancel_current_enabled or
-                (view.scan_input_enabled and (self.__dict__.get("_scanner_shortage_undo") or
-                 (self.__dict__.get("current_set_info") or {}).get("shortage_undo_snapshot"))))),
+            ("manual_complete_button", bool(view.cancel_current_enabled and not
+                (self.__dict__.get("_scanner_shortage_undo") or
+                 (self.__dict__.get("current_set_info") or {}).get("shortage_undo_snapshot")))),
             ("exact_rescan_button", view.f4_enabled),
             ("reset_button", view.cancel_current_enabled or self._refused_capture_cancel_enabled(view)),
             ("cancel_tray_button", view.cancel_completed_enabled),
@@ -22924,6 +22890,12 @@ class Label_Match(tk.Tk):
         entered_scan = str(text or "").strip()
         self._last_scan_enter_at = time.monotonic()
         self._clear_scanner_notice()
+        confirmation = self._partial_submit_confirm_state()
+        partial_answer = confirmation is not None and entered_scan in {
+            "", str((self.current_set_info.get("raw") or [""])[0]),
+        }
+        if confirmation is not None and not partial_answer:
+            self._clear_partial_submit_confirmation()
         if self._reject_residual_tag_input(entered_scan, consume_input=self._consume_scan_entry if from_entry else None):
             return "break"
         if self.__dict__.get("operator_workbench_ready") and entered_scan:
@@ -22946,10 +22918,16 @@ class Label_Match(tk.Tk):
                         self.update_big_display(f"스캔 안 받음 · {view.next_action}", "red")
                     self._play_sound("fail")
                 return "break"
+        if partial_answer:
+            if from_entry:
+                self._consume_scan_entry()
+            self._submit_partial_scanner()
+            return "break"
         return self.process_input(event) if raw is None else self.process_input(event, raw=raw)
 
     def _handle_workflow_shortcut(self, action, event=None):
         """Apply the same presenter gate to keyboard and button actions."""
+        self._clear_partial_submit_confirmation()
         if self._app_close_blocks_local_action():
             return "break"
         action = str(action).lower()
@@ -22962,7 +22940,7 @@ class Label_Match(tk.Tk):
             "f2": bool(view and view.cancel_completed_enabled),
             "f3": bool(view and view.f3_enabled),
             "f4": bool(view and view.f4_enabled),
-            "undo": bool(self.current_set_info.get("raw") or self.__dict__.get("_scanner_shortage_undo") or self.current_set_info.get("shortage_undo_snapshot")),
+            "undo": bool(self.current_set_info.get("raw") and not self.current_set_info.get("shortage_confirmed")),
         }
         if not allowed.get(str(action).lower(), False):
             return "break"
@@ -22977,6 +22955,9 @@ class Label_Match(tk.Tk):
         return "break"
 
     def _handle_workflow_escape(self, event=None):
+        if self._partial_submit_confirm_state() is not None:
+            self._clear_partial_submit_confirmation()
+            return "break"
         guidance = self.__dict__.get("_phs_label_guidance_notice")
         if guidance is not None and guidance.kind == "scanner_notice":
             self._clear_scanner_notice()
@@ -24011,7 +23992,7 @@ class Label_Match(tk.Tk):
     def _update_manual_complete_button_state(self):
         button = self.__dict__.get("manual_complete_button")
         if button is not None:
-            button.config(text="취소 · 방금 스캔 되돌리기", state="normal" if self.current_set_info.get("raw") or self.__dict__.get("_scanner_shortage_undo") else "disabled")
+            button.config(text="취소 · 방금 스캔 되돌리기", state="normal" if self.current_set_info.get("raw") and not self.current_set_info.get("shortage_confirmed") else "disabled")
 
 
     def _update_exact_rescan_button_state(self):
