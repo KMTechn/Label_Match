@@ -44,7 +44,9 @@ import writer_session_fence as fence  # noqa: E402
 import failure_redaction  # noqa: E402
 
 started = time.monotonic()
-if sys.argv[1:] == ['--foreign']:
+if sys.argv[1:2] == ["--foreign"]:
+    if len(sys.argv) > 2:
+        os.environ[fence.CONTROL_ROOT_OVERRIDE_ENV] = sys.argv[2]
     for name in (fence.DELEGATION_TOKEN_ENV, fence.DELEGATION_SESSION_ENV,
                  fence.DELEGATION_ATTEMPT_ENV, fence.DELEGATION_TRANSACTION_ENV):
         os.environ.pop(name, None)
@@ -83,9 +85,23 @@ def stock_verify(command, **kwargs):
         return subprocess.CompletedProcess(command, 1, '', 'isolated stock verification failed')
     return subprocess.CompletedProcess(command, 0, 'PASS', '')
 subprocess.run = stock_verify
-active = fence.active_fence(fence.canonical_control_root())
+machine_expected = os.environ.get("KMTECH_TEST_PLACEMENT_MACHINE") == "1"
+machine_arguments = "--machine-installer-authority" in sys.argv
+if machine_expected and not machine_arguments:
+    raise AssertionError("machine authority arguments were not forwarded")
+diagnostic_control = fence.canonical_control_root()
+if machine_arguments:
+    diagnostic_control = Path(sys.argv[sys.argv.index("--installer-authority-root") + 1])
+    assert diagnostic_control != fence.canonical_control_root()
+    # Native privileged ACL observation and canonical location are the host
+    # facets; native owner PID/birth, mutex, tuple and the actual CLI stay real.
+    fence._installer_owner_root = lambda: machine.absolute()
+    fence._assert_protected_owner_path = lambda _path: None
+active = fence.active_fence(diagnostic_control)
+foreign_environment = dict(os.environ)
+foreign_environment[fence.CONTROL_ROOT_OVERRIDE_ENV] = str(diagnostic_control)
 foreign = original_run([sys.executable, '-I', '-B', str(Path(__file__).resolve()), '--foreign'],
-                       capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                       capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW, env=foreign_environment)
 (machine / 'child-grant.json').write_text(json.dumps({
     'sources': active['delegated_sources'],
     'fresh': active['delegation_sha256'] != os.environ['LM_PLACEMENT_PARENT_GRANT_SHA'],

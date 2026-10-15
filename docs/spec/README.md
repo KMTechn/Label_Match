@@ -316,3 +316,6 @@ v2.0.104 후보는 인수 없이 새 화면(셸 v3.16.2)을 엽니다. 비상 `-
 JSON·관계·자료형·필수 키 실패는 `PACKAGE_RECOVERY_STORED_EVIDENCE_INVALID`, 정상 증거 조회 중 저장소 실패는 별도 `PACKAGE_RECOVERY_STORAGE_UNAVAILABLE`로 거절한다. SQL에 넘길 snapshot 식별자는 조회 전에 검사한다. 저장소 오류는 「작업 기록을 읽지 못했습니다」/「잠시 후 프로그램을 다시 켜세요」와 작은 줄 「코드: PACKAGE_RECOVERY_STORAGE_UNAVAILABLE」를 보인다. 기존 안내에는 자세히 칸이 없어 「다시 켜도 같으면 현장 관리자에게 알리세요」를 보조 줄로 표시한다(WMX0008–0009). 원 오류 내용은 안내에 넣지 않는다. 두 코드는 기존 시작 거절 관측과 정해진 종료로 연결한다.
 
 정상 회수 증거의 양성 회귀는 실제 `main`·guarded callback·store admission을 지나며 UI·네트워크·외부 상태만 격리한다. 실제 GUI 수용 회차를 대신하지 않는다. 읽기 계약의 정본은 별도 [package-recovery.md](package-recovery.md)의 지정 바이트 그대로 유지한다.
+
+
+v2.0.107 조립: 앱 판·자료 판·하한 모두 107. field-update-feed 원본 SHA 결속과 ZIP runtime 관문은 [운영](operations.md#v20107-조립-관문), machine-worker 예외는 [lifecycle 설계](LIFECYCLE-DESIGN.md)를 따른다.

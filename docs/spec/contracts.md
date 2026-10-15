@@ -612,3 +612,8 @@ CLI의 요청 시각은 마이크로초를 유지한 UTC aware 값이다. GUI는
 
 
 관리자 SSH/Session 0 machine-worker 길은 다른 작업자 세션으로 relay를 실행하지 않는다. 성공은 PASS_MACHINE_WORKER_PENDING/첫 일반 실행을 유지한다. 실패에는 코드·startup preimage·담장 자동 복원 사실과 값 없는 작업자 안내를 남기며, 끝 relay READY 의무는 일반 작업자·같은 세션 설치 길에만 적용한다. 현장 지원은 코드 전용 제거 후 새 설치, 업데이트는 apply_prepared를 사용한다.
+
+
+## v2.0.107 조립 관문
+
+v2.0.107 조립의 앱 판·자료 판·data_compatible_min_version 하한은 모두 v2.0.107이다. 빌드 --auto-update-settings 입력은 w9mgrweb/field-update-feed-1015/label_match.auto-update-settings.json 원본 파일 그대로이며 SHA256 b8b0cfa0bdc90cb123299a01a9143a723c528ebb32c70a4104e76e7885b101a7에 결속한다. feed_url=https://worker.kmtecherp.com/static/update-feed/channels/label_match/stable/latest.json, channel=stable, profile_auth=true. 내보낼 ZIP을 E:에 풀어 app/auto-update-settings.json을 입력 파일과 바이트로 대조하고 그 runtime으로 import·탐침 관문을 실행한다.

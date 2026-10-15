@@ -4,6 +4,26 @@ from types import SimpleNamespace
 
 import pytest
 
+
+def test_expired_app_stop_deadline_preserves_marker_and_does_not_stop_relay(tmp_path, monkeypatch):
+    import label_atomic_replace as atomic
+    import user_relay
+
+    relay = tmp_path / "relay"
+    marker = user_relay.app_stop_request_path(relay)
+    marker.parent.mkdir(parents=True)
+    before = b"synthetic existing stop marker"
+    marker.write_bytes(before)
+    monkeypatch.setattr(user_relay, "_app_stop_process_snapshot", lambda **_kwargs: [])
+    monkeypatch.setattr(user_relay, "request_user_relay_stop",
+                        lambda *_args, **_kwargs: pytest.fail("expired request stopped a relay"))
+    monkeypatch.setattr(atomic, "_replace_once",
+                        lambda *_args, **_kwargs: pytest.fail("expired request published a marker"))
+    with pytest.raises(TimeoutError):
+        user_relay.request_app_stop(relay, app_root=tmp_path / "app",
+                                   webview_root=tmp_path / "udf", timeout_seconds=0)
+    assert marker.read_bytes() == before
+
 import label_atomic_replace as publication
 import user_relay
 

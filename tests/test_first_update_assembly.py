@@ -39,7 +39,7 @@ def test_default_stop_owns_the_shell_udf_but_not_another_app(tmp_path, monkeypat
     ]
     monkeypatch.setattr(user_relay, "_app_stop_process_snapshot", lambda **_: rows)
     monkeypatch.setattr(user_relay, "request_user_relay_stop", lambda *_a, **_k: {"status": "ABSENT"})
-    result = user_relay.request_app_stop(relay, app_root=app_root, timeout_seconds=0)
+    result = user_relay.request_app_stop(relay, app_root=app_root, timeout_seconds=1)
     assert result["status"] == "UNKNOWN"
     assert result["remaining_process_count"] == 1
 

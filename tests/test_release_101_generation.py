@@ -16,8 +16,9 @@ from kmtech_shared.data_generation import probe_downgrade, record_generation
     ("v2.0.101", "a" * 40),
     ("v2.0.102", "a" * 40),
     ("v2.0.103", "a" * 40),
+    ('v2.0.106', '06a474b46095fa044a0c46a045b3445cece1ee57'),
 ])
-def test_release_106_admits_previous_generations_and_blocks_lower_rollback(
+def test_release_107_admits_previous_generations_and_blocks_lower_rollback(
         tmp_path, previous_version, previous_build):
     source = Path(__file__).resolve().parents[1] / "Label_Match.py"
     assignments = ast.parse(source.read_text(encoding="utf-8-sig")).body
@@ -26,7 +27,7 @@ def test_release_106_admits_previous_generations_and_blocks_lower_rollback(
                        and any(isinstance(target, ast.Name)
                                and target.id == "APP_VERSION"
                                for target in node.targets))
-    assert app_version == label_data_generation.CURRENT_VERSION == "v2.0.106"
+    assert app_version == label_data_generation.CURRENT_VERSION == "v2.0.107"
     marker = tmp_path / "data-generation.json"
     identity = {"app_id": "Label_Match", "subject_sid": "S-1-5-21-172"}
     current_build = "d8a85220f672e8616deed776100aff0661b8b968"
@@ -46,8 +47,8 @@ def test_release_106_admits_previous_generations_and_blocks_lower_rollback(
     assert upgrade["allowed"] is True
     recorded = record_generation(marker, label_data_generation.CURRENT_VERSION,
                                  build_id=current_build, **identity)
-    assert recorded["version"] == "v2.0.106"
-    assert recorded["data_compatible_min_version"] == "v2.0.106"
+    assert recorded["version"] == "v2.0.107"
+    assert recorded["data_compatible_min_version"] == "v2.0.107"
     assert recorded["compatibility_verified"] is False
     rollback = probe_downgrade([marker], previous_version,
                                target_build_id=previous_build, **identity)

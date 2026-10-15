@@ -22,7 +22,7 @@ def quote(value):
 
 @pytest.mark.parametrize('mode,failure', [('inspect', False), ('activate', False),
                                         ('inspect', True), ('activate', True), ('removed', False)])
-def test_placement_lifecycle_child_preserves_fence_and_parent_grant(tmp_path, monkeypatch, mode, failure):
+def test_placement_lifecycle_child_preserves_fence_and_parent_grant(tmp_path, monkeypatch, mode, failure, *, machine_worker=False):
     machine = tmp_path / 'machine'
     machine.mkdir()
     if mode == 'removed':
@@ -58,6 +58,19 @@ def test_placement_lifecycle_child_preserves_fence_and_parent_grant(tmp_path, mo
                 'LM_PLACEMENT_MACHINE': str(machine),
                 'LM_PLACEMENT_PARENT_GRANT_SHA': str(payload['delegation_sha256']),
                 'LM_PLACEMENT_VERIFY_FAIL': '1' if failure else '0'})
+    if machine_worker:
+        from tests.test_machine_lifecycle_authority import current_native_birth
+        import uuid
+        owner_run = '20261015T000000000Z-' + uuid.uuid4().hex
+        owner = dict(schema='label-match-installer-owner-v1', run_id=owner_run,
+                     control_root=str(writer_control.absolute()), install_root=str((machine / 'current').absolute()),
+                     owner_process_id=os.getpid(), owner_process_started_at_filetime=current_native_birth())
+        owner.update({name: payload[name] for name in fence._INSTALLER_TUPLE_FIELDS})
+        owner_path = machine / ('.installer-owner-' + payload['session_id'] + '-' + owner_run.rsplit('-', 1)[-1] + '.json')
+        owner_path.write_text(json.dumps(owner), encoding='utf-8')
+        env[fence.CONTROL_ROOT_OVERRIDE_ENV] = str(tmp_path / 'unused-user-control')
+        env['KMTECH_TEST_PLACEMENT_MACHINE'] = '1'
+
     statement = '$activation' if mode == 'activate' else '$healthOutput'
     installer = ROOT / 'INSTALL_THIS_PC.ps1'
     harness = tmp_path / 'placement.ps1'
@@ -113,6 +126,15 @@ try{{
 }}finally{{if($null -ne $script:writerFenceLease){{Exit-LabelWriterAdmission $script:writerFenceLease}}}}
 [pscustomobject]@{{child_code=$childCode;lifecycle_state=$lifecycleState;foreign_denied=$denied;grant_restored=$restored;environment_restored=$environmentRestored;parent_held=$held;writer_timeout=$timedOut}}|ConvertTo-Json -Compress
 """, encoding='utf-8-sig')
+    if machine_worker:
+        script = harness.read_text(encoding='utf-8')
+        binding = "$WorkerSid='S-1-5-21-7-8-9-1001';$installRootFull=" + quote(machine / 'current') + ";$InstallerRunId=" + quote(owner_run)
+        assert script.count("$WorkerSid=''") == 1
+        script = script.replace("$WorkerSid=''", binding)
+        assert script.count('--foreign)') == 2
+        script = script.replace('--foreign)', '--foreign ' + quote(writer_control) + ')')
+        harness.write_text(script, encoding='utf-8')
+
     authority = fence._acquire_named_mutex(str(payload['session_authority_mutex_name']), 0)
     assert authority is not None
     try:
@@ -222,3 +244,9 @@ try{{
     assert summary['caught'] == expected_error
     assert summary['restored'] == (damage != 'grant_changed')
     assert summary['environment_restored'] and summary['held']
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_machine_activation_child_uses_authority_without_user_root_fallback(tmp_path, monkeypatch, failure):
+    test_placement_lifecycle_child_preserves_fence_and_parent_grant(
+        tmp_path, monkeypatch, "activate", failure, machine_worker=True)

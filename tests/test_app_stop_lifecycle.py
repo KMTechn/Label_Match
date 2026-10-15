@@ -177,7 +177,7 @@ def test_stop_result_waits_for_app_tree_and_reports_remaining(monkeypatch, tmp_p
     row = process(10, 1, root / 'runtime' / 'pythonw.exe')
     monkeypatch.setattr(user_relay, 'request_user_relay_stop', lambda root, **k: {'status': 'ABSENT'})
     monkeypatch.setattr(user_relay, '_app_stop_process_snapshot', lambda **k: [row], raising=False)
-    report = user_relay.request_app_stop(tmp_path / 'relay', app_root=root, webview_root=udf, timeout_seconds=0)
+    report = user_relay.request_app_stop(tmp_path / 'relay', app_root=root, webview_root=udf, timeout_seconds=1)
     assert report['status'] == 'UNKNOWN'
     assert report['remaining_process_count'] == 1
     rows = iter([[row], []])
