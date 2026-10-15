@@ -55,13 +55,74 @@ def test_recovery_required_onboarding_is_visible_and_does_not_repeat_enrollment(
                 autostart_installer=lambda _root: pytest.fail("recovery activated persistence"),
             )
         assert caught.value.status == "RECOVERY_REQUIRED"
-        assert "일반 등록 토큰과 별도의 관리자 복구 승인" in str(caught.value)
+        assert '현장 관리자' in str(caught.value)
+        assert caught.value.cause_code == "ADMIN_RECOVERY_ACTION"
         report = json.loads(paths.onboarding_report_path.read_text(encoding="utf-8"))
         assert report["status"] == "RECOVERY_REQUIRED"
         assert report["recovery_action"] == "ADMIN_RECOVERY_REQUIRED"
         assert report["server_registration_verified"] is False
     assert attempts == [True]
     assert not paths.identity_path.exists()
+    assert not paths.ledger_path.exists()
+
+
+def test_reattach_required_onboarding_preserves_classification_across_restart(tmp_path):
+    env = {"LOCALAPPDATA": str(tmp_path / "local"), "APPDATA": str(tmp_path / "roaming")}
+    paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=env)
+    attempts = []
+
+    def registration(selected):
+        attempts.append(1)
+        _write_json(selected.registration_report_path, {
+            "report_version": "label-match-worker-pc-registration-v1",
+            "status": "POSSESSION_PROOF_REATTACH_REQUIRED",
+            "recovery_action": "POSSESSION_PROOF_REATTACH_REQUIRED",
+            "secret_material_persisted": False,
+            "server_http_status": 409, "server_error_code": "reattach_proof_required",
+        })
+        return 2
+
+    for _ in range(2):
+        with pytest.raises(CurrentUserOnboardingError) as caught:
+            onboard_current_user(
+                paths.app_root, environ=env, require_bootstrap_integrity=False,
+                registration_runner=registration,
+                legacy_task_quiescence_reader=_legacy_task_quiescent,
+                autostart_installer=lambda _root: pytest.fail("recovery cannot install Run"),
+            )
+        assert caught.value.status == "RECOVERY_REQUIRED"
+        assert caught.value.cause_code == "POSSESSION_PROOF_REATTACH_REQUIRED"
+        report = json.loads(paths.onboarding_report_path.read_text(encoding="utf-8"))
+        assert report["recovery_action"] == "POSSESSION_PROOF_REATTACH_REQUIRED"
+        assert not report["server_registration_verified"]
+    assert attempts == [1]
+    assert not paths.identity_path.exists() and not paths.ledger_path.exists()
+
+
+@pytest.mark.parametrize("registration_status", [
+    "POSSESSION_PROOF_REATTACH_REQUIRED", "ADMIN_RECOVERY_REQUIRED",
+])
+def test_recovery_report_with_existing_credentials_never_enrolls_or_changes_bytes(tmp_path, registration_status):
+    env = {"LOCALAPPDATA": str(tmp_path / "local"), "APPDATA": str(tmp_path / "roaming")}
+    paths = resolve_current_user_onboarding_paths(tmp_path / "app", environ=env)
+    _ready_state(paths)
+    _write_json(paths.registration_report_path, {
+        "report_version": "label-match-worker-pc-registration-v1",
+        "status": registration_status, "recovery_action": registration_status,
+        "secret_material_persisted": False, "server_http_status": 409,
+    })
+    protected = (paths.credential_path, paths.identity_path, paths.producer_manifest_path,
+                 paths.logistics_profile_path, paths.logistics_secret_path, paths.registration_report_path)
+    before = {path: path.read_bytes() for path in protected}
+    for _ in range(2):
+        with pytest.raises(CurrentUserOnboardingError):
+            onboard_current_user(
+                paths.app_root, environ=env, require_bootstrap_integrity=False,
+                registration_runner=lambda _paths: pytest.fail("recovery decision must block enrollment"),
+                legacy_task_quiescence_reader=_legacy_task_quiescent,
+                autostart_installer=lambda _root: pytest.fail("recovery decision must block autostart"),
+            )
+        assert all(path.read_bytes() == expected for path, expected in before.items())
     assert not paths.ledger_path.exists()
 
 
