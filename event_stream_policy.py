@@ -19,6 +19,8 @@ LOCAL_ONLY_EVENT_TYPES = frozenset(
         "EXACT_RESCAN_STARTED",
         "EXACT_RESCAN_OK",
         "EXACT_RESCAN_COMPLETED",
+        "APP_CLOSE_CANCELLED",
+        "멈춤 요청 미룸",
     }
 )
 
