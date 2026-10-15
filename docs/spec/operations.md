@@ -1403,11 +1403,11 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 
 지원 시작 업데이트 작업의 소유 판정은 `ServiceAccount`와 숫자 `5`, `Highest`·`HighestAvailable`과 숫자 `1`을 같은 스케줄러 되읽기로 받는다. 다른 주체·로그온 유형·실행 수준·action은 기존대로 거절한다. 제거 입구와 업데이트 관측 입구가 같은 판정을 사용하며 작업 등록·권한 정책은 바꾸지 않는다.
 
-기계 설치기는 코드·입구 readback 뒤 공용 바탕화면·공용 시작 메뉴를 준비한다. 작업자 세션의 canonical 설치기는 최종 relay/Run 확인 뒤 개인 바탕화면·시작 메뉴의 옛 깨진 링크를 준비한다. 대상은 manifest의 current/launch-label-match.cmd, 이름은 새로 만들 때 「포장」, 아이콘은 current/app/assets/logo.ico, WindowStyle=7이다. 설치 루트 아래의 사라진 대상만 같은 자리에서 바꾸며 다른 앱·다른 루트·파일이 있는 대상은 그대로 둔다. 공용 각 자리에서 바꿀 링크가 없으면 새 링크를 만든다.
+기계 설치기는 코드·입구 readback 뒤 공용 바탕화면·공용 시작 메뉴를 준비한다. 작업자 세션의 canonical 설치기는 최종 relay/Run 확인 뒤 개인 바탕화면·시작 메뉴의 옛 깨진 링크를 준비한다. 대상은 current/runtime/pythonw.exe, 인수는 `-I -B "<current>/app/main.py"`, 작업 폴더는 current, 이름은 새로 만들 때 「포장」, 아이콘은 current/app/assets/logo.ico, WindowStyle=1이다. 설치 루트 아래의 사라진 대상과 속성·해시로 증명한 옛 launch-label-match.cmd 링크를 같은 자리에서 바꾸며 다른 앱·다른 루트·그 밖의 파일이 있는 대상은 그대로 둔다. 공용 각 자리에서 바꿀 링크가 없으면 새 링크를 만든다.
 
 설치 감사의 worker_shortcuts는 common_record_path와 user_record_path를 기록한다. 각 JSON은 원래 대상·인수·아이콘 등 속성과 .preimages/의 원본 링크·해시, 새 링크 해시를 보존한다. 실패한 설치의 코드 복원 뒤 canonical rollback이 개인과 공용 기록을 각각 소비한다. 지원 제거에서 기계 helper에 WorkerShortcutRecordPath·VerifiedWorkerShortcutHelperPath·ExpectedWorkerShortcutHelperSha256을 제공하면 같은 공용 복원 경계를 사용한다. 옛 앱 복귀를 수행하는 작업자 도구는 보존한 해시 검증 helper tools/label_worker_shortcuts.ps1에 -InstallRoot <current> -RecordPath <user JSON> -UserOnly -Rollback(또는 -Uninstall)을 넘겨 개인 링크를 복원한다. 이 바로 가기 명령은 코드·자료를 복원하는 설치 명령과 별개이며, 코드 복원 뒤 실행한다.
 
-바뀐 링크는 원본 바이트로 복원하고 새 링크는 삭제한다. 사용자가 이후 바꾼 링크·다른 대상·reparse·기록 경계 이탈·helper 변조는 거절한다. 관리자 직접 설치는 CommonOnly 경계를 사용하며 작업자 첫 시작 onboarding에 UserOnly 경계를 연결하는 일은 다음 가지 몫이다. 실제 Explorer 기동·아이콘 표시·콘솔 표시와 v2.0.5 복귀의 현장 확인은 이 headless 시험으로 증명하지 않는다.
+바뀐 링크는 원본 바이트로 복원하고 새 링크는 삭제한다. 옛 wrapper 설치 기록도 같은 v1 형식과 원본 해시로 소비하며, 이전 설치의 원본이 wrapper이면 그 원본 바이트를 그대로 되살린다. 게시 링크는 임시 .lnk의 COM 되읽기 뒤 원자 교체하므로 중간 쓰기는 실제 링크를 바꾸지 않는다. 사용자가 이후 바꾼 링크·다른 대상·reparse·기록 경계 이탈·helper 변조는 거절한다. 관리자 직접 설치는 CommonOnly 경계를 사용하며 작업자 첫 시작 onboarding에 UserOnly 경계를 연결하는 일은 다음 가지 몫이다. 실제 Explorer 기동·아이콘 표시·콘솔 표시와 v2.0.5 복귀의 현장 확인은 이 headless 시험으로 증명하지 않는다.
 <a id="remote-app-stop"></a>
 ### 원격 정상 멈춤
 

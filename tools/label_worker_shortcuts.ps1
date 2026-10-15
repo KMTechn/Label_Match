@@ -116,8 +116,11 @@ function Set-LabelShortcutProperties([string]$Path, $Properties) {
     Assert-LabelShortcutPath $Path
     $existed = Test-Path -LiteralPath $Path -PathType Leaf
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))
+    $temporary = $Path + '.tmp.' + [guid]::NewGuid().ToString('N') + '.lnk'
+    try {
+    if ($existed) { Copy-LabelAtomicFile $Path $temporary }
     $shell = New-Object -ComObject WScript.Shell
-    $link = $shell.CreateShortcut($Path)
+    $link = $shell.CreateShortcut($temporary)
     $link.TargetPath = [string]$Properties.target_path
     $link.Arguments = [string]$Properties.arguments
     $link.WorkingDirectory = [string]$Properties.working_directory
@@ -128,6 +131,13 @@ function Set-LabelShortcutProperties([string]$Path, $Properties) {
         $link.Hotkey = [string]$Properties.hotkey
     }
     $link.Save()
+    if (-not (Test-LabelShortcutProperties (Get-LabelShortcutProperties $temporary) $Properties)) {
+        throw 'Prepared worker shortcut readback differs.'
+    }
+    Copy-LabelAtomicFile $temporary $Path
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary }
+    }
 }
 
 function Copy-LabelAtomicStream($SourceStream, $DestinationStream) {
@@ -214,7 +224,7 @@ function Get-LabelWorkerShortcutPublished($Record) {
             }
         }
     }
-    if ($Record -is [Collections.IDictionary]) { $Record.preserved = $preserved }
+    if ($Record -is [Collections.IDictionary] -or $null -ne $Record.PSObject.Properties['preserved']) { $Record.preserved = $preserved }
     else { $Record | Add-Member -NotePropertyName preserved -NotePropertyValue $preserved -Force }
     foreach ($path in @($paths | Select-Object -Unique)) {
         $folder = @($folders | Where-Object {$path.StartsWith($_.path.TrimEnd('\')+'\', [StringComparison]::OrdinalIgnoreCase)})
@@ -235,36 +245,68 @@ function Install-LabelWorkerShortcuts([string]$Root, $Manifest, [string]$Path, [
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
     if ([string]$Manifest.launcher -cne 'launch-label-match.cmd') { throw 'Worker launcher differs from the portable manifest.' }
     $launcher = Join-Path $rootFull ([string]$Manifest.launcher)
+    $pythonw = Join-Path $rootFull 'runtime/pythonw.exe'
+    $entrypoint = Join-Path $rootFull 'app/main.py'
+    if ($entrypoint.Contains('"')) { throw 'Worker entrypoint path contains a quote.' }
     $icon = Join-Path $rootFull 'app/assets/logo.ico'
-    foreach ($file in @($launcher, $icon)) {
+    foreach ($file in @($pythonw, $entrypoint, $icon)) {
         Assert-LabelShortcutPath $file
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw 'Installed worker launcher/icon is absent.' }
     }
-    $expected = [ordered]@{target_path=$launcher;arguments='';working_directory=$rootFull;
+    $legacy = [ordered]@{target_path=$launcher;arguments='';working_directory=$rootFull;
         icon_location=($icon+',0');window_style=7;description='포장';hotkey=''}
+    $expected = [ordered]@{target_path=$pythonw;arguments=('-I -B "'+$entrypoint+'"');working_directory=$rootFull;
+        icon_location=($icon+',0');window_style=1;description='포장';hotkey=''}
+    $record = $null; $previousExpected = $null; $targets = @()
     if (Test-Path -LiteralPath $Path) {
         $saved = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($saved.schema -cne 'label-match-worker-shortcuts-v1' -or $saved.install_root -ine $rootFull -or
             $saved.status -cne 'INSTALLED' -or [bool]$saved.common_only -ne [bool]$CommonOnly -or
             [bool]$saved.user_only -ne [bool]$UserOnly) { throw 'Shortcut record cannot be replaced.' }
+        $wasLegacy = Test-LabelShortcutProperties $saved.expected $legacy
+        if (-not $wasLegacy -and -not (Test-LabelShortcutProperties $saved.expected $expected)) {
+            throw 'Installed worker shortcut definition differs.'
+        }
         foreach ($entry in @($saved.entries)) {
-            if (-not (Test-LabelShortcutProperties (Get-LabelShortcutProperties $entry.path) $expected) -or
+            if (-not (Test-LabelShortcutProperties (Get-LabelShortcutProperties $entry.path) $saved.expected) -or
                 (Get-LabelShortcutSha256 $entry.path) -cne $entry.installed_sha256) {
                 throw 'Installed worker shortcut drifted.'
             }
+            if ($wasLegacy -and $null -ne $entry.original) {
+                Assert-LabelShortcutPath $entry.backup_path
+                if ([IO.Path]::GetFullPath($entry.backup_path) -ine $entry.backup_path -or
+                    -not ([string]$entry.original.target_path).StartsWith($rootFull+'\', [StringComparison]::OrdinalIgnoreCase) -or
+                    -not $entry.backup_path.StartsWith($Path+'.preimages\', [StringComparison]::OrdinalIgnoreCase) -or
+                    (Get-LabelShortcutSha256 $entry.backup_path) -cne $entry.original_sha256) {
+                    throw 'Shortcut preimage is unproven.'
+                }
+            }
         }
-        $saved | Add-Member -NotePropertyName published -NotePropertyValue @(Get-LabelWorkerShortcutPublished $saved) -Force
+        $published = @(Get-LabelWorkerShortcutPublished $saved)
+        if ($null -ne $saved.PSObject.Properties['published']) { $saved.published = $published }
+        else { $saved | Add-Member -NotePropertyName published -NotePropertyValue $published }
+        if ($wasLegacy) {
+            # Keep the original installation preimages while upgrading our old wrapper links.
+            $previousExpected = $legacy; $record = $saved
+            $record.expected = $expected; $record.status = 'PREPARED'
+            foreach ($published in @($saved.published)) {
+                if ($published.shortcut_path -notin @($saved.entries | ForEach-Object {$_.path})) {
+                    $targets += $published.shortcut_path
+                }
+            }
+        } else {
         Save-LabelShortcutRecord $Path $saved
         return [ordered]@{status='PASS';record_path=$Path;count=@($saved.entries).Count;published=@($saved.published)}
+        }
     }
+    if ($null -eq $record) {
     $folders = @(Get-LabelWorkerShortcutFolders -CommonOnly:$CommonOnly -UserOnly:$UserOnly)
-    $targets = @()
     foreach ($file in @(Get-LabelWorkerShortcutFiles $folders)) {
         $before = Get-LabelShortcutProperties $file
         $target = [string]$before.target_path
         if ([IO.Path]::IsPathRooted($target) -and
             [IO.Path]::GetFullPath($target).StartsWith($rootFull+'\', [StringComparison]::OrdinalIgnoreCase) -and
-            -not (Test-Path -LiteralPath $target)) { $targets += $file }
+            (-not (Test-Path -LiteralPath $target) -or (Test-LabelShortcutProperties $before $legacy))) { $targets += $file }
     }
     # Public links ensure a visible entry even when only a private legacy link exists.
     if (-not $UserOnly) {
@@ -284,6 +326,7 @@ function Install-LabelWorkerShortcuts([string]$Root, $Manifest, [string]$Path, [
     }
     $record = [ordered]@{schema='label-match-worker-shortcuts-v1';install_root=$rootFull;
         common_only=[bool]$CommonOnly;user_only=[bool]$UserOnly;status='PREPARED';expected=$expected;entries=@()}
+    }
     foreach ($file in @($targets | Select-Object -Unique)) {
         $before = Get-LabelShortcutProperties $file
         $backup = ''; $beforeSha = ''
@@ -303,13 +346,18 @@ function Install-LabelWorkerShortcuts([string]$Root, $Manifest, [string]$Path, [
     try {
         foreach ($entry in $record.entries) {
             $current = Get-LabelShortcutProperties $entry.path
-            if ($null -ne $entry.original -and (
+            if ($null -ne $previousExpected) {
+                $previousSha = if ($entry.installed_sha256) {$entry.installed_sha256} else {$entry.original_sha256}
+                if (-not (Test-LabelShortcutProperties $current $previousExpected) -or
+                    (Get-LabelShortcutSha256 $entry.path) -cne $previousSha) { throw 'Worker shortcut changed after capture.' }
+            } elseif ($null -ne $entry.original -and (
                 -not (Test-LabelShortcutProperties $current $entry.original) -or
                 (Get-LabelShortcutSha256 $entry.path) -cne $entry.original_sha256 -or
-                (Test-Path -LiteralPath ([string]$entry.original.target_path)))) {
+                ((Test-Path -LiteralPath ([string]$entry.original.target_path)) -and
+                    -not (Test-LabelShortcutProperties $entry.original $legacy)))) {
                 throw 'Worker shortcut changed after capture.'
             }
-            if ($null -eq $entry.original -and $null -ne $current) { throw 'Worker shortcut appeared after capture.' }
+            if ($null -eq $previousExpected -and $null -eq $entry.original -and $null -ne $current) { throw 'Worker shortcut appeared after capture.' }
             Set-LabelShortcutProperties $entry.path $expected
             if (-not (Test-LabelShortcutProperties (Get-LabelShortcutProperties $entry.path) $expected)) { throw 'Worker shortcut readback differs.' }
             $entry.installed_sha256 = (Get-LabelShortcutSha256 $entry.path)
@@ -334,11 +382,13 @@ function Restore-LabelWorkerShortcuts([string]$Root, [string]$Path, [switch]$Com
     $record = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
     if ($CommonOnly -and $UserOnly) { throw 'Shortcut scope is ambiguous.' }
-    $expected = [ordered]@{target_path=(Join-Path $rootFull 'launch-label-match.cmd');arguments='';working_directory=$rootFull;
+    $legacy = [ordered]@{target_path=(Join-Path $rootFull 'launch-label-match.cmd');arguments='';working_directory=$rootFull;
         icon_location=((Join-Path $rootFull 'app/assets/logo.ico')+',0');window_style=7;description='포장';hotkey=''}
+    $expected = [ordered]@{target_path=(Join-Path $rootFull 'runtime/pythonw.exe');arguments=('-I -B "'+(Join-Path $rootFull 'app/main.py')+'"');working_directory=$rootFull;
+        icon_location=((Join-Path $rootFull 'app/assets/logo.ico')+',0');window_style=1;description='포장';hotkey=''}
     if ($record.schema -cne 'label-match-worker-shortcuts-v1' -or $record.install_root -ine $rootFull -or
         [bool]$record.common_only -ne [bool]$CommonOnly -or [bool]$record.user_only -ne [bool]$UserOnly -or
-        -not (Test-LabelShortcutProperties $record.expected $expected) -or
+        (-not (Test-LabelShortcutProperties $record.expected $expected) -and -not (Test-LabelShortcutProperties $record.expected $legacy)) -or
         $record.status -cnotin @('PREPARED','INSTALLED','RESTORED')) { throw 'Worker shortcut restoration record differs.' }
     $folders = @(Get-LabelWorkerShortcutFolders -CommonOnly:([bool]$record.common_only) -UserOnly:([bool]$record.user_only))
     # Admit every link/preimage before any restoration; unrelated drift is preserved.
@@ -360,7 +410,9 @@ function Restore-LabelWorkerShortcuts([string]$Root, [string]$Path, [switch]$Com
         if ($null -ne $current -and $null -ne $entry.original) {
             $isOriginal = (Get-LabelShortcutSha256 $entry.path) -ceq $entry.original_sha256
         }
-        if (-not $isOriginal -and (-not (Test-LabelShortcutProperties $current $record.expected) -or
+        $pendingLegacy = $record.status -ceq 'PREPARED' -and $entry.installed_sha256 -and
+            (Test-LabelShortcutProperties $record.expected $expected) -and (Test-LabelShortcutProperties $current $legacy)
+        if (-not $isOriginal -and ((-not (Test-LabelShortcutProperties $current $record.expected) -and -not $pendingLegacy) -or
             ($entry.installed_sha256 -and (Get-LabelShortcutSha256 $entry.path) -cne $entry.installed_sha256))) {
             throw 'Worker shortcut drifted; restoration refused.'
         }

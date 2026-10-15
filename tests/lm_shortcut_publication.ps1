@@ -20,6 +20,9 @@ function Get-LabelWorkerShortcutFolders([switch]$CommonOnly,[switch]$UserOnly){
 }
 $install=Join-Path $Root 'current';[void][IO.Directory]::CreateDirectory((Join-Path $install 'app/assets'))
 [IO.File]::WriteAllText((Join-Path $install 'launch-label-match.cmd'),'fixture')
+[void][IO.Directory]::CreateDirectory((Join-Path $install 'runtime'))
+[IO.File]::WriteAllText((Join-Path $install 'runtime/pythonw.exe'),'fixture')
+[IO.File]::WriteAllText((Join-Path $install 'app/main.py'),'fixture')
 [IO.File]::WriteAllText((Join-Path $install 'app/assets/logo.ico'),'fixture')
 $record=Join-Path $Root 'shortcuts.json';$held=$null;$caught=$null
 if($Scenario -ceq 'state_failure'){
