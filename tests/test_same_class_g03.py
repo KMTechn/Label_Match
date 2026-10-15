@@ -97,8 +97,14 @@ if($case -eq 'restore_old'){
  }else{[IO.File]::AppendAllText($record.entries[0].backup_path,'changed preimage')}
  $before=@{};foreach($entry in $record.entries){$before[$entry.path]=Get-LabelShortcutSha256 $entry.path}
  $rejected=$false;try{Install-LabelWorkerShortcuts $root @{launcher='launch-label-match.cmd'} $recordPath}catch{$rejected=$true}
- if(-not $rejected){throw 'Drifted legacy record was admitted'}
- foreach($path in $before.Keys){if((Get-LabelShortcutSha256 $path) -cne $before[$path]){throw 'Drift refusal changed a link'}}
+ if($case -eq 'preimage_drift'){
+  if(-not $rejected){throw 'Drifted legacy preimage was admitted'}
+  foreach($path in $before.Keys){if((Get-LabelShortcutSha256 $path) -cne $before[$path]){throw 'Drift refusal changed a link'}}
+ }else{
+  if($rejected){throw 'Changed legacy link blocked installation'}
+  if((Get-LabelShortcutSha256 $record.entries[0].path) -cne $before[$record.entries[0].path]){throw 'Changed legacy bytes lost'}
+  if((Get-LabelShortcutProperties $record.entries[1].path).target_path -cne (Join-Path $root 'runtime/pythonw.exe')){throw 'Normal legacy link not migrated'}
+ }
 }else{
  if($case -eq 'write_failure'){
   $script:setter=${function:Set-LabelShortcutProperties};$script:saveCount=0
