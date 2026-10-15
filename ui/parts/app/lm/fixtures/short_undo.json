@@ -13,11 +13,11 @@
     "start": null,
     "work": {
       "stage": "completion_partial",
-      "stage_label": "부족 확정",
+      "stage_label": "부분 제출 완료",
       "next": "다음 현품표를 스캔하세요",
       "next_sub": [
         {
-          "text": "부족 2개로 확정했습니다",
+          "text": "부분 제출 완료 — 22개(2개 부족)",
           "mark": "plain"
         }
       ],
@@ -85,7 +85,7 @@
       ],
       "result": {
         "kind": "warn",
-        "text": "부족 2개로 확정했습니다",
+        "text": "부분 제출 완료 — 22개(2개 부족)",
         "sub": "42초 안에 「방금 스캔 되돌리기」로 되돌릴 수 있습니다",
         "sound": "scan_master",
         "code": null

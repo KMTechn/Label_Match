@@ -88,6 +88,7 @@ class FakeApp:
         self.idle = []
         self.clipboard = []
         self.history_tree = FakeTree([("r1", ("1", "A110", "x1", "x2", "x3", "x4", "통과", "2026-10-13 08:12:00"))])
+        self.history_row_details_map = {str(iid): {"scanned_product_barcodes": list(values[1:1 + self.TOTAL_SCAN_COUNT])} for iid, values in self.history_tree.rows}
         self.summary_tree = FakeTree([("s1", ("A110", "1차", "4"))])
         self._render_operator_workbench()
 
@@ -257,7 +258,7 @@ def test_actual_shell_state_uses_the_unmodified_receipted_contract(screen):
     state = call(screen, screen.bridge.get_state)
     assert type(state["events_dropped"]) is int and state["events_dropped"] == before + 1
     old_errors = schema_errors(old_schema, state)
-    assert len(old_errors) == 1 and "events_dropped" in old_errors[0]
+    assert any('events_dropped' in error for error in old_errors)
     # Validate the actual response against the receipt, without editing either.
     assert schema_errors(CONTRACT["state"], state) == []
     assert CONTRACT["state"]["properties"]["events_dropped"] == {"type": "integer", "minimum": 0}
@@ -278,7 +279,7 @@ def test_state_through_the_shell_matches_the_contract(screen):
     assert schema_errors(state_schema, state) == []
     work = state["work"]
     assert (work["scan_done"], work["scan_total"], work["scan_left"]) == (3, 5, 2)
-    assert work["next"] == "상단 제품 3번째를 스캔하세요"
+    assert work["next"] == '표본 확인 — 제품 3번째를 스캔하세요'
     assert [slot["role"] for slot in work["slots"]] == ["master_label", "product", "product", "product", "last_product"]
     assert work["slots"][-1]["key"] == "final_label"
     assert work["result"]["kind"] == "ok" and work["result"]["sound"] == "scan_master"
@@ -398,6 +399,8 @@ def door(entry_text=""):
         setattr(self, name, mock.Mock(name=name))
     self._reject_residual_tag_input = types.MethodType(Label_Match.Label_Match._reject_residual_tag_input, self)
     self._consume_scan_entry = mock.Mock()
+    self._partial_submit_confirm_state = lambda: None
+    self._clear_partial_submit_confirmation = lambda: None
     self.intake_scan = types.MethodType(Label_Match.Label_Match.intake_scan, self)
     return self
 

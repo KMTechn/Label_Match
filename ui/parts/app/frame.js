@@ -1,4 +1,4 @@
-// 현장 앱 공통 화면 틀 — 입력·판·셸 이음. 스캔 조립은 scan.js.
+// 현장 앱 공통 화면 틀.
 'use strict';
 window.AppFrame = (() => {
   const SVG = 'http://www.w3.org/2000/svg';
@@ -23,21 +23,291 @@ window.AppFrame = (() => {
     }
     return svg;
   }
+  // M122: Preserve text while joining phrases.
+  function keepTogether(text) {
+    return String(text);
+  }
+  function joinText() {
+    for (const span of document.querySelectorAll('.text-join')) {
+      const parent = span.parentNode;
+      span.replaceWith(...span.childNodes);
+      parent.normalize();
+    }
+    const groups = [], byBlock = new Map(), walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walk.nextNode())) {
+      let block = node.parentElement;
+      if (block.closest('script, style, svg, input, textarea, [contenteditable], .ca-count__item, .result__time')) { byBlock.clear(); continue; }
+      while (block.parentElement && !block.matches('button, a, [role="button"]') && /^(inline|contents)/.test(getComputedStyle(block).display)) block = block.parentElement;
+      if (!byBlock.has(block)) { const group = []; byBlock.set(block, group); groups.push(group); }
+      byBlock.get(block).push(node);
+    }
+    for (const nodes of groups) {
+      const text = nodes.map(n => n.data).join('');
+      const joined = [...text.matchAll(/(?<!\S)(?:(?:[가-힣]+[ \t]+\d[\d,.]*(?=[ \t]*(?:번째|[개건줄장명분초%]|$|[·—:!?]))(?:[ \t]*(?:번째|[개건줄장명분초%]))?|\d[\d,.]*[ \t]+(?:번째|[개건줄장명분초%]))(?:[ \t]+(?:·|PIN\b))*|\S+[ \t]+(?:·|PIN\b))\S*(?!\S)/g)];
+      const at = pos => {
+        let i = 0;
+        while (pos >= nodes[i].length) pos -= nodes[i++].length;
+        return [nodes[i], pos];
+      };
+      for (const match of joined.reverse()) {
+        const start = match.index, end = start + match[0].length;
+        const [first, a] = at(start), [last, b] = at(end - 1), range = new Range();
+        range.setStart(first, a);
+        range.setEnd(last, b + 1);
+        if (first !== last) {
+          const common = range.commonAncestorContainer;
+          let head = first, tail = last;
+          while (head.parentNode !== common) head = head.parentNode;
+          while (tail.parentNode !== common) tail = tail.parentNode;
+          if (head !== first) range.setStartBefore(head);
+          if (tail !== last) range.setEndAfter(tail);
+        }
+        const span = el('span', 'text-join');
+        range.surroundContents(span);
+      }
+    }
+  }
   function el(tag, cls, text) {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
-    if (text != null) node.textContent = text;
+    if (text != null) node.textContent = keepTogether(text);
     return node;
   }
   const $ = (sel) => document.querySelector(sel);
 
-  /** 띠 하나 — alert = {kind: warn|bad|quiet|strong, text, choices?:[{text, default?, go?}], tail?} */
+  const codeNodes = new Set();
+  let codeFrame = 0;
+  const codeObserver = new ResizeObserver(queueCodes);
+  function queueCodes() {
+    if (codeFrame) return;
+    codeFrame = requestAnimationFrame(() => {
+      codeFrame = 0;
+      for (const node of codeNodes) if (!node.isConnected) { codeObserver.unobserve(node); codeNodes.delete(node); }
+      for (const node of document.querySelectorAll('[data-code-full]')) {
+        if (!codeNodes.has(node)) { codeNodes.add(node); codeObserver.observe(node); }
+        if (!node.getClientRects().length || !node.clientWidth) continue;
+        const full = node.dataset.codeFull;
+        const fits = () => {
+          const range = document.createRange(); range.selectNodeContents(node);
+          const style = getComputedStyle(node);
+          return range.getBoundingClientRect().width <= node.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0) - 1;
+        };
+        const group = node.closest('.result__code-group'), time = group?.querySelector('.result__time');
+        const minimum = time ? 4 : 6;
+        if (time) {
+          group.classList.remove('result__code-group--stack');
+          node.textContent = /…|\.{3}/.test(full) ? full : `…${full.slice(-minimum)}`;
+          if (!fits()) group.classList.add('result__code-group--stack');
+        }
+        node.textContent = full;
+        if (fits() || full.length <= minimum || /…|\.{3}/.test(full)) continue;
+        let low = minimum, high = full.length - 1;
+        while (low < high) {
+          const n = Math.ceil((low + high) / 2);
+          node.textContent = `…${full.slice(-n)}`;
+          if (fits()) low = n; else high = n - 1;
+        }
+        node.textContent = `…${full.slice(-low)}`;
+      }
+      for (const time of document.querySelectorAll('.result__time')) {
+        if (time.closest('.result__code-group')) continue;
+        time.classList.remove('result__time--newline');
+        const separator = time.querySelector('.result__time-separator');
+        if (separator.textContent && time.getClientRects().length && time.getBoundingClientRect().left <= time.parentElement.getBoundingClientRect().left + 1) time.classList.add('result__time--newline');
+      }
+    });
+  }
+  function code(value, cls = '') {
+    const full = String(value == null ? '' : value);
+    const node = el('span', `app-code ${cls}`.trim());
+    node.dataset.codeFull = full;
+    node.textContent = full; node.title = full; node.setAttribute('aria-label', full);
+    queueCodes();
+    return node;
+  }
+  function exchange(host, value) {
+    let box = host.querySelector('.app-exchange');
+    if (!box && !value) return;
+    if (!box) { box = el('section', 'app-exchange'); host.append(box); }
+    box.hidden = !value;
+    if (!value) return;
+    box.setAttribute('aria-label', '제품 교환');
+    const fields = el('div', 'app-exchange__fields');
+    for (const [name, title] of [['remove', '빼는 제품(불량)'], ['insert', '넣는 제품(양품)']]) {
+      const active = value.phase === name;
+      const bad = active && value.error;
+      const field = el('div', `app-exchange__field${active ? ' is-current' : ''}${bad ? ' is-error' : ''}`);
+      if (active) field.setAttribute('aria-current', 'step');
+      field.append(el('h3', '', title), value[name] ? code(value[name]) : el('p', 'app-exchange__empty', '스캔하세요'),
+        el('p', 'app-exchange__state', bad ? '오류' : value[name] ? '확인' : '대기'));
+      fields.append(field);
+    }
+    box.replaceChildren(fields);
+    if (value.phase === 'done') box.append(el('p', 'app-exchange__done', '교환 완료'));
+  }
+  function workers(host, names) {
+    const key = JSON.stringify(names);
+    if (host.pickerKey === key) { host.pickerFit(); return; }
+    host.pickerKey = key;
+    host.pickerObserver?.disconnect();
+    host.classList.add('worker-picker');
+    const cols = names.length <= 6 ? 2 : names.length <= 12 ? 3 : 4;
+    host.style.setProperty('--worker-cols', cols);
+    const grid = el('div', 'worker-picker__grid');
+    const pager = el('div', 'worker-picker__pager');
+    const prev = el('button', '', '이전'), next = el('button', '', '다음'), count = el('span');
+    prev.type = next.type = 'button'; prev.dataset.workerPrev = ''; next.dataset.workerNext = '';
+    pager.append(prev, count, next);
+    const initial = (name) => {
+      const n = (name || '').charCodeAt(0) - 0xac00;
+      return n >= 0 && n < 11172 ? 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ'[Math.floor(n / 588)] : (name || '').slice(0, 1).toUpperCase();
+    };
+    let query = '', letter = '', page = 0, capacity = cols * 6, layout = '', pending = false;
+    let found = names;
+    const draw = () => {
+      found = names.filter(n => (!letter || initial(n.label) === letter) && (!query || `${n.label} ${n.id || ''}`.toLocaleLowerCase().includes(query)));
+      const pages = Math.max(1, Math.ceil(found.length / capacity));
+      page = Math.min(page, pages - 1);
+      grid.replaceChildren(...found.slice(page * capacity, (page + 1) * capacity).map(n => {
+        const b = el('button', `worker-choice${n.recent ? ' is-recent' : ''}`);
+        b.type = 'button'; b.dataset.go = n.go; b.title = n.label;
+        b.append(el('span', 'worker-choice__name', n.label));
+        if (n.note) b.append(el('small', 'worker-choice__note', n.note));
+        return b;
+      }));
+      if (!found.length) grid.append(el('p', 'worker-picker__empty', '일치하는 작업자가 없습니다'));
+      pager.hidden = pages === 1; prev.disabled = page === 0; next.disabled = page === pages - 1;
+      count.textContent = `${page + 1} / ${pages} · ${found.length}명`;
+      fit();
+    };
+    const fit = () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        if (!host.isConnected || !host.checkVisibility()) return;
+        const before = capacity;
+        const signature = `${innerWidth}/${innerHeight}/${document.documentElement.dataset.textLevel}/${query}/${letter}`;
+        if (signature !== layout) { layout = signature; capacity = Math.max(cols, Math.min(found.length, cols * 6)); }
+        const rows = [...grid.querySelectorAll('button')];
+        if (!rows.length) return;
+        const rowHeight = Math.max(64, ...rows.map(b => b.getBoundingClientRect().height));
+        const gap = parseFloat(getComputedStyle(grid).rowGap) || 0;
+        let reserve = 16;
+        let block = host;
+        while (block.parentElement) {
+          const parent = block.parentElement, style = getComputedStyle(parent);
+          const after = [...parent.children].slice([...parent.children].indexOf(block) + 1).filter(n => n.checkVisibility());
+          reserve += after.reduce((n, node) => n + node.getBoundingClientRect().height + (parseFloat(getComputedStyle(node).marginTop) || 0) + (parseFloat(getComputedStyle(node).marginBottom) || 0) + (parseFloat(style.rowGap) || 0), 0);
+          reserve += parseFloat(style.paddingBottom) || 0;
+          if (parent.matches('.sheet, .ca-pane, .iw-gate')) break;
+          block = parent;
+        }
+        const sheet = host.closest('.sheet');
+        const bottom = Math.min($('[data-status]').getBoundingClientRect().top, sheet ? sheet.getBoundingClientRect().bottom : innerHeight);
+        const available = bottom - grid.getBoundingClientRect().top - reserve;
+        const allFit = found.length <= Math.floor((available + gap) / (rowHeight + gap)) * cols;
+        const room = Math.max(1, Math.floor((available - (allFit ? 0 : 68) + gap) / (rowHeight + gap))) * cols;
+        capacity = Math.min(capacity, room);
+        if (capacity !== before) draw();
+      });
+    };
+    host.pickerFit = fit;
+    host.replaceChildren();
+    if (names.length > 24) {
+      const tools = el('div', 'worker-picker__tools');
+      const search = el('input'); search.type = 'search'; search.placeholder = '작업자 찾기'; search.setAttribute('aria-label', '작업자 찾기');
+      search.addEventListener('input', () => { query = search.value.trim().toLocaleLowerCase(); page = 0; draw(); });
+      search.addEventListener('keydown', e => {
+        const buttons = grid.querySelectorAll('button');
+        if (e.key === 'ArrowDown' && buttons.length) { e.preventDefault(); buttons[0].focus(); }
+        if (e.key === 'Enter' && !e.isComposing && found.length === 1) { e.preventDefault(); buttons[0].click(); }
+      });
+      const letters = el('div', 'worker-picker__letters'); letters.setAttribute('aria-label', '첫 글자로 찾기');
+      for (const value of ['', ...new Set(names.map(n => initial(n.label)))]) {
+        const b = el('button', '', value || '전체'); b.type = 'button'; b.setAttribute('aria-pressed', String(!value));
+        b.addEventListener('click', () => { letter = value; page = 0; for (const x of letters.children) x.setAttribute('aria-pressed', String(x === b)); draw(); });
+        letters.append(b);
+      }
+      tools.append(search, letters); host.append(tools);
+    }
+    host.append(grid, pager);
+    prev.addEventListener('click', () => { page--; draw(); }); next.addEventListener('click', () => { page++; draw(); });
+    host.pickerObserver = new ResizeObserver(fit); host.pickerObserver.observe(host);
+    draw();
+  }
+  function startup(host, value) {
+    host.classList.add('app-start');
+    host.classList.toggle('app-start--error', !!value.error);
+    const drawing = document.createElementNS(SVG, 'svg');
+    for (const [k, v] of Object.entries({viewBox: '0 0 160 64', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true'})) drawing.setAttribute(k, v);
+    const path = document.createElementNS(SVG, 'path');
+    path.setAttribute('d', 'M8 48h32V24l24-12 24 12v24H40m0-24 24 12 24-12M64 36v24m32-12h24V24l16-8 16 8v24h-32m0-24 16 8 16-8m-16 8v24');
+    path.setAttribute('pathLength', '1'); drawing.append(path);
+    drawing.classList.toggle('is-busy', !!value.busy && !value.error);
+    const title = el('p', 'app-start__name', value.name);
+    const status = el('h1', 'app-start__status', value.status || '프로그램을 준비하는 중입니다');
+    const sub = el('p', 'app-start__sub', value.sub || '');
+    host.replaceChildren(title, drawing, status, sub);
+    if (value.retry) {
+      const b = el('button', 'act', '다시 시도'); b.type = 'button'; b.dataset.go = `command:${value.retry}`; host.append(b);
+    }
+  }
+  function today(host, rows) {
+    host.classList.add('today-items');
+    const max = Math.max(1, ...rows.map(r => r.products || 0));
+    host.replaceChildren(...rows.map(r => {
+      const card = el('section', 'today-items__card');
+      card.append(el('h3', '', r.item));
+      const counts = el('p', 'today-items__counts');
+      if (r.products != null) counts.append(el('strong', '', `제품 ${r.products}개`));
+      counts.append(el('span', '', `트레이 ${r.trays}개`));
+      const bar = el('div', 'today-items__bar'); bar.setAttribute('aria-hidden', 'true');
+      const fill = el('i'); fill.style.width = `${100 * (r.products || 0) / max}%`; bar.append(fill); bar.hidden = r.products == null;
+      card.append(counts, bar); return card;
+    }));
+  }
+  function menu(host, pins, extra = []) {
+    $('[data-admin-btn]').textContent = pins && Object.values(pins).includes(false) ? '메뉴 ▾' : '관리자 ▾';
+    if (!host.menuOriginal) {
+      host.menuOriginal = [...host.childNodes];
+      host.menuBadges = new Map([...host.querySelectorAll('.admin__pin')].map(n => [n, n.hidden]));
+    }
+    if (!pins) {
+      host.replaceChildren(...host.menuOriginal);
+      for (const [node, hidden] of host.menuBadges) node.hidden = hidden;
+      for (const node of host.querySelectorAll('[data-part-pin]')) node.remove();
+      for (const node of host.querySelectorAll('.admin__note')) node.hidden = false;
+      return;
+    }
+    const buttons = host.menuOriginal.filter(n => n.nodeType === 1 && n.tagName === 'BUTTON').concat(extra);
+    host.replaceChildren(...host.menuOriginal.filter(n => n.nodeType === 1 && n.tagName !== 'BUTTON' && !n.classList.contains('admin__group')));
+    for (const node of host.querySelectorAll('.admin__note')) node.hidden = true;
+    for (const [value, label] of [[false, '작업'], [true, '관리자']]) {
+      const group = buttons.filter(b => (pins[b.dataset.open || b.dataset.go] !== false) === value);
+      if (!group.length) continue;
+      const heading = el('p', 'admin__group', label); heading.hidden = group.every(b => b.hidden); host.append(heading);
+      for (const b of group) {
+        const pin = pins[b.dataset.open || b.dataset.go];
+        let badge = b.querySelector('.admin__pin');
+        if (pin === true && !badge) { badge = el('span', 'admin__pin', 'PIN'); badge.dataset.partPin = ''; b.append(badge); }
+        if (badge && typeof pin === 'boolean') badge.hidden = !pin;
+        host.append(b);
+      }
+    }
+  }
+
   const BAND_ICON = { warn: 'alert', bad: 'alert', strong: 'alert', quiet: 'info' };
   function band(alert) {
     const kind = alert.kind || 'warn';
     const node = el('div', kind === 'warn' ? 'band' : `band band--${kind}`);
     node.setAttribute('role', kind === 'bad' || kind === 'strong' ? 'alert' : 'status');
-    node.append(icon(BAND_ICON[kind] || 'alert', 20), el('span', 'band__text', alert.text));
+    const message = el('span', 'band__text');
+    const detail = alert.text.indexOf('\n코드: ');
+    if (detail < 0) message.textContent = keepTogether(alert.text);
+    else message.append(keepTogether(alert.text.slice(0, detail)), el('small', 'band__code', alert.text.slice(detail + 1)));
+    node.append(icon(BAND_ICON[kind] || 'alert', 20), message);
     if (alert.choices) {
       const row = el('div', 'band__choices');
       for (const choice of alert.choices) {
@@ -52,14 +322,45 @@ window.AppFrame = (() => {
     return node;
   }
 
-  /** 방금 결과 — {kind: ok|bad|warn|saved|idle, text, sub?, sound?} (saved = 이 PC 에 저장 · 회사 서버 확인 전) */
   const RESULT_ICON = { ok: 'check', bad: 'alert', warn: 'alert', saved: 'now', idle: 'idle' };
-  function drawResult(node, result) {
+  function drawResult(node, result, codeSub = false) {
     node.classList.remove('result--ok', 'result--bad', 'result--warn', 'result--saved', 'result--idle'); // 자리 이름(area-result) 같은 다른 이름은 그대로
     node.classList.add('result', `result--${result.kind}`);
     const body = el('div');
     body.append(result.text);
-    if (result.sub) body.append(el('small', '', result.sub));
+    if (result.sub) {
+      const sub = el('small');
+      const isTime = text => /^\d{2}:\d{2}:\d{2}$/.test(text);
+      const timeNode = (value, separator = '') => {
+        const time = el('span', 'result__time');
+        time.append(el('span', 'result__time-separator', separator), value);
+        return time;
+      };
+      if (codeSub && /^[\x20-\x7e…]+$/.test(result.sub) && !/\d{2}:\d{2}:\d{2}/.test(result.sub)) sub.append(code(result.sub));
+      else if (codeSub) {
+        const parts = result.sub.split(/(\d{2}:\d{2}:\d{2}|…[!-\x7e]{4,}|[!-\x7e…]{6,})/g);
+        parts.forEach((text, i) => {
+          if (text == null) return;
+          if (!(i % 2)) { sub.append(isTime(parts[i + 1] || '') ? text.replace(/\s*·\s*$/, '') : text); return; }
+          if (isTime(text)) {
+            sub.append(timeNode(text, parts[i - 1].match(/\s*·\s*$/)?.[0] || ''));
+            return;
+          }
+          const group = el('span', 'result__code-group'); group.append(code(text));
+          if (isTime(parts[i + 2] || '') && /^\s*·\s*$/.test(parts[i + 1])) {
+            group.append(timeNode(parts[i + 2], parts[i + 1]));
+            parts[i + 1] = ''; parts[i + 2] = null;
+          }
+          else if (/^\s*·/.test(parts[i + 1] || '')) {
+            group.append(el('span', 'result__code-separator', '\u00a0·'));
+            parts[i + 1] = parts[i + 1].replace(/^\s*·/, '');
+          }
+          sub.append(group);
+        });
+      }
+      else sub.textContent = result.sub;
+      body.append(sub);
+    }
     if (result.sound) {
       const sound = el('span', 'result__sound');
       sound.append(icon('sound', 18), `소리: ${result.sound}`);
@@ -68,9 +369,10 @@ window.AppFrame = (() => {
     node.replaceChildren(icon(RESULT_ICON[result.kind] || 'idle', 26), body);
   }
 
-  /** 위 줄(작업자 · 관리자 메뉴) · 띠 · 바닥 줄 — 앱 화면은 그 사이 작업 칸만 그린다. ui = 화면 잠깐 상태 */
   function drawFrame(s, ui) {
-    $('[data-worker]').textContent = s.worker ? s.worker.label : s.app ? '작업자를 고르세요' : '';
+    const starting = s.view === 'start' || !!s.start;
+    $('.top').classList.toggle('top--starting', starting && !!document.querySelector('.ca-start, .lm-start, .iw-gate'));
+    $('[data-worker]').textContent = starting ? '' : s.worker ? s.worker.label : s.app ? '작업자를 선택하세요' : '';
     const admin = $('[data-admin]');
     if (admin) {
       admin.hidden = !ui.admin_open;
@@ -81,39 +383,97 @@ window.AppFrame = (() => {
       .concat(ui.stopped ? [{ kind: 'bad', text: ui.stopped }] : [], (ui.notices || []).map((text, i) => ({ kind: 'warn', text, choices: [{ text: '확인', go: `dismiss:${i}` }] })), s.alerts || []);
     $('[data-bands]').replaceChildren(...alerts.map(band));
 
-    // 서버 상태는 처리 층 conn.state 로 고른다.
     const conn = s.conn || {};
     const queue = s.queue || { pending: 0, failed: 0 };
     const SERVER = {
       review: ['dot dot--amber', `관리자 확인 ${queue.failed}건`],
-      offline: ['dot dot--amber', `회사 서버 연결 안 됨 · 이 PC에 저장 중 · 보낼 것 ${queue.pending}건`],
-      late: ['dot dot--amber', `회사 서버 연결됨 · 못 보낸 것 ${queue.pending}건`],
+      offline: ['dot dot--amber', `회사 서버 연결 안 됨 · 오프라인 저장 · 전송 대기 ${queue.pending}건`],
+      late: ['dot dot--amber', `회사 서버 연결됨 · 전송 대기 ${queue.pending}건`],
       first: ['dot dot--off', '회사 서버: 첫 작업 때 확인'],
-      ok: ['dot', `회사 서버 연결됨 · 보낼 것 ${queue.pending}건`],
+      ok: ['dot', `회사 서버 연결됨 · 전송 대기 ${queue.pending}건`],
     };
-    const [dot, text] = s.app ? SERVER[conn.state] || SERVER.ok : ['dot dot--off', '프로그램 준비 중'];
+    const [dot, text] = s.app ? SERVER[conn.state] || SERVER.ok : ['dot dot--off', '시작 준비 중'];
     $('[data-status]').className = conn.state === 'offline' ? 'status status--offline' : 'status'; // 바탕색은 끊김 때만
     $('[data-server]').replaceChildren(el('span', dot), conn.label || text);
     const update = $('[data-update]'); // 새 판은 작업 끝나고 PC 를 끄거나 켤 때 바뀐다(현장 업데이트 시점 결정)
     if (update) {
       const ready = !!(s.update && s.update.state === 'ready');
       update.hidden = !ready;
-      update.textContent = ready ? `새 판 ${s.update.version} 준비됨 — PC 를 끄거나 켤 때 바뀝니다` : '';
+      update.textContent = ready ? `업데이트 ${s.update.version} 준비됨 — PC 를 끄거나 켤 때 바뀝니다` : '';
     }
     $('[data-scan]').replaceChildren(el('span', focusLost ? 'dot dot--amber' : 'dot'), focusLost ? '스캔 멈춤 — 창을 누르세요' : '스캔 받는 중');
     $('[data-clock]').textContent = ui.clock || '';
   }
 
-  // 앱은 render · sheets · keys · onPush · onScan 을 준다.
   const ui = { focus: 'on', admin_open: false, sheet: null, stopped: '', clock: '', notices: [] };
   const LOCAL_PUSH = { pedal: 1, focus_state: 1 }; // 화면 표시만 바뀌는 알림 — state() 를 다시 묻지 않는다(app.onPush 가 그림)
   const FN_KEY = /^(F([1-9]|1[01])|Escape|Delete|Ctrl\+[A-Z])$/;
   let app = null, current = null, shown = -Infinity, asked = 0, scanning = false, hostActive = true, readySent = false;
 
+  let textKey = '', textLevel = 0;
+  const textScales = [1, 1.15, 1.3, 1.5], textNames = ['보통', '크게', '더 크게', '아주 크게'];
+  function textSize(s) {
+    const w = s.worker;
+    let who = 'pc';
+    if (w && w.id != null && w.id !== '') who = `id:${w.id}`;
+    else if (w && w.label) {
+      let hash = 2166136261;
+      for (const ch of w.label) hash = Math.imul(hash ^ ch.codePointAt(0), 16777619);
+      who = `h:${(hash >>> 0).toString(16)}`;
+    }
+    const key = `kmtech.app.text:${s.app || s.profile || 'app'}:${who}`;
+    if (key !== textKey) {
+      textKey = key;
+      document.documentElement.removeAttribute('data-text-expanded');
+      $('[data-text-extra]').setAttribute('aria-expanded', 'false');
+      try { textLevel = Math.max(0, textNames.indexOf(localStorage.getItem(key))); } catch { textLevel = 0; }
+    }
+    document.documentElement.style.setProperty('--app-font-scale', textScales[textLevel]);
+    document.documentElement.dataset.textLevel = textLevel;
+    $('[data-text-size]').textContent = `글자: ${textNames[textLevel]}`;
+  }
   function paint() {
+    textSize(current || {});
     drawFrame(current || {}, ui);
     if (current) app.render(current, ui);
-    if (window.AppSheet) window.AppSheet.render(shownSheet());
+    if (window.AppSheet) window.AppSheet.render(partial() ? null : shownSheet());
+    if (current && app.afterPaint) app.afterPaint(current, ui);
+    drawPartial();
+    joinText();
+    queueCodes();
+  }
+  const partial = () => current && current.confirm && current.confirm.kind === 'partial_submit' ? current.confirm : null;
+  function drawPartial() {
+    let layer = $('[data-partial]');
+    const confirm = partial();
+    if (!layer && !confirm) return;
+    if (!layer) {
+      layer = el('div', 'partial-layer');
+      layer.dataset.partial = '';
+      layer.hidden = true;
+      const card = el('section', 'partial');
+      card.setAttribute('role', 'dialog');
+      card.setAttribute('aria-modal', 'true');
+      card.setAttribute('aria-labelledby', 'partial-title');
+      card.setAttribute('aria-describedby', 'partial-body partial-note');
+      const title = el('h2', '', '수량 부족 — 부분 제출하시겠습니까?'); title.id = 'partial-title';
+      const body = el('p', 'partial__body'); body.id = 'partial-body';
+      const buttons = el('div', 'partial__buttons');
+      for (const [text, name] of [['부분 제출', 'partial_submit'], ['계속 작업', 'partial_continue']]) {
+        const button = el('button', name === 'partial_submit' ? 'act' : 'act act--quiet', text);
+        button.type = 'button'; button.dataset.go = `command:${name}`;
+        buttons.append(button);
+      }
+      const note = el('p', 'partial__note', '현품표 한 번 더·Enter = 부분 제출 / 제품 스캔·Esc = 계속 작업'); note.id = 'partial-note';
+      card.append(title, body, buttons, note); layer.append(card); document.body.append(layer);
+    }
+    const opening = layer.hidden;
+    layer.hidden = !confirm;
+    if (confirm) {
+      $('#partial-body').textContent = `${confirm.total}개 중 ${confirm.done}개(${confirm.short}개 부족)`;
+      // 확인 창도 스캔 받이 초점을 유지한다.
+      if (opening && document.activeElement !== document.body) document.activeElement.blur();
+    }
   }
   function shownSheet() { // 처리 층 판에 modal 이 있으면 그것이 먼저(화면 판 위 — 처리 층이 묻는 확인 · 값 넣기), 아니면 화면 판 → 처리 층 판
     const own = current && current.sheet;
@@ -148,7 +508,7 @@ window.AppFrame = (() => {
   function bridge(kind, name, args) { // host 답 {ok, result: 처리 층 값, state} → 처리 층 값 {ok, result?, sheet?} 을 펼쳐 state 를 붙임
     return KMShell.call(kind, [name, args]).then((reply) => {
       if (reply && reply.result && typeof reply.result === 'object' && 'ok' in reply.result) return { ...reply.result, state: reply.result.state || reply.state };
-      if (reply && reply.ok === false && !reply.result) return { ok: false, result: { kind: 'warn', text: '처리하지 못했습니다 — 다시 해 보세요' }, state: reply.state };
+      if (reply && reply.ok === false && !reply.result) return { ok: false, result: { kind: 'warn', text: '처리하지 못했습니다\n다시 시도하세요' }, state: reply.state };
       return reply;
     });
   }
@@ -162,10 +522,16 @@ window.AppFrame = (() => {
     return reply;
   }
   function open(name, target) {
+    const closing = !name && (ui.sheet || ui.admin_open);
     const sheet = name && name !== 'admin' && app.sheets ? app.sheets[name] : null;
     ui.admin_open = name === 'admin';
     ui.sheet = sheet ? { ...sheet, name, target, pin: sheet.kind === 'pin' ? 'enter' : undefined } : null;
     paint();
+    if (closing) {
+      const previous = document.body.getAttribute('tabindex');
+      document.body.tabIndex = -1; document.body.focus({ preventScroll: true });
+      if (previous == null) document.body.removeAttribute('tabindex'); else document.body.setAttribute('tabindex', previous);
+    }
     if (sheet && sheet.load) {
       bridge('command', sheet.load, target === undefined ? {} : { id: target }).then((reply) => {
         if (ui.sheet && ui.sheet.name === name && reply && reply.sheet) { ui.sheet = { ...ui.sheet, ...reply.sheet }; paint(); }
@@ -207,7 +573,7 @@ window.AppFrame = (() => {
     hint.textContent = text;
   }
   function pinClearScan(input) {
-    if (!(input.pinUntil > performance.now())) pinHint(pinIsScan(input) ? '스캔은 PIN 판을 닫은 뒤 하세요 — 칸에 들어간 스캔은 지웠습니다' : 'PIN 칸에 스캔이 들어가 지웠습니다 — PIN 은 손으로 넣으세요');
+    if (!(input.pinUntil > performance.now())) pinHint(pinIsScan(input) ? '칸에 들어간 스캔은 지웠습니다\nPIN 창을 닫은 뒤 스캔하세요' : 'PIN 칸에 스캔이 들어가 지웠습니다\nPIN 은 손으로 넣으세요');
     input.value = '';
     input.pinTimes = [];
     input.pinUntil = performance.now() + 300;
@@ -249,7 +615,7 @@ window.AppFrame = (() => {
     bridge('admin', sheet.name, args).then((reply) => {
       done(reply || {});
       answer(reply);
-    }, () => done({ ok: false, result: { kind: 'warn', text: 'PIN 을 확인하지 못했습니다', sub: '잠시 뒤 다시 넣으세요 — 작업은 계속할 수 있습니다' } }));
+    }, () => done({ ok: false, result: { kind: 'warn', text: 'PIN 을 확인하지 못했습니다', sub: '잠시 후 다시 넣으세요 — 작업은 계속할 수 있습니다' } }));
   }
   function submitForm() { // PIN 없는 글 칸 판 → command(sheet.command || 판 이름, {칸: 값}) — 답 ok+sheet 면 그 판, ok 면 result 를 보이거나 닫힘,
     const sheet = shownSheet(); //   아니면 넣은 값 그대로 오류 한 줄(password 칸 값은 판에 남기지 않음)
@@ -270,7 +636,7 @@ window.AppFrame = (() => {
       if (!ui.sheet || ui.sheet.name !== sheet.name) return;
       if (reply.ok && reply.sheet) ui.sheet = { ...reply.sheet, name: sheet.name };
       else if (reply.ok) ui.sheet = reply.result ? { ...sheet, kind: 'result', result: reply.result, actions: [{ text: '작업 화면으로', go: 'close' }] } : null;
-      else ui.sheet = { ...sheet, values: kept, error: (reply.result && reply.result.text) || '보내지 못했습니다 — 다시 누르세요' };
+      else ui.sheet = { ...sheet, values: kept, error: (reply.result && reply.result.text) || '전송하지 못했습니다\n다시 누르세요' };
       paint();
     };
     bridge('command', sheet.command || sheet.name, sheet.target === undefined ? values : { ...values, target: sheet.target }).then((reply) => {
@@ -315,6 +681,14 @@ window.AppFrame = (() => {
 
   function start(definition) {
     app = definition;
+    document.fonts.ready.then(queueCodes);
+    const size = el('button', 'link', '글자: 보통');
+    size.type = 'button'; size.dataset.textSize = '';
+    $('[data-worker]').after(size);
+    const extra = el('button', 'link text-extra', '보조 칸');
+    extra.type = 'button'; extra.dataset.textExtra = ''; extra.setAttribute('aria-expanded', 'false');
+    size.after(extra);
+    new ResizeObserver(() => document.documentElement.style.setProperty('--hdr-h', `${Math.ceil($('.top').getBoundingClientRect().height)}px`)).observe($('.top'));
     window.addEventListener('shellpush', (event) => window.KMHost.push(event.detail));
     window.addEventListener('kmshellerror', (event) => { ui.stopped = event.detail.message; paint(); });
     window.addEventListener('focus', focusChanged);
@@ -327,20 +701,47 @@ window.AppFrame = (() => {
       });
     }
     document.addEventListener('click', (event) => {
+      if (partial() && !event.target.closest('[data-partial]')) return;
       const shown = shownSheet();
       if (shown && shown.modal && fromProcess() && !event.target.closest('[data-sheet]')) return; // 처리 층 modal 판 밑(관리자 ▾ · 위 줄 · 작업 단추)은 안 먹음
       const target = event.target.closest('button');
       if (ui.admin_open && !event.target.closest('[data-admin], [data-admin-btn]')) open(null); // 메뉴 밖을 누르면 닫힘
       if (!target) return;
-      if (target.matches('[data-admin-btn]')) open(ui.admin_open ? null : 'admin');
+      if (target.matches('[data-text-size]')) {
+        textLevel = (textLevel + 1) % 4;
+        try { localStorage.setItem(textKey, textNames[textLevel]); } catch { textLevel = 0; }
+        document.documentElement.removeAttribute('data-text-expanded');
+        extra.setAttribute('aria-expanded', 'false');
+        paint();
+        target.blur(); // 이 앱의 스캔 받이는 document: 단추 초점을 비우고 버퍼는 그대로.
+      }
+      else if (target.matches('[data-text-extra]')) {
+        extra.setAttribute('aria-expanded', document.documentElement.toggleAttribute('data-text-expanded'));
+        target.blur();
+      }
+      else if (target.matches('[data-admin-btn]')) open(ui.admin_open ? null : 'admin');
       else if (target.matches('[data-pin-ok]')) submitPin(event);
       else if (target.matches('[data-form-ok]')) submitForm();
       else if (target.dataset.open) open(target.dataset.open);
       else if (target.dataset.go) go(target.dataset.go);
     });
-    // 빈 Enter: window 잡기 단계는 받이(document 잡기 단계)보다 먼저 돈다 — 그때 받이 버퍼가 비어 있으면 스캔 끝이 아니라 「확인」.
-    // scan.js 는 그대로(빈 Enter 는 지금처럼 버림), 판정은 처리 층(keys.Enter 의 명령).
+    // 스캔 버퍼가 빈 Enter만 확인으로 처리한다. scan.js는 그대로 둔다.
     window.addEventListener('keydown', (event) => {
+      if (partial() && !event.repeat && !event.isComposing && window.AppScan && !window.AppScan.editable(document.activeElement)) {
+        const sink = window.AppScan.state();
+        if (event.key === 'Tab' && !sink.buffer && !sink.queued) {
+          const buttons = [...$('[data-partial]').querySelectorAll('button')];
+          const index = buttons.indexOf(document.activeElement);
+          buttons[index < 0 ? event.shiftKey ? buttons.length - 1 : 0 : (index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length].focus();
+          event.preventDefault(); event.stopImmediatePropagation(); return;
+        }
+        const enter = event.key === 'Enter' || event.code === 'NumpadEnter';
+        if (event.key === 'Escape' || enter && !sink.buffer && !sink.queued && !window.AppScan.control()) {
+          event.preventDefault(); event.stopImmediatePropagation();
+          go(`command:${event.key === 'Escape' ? 'partial_continue' : 'partial_submit'}`);
+          return;
+        }
+      }
       if (!app.keys || !app.keys.Enter || event.repeat || event.isComposing || (event.code !== 'Enter' && event.code !== 'NumpadEnter')) return;
       if (shownSheet() || ui.admin_open || !window.AppScan || window.AppScan.editable(document.activeElement) || window.AppScan.control()) return; // 단추 등에 초점 = 그 요소가 눌림(M60)
       const sink = window.AppScan.state();
@@ -349,7 +750,6 @@ window.AppFrame = (() => {
     document.addEventListener('beforeinput', (event) => {
       const input = pinField(event);
       if (!input) return;
-      // prev lives only through this native input; retained scan metadata is counts/times.
       const prev = input.value, end = input.selectionStart === prev.length && input.selectionEnd === prev.length;
       const paste = event.inputType === 'insertFromPaste';
       input.pinDiff = (value, time) => {
@@ -373,6 +773,7 @@ window.AppFrame = (() => {
       if (input) input.pinComposing = type === 'compositionstart';
     });
     document.addEventListener('keydown', (event) => {
+      if (partial()) return;
       const sheet = shownSheet();
       if (sheet && sheet.kind === 'pin' && (event.key === 'Enter' || event.code === 'Enter' || event.code === 'NumpadEnter') &&
           (event.isComposing || event.keyCode === 229 || [...$('[data-sheet-body]').querySelectorAll('[data-pin], [data-pin-id]')].some(input => input.pinComposing))) {
@@ -387,7 +788,6 @@ window.AppFrame = (() => {
       }
       if (event.key === 'Escape' && ui.admin_open) { open(null); return; } // Esc 차례: 관리자 메뉴 → 판(처리 층 판은 cancel)
       if (event.key === 'Escape' && shownSheet()) { closeSheet(); return; }
-      // Ctrl+글자는 scan.js 가 글로 안 먹는다(Ctrl+V 붙여넣기만 받이 몫) — 이름은 자판 자리로(Ctrl+N), 한글 입력 상태와 상관없이
       const name = event.ctrlKey && !event.altKey && /^Key[A-Z]$/.test(event.code) && event.code !== 'KeyV' ? `Ctrl+${event.code.slice(3)}` : event.key;
       const action = app.keys && FN_KEY.test(name) && app.keys[name];
       if (action && name.startsWith('Ctrl+')) event.preventDefault();
@@ -402,5 +802,5 @@ window.AppFrame = (() => {
     connect();
   }
 
-  return { icon, el, $, band, drawResult, drawFrame, start, open, refresh, current: () => current, ui };
+  return { keepTogether, icon, el, $, code, exchange, workers, startup, today, menu, band, drawResult, drawFrame, start, open, refresh, current: () => current, ui };
 })();

@@ -96,6 +96,7 @@ from label_recovery_schema import require_recovery_record, valid_recovery_archiv
 from label_admin_pin import (
     AdminPinClient, AdminPinError, AdminPinIntentStore,
     active_pin_operation, fingerprint as admin_pin_fingerprint,
+    active_worker_operation, WorkerRecoveryOperation, WORKER_RECOVERY_ACTIONS,
     operator_message as admin_pin_message, operator_local_id, unverified_hold_allowed,
 )
 from label_safe_path import (describe_entry, quarantine_entry, read_checked_bytes,
@@ -1930,8 +1931,7 @@ PHS_REPLACEMENT_REQUIRED_NOTICE = (
 )
 LEGACY_LABEL_TRANSITION_BANNER = "과도기 모드 — 옛 방식 포장 받음"
 LABEL_MATCH_SHORTAGE_NOTICE = (
-    "모자란 상자: 대체품으로 채워 정상 마감 — "
-    "못 채우면 마감하지 말고 따로 두고 관리자에게"
+    '수량이 부족합니다\n검사실에서 양품을 가져와 스캔하세요'
 )
 LABEL_MATCH_LOCAL_COMPLETION_NOTICE = "출고 전 관리자 보충 필요"
 LEGACY_LABEL_TRANSITION_OFF_REJECT = (
@@ -1958,19 +1958,15 @@ LABEL_TRANSITION_CLASS_NAMES = {
 LABEL_TRANSITION_LOCAL_NOTICES = {
     label_transition.PHS2_MALFORMED: (
         "현품표 형식 오류 · 과도기 기록",
-        "새 현품표 모양이지만 형식이 올바르지 않습니다. 과도기 모드라 막지 않고 "
-        "'형식 오류'로 따로 기록합니다. 제품 4개를 스캔하세요. "
-        "포장 원장에는 들어가지 않습니다.",
+        "새 현품표 모양이지만 형식이 올바르지 않습니다\n제품 4개를 스캔하세요\n자세히: 과도기 모드라 막지 않고 '형식 오류'로 따로 기록합니다. 포장 기록에는 들어가지 않습니다",
     ),
     label_transition.PHS2_LOCAL: (
         "회사 서버 확인 불가 · 과도기 이 PC 기록",
-        "회사 서버 확인이 막혀 이 트레이는 '이 PC에 저장됨'으로 따로 기록합니다. 제품 4개를 "
-        "스캔하세요. 포장 원장에는 들어가지 않습니다.",
+        "회사 서버 확인이 막혀 이 트레이는 '이 PC에 저장됨'으로 따로 기록합니다. 제품 4개를 스캔하세요. 포장 기록에는 들어가지 않습니다.",
     ),
     "DUPLICATE": (
         "중복 현품표 · 과도기 기록",
-        "이미 처리된 현품표입니다. 과도기 모드라 막지 않고 '중복'으로 기록합니다. "
-        "포장 원장에는 처음 한 번만 반영됩니다. 실물이 두 번 포장되지 않았는지 확인하세요.",
+        "이미 처리된 현품표입니다. 과도기 모드라 막지 않고 '중복'으로 기록합니다. 포장 기록에는 처음 한 번만 반영됩니다. 실물이 두 번 포장되지 않았는지 확인하세요.",
     ),
 }
 # Completion refusals decided by packaging policy, not by local storage.  The
@@ -1992,18 +1988,15 @@ LABEL_MATCH_PACKAGE_POLICY_BLOCKS = (
 LABEL_MATCH_PACKAGE_POLICY_NOTICES = {
     "PACKAGE_LEGACY_LABEL_NOT_ACCEPTED": (
         "옛 방식 현품표 완료 불가",
-        "이 현품표는 새 포장 이력(PHS2)이 없는 옛 방식이라 이 PC에서 완료할 수 "
-        "없습니다. 과도기 모드가 꺼져 있습니다. 현재 세트와 실물을 그대로 두고 "
-        "관리자에게 알리세요.",
+        '옛 현품표를 받을 수 없습니다\n실물을 그대로 두고 현장 관리자에게 알리세요\n코드: PHS2',
     ),
     "PACKAGE_MANUAL_COMPLETE_DISABLED": (
-        "모자란 상자",
+        '수량 부족',
         LABEL_MATCH_SHORTAGE_NOTICE,
     ),
     "PACKAGE_CENTRAL_PROFILE_UNAVAILABLE": (
         "회사 서버 포장 연결 설정 확인 필요",
-        "이 PC의 중앙 포장 연결 설정을 불러오지 못해 완료할 수 없습니다. "
-        "현재 세트와 실물을 그대로 두고 관리자에게 알리세요.",
+        '이 PC의 중앙 포장 연결 설정을 불러오지 못해 완료할 수 없습니다.\n현재 세트와 실물을 그대로 두고 현장 관리자에게 알리세요.',
     ),
 }
 
@@ -2059,7 +2052,7 @@ def _phs_exchange_failure(error):
 
 def _startup_send_wait_message(error, fallback):
     if str(getattr(error, "code", "")).startswith("STARTUP_VERIFICATION_"):
-        return "서버 보내기 확인 중입니다. 잠시 뒤 다시 시도하세요."
+        return '서버 보내기 확인 중입니다.\n잠시 후 다시 시도하세요.'
     return fallback
 
 
@@ -5761,9 +5754,7 @@ class Label_Match(tk.Tk):
             submit_task=self._submit_deferred_validation_lane_task)
         count = len(self.package_outbox.list_workbench_holds())
         self._ui_lane_review_notice = WorkflowNotice(
-            f"관리자 확인 {count}건", "처리 중 오류로 이 세트를 따로 보관했습니다. "
-            "관리자 확인 대기 — 다음 세트를 계속하세요. "
-            "격리된 체크포인트가 비교 원본입니다(parked 상태는 작업 제출 때 스냅숏).", tone="warning")
+            f"관리자 확인 {count}건", '이 포장 작업을 보류했습니다\n다음 트레이를 계속하세요\n코드: parked', tone="warning")
         if self.__dict__.get("operator_workbench_ready"):
             self._render_operator_workbench()
         self._focus_scan_entry_if_available()
@@ -6103,20 +6094,15 @@ class Label_Match(tk.Tk):
                 title="중앙 포장 충돌 · 실물 작업 중지",
                 message=(
                     (
-                        "중앙 확인 전에 멈춘 포장 작업입니다. "
-                        "F1로 현재 트레이만 비운 뒤 같은 PHS2를 다시 스캔하세요. "
-                        "충돌 증거는 보존됩니다."
+                        '회사 서버 확인 전에 포장이 멈췄습니다\nF1 키를 눌러 현재 트레이만 비운 뒤 같은 현품표를 다시 스캔하세요'
                     )
                     if recoverable_prewrite_conflict
                     else (
-                        "로컬 포장 완료 기록은 안전하게 유지됩니다. "
-                        "해당 PHS2 실물을 구분 보관하고 관리자에게 중앙 상태 확인을 요청하세요."
+                        '포장 완료 기록은 이 PC에 보존했습니다\n현품표 실물을 따로 두고 현장 관리자에게 알리세요\n코드: PHS2'
                     )
                     if local_committed
                     else (
-                        "현재 포장 상태를 자동으로 확정하지 못했습니다. "
-                        "해당 PHS2 실물을 구분 보관하고 "
-                        "관리자에게 중앙 상태 확인을 요청하세요."
+                        '포장 상태를 확정하지 못했습니다\n현품표 실물을 따로 두고 현장 관리자에게 알리세요\n코드: PHS2'
                     )
                 ).strip(),
                 kind="submission_blocked",
@@ -6131,8 +6117,7 @@ class Label_Match(tk.Tk):
             notice = WorkflowNotice(
                 title="이 PC에 저장된 포장 완료 기록 복구 중",
                 message=(
-                    "저장된 포장 완료 기록을 복구하고 있습니다. "
-                    "복구가 끝날 때까지 PHS2를 이동하거나 다음 포장을 시작하지 마세요."
+                    '포장 완료 기록을 복구하고 있습니다\n현품표를 이동하거나 다음 포장을 시작하지 마세요\n코드: PHS2'
                 ),
                 kind="submission_blocked",
                 tone="warning",
@@ -6469,9 +6454,9 @@ class Label_Match(tk.Tk):
                     self.__dict__[notice_name] = WorkflowNotice(
                         title=previous_notice.title if previous_notice else f"회사 서버 {label} 상태 조회 실패",
                         message=(
-                            previous_notice.message + " 조회 실패 · 오래됨: 마지막 확인 결과입니다. "
+                            previous_notice.message + ' 조회 실패\n오래됨: 마지막 확인 결과입니다. '
                             if previous_notice else "조회 실패: 현재 상태를 확인하지 못했습니다. "
-                        ) + "관리자에게 현재 상태 확인을 요청하세요.",
+                        ) + '현재 포장 상태는 확인이 필요합니다\n현장 관리자에게 알리세요',
                         kind=f"{prefix}_review",
                         tone=previous_notice.tone if previous_notice else "warning",
                     )
@@ -6494,11 +6479,11 @@ class Label_Match(tk.Tk):
                 message = (
                     f"관리자 확인이 필요한 포장이 {count_text} 있습니다. "
                     + (
-                        "로컬 포장 완료 기록은 유지됩니다. "
+                        '포장 완료 기록은 이 PC에 유지됩니다 '
                         if int(conflicts[0].get("local_completion_committed") or 0)
                         else "현재 포장 기록은 자동 확정되지 않았습니다. "
                     )
-                    + "해당 현품표 실물을 구분 보관하고 관리자에게 확인을 요청하세요."
+                    + '이 현품표는 확인이 필요합니다\n실물을 따로 두고 현장 관리자에게 알리세요'
                 )
                 repack_notices = {row.get("repack_server_notice") for row in conflicts}
                 if "OLD_SERVER" in repack_notices:
@@ -6508,8 +6493,7 @@ class Label_Match(tk.Tk):
             else:
                 title = "중앙 취소 확인 필요"
                 message = (
-                    f"관리자 확인이 필요한 취소가 {count_text} 있습니다. "
-                    "해당 트레이는 반출하지 말고 관리자에게 중앙 취소 상태 확인을 요청하세요."
+                    f"""확인이 필요한 취소가 {count_text}건 있습니다\n해당 트레이를 반출하지 말고 현장 관리자에게 알리세요"""
                 )
             self.__dict__[notice_name] = WorkflowNotice(
                 title=title, message=message, kind=f"{prefix}_review", tone="danger",
@@ -6704,10 +6688,7 @@ class Label_Match(tk.Tk):
                 if not self.run_tests:
                     messagebox.showerror(
                         "초기화 오류",
-                        "프로그램 시작에 필요한 중요 파일을 불러올 수 없습니다.\n"
-                        "프로그램이 설치된 폴더를 확인하고 다시 실행하세요. "
-                        "계속 실패하면 관리자에게 확인을 요청하세요.\n\n"
-                        "프로그램을 종료합니다.",
+                        '중요 파일을 불러오지 못해 프로그램을 시작할 수 없습니다\n현장 관리자에게 알리세요',
                     )
                 self.destroy()
                 return
@@ -6768,9 +6749,7 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showerror(
                     "초기화 오류",
-                    "프로그램을 시작하지 못했습니다. 프로그램을 다시 시작해보세요.\n"
-                    "계속 실패하면 관리자에게 확인을 요청하세요.\n\n"
-                    "프로그램을 종료합니다.",
+                    '프로그램을 시작하지 못했습니다\n프로그램을 다시 시작하세요\n자세히: 계속되면 현장 관리자에게 알리세요.',
                 )
             self.destroy()
 
@@ -8426,15 +8405,14 @@ class Label_Match(tk.Tk):
                 return carrier_identity.item_catalog_view(csv.DictReader(f))
         except FileNotFoundError:
             if not self.run_tests:
-                messagebox.showwarning("기준 정보 파일 없음", f"품목 정보 파일({self.FILES.ITEMS})이 없어 품목명을 표시할 수 없습니다.\n프로그램 폴더 내 'assets' 폴더를 확인해주세요.")
+                messagebox.showwarning("기준 정보 파일 없음", f"""품목 정보 파일이 없어 품목명을 표시할 수 없습니다\n현장 관리자에게 알리세요\n코드: assets · {self.FILES.ITEMS}""")
             return {}
         except Exception as e:
             print(f"기준 정보 로드 기술 진단: {e}")
             if not self.run_tests:
                 messagebox.showerror(
                     "기준 정보 로드 오류",
-                    "품목 정보를 불러오지 못했습니다. 프로그램 폴더의 기준 정보 파일을 "
-                    "확인하고 다시 시도하세요. 계속 실패하면 관리자에게 확인을 요청하세요.",
+                    '품목 정보를 불러오지 못했습니다\n현장 관리자에게 알리세요',
                 )
             return {}
 
@@ -9031,7 +9009,7 @@ class Label_Match(tk.Tk):
                 def confirm_close():
                     if self.current_set_info != close_snapshot:
                         self._show_scanner_notice(
-                            "종료 확인 다시 필요", "작업이 바뀌었습니다. 현재 작업을 다시 확인하세요.",
+                            "종료 확인 다시 필요", '작업이 바뀌었습니다.\n현재 작업을 다시 확인하세요.',
                         )
                         return
                     self.on_closing(_pointer_confirmed=True)
@@ -9179,8 +9157,7 @@ class Label_Match(tk.Tk):
                     raise
                 messagebox.showerror(
                     "종료 보류",
-                    "작업 로그 저장을 완료하지 못해 종료를 중단했습니다. "
-                    "잠시 후 다시 시도하고 계속 실패하면 관리자에게 확인을 요청하세요.",
+                    '작업 로그 저장을 완료하지 못해 종료를 중단했습니다\n현장 관리자에게 알리세요',
                 )
                 return
             self._cancel_pending_ui_jobs()
@@ -9672,6 +9649,11 @@ class Label_Match(tk.Tk):
 
     @writer_sink("gui_package_pin_changed_restore")
     def _restore_changed_pin_file(self, target_id):
+        operation = active_pin_operation.get()
+        if (active_worker_operation.get() is not None or operation is None
+                or operation[2] != "LABEL.RECHECK"
+                or operation[3] != (str(target_id)[3:] if str(target_id).startswith("F5:") else str(target_id))):
+            raise AdminPinError("ACTION_INVALID")
         row = self._package_pin_changed_hold_for_target(target_id)
         if row is None or row["state"] not in {"QUARANTINED", "RESTORING", "RESTORED"}:
             raise AdminPinError("TARGET_CHANGED")
@@ -9867,8 +9849,7 @@ class Label_Match(tk.Tk):
                 "관리자가 변경 파일을 원위치에 복원했습니다. 원래 세트 보류는 유지됩니다. "
                 "관리자 메뉴 「멈춘 작업 확인」에서 이 항목을 다시 확인하세요."
                 if restored else
-                "보류 중 바뀐 파일을 안전한 위치로 옮기지 못했습니다. 이 파일은 원위치에 "
-                "보존했습니다. 관리자 메뉴 「멈춘 작업 확인」에서 이 항목을 다시 확인하거나 보류하세요."
+                '보류 중 바뀐 파일을 옮기지 못했습니다\n현장 관리자에게 알리세요\n자세히: 파일은 원위치에 보존했습니다. 관리자 메뉴의 멈춘 작업 확인에서 이 항목을 다시 확인하거나 보류할 수 있습니다.'
             ), kind="submission_blocked", tone="danger",
         )
         self._package_pin_ui(self._render_operator_workbench)
@@ -10266,6 +10247,8 @@ class Label_Match(tk.Tk):
 
     @writer_sink("gui_label_recovery_hold")
     def _hold_label_recovery(self, hold_id, *, manager_code=None):
+        if not self._package_worker_action_allows("LABEL.F5_HOLD", "F5:" + str(hold_id)):
+            return False
         manager_id = self._package_recovery_manager(manager_code)
         if not manager_id:
             return False
@@ -10457,7 +10440,100 @@ class Label_Match(tk.Tk):
         # Recovery writers require a scoped PIN operation or explicit system
         # quarantine. A legacy code is never an authorization or identity.
         operation = active_pin_operation.get()
-        return operation[5] if operation else ""
+        if operation:
+            return operation[5]
+        worker = active_worker_operation.get()
+        return "WORKER:" + worker.operator_id if worker is not None else ""
+
+    @staticmethod
+    def _package_worker_action_allows(action, set_id):
+        worker = active_worker_operation.get()
+        if worker is None:
+            return True  # Existing administrator/system admission still applies.
+        return (worker.action in WORKER_RECOVERY_ACTIONS and (
+            (worker.action == action and worker.target_id == str(set_id))
+            or (worker.action == "LABEL.F5_HOLD" and action == "LABEL.SET_HOLD"
+                and worker.file_binding[0] == str(set_id))))
+
+    def _package_worker_target(self, action, set_id, physical_qr):
+        if action == "LABEL.PHS_LOOKUP" and set_id == "PHS_LOOKUP":
+            fields = _label_match_parse_compact_phs2(physical_qr)
+            _evidence, snapshot, _sealed, _lease = self._resolve_central_phs2_scan_overlay(
+                physical_qr, fields["CLC"], force_central_read=True)
+            digest = admin_pin_fingerprint({"physical_qr": physical_qr, "snapshot": snapshot})
+            return {"kind": "label_worker_lookup", "id": set_id, "state_fingerprint": digest}, digest
+        return self._package_pin_target(action, set_id, physical_qr)
+
+    def _prepare_package_worker_action(self, action, set_id, physical_qr=""):
+        """Read the same target evidence without issuing administrator authority."""
+        self._admin_pin_result_outcome = "unknown"
+        try:
+            if action not in WORKER_RECOVERY_ACTIONS or not str(set_id):
+                raise AdminPinError("ACTION_INVALID")
+            if action == "LABEL.PHS_LOOKUP":
+                _label_match_parse_compact_phs2(physical_qr)
+            elif physical_qr:
+                raise AdminPinError("ACTION_INVALID")
+            if action == "LABEL.F5_HOLD" and not str(set_id).startswith("F5:"):
+                raise AdminPinError("ACTION_INVALID")
+            if action == "LABEL.SET_HOLD" and str(set_id).startswith("F5:"):
+                raise AdminPinError("ACTION_INVALID")
+            operator = self._package_pin_operator()
+            binding = self._package_pin_current_file_binding(action, set_id)
+            target, source_sha = self._package_worker_target(action, set_id, physical_qr)
+            return False, (binding, target, source_sha, operator)
+        except Exception:
+            self._admin_pin_last_message = "작업 대상을 확인하지 못했습니다\n작업자와 대상을 확인하고 다시 시도하세요"
+            return True, False
+
+    def _execute_package_worker_action(self, action, set_id, physical_qr, prepared):
+        """Preserve the hold/lookup CAS and audit; no PIN proof or approver exists."""
+        if action not in WORKER_RECOVERY_ACTIONS:
+            return False
+        token = None
+        try:
+            binding, target, source_sha, operator = prepared
+
+            def unchanged():
+                current_target, current_sha = self._package_worker_target(action, set_id, physical_qr)
+                return (current_target == target and current_sha == source_sha
+                        and self._package_pin_operator() == operator
+                        and self._package_pin_current_file_binding(action, set_id) == binding)
+
+            if not unchanged():
+                raise AdminPinError("TARGET_CHANGED")
+            operation_key = "worker:" + admin_pin_fingerprint({
+                "action": action, "target": str(set_id), "operator": operator["local_id"],
+            })
+            operation = WorkerRecoveryOperation(
+                operation_key, action, str(set_id), operator["local_id"],
+                str(self.worker_name).strip(), binding,
+            )
+            token = active_worker_operation.set(operation)
+            self._audit_package_recovery_action(set_id, "WORKER_ATTEMPT", "", source_sha)
+            if not unchanged():
+                raise AdminPinError("TARGET_CHANGED")
+            if action == "LABEL.PHS_LOOKUP" and set_id == "PHS_LOOKUP":
+                fields = _label_match_parse_compact_phs2(physical_qr)
+                _evidence, snapshot, _sealed, _lease = self._resolve_central_phs2_scan_overlay(
+                    physical_qr, fields["CLC"], force_central_read=True)
+                quantity = snapshot.get("member_count")
+                result = (f"현품표 조회 완료\n제품 {quantity}개" if type(quantity) is int and quantity > 0
+                          else "현품표 조회 완료")
+            else:
+                result = self._package_pin_apply(action, set_id, physical_qr)
+            if result is False or result is None:
+                raise AdminPinError("EFFECT_UNVERIFIED")
+            self._audit_package_recovery_action(set_id, "WORKER_DONE", "", "COMPLETED")
+            self._admin_pin_result_outcome = "success"
+            self._admin_pin_last_message = str(result) if result is not True else "작업을 마쳤습니다"
+            return result
+        except Exception:
+            self._admin_pin_last_message = "작업을 마치지 못했습니다\n현재 건을 보류하고 다시 시도하세요"
+            return False
+        finally:
+            if token is not None:
+                active_worker_operation.reset(token)
 
     def _prompt_package_admin_pin(self):
         """One masked dialog shared by every administrator recovery action."""
@@ -10865,6 +10941,10 @@ class Label_Match(tk.Tk):
                    and row["observed"] != "CENTRAL_MATCH_ATTEMPT" for row in rows)
 
     def _package_pin_apply(self, action, set_id, physical_qr=""):
+        worker = active_worker_operation.get()
+        if worker is not None and not self._package_worker_action_allows(action, set_id):
+            raise AdminPinError("ACTION_INVALID")
+        hold_audit = "WORKER_HOLD" if worker is not None else "PIN_REVIEW_HOLD"
         if action == "LABEL.F5_HOLD":
             hold_id = str(set_id)[3:]
             held = self.package_outbox.get_label_exchange_hold(hold_id)
@@ -10887,7 +10967,7 @@ class Label_Match(tk.Tk):
                     raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
                 if linked:
                     self._audit_package_recovery_action(
-                        linked, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+                        linked, hold_audit, self._package_recovery_manager(), "UNRESOLVED"
                     )
                 if not self._finalize_label_recovery_holds(only_hold_id=hold_id):
                     raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
@@ -10904,7 +10984,7 @@ class Label_Match(tk.Tk):
             elif not entry or not self._package_pin_entry_hold_complete(entry):
                 raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
             self._audit_package_recovery_action(
-                set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+                set_id, hold_audit, self._package_recovery_manager(), "UNRESOLVED"
             )
             return True
         if action == "LABEL.SET_HOLD":
@@ -10916,7 +10996,7 @@ class Label_Match(tk.Tk):
             if not self._package_set_hold_complete(set_id, held):
                 raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
             self._audit_package_recovery_action(
-                set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+                set_id, hold_audit, self._package_recovery_manager(), "UNRESOLVED"
             )
             return True
         if action == "LABEL.RECHECK":
@@ -10926,7 +11006,7 @@ class Label_Match(tk.Tk):
         if action == "LABEL.PHS_LOOKUP":
             return self._recheck_package_recovery_physical(set_id, physical_qr)
         if action == "LABEL.SUPPORT_HANDOFF":
-            closing = self.__dict__.get("_admin_pin_closing_intent")
+            closing = self.__dict__.get("_admin_pin_closing_intent") if worker is None else None
             observed = (json.dumps({
                 "result": "UNKNOWN:NO_KEYED_LEDGER_EFFECT",
                 "original_operation_key": closing["operation_key"],
@@ -11132,6 +11212,7 @@ class Label_Match(tk.Tk):
         self, action, set_id, physical_qr="", *, window, finish, fail,
     ):
         """Keep preparation and authorized apply on the existing UI lane."""
+        worker_action = action in WORKER_RECOVERY_ACTIONS
         pending = self.__dict__.setdefault("_package_pin_pending_targets", {})
         if str(set_id) in pending:
             self._show_ui_lane_rejection("busy")
@@ -11263,6 +11344,10 @@ class Label_Match(tk.Tk):
             if done:
                 finish_action(value)
                 return
+            if worker_action:
+                return submit_stage("worker-apply", lambda: self._execute_package_worker_action(
+                    action, set_id, physical_qr, value,
+                ), finish_action)
             # The first task and its idle barrier have ended. The PIN dialog
             # holds no writer admission and the second task receives its input.
             try:
@@ -11286,7 +11371,8 @@ class Label_Match(tk.Tk):
                 raise
 
         request["start"] = lambda: submit_stage(
-            "prepare", lambda: self._prepare_package_pin_action(action, set_id, physical_qr),
+            "prepare", lambda: (self._prepare_package_worker_action if worker_action
+                                else self._prepare_package_pin_action)(action, set_id, physical_qr),
             prepared_on_ui,
         )
         queue.append(request)
@@ -11627,6 +11713,8 @@ class Label_Match(tk.Tk):
 
     @writer_sink("gui_package_recovery_hold")
     def _hold_package_recovery_set(self, set_id, *, manager_code=None):
+        if not self._package_worker_action_allows("LABEL.SET_HOLD", set_id):
+            return False
         manager_id = self._package_recovery_manager(manager_code)
         if not manager_id:
             return False
@@ -11646,7 +11734,10 @@ class Label_Match(tk.Tk):
         current = candidate.get("current")
         held = outbox.get_workbench_hold(str(set_id))
         pin_operation = active_pin_operation.get()
+        worker_operation = active_worker_operation.get()
         pinned_current_sha = None
+        if worker_operation is not None and worker_operation.file_binding[0] == str(set_id):
+            pinned_current_sha = worker_operation.file_binding[1]
         if pin_operation and pin_operation[2] in {"LABEL.SET_HOLD", "LABEL.F5_HOLD"}:
             bindings = {
                 row["observed"] for row in outbox.pin_effect_rows(pin_operation[0])
@@ -11946,6 +12037,8 @@ class Label_Match(tk.Tk):
         )
 
     def _recheck_package_recovery_set(self, set_id, *, manager_code=None):
+        if not self._package_worker_action_allows("LABEL.RECHECK", set_id):
+            return "관리자 확인이 필요합니다."
         manager_id = self._package_recovery_manager(manager_code)
         if not manager_id:
             return "관리자 확인이 필요합니다."
@@ -12042,6 +12135,8 @@ class Label_Match(tk.Tk):
         return result
 
     def _recheck_package_recovery_physical(self, set_id, physical_qr, *, manager_code=None):
+        if not self._package_worker_action_allows("LABEL.PHS_LOOKUP", set_id):
+            return "이 작업에서 현품표를 조회할 수 없습니다."
         if carrier_identity.is_residual_tag(physical_qr):
             self._package_pin_ui(self._play_sound, "fail")
             return carrier_identity.RESIDUAL_TAG_REJECTION_MESSAGE
@@ -12535,7 +12630,7 @@ class Label_Match(tk.Tk):
                     self._clear_workflow_completion()
                     self._workflow_blocking_notice = None
                     self._workflow_notice = WorkflowNotice('관리자 확인 대기',
-                        '이 세트를 따로 보관하고 다음 현품표를 계속하세요. 관리자에게 알리세요.',
+                        '이 세트를 따로 보관하고 다음 현품표를 계속하세요.\n현장 관리자에게 알리세요.',
                         kind='scanner_notice', tone='warning')
                     self._workflow_notice_action = None
                     self._storage_root_failure = False
@@ -12662,7 +12757,7 @@ class Label_Match(tk.Tk):
                     self.current_set_info["start_time"] = datetime.fromisoformat(self.current_set_info["start_time"])
                 self._package_pin_ui(self._finalize_set, self.Results.PASS, on_closed=True)
                 return
-            self._package_pin_ui(self.update_big_display, "부족 확정 · 취소 카드로 되돌리거나 다음 현품표를 스캔하세요.", "primary")
+            self._package_pin_ui(self.update_big_display, "부분 제출 기록을 마무리하고 있습니다", "primary")
             self._package_pin_ui(self._arm_shortage_confirmation_timeout)
             return
         if state_data:
@@ -12791,10 +12886,9 @@ class Label_Match(tk.Tk):
                 }
                 if not self.data_manager.save_current_state(state_data):
                     notice = WorkflowNotice(
-                        title="회사 서버 포장 복구 잠금",
+                        title='포장 복구 확인 필요',
                         message=(
-                            "복구할 현재 포장 상태를 안전하게 저장하지 못했습니다. "
-                            "새 포장을 시작하지 말고 관리자에게 저장 상태 확인을 요청하세요."
+                            '복구할 현재 포장 상태를 안전하게 저장하지 못했습니다\n현장 관리자에게 알리세요'
                         ),
                         kind="submission_blocked",
                         tone="danger",
@@ -12815,9 +12909,9 @@ class Label_Match(tk.Tk):
                     else "회사 서버 포장 명령의 현품표/봉인 증거가 손상되었습니다."
                 )
                 notice = WorkflowNotice(
-                    title="회사 서버 포장 복구 잠금",
+                    title='포장 복구 확인 필요',
                     message=(
-                        f"{detail} 새 포장을 시작하지 말고 관리자에게 저장 상태 확인을 요청하세요."
+                        f"""현재 포장 상태는 확인이 필요합니다\n새 포장을 시작하지 말고 현장 관리자에게 알리세요\n코드: {detail}"""
                     ),
                     kind="submission_blocked",
                     tone="danger",
@@ -12853,7 +12947,7 @@ class Label_Match(tk.Tk):
             def resume_failure():
                 if self._resume_scanner_failure():
                     self._show_scanner_notice("이전 오류 기록 복구",
-                        "이전 트레이의 오류 기록을 저장했습니다. 새 현품표부터 스캔하세요.")
+                        '이전 트레이의 오류 기록을 저장했습니다.\n새 현품표부터 스캔하세요.')
             self._package_pin_ui(resume_failure, on_closed=True)
             return
         detached_capture = False
@@ -12938,10 +13032,9 @@ class Label_Match(tk.Tk):
                 print(f"중앙 작업 타임스탬프 오류: {type(e).__name__}. 원본 복구 상태를 보존합니다.")
                 self._package_recovery_state_data = state_data
                 notice = WorkflowNotice(
-                    title="회사 서버 포장 복구 잠금",
+                    title='포장 복구 확인 필요',
                     message=(
-                        "저장된 작업 시각을 읽지 못했습니다. 원본 복구 기록은 유지됩니다. "
-                        "새 포장을 시작하지 말고 관리자에게 저장 상태 확인·수리를 요청하세요."
+                        '저장한 작업 시각을 읽지 못했습니다\n새 포장을 시작하지 말고 현장 관리자에게 알리세요\n자세히: 원본 복구 기록은 보존했습니다.'
                     ),
                     kind="submission_blocked",
                     tone="danger",
@@ -12991,8 +13084,7 @@ class Label_Match(tk.Tk):
                 notice = WorkflowNotice(
                     title="복구 상태 관리자 확인 필요",
                     message=(
-                        "구버전 중앙 포장 상태에 예상보다 많은 스캔이 저장되어 자동 제출을 차단했습니다. "
-                        "PHS2와 중앙 저장 상태를 확인한 뒤 관리자 절차로 정리하세요."
+                        '포장에 예상보다 많은 스캔이 있어 제출하지 않았습니다\n현장 관리자에게 알리세요\n코드: PHS2'
                     ),
                     kind="submission_blocked",
                     tone="danger",
@@ -13112,9 +13204,7 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showwarning(
                     "작업 복구",
-                    "이 트레이는 이 PC에서 과도기 트레이로 정해졌지만 회사 서버 확인 기록을 지금 닫지 못해 "
-                    "지울 수 없습니다. 트레이를 이어서 엽니다. 마저 끝내거나 F1로 다시 취소하세요. "
-                    "계속 안 되면 관리자에게 알리세요.",
+                    '이 트레이는 회사 서버 확인 기록을 지금 닫지 못해 지울 수 없습니다\n마저 끝내거나 F1 키로 다시 취소하세요. 또 안 되면 현장 관리자에게 알리세요\n자세히: 이 PC 에서 과도기 트레이로 정한 트레이입니다. 트레이를 이어서 엽니다',
                     parent=self,
                 )
             return False
@@ -13239,7 +13329,7 @@ class Label_Match(tk.Tk):
                 if not self.run_tests:
                     self._show_scanner_notice(
                         "기록 로딩 오류",
-                        result['error'] + ". 이력 상세를 확인하고 다시 조회하세요.",
+                        result['error'] + '.\n이력 상세를 확인하고 다시 조회하세요.',
                     )
                 return
             updates_active_state = result.get('updates_active_state', True)
@@ -13275,9 +13365,8 @@ class Label_Match(tk.Tk):
             if self.history_tree.exists("loading"): self.history_tree.delete("loading")
             if not self.run_tests:
                 self._show_scanner_notice(
-                    "UI 업데이트 오류",
-                    "기록을 화면에 표시하지 못했습니다. 프로그램을 다시 시작해주세요. "
-                    "계속 실패하면 관리자에게 확인을 요청하세요.",
+                    '화면을 갱신하지 못했습니다\n잠시 후 다시 시도하세요\n코드: UI',
+                    '기록을 화면에 표시하지 못했습니다\n프로그램을 다시 시작하세요\n자세히: 계속되면 현장 관리자에게 알리세요.',
                 )
 
     def _start_history_display_apply(self, result):
@@ -13361,7 +13450,7 @@ class Label_Match(tk.Tk):
             self._history_display_applying = False
             print(f"이력 화면 적용 오류: {exc}")
             if not self.run_tests:
-                self._show_scanner_notice("UI 업데이트 오류", "기록을 화면에 표시하지 못했습니다. 다시 조회하세요.")
+                self._show_scanner_notice('화면을 갱신하지 못했습니다\n잠시 후 다시 시도하세요\n코드: UI', '기록을 화면에 표시하지 못했습니다.\n다시 조회하세요.')
             return
         self._history_apply_after_id = self.after(
             1, lambda: self._apply_history_display_chunk(generation, steps)
@@ -15114,9 +15203,7 @@ class Label_Match(tk.Tk):
             return WorkflowNotice(
                 title="저장됨-시간 확인 대기",
                 message=(
-                    "현품표는 저장되었습니다. PC와 서버의 시간 차이로 잠시 대기합니다.\n"
-                    "같은 작업을 자동으로 다시 확인하니 재스캔하지 말고 기다려 주세요.\n"
-                    "계속 대기하면 IT 담당자에게 PC와 서버 시간 동기화 확인을 요청하세요."
+                    '현품표를 저장했지만 PC 시각을 확인해야 합니다\n현장 관리자에게 알리세요\n코드: IT'
                 ),
                 kind="deferred_capture_pending",
                 tone="warning",
@@ -15125,8 +15212,7 @@ class Label_Match(tk.Tk):
             return WorkflowNotice(
                 title="저장됨-선행조건대기",
                 message=(
-                    "현품표를 저장했습니다. 선행 작업의 승인 상태를 확인하세요.\n"
-                    "승인 전에는 자동 재시도하지 않습니다. 대기 항목은 작업 상세에서 확인하세요."
+                    '현품표를 저장했습니다\n선행 작업의 승인 상태를 확인하세요\n자세히: 승인 전에는 자동 재시도하지 않습니다. 대기 항목은 작업 상세에서 확인하세요'
                 ),
                 kind="deferred_dependency_wait",
                 tone="warning",
@@ -15143,21 +15229,18 @@ class Label_Match(tk.Tk):
                 title=str(state.get("status")),
                 message={
                     "관리자확인": (
-                        "중앙 확인이 이 현품표를 받지 않았습니다. F1로 비우고 다음 현품표를 "
-                        "진행하세요(다음 현품표를 바로 스캔해도 새 세트가 됩니다). "
-                        "CA 봉인 뒤 다시 하려면 F1 후 같은 현품표를 다시 스캔하세요. "
-                        "관리자는 「멈춘 작업 확인」에서 이 건만 확인합니다."
+                        '회사 서버가 이 현품표를 받지 않았습니다\n다음 현품표를 스캔하세요\n자세히: 이적 봉인 뒤 다시 하려면 F1 키를 누른 뒤 같은 현품표를 다시 스캔하세요'
                         # F1 closes only a refused read on the set's own capture.
                         if self._refused_capture_cancel_enabled(view)
                         else "이 현품표 저장본은 관리자 확인이 필요합니다. 실물은 따로 두고 "
                         "다음 현품표를 스캔하면 새 세트로 진행됩니다. "
                         "관리자는 「멈춘 작업 확인」에서 이 건만 확인·보류합니다."
                     ),
-                    "결과확인중": "처리 결과를 확인 중입니다. 같은 작업을 다시 제출하지 마세요.",
+                    "결과확인중": '처리 결과를 확인 중입니다.\n같은 작업을 다시 제출하지 마세요.',
                     "검증완료-전송대기": "검증을 마쳤습니다. 회사 서버 전송을 기다리며 자동으로 다시 확인합니다.",
-                    "서버확정-로컬반영대기": "회사 서버 처리는 확정됐습니다. 이 장비의 기록 반영을 기다리세요.",
-                    "완료": "작업을 완료했습니다. 다음 현품표를 스캔하세요.",
-                    "종결-미완료": "이 작업은 완료되지 않았습니다. 관리자와 처리 방법을 확인하세요.",
+                    "서버확정-로컬반영대기": '회사 서버 처리는 확정됐습니다.\n이 장비의 기록 반영을 기다리세요.',
+                    "완료": '작업을 완료했습니다.\n다음 현품표를 스캔하세요.',
+                    "종결-미완료": '이 작업은 완료되지 않았습니다.\n관리자와 처리 방법을 확인하세요.',
                 }[state["status"]],
                 kind="deferred_validation_state",
                 tone=(
@@ -15922,7 +16005,7 @@ class Label_Match(tk.Tk):
         if not self._roster_worker_allowed() and raw_input != "KMCMD:UNDO":
             consume_input()
             self._show_scanner_notice(
-                "작업자 선택", "이름을 고르거나 '새 이름 등록'에서 이름을 등록한 뒤 다시 스캔하세요.")
+                "작업자 선택", "이름을 선택하거나 '새 이름 등록'에서 이름을 등록한 뒤 다시 스캔하세요.")
             self.open_settings_window()
             return
         if self._sealed_transfer_exchange_blocks_local_action("다음 스캔"):
@@ -15981,6 +16064,11 @@ class Label_Match(tk.Tk):
         self._replay_scanner_audits()
         previous_scan = self.__dict__.get("_scanner_previous_scan") or ("", 0.0)
         self._scanner_previous_scan = (raw_input, time.monotonic())
+        partial_label, partial_at = self.__dict__.get("_scanner_last_partial_submit", ("", 0.0))
+        if raw_input == partial_label and time.monotonic() - partial_at < 3:
+            consume_input()
+            self._play_sound("scan_master")
+            return
         if raw_input.startswith("KMCMD:"):
             consume_input()
             if self.current_set_info.get("scanner_exchange_phase"):
@@ -16023,7 +16111,7 @@ class Label_Match(tk.Tk):
             if len(self.current_set_info["raw"]) == 1:
                 self._play_sound("scan_master")
                 return
-            return self._confirm_scanner_shortage()
+            return self._request_scanner_shortage()
         if self.current_set_info.get("exact_rescan_active"):
             consume_input()
             self._process_exact_rescan_product(raw_input)
@@ -16051,7 +16139,7 @@ class Label_Match(tk.Tk):
             if (_label_match_unique_master_index_keys(raw_input)
                     | _label_match_unique_master_index_keys(processed_input)) & held_keys:
                 consume_input()
-                self._show_scanner_notice('관리자 확인 대기', '이 현품표는 저장 확인 대기 중입니다. 다른 세트를 계속하세요.')
+                self._show_scanner_notice('관리자 확인 대기', '이 현품표는 저장 확인 대기 중입니다.\n다른 세트를 계속하세요.')
                 return
             transition_shape, transition_reasons = "", ()
             if self._transition_mode_active():
@@ -16161,7 +16249,7 @@ class Label_Match(tk.Tk):
                     consume_input()
                     if held and held.get('reason') == 'STORAGE_WRITE_FAILURE':
                         self._show_scanner_notice('관리자 확인 대기',
-                            '이 현품표는 저장 확인 대기 중입니다. 따로 두고 다음 트레이를 계속하세요.')
+                            '이 현품표는 저장 확인 대기 중입니다.\n따로 두고 다음 트레이를 계속하세요.')
                         return
                     if self._transition_mode_active():
                         return self._transition_start_local(
@@ -16177,8 +16265,7 @@ class Label_Match(tk.Tk):
                             item_name_override=new_label_data.get("SPC"),
                         )
                     self._show_scanner_notice(
-                        "보류 현품표", "이 현품표는 이전 요청의 결과 확인을 위해 보류 중입니다. "
-                        "다른 세트를 진행하고 관리자에게 이 현품표를 인계하세요.")
+                        "보류 현품표", '이 현품표의 이전 요청 결과를 확인하고 있습니다\n현장 관리자에게 알리세요\n자세히: 해당 현품표는 보류하며 다른 트레이 작업은 계속할 수 있습니다.')
                     return
             if not central_label_candidate:
                 consume_input()
@@ -16600,9 +16687,11 @@ class Label_Match(tk.Tk):
             self._render_operator_workbench()
             self.update_big_display("교환 기록됨 · 다음 제품을 스캔하세요.", "green")
 
-    def _confirm_scanner_shortage(self):
+    def _scanner_shortage_allowed(self):
         current = self.current_set_info
         raw = list(current.get("raw") or [])
+        if not (1 <= len(raw) - 1 <= _label_match_set_product_sample_count(current)):
+            return False
         shape, _reasons, _item = label_transition.classify_start_label(
             raw[0] if raw else "",
             parse_sealed=_label_match_parse_sealed_transfer_qr,
@@ -16612,11 +16701,54 @@ class Label_Match(tk.Tk):
             member_count = snapshot.get("member_count")
             if type(member_count) is not int or member_count < 1:
                 self._show_scanner_notice(
-                    "모자란 상자", f"{LABEL_MATCH_SHORTAGE_NOTICE} · 서버 연결 뒤 마감")
+                    '수량 부족', f"{LABEL_MATCH_SHORTAGE_NOTICE} · 서버 연결 뒤 마감")
                 return False
             if not (1 <= len(raw) - 1 == member_count <= _label_match_set_product_sample_count(current)):
-                self._show_scanner_notice("모자란 상자", LABEL_MATCH_SHORTAGE_NOTICE)
+                self._show_scanner_notice('수량 부족', LABEL_MATCH_SHORTAGE_NOTICE)
                 return False
+        return True
+
+    def _clear_partial_submit_confirmation(self):
+        self.__dict__.pop("_partial_submit_confirmation", None)
+        self.__dict__.pop("_partial_submit_target", None)
+
+    def _partial_submit_confirm_state(self):
+        current = self.__dict__.get("current_set_info") or {}
+        target = (current.get("id"), tuple(current.get("raw") or ()))
+        if self.__dict__.get("_partial_submit_target") != target:
+            self._clear_partial_submit_confirmation()
+        return copy.deepcopy(self.__dict__.get("_partial_submit_confirmation"))
+
+    def _request_scanner_shortage(self):
+        if not self._scanner_shortage_allowed():
+            return False
+        current = self.current_set_info
+        total = _label_match_set_total_scan_count(current) - 1
+        done = len(current["raw"]) - 1
+        self._partial_submit_target = (current.get("id"), tuple(current["raw"]))
+        self._partial_submit_confirmation = {
+            "kind": "partial_submit", "total": total, "done": done, "short": total - done,
+        }
+        self.update_big_display(
+            f"수량 부족 — 부분 제출하시겠습니까?\n{total}개 중 {done}개({total - done}개 부족)", "primary")
+        return True
+
+    def _submit_partial_scanner(self):
+        if self._partial_submit_confirm_state() is None:
+            return False
+        if self._ui_lane_is_busy() or self.__dict__.get("_app_close_in_progress", False):
+            return False
+        if self.__dict__.get("operator_workbench_ready"):
+            view = self._render_operator_workbench()
+            if view is None or not view.scan_input_enabled:
+                return False
+        self._clear_partial_submit_confirmation()
+        return self._confirm_scanner_shortage()
+
+    def _confirm_scanner_shortage(self):
+        if not self._scanner_shortage_allowed():
+            return False
+        current = self.current_set_info
         previous = copy.deepcopy(self.current_set_info)
         self.current_set_info.setdefault("local_completed_at", datetime.now(timezone.utc).isoformat())
         self.current_set_info["shortage_confirmed_at"] = datetime.fromtimestamp(
@@ -16630,13 +16762,11 @@ class Label_Match(tk.Tk):
             self.current_set_info.update(previous)
             return self._publish_durable_commit_block(PackageLogisticsError("short confirmation decision save failed"))
         self._scanner_shortage_undo = snapshot
-        self._shortage_confirmation_deadline = time.monotonic() + 60.0
-        if self._finalize_set(self.Results.PASS) and self.__dict__.get("_scanner_shortage_undo"):
-            details = self.set_details_map[str(snapshot.get("completion_identity") or snapshot["id"])]
-            self.current_set_info["shortage_undo_snapshot"] = snapshot
-            self.current_set_info["shortage_completion_details"] = details
+        if self._finalize_set(self.Results.PASS) and not self.__dict__.get("_scanner_shortage_undo"):
             self._play_sound("scan_master")
-            self.update_big_display(f"부족 {missing}개로 확정", "primary")
+            self.update_big_display(f"부분 제출 완료 — {len(snapshot['raw']) - 1}개({missing}개 부족)", "primary")
+            return True
+        return False
 
     def _cancel_shortage_confirmation_timeout(self):
         state = self.__dict__
@@ -16650,49 +16780,10 @@ class Label_Match(tk.Tk):
                 pass
 
     def _arm_shortage_confirmation_timeout(self):
-        """Use durable wall time once on recovery, then the owner's monotonic clock."""
-        state = self.__dict__
-        current = state.get("current_set_info") or {}
-        snapshot = state.get("_scanner_shortage_undo") or current.get("shortage_undo_snapshot")
-        if not snapshot or state.get("_shortage_confirmation_token") is not None:
-            return
-        stamp = current.get("shortage_confirmed_at") or snapshot.get("shortage_confirmed_at")
-        if not stamp:
-            stamp = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
-        if not current.get("shortage_confirmed_at"):
-            current["shortage_confirmed_at"] = stamp
-            if not self.data_manager.save_current_state({"current_set_info": current}):
-                current.pop("shortage_confirmed_at", None)
-                self._publish_durable_commit_block(PackageLogisticsError("short confirmation time save failed"))
-                return
-        if state.get("_shortage_confirmation_deadline") is None:
-            confirmed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-            if confirmed.tzinfo is None:
-                confirmed = confirmed.replace(tzinfo=timezone.utc)
-            age = max(0.0, time.time() - confirmed.timestamp())
-            remaining = 0.0 if current.get("shortage_release_pending") else max(0.0, 60.0 - age)
-            state["_shortage_confirmation_deadline"] = time.monotonic() + remaining
-        token = state["_shortage_confirmation_token"] = object()
-        self._expire_shortage_confirmation(token)
+        """Replay a durable shortage decision immediately, including old snapshots."""
+        self._cancel_shortage_confirmation_timeout()
+        return self._release_shortage_confirmation()
 
-    def _expire_shortage_confirmation(self, token):
-        state = self.__dict__
-        if state.get("_shortage_confirmation_token") is not token:
-            return
-        state.pop("_shortage_confirmation_after_id", None)
-        remaining = state["_shortage_confirmation_deadline"] - time.monotonic()
-        if remaining > 0:
-            state["_shortage_confirmation_after_id"] = self.after(
-                max(1, int(remaining * 1000 + 0.999)),
-                lambda: self._expire_shortage_confirmation(token))
-            return
-        if self._release_shortage_confirmation():
-            if state.get("operator_workbench_ready"):
-                self._render_operator_workbench()
-        else:
-            # Preserve the original decision/key when a durable release fails.
-            state["_shortage_confirmation_after_id"] = self.after(
-                1000, lambda: self._expire_shortage_confirmation(token))
 
     def _release_shortage_confirmation(self):
         current = self.__dict__.get("current_set_info") or {}
@@ -16723,6 +16814,7 @@ class Label_Match(tk.Tk):
                 raise PackageLogisticsError("short confirmation release state save failed")
             self.current_set_info.clear()
             self.current_set_info.update(checkpoint)
+            self._scanner_last_partial_submit = ((released.get("raw") or [""])[0], time.monotonic())
             self.__dict__.pop("_scanner_shortage_undo", None)
             self._cancel_shortage_confirmation_timeout()
             if released.get("scanner_only"):
@@ -16737,54 +16829,9 @@ class Label_Match(tk.Tk):
             return
         current = self.current_set_info
         snapshot = self.__dict__.get("_scanner_shortage_undo") or current.get("shortage_undo_snapshot")
-        if current.get("shortage_release_pending"):
-            return self._ignore_product_scan("KMCMD:UNDO", "이미 다음 작업으로 넘긴 미달 확정입니다.")
-        if (not current.get("raw") or current.get("shortage_confirmed")) and snapshot:
-            set_id = str(snapshot.get("completion_identity") or snapshot["id"])
-            details = self.set_details_map.get(set_id) or current.get("shortage_completion_details")
-            if not details:
-                return self._ignore_product_scan("KMCMD:UNDO", "되돌릴 미달 확정이 없습니다.")
-            # Once UNDO starts, a partially durable cancellation must never
-            # race the timer into releasing the cancelled completion.
-            self._cancel_shortage_confirmation_timeout()
-            try:
-                log_details = {"cancelled_set_id": set_id, "details": details, "reason": "SHORTAGE_UNDO"}
-                self._commit_package_cancellation_local_event(
-                    event_type=self.Events.TRAY_COMPLETION_CANCELLED,
-                    local_event_details=log_details, cancellation=None)
-                restored = copy.deepcopy(snapshot)
-                restored["completion_identity"] = f"{set_id}-undo"
-                restored["transition_row_key"] = ""
-                restored.pop("local_completed_at", None)
-                restored.pop("shortage_confirmed_at", None)
-                self._cancel_deferred_capture_for_set(snapshot)
-                restored.pop("deferred_intent_id", None)
-                if restored.get("scanner_only"):
-                    captured = self._capture_or_resume_central_phs2_scan(
-                        restored["raw"][0], restored["parsed"][0], restored["completion_identity"], None)
-                    restored["deferred_intent_id"] = captured.intent_id
-                if not self.data_manager.save_current_state({"current_set_info": restored}):
-                    raise PackageLogisticsError("shortage undo state save failed")
-            except Exception as error:
-                return self._publish_durable_commit_block(error)
-            self.set_details_map.pop(set_id, None)
-            self.__dict__.get("history_row_details_map", {}).pop(set_id, None)
-            summary_date = _label_match_summary_date(details)
-            key = (details.get("item_code"), details.get("phase") or "-")
-            counts = self.scan_count.get(summary_date, {})
-            if counts.get(key, 0):
-                counts[key] -= 1
-                if not counts[key]:
-                    del counts[key]
-                if not counts:
-                    self.scan_count.pop(summary_date, None)
-            if self.history_tree.exists(set_id):
-                self.history_tree.delete(set_id)
-            self._rebuild_global_scanned_set_from_details()
-            self.current_set_info = restored
-            self.__dict__.pop("_scanner_shortage_undo", None)
-            self._update_summary_tree()
-        elif current.get("raw"):
+        if snapshot or current.get("shortage_confirmed"):
+            return self._ignore_product_scan("KMCMD:UNDO", "부분 제출한 기록은 되돌릴 수 없습니다.")
+        if current.get("raw"):
             restored = copy.deepcopy(current)
             if restored.get("scanner_exchange_phase"):
                 restored.pop("scanner_exchange_phase", None)
@@ -16922,7 +16969,7 @@ class Label_Match(tk.Tk):
         ):
             self._show_scanner_notice(
                     "복구 상태 관리자 확인 필요",
-                    f"{action} 작업을 진행할 수 없습니다. 현품표 저장 상태를 관리자와 확인하세요.",
+                    f"""{action} 작업을 진행할 수 없습니다.\n현품표 저장 상태를 관리자와 확인하세요.""",
                 )
             return True
         if (
@@ -16977,8 +17024,7 @@ class Label_Match(tk.Tk):
             or attempt.seal_verification_status == "OPERATOR_REVIEW"
         ):
             message = (
-                "제품 교체 결과가 운영자 확인 잠금 상태입니다.\n"
-                f"{action} 작업을 진행하지 말고 중앙 처리 결과와 현재 포장 상태를 확인하세요."
+                f"""제품 교환 결과는 확인이 필요합니다\n현장 관리자에게 알리세요\n코드: {action}"""
             )
             self._show_scanner_notice("제품 교체 확인 필요", message)
         else:
@@ -17350,8 +17396,7 @@ class Label_Match(tk.Tk):
             messagebox.showerror(
                 "제품 교환 준비 안 됨",
                 (
-                    "회사 서버 확인을 받지 못했습니다. 잠시 뒤 다시 하세요. "
-                    "계속 안 되면 관리자에게 알려 주세요."
+                    '회사 서버 확인을 받지 못했습니다\n잠시 후 다시 시도하세요\n자세히: 계속되면 현장 관리자에게 알리세요.'
                 ),
                 parent=self,
             )
@@ -17428,8 +17473,7 @@ class Label_Match(tk.Tk):
                 messagebox.showerror(
                     "제품 교환 준비 안 됨",
                     (
-                        "회사 서버 확인을 받지 못했습니다. 잠시 뒤 다시 하세요. "
-                        "계속 안 되면 관리자에게 알려 주세요."
+                        '회사 서버 확인을 받지 못했습니다\n잠시 후 다시 시도하세요\n자세히: 계속되면 현장 관리자에게 알리세요.'
                     ),
                     parent=self,
                 )
@@ -17541,8 +17585,7 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning(
                     "포장 처리 우선",
                     (
-                        "포장 완료 준비가 이미 시작되어 제품 교체를 진행할 수 없습니다. "
-                        "현재 포장 결과를 먼저 확정하거나 관리자에게 상태 확인을 요청하세요."
+                        '포장 완료를 시작해 제품을 교환할 수 없습니다\n현장 관리자에게 알리세요\n자세히: 현재 포장 결과를 먼저 확정해야 합니다.'
                     ),
                     parent=self,
                 )
@@ -17570,7 +17613,7 @@ class Label_Match(tk.Tk):
             )
             messagebox.showerror(
                 "제품 교체 상태 확인 실패",
-                "포장 처리 상태를 확인하지 못했습니다. 잠시 후 다시 시도하세요.",
+                '포장 처리 상태를 확인하지 못했습니다.\n잠시 후 다시 시도하세요.',
                 parent=self,
             )
 
@@ -17890,8 +17933,7 @@ class Label_Match(tk.Tk):
             self._phs_label_guidance_notice = WorkflowNotice(
                 title="현품표 교체 · 이 PC 기록 충돌",
                 message=(
-                    "교체 중 현재 포장 상태가 바뀌었습니다. "
-                    "중앙 처리 결과는 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환 복구로 확인하세요."
+                    '교체 중 현재 포장 상태가 바뀌었습니다.\n중앙 처리 결과는 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환 복구로 확인하세요.'
                 ),
                 kind="phs_label_exchange",
                 tone="danger",
@@ -17927,8 +17969,7 @@ class Label_Match(tk.Tk):
                 else:
                     title = "현품표 교체 실패"
                     message = (
-                        "현품표 교체를 완료하지 못했습니다. "
-                        "관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하거나 관리자에게 문의하세요."
+                        '현품표 교체를 완료하지 못했습니다.\n관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하거나 현장 관리자에게 알리세요.'
                     )
                     tone = "danger"
                 self._phs_label_guidance_notice = WorkflowNotice(
@@ -17957,8 +17998,7 @@ class Label_Match(tk.Tk):
                         "상태는 유지됩니다."
                         if result.success
                         else (
-                            "현품표 출력에 실패했습니다. 출력 상태를 "
-                            "확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요."
+                            '현품표 출력에 실패했습니다.\n출력 상태를 확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요.'
                         )
                     ))
                 ),
@@ -18000,8 +18040,7 @@ class Label_Match(tk.Tk):
             self._phs_label_guidance_notice = WorkflowNotice(
                 title="현품표 교체 실패",
                 message=_startup_send_wait_message(error, (
-                    "현품표 교체를 완료하지 못했습니다. "
-                    "관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하거나 관리자에게 문의하세요."
+                    '현품표 교체를 완료하지 못했습니다.\n관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하거나 현장 관리자에게 알리세요.'
                 )),
                 kind="phs_label_exchange",
                 tone="danger",
@@ -18104,8 +18143,7 @@ class Label_Match(tk.Tk):
             messagebox.showerror(
                 "현품표 교환 · 이 PC 기록 충돌",
                 (
-                    "교환 중 현재 포장 상태가 변경됐습니다. "
-                    "추가 교체를 중지하고 관리자에게 문의하세요."
+                    '교환 중 현재 포장 상태가 변경됐습니다.\n추가 교체를 중지하고 현장 관리자에게 알리세요.'
                 ),
                 parent=self,
             )
@@ -18137,7 +18175,7 @@ class Label_Match(tk.Tk):
                     def confirm_reprint():
                         if self.current_set_info != confirmation_snapshot:
                             self._show_scanner_notice(
-                                "실물 확인 다시 필요", "작업이 바뀌었습니다. 현재 현품표를 다시 확인하세요.",
+                                "실물 확인 다시 필요", '작업이 바뀌었습니다.\n현재 현품표를 다시 확인하세요.',
                             )
                             return
                         self._start_phs_label_recovery(confirm_ambiguous_reprint=True)
@@ -18150,7 +18188,7 @@ class Label_Match(tk.Tk):
                     return
                 messagebox.showerror(
                     "현품표 날짜 교환 실패",
-                    "현품표 날짜 교환을 완료하지 못했습니다. 관리자에게 문의하세요.",
+                    '현품표 날짜 교환을 완료하지 못했습니다.\n현장 관리자에게 알리세요.',
                     parent=self,
                 )
                 self._render_operator_workbench()
@@ -18166,7 +18204,7 @@ class Label_Match(tk.Tk):
                 message=(
                     getattr(result, "operator_message", "") or ("현품표 날짜 교환을 완료했습니다. 포장 수량과 진행 상태는 유지됩니다."
                     if result.success
-                    else "현품표 출력에 실패했습니다. 출력 상태를 확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요.")
+                    else '현품표 출력에 실패했습니다.\n출력 상태를 확인한 뒤 관리자 메뉴 「멈춘 작업 확인」에서 미완료 현품표 교환을 복구하세요.')
                 ),
                 kind="phs_label_exchange",
                 tone="success" if result.success else "danger",
@@ -18213,8 +18251,7 @@ class Label_Match(tk.Tk):
             messagebox.showerror(
                 "현품표 날짜 교환 실패",
                 _startup_send_wait_message(error, (
-                    "현품표 날짜 교환을 완료하지 못했습니다. "
-                    "관리자에게 문의하세요."
+                    '현품표 날짜 교환을 완료하지 못했습니다.\n현장 관리자에게 알리세요.'
                 )),
                 parent=self,
             )
@@ -18241,8 +18278,7 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning(
                     "현품표 교체 불가",
                     (
-                        "중앙 현품표 교체 API를 사용할 수 없거나 "
-                        "다른 교체 작업이 진행 중입니다."
+                        '현품표 교환을 시작할 수 없습니다\n현장 관리자에게 알리세요\n코드: API'
                     ),
                     parent=self,
                 )
@@ -18283,7 +18319,7 @@ class Label_Match(tk.Tk):
             except PHSLabelWorkflowError:
                 self._phs_label_guidance_notice = WorkflowNotice(
                     title="현품표 교체 복구 오류",
-                    message="이전 현품표 교체 상태를 확인하지 못했습니다. 관리자에게 문의하세요.",
+                    message='이전 현품표 교체 상태를 확인하지 못했습니다.\n현장 관리자에게 알리세요.',
                     kind="phs_label_exchange",
                     tone="danger",
                 )
@@ -18298,7 +18334,7 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showerror(
                     "현품표 교환 복구 오류",
-                    "이전 현품표 교체 상태를 확인하지 못했습니다. 관리자에게 문의하세요.",
+                    '이전 현품표 교체 상태를 확인하지 못했습니다.\n현장 관리자에게 알리세요.',
                     parent=self,
                 )
             return "break"
@@ -18588,13 +18624,10 @@ class Label_Match(tk.Tk):
             return "이 PC의 기록과 회사 서버 포장이 모두 취소되었습니다. 같은 현품표로 다시 포장할 수 있습니다."
         if status == "CONFLICT":
             return (
-                "로컬 취소 기록은 저장되었지만 중앙 취소 확인이 필요합니다. "
-                "해당 트레이를 반출하지 말고 관리자에게 확인을 요청하세요."
+                '취소 기록은 저장했지만 회사 서버 확인이 필요합니다\n트레이를 반출하지 말고 현장 관리자에게 알리세요'
             )
         return (
-            "로컬 취소 기록이 저장되었습니다. 중앙 취소 전송·확인 중입니다. "
-            "중앙 확인 전 해당 트레이를 반출하지 마세요."
-            " 같은 현품표로 다시 포장할 수 있습니다."
+            '취소 기록을 저장했고 회사 서버에 전송 중입니다\n회사 서버 확인 전에는 해당 트레이를 반출하지 마세요'
         )
 
     @writer_sink("gui_package_cancel_enqueue")
@@ -18902,7 +18935,7 @@ class Label_Match(tk.Tk):
         _durable_completion=None,
     ):
         if result == self.Results.PASS and is_manual_complete:
-            self._show_scanner_notice("모자란 상자", LABEL_MATCH_SHORTAGE_NOTICE)
+            self._show_scanner_notice('수량 부족', LABEL_MATCH_SHORTAGE_NOTICE)
             return False
         frozen = (self.__dict__.get("_csv_completed_set") or {}).get("current_snapshot") or {}
         if frozen and str(frozen.get("id") or "") == str(self.current_set_info.get("id") or ""):
@@ -19321,8 +19354,7 @@ class Label_Match(tk.Tk):
     def _show_delete_failure(self, error):
         print(f"기록 삭제 기술 진단: {error}")
         message = (
-            "기록을 삭제하지 못했습니다. 로그 파일 저장 권한과 선택한 기록 상태를 "
-            "확인하고 다시 시도하세요. 계속 실패하면 관리자에게 확인을 요청하세요."
+            '기록을 삭제하지 못했습니다\n현장 관리자에게 알리세요\n자세히: 기록 저장 권한과 선택한 기록 상태를 확인해야 합니다.'
         )
         status_label = self.__dict__.get("status_label")
         if status_label is not None:
@@ -19360,7 +19392,7 @@ class Label_Match(tk.Tk):
             )
             return None
         if _confirmed_selection is not None and _confirmed_selection != selection_snapshot:
-            self._show_scanner_notice("선택 다시 필요", "선택한 기록이 바뀌었습니다. 다시 선택하여 확인하세요.")
+            self._show_scanner_notice("선택 다시 필요", '선택한 기록이 바뀌었습니다.\n다시 선택하여 확인하세요.')
             return False
 
         deleted_count = 0
@@ -19460,10 +19492,7 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning(
                     "중앙 취소 확인 필요",
                     (
-                        f"{deleted_count}개의 로컬 기록을 삭제했습니다.\n"
-                        f"중앙 취소 확인 필요 {central_conflict_count}건입니다."
-                        f"{pending_suffix}\n"
-                        "해당 트레이를 반출하지 말고 관리자에게 확인을 요청하세요."
+                        f"""기록을 삭제했지만 취소 확인이 필요합니다\n해당 트레이를 반출하지 말고 현장 관리자에게 알리세요\n코드: {central_conflict_count} · {central_conflict_count} · {pending_suffix}"""
                     ),
                     parent=self,
                 )
@@ -19471,9 +19500,7 @@ class Label_Match(tk.Tk):
                 messagebox.showwarning(
                     "회사 서버 취소 확인 중",
                     (
-                        f"{deleted_count}개의 로컬 기록을 삭제했습니다.\n"
-                        f"중앙 취소 {central_pending_count}건은 전송·확인 중입니다.\n"
-                        "중앙 확인 전 해당 트레이를 반출하지 마세요."
+                        f"""기록을 삭제했고 취소 결과 확인 중입니다\n회사 서버 확인 전에는 해당 트레이를 반출하지 마세요\n코드: {central_pending_count} · {central_pending_count}"""
                     ),
                     parent=self,
                 )
@@ -19586,6 +19613,7 @@ class Label_Match(tk.Tk):
             self._deferred_capture_ui = None
 
     def _reset_current_set(self, full_reset=False, from_finalize=False):
+        self._clear_partial_submit_confirmation()
         if self.is_blinking: return False
         if full_reset and not from_finalize and self._csv_completed_set_blocks_edit("KMCMD:UNDO"):
             return False
@@ -19629,9 +19657,7 @@ class Label_Match(tk.Tk):
                     self._show_scanner_notice(
                             "현재 트레이 취소 보류",
                             (
-                                "충돌 증거의 로컬 복구 해제 상태를 저장하지 "
-                                "못했습니다. 현재 세트는 유지됩니다. "
-                                "관리자에게 확인을 요청하세요."
+                                '복구 상태를 저장하지 못했습니다\n현장 관리자에게 알리세요'
                             ),
                         )
                     return False
@@ -19645,7 +19671,7 @@ class Label_Match(tk.Tk):
                 print(f"현재 세트 취소 보류: {getattr(exc, 'code', type(exc).__name__)}")
                 self._show_scanner_notice(
                         "현재 트레이 취소 보류",
-                        "저장된 작업의 처리 결과를 확인할 수 없어 현재 트레이를 유지합니다. 관리자와 확인하세요.",
+                        '저장된 작업의 처리 결과를 확인할 수 없어 현재 트레이를 유지합니다.\n관리자와 확인하세요.',
                     )
                 return False
         if full_reset and self.current_set_info.get('id'):
@@ -19750,8 +19776,7 @@ class Label_Match(tk.Tk):
         if not sound:
             self._show_scanner_notice(
                 "사운드 설정 오류",
-                "경고음 파일을 찾을 수 없습니다.\n(assets 폴더의 fail.wav 파일 확인 필요)\n\n"
-                "오류 발생 시 경고음이 울리지 않습니다.",
+                '경고음 파일이 없어 오류 경고음을 낼 수 없습니다\n현장 관리자에게 알리세요\n코드: assets · fail.wav',
             )
             return None
         self._siren_stop_event.clear()
@@ -19785,9 +19810,7 @@ class Label_Match(tk.Tk):
             print(f"사운드 재생 기술 진단: {detail}")
             self._show_scanner_notice(
                 "사운드 재생 오류",
-                "경고음을 재생하는 중 오류가 발생했습니다.\n"
-                "스피커 또는 사운드 드라이버를 확인해주세요. "
-                "계속 실패하면 관리자에게 확인을 요청하세요.",
+                '경고음을 재생하지 못했습니다\n현장 관리자에게 알리세요\n자세히: 스피커와 사운드 드라이버를 확인해야 합니다.',
             )
         if any(thread.is_alive() for thread in self.__dict__.get("_siren_threads", [])):
             self._siren_after_id = self.after(50, self._poll_error_siren)
@@ -19875,8 +19898,7 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showerror(
                     "시스템 오류",
-                    "오류 안내창을 표시하지 못했습니다. 프로그램을 다시 시작하세요. "
-                    "계속 실패하면 관리자에게 확인을 요청하세요.",
+                    '오류 안내창을 표시하지 못했습니다\n프로그램을 다시 시작하세요\n자세히: 계속되면 현장 관리자에게 알리세요.',
                 )
             self._reset_current_set(full_reset=True)
 
@@ -19973,11 +19995,7 @@ class Label_Match(tk.Tk):
 
         item_name = target_details.get('item_name', '알 수 없음')
 
-        confirm_msg = (f"다음 기록을 취소하시겠습니까?\n\n"
-                       f"현품표: {target_details.get('master_label_code')}\n"
-                       f"품명: {item_name}\n"
-                       f"완료 시간: {end_time_display}\n\n"
-                       f"취소 시 통계와 기록이 모두 변경됩니다.")
+        confirm_msg = (f"""이 기록을 취소할까요?\n자세히: 현품표 {target_details.get('master_label_code')} · 품명 {item_name} · 완료 시각 {end_time_display}\n취소하면 통계와 기록이 모두 변경됩니다""")
         
         target_snapshot = (target_set_id, copy.deepcopy(target_details))
         if not self.run_tests and _confirmed_target is None:
@@ -19987,7 +20005,7 @@ class Label_Match(tk.Tk):
             )
             return
         if _confirmed_target is not None and _confirmed_target != target_snapshot:
-            self._show_scanner_notice("대상 다시 필요", "완료 기록이 바뀌었습니다. 현품표를 다시 확인하세요.")
+            self._show_scanner_notice("대상 다시 필요", '완료 기록이 바뀌었습니다.\n현품표를 다시 확인하세요.')
             return
 
         try:
@@ -20051,8 +20069,7 @@ class Label_Match(tk.Tk):
             if not self.run_tests:
                 messagebox.showerror(
                     "처리 오류",
-                    "취소 작업을 완료하지 못했습니다. 프로그램을 다시 시작하여 확인해주세요. "
-                    "계속 실패하면 관리자에게 확인을 요청하세요.",
+                    '취소 작업을 완료하지 못했습니다\n프로그램을 다시 시작해 확인하세요\n자세히: 계속되면 현장 관리자에게 알리세요.',
                     parent=self,
                 )
             self.data_manager.log_event(self.Events.UI_ERROR, {"context": "tray_cancellation_by_label", "error": str(e)})
@@ -20352,7 +20369,7 @@ class Label_Match(tk.Tk):
                 if not self.run_tests:
                     messagebox.showerror(
                         "인증 오류",
-                        "관리자 코드를 확인할 수 없습니다. 보호 프로필과 입력값을 확인하세요.",
+                        '관리자 확인을 마치지 못했습니다\n입력한 값을 확인하세요',
                         parent=window,
                     )
                 return
@@ -20403,8 +20420,7 @@ class Label_Match(tk.Tk):
                 raise
             messagebox.showerror(
                 "저장 보류",
-                "작업 로그 저장을 완료하지 못해 설정 변경을 중단했습니다. "
-                "잠시 후 다시 시도하고 계속 실패하면 관리자에게 확인을 요청하세요.",
+                '작업 로그 저장을 완료하지 못해 설정 변경을 중단했습니다\n현장 관리자에게 알리세요',
                 parent=window,
             )
             return
@@ -22049,7 +22065,7 @@ class Label_Match(tk.Tk):
             return "break"
         self._show_scanner_notice(
             "스캔 안 받음",
-            "확인·조회 영역에서는 스캔을 받지 않았습니다. 스캔 입력칸에서 다시 스캔하세요.",
+            '확인·조회 영역에서는 스캔을 받지 않았습니다.\n스캔 입력칸에서 다시 스캔하세요.',
         )
         return "break"
 
@@ -22060,7 +22076,7 @@ class Label_Match(tk.Tk):
             return False
         notice = WorkflowNotice(
             title=title,
-            message=message + "\n승인은 마우스로 단추를 누르세요. 스캔·Enter·Y/N은 승인하지 않습니다.",
+            message=message + '\n승인은 마우스로 단추를 누르세요\n스캔·Enter·Y/N으로는 승인할 수 없습니다',
             kind="pointer_confirmation", tone="warning",
         )
         # The existing keyboard/command callback only reports rejected input.
@@ -22487,7 +22503,7 @@ class Label_Match(tk.Tk):
             )
             if saved_review:
                 title = "제품 교체 확인 필요"
-                message = "F4에서 저장된 교체 목록을 확인하세요. 관리자 조치 전에는 포장 완료를 보류하세요."
+                message = 'F4에서 저장된 교체 목록을 확인하세요.\n관리자 조치 전에는 포장 완료를 보류하세요.'
             elif seal_pending:
                 title = "새 봉인 QR 확인 필요"
                 message = "F4에서 새 봉인 QR을 확인한 뒤 포장을 계속하세요."
@@ -22876,9 +22892,9 @@ class Label_Match(tk.Tk):
         except PHSLabelWorkflowError:
             phs_label_recovery_pending = True
         for name, enabled in (
-            ("manual_complete_button", bool(view.cancel_current_enabled or
-                (view.scan_input_enabled and (self.__dict__.get("_scanner_shortage_undo") or
-                 (self.__dict__.get("current_set_info") or {}).get("shortage_undo_snapshot"))))),
+            ("manual_complete_button", bool(view.cancel_current_enabled and not
+                (self.__dict__.get("_scanner_shortage_undo") or
+                 (self.__dict__.get("current_set_info") or {}).get("shortage_undo_snapshot")))),
             ("exact_rescan_button", view.f4_enabled),
             ("reset_button", view.cancel_current_enabled or self._refused_capture_cancel_enabled(view)),
             ("cancel_tray_button", view.cancel_completed_enabled),
@@ -22994,6 +23010,12 @@ class Label_Match(tk.Tk):
         entered_scan = str(text or "").strip()
         self._last_scan_enter_at = time.monotonic()
         self._clear_scanner_notice()
+        confirmation = self._partial_submit_confirm_state()
+        partial_answer = confirmation is not None and entered_scan in {
+            "", str((self.current_set_info.get("raw") or [""])[0]),
+        }
+        if confirmation is not None and not partial_answer:
+            self._clear_partial_submit_confirmation()
         if self._reject_residual_tag_input(entered_scan, consume_input=self._consume_scan_entry if from_entry else None):
             return "break"
         if self.__dict__.get("operator_workbench_ready") and entered_scan:
@@ -23016,10 +23038,16 @@ class Label_Match(tk.Tk):
                         self.update_big_display(f"스캔 안 받음 · {view.next_action}", "red")
                     self._play_sound("fail")
                 return "break"
+        if partial_answer:
+            if from_entry:
+                self._consume_scan_entry()
+            self._submit_partial_scanner()
+            return "break"
         return self.process_input(event) if raw is None else self.process_input(event, raw=raw)
 
     def _handle_workflow_shortcut(self, action, event=None):
         """Apply the same presenter gate to keyboard and button actions."""
+        self._clear_partial_submit_confirmation()
         if self._app_close_blocks_local_action():
             return "break"
         action = str(action).lower()
@@ -23032,7 +23060,7 @@ class Label_Match(tk.Tk):
             "f2": bool(view and view.cancel_completed_enabled),
             "f3": bool(view and view.f3_enabled),
             "f4": bool(view and view.f4_enabled),
-            "undo": bool(self.current_set_info.get("raw") or self.__dict__.get("_scanner_shortage_undo") or self.current_set_info.get("shortage_undo_snapshot")),
+            "undo": bool(self.current_set_info.get("raw") and not self.current_set_info.get("shortage_confirmed")),
         }
         if not allowed.get(str(action).lower(), False):
             return "break"
@@ -23047,6 +23075,9 @@ class Label_Match(tk.Tk):
         return "break"
 
     def _handle_workflow_escape(self, event=None):
+        if self._partial_submit_confirm_state() is not None:
+            self._clear_partial_submit_confirmation()
+            return "break"
         guidance = self.__dict__.get("_phs_label_guidance_notice")
         if guidance is not None and guidance.kind == "scanner_notice":
             self._clear_scanner_notice()
@@ -23185,7 +23216,7 @@ class Label_Match(tk.Tk):
             self._clear_workflow_completion()
             self._workflow_blocking_notice = None
             self._workflow_notice = WorkflowNotice('관리자 확인 대기',
-                '이 세트를 따로 보관하고 다음 현품표를 계속하세요. 관리자에게 알리세요.',
+                '이 세트를 따로 보관하고 다음 현품표를 계속하세요.\n현장 관리자에게 알리세요.',
                 kind='scanner_notice', tone='warning')
             self._workflow_notice_action = None
             self._workflow_notice_action_text = '확인'
@@ -23228,37 +23259,28 @@ class Label_Match(tk.Tk):
         )
         message = (
             (
-                "이 PC 시계가 서버보다 30초 넘게 늦어 포장 권한을 아직 쓸 수 없습니다. "
-                "현재 세트와 실물을 유지하고 IT 담당자에게 PC 시간 동기화를 요청한 뒤 "
-                "저장 재시도를 누르세요."
+                'PC 시각이 달라 포장 권한을 아직 사용할 수 없습니다\n현장 관리자에게 알리세요\n코드: IT\n자세히: 30초'
             )
             if clock_behind
             else (
-                "이 장비의 포장 권한과 현재 현품표 상태를 확인하지 못했습니다. "
-                "현재 세트와 실물을 유지하고 네트워크 연결 후 다시 시도하세요. "
-                "계속 실패하면 관리자에게 확인을 요청하세요."
+                '이 장비의 포장 권한과 현재 현품표 상태를 확인하지 못했습니다\n현재 세트와 실물을 유지하고 네트워크 연결 후 다시 시도하세요\n자세히: 계속 실패하면 관리자에게 확인을 요청하세요'
             )
             if lease_failure
             else policy_notice[1]
             if policy_notice
             else (
-                "로컬 완료 기록을 안전하게 저장하지 못했습니다. "
-                "디스크 공간·저장 폴더 권한·파일 잠금을 확인한 뒤 저장 재시도를 누르세요. "
-                "현재 세트와 기존 기록은 보존됩니다. 실물을 이동하지 마세요. "
-                "정상 종료 후 다시 열어 복구할 수 있습니다. "
-                "계속 실패하면 관리자에게 저장 상태 확인을 요청하세요."
+                '이 PC에 완료 기록을 저장하지 못했습니다\n실물을 이동하지 말고 현장 관리자에게 알리세요'
             )
         )
         scans = tuple(self.current_set_info.get("raw") or ())
         if self.__dict__.get('_storage_root_failure') and not lease_failure and not policy_notice:
-            message = ('이 PC에 저장할 수 없습니다. 지금 세트 실물을 그대로 두고 '
-                       '다른 작업대로 옮겨 계속하세요. 관리자에게 알리세요.')
+            message = ('이 PC에 저장할 수 없습니다\n현장 관리자에게 알리세요\n자세히: 현재 트레이 실물을 그대로 두고 다른 작업대로 옮겨 계속하세요.')
         total = max(1, int(self._workflow_total_scan_count()))
         completed = min(total, len(scans))
         frozen = (self.__dict__.get("_csv_completed_set") or {}).get("current_snapshot") or {}
         csv_completed = bool(frozen and str(frozen.get("id") or "") == str(self.current_set_info.get("id") or ""))
         if csv_completed:
-            message = "완료됨 · 기록 마무리 중. 저장 재시도를 누르세요. 완료된 입력은 취소·교환할 수 없습니다."
+            message = '기록을 마무리하지 못했습니다\n「저장 재시도」를 누르세요\n자세히: 작업은 완료했습니다. 완료된 입력은 취소·교환할 수 없습니다'
         notice = WorkflowNotice(
             title=(
                 "완료됨 · 기록 마무리 중"
@@ -23303,9 +23325,7 @@ class Label_Match(tk.Tk):
         # operator surface needs a stable cause and a concrete recovery step.
         print(f"중앙 제출 기술 진단: {error}")
         message = (
-            "중앙 제출을 확인하지 못했습니다.\n"
-            "현재 세트는 유지됩니다.\n"
-            "계속 실패 시 관리자 확인"
+            '포장 제출 결과를 확인하지 못했습니다\n현장 관리자에게 알리세요\n자세히: 현재 작업은 유지됩니다.'
         )
         notice = WorkflowNotice(
             title=(
@@ -24092,7 +24112,7 @@ class Label_Match(tk.Tk):
     def _update_manual_complete_button_state(self):
         button = self.__dict__.get("manual_complete_button")
         if button is not None:
-            button.config(text="취소 · 방금 스캔 되돌리기", state="normal" if self.current_set_info.get("raw") or self.__dict__.get("_scanner_shortage_undo") else "disabled")
+            button.config(text="취소 · 방금 스캔 되돌리기", state="normal" if self.current_set_info.get("raw") and not self.current_set_info.get("shortage_confirmed") else "disabled")
 
 
     def _update_exact_rescan_button_state(self):
@@ -24192,45 +24212,30 @@ def prepare_startup_item_catalog():
 ITEM_CATALOG_STARTUP_EXIT_CODE = 3
 ITEM_CATALOG_STARTUP_ERROR_TITLE = "회사 서버 품목 목록 확인 실패"
 ITEM_CATALOG_STARTUP_ERROR_MESSAGE = (
-    "중앙 품목 목록을 확인할 수 없어 프로그램 시작을 중단했습니다.\n\n"
-    "네트워크 연결과 이 PC의 중앙 물류 설정을 확인한 뒤 다시 실행하세요. "
-    "계속 실패하면 IT 담당자에게 문의하세요."
+    '품목 목록을 받지 못해 프로그램을 시작하지 못했습니다\n연결을 확인하고 다시 시도하세요\n코드: IT'
 )
 ITEM_CATALOG_CACHE_WARNING_TITLE = "저장해 둔 검증된 품목 목록 사용"
 ITEM_CATALOG_CACHE_WARNING_MESSAGE = (
-    "회사 서버 품목 목록을 받지 못해 이 PC에 저장된 목록으로 시작합니다.\n\n"
-    "저장된 목록 시각: {cache_time}\n"
-    "네트워크가 돌아오면 다음 실행 때 회사 서버 목록을 다시 받습니다."
+    '회사 서버 품목 목록을 받지 못해 이 PC 의 목록을 사용합니다\n자세히: 저장된 목록 시각 {cache_time}\n연결이 돌아오면 다음 실행 때 목록을 다시 받습니다'
 )
 ITEM_CATALOG_TRANSITION_WARNING_TITLE = "과도기 모드 — 품목 목록 미확인"
 ITEM_CATALOG_TRANSITION_WARNING_MESSAGE = (
-    "중앙 품목 목록을 확인하지 못했지만 과도기 모드라 설치에 들어 있는 품목 목록으로 시작합니다.\n"
-    "이 상태에서 시작한 세트는 '품목 미확인'으로 기록됩니다.\n\n"
-    "네트워크가 돌아온 뒤 프로그램을 다시 실행하면 중앙 목록을 다시 확인합니다.\n"
-    "오류 코드: {cause_code}"
+    '회사 서버 품목 목록을 확인하지 못해 설치된 목록을 사용합니다\n연결이 돌아오면 프로그램을 다시 실행하세요\n자세히: 과도기 모드입니다. 이 상태의 작업은 품목 미확인으로 기록됩니다\n코드: {cause_code}'
 )
 ITEM_CATALOG_DIAGNOSTIC_FILENAME = "item_catalog_startup_diagnostic.json"
 LOGISTICS_PROFILE_WARNING_TITLE = "회사 서버 물류 프로파일 확인 필요"
 LOGISTICS_PROFILE_WARNING_MESSAGES = {
     PROFILE_WARNING_CURRENT_USER_MISMATCH: (
-        "선택된 중앙 물류 프로파일의 비밀이 아닌 binding이 현재 사용자 설치 "
-        "프로파일과 다릅니다.\n\n"
-        "프로그램은 선택된 프로파일을 유지하지만, IT 담당자는 오래된 설정인지 "
-        "확인하세요."
+        '이 PC의 작업자 설정을 확인해야 합니다\n현장 관리자에게 알리세요\n코드: binding · IT'
     ),
     PROFILE_WARNING_CURRENT_USER_UNREADABLE: (
-        "선택된 중앙 물류 프로파일과 비교할 현재 사용자 설치 프로파일의 식별 "
-        "정보를 확인할 수 없습니다.\n\n"
-        "프로그램은 선택된 프로파일을 유지하지만, IT 담당자는 사용자 프로파일 "
-        "상태를 확인하세요."
+        '이 PC의 작업자 설정을 확인하지 못했습니다\n현장 관리자에게 알리세요\n코드: IT'
     ),
 }
 
 FIRST_RUN_ONBOARDING_ERROR_TITLE = "현재 사용자 초기 설정 실패"
 FIRST_RUN_ONBOARDING_ERROR_MESSAGE = (
-    "이 PC의 사용자별 물류 설정을 완료하지 못해 프로그램 시작을 중단했습니다.\n\n"
-    "이 PC의 설치 및 사용자 설정을 관리자에게 확인받으세요. "
-    "아래 보고서 경로를 IT 담당자에게 전달하세요."
+    '작업자 설정을 마치지 못해 프로그램을 시작하지 못했습니다\n현장 관리자에게 알리세요\n코드: IT'
 )
 FIRST_RUN_REGISTRATION_RECOVERY_CODES = frozenset({
     "POSSESSION_PROOF_REATTACH_REQUIRED", "ADMIN_RECOVERY_ACTION",
@@ -24242,8 +24247,7 @@ FIRST_RUN_REGISTRATION_RECOVERY_DETAIL = (
     "현장 관리자: 관리자 계정으로 이 PC 등록 회복을 실행하세요"
 )
 INSTALLATION_RECOVERY_REQUIRED_MESSAGE = (
-    "설치 또는 복구 상태를 확인해야 해 앱을 멈춘 상태로 유지합니다.\n\n"
-    "자료와 복구 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
+    '설치 또는 복구 상태를 확인해야 해 앱을 멈춘 상태로 유지합니다\n현장 관리자에게 알리세요'
 )
 FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
     "POSSESSION_PROOF_REATTACH_REQUIRED": (
@@ -24253,33 +24257,23 @@ FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
         FIRST_RUN_REGISTRATION_RECOVERY_MESSAGE + "\n\n코드: ADMIN_RECOVERY_ACTION"
     ),
     "PENDING_WORKER_SID_MISMATCH": (
-        "설치할 때 지정한 작업자 계정으로 다시 실행하세요.\n\n"
-        "어떤 계정인지 모르면 관리자에게 아래 설치 기록 경로를 전달하세요."
+        '설치할 때 지정한 작업자 계정이 필요합니다\n그 계정으로 다시 실행하세요\n자세히: 계정을 모르면 현장 관리자에게 설치 기록 경로를 전달하세요.'
     ),
     "PENDING_WORKER_INSTALL_INVALID": (
-        "작업자 설치 준비 기록과 설치된 판을 확인하지 못해 시작을 멈췄습니다.\n\n"
-        "관리자에게 아래 설치 기록 경로를 전달해 설치된 판과 작업자 설정을 확인받으세요."
+        '작업자 설치 준비 기록과 설치된 판을 확인하지 못해 시작을 멈췄습니다\n현장 관리자에게 알리세요'
     ),
     "BUSINESS_DATA_OPEN_FAILED": (
-        "업무 자료를 열지 못해 프로그램 시작을 중단했습니다. 새 판과 자료는 보존됩니다.\n\n"
-        "아래 보고서의 원인을 해결한 뒤 같은 Windows 사용자의 PowerShell에서 "
-        "지원 명령을 실행하고 앱을 다시 시작하세요."
+        '업무 자료를 열지 못해 프로그램을 시작하지 못했습니다\n현장 관리자에게 알리세요\n코드: PowerShell'
     ),
     "INSTALLATION_RECOVERY_REQUIRED": INSTALLATION_RECOVERY_REQUIRED_MESSAGE,
     "RELAY_RESUME_REQUIRED": (
-        "중앙 전송 릴레이가 정지해 있습니다. 신원 복구만으로 전송이 다시 시작되지는 않습니다.\n\n"
-        "미전송 기록은 보존됩니다. 같은 Windows 사용자로 초기 설정을 다시 실행하고 "
-        "READY와 릴레이 ALIVE를 확인하세요. 계속 정지하면 아래 보고서를 지원 담당자에게 전달하세요."
+        '기록 전송이 멈췄습니다\n현장 관리자에게 알리세요\n코드: READY · ALIVE'
     ),
     "BOOTSTRAP_INTEGRITY_INVALID": (
-        "설치 파일의 로컬 무결성 기록이 올바르지 않아 프로그램 시작을 중단했습니다.\n\n"
-        "관리자에게 공식 배포본으로 다시 설치하도록 요청하세요. "
-        "아래 보고서 경로를 함께 전달하세요."
+        '설치 파일을 확인하지 못해 프로그램을 시작하지 못했습니다\n현장 관리자에게 알리세요'
     ),
     "NETWORK_OR_SERVER_UNAVAILABLE": (
-        "네트워크 또는 중앙 서버에 연결하지 못해 사용자 초기 설정을 중단했습니다.\n\n"
-        "네트워크 연결과 서버 상태를 확인한 뒤 다시 실행하세요. "
-        "계속 실패하면 아래 보고서 경로를 IT 담당자에게 전달하세요."
+        '회사 서버에 연결하지 못했습니다\n연결을 확인하고 다시 시도하세요. 또 안 되면 현장 관리자에게 알리세요'
     ),
 }
 BOOTSTRAP_INTEGRITY_ABSENT_WARNING_TITLE = "배포 무결성 기록 없음"
@@ -24455,9 +24449,7 @@ def _show_item_catalog_startup_error(error):
         messagebox.showerror(
             ITEM_CATALOG_STARTUP_ERROR_TITLE,
             (
-                f"{ITEM_CATALOG_STARTUP_ERROR_MESSAGE}\n\n"
-                f"{_item_catalog_profile_details_for_display(context)}\n"
-                f"오류 코드: {error.cause_code}"
+                f"""품목 목록을 확인하지 못했습니다\n연결을 확인하고 다시 시도하세요\n코드: {ITEM_CATALOG_STARTUP_ERROR_MESSAGE} · {_item_catalog_profile_details_for_display(context)} · {error.cause_code}"""
             ),
         )
     except Exception:  # The fail-closed exit must survive Tk initialization failures.
@@ -24511,11 +24503,7 @@ def _offer_item_catalog_startup_retry(error):
         retry = messagebox.askretrycancel(
             "회사 서버 품목 목록 확인 필요",
             (
-                "검증된 중앙 품목 목록을 아직 사용할 수 없습니다.\n\n"
-                f"{_item_catalog_profile_details_for_display(context)}\n"
-                f"오류 코드: {error.cause_code}\n\n"
-                "네트워크와 중앙 물류 설정을 확인한 뒤 '다시 시도'를 누르세요. "
-                "같은 신뢰 원본을 다시 확인합니다. 계속 실패하면 IT 담당자에게 오류 코드를 알려 주세요."
+                f"""회사 서버 품목 목록을 사용할 수 없습니다\n연결을 확인하고 「다시 시도」를 누르세요. 또 안 되면 현장 관리자에게 알리세요\n자세히: {_item_catalog_profile_details_for_display(context)}\n코드: {error.cause_code}"""
             ),
             parent=parent,
         )

@@ -15,7 +15,7 @@ from tests.test_w9scanonly_packaging import completions, packaging, products, sc
 from tests.test_w9scanonly_short_tray import scanner_clock  # noqa: F401
 
 
-NOTICE = "모자란 상자: 대체품으로 채워 정상 마감 — 못 채우면 마감하지 말고 따로 두고 관리자에게"
+NOTICE = '수량이 부족합니다\n검사실에서 양품을 가져와 스캔하세요'
 
 
 @pytest.fixture(autouse=True)
@@ -49,10 +49,12 @@ def test_all_members_of_a_small_group_can_finish(central, scanner_clock):
         scan(app, value)
     scanner_clock[0] += 5
     scan(app, master)
+    assert not completions(app) and app._partial_submit_confirm_state() is not None
+    scan(app, master)
     [(_row, details)] = completions(app)
     assert details["shortage_confirmed"] is True
     assert details["product_sample_barcodes"] == values
-    assert app._scanner_shortage_undo
+    assert not app.__dict__.get("_scanner_shortage_undo")
     assert not app.blocks and central[1] == []
 
 
@@ -110,6 +112,8 @@ def test_a_sealed_two_member_source_can_finish_its_one_member_group(central, sca
     assert source["selected_member_count"] == source["remainder_member_count"] == 1
     scan(app, values[0])
     scanner_clock[0] += 5
+    scan(app, master)
+    assert not completions(app) and app._partial_submit_confirm_state() is not None
     scan(app, master)
     [(_row, details)] = completions(app)
     assert details["shortage_confirmed"] is True

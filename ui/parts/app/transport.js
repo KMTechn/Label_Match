@@ -13,7 +13,7 @@ window.KMShell = (() => {
     try {
       if (mode === 'pywebview') {
         const api = window.pywebview?.api;
-        if (!api || typeof api[item.name] !== 'function') throw new Error(`화면 연결 함수가 없습니다: ${item.name}`);
+        if (!api || typeof api[item.name] !== 'function') throw new Error(`화면을 열지 못했습니다\n코드: ${item.name}`);
         item.resolve(api[item.name](...item.args));
       } else {
         const id = ++serial;

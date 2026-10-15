@@ -121,7 +121,7 @@ def test_sealed_transfer_marks_inherited_membership_and_enables_prepackage_excha
     assert view.exact_rescan.progress_text == "서버 상속"
     assert view.f4_enabled is True
     assert view.f4_hint == "포장 확정 전 제품 1~2개 교체"
-    assert "중앙 멤버십" in view.badges
+    assert '회사 서버 제품 목록' in view.badges
 
 
 def test_error_marks_current_slot_and_preserves_last_successful_scan():
@@ -425,7 +425,7 @@ def test_submission_blocked_preserves_five_of_five_and_last_normal_override():
     assert view.notice.message != notice.message
     assert "ACK" not in view.notice.message
     assert "readback" not in view.notice.message
-    assert "현재 세트를 유지" in view.notice.message
+    assert '현재 작업을 유지하고 다시 시도하세요' in view.notice.message
     assert view.last_normal_scan == "LAST-ACCEPTED-BARCODE"
     assert view.last_successful_scan == "LAST-ACCEPTED-BARCODE"
     assert view.scan_input_enabled is False
@@ -447,7 +447,7 @@ def test_submission_blocked_preserves_five_of_five_and_last_normal_override():
     ),
 )
 def test_operator_safe_message_fails_closed_for_internal_diagnostics(diagnostic):
-    fallback = "현재 작업을 유지하고 관리자에게 확인을 요청하세요."
+    fallback = '현재 작업 상태는 확인이 필요합니다\n현장 관리자에게 알리세요\n자세히: 현재 작업을 유지하세요.'
 
     assert operator_safe_message(diagnostic, fallback=fallback) == fallback
 
@@ -504,8 +504,8 @@ def test_presenter_sanitizes_blocking_notice_and_error_message_at_final_boundary
         "deadbeef",
     ):
         assert internal.lower() not in combined.lower()
-    assert "현재 세트를 유지" in blocked.notice.message
-    assert "새 현품표부터 다시 시작" in failed.notice.message
+    assert '현재 작업을 유지하고 다시 시도하세요' in blocked.notice.message
+    assert '새 현품표부터 다시 시작' in failed.notice.message
 
 
 def test_recoverable_prewrite_package_conflict_enables_only_current_set_cancel():

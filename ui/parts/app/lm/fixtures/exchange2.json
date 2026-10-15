@@ -14,7 +14,7 @@
     "work": {
       "stage": "product_3",
       "stage_label": "제품3",
-      "next": "검사실의 대체 제품을 스캔하세요",
+      "next": "넣는 제품(양품)을 스캔하세요",
       "next_sub": [
         {
           "text": "불량 제품",
@@ -25,7 +25,7 @@
           "mark": "plain"
         },
         {
-          "text": "대체 제품",
+          "text": "대체 양품",
           "mark": "on"
         }
       ],

@@ -59,24 +59,11 @@ def shortage(central, scanner_clock, monkeypatch, request):
     identity = app.current_set_info['id']
     scan(app, sample)
     scanner_clock[0] += 5
-    slow_completion = getattr(request, 'param', '') == 'slow_completion'
-    lane = app.ui_lane
-    if slow_completion:
-        commit = app._commit_finalized_set_durable
-
-        def delayed_commit(**kwargs):
-            scanner_clock[0] += 61
-            return commit(**kwargs)
-
-        monkeypatch.setattr(app, '_commit_finalized_set_durable', delayed_commit)
-        app.ui_lane = None
-    try:
-        scan(app, master)
-    finally:
-        app.ui_lane = lane
+    app._test_confirmation_bytes = __import__("pathlib").Path(app._package_current_state_path()).read_bytes()
+    scan(app, master)
     root.run_until(lambda: not app.ui_lane.is_busy(), timeout=5)
-    assert len(completions(app)) == 1 and not app.blocks and not dialogs
-    assert bool(app.package_outbox.get_by_set_id(identity)) == slow_completion
+    assert len(completions(app)) == 0 and not app.blocks and not dialogs
+    assert app._partial_submit_confirm_state() is not None
     queued = []
     queue = type(app)._queue_authoritative_package
 
@@ -99,43 +86,6 @@ def shortage(central, scanner_clock, monkeypatch, request):
             callback(*args)
 
     return app, identity, advance, jobs, queued, master, scanner_clock
-
-
-def test_idle_sixty_seconds_releases_one_authoritative_outbox(shortage):
-    app, identity, advance, _jobs, queued, _master, _clock = shortage
-    saved = app.data_manager.load_current_state()['current_set_info']
-    assert saved['shortage_undo_snapshot']
-    assert saved['shortage_confirmed_at'] == saved['shortage_undo_snapshot']['shortage_confirmed_at']
-    advance(59)
-    assert app.package_outbox.get_by_set_id(identity) is None
-    advance(1)
-    assert app.package_outbox.get_by_set_id(identity) is not None
-    assert queued == [identity]
-    advance(120)
-    assert queued == [identity] and not app.blocks
-
-
-@pytest.mark.parametrize('boundary', ['next_scan', 'undo', 'shutdown'])
-def test_boundary_invalidates_even_an_already_queued_timer(shortage, boundary):
-    app, identity, advance, jobs, queued, master, _clock = shortage
-    callbacks = [entry[1] for entry in jobs.values()]
-    advance(59)
-    if boundary == 'next_scan':
-        following = master.replace('ITG-WORK-ONE', 'ITG-NEXT').replace('LBL-WORK-PACKAGE', 'LBL-NEXT')
-        scan(app, following)
-        assert app.current_set_info['raw'] == [following]
-    elif boundary == 'undo':
-        scan(app, 'KMCMD:UNDO')
-    else:
-        assert app._release_shortage_confirmation()
-    assert queued == ([] if boundary == 'undo' else [identity])
-    assert bool(app.package_outbox.get_by_set_id(identity)) == (boundary != 'undo')
-    advance(1)
-    for callback in callbacks:
-        callback()  # A Tk callback already dequeued before after_cancel.
-    assert queued == ([] if boundary == 'undo' else [identity])
-    assert bool(app.package_outbox.get_by_set_id(identity)) == (boundary != 'undo')
-    assert not app.blocks
 
 
 def _restart(shortage, *, age=None, legacy=False, pending=False):
@@ -173,107 +123,130 @@ def _restart(shortage, *, age=None, legacy=False, pending=False):
     return restarted
 
 
-@pytest.mark.parametrize('age,delay', [(61, 0), (10, 50), (60, 0)])
-def test_restart_uses_durable_confirmation_time(shortage, age, delay):
-    app, identity, advance, _jobs, queued, _master, _clock = shortage
-    restarted = _restart(shortage, age=age)
-    if delay:
-        advance(delay - 1)
-        assert app.package_outbox.get_by_set_id(identity) is None
-        advance(1)
-    assert app.package_outbox.get_by_set_id(identity) is not None
-    assert queued == [identity] and not restarted.blocks
-
-
-@pytest.mark.parametrize('pending', [False, True])
-def test_old_state_gets_a_durable_new_sixty_second_grace(shortage, pending):
-    app, identity, advance, _jobs, queued, _master, _clock = shortage
-    _restart(shortage, legacy=True, pending=pending)
-    saved = app.data_manager.load_current_state()['current_set_info']
-    assert saved.get('shortage_confirmed_at')
-    advance(59)
-    assert app.package_outbox.get_by_set_id(identity) is None
-    advance(1)
-    assert app.package_outbox.get_by_set_id(identity) is not None and queued == [identity]
-
-
-def test_old_state_second_restart_keeps_the_saved_grace(shortage):
-    app, identity, advance, _jobs, queued, _master, _clock = shortage
-    _restart(shortage, legacy=True)
-    advance(10)
-    _restart(shortage)
-    advance(49)
-    assert app.package_outbox.get_by_set_id(identity) is None
-    advance(1)
-    assert app.package_outbox.get_by_set_id(identity) is not None and queued == [identity]
-
-
-def test_restart_pending_completion_finishes_before_expired_release(shortage):
+def test_confirmation_and_continue_write_no_decision(shortage):
+    from label_screen_bridge import LabelMatchScreenProcessor
+    from types import SimpleNamespace
     app, identity, _advance, _jobs, queued, _master, _clock = shortage
-    restarted = _restart(shortage, age=61, pending=True)
-    if restarted.blocks:
-        raise restarted.blocks[0]
-    assert app.package_outbox.get_by_set_id(identity) is not None
-    assert len(completions(app)) == 1 and queued == [identity] and not restarted.blocks
+    before = app._test_confirmation_bytes
+    current = copy.deepcopy(app.current_set_info)
+    assert app._partial_submit_confirm_state() == {
+        "kind": "partial_submit", "total": 4, "done": 1, "short": 3,
+    }
+    assert "_partial_submit_confirmation" not in app.data_manager.load_current_state()
+    assert LabelMatchScreenProcessor._command_partial_continue(SimpleNamespace(app=app), {}) == {"ok": True}
+    assert app._partial_submit_confirm_state() is None
+    assert app.current_set_info == current
+    assert __import__("pathlib").Path(app._package_current_state_path()).read_bytes() == before
+    assert not completions(app) and not queued and not app.package_outbox.get_by_set_id(identity)
 
 
-def test_failed_timer_release_retries_the_original_decision(shortage, monkeypatch):
+def test_confirmation_stays_open_without_starting_a_completion_timer(shortage):
     app, identity, advance, _jobs, queued, _master, _clock = shortage
-    save = app.data_manager.save_current_state
-    failures = []
+    before = copy.deepcopy(app.current_set_info)
+    advance(601)
+    assert app._partial_submit_confirm_state() is not None
+    assert app.current_set_info == before
+    assert not app.ui_lane.is_busy()
+    assert not completions(app) and not queued and not app.package_outbox.get_by_set_id(identity)
+    assert app._submit_partial_scanner()
+    assert queued == [identity]
 
-    def fail_once(state):
-        if state['current_set_info'].get('shortage_release_pending') and not failures:
-            failures.append(True)
-            return False
-        return save(state)
 
-    monkeypatch.setattr(app.data_manager, 'save_current_state', fail_once)
-    advance(60)
-    assert app.package_outbox.get_by_set_id(identity) is None and len(app.blocks) == 1
-    advance(1)
-    assert app.package_outbox.get_by_set_id(identity) is not None and queued == [identity]
+@pytest.mark.parametrize("answer", ["label", "enter", "command"])
+def test_acceptance_releases_immediately_once(shortage, answer):
+    from label_screen_bridge import LabelMatchScreenProcessor
+    from types import SimpleNamespace
+    app, identity, advance, jobs, queued, master, _clock = shortage
+    if answer == "command":
+        assert LabelMatchScreenProcessor._command_partial_submit(SimpleNamespace(app=app), {})["ok"]
+    else:
+        scan(app, master if answer == "label" else "")
     assert len(completions(app)) == 1
+    row = app.package_outbox.get_by_set_id(identity)
+    assert row and row["local_completion_committed"]
+    assert queued == [identity]
+    key, draft = row["idempotency_key"], row["draft_json"]
+    assert not app._partial_submit_confirm_state()
+    assert not app.__dict__.get("_scanner_shortage_undo")
+    assert "_shortage_confirmation_deadline" not in app.__dict__
+    assert app._arm_shortage_confirmation_timeout()
+    advance(601)
+    assert queued == [identity]
+    same = app.package_outbox.get_by_set_id(identity)
+    assert (same["idempotency_key"], same["draft_json"]) == (key, draft)
 
 
-def test_failed_shortage_undo_never_releases_a_cancelled_completion(shortage, monkeypatch):
-    from tests.test_legacy_label_transition import _events
-    app, identity, advance, _jobs, queued, _master, _clock = shortage
+def test_escape_and_product_scan_continue_normal_work(shortage, monkeypatch):
+    app, _identity, _advance, _jobs, queued, master, _clock = shortage
+    app._handle_workflow_escape()
+    assert app._partial_submit_confirm_state() is None
+    assert app._request_scanner_shortage()
+    seen = []
+    process = app.process_input
+    def observe(*args, **kwargs):
+        assert app._partial_submit_confirm_state() is None
+        seen.append(True)
+        return process(*args, **kwargs)
+    monkeypatch.setattr(app, "process_input", observe)
+    scan(app, app.current_set_info["raw"][-1])
+    assert seen == [True]
+    assert not completions(app) and not queued
+
+
+def test_stale_confirmation_cannot_complete_a_changed_set(shortage):
+    app, _identity, _advance, _jobs, queued, _master, _clock = shortage
+    app.current_set_info["raw"].append("changed-product")
+    assert app._submit_partial_scanner() is False
+    assert app._partial_submit_confirm_state() is None
+    assert not completions(app) and not queued
+
+
+@pytest.mark.parametrize("legacy,pending", [(False, False), (True, False), (False, True)])
+def test_restart_releases_the_same_durable_decision_without_grace(shortage, monkeypatch, legacy, pending):
+    app, identity, _advance, _jobs, queued, _master, _clock = shortage
+    release = type(app)._release_shortage_confirmation
+    monkeypatch.setattr(app, "_release_shortage_confirmation", lambda: False)
+    assert app._submit_partial_scanner() is False
+    assert len(completions(app)) == 1
+    saved = copy.deepcopy(app.data_manager.load_current_state()["current_set_info"]["shortage_undo_snapshot"])
+    monkeypatch.delattr(app, "_release_shortage_confirmation")
+    restarted = _restart(shortage, age=10, legacy=legacy, pending=pending)
+    row = restarted.package_outbox.get_by_set_id(identity)
+    assert row and row["local_completion_committed"]
+    assert queued == [identity]
+    import json
+    draft = json.loads(row["draft_json"])
+    assert draft["sample_barcodes"] == saved["raw"][1:]
+    assert restarted._arm_shortage_confirmation_timeout()
+    assert queued == [identity]
+    assert not restarted.__dict__.get("_scanner_shortage_undo")
+
+
+def test_release_checkpoint_failure_retries_one_outbox_and_identical_bytes(shortage, monkeypatch):
+    app, identity, _advance, _jobs, _queued, _master, _clock = shortage
     save = app.data_manager.save_current_state
-
-    def fail_undo_checkpoint(state):
-        current = state['current_set_info']
-        return False if str(current.get('completion_identity') or '').endswith('-undo') else save(state)
-
-    monkeypatch.setattr(app.data_manager, 'save_current_state', fail_undo_checkpoint)
-    advance(59)
-    scan(app, 'KMCMD:UNDO')
-    assert len(app.blocks) == 1
-    assert app.data_manager.flush(timeout=5)
-    assert len(_events(app.save_directory, app.Events.TRAY_COMPLETION_CANCELLED)) == 1
-    advance(61)
-    assert queued == [] and app.package_outbox.get_by_set_id(identity) is None
-
-
-@pytest.mark.parametrize('shortage', ['slow_completion'], indirect=True)
-def test_slow_completion_cannot_restore_undo_after_immediate_expiry(shortage):
-    from tests.test_legacy_label_transition import _events
-    app, identity, advance, _jobs, queued, _master, _clock = shortage
-    assert app.package_outbox.get_by_set_id(identity) is not None
-    assert not app.current_set_info.get('shortage_undo_snapshot')
-    scan(app, 'KMCMD:UNDO')
-    assert app.data_manager.flush(timeout=5)
-    assert _events(app.save_directory, app.Events.TRAY_COMPLETION_CANCELLED) == []
-    advance(60)
-    assert queued == [] and len(completions(app)) == 1
+    failed = []
+    def interrupt(value):
+        current = value.get("current_set_info") or {}
+        if not failed and app.package_outbox.get_by_set_id(identity) and not current.get("shortage_undo_snapshot"):
+            failed.append(True)
+            return False
+        return save(value)
+    monkeypatch.setattr(app.data_manager, "save_current_state", interrupt)
+    assert app._submit_partial_scanner() is False
+    first = app.package_outbox.get_by_set_id(identity)
+    assert first and failed == [True]
+    assert app._arm_shortage_confirmation_timeout()
+    second = app.package_outbox.get_by_set_id(identity)
+    assert (second["idempotency_key"], second["draft_json"]) == (first["idempotency_key"], first["draft_json"])
+    assert len(completions(app)) == 1
+    assert not app.__dict__.get("_scanner_shortage_undo")
 
 
-def test_live_timer_uses_monotonic_clock_after_wall_clock_jumps(shortage, monkeypatch):
-    app, identity, advance, _jobs, queued, _master, _clock = shortage
-    original = label_module.time.time
-    monkeypatch.setattr(label_module.time, 'time', lambda: original() + 3600)
-    advance(59)
-    assert app.package_outbox.get_by_set_id(identity) is None
-    monkeypatch.setattr(label_module.time, 'time', lambda: original() - 3600)
-    advance(1)
-    assert app.package_outbox.get_by_set_id(identity) is not None and queued == [identity]
+def test_completed_partial_submit_cannot_be_undone(shortage):
+    app, identity, _advance, _jobs, queued, _master, _clock = shortage
+    assert app._submit_partial_scanner()
+    before = app.package_outbox.get_by_set_id(identity)["draft_json"]
+    scan(app, "KMCMD:UNDO")
+    assert len(completions(app)) == 1 and queued == [identity]
+    assert app.package_outbox.get_by_set_id(identity)["draft_json"] == before
