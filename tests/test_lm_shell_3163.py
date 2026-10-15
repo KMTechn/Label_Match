@@ -78,7 +78,7 @@ def test_adapter_passes_exact_udf_and_records_only_types_and_elapsed_ms(tmp_path
             kwargs['before_exit'](1 if failure else 0, 0.2)
     monkeypatch.setattr(screen, '_prepare_screen', lambda version: (run_app, view, tmp_path))
     monkeypatch.setattr(screen, 'close_and_wait_writers', lambda timeout: drains.append(timeout))
-    module = SimpleNamespace(APP_VERSION='v2.0.105', LABEL_MATCH_SCREEN_HOST={'error': host_error})
+    module = SimpleNamespace(APP_VERSION='v2.0.106', LABEL_MATCH_SCREEN_HOST={'error': host_error})
     if failure:
         with pytest.raises(screen.ScreenUnavailable):
             screen.screen_runner(module)()

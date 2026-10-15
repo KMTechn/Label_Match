@@ -1477,6 +1477,8 @@ PowerShell 원문은 byte I/O로 BOM과 줄 끝을 보존한다. 비ASCII PowerS
 동일 품목 코드의 새 세트는 기존 중복 검사를 그대로 거친다. 격리한 원래 세트 ID는 보류 해소 전 자동 검증·물질화에서 제외하며, 품목 코드 전체를 막지 않는다.
 ## Native manifest agreement (v2.0.104)
 
+Native files in the portable app: the builder pins eight PE files. pywebview 6.2.1 resolves all three `webview/lib/runtimes/win-arm64/native`, `win-x64/native`, and `win-x86/native` loader paths during edgechromium import, so each contains the original Microsoft-signed `WebView2Loader.dll` from the pinned wheel. The arm64 loader is 147,016 bytes/SHA256 `0937030efc718f3da77c5e0978fb5046e381d0bb7b01acaad31a535a1b588a33`; x86 is 121,928 bytes/SHA256 `04814b2c59314c6452d61b821a4a3a5c5f8e8577b55b985f6a7a4b59f8907ec5`. Empty placeholder directories do not satisfy this contract. The signed loaders are outside the existing three-file unsigned policy.
+
 The canonical unsigned native hashes are `label_native_policy.UNSIGNED_NATIVE_SHA256`. The portable builder checks both public installer copies and `tools/apply_prepared_update.ps1` against those exact pins and the actual bytes before building. Verify and update selection use the same `Assert-StartupUpdateVersion` check. The supported relay-stop release preflight uses the same Python policy. Each readback accepts the old empty list or exactly the three pinned files; duplicates, extra paths, absent files and changed hashes fail.
 
 Recovery card: 같은 작업자 지원 제거(main --remove-current-user-setup) → 관리자 INSTALL_THIS_PC.ps1 -Uninstall → 고친 승인 키트 재설치 → 같은 작업자 첫 설정 READY 확인; 자료·설정·등록·전송 대기 보존.
