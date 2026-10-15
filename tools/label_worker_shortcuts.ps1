@@ -199,13 +199,23 @@ function Test-LabelShortcutProperties($Actual, $Expected) {
 function Get-LabelWorkerShortcutPublished($Record) {
     $folders = @(Get-LabelWorkerShortcutFolders -CommonOnly:([bool]$Record.common_only) -UserOnly:([bool]$Record.user_only))
     $paths = @($Record.entries | ForEach-Object { $_.path })
+    $preserved = @()
     if (-not $Record.user_only) {
         foreach ($folder in @($folders | Where-Object {$_.name.StartsWith('Common')})) {
             $relative = if ($folder.recursive) { 'KMTech/포장.lnk' } else { '포장.lnk' }
             $path = Join-Path $folder.path $relative
-            if (Test-Path -LiteralPath $path -PathType Leaf) { $paths += $path }
+            if ((Test-Path -LiteralPath $path -PathType Leaf) -and $path -notin $paths) {
+                $actual = Get-LabelShortcutProperties $path
+                if (Test-LabelShortcutProperties $actual $Record.expected) { $paths += $path }
+                else {
+                    $preserved += [ordered]@{location=$(if ($folder.recursive) {'start_menu'} else {'desktop'});
+                        shortcut_path=[string]$path;reason_code='UNRELATED_SHORTCUT_PRESERVED'}
+                }
+            }
         }
     }
+    if ($Record -is [Collections.IDictionary]) { $Record.preserved = $preserved }
+    else { $Record | Add-Member -NotePropertyName preserved -NotePropertyValue $preserved -Force }
     foreach ($path in @($paths | Select-Object -Unique)) {
         $folder = @($folders | Where-Object {$path.StartsWith($_.path.TrimEnd('\')+'\', [StringComparison]::OrdinalIgnoreCase)})
         if ($folder.Count -ne 1) { throw 'Published shortcut escaped its known folder.' }
@@ -265,8 +275,9 @@ function Install-LabelWorkerShortcuts([string]$Root, $Manifest, [string]$Path, [
             $file = Join-Path $folder.path $relative
             $existing = Get-LabelShortcutProperties $file
             if ($null -ne $existing) {
-                if (Test-LabelShortcutProperties $existing $expected) { continue }
-                throw 'Public worker shortcut name is already occupied.'
+                # Existing unrelated links belong to their original application.
+                # The publication readback records preservation without adopting them.
+                continue
             }
             $targets += $file
         }
