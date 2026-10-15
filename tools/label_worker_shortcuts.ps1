@@ -130,6 +130,32 @@ function Set-LabelShortcutProperties([string]$Path, $Properties) {
     $link.Save()
 }
 
+function Copy-LabelAtomicStream($SourceStream, $DestinationStream) {
+    $SourceStream.CopyTo($DestinationStream)
+    $DestinationStream.Flush($true)
+}
+
+function Copy-LabelAtomicFile([string]$Source, [string]$Destination) {
+    Assert-LabelShortcutPath $Source
+    Assert-LabelShortcutPath $Destination
+    $temporary = $Destination + '.tmp.' + [guid]::NewGuid().ToString('N')
+    $inputStream = [IO.File]::Open($Source,'Open','Read','Read')
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try {
+        $expected = ([BitConverter]::ToString($digest.ComputeHash($inputStream))).Replace('-','').ToLowerInvariant()
+        $inputStream.Position = 0
+        $outputStream = [IO.File]::Open($temporary,'CreateNew','Write','None')
+        try { Copy-LabelAtomicStream $inputStream $outputStream } finally { $outputStream.Dispose() }
+    } finally { $digest.Dispose(); $inputStream.Dispose() }
+    # The live destination is untouched until the complete copy is verified.
+    if ((Get-LabelShortcutSha256 $temporary) -cne $expected) { throw 'Atomic copy preparation differs.' }
+    Assert-LabelShortcutPath $Destination
+    if ([IO.File]::Exists($Destination)) {
+        Invoke-LabelPinnedAtomicReplace -Source $temporary -Destination $Destination -Mode Replace
+    } else { Invoke-LabelPinnedAtomicReplace -Source $temporary -Destination $Destination -Mode Move }
+    if ((Get-LabelShortcutSha256 $Destination) -cne $expected) { throw 'Atomic copy readback differs.' }
+}
+
 function Save-LabelShortcutRecord([string]$Path, $Record) {
     Assert-LabelShortcutPath $Path
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))
@@ -170,6 +196,27 @@ function Test-LabelShortcutProperties($Actual, $Expected) {
     return $true
 }
 
+function Get-LabelWorkerShortcutPublished($Record) {
+    $folders = @(Get-LabelWorkerShortcutFolders -CommonOnly:([bool]$Record.common_only) -UserOnly:([bool]$Record.user_only))
+    $paths = @($Record.entries | ForEach-Object { $_.path })
+    if (-not $Record.user_only) {
+        foreach ($folder in @($folders | Where-Object {$_.name.StartsWith('Common')})) {
+            $relative = if ($folder.recursive) { 'KMTech/포장.lnk' } else { '포장.lnk' }
+            $path = Join-Path $folder.path $relative
+            if (Test-Path -LiteralPath $path -PathType Leaf) { $paths += $path }
+        }
+    }
+    foreach ($path in @($paths | Select-Object -Unique)) {
+        $folder = @($folders | Where-Object {$path.StartsWith($_.path.TrimEnd('\')+'\', [StringComparison]::OrdinalIgnoreCase)})
+        if ($folder.Count -ne 1) { throw 'Published shortcut escaped its known folder.' }
+        $actual = Get-LabelShortcutProperties $path
+        if (-not (Test-LabelShortcutProperties $actual $Record.expected)) { throw 'Published shortcut readback differs.' }
+        [ordered]@{location=$(if ($folder[0].recursive) {'start_menu'} else {'desktop'});
+            shortcut_path=[string]$path;target_path=[string]$actual.target_path;
+            arguments=[string]$actual.arguments;working_directory=[string]$actual.working_directory}
+    }
+}
+
 function Install-LabelWorkerShortcuts([string]$Root, $Manifest, [string]$Path, [switch]$CommonOnly, [switch]$UserOnly) {
     if ($CommonOnly -and $UserOnly) { throw 'Shortcut scope is ambiguous.' }
     Assert-LabelShortcutPath $Root
@@ -196,7 +243,9 @@ function Install-LabelWorkerShortcuts([string]$Root, $Manifest, [string]$Path, [
                 throw 'Installed worker shortcut drifted.'
             }
         }
-        return [ordered]@{status='PASS';record_path=$Path;count=@($saved.entries).Count}
+        $saved | Add-Member -NotePropertyName published -NotePropertyValue @(Get-LabelWorkerShortcutPublished $saved) -Force
+        Save-LabelShortcutRecord $Path $saved
+        return [ordered]@{status='PASS';record_path=$Path;count=@($saved.entries).Count;published=@($saved.published)}
     }
     $folders = @(Get-LabelWorkerShortcutFolders -CommonOnly:$CommonOnly -UserOnly:$UserOnly)
     $targets = @()
@@ -256,13 +305,15 @@ function Install-LabelWorkerShortcuts([string]$Root, $Manifest, [string]$Path, [
             Save-LabelShortcutRecord $Path $record
         }
         $record.status = 'INSTALLED'
+        $record.published = @(Get-LabelWorkerShortcutPublished $record)
         Save-LabelShortcutRecord $Path $record
     } catch {
         $failure = $_
-        Restore-LabelWorkerShortcuts $Root $Path -CommonOnly:$CommonOnly -UserOnly:$UserOnly
+        try { Restore-LabelWorkerShortcuts $Root $Path -CommonOnly:$CommonOnly -UserOnly:$UserOnly }
+        catch { $failure.Exception.Data['shortcut_rollback_error_type'] = $_.Exception.GetType().FullName }
         throw $failure
     }
-    [ordered]@{status='PASS';record_path=$Path;count=$record.entries.Count}
+    [ordered]@{status='PASS';record_path=$Path;count=$record.entries.Count;published=@($record.published)}
 }
 
 function Restore-LabelWorkerShortcuts([string]$Root, [string]$Path, [switch]$CommonOnly, [switch]$UserOnly) {
@@ -305,7 +356,7 @@ function Restore-LabelWorkerShortcuts([string]$Root, [string]$Path, [switch]$Com
     }
     foreach ($entry in @($record.entries)) {
         if ($null -ne $entry.original) {
-            Copy-Item -LiteralPath $entry.backup_path -Destination $entry.path
+            Copy-LabelAtomicFile $entry.backup_path $entry.path
             if ((Get-LabelShortcutSha256 $entry.path) -cne $entry.original_sha256) { throw 'Worker shortcut preimage readback differs.' }
         } elseif (Test-Path -LiteralPath $entry.path) {
             Remove-Item -LiteralPath $entry.path

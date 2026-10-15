@@ -9,6 +9,7 @@ from tests.test_shared_ancestor_protection import ROOT, run_functions
 
 HELPER = ROOT / "tools/label_worker_shortcuts.ps1"
 NAMES = [
+    "Copy-LabelAtomicStream", "Copy-LabelAtomicFile", "Get-LabelWorkerShortcutPublished",
     "Get-LabelWorkerShortcutFolders", "Assert-LabelShortcutPath", "Get-LabelShortcutSha256",
     "Get-LabelShortcutProperties", "Set-LabelShortcutProperties",
     "Save-LabelShortcutRecord", "Get-LabelWorkerShortcutFiles",
@@ -170,7 +171,7 @@ if($env:LM_SHORTCUT_PLACEMENT -ceq 'PASS'){
 }
 if($shell.CreateShortcut($private).TargetPath -ne (Join-Path $install 'Label_Match.exe')){throw 'Machine step touched a private link'}
 $canonical=[Management.Automation.Language.Parser]::ParseFile($env:LM_SHORTCUT_CANONICAL,[ref]$tokens,[ref]$errors)
-foreach($name in @('Complete-LabelCanonicalWorkerShortcuts','Invoke-LabelUserShortcutOperation','PinnedFileBytes','ByteSha')){
+foreach($name in @('Get-LabelPublishedShortcut','Assert-LabelShortcutCopyPath','Get-LabelManagedEmergencyPublished','Complete-LabelCanonicalWorkerShortcuts','Invoke-LabelUserShortcutOperation','PinnedFileBytes','ByteSha')){
  $definition=@($canonical.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
  . ([scriptblock]::Create($definition[0].Extent.Text))
 }

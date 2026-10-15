@@ -410,7 +410,7 @@ function Install-CurrentUserTlsCaBootstrap([string]$SourcePath, [string]$LocalAp
     $userRoot = Get-StrictFullPath $LocalAppDataRoot "operator LOCALAPPDATA root"; $target = Join-Path $userRoot "KMTech\Bootstrap\Label_Match\ca-bundle.pem"
     $targetParent = Split-Path -Parent $target; New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
     Assert-NoReparsePoint $targetParent "TLS CA bootstrap directory"
-    Copy-Item -LiteralPath $source -Destination $target -Force; Assert-NoReparsePoint $target "TLS CA bootstrap target"
+    Copy-LabelAtomicFile $source $target; Assert-NoReparsePoint $target "TLS CA bootstrap target"
     if ((Get-FileSha256 $target) -cne (Get-FileSha256 $source)) { throw "TLS CA bootstrap exact readback failed." }
     return $target
 }
@@ -963,6 +963,32 @@ public static class KMTechStartupUpdateAtomicFile {
     }
 }
 # LABEL_ATOMIC_REPLACE_END
+
+function Copy-LabelAtomicStream($SourceStream, $DestinationStream) {
+    $SourceStream.CopyTo($DestinationStream)
+    $DestinationStream.Flush($true)
+}
+
+function Copy-LabelAtomicFile([string]$Source, [string]$Destination) {
+    Assert-NoReparsePoint $Source 'atomic copy'
+    Assert-NoReparsePoint $Destination 'atomic copy'
+    $temporary = $Destination + '.tmp.' + [guid]::NewGuid().ToString('N')
+    $inputStream = [IO.File]::Open($Source,'Open','Read','Read')
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try {
+        $expected = ([BitConverter]::ToString($digest.ComputeHash($inputStream))).Replace('-','').ToLowerInvariant()
+        $inputStream.Position = 0
+        $outputStream = [IO.File]::Open($temporary,'CreateNew','Write','None')
+        try { Copy-LabelAtomicStream $inputStream $outputStream } finally { $outputStream.Dispose() }
+    } finally { $digest.Dispose(); $inputStream.Dispose() }
+    # The live destination is untouched until the complete copy is verified.
+    if ((Get-FileSha256 $temporary) -cne $expected) { throw 'Atomic copy preparation differs.' }
+    Assert-NoReparsePoint $Destination 'atomic copy'
+    if ([IO.File]::Exists($Destination)) {
+        Invoke-LabelAtomicReplace -Source $temporary -Destination $Destination -Mode Replace
+    } else { Invoke-LabelAtomicReplace -Source $temporary -Destination $Destination -Mode Move }
+    if ((Get-FileSha256 $Destination) -cne $expected) { throw 'Atomic copy readback differs.' }
+}
 
 function Write-LabelStartupUpdateRecord([string]$Path, $Payload) {
     Assert-NoReparsePoint $Path 'startup update record'
