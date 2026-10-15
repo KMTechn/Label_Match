@@ -792,8 +792,11 @@ def test_rollback_is_fail_closed_and_persists_explicit_failure() -> None:
     exact_readback = rollback.index(
         "Assert-RollbackRelayPreimage -ExpectedRelays $old"
     )
-    restored_true = rollback.index("$audit.rollback.runtime_restored = $true")
-    assert product < zero_readback < restore < restore_task < exact_readback < restored_true
+    restored_proven = rollback.index(
+        "$audit.rollback.runtime_restored = $rollbackRuntimeProven -and -not $writerFenceStarted "
+        "-and ($audit.rollback.relay_readiness -cin @('PROVEN','NO_RELAY_PREIMAGE'))"
+    )
+    assert product < zero_readback < restore < restore_task < exact_readback < restored_proven
     for token in (
         "$audit.status = if ($legacyFirstRegistration -and -not $rollbackRuntimeVerified) { 'FAILED_ROLLBACK_INCOMPLETE' } else { 'ROLLBACK_FAILED' }",
         "$audit.rollback.runtime_restored = $false",
