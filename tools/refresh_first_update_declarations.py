@@ -20,7 +20,12 @@ import sys
 from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALLED_REFS = ("d9160b6", "89155f17233fb1c8b5bae2a9e470832772a4d785")
+INSTALLED_REFS = (
+    "d9160b6", "89155f17233fb1c8b5bae2a9e470832772a4d785",
+    "e7b9075b2383889e77f524be7a1f0f80d7630033",  # stock 104
+    "4272c5601e035f6a111e493a4acfa5d8d182978f",  # stock 105
+    "06a474b46095fa044a0c46a045b3445cece1ee57",  # stock 106
+)
 SHELL_READY_VERSION = "v3.16.3"
 SHELL_READY_SHA256 = "a8183b660932778c08ebdf1ee24f137b4c2540a66207850afeff9990bbfb3198"
 

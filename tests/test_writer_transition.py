@@ -548,7 +548,7 @@ def test_compatibility_rejection_precedes_all_persistent_preimage_and_fence_effe
     assert source.index("InvokeFrozenIntegrityProbe ([pscustomobject]") < compatibility
     assert compatibility < source.index("New-Item -ItemType Directory -Path $localAuditRoot")
     assert compatibility < source.index("$taskBefore = ScheduledTaskSnapshot")
-    assert compatibility < source.index("[void](Start-LabelWriterFence")
+    assert compatibility < source.index("[void](Start-LabelWriterFence", compatibility)
 
 
 @pytest.mark.parametrize("failure", ["removal", "quiesce", "placement-move", "after-placement", "after-release"])
