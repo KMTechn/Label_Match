@@ -97,8 +97,8 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
         $previousArguments = $expectedArguments -creplace '^(-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden) -ExecutionPolicy Bypass(?= -File ")','$1'
         if ([string]$task.TaskPath -cne '\' -or
             (ConvertTo-LabelTaskSid ([string]$task.Principal.UserId)) -cne 'S-1-5-18' -or
-            [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
-            [string]$task.Principal.RunLevel -cne 'Highest' -or
+            [string]$task.Principal.LogonType -cnotin @('ServiceAccount','5') -or
+            [string]$task.Principal.RunLevel -cnotin @('Highest','HighestAvailable','1') -or
             -not ([string]$actions[0].Execute).Equals($expectedCommand,[StringComparison]::OrdinalIgnoreCase) -or
             ([string]$actions[0].Arguments -cne $expectedArguments -and [string]$actions[0].Arguments -cne $previousArguments) -or
             -not [string]::IsNullOrEmpty([string]$actions[0].WorkingDirectory)) {

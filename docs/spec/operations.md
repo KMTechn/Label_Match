@@ -1401,6 +1401,8 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 <a id="worker-shortcuts"></a>
 ## 작업자 바로 가기와 복원
 
+지원 시작 업데이트 작업의 소유 판정은 `ServiceAccount`와 숫자 `5`, `Highest`·`HighestAvailable`과 숫자 `1`을 같은 스케줄러 되읽기로 받는다. 다른 주체·로그온 유형·실행 수준·action은 기존대로 거절한다. 제거 입구와 업데이트 관측 입구가 같은 판정을 사용하며 작업 등록·권한 정책은 바꾸지 않는다.
+
 기계 설치기는 코드·입구 readback 뒤 공용 바탕화면·공용 시작 메뉴를 준비한다. 작업자 세션의 canonical 설치기는 최종 relay/Run 확인 뒤 개인 바탕화면·시작 메뉴의 옛 깨진 링크를 준비한다. 대상은 manifest의 current/launch-label-match.cmd, 이름은 새로 만들 때 「포장」, 아이콘은 current/app/assets/logo.ico, WindowStyle=7이다. 설치 루트 아래의 사라진 대상만 같은 자리에서 바꾸며 다른 앱·다른 루트·파일이 있는 대상은 그대로 둔다. 공용 각 자리에서 바꿀 링크가 없으면 새 링크를 만든다.
 
 설치 감사의 worker_shortcuts는 common_record_path와 user_record_path를 기록한다. 각 JSON은 원래 대상·인수·아이콘 등 속성과 .preimages/의 원본 링크·해시, 새 링크 해시를 보존한다. 실패한 설치의 코드 복원 뒤 canonical rollback이 개인과 공용 기록을 각각 소비한다. 지원 제거에서 기계 helper에 WorkerShortcutRecordPath·VerifiedWorkerShortcutHelperPath·ExpectedWorkerShortcutHelperSha256을 제공하면 같은 공용 복원 경계를 사용한다. 옛 앱 복귀를 수행하는 작업자 도구는 보존한 해시 검증 helper tools/label_worker_shortcuts.ps1에 -InstallRoot <current> -RecordPath <user JSON> -UserOnly -Rollback(또는 -Uninstall)을 넘겨 개인 링크를 복원한다. 이 바로 가기 명령은 코드·자료를 복원하는 설치 명령과 별개이며, 코드 복원 뒤 실행한다.
