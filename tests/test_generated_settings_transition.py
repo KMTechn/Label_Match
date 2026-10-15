@@ -75,6 +75,75 @@ def build():
     assert layout['app/helper-output.json'] == generator.digest((target / 'app/helper-output.json').read_bytes())
 
 
+def assert_builder_model_layout(builder_output, model_output, model_layout, settings_raw, public_config):
+    """Compare independent app/bootstrap outputs with identical build inputs.
+
+    Runtime, launcher, canonical installer and package manifest are outside the
+    generator contract. Settings and trust config use explicit identical inputs
+    in the separate model tree; bootstrap leaves are compared by content too.
+    """
+    stock._write_auto_update_settings(model_output / "app", settings_raw)
+    stock._write_update_key_config(model_output / "app", public_config)
+    expected = {p.relative_to(model_output).as_posix(): generator.digest(p.read_bytes())
+                for p in (model_output / "app").rglob("*") if p.is_file()}
+    expected.update({name: pin for name, pin in model_layout.items() if not name.startswith("app/")})
+    outside_contract = {stock.CANONICAL_INSTALLER_FILENAME, "launch-label-match.cmd", "portable-manifest.json"}
+    actual = {p.relative_to(builder_output).as_posix(): generator.digest(p.read_bytes())
+              for p in builder_output.rglob("*")
+              if p.is_file() and not p.relative_to(builder_output).as_posix().startswith("runtime/")
+              and p.relative_to(builder_output).as_posix() not in outside_contract}
+    assert actual == expected, "BUILDER_MODEL_LAYOUT_DIFFERS"
+
+
+@pytest.mark.parametrize("build_only_helper", [False, True])
+def test_actual_builder_fixture_matches_independent_generator_model(tmp_path, monkeypatch, build_only_helper):
+    """Real build publishers; runtime/release qualification are fixture seams."""
+    builder_output = tmp_path / "builder-output"
+    model_output = tmp_path / "model-output"
+    settings_raw, _ = stock._release_update_settings(APPROVED_SETTINGS)
+    public_value = json.loads((ROOT / "tests/fixtures/lm_stock_public_update_key.json").read_bytes())["manifest_public_key"]
+    public_config = public_value if isinstance(public_value, str) else json.dumps(public_value)
+    model_layout = generator.application_layout(ROOT, model_output)
+    for name in model_layout:
+        if not name.startswith("app/"):
+            destination = model_output / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, destination)
+
+    def fixture_runtime(_source, destination):
+        destination.mkdir()
+        for name in ("python.exe", "pythonw.exe"):
+            (destination / name).write_bytes(b"fixture-runtime")
+
+    original_run = subprocess.run
+    def fixture_run(argv, *args, **kwargs):
+        if len(argv) > 3 and Path(str(argv[3])).name == "check_kmtech_shared.py":
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(stock, "_assert_clean_source", lambda *_: None)
+    monkeypatch.setattr(stock, "_runtime_source", fixture_runtime)
+    monkeypatch.setattr(subprocess, "run", fixture_run)
+    for name in ("_assert_portable_import_closure", "_assert_packet_file_pins",
+                 "_assert_installer_unsigned_pins", "_assert_atomic_replace_helper_pins"):
+        monkeypatch.setattr(stock, name, lambda *_: None)
+    original_publisher = stock._write_auto_update_settings
+    def build_publisher(app, raw):
+        original_publisher(app, raw)
+        if build_only_helper:
+            (app / "build-only-helper.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(stock, "_write_auto_update_settings", build_publisher)
+    stock.build(ROOT, tmp_path / "runtime-source", builder_output,
+                update_manifest_public_key_config=public_config,
+                auto_update_settings=APPROVED_SETTINGS)
+    monkeypatch.setattr(stock, "_write_auto_update_settings", original_publisher)
+    if build_only_helper:
+        with pytest.raises(AssertionError, match="BUILDER_MODEL_LAYOUT_DIFFERS"):
+            assert_builder_model_layout(builder_output, model_output, model_layout, settings_raw, public_config)
+    else:
+        assert_builder_model_layout(builder_output, model_output, model_layout, settings_raw, public_config)
+
+
 def materialize(source, target, revision):
     layout = generator.application_layout(source, target)
     for relative in layout:
@@ -108,10 +177,6 @@ def transition_layouts():
     assert SETTINGS in old_layout
     assert not list((installed / 'app/site-packages/qrcode/tests').glob('*.py'))
     assert SETTINGS in candidate_layout
-    actual_app = {path.relative_to(candidate).as_posix(): generator.digest(path.read_bytes())
-                  for path in (candidate / 'app').rglob('*')
-                  if path.is_file() and path.relative_to(candidate).as_posix() != 'app/update-manifest-key-config.json'}
-    assert actual_app == {name: pin for name, pin in candidate_layout.items() if name.startswith('app/')}
     raw, _ = stock._release_update_settings(APPROVED_SETTINGS)
     stock._write_auto_update_settings(candidate / 'app', raw)
     # Settings are a release build input. This post-trim direction already
