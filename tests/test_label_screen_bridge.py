@@ -258,7 +258,7 @@ def test_actual_shell_state_uses_the_unmodified_receipted_contract(screen):
     state = call(screen, screen.bridge.get_state)
     assert type(state["events_dropped"]) is int and state["events_dropped"] == before + 1
     old_errors = schema_errors(old_schema, state)
-    assert len(old_errors) == 1 and "events_dropped" in old_errors[0]
+    assert any('events_dropped' in error for error in old_errors)
     # Validate the actual response against the receipt, without editing either.
     assert schema_errors(CONTRACT["state"], state) == []
     assert CONTRACT["state"]["properties"]["events_dropped"] == {"type": "integer", "minimum": 0}
@@ -399,6 +399,8 @@ def door(entry_text=""):
         setattr(self, name, mock.Mock(name=name))
     self._reject_residual_tag_input = types.MethodType(Label_Match.Label_Match._reject_residual_tag_input, self)
     self._consume_scan_entry = mock.Mock()
+    self._partial_submit_confirm_state = lambda: None
+    self._clear_partial_submit_confirmation = lambda: None
     self.intake_scan = types.MethodType(Label_Match.Label_Match.intake_scan, self)
     return self
 

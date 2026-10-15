@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from label_history import HISTORY_LIMIT
+from label_admin_pin import WORKER_RECOVERY_ACTIONS
 
 STATE_CONTRACT = "lm-state/1"
 PARTS_DIR = Path(__file__).resolve().parent / "ui" / "parts"
@@ -236,6 +237,9 @@ class LabelMatchScreenProcessor:
                 "message": result["text"], "result": {"kind": result["kind"]}}
 
     def command(self, name, args):
+        if name in WORKER_RECOVERY_ACTIONS:
+            self._serial += 1
+            return self._worker_action(name, dict(args or {}))
         if name == 'LABEL.RECHECK':
             name = 'recovery_recheck'
         handler = getattr(self, f"_command_{name}", None)
@@ -246,6 +250,9 @@ class LabelMatchScreenProcessor:
 
     def admin(self, name, args):
         args = dict(args or {})
+        if name in WORKER_RECOVERY_ACTIONS:
+            return self._worker_action(name, {key: value for key, value in args.items()
+                                            if key in {"target", "physical_qr"}})
         if name == 'LABEL.RECHECK' and any(
                 row.get('repack_review') and str(row['set_id']) == str(args.get('target') or '')
                 for row in self.app._package_recovery_candidates()):
@@ -291,6 +298,38 @@ class LabelMatchScreenProcessor:
             return {"ok": False, "result": {"kind": "warn", "text": '지금은 관리자 요청을 받지 못했습니다\n잠시 후 다시 하세요'}}
         return {"ok": True, "result": {"kind": "saved", "text": "회사 서버에서 확인하는 중입니다",
                                        "sub": "결과는 멈춘 작업 확인 판 맨 위에 나옵니다 — 창을 닫아도 끝까지 진행됩니다"}}
+
+    def _worker_action(self, name, args):
+        if set(args) - {"target", "physical_qr"}:
+            return {"ok": False}
+        target = str(args.get("target") or "")
+        physical = str(args.get("physical_qr") or "").strip()
+        if name == "LABEL.PHS_LOOKUP":
+            target = target or "PHS_LOOKUP"
+            if not physical:
+                return {"ok": False, "result": {"kind": "warn", "text": "실물 현품표를 스캔하세요"}}
+        elif not target or physical:
+            return {"ok": False}
+        action = ("LABEL.F5_HOLD" if target.startswith("F5:") else "LABEL.SET_HOLD"
+                  ) if name in {"LABEL.SET_HOLD", "LABEL.F5_HOLD"} else name
+        app, window = self.app, _ScreenWindow()
+
+        def settle(value):
+            window.destroy()
+            ok = self._completion_outcome(value)
+            text = _text(value) if value not in (None, False, True) else _text(app.__dict__.get("_admin_pin_last_message"))
+            self._admin_result = {"action": action, "ok": ok, "text": text or "작업을 마치지 못했습니다"}
+            self._load_recovery()
+            self._changed("worker_action")
+
+        accepted = app._submit_package_pin_action(
+            action, target, physical, window=window, finish=settle,
+            fail=lambda _error: settle(False),
+        )
+        if not accepted:
+            window.destroy()
+        return {"ok": bool(accepted), "result": {"kind": "saved" if accepted else "warn",
+                "text": "작업을 확인하고 있습니다" if accepted else "지금은 작업을 받지 못했습니다"}}
 
     def closing(self):
         """창 X(셸 v3.7) — 지금 Tk 의 끝내기 길: 하던 트레이가 있으면 마우스 승인으로 묻고 닫기는 막음."""

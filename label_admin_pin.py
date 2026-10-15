@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+from dataclasses import dataclass
 import hashlib
 import hmac
 import json
@@ -31,6 +32,25 @@ FAILURE_MESSAGE = (
 )
 active_pin_operation: ContextVar[tuple[str, str, str, str, str, str, str] | None] = (
     ContextVar("label_active_pin_operation", default=None)
+)
+
+WORKER_RECOVERY_ACTIONS = frozenset({
+    "LABEL.SET_HOLD", "LABEL.F5_HOLD", "LABEL.SUPPORT_HANDOFF", "LABEL.PHS_LOOKUP",
+})
+
+
+@dataclass(frozen=True)
+class WorkerRecoveryOperation:
+    operation_key: str
+    action: str
+    target_id: str
+    operator_id: str
+    operator_name: str
+    file_binding: tuple[str, str]
+
+
+active_worker_operation: ContextVar[WorkerRecoveryOperation | None] = ContextVar(
+    "label_active_worker_operation", default=None,
 )
 
 

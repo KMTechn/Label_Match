@@ -1,5 +1,6 @@
 """App data stays complete at the final web presentation boundary."""
 from types import SimpleNamespace
+import pytest
 
 from tests.test_label_screen_bridge import (
     CONTRACT, MASTER, call, meta, schema_errors, screen,
@@ -70,3 +71,33 @@ def test_ui_contract_declares_worker_and_restoration_sheets():
     for name in ("LABEL.SET_HOLD", "LABEL.F5_HOLD", "LABEL.SUPPORT_HANDOFF", "LABEL.PHS_LOOKUP"):
         assert sheets[name]["pin"] is False
     assert sheets["LABEL.RECHECK"]["pin"] is True
+
+
+@pytest.mark.parametrize("action", [
+    "LABEL.SET_HOLD", "LABEL.F5_HOLD", "LABEL.SUPPORT_HANDOFF", "LABEL.PHS_LOOKUP",
+])
+def test_worker_sheet_commands_reach_app_without_credentials(screen, monkeypatch, action):
+    received = []
+    def submit(name, target, physical, *, window, finish, fail):
+        received.append((name, target, physical))
+        finish(True)
+        return True
+    monkeypatch.setattr(screen.app, "_submit_package_pin_action", submit)
+    target = "F5:hold" if action == "LABEL.F5_HOLD" else "held-set"
+    args = {"target": target}
+    if action == "LABEL.PHS_LOOKUP":
+        args["physical_qr"] = MASTER
+    assert call(screen, screen.bridge.command, action, args)["result"]["ok"]
+    assert received == [(action, target, args.get("physical_qr", ""))]
+    assert "_screen_admin_credentials" not in screen.app.__dict__
+
+
+def test_ordinary_recheck_and_restore_cannot_use_worker_command(screen, monkeypatch):
+    monkeypatch.setattr(screen.app, "_submit_package_pin_action", lambda *_a, **_k: pytest.fail("unauthorized effect"))
+    assert call(screen, screen.bridge.command, "LABEL.RECHECK", {"target": "ordinary-set"})["result"]["ok"] is False
+    reply = call(screen, screen.bridge.admin, "LABEL.RECHECK", {"target": "ordinary-set"})
+    assert reply["result"]["ok"] is False
+    reply = call(screen, screen.bridge.command, "LABEL.SET_HOLD", {
+        "target": "ordinary-set", "physical_qr": "__RESTORE_CHANGED_PIN_FILE__",
+    })
+    assert reply["result"]["ok"] is False

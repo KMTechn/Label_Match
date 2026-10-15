@@ -96,6 +96,7 @@ from label_recovery_schema import require_recovery_record, valid_recovery_archiv
 from label_admin_pin import (
     AdminPinClient, AdminPinError, AdminPinIntentStore,
     active_pin_operation, fingerprint as admin_pin_fingerprint,
+    active_worker_operation, WorkerRecoveryOperation, WORKER_RECOVERY_ACTIONS,
     operator_message as admin_pin_message, operator_local_id, unverified_hold_allowed,
 )
 from label_safe_path import (describe_entry, quarantine_entry, read_checked_bytes,
@@ -9648,6 +9649,11 @@ class Label_Match(tk.Tk):
 
     @writer_sink("gui_package_pin_changed_restore")
     def _restore_changed_pin_file(self, target_id):
+        operation = active_pin_operation.get()
+        if (active_worker_operation.get() is not None or operation is None
+                or operation[2] != "LABEL.RECHECK"
+                or operation[3] != (str(target_id)[3:] if str(target_id).startswith("F5:") else str(target_id))):
+            raise AdminPinError("ACTION_INVALID")
         row = self._package_pin_changed_hold_for_target(target_id)
         if row is None or row["state"] not in {"QUARANTINED", "RESTORING", "RESTORED"}:
             raise AdminPinError("TARGET_CHANGED")
@@ -10241,6 +10247,8 @@ class Label_Match(tk.Tk):
 
     @writer_sink("gui_label_recovery_hold")
     def _hold_label_recovery(self, hold_id, *, manager_code=None):
+        if not self._package_worker_action_allows("LABEL.F5_HOLD", "F5:" + str(hold_id)):
+            return False
         manager_id = self._package_recovery_manager(manager_code)
         if not manager_id:
             return False
@@ -10432,7 +10440,100 @@ class Label_Match(tk.Tk):
         # Recovery writers require a scoped PIN operation or explicit system
         # quarantine. A legacy code is never an authorization or identity.
         operation = active_pin_operation.get()
-        return operation[5] if operation else ""
+        if operation:
+            return operation[5]
+        worker = active_worker_operation.get()
+        return "WORKER:" + worker.operator_id if worker is not None else ""
+
+    @staticmethod
+    def _package_worker_action_allows(action, set_id):
+        worker = active_worker_operation.get()
+        if worker is None:
+            return True  # Existing administrator/system admission still applies.
+        return (worker.action in WORKER_RECOVERY_ACTIONS and (
+            (worker.action == action and worker.target_id == str(set_id))
+            or (worker.action == "LABEL.F5_HOLD" and action == "LABEL.SET_HOLD"
+                and worker.file_binding[0] == str(set_id))))
+
+    def _package_worker_target(self, action, set_id, physical_qr):
+        if action == "LABEL.PHS_LOOKUP" and set_id == "PHS_LOOKUP":
+            fields = _label_match_parse_compact_phs2(physical_qr)
+            _evidence, snapshot, _sealed, _lease = self._resolve_central_phs2_scan_overlay(
+                physical_qr, fields["CLC"], force_central_read=True)
+            digest = admin_pin_fingerprint({"physical_qr": physical_qr, "snapshot": snapshot})
+            return {"kind": "label_worker_lookup", "id": set_id, "state_fingerprint": digest}, digest
+        return self._package_pin_target(action, set_id, physical_qr)
+
+    def _prepare_package_worker_action(self, action, set_id, physical_qr=""):
+        """Read the same target evidence without issuing administrator authority."""
+        self._admin_pin_result_outcome = "unknown"
+        try:
+            if action not in WORKER_RECOVERY_ACTIONS or not str(set_id):
+                raise AdminPinError("ACTION_INVALID")
+            if action == "LABEL.PHS_LOOKUP":
+                _label_match_parse_compact_phs2(physical_qr)
+            elif physical_qr:
+                raise AdminPinError("ACTION_INVALID")
+            if action == "LABEL.F5_HOLD" and not str(set_id).startswith("F5:"):
+                raise AdminPinError("ACTION_INVALID")
+            if action == "LABEL.SET_HOLD" and str(set_id).startswith("F5:"):
+                raise AdminPinError("ACTION_INVALID")
+            operator = self._package_pin_operator()
+            binding = self._package_pin_current_file_binding(action, set_id)
+            target, source_sha = self._package_worker_target(action, set_id, physical_qr)
+            return False, (binding, target, source_sha, operator)
+        except Exception:
+            self._admin_pin_last_message = "작업 대상을 확인하지 못했습니다\n작업자와 대상을 확인하고 다시 시도하세요"
+            return True, False
+
+    def _execute_package_worker_action(self, action, set_id, physical_qr, prepared):
+        """Preserve the hold/lookup CAS and audit; no PIN proof or approver exists."""
+        if action not in WORKER_RECOVERY_ACTIONS:
+            return False
+        token = None
+        try:
+            binding, target, source_sha, operator = prepared
+
+            def unchanged():
+                current_target, current_sha = self._package_worker_target(action, set_id, physical_qr)
+                return (current_target == target and current_sha == source_sha
+                        and self._package_pin_operator() == operator
+                        and self._package_pin_current_file_binding(action, set_id) == binding)
+
+            if not unchanged():
+                raise AdminPinError("TARGET_CHANGED")
+            operation_key = "worker:" + admin_pin_fingerprint({
+                "action": action, "target": str(set_id), "operator": operator["local_id"],
+            })
+            operation = WorkerRecoveryOperation(
+                operation_key, action, str(set_id), operator["local_id"],
+                str(self.worker_name).strip(), binding,
+            )
+            token = active_worker_operation.set(operation)
+            self._audit_package_recovery_action(set_id, "WORKER_ATTEMPT", "", source_sha)
+            if not unchanged():
+                raise AdminPinError("TARGET_CHANGED")
+            if action == "LABEL.PHS_LOOKUP" and set_id == "PHS_LOOKUP":
+                fields = _label_match_parse_compact_phs2(physical_qr)
+                _evidence, snapshot, _sealed, _lease = self._resolve_central_phs2_scan_overlay(
+                    physical_qr, fields["CLC"], force_central_read=True)
+                quantity = snapshot.get("member_count")
+                result = (f"현품표 조회 완료\n제품 {quantity}개" if type(quantity) is int and quantity > 0
+                          else "현품표 조회 완료")
+            else:
+                result = self._package_pin_apply(action, set_id, physical_qr)
+            if result is False or result is None:
+                raise AdminPinError("EFFECT_UNVERIFIED")
+            self._audit_package_recovery_action(set_id, "WORKER_DONE", "", "COMPLETED")
+            self._admin_pin_result_outcome = "success"
+            self._admin_pin_last_message = str(result) if result is not True else "작업을 마쳤습니다"
+            return result
+        except Exception:
+            self._admin_pin_last_message = "작업을 마치지 못했습니다\n현재 건을 보류하고 다시 시도하세요"
+            return False
+        finally:
+            if token is not None:
+                active_worker_operation.reset(token)
 
     def _prompt_package_admin_pin(self):
         """One masked dialog shared by every administrator recovery action."""
@@ -10840,6 +10941,10 @@ class Label_Match(tk.Tk):
                    and row["observed"] != "CENTRAL_MATCH_ATTEMPT" for row in rows)
 
     def _package_pin_apply(self, action, set_id, physical_qr=""):
+        worker = active_worker_operation.get()
+        if worker is not None and not self._package_worker_action_allows(action, set_id):
+            raise AdminPinError("ACTION_INVALID")
+        hold_audit = "WORKER_HOLD" if worker is not None else "PIN_REVIEW_HOLD"
         if action == "LABEL.F5_HOLD":
             hold_id = str(set_id)[3:]
             held = self.package_outbox.get_label_exchange_hold(hold_id)
@@ -10862,7 +10967,7 @@ class Label_Match(tk.Tk):
                     raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
                 if linked:
                     self._audit_package_recovery_action(
-                        linked, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+                        linked, hold_audit, self._package_recovery_manager(), "UNRESOLVED"
                     )
                 if not self._finalize_label_recovery_holds(only_hold_id=hold_id):
                     raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
@@ -10879,7 +10984,7 @@ class Label_Match(tk.Tk):
             elif not entry or not self._package_pin_entry_hold_complete(entry):
                 raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
             self._audit_package_recovery_action(
-                set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+                set_id, hold_audit, self._package_recovery_manager(), "UNRESOLVED"
             )
             return True
         if action == "LABEL.SET_HOLD":
@@ -10891,7 +10996,7 @@ class Label_Match(tk.Tk):
             if not self._package_set_hold_complete(set_id, held):
                 raise AdminPinError("EFFECT_UNVERIFIED", unknown=True)
             self._audit_package_recovery_action(
-                set_id, "PIN_REVIEW_HOLD", self._package_recovery_manager(), "UNRESOLVED"
+                set_id, hold_audit, self._package_recovery_manager(), "UNRESOLVED"
             )
             return True
         if action == "LABEL.RECHECK":
@@ -10901,7 +11006,7 @@ class Label_Match(tk.Tk):
         if action == "LABEL.PHS_LOOKUP":
             return self._recheck_package_recovery_physical(set_id, physical_qr)
         if action == "LABEL.SUPPORT_HANDOFF":
-            closing = self.__dict__.get("_admin_pin_closing_intent")
+            closing = self.__dict__.get("_admin_pin_closing_intent") if worker is None else None
             observed = (json.dumps({
                 "result": "UNKNOWN:NO_KEYED_LEDGER_EFFECT",
                 "original_operation_key": closing["operation_key"],
@@ -11107,6 +11212,7 @@ class Label_Match(tk.Tk):
         self, action, set_id, physical_qr="", *, window, finish, fail,
     ):
         """Keep preparation and authorized apply on the existing UI lane."""
+        worker_action = action in WORKER_RECOVERY_ACTIONS
         pending = self.__dict__.setdefault("_package_pin_pending_targets", {})
         if str(set_id) in pending:
             self._show_ui_lane_rejection("busy")
@@ -11238,6 +11344,10 @@ class Label_Match(tk.Tk):
             if done:
                 finish_action(value)
                 return
+            if worker_action:
+                return submit_stage("worker-apply", lambda: self._execute_package_worker_action(
+                    action, set_id, physical_qr, value,
+                ), finish_action)
             # The first task and its idle barrier have ended. The PIN dialog
             # holds no writer admission and the second task receives its input.
             try:
@@ -11261,7 +11371,8 @@ class Label_Match(tk.Tk):
                 raise
 
         request["start"] = lambda: submit_stage(
-            "prepare", lambda: self._prepare_package_pin_action(action, set_id, physical_qr),
+            "prepare", lambda: (self._prepare_package_worker_action if worker_action
+                                else self._prepare_package_pin_action)(action, set_id, physical_qr),
             prepared_on_ui,
         )
         queue.append(request)
@@ -11602,6 +11713,8 @@ class Label_Match(tk.Tk):
 
     @writer_sink("gui_package_recovery_hold")
     def _hold_package_recovery_set(self, set_id, *, manager_code=None):
+        if not self._package_worker_action_allows("LABEL.SET_HOLD", set_id):
+            return False
         manager_id = self._package_recovery_manager(manager_code)
         if not manager_id:
             return False
@@ -11621,7 +11734,10 @@ class Label_Match(tk.Tk):
         current = candidate.get("current")
         held = outbox.get_workbench_hold(str(set_id))
         pin_operation = active_pin_operation.get()
+        worker_operation = active_worker_operation.get()
         pinned_current_sha = None
+        if worker_operation is not None and worker_operation.file_binding[0] == str(set_id):
+            pinned_current_sha = worker_operation.file_binding[1]
         if pin_operation and pin_operation[2] in {"LABEL.SET_HOLD", "LABEL.F5_HOLD"}:
             bindings = {
                 row["observed"] for row in outbox.pin_effect_rows(pin_operation[0])
@@ -11921,6 +12037,8 @@ class Label_Match(tk.Tk):
         )
 
     def _recheck_package_recovery_set(self, set_id, *, manager_code=None):
+        if not self._package_worker_action_allows("LABEL.RECHECK", set_id):
+            return "관리자 확인이 필요합니다."
         manager_id = self._package_recovery_manager(manager_code)
         if not manager_id:
             return "관리자 확인이 필요합니다."
@@ -12017,6 +12135,8 @@ class Label_Match(tk.Tk):
         return result
 
     def _recheck_package_recovery_physical(self, set_id, physical_qr, *, manager_code=None):
+        if not self._package_worker_action_allows("LABEL.PHS_LOOKUP", set_id):
+            return "이 작업에서 현품표를 조회할 수 없습니다."
         if carrier_identity.is_residual_tag(physical_qr):
             self._package_pin_ui(self._play_sound, "fail")
             return carrier_identity.RESIDUAL_TAG_REJECTION_MESSAGE

@@ -17,14 +17,21 @@ from deferred_intent_capture import supersede_for_legacy_outbox
 from package_command_draft import PackageCommandDraft, canonical_barcodes, canonical_json, stable_id
 from package_errors import PackageLogisticsError, _bounded_retry_after_seconds
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
-from label_admin_pin import active_pin_operation
+from label_admin_pin import active_pin_operation, active_worker_operation
 from writer_session_fence import writer_sink
 
 
 def _pin_audit_identity() -> tuple[str, str, str, str, str]:
+    worker = active_worker_operation.get()
+    if worker is not None:
+        return worker.operation_key, "", worker.action, worker.operator_id, worker.operator_name
     operation = active_pin_operation.get()
     return ((operation[0], operation[1], operation[2], operation[4], operation[6])
             if operation else ("", "", "", "", ""))
+
+
+def _audit_approver(value: str) -> str:
+    return "" if active_worker_operation.get() is not None else str(value)
 
 
 def _sending_claim_cas(table: str, expected_claim: Mapping[str, Any] | None):
@@ -1091,7 +1098,7 @@ class PackageOutbox:
                     """INSERT INTO package_workbench_hold_audit
                         (set_id,action,manager_id,observed,recorded_at,operation_key,verification_id,pin_action,operator_id,operator_name)
                         VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                    (identity, "HOLD", str(held_by),
+                    (identity, "HOLD", _audit_approver(held_by),
                      "UNVERIFIED_OPERATOR_HOLD" if quarantine else "UNRESOLVED", self._utc_now(),
                      *_pin_audit_identity()),
                 )
@@ -1141,6 +1148,7 @@ class PackageOutbox:
         """Bind a held unknown row only after its saved command matches central source."""
         if not all((set_id, source_input_tag_id, manager_id)):
             raise PackageLogisticsError("held source binding is incomplete")
+        manager_id = _audit_approver(manager_id)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -1213,6 +1221,7 @@ class PackageOutbox:
     def audit_workbench_action(
         self, *, set_id: str, action: str, manager_id: str, observed: str = ""
     ) -> None:
+        manager_id = _audit_approver(manager_id)
         with self._lock, self._connect() as conn:
             cursor = conn.execute(
                 """INSERT INTO package_workbench_hold_audit
@@ -1314,7 +1323,7 @@ class PackageOutbox:
                     """INSERT INTO package_workbench_hold_audit
                        (set_id,action,manager_id,observed,recorded_at,operation_key,verification_id,pin_action,operator_id,operator_name)
                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                    ("F5:" + hold_id, "HOLD_LABEL", held_by,
+                    ("F5:" + hold_id, "HOLD_LABEL", _audit_approver(held_by),
                      "UNVERIFIED_OPERATOR_HOLD" if (active_pin_operation.get() or ("", "", ""))[2]
                      == "UNVERIFIED_QUARANTINE" else "UNRESOLVED", now,
                      *_pin_audit_identity()),
@@ -1353,6 +1362,7 @@ class PackageOutbox:
                 or len({source[1] for source in sources}) != len(sources)
                 or scanned_source not in {source[0] for source in sources}):
             raise PackageLogisticsError("label hold source binding is incomplete")
+        manager_id = _audit_approver(manager_id)
         primary = next(source for source in sources if source[0] == scanned_source)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")

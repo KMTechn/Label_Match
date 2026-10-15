@@ -15,6 +15,9 @@ from tk_serial_ui_lane import Admission, LaneState, TkSerialUiLane
 
 @pytest.fixture
 def pin_lane(tmp_path, monkeypatch, lock_remote):
+    # Exercise the administrator protocol independently of M124 dispatch.
+    # tests/test_lm_worker_recovery.py restores the policy for worker entry tests.
+    monkeypatch.setattr(app_module, "WORKER_RECOVERY_ACTIONS", frozenset())
     app, journal, server = _pin_app(tmp_path, monkeypatch)
     root = FakeTkRoot()
     app._ui_lane_generation = 0
