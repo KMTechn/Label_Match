@@ -1518,6 +1518,8 @@ Range B excludes the ten name/SHA-pinned files in tests/fixtures/lm_atomic_exclu
 
 ## Worker first setup and headless relay
 
+Portable scripts invoked directly with `runtime/python.exe -I -B` (including startup-update task printing, relay bootstrap and prepared-update application) must establish their app and site-packages paths before importing any app-local module; release gate 7 executes those scripts with the built ZIP runtime and complete app tree before registration or application.
+
 Operational installation requires an explicit WorkerAccount. Machine completion releases its writer fence and installs the worker shortcut while keeping setup PENDING; it never prepares a profile or starts GUI/relay inside that transaction. After completion, only a caller with the worker's SID and a positive process session may request the ordinary worker's first setup.
 
 First setup and relay commands use label_match_relay_entry.py. Native worker context must match the protected policy SID, be non-elevated with medium integrity, and have a positive session before relay launch/reuse. Source recovery keeps its existing lifecycle without adding a new identity store. GUI entry remains the default manual program launch. Shell fallback markers and shared shell bytes are owned by the pinned shell.
