@@ -631,3 +631,8 @@ v2.0.107 조립의 앱 판·자료 판·data_compatible_min_version 하한은 �
 복구 relay bootstrap은 감독 부재·FAILED/UNKNOWN·APPLIED 요청 실패/요청 뒤 감독 소실·오래된 UNKNOWN claim의 기존 writer 분기에서 GUI 요청의 단일 실행 결과를 유지한다. relay 요청은 update_lock 안에서 다시 관측하고, 물려받은 KMTECH_LM_UPDATE_DEFERRED_AT가 유효한 과거 시각이며 같은 active SHA·G ALLOW·operator·일반 권한·gui/relay 역할·경계 이후 생성임을 assert_ordinary_recovery로 증명한다. 같은 무리 relay 한 개는 native 신원과 기존 RUNNING 준비 기록으로 재사용하며, 없으면 원 경계를 전달해 하나만 시작하고 같은 경계로 준비를 확인한다. 경계가 없으면 신원·G·생존이 확인된 기존 relay만 재사용한다. 증명·실행·준비 확인 실패는 기존 emit_progress_guidance와 rc 20이며 phase·claim·active·trial·READY·CONFIRMED·지원 기록을 쓰지 않는다. 오래된 claim의 apply 대기가 끝난 뒤 relay 준비에는 별도 75초 상한을 둔다. 일반 복구는 trial nonce를 전달하지 않으며 기존 claim PID·nonce 대조를 유지한다.
 
 같은 bootstrap이 받는 유한 --label-match-direct-sync-relay도 위 복구 증명과 원 경계를 사용한다. native 관측에서는 이 유한 helper가 writer로 분류되므로 실행 성공으로 인계하며 상주 relay의 RUNNING/READY를 기다리거나 게시하지 않는다. 자기 startup gate의 기존 own_pid 제외와 복구 증명은 유지한다.
+
+
+<a id="ordinary-recovery-gui-cohort"></a>
+
+G41/G45 복구 cohort: 일반 복구 증명은 실제 검사한 writer 행을 돌려주며 relay 수·재사용·새 실행 결정은 그 행만 쓴다. GUI가 이미 있으면 기존 단일 실행을 유지한다. GUI가 없고 검증된 relay가 정확히 하나이면 FAILED/UNKNOWN + claim NONE/ABSENT, DEFERRED+recovery_pending + claim NONE/ABSENT, APPLIED_PENDING_READY/ROLLBACK_PENDING_READY + claim ABSENT에서만 일반 GUI 하나를 시작한다. 경계는 증명한 그 relay의 생성 시각이며 새 now를 쓰지 않는다. active SHA·operator·일반 권한·관측 가능·G ALLOW·역할·시각 중 하나라도 불명확하면 기존 진행 안내와 20으로 멈춘다. 새 GUI는 같은 경계로 startup gate와 writer admission을 통과하며 trial nonce나 READY 권한을 받지 않는다. phase·claim·pointer·trial·READY·지원 기록을 이 경로에서 쓰지 않는다. PREPARED·ROLLBACK_PENDING과 대기 상태 claim LIVE/NONE의 기존 trial 경로는 보존한다. SYSTEM guard와 READY 소비자는 바꾸지 않는다.

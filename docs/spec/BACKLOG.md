@@ -764,4 +764,6 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 
 Move startup_timing after auto_update's isolated-entry path setup. Complete-app regression and built ZIP runtime checks cover task JSON, relay argument refusal and prepared-update root refusal; apply the same gate 7 to both apps. No version, installed layout or business-data contract changes.
 
-- w9firstupdsub269 P1: 복구 GUI 부모 writer 때문에 relay 없이 rc 0이던 다섯 bootstrap 분기를 원 시작 경계·일반 복구 증명·단일 relay 시작/재사용으로 고침. GUI 중복 실행·SYSTEM writer 검사·trial 권한은 유지하며 설치기 생성 선언 통합 및 실제 현장 수용은 1차 회차에서 확인한다.
+- w9firstupdsub269 G41/G45 P1: 다섯 relay fallback과 증명 스냅샷 재사용을 고치고, 지정 복구 상태의 단일 일반 relay에서 검증된 생성 경계로 GUI 하나를 연다. 기존 GUI·SYSTEM writer 보호·trial/READY 권한은 유지한다. 실제 현장 수용은 1차 회차에서 확인한다.
+
+- G45 잔류 P2(11/1): ROLLBACK_PENDING 감독 소실 뒤 relay만 살아 있으면 GUI가 안 열린다(claim ABSENT는 기존 0, NONE은 SYSTEM writer 거절 후 bootstrap 대기 종료). 이번 범위에서 고치지 않으며 안내는 「화면이 안 뜨면 지원에 연락」이다.
