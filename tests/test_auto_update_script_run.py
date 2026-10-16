@@ -73,9 +73,11 @@ def test_script_entry_red_to_green_until_first_admission(monkeypatch, tmp_path, 
             assert not evidence["main_entered"]
             assert evidence["first_admission"] is None
         else:
+            # Apply and bootstrap first publish protected progress through the durable writer.
+            # Keep checking zero inherited depth and stop before admission is acquired.
             assert evidence["definition_rejections"] == []
             assert evidence["main_entered"]
-            assert evidence["first_admission"] == {"source": "auto_update_fixed_helper" if mode == "system" else "auto_update_launch_version",
+            assert evidence["first_admission"] == {"source": "auto_update_fixed_helper" if mode == "system" else 'auto_update_write_json_durable',
                                                    "depth": 0, "acquired": False}
             for name in ("write_download_bytes", "write_download_chunk", "stage_prepared_copies", "_run_download_attempt"):
                 assert evidence["script_sinks"][name] == f"auto_update.{name}"
