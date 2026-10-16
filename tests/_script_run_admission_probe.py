@@ -34,7 +34,8 @@ def install(app):
             error = arg[1]
             if getattr(error, "code", "") == "WRITER_PROBE_ONLY_SINK_NOT_ALLOWED":
                 result["definition_rejections"].append(error.code)
-        if event == "return" and frame.f_code.co_name == "decorate" and arg is not None:
+        if (event == "return" and frame.f_code.co_name == "decorate" and arg is not None
+                and Path(filename).resolve() == app / "writer_session_fence.py"):
             function = frame.f_locals.get("function")
             if function is not None and function.__module__ == "__main__":
                 result["script_sinks"][function.__qualname__] = frame.f_locals["sink_id"]
