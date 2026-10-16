@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from tools.build_portable_release_candidate import _copy_application
 
 import pytest
 
@@ -28,7 +29,7 @@ def historical_repo(tmp_path_factory):
 def _packet(tmp_path, old, historical_repo=None):
     managed = tmp_path / ("red" if old else "green")
     app = managed / "current/app"
-    app.mkdir(parents=True)
+    _copy_application(ROOT, app)
     files = ("auto_update.py", "writer_session_fence.py", "failure_redaction.py", "tools/failure_redaction_rules.json")
     for name in files:
         raw = (subprocess.check_output(["git", "-C", str(historical_repo), "show", f"{BASE}:{name}"], creationflags=NOWIN)
