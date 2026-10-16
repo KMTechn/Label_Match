@@ -1,3 +1,5 @@
+- w9firstupdsub267 검토 회귀: 작업자 계정 누락의 비공개 예외 메시지 정규식 기대를 기존 typed pending 표지와 WORKER_ARGS_INCOMPLETE reason으로 맞춘다. 콘솔 조회·쓰기 금지와 기존 성공 sentinel 단언은 유지한다.
+
 - w9firstupdsub267 검토 보완: 최상위 일반 trap은 개인 진단/공개 변환 실패를 기존 REPORT_UNAVAILABLE로 수렴시키고 finally에서 명시 실패 종료한다. 되돌림/작업자 인수 충돌의 사전 적재 rc 0을 닫고 정상 되돌림 성공 출력·typed pending·권한·디스크 형식을 유지한다.
 
 - w9firstupdsub267: 실제 설치의 작업자 계정 누락·빈 값 거절을 기존 typed pending 경계 안으로 옮겨 사전 적재 helper에서도 `PENDING_TARGET_INVALID` / `WORKER_ARGS_INCOMPLETE`·rc 1·공개 실패 한 줄·개인 진단/파일 쓰기 0을 유지한다. 거절 조건·권한·디스크 형식은 그대로다.
