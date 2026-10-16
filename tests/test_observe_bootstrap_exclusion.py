@@ -63,7 +63,7 @@ $rows=Get-StartupUpdateProcesses $inputRows.root $inputRows.operator
         for index, row in enumerate(rows):
             variant = variants[index] if index < len(variants) else "real"
             bundle = self.current
-            if variant == "outside":
+            if variant in {"outside", "outside_bootstrap"}:
                 bundle = self.directory / "outside/current"
             elif variant == "candidate":
                 bundle = self.current.parent / "versions" / row["sha"]
@@ -74,14 +74,14 @@ $rows=Get-StartupUpdateProcesses $inputRows.root $inputRows.operator
             image = bundle / "runtime/pythonw.exe"
             entry = bundle / "app/main.py"
             arguments = " --label-match-user-relay" if row["role"] == "relay" else ""
-            if variant in {"bootstrap", "other_runtime", "other_entry", "outside_bootstrap"}:
+            if variant in {"bootstrap", "other_runtime", "other_entry", "outside_bootstrap", "console_runtime"}:
                 entry = bundle / "app/auto_update.py"
                 arguments = " --bootstrap --role " + row["role"] + " --" + arguments
                 if variant == "other_runtime":
                     image = bundle / "other-runtime/pythonw.exe"
                 elif variant == "other_entry":
                     entry = bundle / "app/other_update.py"
-                elif variant == "outside_bootstrap":
+                elif variant == "console_runtime":
                     image = bundle / "runtime/python.exe"
             processes.append({
                 "ProcessId": row["pid"], "Name": image.name,
@@ -184,7 +184,7 @@ def test_bootstrap_without_actual_relay_cannot_confirm(tmp_path, phase):
     assert not any(row.get("role") == "relay" for row in rows)
 
 
-@pytest.mark.parametrize("variant", ["outside", "other_runtime", "other_entry", "outside_bootstrap"])
+@pytest.mark.parametrize("variant", ["outside", "outside_bootstrap", "other_runtime", "other_entry", "console_runtime"])
 def test_similar_nonbootstrap_commands_keep_existing_classification(tmp_path, variant):
     world = trial_world("ROLLBACK_PENDING_READY")
     rows = Observe(tmp_path).snapshot([world.rows[1]], variants=[variant])
