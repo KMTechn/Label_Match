@@ -442,7 +442,7 @@ $extent=$calls[0].Parent.Parent.Extent
               "[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'unexpected-diagnostic.txt'),'synthetic');throw 'Unexpected input diagnostic'}\n"
             + "$forward=@{};if($PSBoundParameters.ContainsKey('WorkerAccount')){$forward.WorkerAccount=$WorkerAccount};"
               "if($PSBoundParameters.ContainsKey('WorkerSurveyInventory')){$forward.WorkerSurveyInventory=$WorkerSurveyInventory}\n"
-            + "& " + quote(driver) + " @forward\nexit $LASTEXITCODE\n", encoding="utf-8-sig")
+            + "& " + quote(driver) + (" @args" if resume_conflict else "") + " @forward\nexit $LASTEXITCODE\n", encoding="utf-8-sig")
         command[-1] = str(parent)
     before = {p: p.read_bytes() for p in tmp_path.iterdir()}
     if arguments == "invalid-json":
