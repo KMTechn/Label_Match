@@ -1522,6 +1522,8 @@ Portable scripts invoked directly with `runtime/python.exe -I -B` (including sta
 
 Operational installation requires an explicit WorkerAccount. Machine completion releases its writer fence and installs the worker shortcut while keeping setup PENDING; it never prepares a profile or starts GUI/relay inside that transaction. After completion, only a caller with the worker's SID and a positive process session may request the ordinary worker's first setup.
 
+작업자 계정 인수의 누락·빈 값은 helper를 미리 불렀는지와 관계없이 `PENDING_TARGET_INVALID` / `WORKER_ARGS_INCOMPLETE`로 거절한다. 종료 코드 1·stdout 없음·stderr 공개 JSON 한 줄을 확인하고 다음 설치 단계로 진행하지 않는다. 이 거절은 개인 진단이나 파일을 만들지 않는다(w9firstupdsub267).
+
 First setup and relay commands use label_match_relay_entry.py. Native worker context must match the protected policy SID, be non-elevated with medium integrity, and have a positive session before relay launch/reuse. Source recovery keeps its existing lifecycle without adding a new identity store. GUI entry remains the default manual program launch. Shell fallback markers and shared shell bytes are owned by the pinned shell.
 
 

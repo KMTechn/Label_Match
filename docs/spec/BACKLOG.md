@@ -1,3 +1,5 @@
+- w9firstupdsub267: 실제 설치의 작업자 계정 누락·빈 값 거절을 기존 typed pending 경계 안으로 옮겨 사전 적재 helper에서도 `PENDING_TARGET_INVALID` / `WORKER_ARGS_INCOMPLETE`·rc 1·공개 실패 한 줄·개인 진단/파일 쓰기 0을 유지한다. 거절 조건·권한·디스크 형식은 그대로다.
+
 - 첫 업데이트(11/1): A-PREP 빈 catch가 2차 오류를 남기지 않음(sub-147 P3-1).
 - 첫 업데이트(11/1): profile 별칭을 등록 origin과 견줘 정상 재사용이 FULL로 떨어짐(같은 꼴 장부 G06, P2).
 - 첫 업데이트(11/1): frozen 릴리스 길(verify_frozen_release_assets) 시험 17 — frozen 길을 다시 쓰기 전 정리 필수(관리자 06:0x).
