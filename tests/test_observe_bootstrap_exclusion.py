@@ -239,11 +239,13 @@ def test_fixed_bootstrap_owner_failure_matches_successful_census_and_recovery(re
     recovery.configure(CASES[0])
     observe = Observe(tmp_path)
     outcomes = []
+    emitted = []
     for observable in (True, False):
         bootstrap = {**recovery.parent, "pid": recovery.parent["pid"] + 900,
                      "role": role, "observable": observable}
         rows = observe.snapshot([*recovery.rows, bootstrap],
                                 variants=["real"] * len(recovery.rows) + ["bootstrap"])
+        emitted.append(tuple(row["pid"] for row in rows))
         try:
             writers = updates.writer_processes(rows, own_pid=-1)
             census = tuple(row["pid"] for row in writers)
@@ -257,5 +259,6 @@ def test_fixed_bootstrap_owner_failure_matches_successful_census_and_recovery(re
         outcomes.append((census, result))
     assert outcomes[0] == outcomes[1]
     assert outcomes[0] == ((recovery.parent["pid"],), 0)
+    assert emitted == [(recovery.parent["pid"],), (recovery.parent["pid"],)]
     assert not recovery.launches
     recovery.unchanged()
