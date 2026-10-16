@@ -1537,3 +1537,5 @@ v2.0.107 조립의 앱 판·자료 판·data_compatible_min_version 하한은 �
 
 
 v2.0.99/100 → 107 제자리 교체는 미지원이다(app/site-packages/qrcode/tests 10파일 차이로 WRITER_TRANSITION_SOURCE_SET_DIFFERS 거절). 지원은 코드 전용 제거 → 새로 깔기이며, 파일 집합 관문과 기존 before 핀은 유지한다.
+
+복구 GUI의 relay 재요청은 [일반 복구 relay 계약](contracts.md#ordinary-recovery-relay-bootstrap)에 따라 원 시작 경계를 재사용한다. 부모 GUI만 살아 있는 경우에는 성공으로 간주하지 않는다. 같은 판·계정·일반 권한의 검증된 relay를 재사용하거나 하나를 시작하며, 준비를 증명하지 못하면 기존 진행 안내와 종료 코드 20을 반환한다. 이 경로는 업데이트 상태와 지원 기록을 변경하지 않는다. 실제 로그인·현장 relay 수용은 별도 회차에서 확인한다.

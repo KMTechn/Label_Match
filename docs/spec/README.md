@@ -321,3 +321,5 @@ JSON·관계·자료형·필수 키 실패는 `PACKAGE_RECOVERY_STORED_EVIDENCE_
 
 
 v2.0.107 조립: 앱 판·자료 판·하한 모두 107. field-update-feed 원본 SHA 결속과 ZIP runtime 관문은 [운영](operations.md#v20107-조립-관문), machine-worker 예외는 [lifecycle 설계](LIFECYCLE-DESIGN.md)를 따른다.
+
+복구 GUI가 요청한 상주 전송은 원래 시작 경계를 유지해 같은 판·계정의 일반 relay 하나를 시작하거나 살아 있는 relay를 재사용한다. 부모 GUI만 있다는 이유로 성공을 반환하지 않으며, 증명 실패 때는 기존 진행 안내를 유지한다. [복구 relay 계약](contracts.md#ordinary-recovery-relay-bootstrap)을 따른다.

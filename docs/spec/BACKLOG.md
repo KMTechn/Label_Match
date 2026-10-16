@@ -763,3 +763,5 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 # G33 · isolated portable entry imports / gate 7
 
 Move startup_timing after auto_update's isolated-entry path setup. Complete-app regression and built ZIP runtime checks cover task JSON, relay argument refusal and prepared-update root refusal; apply the same gate 7 to both apps. No version, installed layout or business-data contract changes.
+
+- w9firstupdsub269 P1: 복구 GUI 부모 writer 때문에 relay 없이 rc 0이던 다섯 bootstrap 분기를 원 시작 경계·일반 복구 증명·단일 relay 시작/재사용으로 고침. GUI 중복 실행·SYSTEM writer 검사·trial 권한은 유지하며 설치기 생성 선언 통합 및 실제 현장 수용은 1차 회차에서 확인한다.

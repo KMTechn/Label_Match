@@ -625,3 +625,9 @@ v2.0.107 조립의 앱 판·자료 판·data_compatible_min_version 하한은 �
 
 
 기계 installer authority는 OS KnownFolder의 ProgramData 아래 KMTech/Label_Match/install-audit/machine-writer-<run>에 결속한다. ProgramData와 그 위는 특권 owner 종류만, 그 아래 공용 조상은 rename·삭제·DACL·owner 변경 mask 0x500D0040으로 검사한다. 회차별 fence root는 생성 직후 상속을 끊고 SYSTEM/Administrators만 쓰도록 보호하며, root와 active 기록은 기존 엄격한 쓰기 거절을 적용한다. C:/KMTech/Apps의 installer owner record는 이 예외 없이 기존 판정을 유지한다. 부모의 배치·복원 readback 두 호출은 이번 회차 위임 네 이름을 자식 환경에만 전달하고 finally 복원한다.
+
+<a id="ordinary-recovery-relay-bootstrap"></a>
+
+복구 relay bootstrap은 감독 부재·FAILED/UNKNOWN·APPLIED 요청 실패/요청 뒤 감독 소실·오래된 UNKNOWN claim의 기존 writer 분기에서 GUI 요청의 단일 실행 결과를 유지한다. relay 요청은 update_lock 안에서 다시 관측하고, 물려받은 KMTECH_LM_UPDATE_DEFERRED_AT가 유효한 과거 시각이며 같은 active SHA·G ALLOW·operator·일반 권한·gui/relay 역할·경계 이후 생성임을 assert_ordinary_recovery로 증명한다. 같은 무리 relay 한 개는 native 신원과 기존 RUNNING 준비 기록으로 재사용하며, 없으면 원 경계를 전달해 하나만 시작하고 같은 경계로 준비를 확인한다. 경계가 없으면 신원·G·생존이 확인된 기존 relay만 재사용한다. 증명·실행·준비 확인 실패는 기존 emit_progress_guidance와 rc 20이며 phase·claim·active·trial·READY·CONFIRMED·지원 기록을 쓰지 않는다. 오래된 claim의 apply 대기가 끝난 뒤 relay 준비에는 별도 75초 상한을 둔다. 일반 복구는 trial nonce를 전달하지 않으며 기존 claim PID·nonce 대조를 유지한다.
+
+같은 bootstrap이 받는 유한 --label-match-direct-sync-relay도 위 복구 증명과 원 경계를 사용한다. native 관측에서는 이 유한 helper가 writer로 분류되므로 실행 성공으로 인계하며 상주 relay의 RUNNING/READY를 기다리거나 게시하지 않는다. 자기 startup gate의 기존 own_pid 제외와 복구 증명은 유지한다.
