@@ -249,7 +249,9 @@ def test_onboarding_launcher_reaches_alive_via_real_bootstrap(recovery, monkeypa
         result = updates._bootstrap(recovery.control, ["--label-match-user-relay"], role="relay")
         return SimpleNamespace(pid=os.getpid() + 200, poll=lambda: result)
     monkeypatch.setattr(updates, "start_ordinary_process", start)
-    result = user_relay.reuse_or_start_user_relay_process(recovery.control, survival_seconds=0, wait=lambda _: None)
+    def wait(seconds):
+        recovery.clock[0] += seconds
+    result = user_relay.reuse_or_start_user_relay_process(recovery.control, survival_seconds=0, wait=wait)
     assert result["status"] == "ALIVE"
     assert len(recovery.launches) == 1
     recovery.unchanged()
@@ -260,7 +262,9 @@ def test_real_launch_preserves_environment_and_child_startup_gate(recovery, monk
     app = tmp_path / "version/app"
     app.mkdir(parents=True)
     (app / "label_match_relay_entry.py").touch()
+    started = []
     def start(command, *, cwd, environment):
+        started.append(True)
         assert environment.get("KMTECH_LM_UPDATE_DEFERRED_AT") == BOUNDARY
         assert "KMTECH_LM_UPDATE_TRIAL_NONCE" not in environment
         assert command[1:3] == ["-I", "-B"]
@@ -273,6 +277,7 @@ def test_real_launch_preserves_environment_and_child_startup_gate(recovery, monk
     monkeypatch.setattr(updates, "launch_version", REAL_LAUNCH)
     monkeypatch.setattr(updates, "start_ordinary_process", start)
     assert updates._bootstrap(recovery.control, ["--label-match-user-relay"], role="relay") == 0
+    assert started == [True]
     recovery.unchanged()
 
 
