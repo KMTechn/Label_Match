@@ -47,13 +47,14 @@ function Invoke-CimMethod {
  if ($InputObject.unobservable) { return @{ReturnValue=1;Sid=$null} }
  return @{ReturnValue=0;Sid=$InputObject.owner}
 }
-function Assert-LabelStartupNoReparsePoint { param($Path, $Label) }
 $tokens=$null; $errors=$null
 $tree=[Management.Automation.Language.Parser]::ParseFile($Helper,[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'helper parse failed' }
-$function=$tree.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-StartupUpdateProcesses'},$true)
-if ($null -eq $function) { throw 'Observe function missing' }
-Invoke-Expression $function.Extent.Text
+foreach ($name in @('Assert-LabelStartupNoReparsePoint','Get-StartupUpdateProcesses')) {
+ $function=$tree.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
+ if ($null -eq $function) { throw 'Observe function missing' }
+ Invoke-Expression $function.Extent.Text
+}
 $rows=Get-StartupUpdateProcesses $inputRows.root $inputRows.operator
 @{rows=$rows} | ConvertTo-Json -Depth 8 -Compress
 """, encoding="utf-8-sig")
