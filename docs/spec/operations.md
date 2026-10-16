@@ -1542,3 +1542,5 @@ v2.0.99/100 → 107 제자리 교체는 미지원이다(app/site-packages/qrcode
 
 
 G45: relay만 살아 있어 GUI가 안 열리던 복구는 [검증된 일반 GUI cohort](contracts.md#ordinary-recovery-gui-cohort) 범위에서 relay 생성 경계를 이어 GUI 하나를 연다. GUI와 relay가 있는 동안 SYSTEM의 기존 writer 보호를 유지하고, 모두 닫힌 뒤 기존 자료 세대 결정으로 정착한다(UNCHANGED는 이전 판 복구, ADVANCED는 후보 유지). 일반 GUI는 trial nonce가 없어 READY 영수증을 게시하지 않는다. ROLLBACK_PENDING 잔류 P2는 이번 고침 밖이다. 11/1에 이 상태로 화면이 안 뜨면 지원에 연락한다. 실제 로그온·창·현장 수용은 별도 회차다.
+
+DEFERRED+recovery_pending 정착 증명은 FAILED·DEFERRED·APPLIED_PENDING_READY에서 시작하는 사슬이다. ROLLBACK_PENDING_READY는 기존 120초 READY 감독을 보존하고, 영수증이 없으면 FAILED로 남는다. 새 일반 GUI는 이 상태에서도 trial 영수증을 내지 않는다.

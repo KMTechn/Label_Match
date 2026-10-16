@@ -122,6 +122,16 @@ def test_gui_boundary_comes_from_the_rows_actually_proved():
     assert w.gui_environments[0]["KMTECH_LM_UPDATE_DEFERRED_AT"] == w.at(w.clock - 1)
 
 
+@pytest.mark.parametrize("mode", ["--label-match-user-relay", "--label-match-direct-sync-relay"])
+def test_gui_role_with_relay_arguments_keeps_legacy_reuse(mode):
+    w = memory_world()
+    before = copy.deepcopy(w.files)
+    result = w.call("_bootstrap", w.control, [mode], role="gui")
+    assert result["rc"] == 0 and result["exception"] is None
+    assert not w.launches
+    assert w.files == before
+
+
 @pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"])
 def test_recovered_gui_writer_admission_and_no_trial_receipt(recovery, monkeypatch, phase):
     r = recovery
@@ -285,6 +295,24 @@ def test_real_system_guard_and_ready_consumer_cohort_matrix(bound_gui, receipt_p
     else:
         assert observed
         assert (w.state["phase"] == "CONFIRMED") is (receipt_present and not extra_trial_relay)
+
+
+def test_reused_trial_pid_cannot_turn_an_ordinary_gui_into_ready_authority():
+    w = memory_world("APPLIED_PENDING_READY", "LIVE", writer=None)
+    w.ready_trial()
+    gui, relay = w.rows
+    w.state.update(trial_pid=gui["pid"], trial_sha=w.active,
+                   trial_started_at=gui["created_at"], trial_role="gui")
+    w.clock += 1
+    w.rows = [{**gui, "created_at": w.at(w.clock)}, relay]
+    state, confirmed, exited = w.ns["observe_trial_ready"](
+        w.control, w.policy, w.state, w.rows,
+        w.optional(w.stage / "trial.json"), w.optional(w.stage / "ready.json"),
+        deadline=w.clock + 120)
+    assert confirmed is False
+    assert state["phase"] == "APPLIED_PENDING_READY"
+    assert system(w, once=True)["rc"] == 0
+    assert w.state["phase"] == "DEFERRED" and w.state["recovery_pending"] is True
 
 
 def test_proof_snapshot_new_relay_is_reused_without_second_launch(recovery, monkeypatch):

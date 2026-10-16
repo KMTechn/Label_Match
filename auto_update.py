@@ -2874,7 +2874,8 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
             return None
         if role != "relay":
             if (role != "gui" or any(row.get("role") == "gui" for row in rows)
-                    or not gui_recovery_state(state, claim_status)):
+                    or not gui_recovery_state(state, claim_status)
+                    or arguments[:1] in (["--label-match-user-relay"], ["--label-match-direct-sync-relay"])):
                 return 0
             if len(rows) != 1 or rows[0].get("role") != "relay":
                 raise ValueError("ordinary GUI recovery requires exactly one relay")
@@ -3141,7 +3142,8 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
     if current_generation_status(control, policy, active["sha"]) != "ALLOW":
         emit_progress_guidance()
         return 20
-    if role == "gui":
+    if role == "gui" and gui_recovery_state(optional_record(control / "transition.json"),
+                                            apply_claim_status(control)):
         with update_lock(control, policy["operator_sid"],
                          abandoned_check=lambda: _verify_abandoned_update(control, policy)):
             state = optional_record(control / "transition.json")
