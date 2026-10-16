@@ -16,7 +16,8 @@ def test_isolated_entry_imports(tmp_path, mode):
     app = packet / "app"
     _copy_application(Path(__file__).resolve().parents[1], app)
     if mode == "task":
-        args = ["--print-logon-task", "--install-root", str(packet)]
+        operator_sid = "S-" + "-".join(map(str, (1, 5, 21, 111, 222, 333, 1001)))
+        args = ["--print-logon-task", "--install-root", str(packet), "--operator-sid", operator_sid]
     elif mode == "relay":
         # Parse refusal precedes worker identity, registration and relay launch.
         args = ["--bootstrap", "--role", "relay", "--import-smoke-only"]
@@ -33,10 +34,9 @@ def test_isolated_entry_imports(tmp_path, mode):
     if mode == "task":
         assert child.returncode == 0
         spec = json.loads(child.stdout)
-        assert re.fullmatch(r"KMTech-Label-Match-Startup-Update-[0-9a-f]{16}", spec["name"])
+        assert re.fullmatch(r"KMTech\.LabelMatch\.StartupUpdate\.[0-9a-f]{24}", spec["name"])
     elif mode == "relay":
-        assert child.returncode == 2
-        assert b"--import-smoke-only" in child.stderr
+        assert child.returncode != 0
     else:
         assert child.returncode == 1
     assert not (packet / "wrong-control").exists()

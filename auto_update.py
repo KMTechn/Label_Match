@@ -16,13 +16,13 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
-from startup_timing import startup_timed, startup_timing_step
 from typing import Any, Mapping
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     sys.path.insert(1, str(Path(__file__).resolve().parent / "site-packages"))
 
+from startup_timing import startup_timed, startup_timing_step
 from writer_session_fence import WriterFencedError, writer_sink, _assert_no_reparse_components, WriterFenceError
 
 
