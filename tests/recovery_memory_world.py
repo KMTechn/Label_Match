@@ -34,6 +34,7 @@ SELECT = {'_sha', '_utc', 'startup_action', 'writer_processes', 'assert_ordinary
 SELECT.update({'current_relay_ready', 'wait_current_relay'})
 
 CACHE = {}
+SELECT.add("gui_recovery_state")
 
 class MemoryPath(PurePosixPath):
     def resolve(self):

@@ -2083,7 +2083,7 @@ def assert_version_writer(app_root: Path, *, source: str, environ: Mapping[str, 
             or state.get("recovery_pending") is True):
         raise ValueError("bounded force exit requires settled update state")
     deferred_at = environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
-    if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"} and deferred_at:
+    if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"} and deferred_at:
         # The caller already holds writer admission. Do not invert the lock order
         # update_lock -> writer mutex: only read the same ordinary-start proof.
         assert_ordinary_recovery(control, policy, own_sha, deferred_at)
@@ -2590,7 +2590,7 @@ def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> 
         control = control_root(app_root)
         deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
         state = optional_record(control / "transition.json") if control is not None else None
-        if deferred_at and control is not None and (not state or state.get("phase") in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}):
+        if deferred_at and control is not None and (not state or state.get("phase") in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}):
             policy = load_policy(control)
             assert_ordinary_recovery(control, policy, version_manifest(app_root.parent)["source_commit"], deferred_at)
             assert_version_writer(app_root, source="gui_settings_save", environ=os.environ)
@@ -2630,9 +2630,10 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
                 if claim and claim.get("nonce") == state["nonce"] and claim.get("transition_id") == state["transition_id"] and (role == "relay" or claim.get("pid") == os.getpid()):
                     return None
         deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
-        if sha == active["sha"] and deferred_at and (not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}):
+        if sha == active["sha"] and deferred_at and (not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}):
             _utc(deferred_at)
-            if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
+            if state and (state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
+                          or (state["phase"] == "DEFERRED" and state.get("recovery_pending") is True)):
                 assert_ordinary_recovery(control, policy, sha, deferred_at)
             # Ordinary active-code admission only. The unchanged G guard still
             # runs before data access; this grants no pointer or trial authority.
@@ -2773,18 +2774,20 @@ def current_generation_status(control: Path, policy: Mapping[str, Any], sha: str
 
 
 
-def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str, started_at: str) -> None:
+def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str, started_at: str) -> list[dict[str, Any]]:
     """Read-only proof under startup update ownership or existing writer admission."""
     if read_json(control / "active.json")["sha"] != sha:
         raise ValueError("ordinary recovery code is not the active version")
     if current_generation_status(control, policy, sha) != "ALLOW":
         raise ValueError("ordinary recovery requires current data generation allowance")
     started = _utc(started_at)
-    for row in writer_processes(process_snapshot(control), own_pid=os.getpid()):
+    rows = writer_processes(process_snapshot(control), own_pid=os.getpid())
+    for row in rows:
         if (row.get("sha") != sha or row.get("sid") != policy["operator_sid"]
                 or row.get("ordinary_user") is not True or row.get("role") not in {"gui", "relay"}
                 or _utc(row.get("created_at")) < started):
             raise ValueError("an earlier or unrelated writer prevents ordinary recovery")
+    return rows
 
 
 
@@ -2845,8 +2848,20 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
 
 
 
+def gui_recovery_state(state, claim_status: str) -> bool:
+    """Only settled ordinary recovery may add the missing GUI to a relay."""
+    if not state or claim_status not in {"NONE", "ABSENT"}:
+        return False
+    phase = state.get("phase")
+    return (phase in {"FAILED", "UNKNOWN"}
+            or (phase == "DEFERRED" and state.get("recovery_pending") is True)
+            or (phase in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
+                and claim_status == "ABSENT"))
+
+
 def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
-                           arguments: list[str], *, role: str, deadline: float) -> int | None:
+                           arguments: list[str], *, role: str, deadline: float,
+                           state=None, claim_status: str = "") -> int | None:
     """Under update ownership, preserve GUI reuse and prove an ordinary relay.
 
     A recovered GUI is a writer, but does not satisfy its own relay request.
@@ -2858,22 +2873,46 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
         if not rows:
             return None
         if role != "relay":
+            if (role != "gui" or any(row.get("role") == "gui" for row in rows)
+                    or not gui_recovery_state(state, claim_status)):
+                return 0
+            if len(rows) != 1 or rows[0].get("role") != "relay":
+                raise ValueError("ordinary GUI recovery requires exactly one relay")
+            boundary = rows[0].get("created_at")
+            if _utc(boundary) >= _utc(now_utc()):
+                raise ValueError("ordinary recovery relay is not in the past")
+            rows = assert_ordinary_recovery(control, policy, active["sha"], boundary)
+            if any(row.get("role") == "gui" for row in rows):
+                return 0
+            if len(rows) != 1 or rows[0].get("role") != "relay":
+                raise ValueError("the proved ordinary relay cohort changed")
+            # The proof's own observation determines both the sole relay and
+            # the GUI's boundary, even if the earlier candidate was replaced.
+            boundary = rows[0]["created_at"]
+            if _utc(boundary) >= _utc(now_utc()):
+                raise ValueError("ordinary recovery relay is not in the past")
+            _launch_bootstrap_version(control, active["sha"], arguments,
+                                      deadline=deadline, deferred_at=boundary)
             return 0
         started_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
-        relays = [row for row in rows if row.get("role") == "relay"]
-        if len(relays) > 1:
-            raise ValueError("ordinary recovery has multiple relays")
         if started_at:
             if _utc(started_at) >= _utc(now_utc()):
                 raise ValueError("ordinary recovery boundary is not in the past")
-            assert_ordinary_recovery(control, policy, active["sha"], started_at)
+            rows = assert_ordinary_recovery(control, policy, active["sha"], started_at)
         else:
+            relays = [row for row in rows if row.get("role") == "relay"]
             if not relays:
                 raise ValueError("ordinary relay launch requires an inherited recovery boundary")
             # Without a boundary this can only reuse an observed live relay.
             # Validate every writer's identity; no new launch is authorized.
             observed_start = min(rows, key=lambda row: _utc(row.get("created_at")))["created_at"]
-            assert_ordinary_recovery(control, policy, active["sha"], observed_start)
+            rows = assert_ordinary_recovery(control, policy, active["sha"], observed_start)
+        relays = [row for row in rows if row.get("role") == "relay"]
+        if len(relays) > 1:
+            raise ValueError("ordinary recovery has multiple relays")
+        if not started_at:
+            if not relays:
+                raise ValueError("ordinary relay reuse requires a proved live relay")
             started_at = relays[0]["created_at"]
         if relays:
             if current_relay_ready(control, policy, active["sha"],
@@ -2890,7 +2929,7 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
                                   deadline=deadline, pid=pid):
                 return 0
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
-        if role != "relay":
+        if role != "relay" and not (role == "gui" and gui_recovery_state(state, claim_status)):
             raise
     emit_progress_guidance()
     return 20
@@ -2949,6 +2988,11 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                 action = startup_action(state, prepared_present=prepared)
                 active = read_json(control / "active.json")
                 startup_arguments = list(arguments)
+                if role == "gui" and gui_recovery_state(state, claim_status):
+                    writer_result = recovery_writer_result(control, policy, active, arguments,
+                        role=role, deadline=deadline, state=state, claim_status=claim_status)
+                    if writer_result is not None:
+                        return writer_result
                 if state and state["phase"] == "DEFERRED" and state.get("retained_candidate") is True:
                     if active["sha"] != recovery_sha(state, pointer_sha=active["sha"]):
                         action = "WAIT_FOR_RECOVERY"
@@ -2975,7 +3019,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                         code = "UPDATE_TERMINAL_RECOVERED"
                     return start_current(control, policy, state, active, arguments, code=code, deadline=deadline)
                 if claim_status == "ABSENT":
-                    writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline)
+                    writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline, state=state, claim_status=claim_status)
                     if writer_result is not None:
                         return writer_result
                     if current_generation_status(control, policy, active["sha"]) != "ALLOW":
@@ -2989,7 +3033,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                                          code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
                 if state and state["phase"] in {"UNKNOWN", "FAILED"}:
                     if claim_status not in {"LIVE", "UNKNOWN"}:
-                        writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline)
+                        writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline, state=state, claim_status=claim_status)
                         if writer_result is not None:
                             return writer_result
                         if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared:
@@ -3005,7 +3049,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                             continue
                         if not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
                             if state and state["phase"] == "APPLIED_PENDING_READY":
-                                writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline)
+                                writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline, state=state, claim_status=claim_status)
                                 if writer_result is not None:
                                     return writer_result
                             code = "UPDATE_SUPERVISION_UNAVAILABLE" if state and state["phase"] == "APPLIED_PENDING_READY" else "UPDATE_APPLY_REQUEST_FAILED"
@@ -3057,7 +3101,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                     claim_status = apply_claim_status(control)
                     if claim_status == "ABSENT":
                         if state and state["phase"] == "APPLIED_PENDING_READY":
-                            writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline)
+                            writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline, state=state, claim_status=claim_status)
                             if writer_result is not None:
                                 return writer_result
                         return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=deadline)
@@ -3085,7 +3129,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                     # The ordinary stale-owner recovery starts after the apply
                     # wait has ended; give its relay a bounded readiness window.
                     writer_result = recovery_writer_result(control, policy, active, arguments,
-                        role=role, deadline=time.monotonic() + 75)
+                        role=role, deadline=time.monotonic() + 75, state=state, claim_status="UNKNOWN")
                     if writer_result is not None:
                         return writer_result
                     if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared_pending(control, policy, state):
@@ -3097,6 +3141,17 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
     if current_generation_status(control, policy, active["sha"]) != "ALLOW":
         emit_progress_guidance()
         return 20
+    if role == "gui":
+        with update_lock(control, policy["operator_sid"],
+                         abandoned_check=lambda: _verify_abandoned_update(control, policy)):
+            state = optional_record(control / "transition.json")
+            claim_status = apply_claim_status(control)
+            active = read_json(control / "active.json")
+            if gui_recovery_state(state, claim_status):
+                writer_result = recovery_writer_result(control, policy, active, arguments,
+                    role=role, deadline=time.monotonic() + 75, state=state, claim_status=claim_status)
+                if writer_result is not None:
+                    return writer_result
     assert_ordinary_recovery(control, policy, active["sha"], now_utc())
     result = start_current(control, policy, optional_record(control / "transition.json"), active,
                            arguments, code="UPDATE_APPLY_NO_PROGRESS", deadline=deadline)

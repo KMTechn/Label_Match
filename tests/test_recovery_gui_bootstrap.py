@@ -25,8 +25,9 @@ def memory_world(phase="FAILED", claim="NONE", writer="relay"):
 
     def launch(argv, **kwargs):
         process = spawn(argv, **kwargs)
+        environment = kwargs.get("environment", kwargs.get("env", {}))
+        w.launches[-1]["trial"] = bool(environment.get("KMTECH_LM_UPDATE_TRIAL_NONCE"))
         if w.launches[-1]["role"] == "gui":
-            environment = kwargs.get("environment", kwargs.get("env", {}))
             w.gui_environments.append(dict(environment))
             saved_env, saved_pid = w.os.environ, w.os.getpid
             w.os.environ, w.os.getpid = environment, lambda: process.pid
@@ -38,6 +39,13 @@ def memory_world(phase="FAILED", claim="NONE", writer="relay"):
 
     w.ns["start_ordinary_process"] = launch
     return w
+
+
+def system(w, *, once=False):
+    # The next SYSTEM actor must itself be observable; the previous apply
+    # owner was absent only during the ordinary GUI request.
+    w.owner_status = "LIVE"
+    return w.call("_apply_prepared_once" if once else "_apply_prepared", w.control)
 
 
 @pytest.mark.parametrize("phase,claim", GUI_CASES)
@@ -114,6 +122,28 @@ def test_gui_boundary_comes_from_the_rows_actually_proved():
     assert w.gui_environments[0]["KMTECH_LM_UPDATE_DEFERRED_AT"] == w.at(w.clock - 1)
 
 
+@pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"])
+def test_recovered_gui_writer_admission_and_no_trial_receipt(recovery, monkeypatch, phase):
+    r = recovery
+    r.configure(CASES[0])
+    r.state.update(phase=phase, previous_sha=r.sha, candidate_sha=r.sha)
+    r.rows[0]["role"] = "relay"
+    monkeypatch.setenv("KMTECH_LM_UPDATE_DEFERRED_AT", r.rows[0]["created_at"])
+    monkeypatch.delenv("KMTECH_LM_UPDATE_TRIAL_NONCE", raising=False)
+    monkeypatch.setattr(updates, "runtime_matches", lambda *_: True)
+    read = updates.read_json
+
+    def read_identity(path):
+        return {"source_commit": r.sha} if path.name == "portable-manifest.json" else read(path)
+
+    monkeypatch.setattr(updates, "read_json", read_identity)
+    app = r.control.parent / "app"
+    updates.assert_version_writer(app, source="gui_settings_save", environ=updates.os.environ)
+    assert updates.trial_context(app) is None
+    assert updates.publish_gui_ready(app) is True
+    r.unchanged()
+
+
 def test_run_relay_then_system_deferred_then_gui_uses_same_cohort():
     w = memory_world(writer=None)
     assert w.bootstrap("relay")["rc"] == 0
@@ -126,6 +156,34 @@ def test_run_relay_then_system_deferred_then_gui_uses_same_cohort():
     assert w.bootstrap()["rc"] == 0
     assert [row["role"] for row in w.launches] == ["relay", "gui"]
     assert w.files == before
+
+
+def test_deferred_gui_waits_for_live_owner_then_uses_settled_relay_boundary():
+    w = memory_world("DEFERRED", "LIVE")
+    w.files[str(w.control / "apply-claim.json")] = w.ns["new_apply_claim"]()
+    boundary = w.rows[0]["created_at"]
+    preserved = copy.deepcopy(w.state)
+    sleep = w.sleep
+    status = w.ns["apply_claim_status"]
+    observed = []
+
+    def settle_owner(seconds):
+        sleep(seconds)
+        w.ns["complete_apply_claim"](w.control)
+
+    def observe(control):
+        result = status(control)
+        observed.append(result)
+        return result
+
+    w.time.sleep = settle_owner
+    w.ns["apply_claim_status"] = observe
+    result = w.bootstrap()
+    assert result["rc"] == 0 and result["exception"] is None
+    assert "LIVE" in observed and "NONE" in observed
+    assert [row["role"] for row in w.launches] == ["gui"]
+    assert w.gui_environments[0]["KMTECH_LM_UPDATE_DEFERRED_AT"] == boundary
+    assert w.state == preserved
 
 
 @pytest.mark.parametrize("phase,claim", [("PREPARED", "ABSENT"), ("ROLLBACK_PENDING", "ABSENT"),
@@ -145,12 +203,12 @@ def test_gui_and_relay_defer_system_until_writer_absence_then_settle(phase, gene
     before_gui = copy.deepcopy(w.files)
     assert w.bootstrap()["rc"] == 0
     assert w.files == before_gui
-    assert w.call("_apply_prepared", w.control)["rc"] == 0
+    assert system(w)["rc"] == 0
     w.ns["complete_apply_claim"](w.control)
     assert w.state["phase"] == "DEFERRED" and w.state["recovery_pending"] is True
     preserved = copy.deepcopy(w.state)
     active = w.active
-    assert w.call("_apply_prepared", w.control)["rc"] == 0
+    assert system(w)["rc"] == 0
     w.ns["complete_apply_claim"](w.control)
     assert w.state == preserved and w.active == active
     assert not any(str(path).endswith("ready.json") for path in w.files)
@@ -161,7 +219,7 @@ def test_gui_and_relay_defer_system_until_writer_absence_then_settle(phase, gene
         release = w.state["generation_candidate_release"]
         w.generation["record"] = {"build_id": w.candidate, "version": release["version"]}
     w.auto_ready = True
-    result = w.call("_apply_prepared", w.control)
+    result = system(w)
     assert result["exception"] is None
     if generation == "UNCHANGED":
         assert result["rc"] == 0
@@ -180,9 +238,11 @@ def test_applied_absent_gui_recovery_keeps_writer_zero_settlement_decision(gener
     decisions = []
     for with_relay in (False, True):
         w = memory_world("APPLIED_PENDING_READY", "ABSENT", writer="relay" if with_relay else None)
+        outcome = w.bootstrap()
         if with_relay:
-            assert w.bootstrap()["rc"] == 0
-        assert w.call("_apply_prepared", w.control)["exception"] is None
+            assert outcome["rc"] == 0
+        assert [row["role"] for row in w.launches] == ["gui"]
+        assert system(w)["exception"] is None
         w.ns["complete_apply_claim"](w.control)
         w.rows = []
         w.clock += 500
@@ -190,7 +250,7 @@ def test_applied_absent_gui_recovery_keeps_writer_zero_settlement_decision(gener
             release = w.state["generation_candidate_release"]
             w.generation["record"] = {"build_id": w.candidate, "version": release["version"]}
         w.auto_ready = True
-        assert w.call("_apply_prepared", w.control)["exception"] is None
+        assert system(w)["exception"] is None
         decisions.append((w.state["failure_decision"]["code"], w.active))
     assert decisions[0] == decisions[1]
 
