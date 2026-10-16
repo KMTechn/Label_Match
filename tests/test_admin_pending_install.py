@@ -381,9 +381,42 @@ foreach($path in $paths){
 def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, arguments, preloaded):
     product = INSTALLER.read_text(encoding="utf-8-sig")
     caller = "(Get-LabelInstallerCaller)"
-    assert product.count(caller) == 1
     identity = "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$false;session_id=2})" if arguments == "ordinary-empty" else "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$true;session_id=0})"
-    product = product.replace(caller, identity)
+    # Target only the real entry call; the first-run helper has another caller.
+    locate = r"""
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$tokens,[ref]$errors)
+if ($errors.Count) { throw 'Installer parse failed.' }
+$calls=@($ast.FindAll({param($node)
+    if ($node -isnot [Management.Automation.Language.CommandAst] -or
+        $node.GetCommandName() -cne 'Get-LabelInstallerCaller' -or
+        $node.Parent.Parent -isnot [Management.Automation.Language.ParenExpressionAst]) { return $false }
+    $parent=$node.Parent
+    while ($null -ne $parent) {
+        if ($parent -is [Management.Automation.Language.FunctionDefinitionAst]) { return $false }
+        $parent=$parent.Parent
+    }
+    return $true
+},$true))
+if ($calls.Count -ne 1) { throw 'Installer entry caller is ambiguous.' }
+$extent=$calls[0].Parent.Parent.Extent
+@{start=$extent.StartOffset;end=$extent.EndOffset} | ConvertTo-Json -Compress
+"""
+    source = tmp_path / "entry-source.ps1"
+    source.write_text(product, encoding="utf-8-sig", newline="\n")
+    locator = tmp_path / "locate-entry.ps1"
+    locator.write_text(locate, encoding="utf-8-sig")
+    located = subprocess.run(
+        [shutil.which(engine), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(locator), str(source)], capture_output=True, text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    assert located.returncode == 0
+    target = json.loads(located.stdout)
+    # PowerShell extents count UTF-16 units, including non-BMP characters.
+    encoded = product.encode("utf-16-le")
+    start, end = target["start"] * 2, target["end"] * 2
+    assert encoded[start:end].decode("utf-16-le") == caller
+    product = (encoded[:start] + identity.encode("utf-16-le") + encoded[end:]).decode("utf-16-le")
     # Missing explicit input also requires an absent console candidate. Keep the
     # real entry and its rejection path while avoiding observation of the host.
     observer = "function Get-LabelConsoleWorkerObservation {"
