@@ -33,7 +33,9 @@ v2.0.104 어댑터는 `web_allowed(data, version)` 판정과 `before_exit(code, 
 
 설치기와 배포 helper의 조상·검증 대상 조회 및 패키지 자식 열거는 숨김 속성이 있는 ProgramData·AppData·설치 경로도 검사한다. 읽기 `-Force`는 숨김 항목만 포함하며 reparse·파일 종류·바인딩 거절과 삭제 조건은 유지한다.
 
-작업자 대상 거절은 기존 `PENDING_TARGET_INVALID`·종료 코드 1·공개 JSON 한 줄을 유지하며 `reason`과 `summary`를 덧붙인다. `summary`는 `PENDING_TARGET_INVALID reason=<고정 코드>`이며 계정·SID·경로·예외 원문을 포함하지 않는다. 인수·계정 해석·SID 종류·inventory 경로/파일/해독/바인딩·프로필·콘솔·감사 경로의 까닭을 구분하고 미분류 또는 허용 목록 밖 값은 `UNCLASSIFIED`로 공개한다.
+작업자 대상 거절은 기존 `PENDING_TARGET_INVALID`·종료 코드 1·공개 JSON 한 줄을 유지하며 `reason`과 `summary`를 덧붙인다. `summary`는 `PENDING_TARGET_INVALID reason=<고정 코드>`이며 계정·SID·경로·예외 원문을 포함하지 않는다. 인수·계정 해석·SID 종류·inventory 경로/파일/해독/바인딩·프로필·콘솔·감사 경로의 까닭을 구분하고 미분류 또는 허용 목록 밖 값은 `UNCLASSIFIED`로 공개한다. 실제 설치의 `-WorkerAccount` 누락·빈 값도 같은 typed pending 경계에서 `reason=WORKER_ARGS_INCOMPLETE`로 거절한다. 일반 호출과 helper 사전 적재 호출 모두 stdout 없이 stderr 공개 실패 한 줄·rc 1로 끝나며 개인 진단 호출·파일 쓰기는 없다. 거절 조건과 권한 판단은 유지한다.
+
+설치기 최상위 일반 실패는 개인 진단 또는 공개 변환 helper가 throw해도 기존 INSTALLER_FAILED / REPORT_UNAVAILABLE 공개 레코드로 마무리하고 명시적인 비영 종료에 도달한다. 정상 진단의 공개 레코드와 기존 준비 실패의 비영 종료 코드는 유지한다. -ResumeRollbackAuditPath와 작업자 인수의 충돌도 stdout 없이 stderr 공개 실패 한 줄·rc 1·파일 변화 0으로 거절한다. 충돌 없는 정상 되돌림 계속의 성공 출력은 유지한다(w9firstupdsub267, 독립 검토 보완).
 
 관리자 설치 입구(v0, w9firstupdsub63 1차 답)는 상승 또는 Session 0에서만 `-WorkerAccount <SID 또는 DOMAIN\이름>`·`-WorkerSurveyInventory <절대 JSON 경로>`를 받는다. 실제 상승과 두 인수가 필요하다. 제품은 `status == READY`, 해석한 작업자 SID와 같은 `target_sid`(상승 호출자와 같은 SID도 허용), 그 SID의 ProfileList와 같은 `target_profile_root`만 확인한다. 파일/JSON/필드/바인딩 실패는 import·감사·설치·프로필 쓰기 전 고정 실패 한 줄로 끝난다. 나머지 inventory 필드는 해석하지 않고 파일 SHA256만 기계 표지에 기록한다. 일반 작업자 세션에 이 인수가 있으면 거절한다.
 

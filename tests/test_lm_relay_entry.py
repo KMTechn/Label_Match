@@ -140,7 +140,7 @@ $testMode=$false;$Uninstall=$false;$PlanOnly=$false
 function Get-LabelConsoleWorker{throw 'console observed'}
 $refused=$false
 try{Resolve-LabelMachineWorker @{sid='caller';session_id=0;elevated=$true} '' '' $false}
-catch{if($_.Exception.Message -notmatch 'WorkerAccount'){throw};$refused=$true}
+catch{if(-not $_.Exception.Data.Contains('worker_pending_failure') -or -not [bool]$_.Exception.Data['worker_pending_failure'] -or [string]$_.Exception.Data['worker_pending_reason'] -cne 'WORKER_ARGS_INCOMPLETE'){throw};$refused=$true}
 if(-not $refused){throw 'operational install accepted'}
 'PASS'
 """, engine=engine)

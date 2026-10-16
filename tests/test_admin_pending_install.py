@@ -379,11 +379,48 @@ foreach($path in $paths){
 @pytest.mark.parametrize("arguments", ["missing", "invalid-json", "ordinary-empty"])
 @pytest.mark.parametrize("preloaded", [False, True])
 def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, arguments, preloaded):
+    _assert_actual_entry_refusal(tmp_path, engine, arguments, preloaded)
+
+
+def _assert_actual_entry_refusal(tmp_path, engine, arguments, preloaded, *, resume_conflict=False):
     product = INSTALLER.read_text(encoding="utf-8-sig")
     caller = "(Get-LabelInstallerCaller)"
-    assert product.count(caller) == 1
     identity = "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$false;session_id=2})" if arguments == "ordinary-empty" else "([pscustomobject]@{sid='S-1-5-21-111-222-333-9999';elevated=$true;session_id=0})"
-    product = product.replace(caller, identity)
+    # Target only the real entry call; the first-run helper has another caller.
+    locate = r"""
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$tokens,[ref]$errors)
+if ($errors.Count) { throw 'Installer parse failed.' }
+$calls=@($ast.FindAll({param($node)
+    if ($node -isnot [Management.Automation.Language.CommandAst] -or
+        $node.GetCommandName() -cne 'Get-LabelInstallerCaller' -or
+        $node.Parent.Parent -isnot [Management.Automation.Language.ParenExpressionAst]) { return $false }
+    $parent=$node.Parent
+    while ($null -ne $parent) {
+        if ($parent -is [Management.Automation.Language.FunctionDefinitionAst]) { return $false }
+        $parent=$parent.Parent
+    }
+    return $true
+},$true))
+if ($calls.Count -ne 1) { throw 'Installer entry caller is ambiguous.' }
+$extent=$calls[0].Parent.Parent.Extent
+@{start=$extent.StartOffset;end=$extent.EndOffset} | ConvertTo-Json -Compress
+"""
+    source = tmp_path / "entry-source.ps1"
+    source.write_text(product, encoding="utf-8-sig", newline="\n")
+    locator = tmp_path / "locate-entry.ps1"
+    locator.write_text(locate, encoding="utf-8-sig")
+    located = subprocess.run(
+        [shutil.which(engine), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(locator), str(source)], capture_output=True, text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    assert located.returncode == 0
+    target = json.loads(located.stdout)
+    # PowerShell extents count UTF-16 units, including non-BMP characters.
+    encoded = product.encode("utf-16-le")
+    start, end = target["start"] * 2, target["end"] * 2
+    assert encoded[start:end].decode("utf-16-le") == caller
+    product = (encoded[:start] + identity.encode("utf-16-le") + encoded[end:]).decode("utf-16-le")
     # Missing explicit input also requires an absent console candidate. Keep the
     # real entry and its rejection path while avoiding observation of the host.
     observer = "function Get-LabelConsoleWorkerObservation {"
@@ -405,20 +442,28 @@ def test_actual_entry_refuses_before_any_import_or_write(tmp_path, engine, argum
               "[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'unexpected-diagnostic.txt'),'synthetic');throw 'Unexpected input diagnostic'}\n"
             + "$forward=@{};if($PSBoundParameters.ContainsKey('WorkerAccount')){$forward.WorkerAccount=$WorkerAccount};"
               "if($PSBoundParameters.ContainsKey('WorkerSurveyInventory')){$forward.WorkerSurveyInventory=$WorkerSurveyInventory}\n"
-            + "& " + quote(driver) + " @forward\nexit $LASTEXITCODE\n", encoding="utf-8-sig")
+            + "& " + quote(driver) + (" @args" if resume_conflict else "") + " @forward\nexit $LASTEXITCODE\n", encoding="utf-8-sig")
         command[-1] = str(parent)
     before = {p: p.read_bytes() for p in tmp_path.iterdir()}
     if arguments == "invalid-json":
         command += ["-WorkerAccount", "S-1-5-21-111-222-333-1001", "-WorkerSurveyInventory", str(bad_inventory)]
     elif arguments == "ordinary-empty":
         command += ["-WorkerAccount", ""]
+    if resume_conflict:
+        command += ["-ResumeRollbackAuditPath", str(tmp_path / "resume-audit.json")]
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert result.returncode == 1
     assert result.stdout == ""
     lines = result.stderr.strip().splitlines()
     assert len(lines) == 1 and lines[0].startswith("LABEL_MATCH_INSTALLER_FAILURE=")
-    assert json.loads(lines[0].split("=", 1)[1])["reason_code"] == "PENDING_TARGET_INVALID"
+    expected_code = "INSTALLER_FAILED" if resume_conflict else "PENDING_TARGET_INVALID"
+    assert json.loads(lines[0].split("=", 1)[1])["reason_code"] == expected_code
+    failure = json.loads(lines[0].split("=", 1)[1])
+    if not resume_conflict:
+        expected_reason = "INVENTORY_DECODE_INVALID" if arguments == 'invalid-json' else "WORKER_ARGS_INCOMPLETE"
+        assert failure["reason"] == expected_reason
+        assert failure["summary"] == "PENDING_TARGET_INVALID reason=" + expected_reason
     assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before
 
 
@@ -1294,3 +1339,94 @@ def test_gui_first_run_uses_environment_then_marker_then_default(tmp_path, monke
     assert onboarded == expected
     assert code == (ONBOARDING_EXIT_CODE if case == "invalid" else 0)
     assert [r.cause_code for r in reports] == (["PENDING_WORKER_INSTALL_INVALID"] if case == "invalid" else [])
+
+
+@pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("preloaded", [False, True])
+def test_resume_worker_argument_conflict_refuses_before_write(tmp_path, engine, preloaded):
+    _assert_actual_entry_refusal(tmp_path, engine, 'ordinary-empty', preloaded, resume_conflict=True)
+
+
+@pytest.fixture(scope="session", params=["powershell.exe", "pwsh.exe"])
+def installer_entry_fragments(request, tmp_path_factory):
+    engine = request.param
+    if not shutil.which(engine):
+        pytest.skip("PowerShell engine is unavailable")
+    root = tmp_path_factory.mktemp("installer-fragments")
+    script = root / "parse.ps1"
+    output = root / "fragments.json"
+    script.write_text(r"""
+param([string]$Installer,[string]$Output)
+Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($Installer,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'Installer parse failed.'}
+$traps=@($ast.EndBlock.Traps)
+$resume=@($ast.EndBlock.Statements | Where-Object {
+    $_ -is [Management.Automation.Language.IfStatementAst] -and
+    $_.Clauses[0].Item1.Extent.Text -ceq '$ResumeRollbackAuditPath'
+})
+if($traps.Count -ne 1 -or $resume.Count -ne 2){throw 'Entry AST shape differs.'}
+$imports=@($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.PipelineAst] -and $_.PipelineElements[0] -is [Management.Automation.Language.CommandAst] -and $_.PipelineElements[0].GetCommandName() -ceq 'Import-Module' })
+$value=@{trap=$traps[0].Extent.Text;admission=$resume[0].Extent.Text;resume=$resume[1].Extent.Text;imports=($imports.Extent.Text -join "`n")}
+[IO.File]::WriteAllText($Output,($value | ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+""", encoding="utf-8-sig")
+    result = subprocess.run([shutil.which(engine), "-NoProfile", "-NonInteractive",
+        "-ExecutionPolicy", "Bypass", "-File", str(script), str(INSTALLER), str(output)],
+        capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    assert result.returncode == 0
+    return engine, json.loads(output.read_text(encoding="utf-8-sig"))
+
+
+@pytest.mark.parametrize("diagnostic", ["throws", "partial_then_throws", "conversion_throws", "available", "unavailable"])
+def test_general_trap_diagnostic_cannot_suppress_failure_exit(tmp_path, installer_entry_fragments, diagnostic):
+    engine, fragments = installer_entry_fragments
+    expected = {"status": "FAILED", "reason_code": "INSTALLER_FAILED", "report_status": "REPORT_UNAVAILABLE"}
+    functions = ""
+    if diagnostic != "unavailable":
+        functions = "function ConvertTo-KmtechPublicRecord { param($Value); return $Value }\n"
+        if diagnostic == "throws":
+            functions += "function Get-LabelLaunchFailure { throw 'diagnostic injection' }\n"
+        elif diagnostic == "partial_then_throws":
+            functions += "function Get-LabelLaunchFailure { 'partial diagnostic output'; throw 'diagnostic injection' }\n"
+        elif diagnostic == "conversion_throws":
+            functions = "function ConvertTo-KmtechPublicRecord { throw 'conversion injection' }\n"
+            functions += "function Get-LabelLaunchFailure { ConvertTo-KmtechPublicRecord @{} }\n"
+        else:
+            functions += "function Get-LabelLaunchFailure { [ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE'} }\n"
+    driver = tmp_path / "trap.ps1"
+    driver.write_text(fragments["imports"] + "\n$ErrorActionPreference='Stop'\n" + fragments["trap"] + "\n" + functions + "throw 'entry refusal'\n", encoding="utf-8-sig")
+    before = {p.name:p.read_bytes() for p in tmp_path.iterdir()}
+    result = subprocess.run([shutil.which(engine), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(driver)],
+        cwd=tmp_path, capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    assert result.returncode == 1
+    assert result.stdout == ""
+    lines = result.stderr.strip().splitlines()
+    assert len(lines) == 1 and lines[0].startswith("LABEL_MATCH_INSTALLER_FAILURE=")
+    public = json.loads(lines[0].split("=",1)[1])
+    for key,value in expected.items():
+        assert public[key] == value
+    if diagnostic == "available":
+        assert public == expected
+    assert {p.name:p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_rollback_resume_entry_keeps_success_output(tmp_path, installer_entry_fragments):
+    engine, fragments = installer_entry_fragments
+    marker = tmp_path / "resume-called"
+    escaped = str(marker).replace("'", "''")
+    driver = tmp_path / "resume.ps1"
+    driver.write_text(
+        "param([string]$ResumeRollbackAuditPath,[string]$WorkerAccount,[string]$WorkerSurveyInventory)\n"
+        + fragments["imports"] + "\n$ErrorActionPreference='Stop'\n" + fragments["trap"] + "\n"
+        "function Resolve-LabelMachineWorker { throw 'Unexpected worker admission' }\n"
+        "function Invoke-LabelResumeRollback { [IO.File]::WriteAllText('" + escaped + "','1') }\n"
+        "$workerArgumentsSupplied=$PSBoundParameters.ContainsKey('WorkerAccount') -or $PSBoundParameters.ContainsKey('WorkerSurveyInventory')\n"
+        + fragments["admission"] + "\n" + fragments["resume"], encoding="utf-8-sig")
+    result = subprocess.run([shutil.which(engine), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(driver),
+        "-ResumeRollbackAuditPath", str(tmp_path / "audit.json")], cwd=tmp_path,
+        capture_output=True,text=True,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+    assert result.returncode == 0
+    assert result.stdout.strip().splitlines() == ["rollback_resume_status=PROVEN"]
+    assert result.stderr == ""
+    assert marker.read_text() == "1"
