@@ -11,6 +11,7 @@ import pytest
 import auto_update as updates
 import current_user_onboarding as onboarding
 import user_relay
+import writer_session_fence
 from writer_session_fence import WriterFencedError
 
 
@@ -18,6 +19,8 @@ BOUNDARY = "2026-10-16T10:00:00Z"
 CREATED = "2026-10-16T10:00:01Z"
 PRESENT = "2026-10-16T10:01:00Z"
 CASES = ("absent", "failed", "unknown", "request_failure", "request_absent", "stale")
+REAL_LAUNCH = updates.launch_version
+REAL_PUBLISH_RELAY_READY = updates.publish_relay_ready
 
 
 @pytest.fixture
@@ -36,7 +39,7 @@ def recovery(tmp_path, monkeypatch):
     parent = dict(pid=os.getpid() + 100, observable=True, bootstrap=False, role="gui",
                   sha=sha, sid=policy["operator_sid"], ordinary_user=True, created_at=CREATED)
     rows, launches, ready_calls = [parent], [], []
-    state = {"phase": "FAILED"}
+    state = {"schema": updates.SCHEMA, "phase": "FAILED", "nonce": "n" * 32}
     clock = [0.0]
     lock = threading.RLock()
 
@@ -50,6 +53,7 @@ def recovery(tmp_path, monkeypatch):
     monkeypatch.setattr(updates, "ordinary_user_context", lambda *_: True)
     monkeypatch.setattr(onboarding, "_machine_worker_context", lambda *_: None)
     monkeypatch.setattr(updates, "update_lock", ownership)
+    monkeypatch.setattr(writer_session_fence, "writer_admission", ownership)
     monkeypatch.setattr(updates, "optional_record", lambda p: state if p.name == "transition.json" else None)
     monkeypatch.setattr(updates, "prepared_pending", lambda *_: False)
     monkeypatch.setattr(updates, "current_generation_status", lambda *_: "ALLOW")
@@ -68,7 +72,8 @@ def recovery(tmp_path, monkeypatch):
         assert kwargs == {"deferred_at": BOUNDARY}
         assert arguments[0] in ("--label-match-user-relay", "--label-match-direct-sync-relay")
         launches.append(kwargs)
-        rows.append({**parent, "pid": parent["pid"] + 1, "role": "relay"})
+        rows.append({**parent, "pid": parent["pid"] + 1,
+                     "role": "writer" if arguments[0] == "--label-match-direct-sync-relay" else "relay"})
         return rows[-1]["pid"]
 
     def ready(*args, **kwargs):
@@ -87,6 +92,7 @@ def recovery(tmp_path, monkeypatch):
     def configure(case):
         clock[0] = 0
         state.clear()
+        state.update(schema=updates.SCHEMA, nonce="n" * 32)
         state["phase"] = "APPLIED_PENDING_READY" if case in ("absent", "request_absent") else "FAILED"
         monkeypatch.setattr(updates, "apply_claim_status", lambda *_: "ABSENT" if case == "absent" else "NONE")
         if case == "unknown":
@@ -126,12 +132,18 @@ def recovery(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("case", CASES)
 @pytest.mark.parametrize("mode", ["--label-match-user-relay", "--label-match-direct-sync-relay"])
-def test_recovery_gui_gets_one_ordinary_relay(recovery, case, mode):
+def test_recovery_gui_gets_one_ordinary_relay(recovery, monkeypatch, case, mode):
     recovery.configure(case)
     assert updates._bootstrap(recovery.control, [mode], role="relay") == 0
     assert recovery.launches == [{"deferred_at": BOUNDARY}]
-    assert recovery.ready_calls[-1]["started_at"] == BOUNDARY
-    assert updates.startup_gate(recovery.control, [mode]) is None
+    if mode == "--label-match-user-relay":
+        assert recovery.ready_calls[-1]["started_at"] == BOUNDARY
+    else:
+        assert recovery.rows[-1]["role"] == "writer"
+        assert not recovery.ready_calls
+    with monkeypatch.context() as child:
+        child.setattr(updates.os, "getpid", lambda: recovery.rows[-1]["pid"])
+        assert updates.startup_gate(recovery.control, [mode]) is None
     recovery.unchanged()
 
 
@@ -146,7 +158,11 @@ def test_unproved_recovery_never_reports_success(recovery, monkeypatch, case, fa
     elif failure == "generation":
         monkeypatch.setattr(updates, "current_generation_status", lambda *_: "UNKNOWN")
     elif failure == "active":
-        monkeypatch.setattr(updates, "read_json", lambda *_: {"sha": "b" * 40})
+        reads = [0]
+        def active(*_):
+            reads[0] += 1
+            return {"sha": recovery.sha if reads[0] == 1 else "b" * 40}
+        monkeypatch.setattr(updates, "read_json", active)
     else:
         fields = {"earlier": ("created_at", "2026-10-16T09:59:59Z"), "sid": ("sid", "other"),
                   "elevated": ("ordinary_user", False), "role": ("role", "writer"),
@@ -236,4 +252,38 @@ def test_onboarding_launcher_reaches_alive_via_real_bootstrap(recovery, monkeypa
     result = user_relay.reuse_or_start_user_relay_process(recovery.control, survival_seconds=0, wait=lambda _: None)
     assert result["status"] == "ALIVE"
     assert len(recovery.launches) == 1
+    recovery.unchanged()
+
+
+def test_real_launch_preserves_environment_and_child_startup_gate(recovery, monkeypatch, tmp_path):
+    recovery.configure("failed")
+    app = tmp_path / "version/app"
+    app.mkdir(parents=True)
+    (app / "label_match_relay_entry.py").touch()
+    def start(command, *, cwd, environment):
+        assert environment.get("KMTECH_LM_UPDATE_DEFERRED_AT") == BOUNDARY
+        assert "KMTECH_LM_UPDATE_TRIAL_NONCE" not in environment
+        assert command[1:3] == ["-I", "-B"]
+        assert command[-1] == "--label-match-user-relay"
+        row = {**recovery.parent, "pid": recovery.parent["pid"] + 1, "role": "relay"}
+        recovery.rows.append(row)
+        monkeypatch.setenv("KMTECH_LM_UPDATE_DEFERRED_AT", environment["KMTECH_LM_UPDATE_DEFERRED_AT"])
+        assert updates.startup_gate(app, [command[-1]]) is None
+        return SimpleNamespace(pid=row["pid"])
+    monkeypatch.setattr(updates, "launch_version", REAL_LAUNCH)
+    monkeypatch.setattr(updates, "start_ordinary_process", start)
+    assert updates._bootstrap(recovery.control, ["--label-match-user-relay"], role="relay") == 0
+    recovery.unchanged()
+
+
+@pytest.mark.parametrize("mismatch", ["pid", "nonce"])
+def test_ordinary_relay_cannot_publish_trial_ready(recovery, monkeypatch, mismatch):
+    recovery.configure("absent")
+    assert updates._bootstrap(recovery.control, ["--label-match-user-relay"], role="relay") == 0
+    pid = recovery.rows[-1]["pid"]
+    recovery.state.update(candidate_sha=recovery.sha, transition_id="transition")
+    claim = dict(role="relay", pid=pid, nonce=recovery.state["nonce"], transition_id="transition")
+    claim[mismatch] = pid + 1 if mismatch == "pid" else "different"
+    monkeypatch.setattr(updates, "optional_record", lambda p: recovery.state if p.name == "transition.json" else claim)
+    assert REAL_PUBLISH_RELAY_READY(recovery.control, pid) is False
     recovery.unchanged()

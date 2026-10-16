@@ -2845,6 +2845,57 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
 
 
 
+def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
+                           arguments: list[str], *, role: str, deadline: float) -> int | None:
+    """Under update ownership, preserve GUI reuse and prove an ordinary relay.
+
+    A recovered GUI is a writer, but does not satisfy its own relay request.
+    Only its inherited recovery boundary permits launching that missing relay.
+    This path grants no trial authority and publishes no persistent records.
+    """
+    try:
+        rows = writer_processes(process_snapshot(control), own_pid=os.getpid())
+        if not rows:
+            return None
+        if role != "relay":
+            return 0
+        started_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
+        relays = [row for row in rows if row.get("role") == "relay"]
+        if len(relays) > 1:
+            raise ValueError("ordinary recovery has multiple relays")
+        if started_at:
+            if _utc(started_at) >= _utc(now_utc()):
+                raise ValueError("ordinary recovery boundary is not in the past")
+            assert_ordinary_recovery(control, policy, active["sha"], started_at)
+        else:
+            if not relays:
+                raise ValueError("ordinary relay launch requires an inherited recovery boundary")
+            # Without a boundary this can only reuse an observed live relay.
+            # Validate every writer's identity; no new launch is authorized.
+            observed_start = min(rows, key=lambda row: _utc(row.get("created_at")))["created_at"]
+            assert_ordinary_recovery(control, policy, active["sha"], observed_start)
+            started_at = relays[0]["created_at"]
+        if relays:
+            if current_relay_ready(control, policy, active["sha"],
+                                   started_at=started_at, pid=relays[0]["pid"]):
+                return 0
+        else:
+            pid = _launch_bootstrap_version(control, active["sha"], arguments,
+                                            deadline=deadline, deferred_at=started_at)
+            if arguments[:1] == ["--label-match-direct-sync-relay"]:
+                # This finite helper is observed as a writer, not a resident
+                # relay. Its successful launch cannot publish resident READY.
+                return 0
+            if wait_current_relay(control, policy, active["sha"], started_at=started_at,
+                                  deadline=deadline, pid=pid):
+                return 0
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        if role != "relay":
+            raise
+    emit_progress_guidance()
+    return 20
+
+
 def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
     try:
         return _bootstrap(app_root, arguments, role=role)
@@ -2924,8 +2975,9 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                         code = "UPDATE_TERMINAL_RECOVERED"
                     return start_current(control, policy, state, active, arguments, code=code, deadline=deadline)
                 if claim_status == "ABSENT":
-                    if writer_processes(process_snapshot(control), own_pid=os.getpid()):
-                        return 0
+                    writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline)
+                    if writer_result is not None:
+                        return writer_result
                     if current_generation_status(control, policy, active["sha"]) != "ALLOW":
                         emit_progress_guidance()
                         return 20
@@ -2937,8 +2989,9 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                                          code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
                 if state and state["phase"] in {"UNKNOWN", "FAILED"}:
                     if claim_status not in {"LIVE", "UNKNOWN"}:
-                        if writer_processes(process_snapshot(control), own_pid=os.getpid()):
-                            return 0  # The existing single application writer owns work.
+                        writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline)
+                        if writer_result is not None:
+                            return writer_result
                         if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared:
                             return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
                 if action in {"REQUEST_APPLY", "REQUEST_TRIAL", "WAIT_FOR_RECOVERY", "WAIT_FOR_TRIAL"} and not requested:
@@ -2951,8 +3004,10 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                             requested = True
                             continue
                         if not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
-                            if state and state["phase"] == "APPLIED_PENDING_READY" and writer_processes(process_snapshot(control), own_pid=os.getpid()):
-                                return 0
+                            if state and state["phase"] == "APPLIED_PENDING_READY":
+                                writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline)
+                                if writer_result is not None:
+                                    return writer_result
                             code = "UPDATE_SUPERVISION_UNAVAILABLE" if state and state["phase"] == "APPLIED_PENDING_READY" else "UPDATE_APPLY_REQUEST_FAILED"
                             return start_current(control, policy, state, active, arguments, code=code, deadline=deadline)
                         raise
@@ -3001,8 +3056,10 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                 if requested and progress_deadline is not None:
                     claim_status = apply_claim_status(control)
                     if claim_status == "ABSENT":
-                        if state and state["phase"] == "APPLIED_PENDING_READY" and writer_processes(process_snapshot(control), own_pid=os.getpid()):
-                            return 0
+                        if state and state["phase"] == "APPLIED_PENDING_READY":
+                            writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline)
+                            if writer_result is not None:
+                                return writer_result
                         return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=deadline)
                     if claim_status in {"LIVE", "UNKNOWN"}:
                         apply_started = True
@@ -3025,8 +3082,12 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                 if stale_claim and apply_claim_status(control) == "UNKNOWN":
                     state = optional_record(control / "transition.json")
                     active = read_json(control / "active.json")
-                    if writer_processes(process_snapshot(control), own_pid=os.getpid()):
-                        return 0
+                    # The ordinary stale-owner recovery starts after the apply
+                    # wait has ended; give its relay a bounded readiness window.
+                    writer_result = recovery_writer_result(control, policy, active, arguments,
+                        role=role, deadline=time.monotonic() + 75)
+                    if writer_result is not None:
+                        return writer_result
                     if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared_pending(control, policy, state):
                         return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=deadline)
         except RuntimeError as error:
