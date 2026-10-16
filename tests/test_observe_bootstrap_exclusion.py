@@ -9,6 +9,7 @@ import pytest
 
 from recovery_memory_world import World
 from test_recovery_relay_bootstrap import (
+    CASES,
     recovery,
     updates,
     test_concurrent_relay_requests_launch_once as check_concurrent_requests,
@@ -208,6 +209,8 @@ def test_nonbootstrap_identity_and_permission_observations_are_preserved(tmp_pat
     assert len(rows) == 1
     if identity == "unobservable":
         assert rows[0]["observable"] is False
+        with pytest.raises(ValueError):
+            world.ns["writer_processes"](rows, own_pid=world.own_pid)
     else:
         assert rows[0]["sid"] == row["sid"]
         assert rows[0]["ordinary_user"] == row["ordinary_user"]
@@ -229,3 +232,30 @@ def test_concurrent_g41_requests_reuse_real_relay_with_waiting_bootstraps(recove
         return observe.snapshot(recovery.rows, bootstraps=[bootstrap, bootstrap])
     monkeypatch.setattr(updates, "process_snapshot", snapshot)
     check_concurrent_requests(recovery)
+
+
+@pytest.mark.parametrize("role", ["gui", "relay"])
+def test_fixed_bootstrap_owner_failure_matches_successful_census_and_recovery(recovery, tmp_path, monkeypatch, role):
+    recovery.configure(CASES[0])
+    observe = Observe(tmp_path)
+    outcomes = []
+    for observable in (True, False):
+        bootstrap = {**recovery.parent, "pid": recovery.parent["pid"] + 900,
+                     "role": role, "observable": observable}
+        rows = observe.snapshot([*recovery.rows, bootstrap],
+                                variants=["real"] * len(recovery.rows) + ["bootstrap"])
+        try:
+            writers = updates.writer_processes(rows, own_pid=-1)
+            census = tuple(row["pid"] for row in writers)
+        except ValueError:
+            census = "unobservable"
+        monkeypatch.setattr(updates, "process_snapshot", lambda *_: copy.deepcopy(rows))
+        try:
+            result = updates._bootstrap(recovery.control, [], role="gui")
+        except ValueError:
+            result = "unobservable"
+        outcomes.append((census, result))
+    assert outcomes[0] == outcomes[1]
+    assert outcomes[0] == ((recovery.parent["pid"],), 0)
+    assert not recovery.launches
+    recovery.unchanged()
