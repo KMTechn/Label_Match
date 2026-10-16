@@ -18,35 +18,45 @@ Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Mi
 trap {
     $publicError = $_
     $publicExit = 1
-    if ($publicError.Exception.Data.Contains('installation_preparation_exit_code')) {
-        $publicExit = [int]$publicError.Exception.Data['installation_preparation_exit_code']
+    try {
+        if ($publicError.Exception.Data.Contains('installation_preparation_exit_code')) {
+            $publicExit = [int]$publicError.Exception.Data['installation_preparation_exit_code']
+        }
+        if ($publicError.Exception.Data.Contains('worker_pending_failure')) {
+            # Input rejection never allocates private diagnostics, even if a kit
+            # caller has already loaded the redaction functions in this process.
+            $publicFailure = [ordered]@{status='FAILED';reason_code='PENDING_TARGET_INVALID';guidance='작업자 계정과 그 계정에서 확인한 READY 설치 목록을 확인하세요.'}
+            $workerReason = [string]$publicError.Exception.Data['worker_pending_reason']
+            if ($workerReason -cnotin @('WORKER_ARGS_REQUIRE_ADMIN','WORKER_ARGS_INCOMPLETE',
+                'WORKER_ACCOUNT_UNRESOLVED','WORKER_SID_UNSUPPORTED','INVENTORY_PATH_INVALID',
+                'INVENTORY_FILE_INVALID','INVENTORY_DECODE_INVALID','INVENTORY_BINDING_DIFFERS',
+                'WORKER_PROFILE_ABSENT','WORKER_PROFILE_DIFFERS','CONSOLE_WORKER_ABSENT',
+                'CONSOLE_WORKER_AMBIGUOUS','EVIDENCE_PATH_INVALID','UNCLASSIFIED')) { $workerReason = 'UNCLASSIFIED' }
+            $publicFailure['reason'] = $workerReason
+            $publicFailure['summary'] = 'PENDING_TARGET_INVALID reason=' + $workerReason
+        } else {
+            # Private diagnostics are optional; keep the existing public fallback.
+            $fallbackFailure = [ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE';exception_type=$publicError.Exception.GetBaseException().GetType().FullName;location_module='INSTALL_CANONICAL_PORTABLE.ps1';location_function='ScriptBlock';location_line=[int]$publicError.InvocationInfo.ScriptLineNumber}
+            $publicFailure = $fallbackFailure
+            try {
+                if ((Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) -and
+                    (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue)) {
+                    $publicFailure = Get-LabelLaunchFailure $publicError 'forward'
+                }
+            } catch {
+                $publicFailure = $fallbackFailure
+            }
+        }
+        if ($publicError.Exception.Data.Contains('label_failure_code') -and
+            [string]$publicError.Exception.Data['label_failure_code'] -ceq 'SERVER_BASE_URL_INVALID') {
+            $publicFailure.reason_code = 'SERVER_BASE_URL_INVALID'
+            $publicFailure.guidance = '서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요.'
+        }
+        [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($publicFailure | ConvertTo-Json -Compress -Depth 5))
+    } finally {
+        if ($publicExit -eq 0) { $publicExit = 1 }
+        exit $publicExit
     }
-    if ($publicError.Exception.Data.Contains('worker_pending_failure')) {
-        # Input rejection never allocates private diagnostics, even if a kit
-        # caller has already loaded the redaction functions in this process.
-        $publicFailure = [ordered]@{status='FAILED';reason_code='PENDING_TARGET_INVALID';guidance='작업자 계정과 그 계정에서 확인한 READY 설치 목록을 확인하세요.'}
-        $workerReason = [string]$publicError.Exception.Data['worker_pending_reason']
-        if ($workerReason -cnotin @('WORKER_ARGS_REQUIRE_ADMIN','WORKER_ARGS_INCOMPLETE',
-            'WORKER_ACCOUNT_UNRESOLVED','WORKER_SID_UNSUPPORTED','INVENTORY_PATH_INVALID',
-            'INVENTORY_FILE_INVALID','INVENTORY_DECODE_INVALID','INVENTORY_BINDING_DIFFERS',
-            'WORKER_PROFILE_ABSENT','WORKER_PROFILE_DIFFERS','CONSOLE_WORKER_ABSENT',
-            'CONSOLE_WORKER_AMBIGUOUS','EVIDENCE_PATH_INVALID','UNCLASSIFIED')) { $workerReason = 'UNCLASSIFIED' }
-        $publicFailure['reason'] = $workerReason
-        $publicFailure['summary'] = 'PENDING_TARGET_INVALID reason=' + $workerReason
-    } elseif ((Get-Command Get-LabelLaunchFailure -ErrorAction SilentlyContinue) -and
-        (Get-Command ConvertTo-KmtechPublicRecord -ErrorAction SilentlyContinue)) {
-        $publicFailure = Get-LabelLaunchFailure $publicError 'forward'
-    } else {
-        # The pinned helper may not have loaded yet. No error text is emitted.
-        $publicFailure = [ordered]@{status='FAILED';reason_code='INSTALLER_FAILED';report_status='REPORT_UNAVAILABLE';exception_type=$publicError.Exception.GetBaseException().GetType().FullName;location_module='INSTALL_CANONICAL_PORTABLE.ps1';location_function='ScriptBlock';location_line=[int]$publicError.InvocationInfo.ScriptLineNumber}
-    }
-    if ($publicError.Exception.Data.Contains('label_failure_code') -and
-        [string]$publicError.Exception.Data['label_failure_code'] -ceq 'SERVER_BASE_URL_INVALID') {
-        $publicFailure.reason_code = 'SERVER_BASE_URL_INVALID'
-        $publicFailure.guidance = '서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요.'
-    }
-    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($publicFailure | ConvertTo-Json -Compress -Depth 5))
-    exit $publicExit
 }
 
 # TEMPLATE-CONFIG-GUARD-BEGIN
