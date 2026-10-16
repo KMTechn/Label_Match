@@ -452,6 +452,10 @@ $extent=$calls[0].Parent.Parent.Extent
     lines = result.stderr.strip().splitlines()
     assert len(lines) == 1 and lines[0].startswith("LABEL_MATCH_INSTALLER_FAILURE=")
     assert json.loads(lines[0].split("=", 1)[1])["reason_code"] == "PENDING_TARGET_INVALID"
+    failure = json.loads(lines[0].split("=", 1)[1])
+    expected_reason = "INVENTORY_DECODE_INVALID" if arguments == 'invalid-json' else "WORKER_ARGS_INCOMPLETE"
+    assert failure["reason"] == expected_reason
+    assert failure["summary"] == "PENDING_TARGET_INVALID reason=" + expected_reason
     assert {p: p.read_bytes() for p in tmp_path.iterdir()} == before
 
 

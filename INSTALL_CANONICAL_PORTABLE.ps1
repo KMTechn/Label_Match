@@ -5293,11 +5293,12 @@ function Get-LabelConsoleWorker {
 
 function Resolve-LabelMachineWorker($Caller, [string]$Account, [string]$InventoryPath, [bool]$ArgumentsSupplied = $false) {
     $reason = 'UNCLASSIFIED'
-    if (-not $testMode -and -not $Uninstall -and -not $PlanOnly -and
-        [string]::IsNullOrWhiteSpace($Account)) {
-        throw '설치 인수 WorkerAccount에 실제 로컬 작업자 계정 하나를 명시하세요.'
-    }
     try {
+        if (-not $testMode -and -not $Uninstall -and -not $PlanOnly -and
+            [string]::IsNullOrWhiteSpace($Account)) {
+            $reason = 'WORKER_ARGS_INCOMPLETE'
+            throw '설치 인수 WorkerAccount에 실제 로컬 작업자 계정 하나를 명시하세요.'
+        }
         if (-not $Caller.elevated -and $Caller.session_id -ne 0) {
             if ($ArgumentsSupplied -or $Account -or $InventoryPath) { $reason = 'WORKER_ARGS_REQUIRE_ADMIN'; throw 'Worker arguments require the administrator entry.' }
             return $null
