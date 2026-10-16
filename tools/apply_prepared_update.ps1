@@ -359,6 +359,7 @@ public static class KMTechStartupUpdateToken {
         }
         $bootstrapPattern = '^\s*"?' + [regex]::Escape((Join-Path $Root 'runtime\pythonw.exe')) + '"?\s+-I\s+-B\s+"?' + [regex]::Escape((Join-Path $Root 'app\auto_update.py')) + '"?\s+--bootstrap(?:\s|$)'
         $bootstrap = $insideManaged -and ($command -match $bootstrapPattern)
+        if ($bootstrap) { continue }
         try {
             $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -ErrorAction Stop
             if ($owner.ReturnValue -ne 0 -or -not $owner.Sid) { throw 'owner is unobservable' }

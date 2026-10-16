@@ -636,3 +636,5 @@ v2.0.107 조립의 앱 판·자료 판·data_compatible_min_version 하한은 �
 <a id="ordinary-recovery-gui-cohort"></a>
 
 G41/G45 복구 cohort: 일반 복구 증명은 실제 검사한 writer 행을 돌려주며 relay 수·재사용·새 실행 결정은 그 행만 쓴다. GUI가 이미 있으면 기존 단일 실행을 유지한다. GUI가 없고 검증된 relay가 정확히 하나이면 FAILED/UNKNOWN + claim NONE/ABSENT, DEFERRED+recovery_pending + claim NONE/ABSENT, APPLIED_PENDING_READY/ROLLBACK_PENDING_READY + claim ABSENT에서만 일반 GUI 하나를 시작한다. 경계는 증명한 그 relay의 생성 시각이며 새 now를 쓰지 않는다. active SHA·operator·일반 권한·관측 가능·G ALLOW·역할·시각 중 하나라도 불명확하면 기존 진행 안내와 20으로 멈춘다. 새 GUI는 같은 경계로 startup gate와 writer admission을 통과하며 trial nonce나 READY 권한을 받지 않는다. phase·claim·pointer·trial·READY·지원 기록을 이 경로에서 쓰지 않는다. PREPARED·ROLLBACK_PENDING과 대기 상태 claim LIVE/NONE의 기존 trial 경로는 보존한다. SYSTEM guard와 READY 소비자는 바꾸지 않는다.
+
+G46: Observe는 설치기가 Run에 적는 고정 bootstrap 줄(GUI·relay)을 기존 bootstrap 판정 그대로 역할 분류 전에 빼 행으로 내지 않는다. 해당 줄은 READY relay 셈·census 밖이며, 실제 relay가 둘이면 지금처럼 확인하지 않는다.

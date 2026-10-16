@@ -766,4 +766,6 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 
 - w9firstupdsub269 G41/G45 P1: 다섯 relay fallback과 증명 스냅샷 재사용을 고치고, 지정 복구 상태의 단일 일반 relay에서 검증된 생성 경계로 GUI 하나를 연다. 기존 GUI·SYSTEM writer 보호·trial/READY 권한은 유지한다. 실제 현장 수용은 1차 회차에서 확인한다.
 
+- w9firstupdsub277 G46 P1 닫음: Observe에서 기존 판정이 참인 고정 GUI·relay bootstrap 행을 역할·소유자 조회 전에 제외해 되돌림 READY의 실제 relay 하나만 센다. READY·census 코드는 유지하며 실제 relay 둘의 확인 거절과 G41 동시 요청 재사용을 격리 회귀로 확인한다.
+
 - G45 잔류 P2(11/1): ROLLBACK_PENDING 감독 소실 뒤 relay만 살아 있으면 GUI가 안 열린다(claim ABSENT는 기존 0, NONE은 SYSTEM writer 거절 후 bootstrap 대기 종료). 이번 범위에서 고치지 않으며 안내는 「화면이 안 뜨면 지원에 연락」이다.
