@@ -1,3 +1,4 @@
+- w9firstupdsub309 / G62 지킴: 독립 PowerShell 진입 10개의 dot-source·Import 적재 집합과 선택 함수·고정 본문을 PS5.1 AST로 읽어 Verb-Noun 함수 정의를 대조한다. OS 허용 목록은 이름별 이유를 명시하며 제품 스크립트는 실행하지 않는다.
 - w9firstupdsub306 / G60 지킴: git 추적 비 시험 .ps1/.psm1 중 비 ASCII 파일은 UTF-8 BOM 정확히 하나를 요구하는 별도 조립 관문 시험으로 고정한다.
 - w9firstupdsub299 / G36 전수 대조: direct-sync 설치 도우미를 포함한 공개 실패 생산자 여섯 곳에 같은 ASCII 계약과 PS5.1/PS7 × 949/65001 벡터 회귀를 적용했다.
 - w9firstupdsub299 / L5 닫음: sub-184 Q1 relay PID 양의 int 검사, sub-186 Q1 앞 실행 트랜잭션 전 감사 기록의 현재 제거 상한 제외(보존·128 유지), sub-186 Q2 S-a 반대 증거 거절, G36 공개 실패 줄 ASCII를 구현했다. 검토자 단언은 유지하고 저장소/하네스 준비부만 맞췄다. 계약·운영의 L5 절과 집중 회귀를 따른다.
