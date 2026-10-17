@@ -20,6 +20,7 @@ SID 없는 옛 영수증은 거절한다. 이미 제거한 사용자도 다시 �
 
 제거 감사는 기존 decisions 배열에 `{path: "application", disposition: "WORKER_PART_<proof>", worker_run_present: true|false|null}` 행을 더한다.
 proof는 `NEVER_STARTED`, `PROFILE_ABSENT`, `USER_RECEIPT`, `ACCOUNT_UNAVAILABLE`이다.
+`label-match-supported-removal-v1` 표지 최상위 `worker_removal_proof`는 `{proof, worker_run_present}` 또는 null이며, 위 decisions 행은 이 동일 객체의 값에서 계산한다.
 
 검증된 canonical 내부 배치 실패의 부재 복원은 기존 delegated admission·lease로
 증명하며 새 standalone 사전 조건을 적용하지 않는다. raw 스위치는 이 증명이 아니다.

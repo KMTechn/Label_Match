@@ -128,3 +128,53 @@ def test_startup_wait_expectations_reference_contract():
     source = (ROOT / 'tests/test_window_first_startup.py').read_text()
     assert '잠시 뒤 다시' in source
     assert '이 건만 보류 — 틀린 횟수로 세지 않음' in source
+
+
+@pytest.mark.parametrize('proof', ['NEVER_STARTED', 'PROFILE_ABSENT', 'USER_RECEIPT', 'ACCOUNT_UNAVAILABLE', None])
+@pytest.mark.parametrize('run_present', [True, False, None])
+def test_removal_receipt_and_decisions_share_worker_proof(tmp_path, proof, run_present):
+    """Execute the actual proof/receipt AST nodes with an isolated record sink."""
+    source = (ROOT / 'INSTALL_THIS_PC.ps1').read_text(encoding='utf-8-sig')
+    assert 'worker_removal_proof=$workerRemovalProof' in source
+    script = tmp_path / 'receipt-proof.ps1'
+    script.write_text('''param($Source,$InputPath,$OutputPath)
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+$fn=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Invoke-LabelConvergentRemoval'},$true)
+$assignment=$fn.Find({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$workerRemovalProof'},$true)
+$decision=$fn.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.Contains("disposition=('WORKER_PART_'+$"+'workerRemovalProof.proof)')},$true)
+$record=$fn.Find({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Write-LabelStartupUpdateRecord'},$true)
+if($null -eq $assignment -or $null -eq $decision -or $null -eq $record){exit 3}
+$inputObject=Get-Content -LiteralPath $InputPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$WorkerPartProof=$inputObject.worker
+$plan=@{decisions=@()};$remaining=@{retained_paths=@()};$markerPath=$OutputPath;$evidence='isolated-evidence'
+function Write-LabelStartupUpdateRecord($Path,$Payload){
+ [IO.File]::WriteAllText($Path,($Payload|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+}
+. ([scriptblock]::Create($assignment.Extent.Text))
+. ([scriptblock]::Create($decision.Extent.Text))
+. ([scriptblock]::Create($record.Extent.Text))
+''', encoding='utf-8-sig')
+    worker = None if proof is None else {'proof': proof, 'run_present': run_present}
+    incoming = tmp_path / 'input.json'
+    outgoing = tmp_path / 'receipt.json'
+    incoming.write_text(json.dumps({'worker': worker}))
+    engine = Path('C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe')
+    if not engine.is_file():
+        pytest.skip('Windows PowerShell 5.1 required')
+    result = subprocess.run([str(engine), '-NoLogo', '-NoProfile', '-NonInteractive',
+                             '-ExecutionPolicy', 'Bypass', '-File', str(script),
+                             str(ROOT / 'INSTALL_THIS_PC.ps1'), str(incoming), str(outgoing)],
+                            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert result.returncode == 0
+    receipt = json.loads(outgoing.read_text())
+    shared = receipt['worker_removal_proof']
+    decisions = receipt['artifact_dispositions']
+    if proof is None:
+        assert shared is None
+        assert decisions == []
+    else:
+        assert shared == {'proof': proof, 'worker_run_present': run_present}
+        assert decisions == [{'path': 'application', 'disposition': 'WORKER_PART_' + shared['proof'],
+                              'worker_run_present': shared['worker_run_present']}]

@@ -2333,8 +2333,11 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
     }
     Assert-LabelRemovalQuiescent $application $ExcludeProcessIds
     $plan = Get-LabelRemovalArtifacts $application
-    if ($null -ne $WorkerPartProof) {
-        $plan.decisions += @{path='application';disposition=('WORKER_PART_'+$WorkerPartProof.proof);worker_run_present=$WorkerPartProof.run_present}
+    $workerRemovalProof = if ($null -ne $WorkerPartProof) {
+        @{proof=$WorkerPartProof.proof;worker_run_present=$WorkerPartProof.run_present}
+    } else { $null }
+    if ($null -ne $workerRemovalProof) {
+        $plan.decisions += @{path='application';disposition=('WORKER_PART_'+$workerRemovalProof.proof);worker_run_present=$workerRemovalProof.worker_run_present}
     }
     if (Test-Path -LiteralPath $markerPath) { $plan.artifacts += $markerPath }
     $changedMetadataRoots = @(); $cleanupRetained = @()
@@ -2389,6 +2392,7 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
     Write-LabelStartupUpdateRecord -Path $markerPath -Payload @{
         schema='label-match-supported-removal-v1'; lifecycle_state='REMOVED';
         evidence_root=$evidence; business_data_and_registration_preserved=$true
+        worker_removal_proof=$workerRemovalProof
         retained_paths=@($remaining.retained_paths); artifact_dispositions=@($plan.decisions)
     }
     $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
