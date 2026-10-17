@@ -1260,7 +1260,7 @@ publisher와 PC E2E driver는 게시·촬영 도구라 10/12까지 보존한다.
 10/14 이후에는 PC마다 실제로 실행 중인 판을 확인한다.
 지원 절차는 「앱 닫고 다시 열기」다.
 
-D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
+D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 앞 판 포인터를 복원하고 ROLLBACK_PENDING_READY에서 실제 일반 relay의 역할별 READY를 확인한 뒤 ROLLED_BACK한다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
 SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
 늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
 
@@ -1546,6 +1546,8 @@ v2.0.99/100 → 107 제자리 교체는 미지원이다(app/site-packages/qrcode
 복구 GUI의 relay 재요청은 [일반 복구 relay 계약](contracts.md#ordinary-recovery-relay-bootstrap)에 따라 원 시작 경계를 재사용한다. 부모 GUI만 살아 있는 경우에는 성공으로 간주하지 않는다. 같은 판·계정·일반 권한의 검증된 relay를 재사용하거나 하나를 시작하며, 준비를 증명하지 못하면 기존 진행 안내와 종료 코드 20을 반환한다. 이 경로는 업데이트 상태와 지원 기록을 변경하지 않는다. 실제 로그인·현장 relay 수용은 별도 회차에서 확인한다.
 
 
-G45: relay만 살아 있어 GUI가 안 열리던 복구는 [검증된 일반 GUI cohort](contracts.md#ordinary-recovery-gui-cohort) 범위에서 relay 생성 경계를 이어 GUI 하나를 연다. GUI와 relay가 있는 동안 SYSTEM의 기존 writer 보호를 유지하고, 모두 닫힌 뒤 기존 자료 세대 결정으로 정착한다(UNCHANGED는 이전 판 복구, ADVANCED는 후보 유지). 일반 GUI는 trial nonce가 없어 READY 영수증을 게시하지 않는다. ROLLBACK_PENDING 잔류 P2는 이번 고침 밖이다. 11/1에 이 상태로 화면이 안 뜨면 지원에 연락한다. 실제 로그온·창·현장 수용은 별도 회차다.
+G45: relay만 살아 있어 GUI가 안 열리던 복구는 [검증된 일반 GUI cohort](contracts.md#ordinary-recovery-gui-cohort) 범위에서 relay 생성 경계를 이어 GUI 하나를 연다. GUI와 relay가 있는 동안 SYSTEM의 기존 writer 보호를 유지하고, 모두 닫힌 뒤 기존 자료 세대 결정으로 정착한다(UNCHANGED는 이전 판 복구, ADVANCED는 후보 유지). 일반 GUI는 trial nonce가 없어 READY 영수증을 게시하지 않는다. ROLLBACK_PENDING도 claim NONE/ABSENT·앞 판 active·일반 relay 하나·정착 phase와 같은 세대 ALLOW 증명이 모두 맞으면 일반 화면과 업무 쓰기를 허용한다. 상태·포인터·claim·READY는 이 길에서 쓰지 않으며, 뒤 SYSTEM 정착은 그사이 쓴 자료와 원장을 그대로 보존한다. 조건이 하나라도 어긋나면 기존 진행 안내로 막는다. 실제 로그온·창·현장 수용은 별도 회차다.
 
 DEFERRED+recovery_pending 정착 증명은 FAILED·DEFERRED·APPLIED_PENDING_READY에서 시작하는 사슬이다. ROLLBACK_PENDING_READY는 기존 120초 READY 감독을 보존하고, 영수증이 없으면 FAILED로 남는다. 새 일반 GUI는 이 상태에서도 trial 영수증을 내지 않는다.
+
+정식 멈춤을 한 PC는 업데이트 날 전에 기존 --onboard-current-user로 되살린다. relay stop 표지가 남아 있으면 적용은 DEFERRED·UPDATE_RELAY_STOP_REQUESTED(recovery_pending 키 없음)로 보류되고 앞 판과 표지는 유지된다. 사용자 bootstrap은 SYSTEM 적용 요청 없이 지원 기록을 한 번 남기고 지금 판을 요청한 GUI/relay 역할로 연다. 실패 trial·rollback의 기존 복구 요청은 유지한다. 업데이트 경로에서 표지를 직접 지우지 않는다.

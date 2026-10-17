@@ -36,6 +36,7 @@ RELAY_READY_CHECKS = ("relay_initialized", *READY_CHECKS[1:])
 
 APPLY_PROGRESS_TIMEOUT = 60
 STARTUP_WAIT_SECONDS = 240
+UPDATE_RELAY_STOP_REQUESTED = "UPDATE_RELAY_STOP_REQUESTED"
 STARTUP_PROGRESS_MESSAGE = "업데이트가 진행 중입니다. 잠시 후 다시 실행하세요."
 UPDATE_MUTEX_RECOVERY_MESSAGE = (
     "설치 복구 필요: 업데이트 상태와 설치 파일을 확인하지 못해 시작을 멈췄습니다. "
@@ -253,6 +254,11 @@ def recovery_sha(transition: Mapping[str, Any], *, pointer_sha: str) -> str:
         if selected not in {previous, candidate}:
             raise ValueError("failure decision names another version")
         return selected
+    if phase == "DEFERRED" and transition.get("reason_code") == UPDATE_RELAY_STOP_REQUESTED:
+        if (transition.get("retained_candidate", False) is not False
+                or "recovery_pending" in transition):
+            raise ValueError("relay stop deferral is not an unapplied transition")
+        return pointer_sha
     if phase == "DEFERRED" and transition.get("retained_candidate") is True:
         if transition.get("failure_decision", {}).get("selected_sha") != candidate:
             raise ValueError("retained trial decision differs from candidate")
@@ -1404,6 +1410,39 @@ def _apply_prepared(control: Path) -> int:
         return wait_for_rollback_ready(control, load_policy(control))
 
 
+def relay_stop_requested(policy: Mapping[str, Any]) -> bool:
+    """Read only the protected policy's operator root, including under SYSTEM."""
+    from user_relay import user_relay_stop_path
+
+    local = Path(policy["operator_local_app_data"])
+    if not local.is_absolute():
+        raise ValueError("operator profile is not absolute")
+    root = local / "KMTech" / "DirectSync" / "label_match"
+    _assert_no_reparse_components(root)
+    marker = user_relay_stop_path(root)
+    _assert_no_reparse_components(marker)
+    try:
+        marker.stat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def defer_stopped_relay(control: Path, policy: Mapping[str, Any], state) -> bool:
+    if not relay_stop_requested(policy):
+        return False
+    if not (state and state.get("phase") == "DEFERRED"
+            and state.get("reason_code") == UPDATE_RELAY_STOP_REQUESTED
+            and state.get("retained_candidate", False) is False
+            and "recovery_pending" not in state):
+        deferred = {**(state or {}), "schema": SCHEMA,
+            "phase": "DEFERRED", "deferred_at": now_utc(),
+            "reason_code": UPDATE_RELAY_STOP_REQUESTED, "retained_candidate": False}
+        deferred.pop("recovery_pending", None)
+        write_json_durable(control / "transition.json", deferred)
+    return True
+
+
 def _apply_prepared_once(control: Path) -> int:
 
     """SYSTEM applies code only; the operator bootstrap launches the trial."""
@@ -1465,6 +1504,8 @@ def _apply_prepared_once(control: Path) -> int:
         if state is None or state["phase"] in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
             if not prepared_pending(control, policy, state):
                 return 0
+            if defer_stopped_relay(control, policy, state):
+                return 0
             if writer_processes(process_snapshot(control), own_pid=os.getpid()):
                 deferred = {**(state or {}), "schema": SCHEMA, "phase": "DEFERRED", "deferred_at": now_utc(), "reason": "an existing application writer continues working"}
                 write_json_durable(control / "transition.json", deferred)
@@ -1507,16 +1548,22 @@ def _apply_prepared_once(control: Path) -> int:
             state = prepare_transition(previous_sha=active["sha"], candidate_sha=sha, packet_sha256=candidate["sha256"], forward_pin=forward, rollback_pin=rollback, transition_id=uuid.uuid4().hex, nonce=uuid.uuid4().hex, now=now_utc(), failed_shas=(state or {}).get("failed_shas", []))
             state = {**state, "rollback_pair": rollback_pair, "pin_authority": pin_authority, "policy_sha256": file_sha256(control / "policy.json"), "data_api_evidence": data_api_evidence, "prepared_packet_root": str(protected), "generation_before": generation_before, "generation_previous_release": current, "generation_candidate_release": candidate_manifest}
             write_json_durable(control / "transition.json", state)
+            if defer_stopped_relay(control, policy, state):
+                return 0
             state = apply_transition(state, writers_absent=not writer_processes(process_snapshot(control), own_pid=os.getpid()), packet_verified=True, durable_prepared=True, now=now_utc())
             opened_here = True
             persist_switch(control, state, sha)
         else:
             pointer = read_json(control / "active.json")
             if state["phase"] == "PREPARED":
+                if defer_stopped_relay(control, policy, state):
+                    return 0
                 if writer_processes(process_snapshot(control), own_pid=os.getpid()):
                     return 20
                 authorize_prepared_replay(control, policy, state)
                 fixed_helper(control, "Verify", code_root=version_bundle(control, state["candidate_sha"]))
+                if defer_stopped_relay(control, policy, state):
+                    return 0
                 state = apply_transition(state, writers_absent=True, packet_verified=True, durable_prepared=True, now=now_utc())
                 opened_here = True
                 persist_switch(control, state, state["candidate_sha"])
@@ -2083,7 +2130,7 @@ def assert_version_writer(app_root: Path, *, source: str, environ: Mapping[str, 
             or state.get("recovery_pending") is True):
         raise ValueError("bounded force exit requires settled update state")
     deferred_at = environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
-    if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"} and deferred_at:
+    if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"} and deferred_at:
         # The caller already holds writer admission. Do not invert the lock order
         # update_lock -> writer mutex: only read the same ordinary-start proof.
         assert_ordinary_recovery(control, policy, own_sha, deferred_at)
@@ -2590,7 +2637,7 @@ def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> 
         control = control_root(app_root)
         deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
         state = optional_record(control / "transition.json") if control is not None else None
-        if deferred_at and control is not None and (not state or state.get("phase") in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}):
+        if deferred_at and control is not None and (not state or state.get("phase") in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}):
             policy = load_policy(control)
             assert_ordinary_recovery(control, policy, version_manifest(app_root.parent)["source_commit"], deferred_at)
             assert_version_writer(app_root, source="gui_settings_save", environ=os.environ)
@@ -2630,9 +2677,9 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
                 if claim and claim.get("nonce") == state["nonce"] and claim.get("transition_id") == state["transition_id"] and (role == "relay" or claim.get("pid") == os.getpid()):
                     return None
         deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
-        if sha == active["sha"] and deferred_at and (not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}):
+        if sha == active["sha"] and deferred_at and (not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}):
             _utc(deferred_at)
-            if state and (state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
+            if state and (state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}
                           or (state["phase"] == "DEFERRED" and state.get("recovery_pending") is True)):
                 assert_ordinary_recovery(control, policy, sha, deferred_at)
             # Ordinary active-code admission only. The unchanged G guard still
@@ -2782,6 +2829,12 @@ def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str,
         raise ValueError("ordinary recovery requires current data generation allowance")
     started = _utc(started_at)
     rows = writer_processes(process_snapshot(control), own_pid=os.getpid())
+    state = optional_record(control / "transition.json")
+    if state and state.get("phase") == "ROLLBACK_PENDING":
+        if (sha != _sha(state.get("previous_sha"))
+                or apply_claim_status(control) not in {"NONE", "ABSENT"}
+                or len([row for row in rows if row.get("role") == "relay"]) != 1):
+            raise ValueError("pending rollback requires the previous active code and one ordinary relay")
     for row in rows:
         if (row.get("sha") != sha or row.get("sid") != policy["operator_sid"]
                 or row.get("ordinary_user") is not True or row.get("role") not in {"gui", "relay"}
@@ -2810,6 +2863,11 @@ def _launch_bootstrap_version(control: Path, sha: str, arguments: list[str], *, 
 
 def start_current(control: Path, policy: Mapping[str, Any], state, active, arguments, *, code: str, report_once: bool = False, deadline: float | None = None) -> int:
     """Reuse ordinary launch and publish only the E9 allowlisted support fields."""
+    if state and state.get("phase") == "ROLLBACK_PENDING":
+        # Only recovery_writer_result carries the proved relay boundary. A task
+        # request with no progress cannot manufacture an ordinary GUI cohort.
+        emit_progress_guidance()
+        return 20
     report = support_record({"reason_code": code,
         "transition_code": (state or {}).get("failure_decision", {}).get("code", code),
         "retained_candidate": (state or {}).get("retained_candidate") is True}, stage="update_apply")
@@ -2849,11 +2907,11 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
 
 
 def gui_recovery_state(state, claim_status: str) -> bool:
-    """Only settled ordinary recovery may add the missing GUI to a relay."""
+    """Eligible ordinary recovery may add the missing GUI to a proved relay."""
     if not state or claim_status not in {"NONE", "ABSENT"}:
         return False
     phase = state.get("phase")
-    return (phase in {"FAILED", "UNKNOWN"}
+    return (phase in {"FAILED", "UNKNOWN", "ROLLBACK_PENDING"}
             or (phase == "DEFERRED" and state.get("recovery_pending") is True)
             or (phase in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
                 and claim_status == "ABSENT"))
@@ -2994,6 +3052,9 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                         role=role, deadline=deadline, state=state, claim_status=claim_status)
                     if writer_result is not None:
                         return writer_result
+                    if state["phase"] == "ROLLBACK_PENDING" and claim_status == "ABSENT":
+                        emit_progress_guidance()
+                        return 20
                 if state and state["phase"] == "DEFERRED" and state.get("retained_candidate") is True:
                     if active["sha"] != recovery_sha(state, pointer_sha=active["sha"]):
                         action = "WAIT_FOR_RECOVERY"
@@ -3040,6 +3101,11 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                         if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared:
                             return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
                 if action in {"REQUEST_APPLY", "REQUEST_TRIAL", "WAIT_FOR_RECOVERY", "WAIT_FOR_TRIAL"} and not requested:
+                    if ((action == "REQUEST_APPLY" or (state and state.get("phase") == "DEFERRED"
+                            and state.get("reason_code") == UPDATE_RELAY_STOP_REQUESTED))
+                            and relay_stop_requested(policy)):
+                        return start_current(control, policy, state, active, arguments,
+                                             code=UPDATE_RELAY_STOP_REQUESTED, deadline=deadline)
                     requested_at = now_utc()
                     progress_deadline = time.monotonic() + APPLY_PROGRESS_TIMEOUT
                     try:

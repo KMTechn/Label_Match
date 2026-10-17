@@ -325,4 +325,4 @@ v2.0.107 조립: 앱 판·자료 판·하한 모두 107. field-update-feed 원�
 복구 GUI가 요청한 상주 전송은 원래 시작 경계를 유지해 같은 판·계정의 일반 relay 하나를 시작하거나 살아 있는 relay를 재사용한다. 부모 GUI만 있다는 이유로 성공을 반환하지 않으며, 증명 실패 때는 기존 진행 안내를 유지한다. [복구 relay 계약](contracts.md#ordinary-recovery-relay-bootstrap)을 따른다.
 
 
-G41/G45: 일반 복구 증명이 검사한 행으로 relay를 하나로 유지하고, 지정된 복구 상태에서 relay만 남았으면 같은 검증 경계로 GUI 하나를 시작한다. [일반 GUI 복구 cohort](contracts.md#ordinary-recovery-gui-cohort)와 ROLLBACK_PENDING 잔류 P2의 운영 안내를 따른다.
+G41/G45: 일반 복구 증명이 검사한 행으로 relay를 하나로 유지하고, 지정된 복구 상태에서 relay만 남았으면 같은 검증 경계로 GUI 하나를 시작한다. [일반 GUI 복구 cohort](contracts.md#ordinary-recovery-gui-cohort)와 ROLLBACK_PENDING의 앞 판·일반 relay·자료 세대 증명 조건을 따른다.

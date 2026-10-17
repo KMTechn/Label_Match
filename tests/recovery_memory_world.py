@@ -111,10 +111,11 @@ class World:
             CACHE[label] = (constants,self.inventory,compile(ast.fix_missing_locations(module), label+'/auto_update.py', 'exec'))
         constants,self.inventory,code = CACHE[label]
         ns.update(constants)
+        ns["UPDATE_RELAY_STOP_REQUESTED"] = "UPDATE_RELAY_STOP_REQUESTED"
         self.state['schema'] = ns['SCHEMA']
         exec(code, ns)
         self.ns = ns
-        ns.update(control_root=lambda p: self.control, ordinary_user_context=lambda *a: True,
+        ns.update(relay_stop_requested=lambda *a: False, defer_stopped_relay=lambda *a: False, control_root=lambda p: self.control, ordinary_user_context=lambda *a: True,
                   load_policy=lambda p: copy.deepcopy(self.policy), read_json=self.read,
                   optional_record=self.optional, write_json_durable=self.write,
                   now_utc=lambda: self.at(self.clock), prepared_pending=lambda *a: self.prepared,
