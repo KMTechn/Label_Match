@@ -1871,7 +1871,7 @@ def remove_current_user_setup(
         [str | os.PathLike[str]], Mapping[str, Any]
     ] = request_user_relay_stop,
 ) -> dict[str, Any]:
-    from auto_update import installation_root
+    from auto_update import current_process_sid, installation_root
     managed = installation_root(Path(app_root))
     if managed is not None:
         # User removal must work even when machine control cannot be decoded.
@@ -1893,6 +1893,7 @@ def remove_current_user_setup(
     paths.status_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
         "report_version": REMOVAL_REPORT_VERSION,
+        "operator_sid": current_process_sid(),
         "status": "UNKNOWN",
         "captured_at": _now(),
         "state_scope": "current_user",

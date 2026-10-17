@@ -1,5 +1,13 @@
 - w9firstupdsub267 바탕 회귀 후속: 고정 시험 authority 식별자의 병렬 회차 충돌은 단독·직렬 원시험 결과와 분리한다. 복구 위임의 정적 허가 집합, signed G 역방향 stderr 기대, release metrics 기대 및 준비 단계 뒤 미확인은 [바탕 F 장부](D:/KMTech/program-improvement-20260912/work/program/w9firstupd/sub-267/resume-0045/BASELINE-FAILURES.md)에 남긴다. 원자 게시 deadline을 쓰는 시간 시험은 단독 확인하며, 보호 영역·권한 규칙은 이 고침에서 바꾸지 않는다.
 
+## L2 — 제거 사슬·관리자 작업자 증명·숨김 manifest
+
+G53은 생성 시각을 다시 확인한 실제 OS 셸 조상만 제외하고 다른 인수의 앱 경로와
+runtime/사슬 밖 프로세스 거절을 유지한다. G28은 보호 작업자 바인딩과 증명 넷을
+검사하며 사용자 제거 보고의 operator_sid를 대조한다. G35는 공용 0.3.7 전체
+package/manifest/lock과 bootstrap pin을 채택한다. 구현·회귀·남은 수용 범위는
+`D:/KMTech/program-improvement-20260912/work/program/w9firstupd/sub-294/RESULT.md`를 따른다.
+
 ## G49 — 첫 설치의 트랜잭션 전 감사 기록과 재시도
 
 설치기 자신의 트랜잭션 전 기록·사본만 있는 install-audit는 새 PC 판정을 막지 않으며 파일은 보존한다. 등록 시도·active 울타리·다른 잔재·증명 실패는 기존 거절/복구 길을 유지한다. AST 원문 갈림길·기록/재개/정리·돌연변이 회귀는 sub-282 증거를 따르며 전체 설치/등록 READY와 현장 수용은 별도 회차다.

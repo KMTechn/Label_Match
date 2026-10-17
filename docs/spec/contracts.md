@@ -1,5 +1,36 @@
 # Label_Match 데이터·통합 계약
 
+## 관리자 코드 제거 사전 증명 (G28·G53)
+
+공개 관리자 `INSTALL_THIS_PC.ps1 -Uninstall`은 코드·작업·바로 가기를 바꾸기 전에
+보호된 `update-control/worker-pending.json`의 지정 작업자를 읽기로 확인한다.
+첫 준비 전(이미 로드된 작업자 hive에 완료 값·앱 Run 값 모두 없음), 프로필 부재,
+그 프로필 아래의 정확한 사용자 제거 영수증, 로컬 계정 삭제/Disabled 중 하나가
+증명되어야 한다. 계정 삭제/Disabled는 이 PC의 로컬 계정 SID 접두가 맞을 때만
+사용하며 도메인·잠김·만료·조회 불명은 그 증명으로 인정하지 않는다. 남은 Run은
+감사 정보이며 계정 사용 불가 증명을 무효화하지 않는다.
+
+표지가 없거나 잘못된 경우 명시 `-WorkerAccount`의 SID에 대해 프로필이 있고
+사용자 제거 영수증이 정확한 경우만 허용한다. 표지와 명시 계정이 모두 있으면
+SID가 같아야 한다. 다른 사용자 hive를 로드하거나 쓰지 않는다. 증명 불명은
+`MACHINE_REMOVAL_WORKER_PART_PENDING`으로 거절한다. 사용자 제거 보고에는
+기존 report_version을 유지하며 `operator_sid`를 기록한다. 소비자는 SID·상태
+`PASS_DATA_PRESERVED`·기계 코드 경로·프로필 안 고정 위치·reparse 부재를 대조하며
+SID 없는 옛 영수증은 거절한다. 이미 제거한 사용자도 다시 실행해 보고를 발급받는다.
+
+제거 감사는 기존 decisions 배열에 `{path: "application", disposition: "WORKER_PART_<proof>", worker_run_present: true|false|null}` 행을 더한다.
+proof는 `NEVER_STARTED`, `PROFILE_ABSENT`, `USER_RECEIPT`, `ACCOUNT_UNAVAILABLE`이다.
+
+검증된 canonical 내부 배치 실패의 부재 복원은 기존 delegated admission·lease로
+증명하며 새 standalone 사전 조건을 적용하지 않는다. raw 스위치는 이 증명이 아니다.
+
+제거 census는 부모 PID·생성 시각·native 생성 시각을 다시 확인한 자기 실행 사슬만
+제외한다. 키트/SSH 조상은 정해진 OS 실행 파일이어야 하며 `-InstallRoot` 인수 밖의
+정규화된 명령 줄에 앱 뿌리 경로가 없어야 한다. 앱 runtime 조상과 사슬 밖 프로세스는
+제외하지 않는다. 조건 불충족 조상·부모 행 부재·부모 PID 재사용에서는 걷기를
+멈추고 위 행을 일반 census로 남긴다. 걷는 중 빈 생성 시각·부모 PID만 UNKNOWN이다.
+SysWOW64 셸은 허용 목록에 없으며 cwd는 census 관측 항목이 아니다. 뿌리 비교는 대소문자를 무시하고 끝 구분자를 포함한다.
+
 기준일 화면 계약(w9firstupdsub208): 최근 결과 sub와 today.rows[].raw는 축약 Tk 값 대신 원문, work.exchange는 remove/insert/done과 remove.code·insert.code를 보낸다. today.summary[].count는 트레이 수이고 optional products는 완료 metadata의 전체 제품 수 합계다. 근거가 빠지면 생략하며 today.rows[].products의 표본 수/취소 자격 뜻을 유지한다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다.
 
 등록 도구의 기존 신원 거절은 첫 설정의 `RECOVERY_REQUIRED`와 원 `recovery_action`으로 보존한다. 공개 고정 원인은 `ADMIN_RECOVERY_ACTION` 또는 `POSSESSION_PROOF_REATTACH_REQUIRED`이며 등록 보고만 남은 재시작과 시작 거절 관측에서도 동일하다. 107은 길 A 없이 두 원인 모두 첫 설정의 고정 안내·작은 코드 줄·관리자용 자세히를 사용한다. 원 신원·자격·자료·대기열을 바꾸거나 다시 enroll하거나 Run/업무 자료 준비로 진행하지 않는다([첫 설정 안내](operations.md#onboarding-registration-recovery)).
