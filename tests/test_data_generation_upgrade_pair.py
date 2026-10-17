@@ -63,6 +63,12 @@ def probe(source, installed, *, signed=False, installer=None):
                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
 
+def _tree_bytes(*roots):
+    return {(index, path.relative_to(root)): path.read_bytes()
+            for index, root in enumerate(roots)
+            for path in root.rglob("*") if path.is_file()}
+
+
 def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     old, new = pair
     forward = probe(new, old)
@@ -111,6 +117,29 @@ def test_source_admission_inventory_reader_pair_is_exact_and_forward_only(pair, 
 
 
 def test_quiesced_transport_companion_refuses_signed_g_reverse(pair):
+    """operations.md:1002 requires the first rejection for each invalid mixed layout."""
+    from tests.test_writer_transition import _pin
+
+    old, new = pair
+    installed = new.parent / 'quiesced-g'
+    shutil.copytree(new, installed)
+    for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py'):
+        (installed / relative).write_bytes((old / relative).read_bytes())
+    before = _tree_bytes(old, installed)
+    unpinned = probe(old, installed, signed=True)
+    assert unpinned.returncode != 0
+    assert "WRITER_TRANSITION_PIN_INVALID" in unpinned.stderr
+    assert _tree_bytes(old, installed) == before
+
+    _pin(installed)
+    before = _tree_bytes(old, installed)
+    reverse = probe(old, installed, signed=True)
+    assert reverse.returncode != 0
+    assert "WRITER_TRANSITION_SOURCE_SET_DIFFERS" in reverse.stderr
+    assert _tree_bytes(old, installed) == before
+
+
+def test_unpinned_transport_companion_mix_is_rejected_before_writes(pair):
     old, new = pair
     installed = new.parent / 'quiesced-g'
     shutil.copytree(new, installed)
@@ -118,9 +147,14 @@ def test_quiesced_transport_companion_refuses_signed_g_reverse(pair):
     # the independent, forward-only maintenance admission repair.
     for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py'):
         (installed / relative).write_bytes((old / relative).read_bytes())
+    before = {path.relative_to(installed): path.read_bytes()
+              for path in installed.rglob("*") if path.is_file()}
     reverse = probe(old, installed, signed=True)
     assert reverse.returncode != 0
-    assert 'WRITER_TRANSITION_SOURCE_SET_DIFFERS' in reverse.stderr
+    assert "WRITER_TRANSITION_PIN_INVALID" in reverse.stderr
+    after = {path.relative_to(installed): path.read_bytes()
+             for path in installed.rglob("*") if path.is_file()}
+    assert after == before
 
 
 @pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice', 'corrected_host'])

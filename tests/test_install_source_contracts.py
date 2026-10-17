@@ -94,6 +94,9 @@ def test_restore_delegation_covers_onboarding_nested_writer_calls():
         if (module,name) in visited:
             return
         visited.add((module,name))
+        # contracts.md writer admission; aedcbca makes this diagnostic best effort.
+        if (module, name) == ('auto_update', 'emit_support_record'):
+            return
         data = load(module)
         if not data or name not in data[0]:
             return
@@ -112,3 +115,19 @@ def test_restore_delegation_covers_onboarding_nested_writer_calls():
     walk('current_user_onboarding','onboard_current_user')
     assert 'auto_update_fixed_helper' in needed, 'The pre-report lifecycle Verify call must be included'
     assert needed <= permitted, 'Nested writer sources missing from canonical restoration: ' + repr(sorted(needed-permitted))
+
+
+def test_restore_diagnostic_refusal_preserves_original_public_report(tmp_path, monkeypatch, capsys):
+    """The diagnostic boundary excluded above must retain the original refusal."""
+    import auto_update as updates
+    from writer_session_fence import WriterFenceError
+
+    def refuse_diagnostic(*_args, **_kwargs):
+        raise WriterFenceError("diagnostic fixture refused")
+
+    monkeypatch.setattr(updates, "write_json_durable", refuse_diagnostic)
+    fields = {"status": "FAILED", "reason_code": "INSTALLER_FAILED"}
+    updates.emit_support_record(fields, stage="SUPPORT", policy={"staging_root": str(tmp_path)})
+    reports = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert reports[-1] == updates.support_record(fields, stage="SUPPORT")
+    assert not (tmp_path / "startup-support.json").exists()

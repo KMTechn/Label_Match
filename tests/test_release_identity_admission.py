@@ -228,7 +228,8 @@ def test_failed_verification_is_retried_and_keeps_the_same_failure(packet, verif
     _write_bootstrap_inventory_record(packet)
     generation.check_user_data_open(packet)
     generation.check_user_data_open(packet)
-    assert verification_calls == [False, False, False]
+    # e1c0066: failures are retried, successful identities still recheck integrity.
+    assert verification_calls == [False, False, False, False]
 
 
 def test_identity_copy_and_entrypoint_scoped_cache(packet, verification_calls, monkeypatch):

@@ -21,12 +21,17 @@ def _probe(tmp_path: Path, *, residue: str = "", compatibility: str = "PINNED_W9
     source = INSTALLER.read_text(encoding="utf-8-sig")
     definitions = source[:source.index("if (-not $SourceRoot) { $SourceRoot = $PSScriptRoot }")]
     definitions += "\n. (Get-LabelSharedPortableLeafPath " + _quote(ROOT) + ")\n"
+    definitions += "\n. " + _quote(ROOT / "tools/failure_redaction.ps1") + "\n"
     preflight = source[source.index("$pristineResiduePaths = @("):source.index("$healthyWithoutCode =")]
     removal_start = source.rindex("    if (-not $pristineInstall", 0, source.index("    $unquiesced ="))
     phase_marker = "    if ($legacyFirstRegistration) {\n        # Repeat absence"
     phase_start = source.index(phase_marker) if phase_marker in source else removal_start
     phase_end = source.index("    $after = Snapshot", source.index("    $onboardingFailure = $null"))
     phase = source[phase_start:phase_end + len("    $after = Snapshot")]
+    attempt_path_start = source.index("    $firstRegistrationAttemptPath = Join-Path $localAuditRoot")
+    attempt_start = source.rindex("elseif ($legacyFirstRegistration) {", 0, attempt_path_start)
+    attempt_end = source.index("$Script:LabelWriterFenceInstalledIdentity =", attempt_start)
+    attempt_setup = source[attempt_start:attempt_end].replace("elseif (", "if (", 1)
     tmp_path.mkdir(parents=True, exist_ok=True)
     installed = tmp_path / "installed"
     installed.mkdir()
@@ -101,7 +106,7 @@ function Sha {{ return 'checked' }}
 function Save {{}}
 function Same($Left, $Right) {{ return $Left -ceq $Right }}
 function Assert-HealthyLifecycleOwnership {{}}
-function Manifest {{ {'return [pscustomobject]@{source_commit=$(if($script:placements){"candidate"}else{"legacy"})}' if verified else "throw 'unverified installed code'"} }}
+function Manifest {{ if ($script:placements -gt 0) {{ return $sourceManifest }} {'return [pscustomobject]@{source_commit=$(if($script:placements){"candidate"}else{"legacy"})}' if verified else "throw 'unverified installed code'"} }}
 function InvokeFrozenIntegrityProbe {{}}
 function PortableInventory {{ return [pscustomobject]@{{sha256='checked';schema_version='fixture';algorithm='fixture';file_count=1;byte_count=1;
     critical_file_sha256=@{{bootstrap_integrity_helper='checked';placement_helper='checked';writer_fence_helper='checked'}}}} }}
@@ -124,6 +129,16 @@ function Product($Root, $Mode) {{
     }}
 }}
 """
+    setup += f"""
+$lad = {_quote(local)}
+$existingVerified = {'$true' if verified else '$false'}
+$writerTransition = Assert-WriterTransition $source $install
+$placement = 'INSTALL_REQUIRED'
+$receiptSource = PortableInventory $source
+$placementCriticalHashes = $receiptSource.critical_file_sha256
+$localAuditRoot = Join-Path $lad 'fixture-audit'
+$runId = 'fixture-first-registration'
+"""
     if residue == "access-denied":
         setup += "\nfunction Get-Item { throw [UnauthorizedAccessException]::new('unreadable user state') }\n"
     elif residue == "reparse":
@@ -131,10 +146,9 @@ function Product($Root, $Mode) {{
     script = tmp_path / "admission.ps1"
     before_phase = """
 $healthyWithoutCode = $false
-$firstRegistrationAttempt = @{state_verified=$false;registration_started=$false}
 # A race is injected after admission and before the owned phase recheck.
 """ + ("New-Item -ItemType Directory -Path (Split-Path -Parent $onboardingPath) -Force | Out-Null\n" if race else "")
-    script.write_text(definitions + setup + "\ntry {\n" + preflight + before_phase + phase + """
+    script.write_text(definitions + setup + "\ntry {\n" + preflight + attempt_setup + before_phase + phase + """
     [pscustomobject]@{ admitted=$true; pristine=[bool]$pristineInstall;
         first=[bool]$legacyFirstRegistration; removals=$script:removals;
         placements=$script:placements; registrations=$script:registrations } | ConvertTo-Json -Compress
@@ -143,7 +157,7 @@ $firstRegistrationAttempt = @{state_verified=$false;registration_started=$false}
         removals=$script:removals; placements=$script:placements;
         registrations=$script:registrations } | ConvertTo-Json -Compress
 }
-""", encoding="utf-8-sig")
+""", encoding="utf-8-sig", newline="\n")
     environment = os.environ.copy()
     environment.update({"KMTECH_FACTORY_INSTALL_TEST_MODE": "1", "LOCALAPPDATA": str(local),
                         "KM_LOGISTICS_PROFILE_PATH": str(shared), "KM_LOGISTICS_SHARED_SENTINEL": "unchanged"})

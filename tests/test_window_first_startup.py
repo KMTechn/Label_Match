@@ -267,7 +267,9 @@ def test_phs_wait_survives_typed_ui_failure_without_conflict_instruction():
     wrapped.__cause__ = refused
     failure = gui._phs_exchange_failure(wrapped)
     assert failure.retryable is True and failure.commit_state == "unknown"
-    assert "잠시 뒤 다시" in gui._startup_send_wait_message(failure, "review")
+    # operations.md startup-send deferral; wording map introduced in 8290f94.
+    # operations.md:1447; exact bridge wording introduced by 8290f94.
+    assert gui._startup_send_wait_message(failure, 'fallback') == '서버 보내기 확인 중입니다.\n잠시 후 다시 시도하세요.'
 
 
 @pytest.fixture
@@ -362,7 +364,9 @@ def test_retry_verification_rapid_clicks_run_one_background_check(failed_startup
 def test_pin_startup_deferral_explains_attempt_is_not_counted():
     from label_admin_pin import operator_message
     message = operator_message("STARTUP_VERIFICATION_PENDING")
-    assert message.endswith("이 건만 보류 — 틀린 횟수로 세지 않음")
+    # operations.md: startup PIN hold sends nothing and counts no wrong attempt.
+    # operations.md:1447; exact startup PIN wording introduced by 8290f94.
+    assert message == '서버 보내기 확인 중입니다\n잠시 후 다시 시도하세요\n자세히: 이 건만 보류합니다. 틀린 횟수로 세지 않습니다'
 
 
 @pytest.fixture
@@ -483,12 +487,9 @@ def test_nonsteady_start_keeps_full_path(steady_start, condition):
     elif condition == "held":
         create_startup_send_hold(paths.direct_sync_root)
     else:
-        registration = onboarding._read_json(paths.registration_report_path, "registration")
-        registration["server_base_url"] = "https://registered.invalid"
-        paths.registration_report_path.write_text(json.dumps(registration))
-        profile = onboarding._read_json(paths.logistics_profile_path, "profile")
-        profile["base_url"] = "https://different.invalid"
-        paths.logistics_profile_path.write_text(json.dumps(profile))
+        # contracts.md:17 binds installation marker to credential, not profile alias.
+        from tests.test_install_server_origin import _bind_origins
+        _bind_origins(paths, "https://installation.invalid", "https://registration.invalid")
     assert onboarding.try_window_first_start(paths.app_root, environ=steady_start.environment) is None
     assert steady_start.helpers == []
 

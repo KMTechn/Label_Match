@@ -99,7 +99,10 @@ if((Get-InstallationPreparationExitCode ([Exception]::new('unknown'))) -ne 66){t
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
 def test_canonical_parent_maps_actual_child_codes_without_running_installer(tmp_path, engine):
     result = run_functions(tmp_path, ROOT/'tools/bootstrap_integrity.ps1',
-                           ['Get-InstallationPreparationDiagnostic'], r'''
+                           ['Get-InstallationPreparationDiagnostic'], r"""
+# Persistence is outside this parent diagnostic fragment.
+function Save([string]$Path,$Value) {}
+
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CANONICAL_SOURCE,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'Canonical parse failed.'}
@@ -115,13 +118,13 @@ foreach($placementExitCode in 0,4,61,62,63,64,65,66){
  if($placementExitCode -eq 0){if($null -ne $failure){throw 'Success was rejected.'};continue}
  if($null -eq $failure){throw 'Child failure was admitted.'}
  if($placementExitCode -eq 4){
-  if($failure.Exception.Message -cne 'Code placement failed: 4'){throw 'Unrelated code changed.'}
+  if($failure.Exception.Message -cne 'Code placement failed.'){throw 'Unrelated code changed.'}
  }elseif($failure.Exception.Data['installation_preparation_exit_code'] -ne $placementExitCode -or $failure.Exception.Message -notmatch '[가-힣]' -or $failure.Exception.Message -cnotmatch 'INSTALLATION_PREPARATION_'){
   throw 'Parent lost preparation code/Korean reason.'
  }
 }
 'PASS'
-''', engine=engine, values={'LM_CANONICAL_SOURCE': str(ROOT/'INSTALL_CANONICAL_PORTABLE.ps1')})
+""", engine=engine, values={'LM_CANONICAL_SOURCE': str(ROOT/'INSTALL_CANONICAL_PORTABLE.ps1')})
     assert result.returncode == 0, result.stdout + result.stderr
 
 

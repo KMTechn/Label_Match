@@ -107,7 +107,11 @@ def test_pin_compressed_json_refusal_preserves_contract_code():
         client.post("redemptions", {})
     assert caught.value.code == "PIN_INVALID" and not caught.value.unknown
     assert caught.value.http_status == 403
-    assert pin.operator_message(caught.value.code, http_status=403) == pin.FAILURE_MESSAGE
+    # operations.md company HTTP: retain refusal and per-item hold guidance.
+    # operations.md:110; hold suffix introduced by 95a0fe8 (HTTP cause: 2796fca).
+    assert pin.operator_message(caught.value.code, http_status=caught.value.http_status) == (
+        pin.FAILURE_MESSAGE + ' 이 건만 보류하고 다른 작업을 계속하세요.'
+    )
 
 
 def test_pin_html_after_redemption_recovers_same_key_receipt():

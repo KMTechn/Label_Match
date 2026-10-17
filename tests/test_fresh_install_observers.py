@@ -72,7 +72,9 @@ if($script:mutations){throw 'Observation mutated a task'}
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
 @pytest.mark.parametrize('scenario', ('com_not_found', 'file_not_found', 'access_denied', 'com_other', 'file_other', 'io_error'))
 def test_removed_task_readback_accepts_only_api_not_found(tmp_path, engine, scenario):
-    result = run_functions(tmp_path, ROOT/'INSTALL_THIS_PC.ps1', ['Remove-LabelScheduledTasks'], r'''
+    result = run_functions(tmp_path, ROOT/'INSTALL_THIS_PC.ps1', ['Remove-LabelScheduledTasks', 'Get-LabelOfficialLegacyTaskSnapshot', 'Get-LabelOfficialLegacyTaskExpectation', 'Get-LabelOfficialLegacyTaskFingerprint', 'Get-LabelOfficialLegacyTaskExpectations', 'Get-LabelOfficialLegacyPrincipalModes', 'ConvertTo-LabelLegacyTaskPath', 'ConvertTo-LabelTaskSid'], r"""# This supported-task API fixture contains no official legacy task.
+function Get-LabelOfficialLegacyTaskSnapshot { return $null }
+
 Add-Type -TypeDefinition @'
 using System; using System.IO; using System.Runtime.InteropServices;
 public class OtherFileFailure : FileNotFoundException {
@@ -111,7 +113,7 @@ $failed=$false
 try{Remove-LabelScheduledTasks $script:Folder $env:TEMP 'fixture'}catch{$failed=$true}
 if($failed -ne ($env:LM_FRESH_SCENARIO -notin @('com_not_found','file_not_found'))){throw 'Removal readback hid an error or refused exact not-found'}
 'PASS'
-''', engine=engine, values={'LM_FRESH_SCENARIO': scenario})
+""", engine=engine, values={'LM_FRESH_SCENARIO': scenario})
     assert result.returncode == 0, result.stdout + result.stderr
 
 

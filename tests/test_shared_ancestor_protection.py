@@ -69,6 +69,11 @@ def _stock_powershell_members(scratch):
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
         and Path(node.value).suffix.lower() in suffixes
     }
+    # Builder PACKET_FILE_PINS fields are (diagnostic name, holder, pattern, target).
+    packet_paths = {holder for _, holder, _, _ in portable_builder.PACKET_FILE_PINS}
+    packet_paths.update(target for _, _, _, target in portable_builder.PACKET_FILE_PINS)
+    diagnostic_names = {name for name, _, _, _ in portable_builder.PACKET_FILE_PINS} - packet_paths
+    relative_paths.difference_update(diagnostic_names)
     members = {ROOT / relative for relative in relative_paths}
     copy_file = portable_builder.shutil.copy2
     def record_file(source, target, **_kwargs):

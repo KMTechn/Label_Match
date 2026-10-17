@@ -1312,10 +1312,6 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
         if registration.get("server_registration_verified") is not True:
             return miss("REGISTRATION_UNVERIFIED")
         registered_origin = registration.get("server_base_url")
-        if registered_origin:
-            profile = _read_json(paths.logistics_profile_path, "logistics profile")
-            if str(profile.get("base_url") or "").rstrip("/") != str(registered_origin).rstrip("/"):
-                return miss("REGISTRATION_ORIGIN")
         observed = {control / "apply-claim.json": claim_input}
         for path in (*state_paths, root / "portable-manifest.json", *(control / name for name in ("policy.json", "active.json", "transition.json"))):
             assert_path_has_no_reparse_components(path, label="startup verification input")

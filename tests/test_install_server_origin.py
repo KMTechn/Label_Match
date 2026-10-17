@@ -59,6 +59,14 @@ def test_equal_origin_keeps_ready_and_live_relay_reuse(live_relay, tmp_path, mon
 
 def test_changed_origin_refuses_onboarding_without_sending_or_mutating_work(tmp_path, monkeypatch):
     fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "managed", monkeypatch)
+    # The native worker-session admission precedes origin inspection.
+    import auto_update as updates
+    from auto_update import installation_root
+    worker = updates.load_policy(installation_root(paths.app_root) / "update-control")
+    monkeypatch.setattr(updates, "process_security", lambda _pid: {
+        "elevated": False, "integrity_rid": 8192, "session_id": 1,
+        "sid": worker["operator_sid"],
+    })
     marker = _bind_origins(paths, _origin("installed"), _origin())
     # Pending completion has already been recorded: the machine marker still applies.
     monkeypatch.setattr(onboarding, "validate_pending_worker_install", lambda _: None)
