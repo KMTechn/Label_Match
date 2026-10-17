@@ -1,0 +1,60 @@
+{
+  "contract": "G36 public failure line = <APP_PREFIX>=<one compact JSON object> followed by CR LF. Every byte before CR LF is 0x20-0x7E. After the app builds its JSON, every UTF-16 code unit above U+007F is written as backslash-u plus 4 lowercase hex digits (surrogate pairs unit by unit). Field names, field order and all other escapes stay exactly as the app producer makes them.",
+  "checks": [
+    "identical bytes when written to a 949 console and to a 65001 console",
+    "every byte < 0x80",
+    "JSON-decoding the escaped string gives the original text exactly"
+  ],
+  "note_engine": "PS5.1 ConvertTo-Json escapes the four characters < > & ' (as backslash-u003c, -u003e, -u0026, -u0027) and PS7 does not. The vectors avoid those four; both forms are valid JSON with the same meaning.",
+  "vectors": [
+    {
+      "name": "producer-default",
+      "text": "작업에 실패했습니다. 보호 보고서를 확인하세요.",
+      "expected_json_string_ascii": "\"\\uc791\\uc5c5\\uc5d0 \\uc2e4\\ud328\\ud588\\uc2b5\\ub2c8\\ub2e4. \\ubcf4\\ud638 \\ubcf4\\uace0\\uc11c\\ub97c \\ud655\\uc778\\ud558\\uc138\\uc694.\"",
+      "expected_sha256": "06bb84194e21a78d2919ac8a8104eeb5e4e50546956c2921db9d8bb36eb31d82",
+      "bytes": 128
+    },
+    {
+      "name": "process-timeout-retry",
+      "text": "프로세스 확인이 늦어 설치를 멈췄습니다. 잠시 뒤 같은 설치를 다시 하세요.",
+      "expected_json_string_ascii": "\"\\ud504\\ub85c\\uc138\\uc2a4 \\ud655\\uc778\\uc774 \\ub2a6\\uc5b4 \\uc124\\uce58\\ub97c \\uba48\\ucdc4\\uc2b5\\ub2c8\\ub2e4. \\uc7a0\\uc2dc \\ub4a4 \\uac19\\uc740 \\uc124\\uce58\\ub97c \\ub2e4\\uc2dc \\ud558\\uc138\\uc694.\"",
+      "expected_sha256": "7bff60cdf011299a85e605bae9b849fc5f67c788437fff8bbea2e22cbd20f367",
+      "bytes": 194
+    },
+    {
+      "name": "diagnostic-support",
+      "text": "진단 결과의 자세한 내용은 보호 보고서에서 확인하세요.",
+      "expected_json_string_ascii": "\"\\uc9c4\\ub2e8 \\uacb0\\uacfc\\uc758 \\uc790\\uc138\\ud55c \\ub0b4\\uc6a9\\uc740 \\ubcf4\\ud638 \\ubcf4\\uace0\\uc11c\\uc5d0\\uc11c \\ud655\\uc778\\ud558\\uc138\\uc694.\"",
+      "expected_sha256": "b4a40ccddd3c3bd3357c792c86feb33bdd574ff3b6463c1fc356a125e901a0fc",
+      "bytes": 147
+    },
+    {
+      "name": "mixed-ascii-after-hangul",
+      "text": "보고서report_path확인 A1 b2",
+      "expected_json_string_ascii": "\"\\ubcf4\\uace0\\uc11creport_path\\ud655\\uc778 A1 b2\"",
+      "expected_sha256": "7f2099ad2c09c9db4cf85f94066a6266d5534634821bb6a74a27f860d1599620",
+      "bytes": 49
+    },
+    {
+      "name": "synthetic-non-bmp",
+      "text": "확인 😀 끝",
+      "expected_json_string_ascii": "\"\\ud655\\uc778 \\ud83d\\ude00 \\ub05d\"",
+      "expected_sha256": "883520957f35fa02588d1b36310e6aa018e229c997b8f27d9139d147fed340d7",
+      "bytes": 34
+    }
+  ],
+  "defect_line_example": {
+    "line_ascii": "DEFECT_PUBLIC_FAILURE={\"status\":\"FAILED\",\"code\":\"INSTALLATION_FAILED\",\"stage\":\"INSTALL\",\"exception_type\":\"RuntimeException\",\"guidance\":\"\\uc791\\uc5c5\\uc5d0 \\uc2e4\\ud328\\ud588\\uc2b5\\ub2c8\\ub2e4. \\ubcf4\\ud638 \\ubcf4\\uace0\\uc11c\\ub97c \\ud655\\uc778\\ud558\\uc138\\uc694.\",\"report_status\":\"REPORT_UNAVAILABLE\"}",
+    "line_with_crlf_sha256": "39799f88bdccc2cb635f383722363d58c356cbb8186c542e32a232cb249384c4",
+    "line_with_crlf_bytes": 303,
+    "fields_in_order": [
+      "status",
+      "code",
+      "stage",
+      "exception_type",
+      "guidance",
+      "report_status"
+    ],
+    "source": "Defect_Inspection 9ae4ea7c4c83 tools/bootstrap_integrity.ps1:1289-1316 Get-KmtechPublicFailureLine (REPORT_UNAVAILABLE branch, no runtime-restore fields)"
+  }
+}

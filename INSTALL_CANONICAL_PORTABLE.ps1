@@ -52,7 +52,9 @@ trap {
             $publicFailure.reason_code = 'SERVER_BASE_URL_INVALID'
             $publicFailure.guidance = '서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요.'
         }
-        [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($publicFailure | ConvertTo-Json -Compress -Depth 5))
+        $publicJson = ($publicFailure | ConvertTo-Json -Compress -Depth 5)
+        $publicAscii = [regex]::Replace($publicJson, '[^\u0000-\u007f]', { param($unit) '\u{0:x4}' -f [int][char]$unit.Value })
+        [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + $publicAscii)
     } finally {
         if ($publicExit -eq 0) { $publicExit = 1 }
         exit $publicExit
@@ -1373,7 +1375,7 @@ admin_worker_replacements = {'INSTALL_THIS_PC.ps1': ('bdc42c26a8b5464d8a65e880ba
  'app/writer_session_fence.py': ('a43bf51c06caf667a0a0e98849553ca667aa8cd2640b546d357d918d95ec13bb',
                                  'fabae16ca086ea44edc96238c4164687c61187d864db434ce0edc2a92a505f88'),
  'tools/apply_prepared_update.ps1': ('dc7e30404d7bd4277692f875120aff4f7afd5c01b84301ed9e95a2c03e844c83',
-                                     '6760565a50cf3fa0b2f39d272b9690f6cac7c9ca53dcc9c72128525475baae42'),
+                                     '742c594974973e26cf3d082f74c200e111d5687d8801a1913f3bce528ebdce01'),
  'tools/bootstrap_integrity.ps1': ('96101ce38befdf9dcca09ec42abd571aa441ad312f35bf3d14fd7effc97db963',
                                    '7d82c5967868605e200c26cdce451ac2ff84eff2a290025ca6b0f0c2fd7e1a5a'),
  'tools/failure_redaction.ps1': ('c81ce889aef0d216985a9dbaf439c2bfa11640d929e836d2bc7b68966d6d073f',
@@ -2854,7 +2856,9 @@ trap {
     if ($record.Contains('full_exception_trace')) {
         $publicFields.report_path=$record.full_exception_trace.path;$publicFields.report_sha256=$record.full_exception_trace.sha256
     } else { $publicFields.report_status='REPORT_UNAVAILABLE' }
-    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ((ConvertTo-KmtechPublicRecord $publicFields) | ConvertTo-Json -Compress))
+    $publicJson = ((ConvertTo-KmtechPublicRecord $publicFields) | ConvertTo-Json -Compress)
+    $publicAscii = [regex]::Replace($publicJson, '[^\u0000-\u007f]', { param($unit) '\u{0:x4}' -f [int][char]$unit.Value })
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + $publicAscii)
     exit $childExit
 }
 $pinnedStreams = [Collections.Generic.List[IO.Stream]]::new()
@@ -3090,7 +3094,9 @@ try{
  }catch{}
  $public=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';placement_code=$record.placement_code;location_function=$transportPhase;exit_code=1;exception_type=$record.exception_type;guidance=$record.message}
  if($record.Contains('full_exception_trace')){$public.report_path=$record.full_exception_trace.path;$public.report_sha256=$record.full_exception_trace.sha256}else{$public.report_status='REPORT_UNAVAILABLE'}
- [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE='+($public|ConvertTo-Json -Compress))
+ $publicJson = ($public|ConvertTo-Json -Compress)
+ $publicAscii = [regex]::Replace($publicJson, '[^\u0000-\u007f]', { param($unit) '\u{0:x4}' -f [int][char]$unit.Value })
+ [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + $publicAscii)
  exit 1
 }
 finally{foreach($s in $streams){$s.Dispose()}}
@@ -4207,7 +4213,10 @@ function Test-PretransactionInstallAudit([string]$AuditRoot, [string]$FenceActiv
             $admissionFailure = [string]$record.status -ceq 'FAILED' -and
                 [string]$record.preparation_status -ceq 'FAILED_PREPARATION_ADMISSION' -and
                 [string]$record.code_placement -ceq 'NOT_STARTED' -and
-                $record.rollback.applied -is [bool] -and -not $record.rollback.applied
+                $record.rollback.applied -is [bool] -and -not $record.rollback.applied -and
+                ($record.PSObject.Properties.Name -cnotcontains 'current_user_setup_started' -or
+                    -not $record.current_user_setup_started) -and
+                ($record.PSObject.Properties.Name -cnotcontains 'writer_fence')
             $preimageOnly = [string]$record.status -cin @('PREIMAGE_SAVED', 'FAILED_PREPARATION_ADMISSION', 'FAILED_PRETRANSACTION') -and
                 [string]$record.code_placement -ceq 'PENDING' -and
                 $record.current_user_setup_started -is [bool] -and -not $record.current_user_setup_started -and

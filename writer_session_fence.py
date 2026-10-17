@@ -777,8 +777,7 @@ def _failed_installer_removal_sources(
             return None
         _assert_no_reparse_components(audit_root)
         files = list(audit_root.glob("canonical-portable-*.json"))
-        if len(files) > 128:
-            return None
+        counted_files = 0
         matches = []
         for path in files:
             try:
@@ -787,7 +786,35 @@ def _failed_installer_removal_sources(
             except WriterFenceError:
                 if path.name == 'canonical-portable-' + run_id + '.json':
                     return None
+                counted_files += 1
+                if counted_files > 128:
+                    return None
                 continue
+            # Retain earlier, transaction-free installer evidence in place.
+            # It cannot claim this fence and does not consume the current
+            # failed installation's cleanup allowance.
+            pretransaction = (
+                path.name != 'canonical-portable-' + run_id + '.json'
+                and audit.get('run_id') != run_id
+                and audit.get('schema') == 'label-match-canonical-portable-install-v1'
+                and 'writer_fence' not in audit
+                and not audit.get('current_user_setup_started')
+                and (
+                    (audit.get('status') == 'FAILED'
+                     and audit.get('preparation_status') == 'FAILED_PREPARATION_ADMISSION'
+                     and audit.get('code_placement') == 'NOT_STARTED'
+                     and isinstance(audit.get('rollback'), dict)
+                     and audit['rollback'].get('applied') is False)
+                    or (audit.get('status') in {'PREIMAGE_SAVED', 'FAILED_PREPARATION_ADMISSION', 'FAILED_PRETRANSACTION'}
+                        and audit.get('code_placement') == 'PENDING'
+                        and audit.get('current_user_setup_started') is False
+                        and audit.get('current_user_registration_mode') == 'FIRST_INSTALL')
+                )
+            )
+            if not pretransaction:
+                counted_files += 1
+                if counted_files > 128:
+                    return None
             owner = audit.get("writer_fence")
             if not isinstance(owner, dict) or any(owner.get(key) != active[key] for key in _INSTALLER_TUPLE_FIELDS):
                 continue

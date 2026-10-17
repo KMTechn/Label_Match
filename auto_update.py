@@ -2937,6 +2937,8 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
                 return 0
             if len(rows) != 1 or rows[0].get("role") != "relay":
                 raise ValueError("ordinary GUI recovery requires exactly one relay")
+            if type(rows[0].get("pid")) is not int or rows[0]["pid"] <= 0:
+                raise ValueError("ordinary recovery relay process identity is unreadable")
             boundary = rows[0].get("created_at")
             if _utc(boundary) >= _utc(now_utc()):
                 raise ValueError("ordinary recovery relay is not in the past")
@@ -2945,6 +2947,8 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
                 return 0
             if len(rows) != 1 or rows[0].get("role") != "relay":
                 raise ValueError("the proved ordinary relay cohort changed")
+            if type(rows[0].get("pid")) is not int or rows[0]["pid"] <= 0:
+                raise ValueError("proved ordinary relay process identity is unreadable")
             # The proof's own observation determines both the sole relay and
             # the GUI's boundary, even if the earlier candidate was replaced.
             boundary = rows[0]["created_at"]
