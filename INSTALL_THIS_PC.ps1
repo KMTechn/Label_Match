@@ -7,6 +7,7 @@ param(
     [string]$TlsCaBundlePath = "",
     [string]$OperatorLocalAppDataRoot = "",
     [string]$WorkerSid = "",
+    [string]$WorkerAccount = "",
     [string]$ElevationLogPath = "",
     [string]$ExpectedBootstrapScriptSha256 = "",
     [string]$VerifiedBootstrapScriptPath = "",
@@ -50,6 +51,11 @@ trap {
     }
     $publicReason='INSTALLER_FAILED';$publicGuidance=''
     for($cause=$_.Exception;$null -ne $cause;$cause=$cause.InnerException){
+        if($cause.Data['label_installer_reason_code'] -ceq 'MACHINE_REMOVAL_WORKER_PART_PENDING'){
+            $publicReason='MACHINE_REMOVAL_WORKER_PART_PENDING'
+            $publicGuidance='작업자 계정으로 먼저 제거(사용자 몫)를 실행한 뒤 다시 시도하세요.'
+            break
+        }
         if($cause.Data['label_installer_reason_code'] -ceq 'UNSUPPORTED_WORKER_ARGUMENTS'){
             $publicReason='UNSUPPORTED_WORKER_ARGUMENTS'
             $kinds=@($cause.Data['label_installer_mismatch_kinds'] | Where-Object {
@@ -73,7 +79,7 @@ trap {
             $fields.Remove('report_status');$fields.report_path=$reference.path;$fields.report_sha256=$reference.sha256
         } catch { }
         $record=ConvertTo-KmtechPublicRecord $fields `
-            -AllowedCodes @($Script:KmtechRedactionRules.allowed_codes + @('UNSUPPORTED_WORKER_ARGUMENTS','CURRENT_USER_RELAY_SETUP_PRESENT')) `
+            -AllowedCodes @($Script:KmtechRedactionRules.allowed_codes + @('UNSUPPORTED_WORKER_ARGUMENTS','CURRENT_USER_RELAY_SETUP_PRESENT','MACHINE_REMOVAL_WORKER_PART_PENDING')) `
             -SafeMessages @($Script:KmtechRedactionRules.safe_messages + @($publicGuidance))
     }
     [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($record | ConvertTo-Json -Compress))
@@ -1877,15 +1883,245 @@ function Assert-LabelRemovalBoundary([string]$Path) {
     }
 }
 
+function Get-LabelRemovalNativeProcessStartTime([int]$ProcessId) {
+    $process = [Diagnostics.Process]::GetProcessById($ProcessId)
+    try { if ($process.HasExited) { throw 'REMOVAL_PROCESS_ENDED' }; return $process.StartTime.ToUniversalTime() }
+    finally { $process.Dispose() }
+}
+
+function Test-LabelRemovalProcessReferencesRoot([string]$ApplicationRoot,[string]$Executable,[string]$CommandLine) {
+    $prefix = (Get-StrictFullPath $ApplicationRoot 'removal process root').TrimEnd('\') + '\'
+    foreach ($text in @($Executable,$CommandLine)) {
+        $normalized = $text.Replace('/','\')
+        if ($normalized.IndexOf($prefix,[StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+        foreach ($match in [regex]::Matches($text,'(?i)[a-z]:[\\/]|\\\\')) {
+            $start=$match.Index; $end=$text.Length; $quote=[char]0
+            if ($start -gt 0 -and $text[$start-1] -in @([char]34,[char]39)) { $quote=$text[$start-1] }
+            for ($index=$start;$index -lt $text.Length;$index++) {
+                if (($quote -ne [char]0 -and $text[$index] -eq $quote) -or
+                    ($quote -eq [char]0 -and ([char]::IsWhiteSpace($text[$index]) -or $text[$index] -in @([char]34,[char]39)))) { $end=$index; break }
+            }
+            try { $path=[IO.Path]::GetFullPath($text.Substring($start,$end-$start).Replace('/','\')) }
+            catch { continue }
+            if ($path.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { return $true }
+        }
+    }
+    return $false
+}
+
+function Test-LabelRemovalCanonicalOwner($Row) {
+    if (-not $BootstrapIntegrityPreloaded.IsPresent -or -not $WriterFenceFunctionsPreloaded.IsPresent -or
+        $InstallerOwnerProcessId -le 0 -or [int]$Row.ProcessId -ne $InstallerOwnerProcessId -or
+        $InstallerOwnerProcessStartedAtFileTime -cnotmatch '^[1-9][0-9]{0,18}$' -or -not $SourceRoot) { return $false }
+    $engine=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-SamePath ([string]$Row.ExecutablePath) $engine)) { return $false }
+    if ((Get-LabelRemovalNativeProcessStartTime ([int]$Row.ProcessId)).ToFileTimeUtc().ToString() -cne $InstallerOwnerProcessStartedAtFileTime) { return $false }
+    $packet=Get-StrictFullPath $SourceRoot 'removal packet'
+    $canonical=Join-Path $packet 'INSTALL_CANONICAL_PORTABLE.ps1'
+    Assert-LabelRemovalBoundary $canonical
+    $manifest=Read-LabelRemovalJson (Join-Path $packet 'portable-manifest.json')
+    if ($null -eq $manifest -or $null -eq $manifest.PSObject.Properties['canonical_installer_sha256'] -or
+        (Get-FileSha256 $canonical) -cne [string]$manifest.canonical_installer_sha256) { return $false }
+    $pattern='(?i)(?<![a-z0-9_-])-File\s+(?:"'+[regex]::Escape($canonical)+'"|'''+[regex]::Escape($canonical)+'''|'+[regex]::Escape($canonical)+'(?=\s|$))'
+    $invocation=[regex]::Match(([string]$Row.CommandLine).Replace('/','\'),$pattern)
+    if (-not $invocation.Success) { return $false }
+    $tokens=$null;$parseErrors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseFile($canonical,[ref]$tokens,[ref]$parseErrors)
+    if ($parseErrors.Count -or $null -eq $ast.ParamBlock) { return $false }
+    $names=@($ast.ParamBlock.Parameters | ForEach-Object {$_.Name.VariablePath.UserPath})
+    $tail=([string]$Row.CommandLine).Substring($invocation.Index+$invocation.Length)
+    $tailErrors=$null
+    $tailTokens=@([Management.Automation.PSParser]::Tokenize($tail,[ref]$tailErrors))
+    if ($tailErrors.Count) { return $false }
+    foreach ($token in $tailTokens) {
+        if ($token.Type -eq 'CommandParameter' -and (($token.Content.TrimStart('-') -split ':')[0] -notin $names)) { return $false }
+        if ($token.Type -in @('StatementSeparator','GroupStart','GroupEnd','SubExpressionStart','Operator')) { return $false }
+    }
+    return $true
+}
+
+function Get-LabelVerifiedRemovalProcessChain([object[]]$Rows,[string]$ApplicationRoot) {
+    $byId=@{}
+    foreach ($row in $Rows) {
+        if ($null -eq $row.ProcessId -or $byId.ContainsKey([int]$row.ProcessId)) { return @() }
+        $byId[[int]$row.ProcessId]=$row
+    }
+    if (-not $byId.ContainsKey([int]$PID)) { return @() }
+    $engines=@(
+        (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'),
+        (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'PowerShell\7\pwsh.exe'),
+        (Join-Path ([Environment]::SystemDirectory) 'cmd.exe'),
+        (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\sshd.exe'),
+        (Join-Path ([Environment]::SystemDirectory) 'conhost.exe')
+    )
+    $chain=@();$seen=@{};$child=$byId[[int]$PID]
+    while ($true) {
+        if ([string]::IsNullOrWhiteSpace([string]$child.CreationDate) -or [string]::IsNullOrWhiteSpace([string]$child.ParentProcessId)) { throw 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN' }
+        if ([int]$child.ParentProcessId -le 0) { break }
+        $parentId=[int]$child.ParentProcessId
+        if ($seen.ContainsKey($parentId) -or -not $byId.ContainsKey($parentId)) { break }
+        $seen[$parentId]=$true;$parent=$byId[$parentId]
+        if ([string]::IsNullOrWhiteSpace([string]$parent.CreationDate) -or [string]::IsNullOrWhiteSpace([string]$parent.ParentProcessId)) { throw 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN' }
+        try {
+            if (([datetime]$parent.CreationDate).ToUniversalTime() -ge ([datetime]$child.CreationDate).ToUniversalTime()) { break }
+            foreach ($node in @($child,$parent)) {
+                $again=@(Get-CimInstance Win32_Process -Filter ('ProcessId = '+[int]$node.ProcessId) -ErrorAction Stop)
+                if ($again.Count -ne 1 -or [int]$again[0].ProcessId -ne [int]$node.ProcessId -or
+                    [int]$again[0].ParentProcessId -ne [int]$node.ParentProcessId -or
+                    $null -eq $again[0].CreationDate -or
+                    ([datetime]$again[0].CreationDate).ToUniversalTime() -ne ([datetime]$node.CreationDate).ToUniversalTime() -or
+                    [string]$again[0].ExecutablePath -cne [string]$node.ExecutablePath -or
+                    [string]$again[0].CommandLine -cne [string]$node.CommandLine) { throw 'REMOVAL_PROCESS_CHANGED' }
+                $native=(Get-LabelRemovalNativeProcessStartTime ([int]$node.ProcessId)).Ticks
+                $observed=([datetime]$node.CreationDate).ToUniversalTime().Ticks
+                # CIM carries microseconds; native FILETIME carries 100 ns ticks.
+                if (($native-($native%10)) -ne ($observed-($observed%10))) { throw 'REMOVAL_PROCESS_REUSED' }
+            }
+            $image=[IO.Path]::GetFullPath(([string]$parent.ExecutablePath).Replace('/','\'))
+            if (@($engines | Where-Object {$image.Equals($_,[StringComparison]::OrdinalIgnoreCase)}).Count -ne 1) { break }
+            $rest=[regex]::Replace([string]$parent.CommandLine,'(?i)(?<![a-z0-9_-])-InstallRoot\s+(?:"[^"]*"|''[^'']*''|[^\s"'';]+)','')
+            if ((Test-LabelRemovalProcessReferencesRoot $ApplicationRoot '' $rest) -and -not (Test-LabelRemovalCanonicalOwner $parent)) { break }
+        } catch { break }
+        $chain += [int]$parent.ProcessId
+        $child=$parent
+    }
+    return $chain
+}
+
+function Read-LabelRemovalJson([string]$Path) {
+    Assert-LabelRemovalBoundary $Path
+    if (-not (Test-Path -LiteralPath $Path -ErrorAction Stop)) { return $null }
+    $file=Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($file.PSIsContainer) { throw [IO.InvalidDataException]::new('REMOVAL_RECORD_INVALID') }
+    $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true)
+        try { $text=$reader.ReadToEnd() } finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
+    try { $record=$text | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw [IO.InvalidDataException]::new('REMOVAL_RECORD_INVALID') }
+    if ($record -isnot [pscustomobject]) { throw [IO.InvalidDataException]::new('REMOVAL_RECORD_INVALID') }
+    return $record
+}
+
+function Open-LabelRemovalRegistryKey([string]$Hive,[string]$SubKey) {
+    if (-not ('KmtechLabelRemovalRegistryNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class KmtechLabelRemovalRegistryNative {
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
+    public static extern int RegOpenKeyExW(IntPtr root,string subKey,uint options,uint access,out IntPtr key);
+}
+'@
+    }
+    $root=if($Hive -ceq 'LocalMachine'){[IntPtr]::new(-2147483646)}elseif($Hive -ceq 'Users'){[IntPtr]::new(-2147483645)}else{throw 'REMOVAL_REGISTRY_HIVE_INVALID'}
+    $handle=[IntPtr]::Zero
+    $status=[KmtechLabelRemovalRegistryNative]::RegOpenKeyExW($root,$SubKey,0,1,[ref]$handle)
+    if($status -eq 2){return $null}
+    if($status -ne 0){throw [ComponentModel.Win32Exception]::new($status)}
+    if($handle -eq [IntPtr]::Zero){throw 'REMOVAL_REGISTRY_HANDLE_INVALID'}
+    $owned=[Microsoft.Win32.SafeHandles.SafeRegistryHandle]::new($handle,$true)
+    try{return [Microsoft.Win32.RegistryKey]::FromHandle($owned)}catch{$owned.Dispose();throw}
+}
+
+function Resolve-LabelRemovalAccountSid([string]$Account) {
+    if($Account -cmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$'){return ([Security.Principal.SecurityIdentifier]::new($Account)).Value}
+    return ([Security.Principal.NTAccount]::new($Account)).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
+function Get-LabelRemovalWorkerProfile([string]$Sid) {
+    $key=Open-LabelRemovalRegistryKey 'LocalMachine' ('SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\'+$Sid)
+    if($null -eq $key){return @{exists=$false;root=''}}
+    try{$value=$key.GetValue('ProfileImagePath',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)}finally{$key.Dispose()}
+    if($value -isnot [string] -or -not $value){throw 'REMOVAL_PROFILE_UNKNOWN'}
+    $path=Get-StrictFullPath ([Environment]::ExpandEnvironmentVariables($value)) 'removal worker profile'
+    Assert-LabelRemovalBoundary $path
+    return @{exists=$true;root=$path}
+}
+
+function Get-LabelRemovalWorkerHiveState([string]$Sid) {
+    $hive=Open-LabelRemovalRegistryKey 'Users' $Sid
+    if($null -eq $hive){return @{loaded=$false;completed=$null;run_present=$null}}
+    $hive.Dispose()
+    $completed=$false;$run=$false
+    $key=Open-LabelRemovalRegistryKey 'Users' ($Sid+'\Software\KMTech\Label_Match')
+    if($null -ne $key){try{$completed='WorkerInstallCompleted' -in $key.GetValueNames()}finally{$key.Dispose()}}
+    $key=Open-LabelRemovalRegistryKey 'Users' ($Sid+'\Software\Microsoft\Windows\CurrentVersion\Run')
+    if($null -ne $key){try{$run='KMTech.LabelMatch.Relay' -in $key.GetValueNames()}finally{$key.Dispose()}}
+    return @{loaded=$true;completed=$completed;run_present=$run}
+}
+
+function Get-LabelRemovalLocalAccountState([string]$Sid) {
+    $local=@(Get-LocalUser -ErrorAction Stop)
+    $domains=@($local | ForEach-Object {if($null -ne $_.SID.AccountDomainSid){$_.SID.AccountDomainSid.Value}} | Sort-Object -Unique)
+    $identity=[Security.Principal.SecurityIdentifier]::new($Sid)
+    if($domains.Count -ne 1 -or $null -eq $identity.AccountDomainSid -or $identity.AccountDomainSid.Value -cne $domains[0]){return 'DOMAIN'}
+    try{$account=@(Get-LocalUser -SID $identity -ErrorAction Stop)}
+    catch [Security.Principal.IdentityNotMappedException]{return 'ABSENT'}
+    catch {if(($_.FullyQualifiedErrorId -split ',')[0] -ceq 'UserNotFound'){return 'ABSENT'};throw}
+    if($account.Count -eq 0 -or ($account.Count -eq 1 -and $null -eq $account[0])){return 'ABSENT'}
+    if($account.Count -ne 1 -or $account[0].SID.Value -cne $Sid -or $account[0].Enabled -isnot [bool]){throw 'REMOVAL_ACCOUNT_UNKNOWN'}
+    if($account[0].Enabled -eq $false){return 'DISABLED'}
+    return 'ENABLED'
+}
+
+function Assert-LabelMachineRemovalWorkerPart([string]$InstallRoot,[string]$WorkerAccount='') {
+    try {
+        $current=Get-StrictFullPath $InstallRoot 'removal worker binding'
+        $markerPath=Join-Path (Split-Path -Parent $current) 'update-control\worker-pending.json'
+        Assert-ProtectedCodeAncestors $markerPath
+        $marker=$null
+        try{$marker=Read-LabelRemovalJson $markerPath}catch [IO.InvalidDataException]{}
+        $bound=$false;$sid=''
+        if($null -ne $marker -and $null -ne $marker.PSObject.Properties['schema'] -and $marker.schema -is [string] -and
+            $marker.schema -ceq 'label-match-machine-worker-pending-v1' -and
+            $null -ne $marker.PSObject.Properties['target_sid'] -and $marker.target_sid -is [string] -and
+            $marker.target_sid -cmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$' -and
+            $null -ne $marker.PSObject.Properties['install_id'] -and $marker.install_id -is [string] -and $marker.install_id -cmatch '^\d{8}T\d{9}Z-[0-9a-f]{32}$' -and
+            $null -ne $marker.PSObject.Properties['source_commit'] -and $marker.source_commit -is [string] -and $marker.source_commit -cmatch '^[0-9a-f]{40}$'){
+            $sid=[string]$marker.target_sid;$bound=$true
+        }
+        if($WorkerAccount){
+            $explicit=Resolve-LabelRemovalAccountSid $WorkerAccount
+            if($bound -and $explicit -cne $sid){throw 'REMOVAL_WORKER_BINDING_DIFFERS'}
+            if(-not $bound){$sid=$explicit}
+        }
+        if(-not $sid){throw 'REMOVAL_WORKER_BINDING_UNKNOWN'}
+        $profile=Get-LabelRemovalWorkerProfile $sid
+        if(-not $profile.exists){if($bound){return @{proof='PROFILE_ABSENT';run_present=$null}};throw 'REMOVAL_WORKER_PROFILE_REQUIRED'}
+        $hive=$null
+        if($bound){
+            try{$hive=Get-LabelRemovalWorkerHiveState $sid}catch{}
+            if($null -ne $hive -and $hive.loaded -eq $true -and $hive.completed -eq $false -and $hive.run_present -eq $false){return @{proof='NEVER_STARTED';run_present=$false}}
+        }
+        $receiptPath=Join-Path $profile.root 'AppData\Local\KMTech\DirectSync\label_match\status\current_user_removal.json'
+        $receipt=Read-LabelRemovalJson $receiptPath
+        if($null -ne $receipt -and $null -ne $receipt.PSObject.Properties['operator_sid'] -and $receipt.operator_sid -is [string] -and $receipt.operator_sid -ceq $sid -and
+            $null -ne $receipt.PSObject.Properties['status'] -and $receipt.status -is [string] -and $receipt.status -ceq 'PASS_DATA_PRESERVED' -and
+            $null -ne $receipt.PSObject.Properties['machine_code_root'] -and $receipt.machine_code_root -is [string] -and (Test-SamePath ([string]$receipt.machine_code_root) $current)){
+            return @{proof='USER_RECEIPT';run_present=$(if($null -ne $hive){$hive.run_present}else{$null})}
+        }
+        if($bound){
+            $account=Get-LabelRemovalLocalAccountState $sid
+            if($account -cin @('ABSENT','DISABLED')){return @{proof='ACCOUNT_UNAVAILABLE';run_present=$(if($null -ne $hive){$hive.run_present}else{$null})}}
+        }
+        throw 'REMOVAL_WORKER_PART_UNPROVEN'
+    } catch {
+        $refusal=[InvalidOperationException]::new('작업자 계정으로 먼저 제거(사용자 몫)를 실행한 뒤 다시 시도하세요.')
+        $refusal.Data['label_installer_reason_code']='MACHINE_REMOVAL_WORKER_PART_PENDING'
+        throw $refusal
+    }
+}
+
 function Assert-LabelRemovalQuiescent([string]$ApplicationRoot, [int[]]$ExcludeProcessIds = @()) {
-    $prefix = (Get-StrictFullPath $ApplicationRoot 'removal process root') + '\'
     $rows = @(Get-CimInstance Win32_Process -ErrorAction Stop)
     if ($rows.Count -eq 0) { throw 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN' }
+    $verified=@(Get-LabelVerifiedRemovalProcessChain $rows $ApplicationRoot)
     foreach ($row in $rows) {
         if ($null -eq $row.ProcessId) { throw 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN' }
-        if ([int]$row.ProcessId -eq $PID -or [int]$row.ProcessId -in $ExcludeProcessIds) { continue }
-        if (([string]$row.ExecutablePath).StartsWith($prefix, 'OrdinalIgnoreCase') -or
-            ([string]$row.CommandLine).IndexOf($prefix, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        if ([int]$row.ProcessId -eq $PID -or [int]$row.ProcessId -in $verified) { continue }
+        if (Test-LabelRemovalProcessReferencesRoot $ApplicationRoot ([string]$row.ExecutablePath) ([string]$row.CommandLine)) {
             throw 'REMOVAL_REQUIRES_PRODUCT_PROCESS_STOP'
         }
     }
@@ -2056,7 +2292,7 @@ function Remove-LabelEmptiedParents([string]$Path, [string[]]$Directories) {
     }
 }
 
-function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]]$ExcludeProcessIds = @(), [string[]]$AdditionalRetainedPaths = @()) {
+function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]]$ExcludeProcessIds = @(), [string[]]$AdditionalRetainedPaths = @(), [hashtable]$WorkerPartProof = $null) {
     $current = Get-StrictFullPath $InstallRoot 'removal current'
     if ((Split-Path -Leaf $current) -cne 'current') { throw 'REMOVAL_CURRENT_PATH_INVALID' }
     $application = Get-StrictFullPath (Split-Path -Parent $current) 'removal application'
@@ -2094,6 +2330,9 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
     }
     Assert-LabelRemovalQuiescent $application $ExcludeProcessIds
     $plan = Get-LabelRemovalArtifacts $application
+    if ($null -ne $WorkerPartProof) {
+        $plan.decisions += @{path='application';disposition=('WORKER_PART_'+$WorkerPartProof.proof);worker_run_present=$WorkerPartProof.run_present}
+    }
     if (Test-Path -LiteralPath $markerPath) { $plan.artifacts += $markerPath }
     $changedMetadataRoots = @(); $cleanupRetained = @()
     foreach ($path in $plan.artifacts) {
@@ -2175,7 +2414,7 @@ if ($WorkerSid) {
     $OperatorSid = $WorkerSid
 }
 $testOverride = $earlyTestOverride
-if ([string]::IsNullOrWhiteSpace($OperatorLocalAppDataRoot)) {
+if (-not $Uninstall.IsPresent -and [string]::IsNullOrWhiteSpace($OperatorLocalAppDataRoot)) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "The invoking operator LOCALAPPDATA is unavailable." }
     $OperatorLocalAppDataRoot = [IO.Path]::GetFullPath($env:LOCALAPPDATA)
 }
@@ -2191,20 +2430,8 @@ $installRootFull = Get-StrictFullPath $InstallRoot "InstallRoot"
 if (-not (Test-SamePath $installRootFull $ExpectedInstallRoot) -and -not $testOverride) {
     throw "InstallRoot must be the hardened Label_Match code root."
 }
-if (
-    $Uninstall.IsPresent -and
-    -not $DryRun.IsPresent -and
-    -not $testOverride -and
-    (Test-CurrentUserRelayPersistencePresent)
-) {
-    $refusal=[InvalidOperationException]::new((
-        "작업자의 자동 전송 설정이 남아 있어 코드 제거를 멈췄습니다. " +
-        "다음: 같은 작업자 계정에서 main --remove-current-user-setup을 마친 뒤, " +
-        "관리자가 -Uninstall을 -WorkerSid 없이 다시 실행하세요."
-    ))
-    $refusal.Data['label_installer_reason_code']='CURRENT_USER_RELAY_SETUP_PRESENT'
-    throw $refusal
-}
+$removalWorkerPartProof=$null
+if ($WorkerAccount -and -not $Uninstall.IsPresent) { throw 'WorkerAccount is only supported for code removal.' }
 if (
     -not $DryRun.IsPresent -and
     -not $Uninstall.IsPresent -and
@@ -2280,6 +2507,8 @@ if ($Uninstall.IsPresent) {
     # A canonical caller retains its exact, preloaded deployment delegation.
     if (-not $testOverride -and $WriterFenceFunctionsPreloaded.IsPresent) {
         $lease = Enter-LabelCanonicalPlacement
+    } elseif (-not $testOverride) {
+        $removalWorkerPartProof=Assert-LabelMachineRemovalWorkerPart -InstallRoot $installRootFull -WorkerAccount $WorkerAccount
     }
     try {
         $application = Split-Path -Parent $installRootFull
@@ -2314,7 +2543,7 @@ if ($Uninstall.IsPresent) {
             Invoke-LabelWorkerShortcutOperation $installRootFull 'Restore' $WorkerShortcutRecordPath `
                 $VerifiedWorkerShortcutHelperPath $ExpectedWorkerShortcutHelperSha256
         }
-        $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder -AdditionalRetainedPaths $emergencyRetainedPaths
+        $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder -AdditionalRetainedPaths $emergencyRetainedPaths -WorkerPartProof $removalWorkerPartProof
         } catch {
             if ($null -eq $emergencyRemovalFailure) { throw }
             $causes = @($emergencyRemovalFailure.Exception)

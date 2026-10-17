@@ -1,0 +1,15 @@
+{
+  "source_sha256": {
+    "kit-core.ps1": "dcf7fb994455b47126ee0557511a70f3eb9c5b5694e4012f427e27c8fce43a6f",
+    "README.md": "cdf14c1a1394ce57ed79413afe2d0c94b95085cf88ac8d676e7e7dd4a380a3a0",
+    "SHA256SUMS": "6fc45ecdf45186c6b56d86875f1b159039c3703c27f92beff1a32b57327a9e4a"
+  },
+  "kit_core_line": 256,
+  "readme_lines": [
+    134,
+    135
+  ],
+  "arguments": [
+    "-Uninstall"
+  ]
+}

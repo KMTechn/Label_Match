@@ -1,5 +1,26 @@
 # Label_Match 운영·복구·검증
 
+## 관리자 제거의 작업자 증명과 재시도
+
+작업자는 먼저 공개 `--remove-current-user-setup`을 실행한다. 제거가 이미 끝난
+계정에서도 다시 실행하면 `operator_sid`가 있는 새 `PASS_DATA_PRESERVED` 보고를
+발급하며 자료·신원·설정·원장·대기 파일을 보존한다. 관리자는 그 뒤 같은 packet의
+`INSTALL_THIS_PC.ps1 -Uninstall`을 실행한다. `-WorkerSid`는 관리자 제거 인수가 아니다.
+보호 worker-pending 표지가 없거나 잘못된 옛 설치는 `-WorkerAccount`를 명시할 수
+있고, 이 길은 해당 SID 프로필의 정확한 새 사용자 제거 영수증만 허용한다.
+
+표지가 있는 설치는 첫 준비 전을 읽기로 증명하거나, 프로필 부재, 정확한 사용자
+제거 영수증, 해당 PC 로컬 작업자 계정 삭제/Disabled를 증명해 진행한다. 로컬 계정
+사용 불가 때 남은 Run은 참/거짓/불명 감사에만 남긴다. 도메인 계정·일시 잠김·만료·
+조회 실패는 사용 불가 증명이 아니다. 증명이 안 되면
+`MACHINE_REMOVAL_WORKER_PART_PENDING`과 작업자 사용자 몫 제거 안내를 내며
+코드·작업·바로 가기는 바꾸지 않는다. 다른 사용자 hive 로드·쓰기와 자동 값 삭제는 없다.
+
+키트/SSH의 OS 셸 조상은 PID 사슬·생성 시각·허용된 OS 엔진과 경로를 검증해서만
+제외한다. `-InstallRoot` 밖의 인수에 앱 뿌리가 있거나 runtime/사슬 밖 프로세스가
+남으면 기존 정지 요구를 유지한다. 정확한 packet 호출 꼴과 실제 현장 수용은
+각 회차의 별도 증거로 확인한다.
+
 종료 취소 `APP_CLOSE_CANCELLED`와 `멈춤 요청 미룸`은 `local_events/포장실로컬이벤트로그_*.csv`에 보존한다(w9firstupdsub247). 서버 catalog에 없는 이 감사가 업무 CSV에 섞이면 격리·UNKNOWN 영수증으로 정상 relay ACK를 막으므로 앞으로 생성하는 행은 로컬 전용이다. 이미 생성된 업무 CSV·spool·operator_review는 자동 수정하거나 지우지 않는다. 현재 서버 catalog 고정 사본과 구 bundle을 emitter 전체에 대조하는 정책 시험 및 실제 CSV→relay receipt→상태 되읽기 회귀로 확인한다.
 
 v2.0.107 화면 몫(w9firstupdsub208)은 웹 a1b37ce25a28f4147f15b3e58b4cc900c8be6f97의 exporter 사본 76개 파일(parts fingerprint 551f9c24957b974a)을 고정한다. 다리 글·원문 코드·교환 두 칸·품목별 전체 제품 수와 부분 제출 확인 뒤 즉시 release를 반영했다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다.

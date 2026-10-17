@@ -654,7 +654,7 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot, [ValidateSet('portab
             throw "Shared PowerShell path contains a reparse point: $path"
         }
     }
-    $expectedManifestSha = '8c310e69a97c613dbfc3405b17e2ca9f15290a4373c98c140510ea16b9d94c84'
+    $expectedManifestSha = '9bdace18db6c6f124ca02418376f4005b8a46b4e82a64033a0407f7c7e988c37'
     $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
     if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
     $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json

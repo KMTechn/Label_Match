@@ -87,7 +87,7 @@ function Assert-KmtechPortableTree([string]$Root, [string[]]$RequiredFiles) {
 # Preserve canonical installer provider-path and JSON error behavior.
 function Read-KmtechPortableManifest([string]$Root) {
     $path = Join-Path $Root 'portable-manifest.json'
-    if ((Get-Item $path).Length -gt 65536) { throw 'Portable manifest is oversized.' }
+    if ((Get-Item $path -Force).Length -gt 65536) { throw 'Portable manifest is oversized.' }
     $value = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
     # Keep the parser's assigned shape across this extra function boundary.
     # The app's original schema/property checks must see arrays and null intact.
