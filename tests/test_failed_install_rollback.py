@@ -8,7 +8,7 @@ INSTALLER = Path(__file__).resolve().parents[1] / 'INSTALL_CANONICAL_PORTABLE.ps
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
 def test_packet_runtime_removal_binds_canonical_logical_root(tmp_path, engine):
     result = run_functions(tmp_path, INSTALLER, ['Arg', 'Product', 'Initialize-LabelChildOutputReader',
-                           'ConvertTo-LabelFailureOutput', 'Protect-LabelFailureText', 'New-LabelChildFailure'], r'''
+                           'ConvertTo-LabelFailureOutput', 'Protect-LabelFailureText', 'New-LabelChildFailure'], r"""
 $source=Join-Path $env:LM_ROLLBACK_ROOT 'packet'
 $install=Join-Path $env:LM_ROLLBACK_ROOT 'canonical\current'
 New-Item -ItemType Directory -Path (Join-Path $source 'runtime') -Force | Out-Null
@@ -28,11 +28,14 @@ public static class ArgumentProbe {
 [IO.File]::WriteAllText($compiler,$compilerText,[Text.UTF8Encoding]::new($false))
 & powershell.exe -NoProfile -NonInteractive -File $compiler (Join-Path $source 'runtime\pythonw.exe')
 if($LASTEXITCODE -ne 0){throw 'Isolated child compilation failed'}
+# 25a7d2a: the packet fixture must include a supported headless entry.
+[void][IO.Directory]::CreateDirectory((Join-Path $source 'app'))
+[IO.File]::WriteAllText((Join-Path $source 'app\label_match_relay_entry.py'), '')
 Product $source '--remove-current-user-setup' -LogicalAppRoot $install
 $actual=[IO.File]::ReadAllLines($capture)
-if($actual.Count -ne 6 -or $actual[2] -cne (Join-Path $source 'app\main.py') -or $actual[3] -cne '--remove-current-user-setup' -or $actual[5] -cne $install){throw 'Packet source was used as logical install root.'}
+if($actual.Count -ne 6 -or $actual[2] -cne (Join-Path $source 'app\label_match_relay_entry.py') -or $actual[3] -cne '--remove-current-user-setup' -or $actual[5] -cne $install){throw 'Packet source was used as logical install root.'}
 'PASS'
-''', engine=engine, values={'LM_ROLLBACK_ROOT': str(tmp_path)})
+""", engine=engine, values={'LM_ROLLBACK_ROOT': str(tmp_path)})
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -46,7 +49,9 @@ def test_actual_install_rollback_attempts_later_restoration_and_records_failure(
     names.extend(['ByteSha', 'InvokeFrozenPlacementHelper'])
     if 'function Assert-LabelRollbackGeneration' in INSTALLER.read_text(encoding='utf-8'):
         names.append('Assert-LabelRollbackGeneration')
-    result = run_functions(tmp_path, INSTALLER, names, r'''
+    result = run_functions(tmp_path, INSTALLER, names + ['Get-LabelLaunchFailure'], ". '" + str((INSTALLER.parent / "tools/failure_redaction.ps1")).replace("'", "''") + "'\n" + r"""
+function Wait-LabelRollbackRelayReady { return $true }
+
 $root=$env:LM_ROLLBACK_ROOT
 . (Join-Path (Split-Path -Parent $env:LM_CONTRACT_SOURCE) 'kmtech_shared/powershell/data_generation.ps1')
 $generationSubjectSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -140,5 +145,5 @@ if(@($audit.rollback.step_failures).Count -eq 0){throw 'Original rollback step f
 if($env:LM_ROLLBACK_CUT -in @('task','custody') -and $events.Contains('fence-release')){throw 'Unproven recovery released the protective fence.'}
 if($env:LM_ROLLBACK_CUT -in @('remove','run') -and -not $events.Contains('fence-release')){throw 'Proven recovery skipped fence release because an earlier phase failed.'}
 'PASS'
-''', engine=engine, values={'LM_ROLLBACK_ROOT': str(tmp_path), 'LM_ROLLBACK_CUT': cut})
+""", engine=engine, values={'LM_ROLLBACK_ROOT': str(tmp_path), 'LM_ROLLBACK_CUT': cut})
     assert result.returncode == 0, result.stdout + result.stderr
