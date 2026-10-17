@@ -123,6 +123,24 @@ def test_quiesced_transport_companion_refuses_signed_g_reverse(pair):
     assert 'WRITER_TRANSITION_SOURCE_SET_DIFFERS' in reverse.stderr
 
 
+def test_unpinned_transport_companion_mix_is_rejected_before_writes(pair):
+    old, new = pair
+    installed = new.parent / 'quiesced-g'
+    shutil.copytree(new, installed)
+    # Remove the older audit-index companion so this rejection identifies
+    # the independent, forward-only maintenance admission repair.
+    for relative in ('app/label_data_manager.py', 'app/label_recovery_schema.py'):
+        (installed / relative).write_bytes((old / relative).read_bytes())
+    before = {path.relative_to(installed): path.read_bytes()
+              for path in installed.rglob("*") if path.is_file()}
+    reverse = probe(old, installed, signed=True)
+    assert reverse.returncode != 0
+    assert "WRITER_TRANSITION_PIN_INVALID" in reverse.stderr
+    after = {path.relative_to(installed): path.read_bytes()
+             for path in installed.rglob("*") if path.is_file()}
+    assert after == before
+
+
 @pytest.mark.parametrize('mutation', ['runtime', 'extra_app', 'helper', 'old_source', 'shutdown_notice', 'old_notice', 'corrected_host'])
 def test_g_pair_rejects_changes_outside_its_exact_declaration(pair, mutation):
     old, new = pair
