@@ -1966,6 +1966,7 @@ function Get-LabelVerifiedRemovalProcessChain([object[]]$Rows,[string]$Applicati
             if (([datetime]$parent.CreationDate).ToUniversalTime() -ge ([datetime]$child.CreationDate).ToUniversalTime()) { break }
             foreach ($node in @($child,$parent)) {
                 $again=@(Get-CimInstance Win32_Process -Filter ('ProcessId = '+[int]$node.ProcessId) -ErrorAction Stop)
+                if ($again.Count -eq 1 -and ([string]::IsNullOrWhiteSpace([string]$again[0].CreationDate) -or [string]::IsNullOrWhiteSpace([string]$again[0].ParentProcessId))) { throw 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN' }
                 if ($again.Count -ne 1 -or [int]$again[0].ProcessId -ne [int]$node.ProcessId -or
                     [int]$again[0].ParentProcessId -ne [int]$node.ParentProcessId -or
                     $null -eq $again[0].CreationDate -or
@@ -1981,7 +1982,7 @@ function Get-LabelVerifiedRemovalProcessChain([object[]]$Rows,[string]$Applicati
             if (@($engines | Where-Object {$image.Equals($_,[StringComparison]::OrdinalIgnoreCase)}).Count -ne 1) { break }
             $rest=[regex]::Replace([string]$parent.CommandLine,'(?i)(?<![a-z0-9_-])-InstallRoot\s+(?:"[^"]*"|''[^'']*''|[^\s"'';]+)','')
             if ((Test-LabelRemovalProcessReferencesRoot $ApplicationRoot '' $rest) -and -not (Test-LabelRemovalCanonicalOwner $parent)) { break }
-        } catch { break }
+        } catch { if ($_.Exception.Message -ceq 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN') { throw }; break }
         $chain += [int]$parent.ProcessId
         $child=$parent
     }

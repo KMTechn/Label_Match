@@ -20,7 +20,7 @@ CASES = [
     "pending_run_lower", "completed_lower",
     "canonical_owner", "canonical_packet_differs", "canonical_unknown_argument",
     "parent_ended", "four_shell_chain",
-    "entry_missing_receipt", 'never_started','large_marker','large_receipt','kit_bound','kit_missing_marker','kit_invalid_marker','same_birth', 'broken_top', 'newer_top', 'blank_birth', 'blank_parent', 'above_unrecognized', 'syswow64', 'cwd_only', 'entry_delegated', 'entry_raw_switch',
+    "entry_missing_receipt", 'never_started','large_marker','large_receipt','kit_bound','kit_missing_marker','kit_invalid_marker','refresh_blank_birth','refresh_blank_parent','same_birth', 'broken_top', 'newer_top', 'blank_birth', 'blank_parent', 'above_unrecognized', 'syswow64', 'cwd_only', 'entry_delegated', 'entry_raw_switch',
 ]
 
 

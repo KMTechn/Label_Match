@@ -29,7 +29,7 @@ $script:BootstrapIntegrityPreloaded=[Management.Automation.SwitchParameter]$fals
 $script:WriterFenceFunctionsPreloaded=[Management.Automation.SwitchParameter]$false
 function Assert-ProtectedCodeAncestors([string]$Path) {}
 
-if($Case -in @('same_birth','broken_top','newer_top','blank_birth','blank_parent','above_unrecognized','syswow64','cwd_only','ancestor','outsider','runtime_ancestor','wrong_engine','reused_pid','other_argument','peer_root','normalized_root','canonical_owner','canonical_packet_differs','canonical_unknown_argument','parent_ended','four_shell_chain')){
+if($Case -in @('refresh_blank_birth','refresh_blank_parent','same_birth','broken_top','newer_top','blank_birth','blank_parent','above_unrecognized','syswow64','cwd_only','ancestor','outsider','runtime_ancestor','wrong_engine','reused_pid','other_argument','peer_root','normalized_root','canonical_owner','canonical_packet_differs','canonical_unknown_argument','parent_ended','four_shell_chain')){
     $birth=[datetime]::UtcNow.AddMinutes(-1)
     $engine=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
     $parentId=($PID+10000)
@@ -82,7 +82,16 @@ if($Case -in @('same_birth','broken_top','newer_top','blank_birth','blank_parent
     if($Case -eq 'syswow64'){$script:Rows[1].ExecutablePath=Join-Path (Split-Path ([Environment]::SystemDirectory) -Parent) 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'}
     if($Case -eq 'cwd_only'){$script:Rows[1].CommandLine='powershell.exe';$script:Rows[1] | Add-Member NoteProperty WorkingDirectory $current}
     function Get-CimInstance {param($ClassName,$Filter,$ErrorAction)
-        if($Filter){$id=[int]($Filter -replace '^ProcessId = ','');if($Case -eq 'parent_ended' -and $id -eq $parentId){return @()};return @($script:Rows | Where-Object {$_.ProcessId -eq $id})}
+        if($Filter){
+            $id=[int]($Filter -replace '[^0-9]','')
+            if($Case -eq 'parent_ended' -and $id -eq $parentId){return @()}
+            if($Case -in @('refresh_blank_birth','refresh_blank_parent') -and $id -eq $parentId){
+                $copy=@($script:Rows | Where-Object ProcessId -eq $id)[0].PSObject.Copy()
+                if($Case -eq 'refresh_blank_birth'){$copy.CreationDate=$null}else{$copy.ParentProcessId=''}
+                return $copy
+            }
+            return @($script:Rows | Where-Object {$_.ProcessId -eq $id})
+        }
         return $script:Rows
     }
     function Get-LabelRemovalNativeProcessStartTime([int]$ProcessId){
@@ -92,7 +101,7 @@ if($Case -in @('same_birth','broken_top','newer_top','blank_birth','blank_parent
     }
     $rejected=$false
     try { Assert-LabelRemovalQuiescent $application }
-    catch {if($Case -in @('blank_birth','blank_parent')){if($_.Exception.Message -cne 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN'){throw}}elseif($_.Exception.Message -cne 'REMOVAL_REQUIRES_PRODUCT_PROCESS_STOP'){throw};$rejected=$true}
+    catch {if($Case -in @('refresh_blank_birth','refresh_blank_parent','blank_birth','blank_parent')){if($_.Exception.Message -cne 'REMOVAL_PROCESS_OBSERVATION_UNKNOWN'){throw}}elseif($_.Exception.Message -cne 'REMOVAL_REQUIRES_PRODUCT_PROCESS_STOP'){throw};$rejected=$true}
     $expectedReject=$Case -notin @('broken_top','newer_top','cwd_only','ancestor','peer_root','canonical_owner','four_shell_chain')
     if($rejected -ne $expectedReject){throw 'PROCESS_ADMISSION_DIFFERS'}
 } else {
