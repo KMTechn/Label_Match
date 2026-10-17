@@ -48,6 +48,9 @@ def companion_g_source(tmp_path_factory):
 
 
 def _pair_layouts(tmp_path, baseline_source, candidate_source):
+    from tools import build_portable_release_candidate as candidate_builder
+    from tools import refresh_first_update_declarations as generator
+
     result = []
     for name, source in (('old', baseline_source), ('new', candidate_source)):
         package = tmp_path / name
@@ -57,7 +60,19 @@ def _pair_layouts(tmp_path, baseline_source, candidate_source):
         import_path = sys.path[:]
         try:
             spec.loader.exec_module(own_builder)
-            own_builder._copy_application(source, package / 'app')
+            generator.application_layout(source, package)
+            if name == "old":
+                # old 개발 원천은 3자 제외 정책 앞이다: operations.md:1582의 제자리 교체 미지원 꼴.
+                # 이 fixture는 G writer 뜻만 보도록 현재 제외 정책을 두 쪽에 같게 맞춘다.
+                site_packages = (package / "app/site-packages").resolve()
+                for relative in candidate_builder.THIRD_PARTY_EXCLUDED_PATHS:
+                    excluded = (site_packages / relative).resolve()
+                    if not excluded.is_relative_to(site_packages):
+                        raise ValueError("third-party exclusion escapes site-packages")
+                    if excluded.is_dir():
+                        shutil.rmtree(excluded)
+                    elif excluded.is_file():
+                        excluded.unlink()
         finally:
             sys.path[:] = import_path
         (package / 'runtime').mkdir()
@@ -92,9 +107,6 @@ def _pair_layouts(tmp_path, baseline_source, candidate_source):
         (package / 'portable-manifest.json').write_text(json.dumps({
             'source_commit': commit}), encoding='utf-8')
         if (source / 'tools/apply_prepared_update.ps1').is_file():
-            from auto_update import canonical_startup_settings
-            (package / 'app/auto-update-settings.json').write_bytes(
-                canonical_startup_settings({}))
             public = json.loads((source / 'config/update-manifest-key-config.json').read_text(
                 encoding='utf-8-sig'))
             (package / 'app/update-manifest-key-config.json').write_bytes(
