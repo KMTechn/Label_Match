@@ -25,7 +25,7 @@ $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $Repo 'INSTALL_THIS_PC.ps1'),[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'source parse failed' }
-$names=@('Get-StrictFullPath','Test-SamePath','Get-LabelRemovalIoPath','Assert-LabelRemovalBoundary',
+$names=@('Get-LabelVerifiedRemovalProcessChain','Test-LabelRemovalProcessReferencesRoot','Test-LabelRemovalCanonicalOwner','Get-LabelRemovalNativeProcessStartTime','Get-StrictFullPath','Test-SamePath','Get-LabelRemovalIoPath','Assert-LabelRemovalBoundary',
     'Assert-LabelRemovalQuiescent','Remove-LabelScheduledTasks', 'Get-LabelSupportedStartupTasks',
     'Test-LabelRemovalFile','Get-LabelArtifactFilePlan',
     'Get-LabelRemovalArtifacts','Remove-LabelEmptiedParents','Invoke-LabelConvergentRemoval')
@@ -77,9 +77,9 @@ function Get-LabelSupportedStartupTasks { param($Root)
 function Get-OwnedLegacyTaskRetirementSnapshot { return $null }
 function Get-CimInstance {
     if ($script:processScenario -eq 'process-unknown') { return @() }
-    if ($script:processScenario -eq 'process-live') { return [pscustomobject]@{ProcessId=124;ExecutablePath=(Join-Path $Root 'versions\fixture\runtime\python.exe');CommandLine='fixture'} }
-    if ($script:processScenario -eq 'release-owner') { return [pscustomobject]@{ProcessId=123;ExecutablePath='fixture';CommandLine=(Join-Path $Root 'current')} }
-    return [pscustomobject]@{ProcessId=$PID;ExecutablePath='fixture';CommandLine='fixture'}
+    if ($script:processScenario -eq 'process-live') { return [pscustomobject]@{ProcessId=124;ParentProcessId=0;CreationDate=[datetime]::UtcNow;ExecutablePath=(Join-Path $Root 'versions\fixture\runtime\python.exe');CommandLine='fixture'} }
+    if ($script:processScenario -eq 'release-owner') { return [pscustomobject]@{ProcessId=123;ParentProcessId=0;CreationDate=[datetime]::UtcNow;ExecutablePath='fixture';CommandLine=(Join-Path $Root 'current')} }
+    return [pscustomobject]@{ProcessId=$PID;ParentProcessId=0;CreationDate=[datetime]::UtcNow;ExecutablePath='fixture';CommandLine='fixture'}
 }
 function Write-LabelStartupUpdateRecord {
     param([string]$Path,$Payload,[switch]$ProtectedOwner)

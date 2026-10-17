@@ -2052,7 +2052,7 @@ def _phs_exchange_failure(error):
 
 def _startup_send_wait_message(error, fallback):
     if str(getattr(error, "code", "")).startswith("STARTUP_VERIFICATION_"):
-        return '서버 보내기 확인 중입니다.\n잠시 후 다시 시도하세요.'
+        return '서버 보내기 확인 중입니다.\n잠시 뒤 다시'
     return fallback
 
 

@@ -2,7 +2,7 @@
   "files": [
     {
       "path": "kmtech_shared/__init__.py",
-      "sha256": "69fd58b999defcac181a82d3f93ca0288425fce037ab0bdb4c4d3bd9da5f0a17"
+      "sha256": "20a78c178bcbf0ac93e805b6a151b9b0cfdea654647b62d68e54017679e3a979"
     },
     {
       "path": "kmtech_shared/catalog.py",
@@ -22,7 +22,7 @@
     },
     {
       "path": "kmtech_shared/powershell/portable.ps1",
-      "sha256": "2fd1e3f4992f717ffb612e340d13ced046cde05933775e03d2f57acca3333607"
+      "sha256": "eba0b2d69b831d386d2668e5605e63807d27612b877115a53a038a8b283dbb70"
     },
     {
       "path": "kmtech_shared/powershell/ps51_module_prologue.ps1",

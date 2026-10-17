@@ -268,8 +268,8 @@ def test_phs_wait_survives_typed_ui_failure_without_conflict_instruction():
     failure = gui._phs_exchange_failure(wrapped)
     assert failure.retryable is True and failure.commit_state == "unknown"
     # operations.md startup-send deferral; wording map introduced in 8290f94.
-    # operations.md:1447; exact bridge wording introduced by 8290f94.
-    assert gui._startup_send_wait_message(failure, 'fallback') == '서버 보내기 확인 중입니다.\n잠시 후 다시 시도하세요.'
+    # operations.md#window-first-startup; exact bridge wording introduced by 8290f94.
+    assert gui._startup_send_wait_message(failure, 'fallback') == '서버 보내기 확인 중입니다.\n잠시 뒤 다시'
 
 
 @pytest.fixture
@@ -365,8 +365,8 @@ def test_pin_startup_deferral_explains_attempt_is_not_counted():
     from label_admin_pin import operator_message
     message = operator_message("STARTUP_VERIFICATION_PENDING")
     # operations.md: startup PIN hold sends nothing and counts no wrong attempt.
-    # operations.md:1447; exact startup PIN wording introduced by 8290f94.
-    assert message == '서버 보내기 확인 중입니다\n잠시 후 다시 시도하세요\n자세히: 이 건만 보류합니다. 틀린 횟수로 세지 않습니다'
+    # operations.md#window-first-startup; exact startup PIN wording introduced by 8290f94.
+    assert message == '서버 보내기 확인 중입니다\n잠시 뒤 다시\n이 건만 보류 — 틀린 횟수로 세지 않음'
 
 
 @pytest.fixture

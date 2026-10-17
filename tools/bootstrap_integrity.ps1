@@ -658,7 +658,7 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot, [ValidateSet('portab
     $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
     if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
     $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$lock.version -cne '0.3.6' -or [string]$lock.manifest_sha256 -cne $expectedManifestSha) {
+    if ([string]$lock.manifest_sha256 -cne $expectedManifestSha) {
         throw 'Shared consumer manifest pin mismatch.'
     }
     $manifestPath = Join-Path $appRoot 'kmtech_shared.manifest.json'
@@ -670,6 +670,9 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot, [ValidateSet('portab
     } finally { $hash.Dispose() }
     if ($actualManifestSha -cne $expectedManifestSha) { throw 'Shared manifest pin mismatch.' }
     $pinnedSharedManifest = (New-Object Text.UTF8Encoding($false, $true)).GetString($manifestBytes) | ConvertFrom-Json
+    if ([string]$lock.version -cne [string]$pinnedSharedManifest.version) {
+        throw 'Shared consumer manifest pin mismatch.'
+    }
     $sharedLeaf = Join-Path $appRoot ('kmtech_shared\powershell\' + $Leaf)
     $expectedLeafSha = $pinnedSharedManifest.files.('kmtech_shared/powershell/' + $Leaf)
     $stream = [IO.File]::OpenRead($sharedLeaf)

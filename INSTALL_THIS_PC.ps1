@@ -239,7 +239,7 @@ if (-not (Get-Command ConvertTo-KmtechRedactedSinkText -CommandType Function -Er
         # these exact packet diagnostics may load in its fresh process.
         $UninstallRedactionPins = [ordered]@{
             'tools/failure_redaction.ps1' = 'd695563e82d54ccf8d577859184438cc8eea36b72ea2ddd79e06127a7759ef43'
-            'tools/failure_redaction_rules.json' = 'bab6f3bb441cfb11d8ab0e4f0944605fa07577ad8b0c2cccc893c4d3d07391fd'
+            'tools/failure_redaction_rules.json' = 'a956bc177afd19cb358d2b30ada9dd44b14b8d66b046cad91fc43cec2d94f76a'
         }
         foreach ($relative in $UninstallRedactionPins.Keys) {
             if ((Get-EarlyFileSha256 (Join-Path $PSScriptRoot $relative)) -cne $UninstallRedactionPins[$relative]) {

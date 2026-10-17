@@ -177,6 +177,22 @@ def refresh(work: Path, *, check: bool, installed_refs: list[str]) -> None:
     sys.path.insert(0, str(ROOT))
     from writer_sink_inventory import derive_writer_sink_inventory, writer_sink_inventory_sha256
 
+    # Standalone removal cannot load bootstrap code to establish trust.
+    # Generate its two static pins from the candidate packet bytes instead.
+    entry = ROOT / "INSTALL_THIS_PC.ps1"
+    entry_raw = entry.read_bytes()
+    updated = entry_raw
+    for relative in ("tools/failure_redaction.ps1", "tools/failure_redaction_rules.json"):
+        digest = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest().encode()
+        pattern = rb"('" + re.escape(relative.encode()) + rb"' = ')[0-9a-f]{64}(')"
+        updated, count = re.subn(pattern, lambda match: match[1] + digest + match[2], updated)
+        if count != 1:
+            raise ValueError("standalone removal diagnostic pin is ambiguous: " + relative)
+    if check and entry_raw != updated:
+        raise ValueError("standalone removal diagnostic pins are stale")
+    if not check:
+        entry.write_bytes(updated)
+
     rows = derive_writer_sink_inventory(ROOT)
     inventory = writer_sink_inventory_sha256(rows)
     pins = {}

@@ -34,7 +34,7 @@ $exceptions=Get-Content -LiteralPath (Join-Path $HostRoot 'tests/fixtures/lm_ato
 $used=@{};$forbidden=@()
 $sharedExclusions = @{
     'kmtech_shared/powershell/data_generation.ps1' = 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'
-    'kmtech_shared/powershell/portable.ps1' = '2fd1e3f4992f717ffb612e340d13ced046cde05933775e03d2f57acca3333607'
+    'kmtech_shared/powershell/portable.ps1' = 'eba0b2d69b831d386d2668e5605e63807d27612b877115a53a038a8b283dbb70'
     'kmtech_shared/powershell/ps51_module_prologue.ps1' = '9c5e083b8e332573f3368be3e9592a2e2409aa89891e15942026361be17d0b71'
 }
 foreach($file in @(& git -C $HostRoot ls-files --cached --others --exclude-standard '*.ps1' '*.psm1')){
