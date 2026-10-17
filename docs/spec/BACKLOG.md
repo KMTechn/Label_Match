@@ -33,7 +33,7 @@
 
 - 첫 업데이트: 승인 from 표에서 v2.0.99/100을 뺄지, qrcode/tests 10파일의 정확한 바이트에 묶인 제거 선언 계약을 둘지 정한다. 현재 107 제자리 교체는 그 파일 집합 차이를 거절하며 지원은 코드 전용 제거 후 새 설치다.
 
-- 정식 멈춤의 relay stop 표지가 아침 relay-only trial을 막음: 하루 마감 멈춤 → 아침 재개(D)는 밤 멈춤을 안 쓰므로 뒤로 미룬다.
+- G43 / LM113 L1: relay stop 표지가 있으면 후보 적용을 DEFERRED·UPDATE_RELAY_STOP_REQUESTED(recovery_pending 키 없음)로 미룬다. 기존 onboarding 재개 뒤 다음 로그온 적용을 사용한다. headless 회귀와 실제 로그온 수용은 구별한다.
 
 - bootstrap 없는 SYSTEM 적용이 정상 후보를 실패 판으로 막음: 제품 C(bootstrap 부재면 적용 전 DEFERRED)는 10/16 로그온 장면의 경쟁 실측 뒤 정한다.
 
@@ -647,7 +647,7 @@ W5-S0는 기존 scope tuple 3곳과 package-client 생성 1곳의 named 전달�
 
 - sub-458: 기존 설치기/진단 fixture 실패는 최종 동일 시험 본문의 clean 기준·후보에서 단언 AST·예외 형식·오류 코드가 일치한 경우만 상속으로 기록한다. fixture 정리는 컷 뒤이며 원 출력과 분류는 `D:/KMTech/program-improvement-20260912/work/program/w9scanonly/sub-458/INHERITED-FAILURES.md`에 보존한다.
 
-D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
+D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 앞 판 포인터를 복원하고 ROLLBACK_PENDING_READY에서 실제 일반 relay의 역할별 READY를 확인한 뒤 ROLLED_BACK한다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
 SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
 늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
 
@@ -781,4 +781,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 
 - w9firstupdsub277 G46 P1 닫음: Observe에서 기존 판정이 참인 고정 GUI·relay bootstrap 행을 역할·소유자 조회 전에 제외해 되돌림 READY의 실제 relay 하나만 센다. READY·census 코드는 유지하며 실제 relay 둘의 확인 거절과 G41 동시 요청 재사용을 격리 회귀로 확인한다.
 
-- G45 잔류 P2(11/1): ROLLBACK_PENDING 감독 소실 뒤 relay만 살아 있으면 GUI가 안 열린다(claim ABSENT는 기존 0, NONE은 SYSTEM writer 거절 후 bootstrap 대기 종료). 이번 범위에서 고치지 않으며 안내는 「화면이 안 뜨면 지원에 연락」이다.
+- G45 / LM113 L1: ROLLBACK_PENDING + claim NONE/ABSENT에서 검증된 앞 판 active·일반 relay 하나·정착 phase와 같은 세대 ALLOW 증명으로 일반 GUI를 허용한다. 상태 쓰기·trial/READY 권한은 없고 writer 부재 뒤 SYSTEM 정착은 그사이 쓴 자료·원장을 보존한다. 실제 현장 수용은 별도 회차다.

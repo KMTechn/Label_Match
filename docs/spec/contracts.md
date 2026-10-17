@@ -551,7 +551,7 @@ U4 재포장 확인 상태(`REPACK_REOPEN_REFUSED`·`REPACK_PREDECESSOR_REVIEW_R
 
 진단 writer `startup_check_result`는 업무 쓰기 허가·네트워크·추가 mutex 없이 기존 결과를 `C:\ProgramData\KMTech\start-check\<YYYYMMDD>-LABEL.json` 한 줄로 원자 교체한다. 폴더가 없거나 쓰기 실패하면 조용히 계속하며 폴더·ACL은 설치 키트가 준비한다. `KMTECH_START_CHECK_TEST_CATEGORY`는 결과 묶음만 강제하는 시험 전용 입력이며 설치기·업데이트는 설정하지 않는다. 실제 시작 결정은 주입과 무관하다.
 
-D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 이미 확인된 판으로 ROLLED_BACK하며 두 번째 READY를 요구하지 않는다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
+D-16 S/E1–E9: READY 실패 뒤 writer 정상 부재와 실제 공통 SID G를 확인하고, 결정부터 내구 저장한 뒤 코드 포인터를 정착한다. G 불변·이전 판 ALLOW면 앞 판 포인터를 복원하고 ROLLBACK_PENDING_READY에서 실제 일반 relay의 역할별 READY를 확인한 뒤 ROLLED_BACK한다. G 진전은 후보를 유지하고 같은 bootstrap이 GUI 일반 실행을 시작한다. shared/owner marker와 업무 자료는 되돌리지 않는다.
 SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 및 FAILED/UNKNOWN 뒤에도 정확한 active 판이 G ALLOW면 기존 일반 사용자 경로로 시작한다. 현재 사용자·보호 runtime·active SHA 및 같은 시작 이후 GUI/relay cohort를 검증한다. startup의 update mutex와 native 시작은 직렬이며, writer mutex를 이미 가진 sink는 update mutex를 다시 얻지 않고 같은 조건을 읽기 전용으로 확인한다.
 늦은 SYSTEM이 기존 writer를 만나면 DEFERRED와 recovery_pending 및 원 phase·원 코드를 보존한다. writer 부재 뒤 같은 G decide로 한 번 정착하고 pending=false를 내구 저장한 다음에만 새 prepared를 적용한다. 다음 아이콘도 pending 회복을 요청한다. generation_before UNKNOWN에서는 trial을 시작하지 않으며 G 판정 불가는 기존 고정 지원 안내로 자료와 증거를 보존한다. 보고는 허용된 transition_code·retained_candidate만 사용한다. headless 실제 자식/서명 packet 회귀와 실제 GUI READY·SYSTEM task·랩 실물 수용은 구별한다.
 
@@ -637,8 +637,14 @@ v2.0.107 조립의 앱 판·자료 판·data_compatible_min_version 하한은 �
 
 <a id="ordinary-recovery-gui-cohort"></a>
 
-G41/G45 복구 cohort: 일반 복구 증명은 실제 검사한 writer 행을 돌려주며 relay 수·재사용·새 실행 결정은 그 행만 쓴다. GUI가 이미 있으면 기존 단일 실행을 유지한다. GUI가 없고 검증된 relay가 정확히 하나이면 FAILED/UNKNOWN + claim NONE/ABSENT, DEFERRED+recovery_pending + claim NONE/ABSENT, APPLIED_PENDING_READY/ROLLBACK_PENDING_READY + claim ABSENT에서만 일반 GUI 하나를 시작한다. 경계는 증명한 그 relay의 생성 시각이며 새 now를 쓰지 않는다. active SHA·operator·일반 권한·관측 가능·G ALLOW·역할·시각 중 하나라도 불명확하면 기존 진행 안내와 20으로 멈춘다. 새 GUI는 같은 경계로 startup gate와 writer admission을 통과하며 trial nonce나 READY 권한을 받지 않는다. phase·claim·pointer·trial·READY·지원 기록을 이 경로에서 쓰지 않는다. PREPARED·ROLLBACK_PENDING과 대기 상태 claim LIVE/NONE의 기존 trial 경로는 보존한다. SYSTEM guard와 READY 소비자는 바꾸지 않는다.
+G41/G45 복구 cohort: 일반 복구 증명은 실제 검사한 writer 행을 돌려주며 relay 수·재사용·새 실행 결정은 그 행만 쓴다. GUI가 이미 있으면 기존 단일 실행을 유지한다. GUI가 없고 검증된 relay가 정확히 하나이면 FAILED/UNKNOWN + claim NONE/ABSENT, DEFERRED+recovery_pending + claim NONE/ABSENT, APPLIED_PENDING_READY/ROLLBACK_PENDING_READY + claim ABSENT, ROLLBACK_PENDING + claim NONE/ABSENT에서만 일반 GUI 하나를 시작한다. 경계는 증명한 그 relay의 생성 시각이며 새 now를 쓰지 않는다. active SHA·operator·일반 권한·관측 가능·G ALLOW·역할·시각 중 하나라도 불명확하면 기존 진행 안내와 20으로 멈춘다. 새 GUI는 같은 경계로 startup gate와 writer admission을 통과하며 trial nonce나 READY 권한을 받지 않는다. phase·claim·pointer·trial·READY·지원 기록을 이 경로에서 쓰지 않는다. ROLLBACK_PENDING에서는 active가 앞 판 previous_sha이고 정착 phase와 같은 current_generation_status/probe_downgrade 증명이 ALLOW여야 한다. 자식 시작과 각 writer admission에서도 claim NONE/ABSENT·앞 판 active·일반 relay 정확히 하나를 다시 증명한다. GUI의 업무 쓰기 뒤 writer가 모두 닫히면 SYSTEM은 기존 세대 판정과 코드 포인터만 정착하며 그사이 쓴 업무 자료·원장·구성원·수량은 복원하거나 덮지 않는다. PREPARED와 APPLIED_PENDING_READY/ROLLBACK_PENDING_READY의 claim LIVE/NONE trial 경로 및 claim UNKNOWN의 기존 거절은 보존한다. SYSTEM guard와 READY 소비자는 바꾸지 않는다.
 
 G46: Observe는 설치기가 Run에 적는 고정 bootstrap 줄(GUI·relay)을 기존 bootstrap 판정 그대로 역할 분류 전에 빼 행으로 내지 않는다. 해당 줄은 READY relay 셈·census 밖이며, 실제 relay가 둘이면 지금처럼 확인하지 않는다.
 
 고정 bootstrap 줄은 소유자·manifest·권한 관측 전에 빠지므로 그 관측이 실패해도 census·READY를 막지 않는다. 관측된 고정 bootstrap은 원래도 census 밖이므로 성공한 경우와 결과가 같다. 실제 writer의 관측 불가 거절은 그대로다.
+
+### 업데이트 적용 전 relay 멈춤 표지
+
+G43: SYSTEM은 후보 포인터 전환 전 보호된 policy의 작업자 루트에서 relay stop 표지를 읽는다. 있으면 active와 표지를 보존하고 DEFERRED·reason_code=UPDATE_RELAY_STOP_REQUESTED(recovery_pending 키 없음)로 미룬다. PREPARED 재진입도 같은 검사를 한다. 사용자 bootstrap도 REQUEST_APPLY 또는 같은 stop 보류 재요청 전에 표지를 확인한다. 있으면 SYSTEM 요청 없이 start_current로 지원 기록을 한 번 남기고 지금 판을 요청한 GUI/relay 역할로 연다. 실패 trial·rollback의 WAIT_FOR_RECOVERY 요청은 기존대로 유지한다. 업데이트 길은 표지를 지우지 않는다. --onboard-current-user의 기존 계보·해시 CAS release로 정상 재개한 뒤 다음 로그온 적용을 진행한다. 이 보류는 실패한 trial의 자료 세대 정착으로 처리하지 않는다. trial 도중 새 멈춤의 기존 READY 실패·복구 판정은 유지한다.
+
+UPDATE_RELAY_STOP_REQUESTED인 DEFERRED는 retained_candidate가 아니고 recovery_pending 키가 없으며 기존 previous/candidate 집합 검사를 통과한 active일 때만 recovery_sha가 그 active를 반환한다. 기존 onboarding의 보호 코드 Verify·판/세대·권한 검사는 유지하며 새 파일·필드는 만들지 않는다.

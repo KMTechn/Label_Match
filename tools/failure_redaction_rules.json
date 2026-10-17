@@ -38,6 +38,7 @@
   "head": 8192,
   "field": "[REDACTED:field]",
   "allowed_codes": [
+    "UPDATE_RELAY_STOP_REQUESTED",
     "ABORTED",
     "ABSENT",
     "ABSENT_OR_DISABLED",

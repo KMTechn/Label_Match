@@ -114,7 +114,7 @@ def _waiting_on_real_mutex(thread_id):
 def test_concurrent_relay_only_gui_requests_share_real_update_mutex(tmp_path, monkeypatch,
                                                                   phase, claim):
     packet = _packet(tmp_path)
-    state = {"schema": updates.SCHEMA, "phase": phase}
+    state = {"schema": updates.SCHEMA, "phase": phase, "previous_sha": packet.sha}
     if phase == "DEFERRED":
         state["recovery_pending"] = True
     _write_record(packet.control / "transition.json", state)

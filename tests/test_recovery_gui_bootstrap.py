@@ -8,7 +8,7 @@ from recovery_memory_world import MemoryPath, World
 from test_recovery_relay_bootstrap import CASES, recovery, updates
 
 
-GUI_CASES = [(phase, claim) for phase in ("FAILED", "UNKNOWN", "DEFERRED")
+GUI_CASES = [(phase, claim) for phase in ("ROLLBACK_PENDING", "FAILED", "UNKNOWN", "DEFERRED")
              for claim in ("NONE", "ABSENT")] + [
     ("APPLIED_PENDING_READY", "ABSENT"), ("ROLLBACK_PENDING_READY", "ABSENT")]
 
@@ -132,7 +132,7 @@ def test_gui_role_with_relay_arguments_keeps_legacy_reuse(mode):
     assert w.files == before
 
 
-@pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"])
+@pytest.mark.parametrize('phase', ['APPLIED_PENDING_READY', 'ROLLBACK_PENDING_READY', 'ROLLBACK_PENDING'])
 def test_recovered_gui_writer_admission_and_no_trial_receipt(recovery, monkeypatch, phase):
     r = recovery
     r.configure(CASES[0])
@@ -196,9 +196,7 @@ def test_deferred_gui_waits_for_live_owner_then_uses_settled_relay_boundary():
     assert w.state == preserved
 
 
-@pytest.mark.parametrize("phase,claim", [("PREPARED", "ABSENT"), ("ROLLBACK_PENDING", "ABSENT"),
-                                        ("APPLIED_PENDING_READY", "NONE"), ("APPLIED_PENDING_READY", "LIVE"),
-                                        ("ROLLBACK_PENDING_READY", "NONE"), ("ROLLBACK_PENDING_READY", "LIVE")])
+@pytest.mark.parametrize('phase,claim', [('PREPARED', 'ABSENT'), ('APPLIED_PENDING_READY', 'NONE'), ('APPLIED_PENDING_READY', 'LIVE'), ('ROLLBACK_PENDING_READY', 'NONE'), ('ROLLBACK_PENDING_READY', 'LIVE')])
 def test_excluded_states_never_get_an_ordinary_gui(phase, claim):
     w = memory_world(phase, claim)
     w.request_mode = "nothing"
