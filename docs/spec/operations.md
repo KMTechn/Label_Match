@@ -1471,6 +1471,23 @@ G0: 기존 시작·경고·재시도·bootstrap 인계·기존 창 활성화와 
 
 update mutex의 소유자가 강제 종료되어 버려짐을 받으면, 잠금을 보유한 채 `transition.json`·`active.json`과 기존 설치 Verify/판 신원/작업 존재를 확인한다. 확정된 설치가 일관되고 재판독도 같을 때만 시작을 이어 가며 `UPDATE_MUTEX_ABANDONED_VERIFIED`를 기록한다. 진행 중인 복구·상태 불일치·검증 실패는 rc 20, 「설치 복구 필요」 안내와 `UPDATE_MUTEX_ABANDONED_RECOVERY_REQUIRED`를 남긴다. 기록이나 안내 창 실패도 이 거부를 처리 안 된 예외로 바꾸지 않는다. 상태와 업무 자료는 보존한다. PHS 복구의 HTTP 대기 중 강제 종료는 기존 writer admission 관문에서 다음 시작 한 번 복구 안내 후, 두 번째 시작부터 정상 확인을 따른다.
 
+### 첫 업데이트 현장 차례
+
+첫 업데이트는 현장 휴무일(일요일)에 원격으로 적용한다. 작업자의 다음 업무 로그온(월요일 아침)에 첫 적용을 맡기지 않는다. 업무 PC 의 무인 모드와 PC 별 자동 로그인 표는 설치 준비 기록을 따른다.
+
+1. 전날 업무가 끝나면 작업자는 포장 앱을 닫고 화면을 잠근다(Windows 키 + L). 로그아웃하거나 PC 를 끄지 않는다.
+2. 정식 멈춤(relay 멈춤 표지)을 건 PC 는 업데이트 날 전에 작업자 계정의 onboarding 으로 멈춤을 푼다. 표지가 남아 있으면 SYSTEM 적용은 포인터를 바꾸지 않고 `DEFERRED`(`reason_code=UPDATE_RELAY_STOP_REQUESTED`)로 미룬다. 지금 판은 그대로 열리고 relay 는 멈춘 채로 있다.
+3. 업데이트 날 원격으로 다음을 차례대로 한다.
+   1. 앱이 꺼져 있는지 확인한다.
+   2. 그 PC 의 준비본을 놓는다.
+   3. PC 를 다시 시작한다. 자동 로그인이 다음 로그온이 되고, SYSTEM 적용 → 새 판 trial → `CONFIRMED` 가 이어진다.
+4. 다시 시작하고 10 분 뒤 `update-control/transition.json` 의 `phase` 를 읽는다(읽기만 한다).
+   - `CONFIRMED`: 끝이다.
+   - `ROLLED_BACK`: 앞 판이 정상으로 돈다. 결과를 기록하고, 원인은 지원 담당자가 확인한다.
+   - `DEFERRED`: `reason_code` 를 확인한다. `UPDATE_EXISTING_WRITER` 는 앱이 떠 있는 것이고, `UPDATE_RELAY_STOP_REQUESTED` 는 멈춤 표지가 남은 것이다. 원인을 푼 뒤 PC 를 다시 시작한다.
+   - 그 밖의 값: 5 분 뒤 한 번 더 읽는다. 그래도 `CONFIRMED`·`ROLLED_BACK` 이 아니면 그날 지원 길(FAILED 지원 제거·다시 설치)로 간다.
+5. 원격 relay 멈춤(`--request-app-stop`)으로 적용을 억지로 앞당기지 않는다. 멈춤 표지가 trial READY 를 막아서 되돌림 → FAILED 가 된다.
+
 ## 첫 업데이트 묶음 선언 재생성
 
 관련 경로와 승인 행을 모두 조립한 뒤 `python -B tools/refresh_first_update_declarations.py --work-root E:/KMTech/w9firstupd-tmp/w9firstupdsub100/declarations`를 실행하고 같은 명령에 `--check`를 붙여 확인한다. 기본 깔린 판은 d9160b6와 sub-86의 89155f1이다. 뒤에 전달된 실제 설치 판은 `--installed-ref <전체 SHA>`로 함께 지정한다. 기존 깔린 판 목록은 보존한다.
