@@ -1,3 +1,4 @@
+- w9firstupdsub306 / G60 지킴: git 추적 비 시험 .ps1/.psm1 중 비 ASCII 파일은 UTF-8 BOM 정확히 하나를 요구하는 별도 조립 관문 시험으로 고정한다.
 - w9firstupdsub299 / G36 전수 대조: direct-sync 설치 도우미를 포함한 공개 실패 생산자 여섯 곳에 같은 ASCII 계약과 PS5.1/PS7 × 949/65001 벡터 회귀를 적용했다.
 - w9firstupdsub299 / L5 닫음: sub-184 Q1 relay PID 양의 int 검사, sub-186 Q1 앞 실행 트랜잭션 전 감사 기록의 현재 제거 상한 제외(보존·128 유지), sub-186 Q2 S-a 반대 증거 거절, G36 공개 실패 줄 ASCII를 구현했다. 검토자 단언은 유지하고 저장소/하네스 준비부만 맞췄다. 계약·운영의 L5 절과 집중 회귀를 따른다.
 - w9firstupdsub299 / sub-184 Q2 닫음: 기존 전용 회귀에 매 관측 relay 정확히 하나·GUI writer 최대 하나 단언을 보강했다. 실제 bootstrap/update_lock 경합·GUI 정확히 하나·둘째 요청 재사용 rc 0·기록 바이트 불변을 지정 바탕과 고침에서 각각 8P로 확인했다. ANSWER-2354의 레인 판정대로 process_snapshot 대역을 띄우기와 같은 OS 프로세스 경계의 짝으로 허용한다. 바탕 GREEN인 지킴 시험이며 실제 CIM/창 수용을 주장하지 않는다. 시험만 별도 커밋했다.
