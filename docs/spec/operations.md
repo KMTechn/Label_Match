@@ -1549,3 +1549,14 @@ v2.0.99/100 → 107 제자리 교체는 미지원이다(app/site-packages/qrcode
 G45: relay만 살아 있어 GUI가 안 열리던 복구는 [검증된 일반 GUI cohort](contracts.md#ordinary-recovery-gui-cohort) 범위에서 relay 생성 경계를 이어 GUI 하나를 연다. GUI와 relay가 있는 동안 SYSTEM의 기존 writer 보호를 유지하고, 모두 닫힌 뒤 기존 자료 세대 결정으로 정착한다(UNCHANGED는 이전 판 복구, ADVANCED는 후보 유지). 일반 GUI는 trial nonce가 없어 READY 영수증을 게시하지 않는다. ROLLBACK_PENDING 잔류 P2는 이번 고침 밖이다. 11/1에 이 상태로 화면이 안 뜨면 지원에 연락한다. 실제 로그온·창·현장 수용은 별도 회차다.
 
 DEFERRED+recovery_pending 정착 증명은 FAILED·DEFERRED·APPLIED_PENDING_READY에서 시작하는 사슬이다. ROLLBACK_PENDING_READY는 기존 120초 READY 감독을 보존하고, 영수증이 없으면 FAILED로 남는다. 새 일반 GUI는 이 상태에서도 trial 영수증을 내지 않는다.
+
+
+## L5 — 113 보호 조건과 공개 실패 줄
+
+일반 복구 GUI의 relay PID는 최초 관측과 실제 증명 행 모두 bool이 아닌 양의 int여야 한다. 실제 Observe의 CIM ProcessId는 int로 변환되며, 증명 실패는 기존 진행 안내와 rc 20을 유지한다.
+
+실패한 현재 설치의 정식 제거 허가를 계산할 때 앞 실행의 트랜잭션 전 감사 기록은 기존 128 상한에 넣지 않는다. 현재 기록·불명확한 기록과 다른 제거 허가 조건은 기존 검사를 유지하며, 앞 기록을 지우거나 옮기지 않는다.
+
+S-a 기록은 current_user_setup_started가 참이거나 writer_fence 필드가 있으면 설치 잔재다. 두 필드가 없는 정상 생산자는 기존처럼 허용한다.
+
+공개 실패 줄(stderr 한 줄) = `<앱 접두>=` + JSON 객체 하나(-Compress) + CRLF 이다. CRLF 앞의 모든 바이트는 0x20–0x7E 이다. 앱이 JSON을 만든 뒤, U+007F보다 큰 모든 UTF-16 코드 단위를 `\u` + 소문자 16진 네 자리로 쓴다(서로게이트 짝은 단위마다 따로). 필드 이름·차례와 그 밖의 이스케이프는 앱 생산자가 만든 그대로이다. 포장 접두는 LABEL_MATCH_INSTALLER_FAILURE이며 ICP·ITP·업데이트 도우미의 기존 출력 채널을 유지한다.

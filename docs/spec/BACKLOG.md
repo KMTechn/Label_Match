@@ -1,3 +1,6 @@
+- w9firstupdsub299 / L5 닫음: sub-184 Q1 relay PID 양의 int 검사, sub-186 Q1 앞 실행 트랜잭션 전 감사 기록의 현재 제거 상한 제외(보존·128 유지), sub-186 Q2 S-a 반대 증거 거절, G36 공개 실패 줄 ASCII를 구현했다. 검토자 단언은 유지하고 저장소/하네스 준비부만 맞췄다. 계약·운영의 L5 절과 집중 회귀를 따른다.
+- w9firstupdsub299 / sub-184 Q2: 기존 실제 bootstrap/update_lock 동시 요청 회귀 8개는 바탕·고침 모두 PASS다. process_snapshot도 대역으로 쓰므로 「프로세스 띄우기만 대역」 조건의 검증으로 받아들일지는 QUESTION.md Q1에서 레인 답을 기다린다. 제품 동시 실행 코드 변경 0, 닫음 판정 대기.
+
 - w9firstupdsub267 바탕 회귀 후속: 고정 시험 authority 식별자의 병렬 회차 충돌은 단독·직렬 원시험 결과와 분리한다. 복구 위임의 정적 허가 집합, signed G 역방향 stderr 기대, release metrics 기대 및 준비 단계 뒤 미확인은 [바탕 F 장부](D:/KMTech/program-improvement-20260912/work/program/w9firstupd/sub-267/resume-0045/BASELINE-FAILURES.md)에 남긴다. 원자 게시 deadline을 쓰는 시간 시험은 단독 확인하며, 보호 영역·권한 규칙은 이 고침에서 바꾸지 않는다.
 
 ## G49 — 첫 설치의 트랜잭션 전 감사 기록과 재시도

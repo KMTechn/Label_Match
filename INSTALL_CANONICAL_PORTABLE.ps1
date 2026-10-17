@@ -52,7 +52,9 @@ trap {
             $publicFailure.reason_code = 'SERVER_BASE_URL_INVALID'
             $publicFailure.guidance = '서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요.'
         }
-        [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($publicFailure | ConvertTo-Json -Compress -Depth 5))
+        $publicJson = ($publicFailure | ConvertTo-Json -Compress -Depth 5)
+        $publicAscii = [regex]::Replace($publicJson, '[^\u0000-\u007f]', { param($unit) '\u{0:x4}' -f [int][char]$unit.Value })
+        [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + $publicAscii)
     } finally {
         if ($publicExit -eq 0) { $publicExit = 1 }
         exit $publicExit
@@ -2854,7 +2856,9 @@ trap {
     if ($record.Contains('full_exception_trace')) {
         $publicFields.report_path=$record.full_exception_trace.path;$publicFields.report_sha256=$record.full_exception_trace.sha256
     } else { $publicFields.report_status='REPORT_UNAVAILABLE' }
-    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ((ConvertTo-KmtechPublicRecord $publicFields) | ConvertTo-Json -Compress))
+    $publicJson = ((ConvertTo-KmtechPublicRecord $publicFields) | ConvertTo-Json -Compress)
+    $publicAscii = [regex]::Replace($publicJson, '[^\u0000-\u007f]', { param($unit) '\u{0:x4}' -f [int][char]$unit.Value })
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + $publicAscii)
     exit $childExit
 }
 $pinnedStreams = [Collections.Generic.List[IO.Stream]]::new()
@@ -3090,7 +3094,9 @@ try{
  }catch{}
  $public=[ordered]@{status='FAILED';stage='SUPPORT';reason_code='INSTALLER_FAILED';placement_code=$record.placement_code;location_function=$transportPhase;exit_code=1;exception_type=$record.exception_type;guidance=$record.message}
  if($record.Contains('full_exception_trace')){$public.report_path=$record.full_exception_trace.path;$public.report_sha256=$record.full_exception_trace.sha256}else{$public.report_status='REPORT_UNAVAILABLE'}
- [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE='+($public|ConvertTo-Json -Compress))
+ $publicJson = ($public|ConvertTo-Json -Compress)
+ $publicAscii = [regex]::Replace($publicJson, '[^\u0000-\u007f]', { param($unit) '\u{0:x4}' -f [int][char]$unit.Value })
+ [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + $publicAscii)
  exit 1
 }
 finally{foreach($s in $streams){$s.Dispose()}}
@@ -4207,7 +4213,10 @@ function Test-PretransactionInstallAudit([string]$AuditRoot, [string]$FenceActiv
             $admissionFailure = [string]$record.status -ceq 'FAILED' -and
                 [string]$record.preparation_status -ceq 'FAILED_PREPARATION_ADMISSION' -and
                 [string]$record.code_placement -ceq 'NOT_STARTED' -and
-                $record.rollback.applied -is [bool] -and -not $record.rollback.applied
+                $record.rollback.applied -is [bool] -and -not $record.rollback.applied -and
+                ($record.PSObject.Properties.Name -cnotcontains 'current_user_setup_started' -or
+                    -not $record.current_user_setup_started) -and
+                ($record.PSObject.Properties.Name -cnotcontains 'writer_fence')
             $preimageOnly = [string]$record.status -cin @('PREIMAGE_SAVED', 'FAILED_PREPARATION_ADMISSION', 'FAILED_PRETRANSACTION') -and
                 [string]$record.code_placement -ceq 'PENDING' -and
                 $record.current_user_setup_started -is [bool] -and -not $record.current_user_setup_started -and

@@ -642,3 +642,14 @@ G41/G45 복구 cohort: 일반 복구 증명은 실제 검사한 writer 행을 �
 G46: Observe는 설치기가 Run에 적는 고정 bootstrap 줄(GUI·relay)을 기존 bootstrap 판정 그대로 역할 분류 전에 빼 행으로 내지 않는다. 해당 줄은 READY relay 셈·census 밖이며, 실제 relay가 둘이면 지금처럼 확인하지 않는다.
 
 고정 bootstrap 줄은 소유자·manifest·권한 관측 전에 빠지므로 그 관측이 실패해도 census·READY를 막지 않는다. 관측된 고정 bootstrap은 원래도 census 밖이므로 성공한 경우와 결과가 같다. 실제 writer의 관측 불가 거절은 그대로다.
+
+
+## L5 — 113 보호 조건과 공개 실패 줄
+
+일반 복구 GUI의 relay PID는 최초 관측과 실제 증명 행 모두 bool이 아닌 양의 int여야 한다. 실제 Observe의 CIM ProcessId는 int로 변환되며, 증명 실패는 기존 진행 안내와 rc 20을 유지한다.
+
+실패한 현재 설치의 정식 제거 허가를 계산할 때 앞 실행의 트랜잭션 전 감사 기록은 기존 128 상한에 넣지 않는다. 현재 기록·불명확한 기록과 다른 제거 허가 조건은 기존 검사를 유지하며, 앞 기록을 지우거나 옮기지 않는다.
+
+S-a 기록은 current_user_setup_started가 참이거나 writer_fence 필드가 있으면 설치 잔재다. 두 필드가 없는 정상 생산자는 기존처럼 허용한다.
+
+공개 실패 줄(stderr 한 줄) = `<앱 접두>=` + JSON 객체 하나(-Compress) + CRLF 이다. CRLF 앞의 모든 바이트는 0x20–0x7E 이다. 앱이 JSON을 만든 뒤, U+007F보다 큰 모든 UTF-16 코드 단위를 `\u` + 소문자 16진 네 자리로 쓴다(서로게이트 짝은 단위마다 따로). 필드 이름·차례와 그 밖의 이스케이프는 앱 생산자가 만든 그대로이다. 포장 접두는 LABEL_MATCH_INSTALLER_FAILURE이며 ICP·ITP·업데이트 도우미의 기존 출력 채널을 유지한다.

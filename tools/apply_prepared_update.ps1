@@ -58,7 +58,9 @@ trap {
         foreach($key in @('report_path','report_sha256','report_status')){if($record.Contains($key)){$fields[$key]=$record[$key]}}
         $record=ConvertTo-KmtechPublicRecord $fields
     }
-    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($record | ConvertTo-Json -Compress))
+    $publicJson = ($record | ConvertTo-Json -Compress)
+    $publicAscii = [regex]::Replace($publicJson, '[^\u0000-\u007f]', { param($unit) '\u{0:x4}' -f [int][char]$unit.Value })
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + $publicAscii)
     exit 1
 }
 $script:LabelStartupBootstrapLoaded=$false

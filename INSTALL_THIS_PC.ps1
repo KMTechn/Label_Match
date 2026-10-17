@@ -76,7 +76,9 @@ trap {
             -AllowedCodes @($Script:KmtechRedactionRules.allowed_codes + @('UNSUPPORTED_WORKER_ARGUMENTS','CURRENT_USER_RELAY_SETUP_PRESENT')) `
             -SafeMessages @($Script:KmtechRedactionRules.safe_messages + @($publicGuidance))
     }
-    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($record | ConvertTo-Json -Compress))
+    $publicJson = ($record | ConvertTo-Json -Compress)
+    $publicAscii = [regex]::Replace($publicJson, '[^\u0000-\u007f]', { param($unit) '\u{0:x4}' -f [int][char]$unit.Value })
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + $publicAscii)
     exit 1
 }
 $ExpectedInstallRoot = "C:\KMTech\Apps\Label_Match\current"
