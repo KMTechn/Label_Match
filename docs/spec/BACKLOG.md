@@ -1,6 +1,6 @@
 - w9firstupdsub299 / G36 전수 대조: direct-sync 설치 도우미를 포함한 공개 실패 생산자 여섯 곳에 같은 ASCII 계약과 PS5.1/PS7 × 949/65001 벡터 회귀를 적용했다.
 - w9firstupdsub299 / L5 닫음: sub-184 Q1 relay PID 양의 int 검사, sub-186 Q1 앞 실행 트랜잭션 전 감사 기록의 현재 제거 상한 제외(보존·128 유지), sub-186 Q2 S-a 반대 증거 거절, G36 공개 실패 줄 ASCII를 구현했다. 검토자 단언은 유지하고 저장소/하네스 준비부만 맞췄다. 계약·운영의 L5 절과 집중 회귀를 따른다.
-- w9firstupdsub299 / sub-184 Q2: 기존 실제 bootstrap/update_lock 동시 요청 회귀 8개는 바탕·고침 모두 PASS다. process_snapshot도 대역으로 쓰므로 「프로세스 띄우기만 대역」 조건의 검증으로 받아들일지는 QUESTION.md Q1에서 레인 답을 기다린다. 제품 동시 실행 코드 변경 0, 닫음 판정 대기.
+- w9firstupdsub299 / sub-184 Q2 닫음: 기존 전용 회귀에 매 관측 relay 정확히 하나·GUI writer 최대 하나 단언을 보강했다. 실제 bootstrap/update_lock 경합·GUI 정확히 하나·둘째 요청 재사용 rc 0·기록 바이트 불변을 지정 바탕과 고침에서 각각 8P로 확인했다. ANSWER-2354의 레인 판정대로 process_snapshot 대역을 띄우기와 같은 OS 프로세스 경계의 짝으로 허용한다. 바탕 GREEN인 지킴 시험이며 실제 CIM/창 수용을 주장하지 않는다. 시험만 별도 커밋했다.
 
 - w9firstupdsub267 바탕 회귀 후속: 고정 시험 authority 식별자의 병렬 회차 충돌은 단독·직렬 원시험 결과와 분리한다. 복구 위임의 정적 허가 집합, signed G 역방향 stderr 기대, release metrics 기대 및 준비 단계 뒤 미확인은 [바탕 F 장부](D:/KMTech/program-improvement-20260912/work/program/w9firstupd/sub-267/resume-0045/BASELINE-FAILURES.md)에 남긴다. 원자 게시 deadline을 쓰는 시간 시험은 단독 확인하며, 보호 영역·권한 규칙은 이 고침에서 바꾸지 않는다.
 

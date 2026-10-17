@@ -1560,3 +1560,5 @@ DEFERRED+recovery_pending 정착 증명은 FAILED·DEFERRED·APPLIED_PENDING_REA
 S-a 기록은 current_user_setup_started가 참이거나 writer_fence 필드가 있으면 설치 잔재다. 두 필드가 없는 정상 생산자는 기존처럼 허용한다.
 
 공개 실패 줄(stderr 한 줄) = `<앱 접두>=` + JSON 객체 하나(-Compress) + CRLF 이다. CRLF 앞의 모든 바이트는 0x20–0x7E 이다. 앱이 JSON을 만든 뒤, U+007F보다 큰 모든 UTF-16 코드 단위를 `\u` + 소문자 16진 네 자리로 쓴다(서로게이트 짝은 단위마다 따로). 필드 이름·차례와 그 밖의 이스케이프는 앱 생산자가 만든 그대로이다. 포장 접두는 LABEL_MATCH_INSTALLER_FAILURE이며 ICP·ITP·업데이트 도우미·direct-sync 설치 도우미의 기존 출력 채널을 유지한다.
+
+sub-184 Q2: relay만 남은 상태의 동시 GUI 요청 둘은 실제 bootstrap/update_lock 경계에서 GUI 하나와 둘째 요청의 재사용 rc 0을 유지한다. 모든 관측의 relay는 하나이고 GUI writer는 하나를 넘지 않으며 기존 기록 바이트를 보존한다. 프로세스 관측/실행 경계만 대역으로 둔 전용 지킴 회귀 8개는 지정 바탕과 고침 모두 GREEN이다(레인 ANSWER-2354).
