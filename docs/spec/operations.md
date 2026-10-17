@@ -1321,6 +1321,7 @@ Portable tree 지표는 루트 portable-manifest.json과 루트 bootstrap-integr
 canonical 설치기는 원 파일 bytes를 한 번 읽어 BOM을 포함한 SHA256을 대조한 같은 bytes만 실행한다. UTF-8 디코드 뒤 맨 앞 U+FEFF 하나만 제거하여 ScriptBlock으로 만든다. 나머지 문자·줄바꿈과 파일 BOM은 유지한다. 일반 사용자 사전 검사, 동결 무결성 probe, 상승 placement launcher의 integrity/writer/placement helper 다섯 자리가 같은 규칙을 쓴다. 한국어 PowerShell 파일의 BOM을 파일에서 지우거나 해시 대상을 바꾸지 않는다.
 
 preimage 저장 뒤 writer authority/fence 거래 진입 전 실패는 `FAILED_PRETRANSACTION`으로 원 예외와 `transaction_started=false`를 남긴다. 그 run의 snapshot·동결 helper·중단된 audit 임시 파일만 사용자 상태의 `install-audit-pretransaction-failures/<run_id>/`에 bytes와 ACL 그대로 보존 이동한다. 판정한 이번 run의 정확한 항목만 하나씩 이동하고 공유 active root를 전체 rename하지 않는다. 마지막 비재귀 빈 폴더 삭제에서 동시 기록·열린 핸들이 거절되면 active root를 보존한다. 기존 receipt·등록·업무 자료의 residue 거절과 거래 안 rollback은 유지한다. 회복 이동 자체가 실패하면 원 예외와 회복 오류를 함께 보존하고 guard를 우회하지 않는다. 지원 사용자 제거는 이 진단 archive를 삭제하지 않는다.
+첫 설치의 install-audit에 설치기 자신의 트랜잭션 전 기록·사본만 있고 쓰기 울타리 active가 없으면 기록을 보존한 채 새 PC 설치를 허용한다. 등록 시도 기록·울타리 시작 뒤 상태·손상되거나 알 수 없는 항목은 기존 재개·복구 판정을 유지하며, 새 감사에는 무시한 앞 실행 id 값만 남긴다.
 
 PS5.1/PS7의 실제 BOM helper·encoded prefix·hash 불일치 거절, native deny ACL 및 기존 receipt/임시 bytes 보존, 실제 거래 전 catch와 격리 지원 제거 domain 회귀는 sub-177 REPORT를 따른다. 전체 native 설치/Run/task/relay·콜드 부팅/현장 수용과 고정 선언은 source 회귀와 구별한다. 정식 선언/pin 재생성은 이번 교정에서 수행하지 않고 예행 가지와 중앙 출시 컷에서만 처리한다.
 

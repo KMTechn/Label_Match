@@ -4153,6 +4153,73 @@ function Assert-HealthyLifecycleOwnership($Run, $RelayValues, $Tasks, [string]$I
     }
 }
 
+function Test-PretransactionInstallAudit([string]$AuditRoot, [string]$FenceActivePath) {
+    # Read-only admission: unknown or unprovable state remains installation residue.
+    $Script:LabelIgnoredPretransactionRunIds = @()
+    try {
+        if (Test-Path -LiteralPath $FenceActivePath -ErrorAction Stop) { return $false }
+        $ancestor = [IO.Path]::GetFullPath($AuditRoot)
+        while ($ancestor) {
+            try { $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop }
+            catch [Management.Automation.ItemNotFoundException] { $item = $null }
+            if ($null -ne $item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+            $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+        }
+        if (-not (Test-Path -LiteralPath $AuditRoot -ErrorAction Stop)) { return $true }
+        if (-not (Test-Path -LiteralPath $AuditRoot -PathType Container -ErrorAction Stop)) { return $false }
+        $entries = @(Get-ChildItem -LiteralPath $AuditRoot -Force -ErrorAction Stop)
+        $runs = @{}
+        foreach ($entry in $entries) {
+            if ($entry.Name -cnotmatch '^canonical-portable-([a-zA-Z0-9-]+?)(-helper|-task-preimage\.xml|-stop-preimage\.json|-removal-preimage\.json|\.json(?:\.tmp\..*)?)$') { return $false }
+            $id = $Matches[1]
+            $suffix = $Matches[2]
+            if ($id.EndsWith('-first-registration-attempt', [StringComparison]::Ordinal)) { return $false }
+            if ($entry.PSIsContainer -ne ($suffix -ceq '-helper')) { return $false }
+            if (-not $runs.ContainsKey($id)) { $runs[$id] = @() }
+            $runs[$id] += $suffix
+            # Inspect helpers without following a reparse directory, including hidden files.
+            $pending = @($entry)
+            while ($pending.Count -ne 0) {
+                $current = $pending[0]
+                $pending = @($pending | Select-Object -Skip 1)
+                if ($current.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
+                if ($current.PSIsContainer) {
+                    $pending += @(Get-ChildItem -LiteralPath $current.FullName -Force -ErrorAction Stop)
+                }
+                else {
+                    $stream = [IO.File]::OpenRead($current.FullName)
+                    try { [void]$stream.ReadByte() } finally { $stream.Dispose() }
+                    if ($current.Name -cmatch '\.json(?:\.tmp\..*)?$') {
+                        $jsonText = Get-Content -LiteralPath $current.FullName -Raw -Encoding UTF8 -ErrorAction Stop
+                        if ([string]::IsNullOrWhiteSpace($jsonText)) { return $false }
+                        $json = $jsonText | ConvertFrom-Json -ErrorAction Stop
+                    }
+                }
+            }
+        }
+        foreach ($id in $runs.Keys) {
+            if ($runs[$id] -cnotcontains '.json') {
+                if (@($runs[$id] | Where-Object { $_.StartsWith('.json', [StringComparison]::Ordinal) }).Count -ne 0) { return $false }
+                continue
+            }
+            $record = Get-Content -LiteralPath (Join-Path $AuditRoot ('canonical-portable-' + $id + '.json')) -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ([string]$record.schema -cne 'label-match-canonical-portable-install-v1') { return $false }
+            $admissionFailure = [string]$record.status -ceq 'FAILED' -and
+                [string]$record.preparation_status -ceq 'FAILED_PREPARATION_ADMISSION' -and
+                [string]$record.code_placement -ceq 'NOT_STARTED' -and
+                $record.rollback.applied -is [bool] -and -not $record.rollback.applied
+            $preimageOnly = [string]$record.status -cin @('PREIMAGE_SAVED', 'FAILED_PREPARATION_ADMISSION', 'FAILED_PRETRANSACTION') -and
+                [string]$record.code_placement -ceq 'PENDING' -and
+                $record.current_user_setup_started -is [bool] -and -not $record.current_user_setup_started -and
+                [string]$record.current_user_registration_mode -ceq 'FIRST_INSTALL'
+            if (-not ($admissionFailure -or $preimageOnly)) { return $false }
+        }
+        $Script:LabelIgnoredPretransactionRunIds = [string[]]@($runs.Keys | Sort-Object)
+        return $true
+    }
+    catch { return $false }
+}
+
 function Test-PristineInstallState(
     [string]$InstallRootValue,
     $RunSnapshotValue,
@@ -6146,8 +6213,6 @@ $pristineResiduePaths = @(
     $stop,
     (Join-Path $selectedDirectSyncRoot 'control\label_match_user_relay.stop.json'),
     (Join-Path $selectedDirectSyncRoot 'credential.json'),
-    # Receipts/recovery evidence are existing state, even without a credential.
-    (Join-Path $lad 'KMTech\Label_Match\install-audit'),
     # User data/settings are preserved by removal, so their presence still means the PC is not pristine.
     $defaultDataRoot,
     $selectedDataRoot,
@@ -6164,6 +6229,11 @@ $pristineResiduePaths = @(
     (Join-Path (Split-Path -Parent $selectedProfilePath) 'secrets\bearer-token.dpapi'),
     (Split-Path -Parent $bootstrapCaPath),
     $bootstrapCaPath
+) + @(
+    # Receipts/recovery evidence remain residue unless all entries precede the transaction.
+    if (-not (Test-PretransactionInstallAudit (Join-Path $lad 'KMTech\Label_Match\install-audit') (Join-Path $writerFenceControlRoot 'active.json'))) {
+        Join-Path $lad 'KMTech\Label_Match\install-audit'
+    }
 )
 # Own authentication/recovery residue only. Business files and a public
 # bootstrap CA do not manufacture a registration; legacy shared paths are not read.
@@ -6286,6 +6356,7 @@ if ([bool]$stopBefore.exists -and $old.Count -gt 0) {
 $audit = [ordered]@{
     schema = 'label-match-canonical-portable-install-v1'
     status = 'PREIMAGE_SAVED'
+    ignored_pretransaction_run_ids = @($Script:LabelIgnoredPretransactionRunIds)
     run_id = $runId
     captured_at = (Get-Date).ToUniversalTime().ToString('o')
     install_root = $install

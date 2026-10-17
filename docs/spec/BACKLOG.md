@@ -1,5 +1,10 @@
 - w9firstupdsub267 바탕 회귀 후속: 고정 시험 authority 식별자의 병렬 회차 충돌은 단독·직렬 원시험 결과와 분리한다. 복구 위임의 정적 허가 집합, signed G 역방향 stderr 기대, release metrics 기대 및 준비 단계 뒤 미확인은 [바탕 F 장부](D:/KMTech/program-improvement-20260912/work/program/w9firstupd/sub-267/resume-0045/BASELINE-FAILURES.md)에 남긴다. 원자 게시 deadline을 쓰는 시간 시험은 단독 확인하며, 보호 영역·권한 규칙은 이 고침에서 바꾸지 않는다.
 
+## G49 — 첫 설치의 트랜잭션 전 감사 기록과 재시도
+
+설치기 자신의 트랜잭션 전 기록·사본만 있는 install-audit는 새 PC 판정을 막지 않으며 파일은 보존한다. 등록 시도·active 울타리·다른 잔재·증명 실패는 기존 거절/복구 길을 유지한다. AST 원문 갈림길·기록/재개/정리·돌연변이 회귀는 sub-282 증거를 따르며 전체 설치/등록 READY와 현장 수용은 별도 회차다.
+
+
 - w9firstupdsub267 검토 회귀: 작업자 계정 누락의 비공개 예외 메시지 정규식 기대를 기존 typed pending 표지와 WORKER_ARGS_INCOMPLETE reason으로 맞춘다. 콘솔 조회·쓰기 금지와 기존 성공 sentinel 단언은 유지한다.
 
 - w9firstupdsub267 검토 보완: 최상위 일반 trap은 개인 진단/공개 변환 실패를 기존 REPORT_UNAVAILABLE로 수렴시키고 finally에서 명시 실패 종료한다. 되돌림/작업자 인수 충돌의 사전 적재 rc 0을 닫고 정상 되돌림 성공 출력·typed pending·권한·디스크 형식을 유지한다.
