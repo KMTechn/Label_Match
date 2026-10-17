@@ -206,8 +206,14 @@ def test_concurrent_relay_only_gui_requests_share_real_update_mutex(tmp_path, mo
     expected = [str(packet.bundle / "runtime/pythonw.exe"), "-I", "-B",
                 str(packet.bundle / "app/main.py")]
     assert launches == [(first_thread[0], expected)]
+    assert all(sum(row["role"] == "relay" for row in snapshot) == 1
+               for snapshot in observations)
     assert all(sum(row["role"] == "gui" for row in snapshot) <= 1
                for snapshot in observations)
+    # The relay is retained separately; neither bootstrap request may add a
+    # second GUI writer to the cohort selected by the real writer filter.
+    assert all(sum(row.get("role") == "gui" for row in updates.writer_processes(
+        snapshot, own_pid=os.getpid())) <= 1 for snapshot in observations)
     assert sum(row["role"] == "gui" for row in rows) == 1
     assert sum(row["role"] == "relay" for row in rows) == 1
     assert {path: path.read_bytes() for path in retained} == before
