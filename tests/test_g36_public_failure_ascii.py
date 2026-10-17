@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VECTORS = json.loads((ROOT / 'tests/fixtures/g36_public_line_vectors.json').read_text(encoding='utf-8'))['vectors']
 PRODUCERS = [(relative, index) for relative, count in (
     ('INSTALL_CANONICAL_PORTABLE.ps1', 3), ('INSTALL_THIS_PC.ps1', 1),
-    ('tools/apply_prepared_update.ps1', 1)) for index in range(count)]
+    ('tools/apply_prepared_update.ps1', 1), ('install_label_match_direct_sync.ps1', 1)) for index in range(count)]
 
 
 @pytest.mark.parametrize('engine', ['powershell', 'pwsh'])

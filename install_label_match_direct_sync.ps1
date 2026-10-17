@@ -41,7 +41,9 @@ trap {
         } catch { }
         $record=ConvertTo-KmtechPublicRecord $fields
     }
-    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + ($record | ConvertTo-Json -Compress))
+    $publicJson = ($record | ConvertTo-Json -Compress)
+    $publicAscii = [regex]::Replace($publicJson, '[^\u0000-\u007f]', { param($unit) '\u{0:x4}' -f [int][char]$unit.Value })
+    [Console]::Error.WriteLine('LABEL_MATCH_INSTALLER_FAILURE=' + $publicAscii)
     exit 1
 }
 $MutableAppRelativePaths = @("_internal/config/app_settings.json")
