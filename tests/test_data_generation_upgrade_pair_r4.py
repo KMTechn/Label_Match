@@ -140,7 +140,7 @@ def pair(tmp_path, baseline_source, companion_g_source):
 
 @pytest.fixture
 def integration_pair(tmp_path, baseline_source):
-    return _pair_layouts(tmp_path, baseline_source, ROOT)
+    return _pair_layouts(tmp_path, baseline_source, ROOT, third_party=True)
 
 
 def probe(source, installed, *, signed=False, integrated=False, historical=False):

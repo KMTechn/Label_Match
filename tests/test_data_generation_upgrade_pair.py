@@ -218,6 +218,12 @@ def test_g_forward_companions_refuse_stale_partial_and_unreviewed_bytes(pair, re
         target.write_bytes((old / relative).read_bytes())
     else:
         target.write_bytes(target.read_bytes() + b'X')
+    if relative == 'app/label_data_manager.py':
+        unpinned = probe(new, old)
+        assert unpinned.returncode != 0
+        assert 'WRITER_TRANSITION_PIN_INVALID' in unpinned.stderr
+        from tests.test_writer_transition import _pin
+        _pin(new)
     result = probe(new, old)
     assert result.returncode != 0
     assert 'WRITER_TRANSITION_SOURCE_SET_DIFFERS' in result.stderr
@@ -235,12 +241,10 @@ def test_already_g_committed_preimage_uses_only_forward_companions(pair, revisio
         (installed / relative).write_bytes(before)
     preserved = {path.relative_to(installed): path.read_bytes() for path in installed.rglob('*') if path.is_file()}
     forward = probe(new, installed)
-    assert forward.returncode == 0, forward.stderr[-2000:]
-    assert json.loads(forward.stdout)['compatibility'] == 'PINNED_DATA_GENERATION_G'
-    for signed in (False, True):
-        reverse = probe(installed, new, signed=signed)
-        assert reverse.returncode != 0
-        assert 'WRITER_TRANSITION_SEMANTICS_DIFFER: app/label_data_manager.py' in reverse.stderr
+    assert forward.returncode != 0
+    assert 'WRITER_TRANSITION_PIN_INVALID' in forward.stderr
+    # Pure-G forward and reverse: test_data_generation_upgrade_pair_r4.py:287-292.
+    # Whole-tree correction forward and reverse: test_data_generation_upgrade_pair.py:251.
     assert {path.relative_to(installed): path.read_bytes() for path in installed.rglob('*') if path.is_file()} == preserved
 
 

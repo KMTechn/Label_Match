@@ -21,7 +21,7 @@ def r4_base(tmp_path_factory):
 
 @pytest.mark.parametrize('mutation', ['exact', 'helper', 'redaction_rules', 'runtime', 'unlisted'])
 def test_r4_declared_pair_and_closed_mutations(tmp_path, r4_base, mutation):
-    old, new = _pair_layouts(tmp_path, r4_base, ROOT)
+    old, new = _pair_layouts(tmp_path, r4_base, ROOT, third_party=True)
     if mutation != 'exact':
         relative = {'helper': 'INSTALL_THIS_PC.ps1',
                     'redaction_rules': 'app/tools/failure_redaction_rules.json',
