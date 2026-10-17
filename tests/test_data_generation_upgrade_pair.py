@@ -33,7 +33,7 @@ def pair(tmp_path, baseline_source):
 
 def _package_pair(tmp_path, baseline_source):
     from tests.test_data_generation_upgrade_pair_r4 import _pair_layouts
-    return _pair_layouts(tmp_path, baseline_source, ROOT)
+    return _pair_layouts(tmp_path, baseline_source, ROOT, third_party=True)
 
 
 @pytest.fixture(scope='module')
@@ -69,7 +69,7 @@ def _tree_bytes(*roots):
             for path in root.rglob("*") if path.is_file()}
 
 
-def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
+def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair, baseline_source):
     old, new = pair
     forward = probe(new, old)
     assert forward.returncode == 0, forward.stderr[-2000:]
@@ -87,7 +87,7 @@ def test_exact_g_pair_adds_only_one_writer_and_signed_reverse_is_explicit(pair):
     subprocess.run(['git', '-C', str(historical), 'checkout', '--quiet', '--detach',
                     ORIGINAL_G_COMMIT], check=True, capture_output=True)
     from tests.test_data_generation_upgrade_pair_r4 import _pair_layouts
-    _, legacy = _pair_layouts(new.parent / 'original-g', historical, historical)
+    old, legacy = _pair_layouts(new.parent / 'original-g', baseline_source, historical)
     installer = legacy / 'INSTALL_CANONICAL_PORTABLE.ps1'
     original_reverse = probe(old, legacy, signed=True, installer=installer)
     assert original_reverse.returncode == 0, original_reverse.stderr[-2000:]
@@ -193,7 +193,7 @@ def test_g_composes_only_with_the_exact_shutdown_repair(pair, revision, compatib
     subprocess.run(['git', '-C', str(snapshot), 'checkout', '--quiet', '--detach', revision],
                    check=True, capture_output=True)
     from tests.test_data_generation_upgrade_pair_r4 import _pair_layouts
-    old, _ = _pair_layouts(new.parent / 'shutdown-pair', snapshot, snapshot)
+    old, _ = _package_pair(new.parent / 'shutdown-pair', snapshot)
     forward = probe(new, old)
     assert forward.returncode == 0, forward.stderr[-2000:]
     assert json.loads(forward.stdout)['compatibility'] == compatibility
