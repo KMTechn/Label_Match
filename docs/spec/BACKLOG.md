@@ -1,3 +1,4 @@
+- w9firstupd / G63·G64 P3: 제품 고침 0. 주인이 멈춘 뒤 우리 코드가 그 폴더 앞뒤를 대는 SQLite 읽기 자리는 0 이고, active_work_probe 는 앱·키트 흐름에서 부름 0 이다. -wal·-shm 휘발·immutable 판정 금지 규칙은 contracts.md 「수량·시각·로컬 파일」 끝 두 문단.
 - w9firstupdsub309 / G62 지킴: 독립 PowerShell 진입 10개의 dot-source·Import 적재 집합과 선택 함수·고정 본문을 PS5.1 AST로 읽어 Verb-Noun 함수 정의를 대조한다. OS 허용 목록은 이름별 이유를 명시하며 제품 스크립트는 실행하지 않는다.
 - w9firstupdsub306 / G60 지킴: git 추적 비 시험 .ps1/.psm1 중 비 ASCII 파일은 UTF-8 BOM 정확히 하나를 요구하는 별도 조립 관문 시험으로 고정한다.
 - w9firstupdsub299 / G36 전수 대조: direct-sync 설치 도우미를 포함한 공개 실패 생산자 여섯 곳에 같은 ASCII 계약과 PS5.1/PS7 × 949/65001 벡터 회귀를 적용했다.

@@ -394,6 +394,10 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 
 로컬 GUI writer의 기존 저장 위치를 보존하기 위해 [guard `resolve_data_scope`](../../label_match_single_instance.py)는 앱과 같은 nonempty `custom_save_path` → `LABEL_MATCH_SAVE_DIR` → ProgramData 순서로 소스 교정했다. null/빈 custom은 fallback하며 데이터 이동·schema/업무 identity 변경은 없다. 이름은 앞뒤 공백 제거 후 기존 `ntpath.normcase(normpath(path))`의 UTF-8 SHA-256 앞 32자리와 `Global\KMTech.LabelMatch.`로 만들고, callback 종료까지 handle을 보유한다. [SaveRoot13 실제 13 PASS/39 ordered phase PASS](operations.md#saveroot13-evidence)는 custom 우선 선택, missing/empty/whitespace/null × env 유무의 실제 writer resolver 대조, 단일 process의 native mutex 중복 callback 제외·해제 후 재진입을 입증한다. 실제 파일 alias/relative 경로의 동일성이나 settings 생성·변경 race를 해결한 것은 아니다. [onboarding의 guard 이전 ledger 선택](operations.md#storage-root-residual)은 여전히 OPEN이며, relay의 기존 custom CSV 발견 경로는 아래 C-05와 [한정 26 PASS](operations.md#relay-custom-root-evidence)로 좁게 교정했다. 두 GUI writer·packaged/source·pending identity 복구는 [LM-B10](BACKLOG.md#lm-b10)의 별도 미입증 수용 범위이며 과거 Modules3 PASS를 이 교정에 확장하지 않는다.
 
+SQLite 자료·relay·outbox DB 의 `-wal`·`-shm` 은 휘발 파일이다(G63). 주인(앱·relay)이 닫혀 있을 때 `mode=ro` 로 열고 닫아도 두 파일이 새로 생겨 남을 수 있다(SQLite 3.49.1 실측). 지문·보존 대조는 본 DB 파일(또는 논리 내용)만 대고 `-wal`·`-shm` 은 세지 않는다. 공식 제거 뒤 첫 시작의 relay 회수(`registration_relay_recovery.py`)와 설치기 HealthyLifecycle 은 사용자 relay 대기열 DB 를 `mode=ro` 로 열므로 그 폴더에 두 파일이 생길 수 있다. 밖의 도구(키트 등)가 주인이 멈춘 DB 를 읽을 때는 본 파일과 `-wal` 을 임시 폴더에 바이트로 복사해 사본만 연다.
+
+`immutable=1` 연결은 `-wal` 에만 있는 행을 보지 못한다(G64). 그래서 그 결과로 진행 중 작업을 판정하지 않는다. `kmtech_factory_contracts/active_work_probe`(immutable 사용)는 빌드 시점 검증 도구이며 설치·업데이트·제거·앱 흐름은 부르지 않는다. 현장의 진행 중 방어는 설치기의 writer·중지 표식·lease 검사다.
+
 <a id="c-00"></a>
 ## C-00 공통 명령·권한
 
