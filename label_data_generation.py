@@ -13,16 +13,12 @@ from types import SimpleNamespace
 from typing import Mapping
 from startup_timing import startup_timed
 
-from kmtech_shared.data_generation import probe_downgrade, record_generation, version_key
+from kmtech_shared.data_generation import UNKNOWN_MESSAGE, probe_downgrade, record_generation, version_key
 from writer_session_fence import canonical_control_root, writer_sink
 
 CURRENT_VERSION = "v2.0.113"
 APP_ID = "Label_Match"
 _RELEASE_IDENTITY_PASS: dict[tuple[Path, Path], dict[str, object]] = {}
-UNKNOWN_MESSAGE = (
-    "이 PC의 자료 판을 확인할 수 없어 자료를 열거나 옛 판으로 되돌릴 수 없습니다. "
-    "현재 코드와 자료·확인 기록을 보존하고 관리자에게 지원 복구를 요청하세요."
-)
 
 
 class DataGenerationError(RuntimeError):

@@ -65,6 +65,8 @@ def test_direct_product_start_records_before_workflow_and_blocks_old_code(monkey
 def test_unknown_generation_keeps_private_cause_without_public_details(monkeypatch, tmp_path, entry):
     from kmtech_shared import data_generation as shared
 
+    assert generation.UNKNOWN_MESSAGE == shared.UNKNOWN_MESSAGE
+
     opened = []
     monkeypatch.setattr(protected_admin, "current_process_sid", lambda: SID)
 
