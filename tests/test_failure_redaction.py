@@ -156,3 +156,11 @@ catch {
 ''', values={"LM_FAILURE_ROOT": str(tmp_path)})
     assert result.returncode == 0, result.stdout + result.stderr
     assert "syntheticOnlyDelegation0987654321" not in result.stdout + result.stderr
+
+
+def test_data_generation_standard_messages_pass_public_filter():
+    from auto_update import safe_update_text
+    from kmtech_shared.data_generation import REFUSAL_MESSAGE, UNKNOWN_MESSAGE
+
+    for message in (REFUSAL_MESSAGE, UNKNOWN_MESSAGE):
+        assert safe_update_text(message).encode("utf-8") == message.encode("utf-8")

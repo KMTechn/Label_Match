@@ -66,6 +66,7 @@ def test_unknown_generation_keeps_private_cause_without_public_details(monkeypat
     from kmtech_shared import data_generation as shared
 
     assert generation.UNKNOWN_MESSAGE == shared.UNKNOWN_MESSAGE
+    assert generation.UNKNOWN_MESSAGE.encode("utf-8") == "이 PC의 자료 판을 확인하지 못해 프로그램을 열 수 없습니다.\n현장 관리자에게 알리세요.".encode("utf-8")
 
     opened = []
     monkeypatch.setattr(protected_admin, "current_process_sid", lambda: SID)
