@@ -4587,6 +4587,8 @@ class DataManager(_DataManager):
             csv_safe_cell=self._csv_safe_cell,
         )
 
+WORKER_UNDECIDED_LABEL = "작업자 미정"
+
 class Label_Match(tk.Tk):
     WORKER_HISTORY_LIMIT = 20
 
@@ -5173,7 +5175,7 @@ class Label_Match(tk.Tk):
         self.data_manager = _open_label_data_manager(
             self.save_directory,
             self.Worker.PACKAGING,
-            self.worker_name,
+            WORKER_UNDECIDED_LABEL,  # no blank owner before the first pick
             self.unique_id,
             authenticated_admin=False,
         )
@@ -7491,10 +7493,10 @@ class Label_Match(tk.Tk):
     def _roster_worker_allowed(self):
         if not self.__dict__.get("_roster_enabled", False):
             return True
+        if self.__dict__.get("_worker_pick_pending", False):
+            return False  # D-05: nobody chosen this run, even with a restored set.
         if self.__dict__.get("current_set_info", {}).get("id"):
             return True  # Current work and recovery keep their original owner.
-        if self.__dict__.get("_worker_pick_pending", False):
-            return False  # D-05: nobody has been chosen in this run yet.
         if self.__dict__.get("_authenticated_protected_admin", False):
             return True
         name = str(self.__dict__.get("worker_name", "") or "")
@@ -10492,7 +10494,9 @@ class Label_Match(tk.Tk):
             target, source_sha = self._package_worker_target(action, set_id, physical_qr)
             return False, (binding, target, source_sha, operator)
         except Exception:
-            self._admin_pin_last_message = "작업 대상을 확인하지 못했습니다\n작업자와 대상을 확인하고 다시 시도하세요"
+            self._admin_pin_last_message = (
+                "작업자를 먼저 고르세요" if self.__dict__.get("_worker_pick_pending", False)
+                else "작업 대상을 확인하지 못했습니다\n작업자와 대상을 확인하고 다시 시도하세요")
             return True, False
 
     def _execute_package_worker_action(self, action, set_id, physical_qr, prepared):
@@ -10578,6 +10582,16 @@ class Label_Match(tk.Tk):
         id_entry.focus_set()
         self.wait_window(window)
         return result[0] if result else None
+
+    def _record_owner_name(self):
+        """Owner for records not bound to a set: the chosen worker, else the
+        restored set's own owner, else the visible 'undecided' label."""
+        name = str(self.__dict__.get("worker_name", "") or "").strip()
+        if name:
+            return name
+        current = self.__dict__.get("current_set_info") or {}
+        name = str(current.get("worker_name_snapshot") or "").strip()
+        return name or WORKER_UNDECIDED_LABEL
 
     def _package_pin_operator(self):
         local_id = str(self.worker_name or "").strip()
@@ -11444,7 +11458,9 @@ class Label_Match(tk.Tk):
             target, source_sha = self._package_pin_target(action, set_id, physical_qr)
             operator = self._package_pin_operator()
         except Exception:
-            self._admin_pin_last_message = admin_pin_message("TARGET_CHANGED")
+            self._admin_pin_last_message = (
+                "작업자를 먼저 고르세요" if self.__dict__.get("_worker_pick_pending", False)
+                else admin_pin_message("TARGET_CHANGED"))
             return True, False
         return False, (file_binding, target, source_sha, operator, closing)
 
@@ -11973,7 +11989,7 @@ class Label_Match(tk.Tk):
                         state_data = sanitize_persistent_value({
                             "current_set_info": current,
                             "timestamp": datetime.now().isoformat(),
-                            "worker_name": persistent_operator_name(self.worker_name),
+                            "worker_name": persistent_operator_name(self._record_owner_name()),
                         })
                         require_recovery_record("current", state_data)
                 else:
@@ -12887,7 +12903,9 @@ class Label_Match(tk.Tk):
             if len(recoverable) == 1 and not invalid:
                 row, recovered = recoverable[0]
                 state_data = {
-                    "worker_name": self.worker_name,
+                    "worker_name": str(
+                        recovered.get("worker_name_snapshot") or ""
+                    ).strip() or self._record_owner_name(),
                     "timestamp": str(
                         row.get("updated_at") or datetime.now().isoformat()
                     ),
@@ -13109,7 +13127,7 @@ class Label_Match(tk.Tk):
                 self.current_set_info['start_time'] = datetime.fromisoformat(self.current_set_info['start_time'])
             self.data_manager.log_event(
                 self.Events.SET_RESTORED,
-                {"set_id": self.current_set_info.get("id"), "continued_by": self.worker_name},
+                {"set_id": self.current_set_info.get("id"), "continued_by": self._record_owner_name()},
             )
             self._package_pin_ui(self.progress_bar.__setitem__, 'value', len(self.current_set_info['raw']))
             if self.current_set_info.get("exact_rescan_active"):
@@ -19615,7 +19633,7 @@ class Label_Match(tk.Tk):
                 raise DeferredIntentCaptureError("CANCEL_CAPTURE_BINDING", "the active scope differs from the current capture")
         self.deferred_intent_capture.cancel_unsubmitted(
             intent_id=row["intent_id"], local_work_identity=str(current.get("completion_identity") or current.get("id") or ""),
-            physical_qr_payload=physical_qr, operator_id=persistent_operator_name(self.worker_name),
+            physical_qr_payload=physical_qr, operator_id=persistent_operator_name(self._record_owner_name()),
             expected_row_version=row["row_version"], issue_request_fingerprint=fingerprint,
             expected_operation_lease_id=str(current.get("operation_lease_id") or ""),
         )
@@ -20282,7 +20300,7 @@ class Label_Match(tk.Tk):
         if previous_window is not None:
             previous_window.lift()
             return
-        if self.current_set_info.get('id'):
+        if self.current_set_info.get('id') and not self.__dict__.get("_worker_pick_pending", False):
             if not self.run_tests:
                 messagebox.showwarning("작업 중 경고", "현재 스캔 작업이 진행 중입니다.\n현재 작업을 완료하거나 취소한 뒤 설정을 저장하세요.")
         settings_window = tk.Toplevel(self)
@@ -20351,6 +20369,8 @@ class Label_Match(tk.Tk):
         if self._app_close_blocks_local_action():
             return
         active_set = bool(getattr(self, 'current_set_info', {}).get('id'))
+        if active_set and self.__dict__.get("_worker_pick_pending", False):
+            active_set = False  # the first pick of a restored set is the one allowed change
         if active_set or self._has_background_work():
             if not self.run_tests:
                 messagebox.showwarning("작업 중 설정 변경 불가", "현재 스캔 작업 또는 테스트 시뮬레이션이 진행 중입니다.\n현재 작업을 완료하거나 취소한 뒤 설정을 저장하세요.", parent=window)

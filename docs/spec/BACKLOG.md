@@ -797,4 +797,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - w9firstupdsub277 G46 P1 닫음: Observe에서 기존 판정이 참인 고정 GUI·relay bootstrap 행을 역할·소유자 조회 전에 제외해 되돌림 READY의 실제 relay 하나만 센다. READY·census 코드는 유지하며 실제 relay 둘의 확인 거절과 G41 동시 요청 재사용을 격리 회귀로 확인한다.
 
 - G45 / LM113 L1: ROLLBACK_PENDING + claim NONE/ABSENT에서 검증된 앞 판 active·일반 relay 하나·정착 phase와 같은 세대 ALLOW 증명으로 일반 GUI를 허용한다. 상태 쓰기·trial/READY 권한은 없고 writer 부재 뒤 SYSTEM 정착은 그사이 쓴 자료·원장을 보존한다. 실제 현장 수용은 별도 회차다.
-- D-05 포장: 켤 때 지난 이름을 이번 실행의 작업자로 쓰지 않음(작업자 미정·고르기 판 자동 열림·콤보 빈 값). 설정 파일 값은 보존하고 「지난번」 표시만. 현재 트레이가 복구돼 있으면 원 작업자 유지(`_roster_worker_allowed`) — 이어 하기 뒤 작업자 표시는 후속.
+- D-05 포장: 켤 때 지난 이름을 이번 실행의 작업자로 쓰지 않음(작업자 미정·고르기 판 자동 열림·콤보 빈 값). 설정 파일 값은 보존하고 「지난번」 표시만. 복구된 미완 세트가 있어도 고르기 판이 열리고, 활성 세트 중 설정 변경 막음은 「미정에서 처음 고르기」 한 번만 푼다. 세트 기록 주인은 세트 스냅샷, 세트 밖 기록은 고른 사람(고르기 전엔 「작업자 미정」 표시).
