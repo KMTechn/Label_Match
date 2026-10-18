@@ -9,6 +9,7 @@ warning sound and a "N건 ... 다시 스캔" notice, never silently.
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -285,22 +286,58 @@ def test_a_work_change_before_the_held_scans_run_refuses_them_aloud(tmp_path, mo
         _teardown(app, root, release)
 
 
+def _fault_the_save(app, root, release):
+    def broken_apply(*_args, **_kwargs):
+        raise RuntimeError("completion apply fault (test)")
+
+    app._finalize_set = broken_apply
+    release.set()
+
+
 def test_a_lane_fault_during_the_save_refuses_the_held_scans_aloud(tmp_path, monkeypatch):
+    """Terminal BROKEN (quarantine refused after repeated faults): the held scan
+    is refused aloud and the terminal notice still stands."""
+
     module, app, root, entered, release = _completion_app(tmp_path, monkeypatch)
     _record_events(app)
     try:
         _save_first_set(app, root, entered)
         _scanner(app, NEXT_SET[0])
-
-        def broken_apply(*_args, **_kwargs):
-            raise RuntimeError("completion apply fault (test)")
-
-        app._finalize_set = broken_apply
-        release.set()
+        now = time.monotonic()
+        app._ui_lane_faults = [(now, "earlier-a"), (now, "earlier-b")]  # a third fault in 10 min is terminal
+        _fault_the_save(app, root, release)
         root.run_until(lambda: app.ui_lane.state is LaneState.BROKEN, timeout=10)
 
-        assert "1건" in _status(app) and app.sounds[-1:] == ["fail"], _status(app)
+        status = _status(app)
+        assert "1건" in status and app.sounds[-1:] == ["fail"], status
+        assert "추가 스캔을 중지" in status and "받지 않았습니다" in status and "다시 스캔하세요" in status, status
+        assert "·" not in status
         assert app.__dict__.get("_scans_behind_completion") in (None, [])
+        assert _attempts(app) == _legacy_set(60)
+    finally:
+        _teardown(app, root, release)
+
+
+def test_a_quarantined_lane_fault_also_refuses_and_announces_the_held_scans(tmp_path, monkeypatch):
+    """Quarantine succeeds and the lane restarts: the held scan is not dropped
+    silently - fail sound, the review notice says it was not received."""
+
+    module, app, root, entered, release = _completion_app(tmp_path, monkeypatch)
+    _record_events(app)
+    try:
+        _save_first_set(app, root, entered)
+        _scanner(app, NEXT_SET[0])
+        assert app.__dict__.get("_scans_behind_completion") == [NEXT_SET[0]]
+        _fault_the_save(app, root, release)
+        root.run_until(lambda: app.__dict__.get("_ui_lane_review_notice") is not None, timeout=10)
+
+        assert app.sounds[-1:] == ["fail"], app.sounds
+        notice = app._ui_lane_review_notice
+        text = notice.message
+        assert "보류 스캔 1건은 받지 않았습니다" in text and "다시 스캔하세요" in text, text
+        assert "·" not in text and not text.rstrip().endswith("."), text
+        assert app.__dict__.get("_scans_behind_completion") in (None, [])
+        assert "1건" in _status(app) and "다시 스캔" in _status(app), _status(app)
         assert _attempts(app) == _legacy_set(60)
     finally:
         _teardown(app, root, release)

@@ -191,6 +191,8 @@ def test_fault_persistence_failure_keeps_input_stopped_and_original(recovery_app
     app, root, _typing = recovery_app
     path, raw = _checkpoint(app)
     app._scans_behind_completion = ["NEXT-HELD"]
+    sounds = []
+    monkeypatch.setattr(app, "_play_sound", sounds.append)
     app.entry.get = lambda: "NEXT-PARTIAL"
     if boundary == "audit":
         monkeypatch.setattr(app.package_outbox, "audit_workbench_action", Mock(side_effect=OSError()))
@@ -201,7 +203,8 @@ def test_fault_persistence_failure_keeps_input_stopped_and_original(recovery_app
     old = _finish_fault(app, root)
     assert app.ui_lane is old and app._ui_lane_generation == 0
     assert path.read_bytes() == raw
-    assert app._scans_behind_completion == ["NEXT-HELD"]
+    # The held scan is refused aloud and dropped, never kept silently behind a stopped lane.
+    assert app._scans_behind_completion == [] and sounds == ["fail"]
     assert app.entry.get() == "NEXT-PARTIAL"
     app._render_operator_workbench()
     assert app.entry.options["state"] == "disabled"

@@ -5661,6 +5661,8 @@ class Label_Match(tk.Tk):
         self._completed_set_behind_scans = None
 
     def _handle_ui_lane_fault(self, error):
+        # Held scans never vanish silently: refused aloud on every end of a lane fault.
+        refused_scans = len(self.__dict__.get("_scans_behind_completion") or ())
         self._ui_lane_busy_task = ""
         self._ui_lane_busy_label = ""
         self._clear_package_pin_requests()
@@ -5669,6 +5671,7 @@ class Label_Match(tk.Tk):
                 return
         except Exception as exc:
             print(f"처리 오류 보관 실패: {type(exc).__name__}")
+        self._refuse_scans_behind_completion("broken")  # no-op when quarantine already refused them
         print(
             "Label Tk UI lane technical diagnostic: "
             f"{self._ui_lane_diagnostic_text(error)}"
@@ -5680,8 +5683,11 @@ class Label_Match(tk.Tk):
         status_label = self.__dict__.get("status_label")
         if status_label is not None:
             try:
+                terminal_text = "처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요."
+                if refused_scans:
+                    terminal_text += f" 보류 스캔 {refused_scans}건은 받지 않았습니다 — 관리자 확인 뒤 다시 스캔하세요"
                 status_label.config(
-                    text="처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요.",
+                    text=terminal_text,
                     style="Error.TLabel",
                 )
                 status_label.grid()
@@ -5738,7 +5744,8 @@ class Label_Match(tk.Tk):
                 if not self._move_package_pin_file(path, archive, evidence["raw"],
                                                   allowed_root=Path(self.data_manager.save_directory)):
                     return False
-        self._scans_behind_completion = []
+        refused_scans = len(self.__dict__.get("_scans_behind_completion") or ())
+        self._refuse_scans_behind_completion("broken")  # aloud, then the list is empty
         for name in ("_workflow_blocking_notice", "_workflow_notice", "_workflow_notice_action",
                      "_scans_behind_completion_work", "_completed_set_behind_scans", "_deferred_label_materialization",
                      "_pending_workflow_error", "_workflow_pending_error", "_package_recovery_state_data"):
@@ -5759,8 +5766,11 @@ class Label_Match(tk.Tk):
             on_admitted=self._on_deferred_validation_lane_admitted,
             submit_task=self._submit_deferred_validation_lane_task)
         count = len(self.package_outbox.list_workbench_holds())
+        refused_line = (f"보류 스캔 {refused_scans}건은 받지 않았습니다 — 관리자 확인 뒤 다시 스캔하세요\n"
+                        if refused_scans else "")
         self._ui_lane_review_notice = WorkflowNotice(
-            f"관리자 확인 {count}건", '이 포장 작업을 보류했습니다\n다음 트레이를 계속하세요\n코드: parked', tone="warning")
+            f"관리자 확인 {count}건",
+            f'이 포장 작업을 보류했습니다\n다음 트레이를 계속하세요\n{refused_line}코드: parked', tone="warning")
         if self.__dict__.get("operator_workbench_ready"):
             self._render_operator_workbench()
         self._focus_scan_entry_if_available()
