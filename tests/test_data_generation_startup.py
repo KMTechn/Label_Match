@@ -53,7 +53,7 @@ def test_direct_product_start_records_before_workflow_and_blocks_old_code(monkey
         decision = probe_downgrade([marker], "v2.0.38", app_id="Label_Match", subject_sid=SID,
                                   target_build_id=OLD_BUILD)
         assert decision["status"] == "REFUSE"
-        assert "옛 판으로 되돌릴 수 없습니다" in decision["message"]
+        assert '이 PC의 자료는 더 새 판에서 이미 열려 이 판으로는 열 수 없습니다.\n현장 관리자에게 알리세요.' in decision["message"]
         return 0
 
     monkeypatch.setattr(app, "DataManager", data_manager)

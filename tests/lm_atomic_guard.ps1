@@ -33,7 +33,7 @@ if($SourceFile){
 $exceptions=Get-Content -LiteralPath (Join-Path $HostRoot 'tests/fixtures/lm_atomic_directory_sites.json') -Raw | ConvertFrom-Json
 $used=@{};$forbidden=@()
 $sharedExclusions = @{
-    'kmtech_shared/powershell/data_generation.ps1' = 'b809e49985c73e0b1aedbe9dd3a8050177939f6fb088087e6d3e4c9bc05b5c96'
+    'kmtech_shared/powershell/data_generation.ps1' = '3452a5a0bef3f3e4ebd6e28056febeea157c932b4346133b91d67fc497124056'
     'kmtech_shared/powershell/portable.ps1' = 'eba0b2d69b831d386d2668e5605e63807d27612b877115a53a038a8b283dbb70'
     'kmtech_shared/powershell/ps51_module_prologue.ps1' = '9c5e083b8e332573f3368be3e9592a2e2409aa89891e15942026361be17d0b71'
 }

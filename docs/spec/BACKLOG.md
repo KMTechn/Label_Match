@@ -11,7 +11,7 @@
 
 G53은 생성 시각을 다시 확인한 실제 OS 셸 조상만 제외하고 다른 인수의 앱 경로와
 runtime/사슬 밖 프로세스 거절을 유지한다. G28은 보호 작업자 바인딩과 증명 넷을
-검사하며 사용자 제거 보고의 operator_sid를 대조한다. G35는 공용 0.3.7 전체
+검사하며 사용자 제거 보고의 operator_sid를 대조한다. G35는 공용 0.3.8 전체
 package/manifest/lock과 bootstrap pin을 채택한다. 구현·회귀·남은 수용 범위는
 `D:/KMTech/program-improvement-20260912/work/program/w9firstupd/sub-294/RESULT.md`를 따른다.
 

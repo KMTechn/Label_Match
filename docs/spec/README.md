@@ -16,7 +16,7 @@ v2.0.104 후보는 인수 없이 새 화면(셸 v3.16.2)을 엽니다. 비상 `-
 - 기술 계약은 [contracts.md](contracts.md), 운영은 [operations.md](operations.md), 설치·업데이트 설계는 [LIFECYCLE-DESIGN.md](LIFECYCLE-DESIGN.md)·[PAIR-RULE-CONTRACT.md](PAIR-RULE-CONTRACT.md) 가 정본이다.
 - 회사 서버 연결의 고정 요청 식별·압축 응답·거절 코드는 [회사 서버 HTTP 계약](contracts.md#company-http)을 따른다.
 - 업무 전 숨김 시작 확인은 [읽기 전용 시작 확인](operations.md#startup-check)을 따른다. 화면 없이 설치·계정·자료·저장 품목 목록 상태를 확인한다. 앱도 기존 시작 관문의 결과를 한 줄로 기록하며 기존 거부는 쉬운 안내로 알린다. 새 기록의 실패는 시작을 막지 않는다.
-- 설치 주소가 등록 주소와 다르면 자료·보낼 것을 보존하고 「설치 주소가 바뀌었습니다. 관리자에게 알려 주세요.」로 시작과 옛 relay 재사용을 거절한다. 주소 기록이 없는 옛 설치는 기존 판정을 유지한다([시작 절차](operations.md#onboarding-writer-admission)).
+- 설치 주소가 등록 주소와 다르면 자료·보낼 것을 보존하고 「회사 서버 주소가 설치 때와 다릅니다.\n현장 관리자에게 알리세요.」로 시작과 옛 relay 재사용을 거절한다. 주소 기록이 없는 옛 설치는 기존 판정을 유지한다([시작 절차](operations.md#onboarding-writer-admission)).
 - 근거:
   - 지금 상태 조사표: `D:\KMTech\program-improvement-20260912\work\program\w9archplan\sub-27\INVENTORY.md`. 정적 조사이며, 기능 ID F-01–F-74 가 그 표의 ID 다.
   - 현장 사실: 사용자 확인분.
@@ -263,7 +263,7 @@ v2.0.104 후보는 인수 없이 새 화면(셸 v3.16.2)을 엽니다. 비상 `-
 
 ## 8. 실제 PC 작동 확인 방법
 ### 8-1. 설치
-- 설치기는 고정 `kmtech_shared` 0.3.7 PowerShell leaf를 manifest/leaf pin 확인 뒤 호출한다([X13-B](operations.md#shared-powershell-x13b)). manifest 크기 조회는 숨김 파일을 포함하고 기존 provider 경로·JSON 오류·64KiB 한도를 유지한다. 런타임 PowerShell 파일과 생성 템플릿은 OS 모듈의 절대 경로 import 두 줄로 PS7 상속 경로 오염을 막는다. 자료 세대 UNKNOWN 원인은 비공개 속성으로 보존하며 진단 로그 잎은 공급만 하고 앱에 연결하지 않는다([고정 shared core](operations.md#shared-core-x04b)).
+- 설치기는 고정 `kmtech_shared` 0.3.8 PowerShell leaf를 manifest/leaf pin 확인 뒤 호출한다([X13-B](operations.md#shared-powershell-x13b)). manifest 크기 조회는 숨김 파일을 포함하고 기존 provider 경로·JSON 오류·64KiB 한도를 유지한다. 런타임 PowerShell 파일과 생성 템플릿은 OS 모듈의 절대 경로 import 두 줄로 PS7 상속 경로 오염을 막는다. 자료 세대 UNKNOWN 원인은 비공개 속성으로 보존하며 진단 로그 잎은 공급만 하고 앱에 연결하지 않는다([고정 shared core](operations.md#shared-core-x04b)).
 - **목표: 관리자 SSH 숨김 설치·업데이트로 깔린다(현장 PC 화면에 설치 창·Windows 허용 창 0).**
 - **제품 후보(w9firstupdsub63)**: 상승/Session 0 입구는 키트가 넘긴 작업자 계정과 그 작업자의 READY inventory를 먼저 확인한다. 작업자 인수를 생략한 상승 SSH 호출은 안정된 활성 콘솔 작업자를 확인한다. 기계 몫을 배치한 뒤 `PASS_MACHINE_WORKER_PENDING`으로 작업자 첫 시작을 기다리며, 호출자와 작업자 SID가 같아도 상승 SSH에서 사용자 프로필·등록·Run을 준비하지 않는다. 지정 작업자의 기존 일반 세션 onboarding이 READY를 확인해야 작업자 HKCU에 완료가 기록된다.
   - 키트 관리자 가지 연결·실제 Windows 설치/되돌림은 아직 미증명이다(LM-2). 현장 일반 세션 설치는 기존 Windows 허용 창 승인을 사용한다.

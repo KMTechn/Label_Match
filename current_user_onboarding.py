@@ -836,7 +836,7 @@ def require_install_server_origin_matches(
         return
     if installed_origin is not None and registered_origin is not None and installed_origin != registered_origin:
         raise CurrentUserOnboardingError(
-            "설치 주소가 바뀌었습니다. 관리자에게 알려 주세요.",
+            "회사 서버 주소가 설치 때와 다릅니다.\n현장 관리자에게 알리세요.",
             report_path=paths.onboarding_report_path, status="RECOVERY_REQUIRED",
             cause_code="INSTALL_SERVER_ORIGIN_CHANGED",
         )

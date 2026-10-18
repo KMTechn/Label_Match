@@ -146,3 +146,23 @@ def test_unavailable_origin_preserves_existing_ready_and_reuse(live_relay, tmp_p
     assert _inspect(paths)["status"] == "READY"
     assert user_relay.reuse_or_start_user_relay_process(
         live_relay.current, wait=lambda _: None)["existing_relay_reused"] is True
+
+
+def test_install_origin_guidance_bytes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import auto_update
+    marker = tmp_path / "update-control" / "worker-pending.json"
+    marker.parent.mkdir()
+    marker.write_text(json.dumps({
+        "schema": "label-match-machine-worker-pending-v1",
+        "server_base_url": "https://installed.invalid",
+    }), encoding="utf-8")
+    monkeypatch.setattr(auto_update, "installation_root", lambda _: tmp_path)
+    paths = SimpleNamespace(app_root=tmp_path, onboarding_report_path=tmp_path / "report.json")
+    with pytest.raises(onboarding.CurrentUserOnboardingError) as caught:
+        onboarding.require_install_server_origin_matches(
+            paths, credential={"endpoint_url": "https://registered.invalid"})
+    assert caught.value.cause_code == "INSTALL_SERVER_ORIGIN_CHANGED"
+    assert caught.value.status == "RECOVERY_REQUIRED"
+    assert str(caught.value).encode("utf-8") == (
+        "회사 서버 주소가 설치 때와 다릅니다.\n현장 관리자에게 알리세요.".encode("utf-8"))

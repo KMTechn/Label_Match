@@ -16,8 +16,8 @@ from typing import Iterable
 
 SCHEMA = "kmtech-data-generation-v2"
 MAX_BYTES = 4096
-REFUSAL_MESSAGE = "이 PC의 자료가 새 판으로 이미 열려 옛 판으로 되돌릴 수 없습니다. 같은 새 판을 다시 시작하거나 고친 판으로 지원 업데이트하세요. 관리자 지원 복구는 설치 전 백업과 옛 판을 함께 복원해야 합니다."
-UNKNOWN_MESSAGE = "이 PC의 자료 판을 확인할 수 없어 옛 판으로 되돌릴 수 없습니다. 자료와 확인 기록을 보존하고 관리자 지원 복구를 요청하세요."
+REFUSAL_MESSAGE = "이 PC의 자료는 더 새 판에서 이미 열려 이 판으로는 열 수 없습니다.\n현장 관리자에게 알리세요."
+UNKNOWN_MESSAGE = "이 PC의 자료 판을 확인하지 못해 프로그램을 열 수 없습니다.\n현장 관리자에게 알리세요."
 _VERSION = re.compile(r"v?(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})")
 _FIELDS = frozenset({"schema", "app_id", "subject_sid", "version", "data_compatible_min_version", "build_id", "compatibility_verified"})
 _CAUSE_IDENTIFIER = re.compile(r"[A-Za-z_<][A-Za-z0-9_<>]*(\.[A-Za-z_<][A-Za-z0-9_<>]*)*")

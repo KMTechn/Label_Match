@@ -123,14 +123,14 @@ function Get-KmtechDataDowngradeDecision(
         return [pscustomobject]@{
             status=$(if ($allowed) {'ALLOW'} else {'REFUSE'}); allowed=$allowed
             message_key=$(if ($allowed) {'compatible_generation'} else {'data_generation_downgrade_refused'})
-            message=$(if ($allowed) {''} else {'이 PC의 자료가 새 판으로 이미 열려 옛 판으로 되돌릴 수 없습니다. 같은 새 판을 다시 시작하거나 고친 판으로 지원 업데이트하세요. 관리자 지원 복구는 설치 전 백업과 옛 판을 함께 복원해야 합니다.'})
+            message=$(if ($allowed) {''} else {"이 PC의 자료는 더 새 판에서 이미 열려 이 판으로는 열 수 없습니다.`n현장 관리자에게 알리세요."})
             version=('v' + $latest.ToString()); minimum_version=('v' + $floor.ToString())
         }
     }
     catch {
         return [pscustomobject]@{
             status='UNKNOWN';allowed=$false;message_key='data_generation_unknown'
-            message='이 PC의 자료 판을 확인할 수 없어 옛 판으로 되돌릴 수 없습니다. 자료와 확인 기록을 보존하고 관리자 지원 복구를 요청하세요.'
+            message="이 PC의 자료 판을 확인하지 못해 프로그램을 열 수 없습니다.`n현장 관리자에게 알리세요."
             version=$null;minimum_version=$null
         }
     }

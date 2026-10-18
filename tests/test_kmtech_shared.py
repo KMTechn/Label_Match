@@ -263,3 +263,14 @@ def test_pre_adoption_v2_sidecars_read_write_and_recover_unchanged(tmp_path, mon
     assert recovered.read_bytes() == payload
     assert sync.get_verified_catalog_snapshot(recovered) == payload
     assert cache.read_bytes() == b"interrupted primary write"
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("UNKNOWN_MESSAGE", "이 PC의 자료 판을 확인하지 못해 프로그램을 열 수 없습니다.\n현장 관리자에게 알리세요."),
+    ("REFUSAL_MESSAGE", "이 PC의 자료는 더 새 판에서 이미 열려 이 판으로는 열 수 없습니다.\n현장 관리자에게 알리세요."),
+])
+def test_shared_038_guidance_bytes(name, expected):
+    from kmtech_shared import data_generation
+    actual = getattr(data_generation, name).encode("utf-8")
+    assert actual == expected.encode("utf-8")
+    assert actual.count(b"\n") == 1 and b"\r" not in actual
