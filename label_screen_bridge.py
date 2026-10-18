@@ -967,6 +967,9 @@ def _settings(processor):
                            "candidates": [{"id": str(row["worker_id"]), "label": roster_module.worker_choice_label(row)} for row in register["candidates"]]}
     note = "다른 분이면 구분할 이름을 적어 주세요. 예: 이름B" if register and register.get("different_from") else (
         "현재 트레이를 끝내거나 취소한 뒤 바꿀 수 있습니다" if (app.__dict__.get("current_set_info") or {}).get("id") else None)
+    if app.__dict__.get("_worker_pick_pending", False):  # D-05: 지난번 표시로만 쓴다(고른 것 아님)
+        current = next((roster_module.worker_choice_label(row) for row in choices
+                        if row["display_name"] == app.__dict__.get("_last_worker_name")), "")
     return {"workers": [{"name": name} for name in names], "selected": current if current in names else None,
             "required": not app._roster_worker_allowed(), "note": note, "register": screen_register}
 

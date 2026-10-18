@@ -5160,9 +5160,13 @@ class Label_Match(tk.Tk):
         self.sound_objects = {}
         self.items_data = {}
         self.unique_id = _label_match_local_log_id()
-        self.worker_name = str(
+        # D-05: the name left in the settings file is only the "last time"
+        # hint. It is never this run's worker until someone picks it.
+        self._last_worker_name = str(
             self.app_settings.get("worker_name", "")
         ).strip()
+        self.worker_name = ""
+        self._worker_pick_pending = True
         self._admin_pin_login_epoch = uuid.uuid4().hex
         self.worker_role = "PACKAGING"
         self._authenticated_protected_admin = False
@@ -7206,7 +7210,9 @@ class Label_Match(tk.Tk):
                 or self.worker_name
                 in {PROTECTED_ADMIN_OPERATOR_ID, PROTECTED_ADMIN_DISPLAY_NAME}
             )
-            if protected_admin_active or protected_identity_value:
+            if self.__dict__.get("_worker_pick_pending", False):
+                pass  # Not chosen this run: keep the last-time hint untouched.
+            elif protected_admin_active or protected_identity_value:
                 self.app_settings.pop('worker_name', None)
                 self.app_settings.pop('worker_role', None)
             else:
@@ -7409,7 +7415,8 @@ class Label_Match(tk.Tk):
         if client is not None:
             client._label_roster_b = self._roster_b
         self._worker_roster = self._roster_b.snapshot
-        self.worker_id = self.app_settings.get("worker_id")
+        self.worker_id = (None if self.__dict__.get("_worker_pick_pending", False)
+                          else self.app_settings.get("worker_id"))
         self._bind_remembered_roster_worker()
         self._roster_request_serial = 0
         self._roster_result_queue = queue.Queue()
@@ -7486,6 +7493,8 @@ class Label_Match(tk.Tk):
             return True
         if self.__dict__.get("current_set_info", {}).get("id"):
             return True  # Current work and recovery keep their original owner.
+        if self.__dict__.get("_worker_pick_pending", False):
+            return False  # D-05: nobody has been chosen in this run yet.
         if self.__dict__.get("_authenticated_protected_admin", False):
             return True
         name = str(self.__dict__.get("worker_name", "") or "")
@@ -16006,6 +16015,7 @@ class Label_Match(tk.Tk):
             consume_input()
             self._show_scanner_notice(
                 "작업자 선택", "이름을 선택하거나 '새 이름 등록'에서 이름을 등록한 뒤 다시 스캔하세요.")
+            self._play_sound("fail")
             self.open_settings_window()
             return
         if self._sealed_transfer_exchange_blocks_local_action("다음 스캔"):
@@ -20295,7 +20305,10 @@ class Label_Match(tk.Tk):
         names = [label_worker_roster.worker_choice_label(worker) for worker in self._worker_roster_choices()]
         current_name = next((label_worker_roster.worker_choice_label(row) for row in self._worker_roster_choices()
                              if row["worker_id"] == self.__dict__.get("worker_id")), display_operator_name(self.worker_name))
-        self.worker_name_var = tk.StringVar(value=current_name if current_name in names else "")
+        pending = self.__dict__.get("_worker_pick_pending", False)
+        # D-05: while nobody is chosen this run, the combo starts empty.
+        self.worker_name_var = tk.StringVar(
+            value="" if pending else (current_name if current_name in names else ""))
         worker_entry = ttk.Combobox(
             main_frame,
             textvariable=self.worker_name_var,
@@ -20309,6 +20322,10 @@ class Label_Match(tk.Tk):
             row=3, column=2, sticky="e", pady=(8, 0))
         self._roster_choice_note = ttk.Label(main_frame, style="Status.TLabel")
         self._roster_choice_note.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        last_hint = str(self.__dict__.get("_last_worker_name", "") or "")
+        if pending and last_hint:
+            ttk.Label(main_frame, text=f"지난번: {display_operator_name(last_hint)}", style="Status.TLabel").grid(
+                row=2, column=3, sticky="w", padx=(8, 0))
         self._refresh_worker_roster_selection()
         button_frame = ttk.Frame(main_frame, padding=(0, 20, 0, 0), style="TFrame")
         button_frame.grid(row=4, column=0, columnspan=3, sticky='e', pady=(20,0))
@@ -20426,6 +20443,7 @@ class Label_Match(tk.Tk):
             return
 
         self.worker_name = requested_worker_name
+        self._worker_pick_pending = False
         if managed_choice:
             self.worker_id = selected_worker["worker_id"]
         elif self.__dict__.get("_roster_enabled", False):
