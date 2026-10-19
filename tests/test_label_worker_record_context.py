@@ -183,3 +183,19 @@ def test_identityless_checkpoint_keeps_absent_identity_after_first_pick(
             assert 'worker_name_snapshot' not in details
     finally:
         _close(restored)
+
+
+@pytest.mark.parametrize('captured', [False, True])
+def test_idle_shortage_snapshot_does_not_fall_through_to_selected_worker(packaging, tmp_path, captured):
+    app, _dialogs = packaging
+    select_worker(app, tmp_path, enabled=True)
+    app._worker_roster_stage_b = True
+    scan(app, MASTER)
+    snapshot = copy.deepcopy(app.current_set_info)
+    if not captured:
+        snapshot.pop('worker_id')
+        snapshot.pop('worker_name_snapshot')
+    app.current_set_info = {'id': None, 'raw': [], 'shortage_undo_snapshot': snapshot}
+    app.worker_id = str(uuid.uuid4())
+    app.worker_name += ' (선택)'
+    assert app._worker_record_context() == (IDENTITY if captured else {}, True)
