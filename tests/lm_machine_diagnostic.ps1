@@ -5,15 +5,19 @@ $tree=[Management.Automation.Language.Parser]::ParseFile((Join-Path $HostRoot 'I
 if($errors.Count){throw 'SOURCE_PARSE'}
 $branch=@($tree.FindAll({param($n)$n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.Contains('Machine code placement failed.')},$true))
 $failureFunction=@($tree.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-LabelLaunchFailure'},$false))
+$placementConverter=@($tree.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ConvertTo-LabelPlacementPublicFailure'},$false))
 $traps=@($tree.FindAll({param($n)$n -is [Management.Automation.Language.TrapStatementAst]},$false))
 if($branch.Count -ne 1 -or $failureFunction.Count -ne 1 -or $traps.Count -ne 1){throw 'SOURCE_BOUNDARY_COUNT'}
+if($placementConverter.Count -ne 1){throw 'public placement converter shape changed'}
 . ([scriptblock]::Create($failureFunction[0].Extent.Text))
+. ([scriptblock]::Create($placementConverter[0].Extent.Text))
 function ConvertTo-KmtechPublicRecord($fields){return $fields}
 function ConvertTo-KmtechRedactedSinkObject($fields){return $fields}
 function Write-KmtechProtectedFailureSidecar {param($Text)throw [IO.IOException]::new('test writer refusal')}
 $Script:KmtechRedactionRules=@{safe_messages=@('현장 관리자에게 문의하세요.')}
 $reference=if($WriterFails){$null}else{@{path='fixture-reference';sha256=('0'*64)}}
 $Script:LabelPlacementChildFailure=@{placement_code='PLACEMENT_DIAGNOSTIC_UNAVAILABLE';phase='canonical_placement';exit_code=$ChildExit;full_exception_trace=$reference}
+$Script:LabelPlacementChildFailure=ConvertTo-LabelPlacementPublicFailure $Script:LabelPlacementChildFailure
 $audit=[ordered]@{};$auditFile=Join-Path $FixtureRoot 'audit.json'
 function Save($Path,$Payload){[IO.File]::WriteAllText($Path,($Payload | ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))}
 function InvokeFrozenPlacementHelper($Frozen,$Parameters){
