@@ -3758,8 +3758,8 @@ except Exception:
 
 function Get-LabelPathCompareKey([string]$Value) {
     $text = ([string]$Value).Trim().Replace('/', '\')
-    if ($text.StartsWith('\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { $text = '\' + $text.Substring(8) }
-    elseif ($text.StartsWith('\?\', [StringComparison]::OrdinalIgnoreCase) -or $text.StartsWith('\.\', [StringComparison]::OrdinalIgnoreCase)) { $text = $text.Substring(4) }
+    if ($text.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { $text = '\\' + $text.Substring(8) }
+    elseif ($text.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase) -or $text.StartsWith('\\.\', [StringComparison]::OrdinalIgnoreCase)) { $text = $text.Substring(4) }
     return ([IO.Path]::GetFullPath($text)).TrimEnd('\')
 }
 
@@ -3804,7 +3804,8 @@ function Test-LabelLegacySharedProfilePath([string]$Value) {
     $rootValues = @([Environment]::GetFolderPath('CommonApplicationData'), [string]$env:PROGRAMDATA)
     foreach ($rootValue in $rootValues) {
         if ([string]::IsNullOrWhiteSpace($rootValue) -or -not [IO.Path]::IsPathRooted($rootValue)) { continue }
-        $rootKeys = @(Get-LabelPathCompareKey $rootValue)
+        $rootKeys = @()
+        try { $rootKeys += Get-LabelPathCompareKey $rootValue } catch { continue }
         try { $rootKeys += Resolve-LabelPathLinkTargets $rootValue } catch { }
         foreach ($rootKey in $rootKeys) {
             $shared = $rootKey + '\KMTech\Logistics'

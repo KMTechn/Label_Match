@@ -134,10 +134,10 @@ def test_installer_profile_env_judgement_matches_python(tmp_path, shell):
         (tmp_path / "process-stderr.log").write_bytes(completed.stderr)
     assert completed.returncode == 0, "definition-only installer child failed"
     data = json.loads(output.read_text(encoding="utf-8-sig"))
-    for name in ("exact", "case", "slash", "trailing", "verbatim", "secret", "junction"):
+    for name in ("exact", "case", "slash", "trailing", "verbatim", "devicepath", "secret", "junction"):
         assert data[name]["legacy"] is True, name
         assert data[name]["value"] == "", name
-    for name in ("sibling", "appspecific", "secretsx"):
+    for name in ("sibling", "appspecific", "secretsx", "verbatimsibling", "verbatimapp", "uncplain", "uncverbatim"):
         assert data[name]["legacy"] is False, name
         assert data[name]["value"] == data["cases"][name], name
     assert data["unset"]["value"] == ""
