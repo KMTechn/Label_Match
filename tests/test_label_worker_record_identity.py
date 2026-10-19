@@ -96,23 +96,30 @@ def test_legacy_temporary_selection_records_null_without_inventing_uuid(packagin
 
 @pytest.mark.parametrize('enabled', [False, True])
 def test_shortage_undo_keeps_local_identity_out_of_nested_csv_details(packaging, tmp_path, scanner_clock, enabled):
+    # 보호 이어받음 = tests/test_label_worker_record_identity.py::test_f2_completed_tray_cancel_keeps_local_identity_out_of_nested_csv_details
     app, dialogs = packaging
     select_worker(app, tmp_path, enabled=enabled)
     for value in [MASTER, products()[0], MASTER]:
         scanner_clock[0] += 5
         scan(app, value)
-    assert len(completions(app)) == 1
+    assert completions(app) == []
+    scanner_clock[0] += 5
+    scan(app, MASTER)
+    completed = completions(app)
+    assert len(completed) == 1
+    before_current = copy.deepcopy(app.current_set_info)
+    before_saved = copy.deepcopy(app.data_manager.load_current_state())
+    before_current_identity = roster.record_identity(before_current)
+    before_saved_identity = roster.record_identity(before_saved)
+    before_selected_identity = (app.worker_id, app.worker_name)
     scan(app, 'KMCMD:UNDO')
-    app.data_manager.flush(timeout=5)
-    records = [row for path in Path(app.save_directory).rglob('*.csv')
-               for row in csv.DictReader(path.open(encoding='utf-8-sig', newline=''))]
-    [cancelled] = [json.loads(row['details']) for row in records
-                   if row['event'] == app.Events.TRAY_COMPLETION_CANCELLED]
-    assert ('worker_id' in cancelled) is enabled
-    assert 'worker_id' not in cancelled['details']
-    assert 'worker_name_snapshot' not in cancelled['details']
-    assert roster.record_identity(app.current_set_info) == IDENTITY
-    assert roster.record_identity(app.data_manager.load_current_state()) == IDENTITY
+    assert app.data_manager.flush(timeout=5.0)
+    assert app.current_set_info == before_current
+    assert app.data_manager.load_current_state() == before_saved
+    assert roster.record_identity(app.current_set_info) == before_current_identity
+    assert roster.record_identity(app.data_manager.load_current_state()) == before_saved_identity
+    assert (app.worker_id, app.worker_name) == before_selected_identity
+    assert completions(app) == completed
     assert dialogs == []
 
 
@@ -380,8 +387,7 @@ def test_csv_completed_outbox_marker_failure_retries_without_requeuing(packaging
 
 
 @pytest.mark.parametrize('follow_up', ['failure_archive', 'empty_failure_archive', 'shortage_checkpoint'])
-def test_csv_completed_failure_or_shortage_follow_up_keeps_its_verdict(
-        packaging, tmp_path, monkeypatch, scanner_clock, follow_up):
+def test_csv_completed_failure_or_shortage_follow_up_keeps_its_verdict(packaging, tmp_path, monkeypatch, scanner_clock, follow_up):
     import label_data_manager as module
     app, dialogs = packaging
     select_worker(app, tmp_path, enabled=True)
@@ -389,17 +395,19 @@ def test_csv_completed_failure_or_shortage_follow_up_keeps_its_verdict(
     original = [] if follow_up == 'empty_failure_archive' else [MASTER, products(prefix='FOLLOWUP')[0]]
     if follow_up.endswith('failure_archive'):
         write = module.write_checked_bytes
+
         def interrupt(path, *args, **kwargs):
-            if '_worker_record_identity' in Path(path).parts and not cuts:
+            if '_worker_record_identity' in Path(path).parts and (not cuts):
                 cuts.append(True)
                 raise OSError('failure archive interrupted after CSV completion')
             return write(path, *args, **kwargs)
         monkeypatch.setattr(module, 'write_checked_bytes', interrupt)
     else:
         save = app.data_manager.save_current_state
+
         def interrupt(state, **kwargs):
             current = state.get('current_set_info') or {}
-            if current.get('shortage_undo_snapshot') and not current.get('raw') and not cuts:
+            if current.get('shortage_undo_snapshot') and (not current.get('raw')) and (not cuts):
                 cuts.append(True)
                 return False
             return save(state, **kwargs)
@@ -410,6 +418,9 @@ def test_csv_completed_failure_or_shortage_follow_up_keeps_its_verdict(
     if follow_up.endswith('failure_archive'):
         scan(app, 'OTHER-ITEM-WRONG-PRODUCT')
     else:
+        scanner_clock[0] += 5
+        scan(app, MASTER)
+        assert cuts == []
         scanner_clock[0] += 5
         scan(app, MASTER)
     assert cuts == [True]
@@ -425,10 +436,11 @@ def test_csv_completed_failure_or_shortage_follow_up_keeps_its_verdict(
         assert final['final_result'] == (app.Results.FAIL_MISMATCH if original else app.Results.FAIL_INPUT_ERROR)
     else:
         assert final['shortage_confirmed'] is True
-        # The documented shortage exception reopens only after the follow-up
-        # checkpoint is safely saved, until the next material master label.
+        after_retry = copy.deepcopy(app.current_set_info)
         scan(app, 'KMCMD:UNDO')
-        assert app.current_set_info['raw'] == original
+        assert app.current_set_info == after_retry
+        assert completions(app) == [(_row, final)]
+        assert dialogs == []
 
 
 def test_completed_ui_follow_up_failure_does_not_recount_or_reopen_the_set(packaging, tmp_path, monkeypatch):
@@ -682,4 +694,3 @@ def test_f2_completed_tray_cancel_keeps_local_identity_out_of_nested_csv_details
     assert 'worker_id' not in cancelled['details']
     assert 'worker_name_snapshot' not in cancelled['details']
     assert dialogs == []
-
