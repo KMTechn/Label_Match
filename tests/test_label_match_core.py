@@ -205,6 +205,7 @@ def test_success_scan_sound_mapping_keeps_product_one_as_scan_one():
 def test_central_inherit_all_phs2_scan_stages_without_auto_finalize():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
+    app.worker_name = "worker"
     app.Results = module.Label_Match.Results
     app.package_logistics_client = object()
     app.current_set_info = {
@@ -2515,6 +2516,7 @@ def test_mark_current_set_error_persists_active_set_only():
 def test_first_scan_error_event_and_finalization_share_set_id():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
+    app.worker_name = "worker"
     app.current_set_info = {
         "id": None,
         "raw": [],
@@ -6153,7 +6155,12 @@ def test_history_delete_conflict_feedback_requires_operator_review(monkeypatch):
 
     assert warnings
     assert warnings[-1][0][0] == "중앙 취소 확인 필요"
-    assert "확인 필요 1건" in warnings[-1][0][1]
+    # Approved operator wording: 8290f94f1078, _delete_selected_row central-conflict warning.
+    assert warnings[-1][0][1] == (
+        "기록을 삭제했지만 취소 확인이 필요합니다\n"
+        "해당 트레이를 반출하지 말고 현장 관리자에게 알리세요\n"
+        "코드: 1 · 1 · "
+    )
     assert "관리자" in warnings[-1][0][1]
     assert "전송·확인 중" not in warnings[-1][0][1]
 
