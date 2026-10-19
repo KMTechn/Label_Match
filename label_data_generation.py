@@ -16,7 +16,7 @@ from startup_timing import startup_timed
 from kmtech_shared.data_generation import UNKNOWN_MESSAGE, probe_downgrade, record_generation, version_key
 from writer_session_fence import canonical_control_root, writer_sink
 
-CURRENT_VERSION = "v2.0.114"
+CURRENT_VERSION = "v2.0.115"
 APP_ID = "Label_Match"
 _RELEASE_IDENTITY_PASS: dict[tuple[Path, Path], dict[str, object]] = {}
 
