@@ -54,6 +54,14 @@ def verification_calls(monkeypatch, verification_call_sources):
 
 def test_direct_runner_entry_hashes_once_before_admission(packet, verification_calls, monkeypatch, tmp_path):
     import direct_sync_runtime
+    hash_depths = []
+    real_hash = onboarding._verify_bootstrap_integrity_uncached
+
+    def counted_hash(paths, *, required):
+        hash_depths.append(int(getattr(fence._WRITER_LOCAL, "depth", 0)))
+        return real_hash(paths, required=required)
+
+    monkeypatch.setattr(onboarding, "_verify_bootstrap_integrity_uncached", counted_hash)
     from tools import direct_sync_relay_runner as runner
 
     monkeypatch.setattr(direct_sync_runtime, "prepare_credentials_from_json", lambda *_a, **_kw: object())
@@ -69,7 +77,12 @@ def test_direct_runner_entry_hashes_once_before_admission(packet, verification_c
         runpy.run_path(str(runner.__file__), run_name="__main__")
     assert exit_info.value.code == 0
     print("runner verification total/inside:", len(verification_calls), sum(verification_calls))
-    assert verification_calls == [False]
+    # Real hashing (byte read + SHA) happens exactly once, before admission (writer depth 0).
+    assert hash_depths == [0]
+    # The pre-admission warm-up is the only outside call; every call inside admission is a cache hit.
+    assert verification_calls[:1] == [False]
+    assert verification_calls.count(False) == 1
+    assert all(verification_calls[1:])
     assert (scan / "data-generation.json").is_file()
 
 
