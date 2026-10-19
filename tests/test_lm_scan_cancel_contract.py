@@ -22,11 +22,15 @@ from tests.test_lm_scan_cancel import app_for_delete
 CONTRACT_BYTES = (Path(__file__).parent / 'fixtures/lm_cancel_contract_e89e2066.json').read_bytes()
 CONTRACT = json.loads(CONTRACT_BYTES)
 PREVIOUS_CONTRACT_BYTES = (Path(__file__).parent / 'fixtures/lm_cancel_contract_c6d5f907.json').read_bytes()
+CURRENT_CONTRACT_BYTES = (
+    Path(__file__).resolve().parents[1] / "ui/parts/app/lm/contract.json"
+).read_bytes()
+CURRENT_CONTRACT = json.loads(CURRENT_CONTRACT_BYTES)
 
 
 def assert_state(state):
-    assert schema_errors(CONTRACT['state'], state) == []
-    assert schema_errors(CONTRACT['state'], {**state, 'unlisted_cancel_field': None})
+    assert schema_errors(CURRENT_CONTRACT['state'], state) == []
+    assert schema_errors(CURRENT_CONTRACT['state'], {**state, 'unlisted_cancel_field': None})
 
 
 @pytest.fixture
@@ -53,6 +57,7 @@ def command(screen, name, args):
 
 
 def test_exact_e89e2066_schema_preserves_c6d5f907_and_shell_completed_rows(cancel_screen):
+    assert hashlib.sha256(CURRENT_CONTRACT_BYTES).hexdigest() == "1616dfe54fa178f251afa25bde5cc3d1088cd235bc9e2b9eb27ad24ad31ded27"
     assert hashlib.sha256(CONTRACT_BYTES).hexdigest() == '86aa690d83ecd8a67f37e43780d00f02e657fb34450efd7f7a071887cdbc200a'
     assert hashlib.sha256(PREVIOUS_CONTRACT_BYTES).hexdigest() == 'fa255a368d378b43fe13fd670cd88eedb7a4fb9e0752c74093aab683db3cd862'
     assert CONTRACT['state'] == json.loads(PREVIOUS_CONTRACT_BYTES)['state']
