@@ -96,3 +96,23 @@ def test_broken_input_survives_actual_operator_workbench_rerender(mode):
     assert view.notice is not None
     assert RESTART in (view.notice.title, view.notice.message)
     assert app.big_display_label.options.get("text") == RESTART
+
+
+
+@pytest.mark.parametrize("active_view", [False, True])
+def test_broken_input_survives_history_mode_refresh(active_view):
+    from tests.test_label_operator_action_gates import _render_app
+    import tkinter
+    app = _render_app()
+    app.update_big_display = Mock()
+    app._play_sound = Mock()
+    app._update_status_label = Mock()
+    def failed_delete(*_args):
+        raise tkinter.TclError("synthetic delete failure")
+    app.entry.delete = failed_delete
+    app._handle_scan_enter()
+    app._render_operator_workbench()
+    app.history_view_updates_active_state = active_view
+    app._apply_history_view_mode()
+    assert app.entry.cget("state") == "disabled"
+    assert app.big_display_label.options.get("text") == RESTART
