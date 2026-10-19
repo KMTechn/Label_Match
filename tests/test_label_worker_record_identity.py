@@ -661,3 +661,25 @@ def test_legacy_state_and_draft_keep_their_absent_identity_and_fingerprint(tmp_p
         assert 'worker_id' not in saved and 'worker_id' not in saved['current_set_info']
     finally:
         manager.close(timeout=5)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_f2_completed_tray_cancel_keeps_local_identity_out_of_nested_csv_details(packaging, tmp_path, enabled):
+    app, dialogs = packaging
+    select_worker(app, tmp_path, enabled=enabled)
+    app._worker_roster_stage_b = enabled
+    for value in [MASTER, *products()]:
+        scan(app, value)
+    assert len(completions(app)) == 1
+    assert app._worker_record_context()[1] is enabled
+    lm.Label_Match._cancel_completed_tray_by_label(app, MASTER)
+    assert app.data_manager.flush(timeout=5.0)
+    records = [row for path in Path(app.save_directory).rglob('*.csv') for row in csv.DictReader(path.open(encoding='utf-8-sig', newline=''))]
+    cancelled_records = [json.loads(row['details']) for row in records if row['event'] == app.Events.TRAY_COMPLETION_CANCELLED]
+    assert len(cancelled_records) == 1
+    [cancelled] = cancelled_records
+    assert ('worker_id' in cancelled) is enabled
+    assert 'worker_id' not in cancelled['details']
+    assert 'worker_name_snapshot' not in cancelled['details']
+    assert dialogs == []
+
