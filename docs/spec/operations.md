@@ -23,7 +23,9 @@
 
 종료 취소 `APP_CLOSE_CANCELLED`와 `멈춤 요청 미룸`은 `local_events/포장실로컬이벤트로그_*.csv`에 보존한다(w9firstupdsub247). 서버 catalog에 없는 이 감사가 업무 CSV에 섞이면 격리·UNKNOWN 영수증으로 정상 relay ACK를 막으므로 앞으로 생성하는 행은 로컬 전용이다. 이미 생성된 업무 CSV·spool·operator_review는 자동 수정하거나 지우지 않는다. 현재 서버 catalog 고정 사본과 구 bundle을 emitter 전체에 대조하는 정책 시험 및 실제 CSV→relay receipt→상태 되읽기 회귀로 확인한다.
 
-v2.0.107 화면 몫(w9firstupdsub208)은 웹 a1b37ce25a28f4147f15b3e58b4cc900c8be6f97의 exporter 사본 76개 파일(parts fingerprint 551f9c24957b974a)을 고정한다. 다리 글·원문 코드·교환 두 칸·품목별 전체 제품 수와 부분 제출 확인 뒤 즉시 release를 반영했다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다.
+v2.0.115 화면 고정은 웹 d6436ff74b3fd0277be66fb7a40e985329a5f51d의 exporter 사본 76개 파일(parts fingerprint 9507a83d248d47f0)을 고정한다. 다리 글·원문 코드·교환 두 칸·품목별 전체 제품 수와 부분 제출 확인 뒤 즉시 release를 반영했다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다. 셸 v3.16.3.1을 고정한다.
+
+입력 칸 스캔 막이: 열린 판에서 스캐너 꼴 입력을 받으면 앰버 띠로 알리고 처리는 0건이다.
 
 새 화면과 비상 옛 화면(`--ui tk`)의 스캔 기록은 오늘 최근 100줄만 보인다. 「오늘」은 오늘 기록을 다시 읽으며 날짜 선택·지난 날짜 조회는 제공하지 않는다. 「지난 기록은 회사 웹 리포트에서 봅니다」 안내를 따른다. 화면에서 빠진 오래된 줄의 원본 파일·집계·중복·취소 색인은 그대로 남고, 비상 Tk의 선택 삭제·Delete는 기존 처리기를 사용한다.
 
