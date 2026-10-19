@@ -408,13 +408,94 @@ def _runtime_environment(environ: Mapping[str, str] | None) -> Mapping[str, str]
     return os.environ
 
 
+_LEGACY_SHARED_IGNORED_NOTED = False
+
+
+def _legacy_shared_path_key(value: object) -> str:
+    text = str(value or "").strip().replace("/", "\\")
+    for prefix in ("\\\\?\\UNC\\", "\\\\?\\", "\\\\.\\"):
+        if text.upper().startswith(prefix.upper()):
+            text = ("\\\\" if prefix.upper().endswith("UNC\\") else "") + text[len(prefix):]
+            break
+    return os.path.normcase(os.path.normpath(text)).rstrip("\\")
+
+
+def _legacy_shared_candidates(value: object) -> list[str]:
+    keys = [_legacy_shared_path_key(value)]
+    try:
+        # Junction/symlink targets are judged by their real path; an
+        # unresolvable path is treated as legacy-shared (ignored).
+        keys.append(_legacy_shared_path_key(os.path.realpath(str(value))))
+    except (OSError, ValueError):
+        return []
+    return keys
+
+
+def _legacy_shared_roots(environ: Mapping[str, str] | None = None) -> list[str]:
+    roots: list[str] = []
+    try:
+        from writer_session_fence import _installer_program_data_root
+
+        roots.append(str(_installer_program_data_root()))
+    except Exception:
+        pass
+    for source in (os.environ, environ):
+        env_root = str((source or {}).get("PROGRAMDATA") or "").strip()
+        if env_root and os.path.isabs(env_root):
+            roots.append(env_root)
+    result: list[str] = []
+    for root in roots:
+        for key in _legacy_shared_candidates(root):
+            if key and key not in result:
+                result.append(key)
+    return result
+
+
+def is_legacy_shared_profile_path(
+    value: object, environ: Mapping[str, str] | None = None
+) -> bool:
+    """True when value is the old shared ProgramData/KMTech/Logistics profile
+    or anything under its secrets directory. Pure path comparison: nothing
+    is opened, read, or stat-ed as a file."""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    candidates = _legacy_shared_candidates(text)
+    if not candidates:
+        return True
+    for root in _legacy_shared_roots(environ):
+        base = root + os.path.normcase(r"\KMTech\Logistics")
+        profile = base + os.path.normcase(r"\runtime-profile.json")
+        secrets = base + os.path.normcase(r"\secrets")
+        for key in candidates:
+            if key == profile or key == secrets or key.startswith(secrets + "\\"):
+                return True
+    return False
+
+
+def app_profile_env_value(environ: Mapping[str, str] | None = None) -> str:
+    """App-specific profile env value; an old shared path counts as unset."""
+    values = os.environ if environ is None else environ
+    explicit = str(values.get(APP_PROFILE_PATH_ENV) or "").strip()
+    if explicit and is_legacy_shared_profile_path(explicit, values):
+        global _LEGACY_SHARED_IGNORED_NOTED
+        if not _LEGACY_SHARED_IGNORED_NOTED:
+            _LEGACY_SHARED_IGNORED_NOTED = True
+            try:
+                print(f"{APP_PROFILE_PATH_ENV} ignored: points at the legacy shared profile location")
+            except Exception:
+                pass
+        return ""
+    return explicit
+
+
 def default_logistics_profile_path(
     environ: Mapping[str, str] | None = None,
     *,
     default_data_root: str | os.PathLike[str] | None = None,
 ) -> Path:
     values = _runtime_environment(environ)
-    configured = str(values.get(APP_PROFILE_PATH_ENV) or "").strip()
+    configured = app_profile_env_value(values)
     local_app_data = str(values.get("LOCALAPPDATA") or "").strip()
     if configured:
         selected = Path(configured)
@@ -709,7 +790,7 @@ def load_logistics_runtime_profile(
         return None
     required_value = logistics_runtime_required(values) if required is None else bool(required)
     requested_path = str(profile_path or "").strip()
-    configured_path = str(values.get(APP_PROFILE_PATH_ENV) or "").strip()
+    configured_path = app_profile_env_value(values)
     explicit_path = requested_path or configured_path
     if not required_value and not explicit_path and not any(
         str(values.get(name) or "").strip()
@@ -864,6 +945,8 @@ __all__ = [
     "PROFILE_CONTRACT_VERSION",
     "PROFILE_PATH_ENV",
     "APP_PROFILE_PATH_ENV",
+    "app_profile_env_value",
+    "is_legacy_shared_profile_path",
     "REQUIRED_ENV",
     "TEST1_ISOLATED_LEGACY_OVERRIDE_ENV",
     "assert_logistics_runtime_ready",

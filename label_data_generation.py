@@ -466,8 +466,8 @@ def _check_user_data_open(app_root: Path, data_roots=(), *, environ=None, identi
                 roots.append(resolve_data_path(value).parent)
         from protected_admin import default_protected_admin_profile_path
         roots.append(resolve_data_path(default_protected_admin_profile_path(environ=values)).parent)
-        if local or save or str(values.get("LABEL_MATCH_LOGISTICS_PROFILE_PATH") or "").strip():
-            from logistics_runtime_profile import default_logistics_profile_path
+        from logistics_runtime_profile import app_profile_env_value, default_logistics_profile_path
+        if local or save or app_profile_env_value(values):
             roots.append(default_logistics_profile_path(values,
                 default_data_root=resolve_data_path(save) if save else None).parent)
         sid = current_process_sid()

@@ -104,6 +104,13 @@ def mutex_name_for_data_scope(path: str | os.PathLike[str]) -> str:
     return rf"Global\KMTech.LabelMatch.{digest[:32]}"
 
 
+def _app_profile_env_value(env) -> str:
+    """App profile env value; one naming the old shared profile counts as unset (G91)."""
+    from logistics_runtime_profile import app_profile_env_value
+
+    return app_profile_env_value(env)
+
+
 def prepare_user_directory(path: str | os.PathLike[str]) -> None:
     """User writers may use prepared machine folders, never create them."""
     folder = Path(path).expanduser().resolve(strict=False)
@@ -160,7 +167,7 @@ def resolve_data_scope(
         if (
             for_onboarding
             and not local_app_data
-            and not str(env.get("LABEL_MATCH_LOGISTICS_PROFILE_PATH") or "").strip()
+            and not _app_profile_env_value(env)
         ):
             # A legacy business folder is not a current-user identity anchor.
             # Stop before resolving or inspecting the ProgramData fallback.
@@ -219,7 +226,7 @@ def resolve_data_scope(
     if (
         for_onboarding
         and not str(env.get("LOCALAPPDATA") or "").strip()
-        and not str(env.get("LABEL_MATCH_LOGISTICS_PROFILE_PATH") or "").strip()
+        and not _app_profile_env_value(env)
         and not override
     ):
         # Only this fallback also selects the logistics identity location.

@@ -3756,6 +3756,81 @@ except Exception:
     return Full $cooked 'Label generation input'
 }
 
+function Get-LabelPathCompareKey([string]$Value) {
+    $text = ([string]$Value).Trim().Replace('/', '\')
+    if ($text.StartsWith('\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { $text = '\' + $text.Substring(8) }
+    elseif ($text.StartsWith('\?\', [StringComparison]::OrdinalIgnoreCase) -or $text.StartsWith('\.\', [StringComparison]::OrdinalIgnoreCase)) { $text = $text.Substring(4) }
+    return ([IO.Path]::GetFullPath($text)).TrimEnd('\')
+}
+
+function Resolve-LabelPathLinkTargets([string]$Path) {
+    # Link metadata only. A path that cannot be resolved throws, and the caller treats it as legacy-shared.
+    $current = Get-LabelPathCompareKey $Path
+    for ($round = 0; $round -lt 16; $round++) {
+        $parts = $current.Split('\')
+        $walk = $parts[0] + '\'
+        $replaced = $false
+        for ($i = 1; $i -lt $parts.Count; $i++) {
+            $walk = Join-Path $walk $parts[$i]
+            try { $attributes = [IO.File]::GetAttributes($walk) }
+            catch [IO.FileNotFoundException] { break }
+            catch [IO.DirectoryNotFoundException] { break }
+            if (($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) { continue }
+            $target = @((Get-Item -LiteralPath $walk -Force -ErrorAction Stop).Target)[0]
+            if ([string]::IsNullOrWhiteSpace([string]$target)) { throw 'Link target cannot be resolved.' }
+            if (-not [IO.Path]::IsPathRooted([string]$target)) { $target = Join-Path (Split-Path -Parent $walk) ([string]$target) }
+            $rest = if ($i + 1 -lt $parts.Count) { '\' + (($parts[($i + 1)..($parts.Count - 1)]) -join '\') } else { '' }
+            $current = Get-LabelPathCompareKey (([string]$target) + $rest)
+            $replaced = $true
+            break
+        }
+        if (-not $replaced) { return $current }
+    }
+    throw 'Link chain is too deep.'
+}
+
+function Test-LabelLegacySharedProfilePath([string]$Value) {
+    # The old PC-wide <ProgramData>\KMTech\Logistics profile and everything under its secrets directory.
+    # Path comparison only: neither the old profile nor its secrets are opened or probed.
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    $trimmed = $Value.Trim()
+    if (-not [IO.Path]::IsPathRooted($trimmed)) { return $false }
+    $candidates = @()
+    try {
+        $candidates += Get-LabelPathCompareKey $trimmed
+        $candidates += Resolve-LabelPathLinkTargets $trimmed
+    }
+    catch { return $true }
+    $rootValues = @([Environment]::GetFolderPath('CommonApplicationData'), [string]$env:PROGRAMDATA)
+    foreach ($rootValue in $rootValues) {
+        if ([string]::IsNullOrWhiteSpace($rootValue) -or -not [IO.Path]::IsPathRooted($rootValue)) { continue }
+        $rootKeys = @(Get-LabelPathCompareKey $rootValue)
+        try { $rootKeys += Resolve-LabelPathLinkTargets $rootValue } catch { }
+        foreach ($rootKey in $rootKeys) {
+            $shared = $rootKey + '\KMTech\Logistics'
+            $profileFile = $shared + '\runtime-profile.json'
+            $secretsDir = $shared + '\secrets'
+            foreach ($candidate in $candidates) {
+                if ($candidate.Equals($profileFile, [StringComparison]::OrdinalIgnoreCase) -or
+                    $candidate.Equals($secretsDir, [StringComparison]::OrdinalIgnoreCase) -or
+                    $candidate.StartsWith($secretsDir + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+            }
+        }
+    }
+    return $false
+}
+
+function Get-LabelAppProfileEnvValue {
+    # An app-specific profile env naming the old shared profile counts as unset (G91).
+    $value = [string]$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH
+    if ([string]::IsNullOrWhiteSpace($value)) { return '' }
+    if (Test-LabelLegacySharedProfilePath $value) {
+        Write-Host 'LABEL_MATCH_LOGISTICS_PROFILE_PATH ignored: points at the legacy shared profile location'
+        return ''
+    }
+    return $value
+}
+
 $WriterDelegationEnvironmentNames = @(
     'KMTECH_LABEL_WRITER_DELEGATION_TOKEN',
     'KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID',
@@ -6092,10 +6167,11 @@ $selectedSettingsPath = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATC
 else { Resolve-LabelGenerationInputPath ([string]$env:LABEL_MATCH_SETTINGS_PATH) $source }
 # The shared KM_LOGISTICS_PROFILE_PATH is not read: an inherited Machine value from the
 # old PC-wide rollout points at a file other programs may use (TEST1 09-30 refused here).
-$selectedProfilePath = if ([string]::IsNullOrWhiteSpace([string]$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH)) {
+$appProfileEnvValue = Get-LabelAppProfileEnvValue
+$selectedProfilePath = if ([string]::IsNullOrWhiteSpace($appProfileEnvValue)) {
     $defaultProfilePath
 }
-else { Resolve-LabelGenerationInputPath ([string]$env:LABEL_MATCH_LOGISTICS_PROFILE_PATH) $source }
+else { Resolve-LabelGenerationInputPath $appProfileEnvValue $source }
 $generationSecurityParents = @((Split-Path -Parent $bootstrapCaPath))
 foreach ($generationInputName in @('LABEL_MATCH_ENROLLMENT_TLS_CA_BUNDLE_PATH',
     'LABEL_MATCH_LOGISTICS_TLS_CA_BUNDLE_PATH', 'LABEL_MATCH_PROTECTED_ADMIN_PROFILE')) {

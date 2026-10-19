@@ -32,6 +32,7 @@ from label_match_product_host import _default_product_root, requires_bootstrap_i
 from label_match_single_instance import SingleInstanceError, resolve_data_scope
 from logistics_runtime_profile import (
     APP_PROFILE_PATH_ENV as LABEL_MATCH_LOGISTICS_PROFILE_PATH_ENV,
+    app_profile_env_value,
     LogisticsRuntimeConfigurationError,
     REQUIRED_ENV,
     assert_path_has_no_reparse_components,
@@ -333,9 +334,7 @@ def resolve_current_user_onboarding_paths(
     local_app_data = str(values.get("LOCALAPPDATA") or "").strip()
     explicit_data_root = str(values.get(LABEL_MATCH_DATA_ROOT_ENV) or "").strip()
     explicit_settings = str(values.get(LABEL_MATCH_SETTINGS_PATH_ENV) or "").strip()
-    if not local_app_data and not str(
-        values.get(LABEL_MATCH_LOGISTICS_PROFILE_PATH_ENV) or ""
-    ).strip():
+    if not local_app_data and not app_profile_env_value(values):
         for anchor in (explicit_data_root, explicit_settings):
             if anchor:
                 assert_path_has_no_reparse_components(
