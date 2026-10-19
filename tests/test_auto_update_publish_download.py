@@ -1,5 +1,6 @@
 """Native writer admission and a competing process for feed preparation."""
 from contextlib import contextmanager
+import ast
 import json
 from pathlib import Path
 import subprocess
@@ -783,6 +784,15 @@ def test_fence_actors_keep_feed_staging_separate():
     for relative in ("INSTALL_CANONICAL_PORTABLE.ps1", "tools/bootstrap_integrity.ps1",
                      "current_user_onboarding.py", "tools/label_writer_fence.ps1"):
         source = (root / relative).read_text(encoding="utf-8-sig")
+        if relative == "INSTALL_CANONICAL_PORTABLE.ps1":
+            # 41bb7eb records the approved c3c6883 staging probe as data.
+            declaration, = (line for line in source.splitlines()
+                            if line.startswith("startup_candidate_membership = "))
+            membership = ast.literal_eval(declaration.split(" = ", 1)[1])
+            assert [member for member in membership if member[2] == "stage_prepared_copies"] == [
+                ('auto_update_stage_prepared_copies', 'auto_update.py', 'stage_prepared_copies', 'decorator'),
+            ]
+            source = source.replace(declaration, "", 1)
         assert "staging_root" not in source
         assert "download-" not in source
         assert "stage_prepared_copies" not in source
