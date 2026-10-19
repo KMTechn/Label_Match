@@ -368,6 +368,7 @@ class API:
     """Expose only the agreed intake methods and compatibility aliases."""
     def __init__(self, bridge): self._bridge, self._on_ready = bridge, None
     def scan(self, text, meta): return self._bridge.scan(text, meta)
+    def scan_blocked(self, info): return self._bridge.scan_blocked(info)
     def state(self): return self._bridge.state()
     def f12_physical(self): return self._bridge.f12_physical()
     def command(self, name, args=None): return self._bridge.command(name, args)

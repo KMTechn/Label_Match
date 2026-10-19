@@ -31,6 +31,7 @@ class Bridge:
         self.events = Events(data, fileio=self.fileio)
         self.pedal = pedal or Pedal()
         self._sound = sound
+        self._last_blocked_sound = None
         self._physical_reader = physical_reader or read_physical_f12
         self._test_control = test_control
         self._processor_factory, self._processor, self._external = processor_factory, None, owner == 'external'
@@ -198,6 +199,15 @@ class Bridge:
     def state(self): return self._call('state')
     def get_state(self): return self.state()
     def command(self, name, args=None): return self._call('command', (name, copy.deepcopy(args)))
+    def scan_blocked(self, info):
+        if type(info) is not dict or set(info) != {'reason', 'n_keys'}:
+            return {'ok': False}
+        if type(info['reason']) is not str or info['reason'] not in ('sheet', 'field'):
+            return {'ok': False}
+        if type(info['n_keys']) is not int or info['n_keys'] < 0:
+            return {'ok': False}
+        # Queue only the notice; no input values reach the owner or diagnostics.
+        return self._call('scan_blocked')
     def admin(self, name, args=None): return self._call('admin', (name, copy.deepcopy(args)))
     def push_state(self, **extra):
         # Any thread: the snapshot itself is taken on the owner thread.
@@ -249,6 +259,12 @@ class Bridge:
         return old
 
     def _handle(self, op, value):
+        if op == 'scan_blocked':
+            now = time.monotonic()
+            if self._last_blocked_sound is None or now - self._last_blocked_sound >= 0.5:
+                self._last_blocked_sound = now
+                self._play(None, 'error')
+            return {'ok': True}
         if op == 'pick_file':
             picker, path, result = self._file_picker, None, 'unavailable'
             if picker is not None and not self._closed and not self._exit_requested:

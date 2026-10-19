@@ -1,104 +1,104 @@
 {
-  "created_utc": "2026-10-15T00:36:00.432015+09:00",
+  "created_utc": "2026-10-19T00:34:57.926424+00:00",
   "files": [
     {
-      "path": "shell-v3.16.3/bridge.py",
-      "bytes": 28977,
-      "sha256": "61654de8e21ba4652e2b56ca9eb4a8e0881bfff6f20c6bb1c6d2325ebaafcd29"
+      "path": "shell-v3.16.3.1/bridge.py",
+      "bytes": 29778,
+      "sha256": "1a7e53db0d18f022d86d936d8666d5d13028873e8a10945cbd78f96995b1456b"
     },
     {
-      "path": "shell-v3.16.3/event_order.py",
+      "path": "shell-v3.16.3.1/event_order.py",
       "bytes": 2443,
       "sha256": "48075f599c33bef1b9a3a283717d31f50f00ac2e71b1ebeb6970620b2275c146"
     },
     {
-      "path": "shell-v3.16.3/host.py",
-      "bytes": 58115,
-      "sha256": "1e3029ce38a7faad952aa56431076bf4d51c0d626f072968f1f07d73768f54b1"
+      "path": "shell-v3.16.3.1/host.py",
+      "bytes": 58189,
+      "sha256": "d3aaf6549fff429384ac262eaf32de5cf440daba1e220936e37579b231df5d02"
     },
     {
-      "path": "shell-v3.16.3/journal.py",
+      "path": "shell-v3.16.3.1/journal.py",
       "bytes": 4155,
       "sha256": "5d486cde397f93d1b8d651fec273e667399c5860d1481cc86232341bb1a0aa4d"
     },
     {
-      "path": "shell-v3.16.3/pedal.py",
+      "path": "shell-v3.16.3.1/pedal.py",
       "bytes": 3437,
       "sha256": "fe19337649eddcc804398f410e022fce91bead708159ae3f82ae01dc790312f9"
     },
     {
-      "path": "shell-v3.16.3/scan_rules.py",
+      "path": "shell-v3.16.3.1/scan_rules.py",
       "bytes": 1259,
       "sha256": "a07e19eaac003b775adbe93fac86ce1536cf1e83729f7c654279e5f0c09f1504"
     },
     {
-      "path": "shell-v3.16.3/shell_fileio.py",
+      "path": "shell-v3.16.3.1/shell_fileio.py",
       "bytes": 5868,
       "sha256": "b1d993c466d1df5161330c25389c35bd295b7f02a6c566b544bdac3072968101"
     },
     {
-      "path": "shell-v3.16.3/sound.py",
+      "path": "shell-v3.16.3.1/sound.py",
       "bytes": 1578,
       "sha256": "a007064433046d9b1debfb183d1db28fb88f585230dcaa2937d175993f308504"
     },
     {
-      "path": "shell-v3.16.3/web/app.css",
+      "path": "shell-v3.16.3.1/web/app.css",
       "bytes": 1080,
       "sha256": "6a4da30da94dd1f891bdfdbeed8a077a20dc43579be3df3114cde6bad46c4ed8"
     },
     {
-      "path": "shell-v3.16.3/web/app.js",
+      "path": "shell-v3.16.3.1/web/app.js",
       "bytes": 9992,
       "sha256": "fbc1691ae9ad2e6431352c0d1799789f2fa12042cf6f095398c24e9ad6839ab6"
     },
     {
-      "path": "shell-v3.16.3/web/core/fonts/Pretendard-Bold.subset.woff2",
+      "path": "shell-v3.16.3.1/web/core/fonts/Pretendard-Bold.subset.woff2",
       "bytes": 270784,
       "sha256": "78eb71c33101ee7d4f8d1b777d193a12d00f8a296e712a8c417cf27abe946397"
     },
     {
-      "path": "shell-v3.16.3/web/core/fonts/Pretendard-OFL.txt",
+      "path": "shell-v3.16.3.1/web/core/fonts/Pretendard-OFL.txt",
       "bytes": 4419,
       "sha256": "b04538c9abec39a3db75108cf0af0fd9c77032fe8aa2cf38345b4d250e98e38e"
     },
     {
-      "path": "shell-v3.16.3/web/core/fonts/Pretendard-Regular.subset.woff2",
+      "path": "shell-v3.16.3.1/web/core/fonts/Pretendard-Regular.subset.woff2",
       "bytes": 267096,
       "sha256": "01dd73155fdfab7ce9b25224523e85a96927e21aef97f21957d41f1bfa7e3878"
     },
     {
-      "path": "shell-v3.16.3/web/core/fonts/Pretendard-SemiBold.subset.woff2",
+      "path": "shell-v3.16.3.1/web/core/fonts/Pretendard-SemiBold.subset.woff2",
       "bytes": 268752,
       "sha256": "4247dc5e260b92640c2cbd0e75091154647b71e1d5884116655e2903468c54cc"
     },
     {
-      "path": "shell-v3.16.3/web/core/parts.css",
+      "path": "shell-v3.16.3.1/web/core/parts.css",
       "bytes": 18015,
       "sha256": "460658d8d1f7f19b42231b6d450595c8cd21745f1d71c992c3e3630bb0c36d60"
     },
     {
-      "path": "shell-v3.16.3/web/core/tokens.css",
+      "path": "shell-v3.16.3.1/web/core/tokens.css",
       "bytes": 7542,
       "sha256": "bd8520ff68ea5e5616ab1b4916e11faf5895bc7a6bdd0498b5978b3ef70476c4"
     },
     {
-      "path": "shell-v3.16.3/web/index.html",
+      "path": "shell-v3.16.3.1/web/index.html",
       "bytes": 1771,
       "sha256": "7cc107d19fda6d064f3758eeb26f53ed9ffba320ad9c8953bdbea12227245367"
     },
     {
-      "path": "shell-v3.16.3/web/sink.js",
+      "path": "shell-v3.16.3.1/web/sink.js",
       "bytes": 12165,
       "sha256": "41c7980af9ae8ac3f8ca7811a5babe1efb881f225fa4ab11d2d6c3bfda0f6f2c"
     },
     {
-      "path": "shell-v3.16.3/web/transport.js",
+      "path": "shell-v3.16.3.1/web/transport.js",
       "bytes": 3216,
       "sha256": "fdb207a3b596271368fe67a4781d0cbb81c28619bd98057f12487f605b64c07a"
     }
   ],
-  "version": "v3.16.3",
-  "status": "source ready; headless shell tests PROVEN; actual native windows and app adapters NOT TESTED",
+  "version": "v3.16.3.1",
+  "status": "source ready; pinned v3.16.3 325/325 + new 15 = 340/340 headless tests PROVEN; actual native windows/sound and app adapters NOT TESTED",
   "run_commands": [
     "<python> -I -B app/shell/host.py --profile rw --data <isolated-data> --udf <isolated-udf> --test-control <control-dir>",
     "<python> -I -B app/shell/host.py --profile iw --data <isolated-data> --udf <isolated-udf> --pedal --test-control <control-dir>"
@@ -119,7 +119,7 @@
     "js.domContentLoaded (epoch ms, retained)"
   ],
   "native_push": "FIFO retained until app ready and core configured; reset readiness before reload/reinjection",
-  "regression": "actual pywebview 6.2.1 api.js + finish.js; actual on_script_notify unpack/parser; v3 FAIL / v3.1 PASS",
+  "regression": "actual pywebview 6.2.1 api.js + finish.js; actual on_script_notify unpack/parser; v3 FAIL / v3.1 PASS; v3.16.3.1: pinned existing 325/325 plus new 15/15; verification/regression.json; existing startup history retained below",
   "focus_recovery": "once per ready generation, foreground Form only; Control.Focus and MoveFocus outcomes separate; focus_restored.ok based on subsequent page_active async probe",
   "memory": "journal recent 8, aggregate counters, result cache 128 with disk duplicate lookup; duplicate push/reply suppression; pywebview synchronous UUID->None entries not retained",
   "state_additions": [
@@ -146,14 +146,15 @@
   "api_additions": [
     "command(name,args) -> {ok,result,state}",
     "admin(name,args) -> {ok,result,state}; args never logged",
-    "bridge.push_state(**extra) any thread"
+    "bridge.push_state(**extra) any thread",
+    "scan_blocked(info{reason:'sheet'|'field',n_keys:nonnegative integer}) -> {ok}; KMShell.call('scan_blocked',[info]); no processor; existing error cue at most once per 0.5s from last valid audible request; no dedicated log"
   ],
   "exit": "bridge.request_exit() any thread -> window.destroy on its own thread, X question skipped; window X -> processor.closing() on owner: quick True/None closes, False cancels; no answer in 0.3 s cancels X and shows closing strip, one pending Future; late True requests exit, late False removes strip; closing_timeout=120 s by default then keyboard-accessible close/wait choices; close records closing_force; explicit force watcher is armed before Bridge.close and ends the process after window close without waiting for stuck owner/non-daemon app threads; wait rearms same interval and reuses question; choice strip adds the warning 그래도 닫으면 저장 중인 것은 잃을 수 있습니다; on_force_exit=None preserves the v3.15 force path; callable gets no arguments and runs once on an app-force-exit daemon thread after window close, before os._exit, with worker.join(2); normal closing never calls it; force_exit_start then force_exit_done|force_exit_error (exception class only)|force_exit_timeout (wait_seconds=2), then exit; exceptions/timeouts still end the process; normal close never automatically forces on OWNER_JOIN_S timeout; ended owner receives no Future; exit 기록 뒤 프로세스 정리 시간은 현장 실측 2초 안팎(M88), 관리자 제공 근거이며 이 레인 실측 아님",
   "reply_shape": "command/admin -> {ok: True, result: <processor value>, state}; exception -> {ok: False, error, state}; frame.js unwraps a result dict carrying ok (57f87c1a)",
   "bundle_root": "run_app(root=<bundle>, page=<bundle>/app/<app>/index.html): pywebview global server started on root before webview.start so ../ shared files load; page outside root -> ValueError before anything starts",
   "kit_only_files": [
     {
-      "path": "shell-v3.16.3/tk_ab.py",
+      "path": "shell-v3.16.3.1/tk_ab.py",
       "bytes": 6897,
       "sha256": "ac9272790f77ae7b8bbed96110443d58ffcccc6716154406190671057a05a356"
     }
