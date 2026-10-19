@@ -1,8 +1,6 @@
+// Shared scan sink (shell v3.10); contracts and pinned sources: docs/spec/app-editing-scan.md.
+// Keep F12/V152, secret(), owns(), waiting and scan metadata unchanged.
 'use strict';
-// 현장 앱 스캔 받이(주인 w9appshell1012 셸 레인 — 10/13 넘김: shell/web/sink.js 셸 v3.10 sha256 bc572234…, 이름만 KMScanSink → AppScan).
-// 10/13 틀 고침(셸 원본과 다름 — 셸 다음 판 몫): 키 기록에 key · code 값 0 · 비밀 판이 열리면 칸 밖 키 버림 · 빈 버퍼 Tab 은 초점 이동 그대로.
-// 키 조립 · F12 판정 증거(v2.0.152 사건 순서, F12-V152-RULES.md)는 여기서만 — 앱 화면 JS 에 keydown 조립 0(APP-SCREENS 불변식 4).
-// 판정 규칙 · meta 꼴은 처리 층(bridge.py · event_order.py)이 읽으므로 셸 레인과 함께만 고친다. 붙이기 = frame.js(AppFrame.start)가 첫 state 뒤 start 한 번.
 // Framing correction: IW components_v2.py:665,765–833 @a211ea4;
 // RW ui/scan_entry.py @347a50e3. Enter/Tab in both; no idle timer.
 // F12 frame: ui/integration.py:7589–7684 @198add5 (V152 event order).
@@ -23,6 +21,71 @@ window.AppScan = (() => {
     if (element.isContentEditable || element.tagName === 'TEXTAREA') return true;
     return element.tagName === 'INPUT' && !['button','submit','reset','checkbox','radio','range','color','file','hidden','image'].includes(element.type);
   }
+  // Editing has a separate, private candidate. It never enters the scan buffer,
+  // queued events, shell logs or event detail. Native typing/paste stays native.
+  // No timing classifier in the sink/IW ScanEntry: task fallback = 6 keys / 40 ms.
+  let editingRun = null, editingSuffix = null;
+  function editingSnapshot(node) {
+    if ('value' in node) {
+      const value = node.value, start = node.selectionStart, end = node.selectionEnd, direction = node.selectionDirection;
+      const pinTimes = node.pinTimes, pinUntil = node.pinUntil;
+      return () => {
+        node.value = value;
+        if (start !== null && start !== undefined) node.setSelectionRange(start, end, direction);
+        if (pinTimes === undefined) delete node.pinTimes; else node.pinTimes = pinTimes;
+        if (pinUntil === undefined) delete node.pinUntil; else node.pinUntil = pinUntil;
+      };
+    }
+    const contents = [...node.childNodes].map(child => child.cloneNode(true));
+    const selection = window.getSelection();
+    const path = child => {
+      const steps = [];
+      while (child && child !== node) { steps.unshift([...child.parentNode.childNodes].indexOf(child)); child = child.parentNode; }
+      return child === node ? steps : null;
+    };
+    const anchor = selection && path(selection.anchorNode), focus = selection && path(selection.focusNode);
+    const a = selection && selection.anchorOffset, f = selection && selection.focusOffset;
+    return () => {
+      node.replaceChildren(...contents);
+      const at = steps => steps.reduce((child, index) => child.childNodes[index], node);
+      if (anchor && focus) window.getSelection().setBaseAndExtent(at(anchor), a, at(focus), f);
+    };
+  }
+  function editingCapture(event) {
+    const suffix = event.key === 'Enter' || event.key === 'Tab' || event.code === 'NumpadEnter';
+    if (event.type !== 'keydown') {
+      if (editingSuffix && suffix && editingSuffix === event.key) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        if (event.type === 'keyup') editingSuffix = null;
+      }
+      return;
+    }
+    editingSuffix = null;
+    if (event.key === 'F12' || event.code === 'F12') return;
+    if (event.key === 'Shift') return; // Scanner uppercase/punctuation may bracket characters with Shift.
+    const node = document.activeElement, at = event.timeStamp;
+    if (!editable(node) || node.closest('[data-scan-into]') || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.keyCode === 229 || event.repeat) {
+      editingRun = null; return;
+    }
+    if (suffix) {
+      const run = editingRun; editingRun = null;
+      if (!run || run.node !== node || run.count < 6 || at - run.last > 40 || at < run.last) return;
+      run.restore();
+      event.preventDefault(); event.stopImmediatePropagation(); editingSuffix = event.key;
+      document.dispatchEvent(new CustomEvent('scanblocked', {detail:{n_keys:run.count,reason:'editing'}}));
+      try {
+        const sheet = node.closest('[data-sheet]');
+        Promise.resolve(KMShell.call('scan_blocked', [{reason:sheet && !sheet.hidden ? 'sheet' : 'field',n_keys:run.count}])).catch(()=>{});
+      } catch { /* Optional shell sound: no retry or additional notice. */ }
+      return;
+    }
+    const printable = event.key && event.key.length === 1 && event.key.charCodeAt(0) >= 0x20 || physical(event) !== null;
+    if (!printable) { editingRun = null; return; }
+    if (!editingRun || editingRun.node !== node || at - editingRun.last > 40 || at < editingRun.last) {
+      editingRun = {node, restore:editingSnapshot(node), count:0, last:at};
+    }
+    editingRun.count++; editingRun.last = at;
+  }
   function physical(event) {
     const {code, shiftKey} = event;
     if (/^Key[A-Z]$/.test(code)) return shiftKey !== mod(event, 'CapsLock') ? code.slice(3) : code.slice(3).toLowerCase();
@@ -35,12 +98,9 @@ window.AppScan = (() => {
     return null;
   }
   function logKey(event) {
-    // 칸 안팎 모두 글자 키의 key · code 값을 남기지 않는다(PIN 이 칸 밖에서 쳐져도 셸 기록에 0) — 순서 · 시각 · 표시만, 이름 키(Enter · Tab · Escape · Backspace · F12)만 이름.
     keys.push({type:event.type,t:stamp(event),editing:event.editing,...(['Enter','Escape','Tab','Backspace','F12'].includes(event.key) ? {key:event.key} : {})});
   }
-  // 비밀 판(PIN · password 칸이 보이는 판)이 열려 있으면 칸 밖 키로 스캔을 조립하지 않는다 — 버림, scan() 0. 판이 닫히면 다시.
   const secret = () => [...document.querySelectorAll('input[type=password], [data-pin]')].some(node => !node.closest('[hidden]'));
-  // M60: 초점이 조작 요소(단추 · 링크 · 입력 · 고르기)에 있고 버퍼가 비었으면 Enter · Space 는 그 요소 몫(눌림) — body 빈 Enter 는 frame 「확인」 길
   const control = () => !!document.activeElement && document.activeElement.matches('button, a[href], input, select, summary, [role=button]');
   const owns = event => !buffer && (event.key === 'Enter' || event.code === 'NumpadEnter' || event.key === ' ') && control();
   function eventLog(ev, fields = {}) { events.push({ev, ...fields}); }
@@ -123,7 +183,7 @@ window.AppScan = (() => {
     if (event.code === 'Enter' || event.code === 'NumpadEnter' || event.key === 'Enter' || tab && buffer) {
       event.preventDefault(); submit(event); return;
     }
-    if (tab) return; // 빈 버퍼 Tab · Shift+Tab 은 초점 이동 그대로(키보드만으로 메뉴 · 판 단추) — 끝 Tab 은 버퍼가 있을 때만 먹음
+    if (tab) return;
     if (event.key === 'Backspace' || event.code === 'Backspace') {
       event.preventDefault(); buffer = Array.from(buffer).slice(0,-1).join(''); nKeys++;
       if (!buffer) { first = null; observe('clear',stamp(event)); }
@@ -203,6 +263,10 @@ window.AppScan = (() => {
     if (started) return;
     started = true;
     attachedAt = performance.timeOrigin + performance.now(); recovered = !!options.recovery;
+    // Window capture precedes the form's document Enter handler, including while
+    // the F12 focus-return reply holds the existing non-editing queue.
+    for (const type of ['keydown','keypress','keyup']) window.addEventListener(type,editingCapture,true);
+    for (const type of ['paste','compositionstart','focusout','pointerdown']) window.addEventListener(type,()=>{ editingRun = null; },true);
     for (const type of ['keydown','keypress','keyup','paste']) document.addEventListener(type,capture,true);
     window.addEventListener('blur',()=>focusEvent('blur')); window.addEventListener('focus',()=>focusEvent('focus'));
     setInterval(flush,250);

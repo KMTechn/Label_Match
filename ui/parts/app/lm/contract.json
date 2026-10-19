@@ -448,6 +448,32 @@
     }
   },
   "calls": {
+ "scan_blocked": {
+  "args": [
+   {
+    "type": "object",
+    "required": [
+     "reason",
+     "n_keys"
+    ],
+    "properties": {
+     "reason": {
+      "enum": [
+       "sheet",
+       "field"
+      ]
+     },
+     "n_keys": {
+      "type": "integer",
+      "minimum": 0
+     }
+    },
+    "additionalProperties": false
+   }
+  ],
+  "reply": "{ok:boolean}",
+  "does": "입력 칸에서 막은 스캔의 오류음만 셸에 한 번 요청; reason=sheet|field, 글자·칸 값 0, 처리기 호출 0, 응답을 기다리지 않고 실패·모르는 명령은 안내·재시도 없이 무시 (셸 v3.16.3.1·v3.16.6 부터)"
+ },
     "state": {"args": [], "source": "present_lm(app) = present_workflow(_workflow_view_source()) + 스냅숏 밖 값 — 부작용 0 · Tk 0", "reply": "state"},
     "scan": {
       "args": ["text", "meta"],

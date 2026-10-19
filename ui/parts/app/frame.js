@@ -1,4 +1,3 @@
-// 현장 앱 공통 화면 틀.
 'use strict';
 window.AppFrame = (() => {
   const SVG = 'http://www.w3.org/2000/svg';
@@ -23,7 +22,6 @@ window.AppFrame = (() => {
     }
     return svg;
   }
-  // M122: Preserve text while joining phrases.
   function keepTogether(text) {
     return String(text);
   }
@@ -324,7 +322,7 @@ window.AppFrame = (() => {
 
   const RESULT_ICON = { ok: 'check', bad: 'alert', warn: 'alert', saved: 'now', idle: 'idle' };
   function drawResult(node, result, codeSub = false) {
-    node.classList.remove('result--ok', 'result--bad', 'result--warn', 'result--saved', 'result--idle'); // 자리 이름(area-result) 같은 다른 이름은 그대로
+    node.classList.remove('result--ok', 'result--bad', 'result--warn', 'result--saved', 'result--idle');
     node.classList.add('result', `result--${result.kind}`);
     const body = el('div');
     body.append(result.text);
@@ -395,7 +393,7 @@ window.AppFrame = (() => {
     const [dot, text] = s.app ? SERVER[conn.state] || SERVER.ok : ['dot dot--off', '시작 준비 중'];
     $('[data-status]').className = conn.state === 'offline' ? 'status status--offline' : 'status'; // 바탕색은 끊김 때만
     $('[data-server]').replaceChildren(el('span', dot), conn.label || text);
-    const update = $('[data-update]'); // 새 판은 작업 끝나고 PC 를 끄거나 켤 때 바뀐다(현장 업데이트 시점 결정)
+    const update = $('[data-update]');
     if (update) {
       const ready = !!(s.update && s.update.state === 'ready');
       update.hidden = !ready;
@@ -406,7 +404,7 @@ window.AppFrame = (() => {
   }
 
   const ui = { focus: 'on', admin_open: false, sheet: null, stopped: '', clock: '', notices: [] };
-  const LOCAL_PUSH = { pedal: 1, focus_state: 1 }; // 화면 표시만 바뀌는 알림 — state() 를 다시 묻지 않는다(app.onPush 가 그림)
+  const LOCAL_PUSH = { pedal: 1, focus_state: 1 };
   const FN_KEY = /^(F([1-9]|1[01])|Escape|Delete|Ctrl\+[A-Z])$/;
   let app = null, current = null, shown = -Infinity, asked = 0, scanning = false, hostActive = true, readySent = false;
 
@@ -471,18 +469,17 @@ window.AppFrame = (() => {
     layer.hidden = !confirm;
     if (confirm) {
       $('#partial-body').textContent = `${confirm.total}개 중 ${confirm.done}개(${confirm.short}개 부족)`;
-      // 확인 창도 스캔 받이 초점을 유지한다.
       if (opening && document.activeElement !== document.body) document.activeElement.blur();
     }
   }
-  function shownSheet() { // 처리 층 판에 modal 이 있으면 그것이 먼저(화면 판 위 — 처리 층이 묻는 확인 · 값 넣기), 아니면 화면 판 → 처리 층 판
+  function shownSheet() {
     const own = current && current.sheet;
     return own && own.modal ? own : ui.sheet || own || null;
   }
   const fromProcess = () => !!current && !!current.sheet && shownSheet() === current.sheet;
-  function closeSheet() { // 닫기 · Esc · 그만두기: 처리 층 판은 cancel 명령을 보내고(다음 state 가 판을 걷음), 화면 판은 그냥 닫음
+  function closeSheet() {
     const sheet = shownSheet();
-    if (sheet && sheet.cancel) { go(`command:${sheet.cancel}`); return; } // 화면 판이든 처리 층 판이든 cancel 이 있으면 보냄(화면 판은 go 가 닫음)
+    if (sheet && sheet.cancel) { go(`command:${sheet.cancel}`); return; }
     if (sheet && fromProcess()) return;
     open(null);
   }
@@ -494,18 +491,18 @@ window.AppFrame = (() => {
       shown = seq;
     }
     current = s;
-    if (ui.sheet && ui.sheet.pending && s.sheet && !s.sheet.modal) ui.sheet = null; // 받는 중 판(pending) 뒤 처리 층 결과 판이 오면 그 판이 자리를 잇는다
-    if (!scanning && window.AppScan) { // 스캔 받이는 첫 state 뒤 한 번(번호는 처리 층 마지막 번호 다음부터)
+    if (ui.sheet && ui.sheet.pending && s.sheet && !s.sheet.modal) ui.sheet = null;
+    if (!scanning && window.AppScan) {
       scanning = true;
       window.AppScan.start(s.profile || s.app, typeof seq === 'number' ? seq : 0, { recovery: s.recovery });
     }
     paint();
-    if (!readySent) { // host 약속(HOST-USE §5·6): 첫 state → 그림 → AppScan.start 뒤 ready 한 번(되살린 문서마다) — 없으면 host 가 8 s 뒤 다시 읽고 push 를 붙잡아 둠
+    if (!readySent) {
       readySent = true;
       KMShell.call('ready', [{ readyAt: performance.timeOrigin + performance.now(), transport: KMShell.status().mode, app: s.app }]).catch(() => {});
     }
   }
-  function bridge(kind, name, args) { // host 답 {ok, result: 처리 층 값, state} → 처리 층 값 {ok, result?, sheet?} 을 펼쳐 state 를 붙임
+  function bridge(kind, name, args) {
     return KMShell.call(kind, [name, args]).then((reply) => {
       if (reply && reply.result && typeof reply.result === 'object' && 'ok' in reply.result) return { ...reply.result, state: reply.result.state || reply.state };
       if (reply && reply.ok === false && !reply.result) return { ok: false, result: { kind: 'warn', text: '처리하지 못했습니다\n다시 시도하세요' }, state: reply.state };
@@ -516,7 +513,7 @@ window.AppFrame = (() => {
     const n = ++asked;
     return KMShell.call('state', []).then((s) => { if (n === asked) take(s); });
   }
-  function answer(reply) { // 처리 층 답에 state 가 있으면 그것, 없으면 state() 를 다시 묻는다
+  function answer(reply) {
     if (reply && reply.state) take(reply.state);
     else refresh().catch(() => {});
     return reply;
@@ -562,7 +559,7 @@ window.AppFrame = (() => {
     const gaps = tail.slice(1).map((t, i) => t - tail[i]).sort((a, b) => a - b), n = gaps.length;
     return (gaps[Math.floor((n - 1) / 2)] + gaps[Math.floor(n / 2)]) / 2 < PIN_FAST_MS;
   }
-  function pinHint(text) {
+  function pinHint(text, scan = false) {
     const box = $('[data-sheet-body]');
     let hint = box.querySelector('.pinform__error');
     if (!hint) {
@@ -571,12 +568,14 @@ window.AppFrame = (() => {
       box.querySelector('.pinform').append(hint);
     }
     hint.textContent = text;
+    hint.style.visibility = scan ? 'hidden' : '';
   }
   function pinClearScan(input) {
-    if (!(input.pinUntil > performance.now())) pinHint(pinIsScan(input) ? '칸에 들어간 스캔은 지웠습니다\nPIN 창을 닫은 뒤 스캔하세요' : 'PIN 칸에 스캔이 들어가 지웠습니다\nPIN 은 손으로 넣으세요');
+    if (!(input.pinUntil > performance.now())) pinHint(pinIsScan(input) ? '칸에 들어간 스캔은 지웠습니다\nPIN 창을 닫은 뒤 스캔하세요' : 'PIN 칸에 스캔이 들어가 지웠습니다\nPIN 은 손으로 넣으세요', true);
     input.value = '';
     input.pinTimes = [];
     input.pinUntil = performance.now() + 300;
+    window.AppSheet.blocked();
   }
   function submitPin(event) {
     const sheet = ui.sheet;
@@ -591,8 +590,8 @@ window.AppFrame = (() => {
     const fastFields = fields.filter(input => pinIsScan(input) || (input === pin && input.value.length > 6));
     for (const input of fastFields) pinClearScan(input);
     const held = fields.find(input => input.pinUntil > performance.now());
-    if (held) { held.focus(); return; }
-    if (!adminId && id && id.pinUntil) { id.focus(); return; }
+    if (held) { window.AppSheet.blocked(); held.focus(); return; }
+    if (!adminId && id && id.pinUntil) { window.AppSheet.blocked(); id.focus(); return; }
     if (!adminId || !pin || !/^\d{6}$/.test(pin.value)) {
       if (pin) { pin.value = ''; pin.pinTimes = []; }
       pinHint('관리자 ID 와 PIN 6자리를 넣으세요');
@@ -725,7 +724,6 @@ window.AppFrame = (() => {
       else if (target.dataset.open) open(target.dataset.open);
       else if (target.dataset.go) go(target.dataset.go);
     });
-    // 스캔 버퍼가 빈 Enter만 확인으로 처리한다. scan.js는 그대로 둔다.
     window.addEventListener('keydown', (event) => {
       if (partial() && !event.repeat && !event.isComposing && window.AppScan && !window.AppScan.editable(document.activeElement)) {
         const sink = window.AppScan.state();

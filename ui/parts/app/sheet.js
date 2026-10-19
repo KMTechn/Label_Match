@@ -1,17 +1,75 @@
-// 현장 앱 판 그리기(주인 w9webnewui1014 — 10/13 이적 레인 apps-mock/lane-sheet.js 에서 올림, .ca- 뗌) — 관리자 ▾ 항목 · 되돌릴 수 없는 확인.
-// 판 = {name, tag?, kind: pin|form|result|info|list|confirm, title, load?(열 때 부를 명령 — 답의 sheet 를 덮음), lead?(글 또는 [글, 굵은 글]), facts?:[[이름, 값]], result?:{kind, text, sub?},
-//   fields?:[{name, label, placeholder?, type?, value?(form 처음 값)}](PIN 앞에 더 받을 칸 · form 의 칸), pin?: enter|checking|done|denied, go?(확인 단추 글), command?(confirm · form 이 부를 명령),
-//   rows?:[{title, text, actions:[단추]}], actions?:[단추], note?, modal?(처리 층 state.sheet — 화면 판 위에 먼저), pending?(받는 중 — 처리 층 판이 오면 그 판이 이음), cancel?(판을 닫을 때 보낼 명령 「이름[:id]」)}. 단추 = {text, go?: close|retry|open:<판>|command:<이름>, quiet?, danger?}.
-// 그리기만 한다 — 누름 · PIN 보내기는 frame.js(AppFrame.start), PIN 값은 처리 층이 받고 화면에 남기지 않는다(웹 PIN 상자와 같은 꼴 + 관리자 ID).
 'use strict';
 window.AppSheet = (() => {
   const { el, $, drawResult } = window.AppFrame;
   const PIN_NOTE = 'PIN 은 저장되지 않습니다. 누른 뒤 창이 닫혀도 적용은 끝까지 진행됩니다';
   let shown = null;
+  let blockedBand = null;
+  let blockedNode = null;
+  function clearBlocked() {
+    if (blockedBand) blockedBand.remove();
+    blockedBand = null;
+  }
+  function placeBlocked() {
+    if (!blockedBand?.classList.contains('sheet-scan-blocked')) return;
+    const sheet = $('[data-sheet]'), body = $('[data-sheet-body]');
+    const rect = sheet.getBoundingClientRect(), padding = body.offsetLeft;
+    Object.assign(blockedBand.style, {height:'', left:`${rect.left + padding}px`, width:`${sheet.clientWidth - 2 * padding}px`, top:`${rect.top + body.offsetTop}px`});
+    const band = blockedBand.getBoundingClientRect();
+    const coversButton = [...body.querySelectorAll('button')].some(node => {
+      const r = node.getBoundingClientRect();
+      return r.width && r.height && r.left < band.right && r.right > band.left && r.top < band.bottom && r.bottom > band.top;
+    });
+    blockedBand.dataset.scanPosition = coversButton ? 'title' : 'body';
+    if (coversButton) blockedBand.style.top = `${$('.sheet__head').getBoundingClientRect().top + sheet.scrollTop}px`;
+    const base = blockedBand.getBoundingClientRect();
+    const across = r => r.left < base.right && r.right > base.left;
+    let bottom = base.bottom, stop = Infinity;
+    for (const node of body.querySelectorAll('input, button, .sheet__facts')) {
+      const r = node.getBoundingClientRect();
+      if (r.width && r.height && across(r) && r.top >= base.bottom) stop = Math.min(stop, r.top);
+    }
+    for (const node of body.querySelectorAll('p')) {
+      const r = node.getBoundingClientRect();
+      if (getComputedStyle(node).visibility !== 'hidden' && across(r) && r.top < bottom && r.bottom > bottom) bottom = r.bottom;
+    }
+    blockedBand.style.height = `${Math.max(base.height, Math.min(bottom, stop) - base.top)}px`;
+  }
+  function blocked() {
+    if (blockedBand?.isConnected) { placeBlocked(); return; }
+    const sheet = $('[data-sheet]');
+    const inside = sheet && !sheet.hidden;
+    const box = inside ? $('[data-sheet-body]') : $('.bands');
+    if (!box) return;
+    blockedBand = blockedNode || (blockedNode = el('div', 'band'));
+    blockedBand.className = 'band';
+    blockedBand.removeAttribute('style');
+    delete blockedBand.dataset.scanPosition;
+    blockedBand.replaceChildren();
+    blockedBand.dataset.scanBlocked = '';
+    blockedBand.setAttribute('role', 'status');
+    if (inside) blockedBand.append(el('div', '', '열린 창에 먼저 답하세요'));
+    blockedBand.append(el('div', '', '방금 스캔은 처리되지 않았습니다'));
+    if (inside) {
+      blockedBand.classList.add('sheet-scan-blocked');
+      document.body.append(blockedBand);
+      placeBlocked();
+    } else box.prepend(blockedBand);
+  }
+  document.addEventListener('scanblocked', blocked);
+  window.addEventListener('scroll', placeBlocked, true);
+  window.addEventListener('resize', placeBlocked);
+  window.addEventListener('keydown', clearBlocked, true);
+  window.addEventListener('pointerdown', clearBlocked, true);
+  const bands = $('.bands');
+  if (bands) new MutationObserver(() => {
+    const sheet = $('[data-sheet]');
+    if (blockedBand && !blockedBand.isConnected && (!sheet || sheet.hidden)) bands.prepend(blockedBand);
+  }).observe(bands, {childList:true});
 
   function render(sheet) {
     const key = sheet ? JSON.stringify(sheet) : null;
-    if (key === shown) return; // 같은 판이면 그대로 — 넣던 글 · 초점을 지우지 않는다
+    if (key === shown) return;
+    clearBlocked();
     shown = key;
     $('[data-sheet]').hidden = !sheet;
     $('[data-sheet-scrim]').hidden = !sheet;
@@ -46,7 +104,7 @@ window.AppSheet = (() => {
     const box = $('[data-sheet-body]');
     box.replaceChildren(...body);
     const inputs = [...box.querySelectorAll('input:not(:disabled)')];
-    (inputs.find((input) => !input.value) || inputs[0] || box.querySelector('button:not(:disabled)') || $('[data-sheet] .link')).focus(); // 빈 첫 칸 → 첫 칸(처음 값을 고칠 때) → 첫 단추
+    (inputs.find((input) => !input.value) || inputs[0] || box.querySelector('button:not(:disabled)') || $('[data-sheet] .link')).focus();
   }
   function resultNode(result) {
     const node = el('div', 'result');
@@ -79,13 +137,13 @@ window.AppSheet = (() => {
     node.append(child);
     return node;
   }
-  function formBody(sheet) { // PIN 없는 글 칸 판 — 칸 안 Enter · 확인 = command(sheet.command, {칸 이름: 값}) (frame.js submitForm)
+  function formBody(sheet) {
     const form = el('div', 'pinform');
-    for (const f of sheet.fields || []) { // type: text · number · password(로컬 관리자 코드 — 값은 판에 남기지 않음)
+    for (const f of sheet.fields || []) {
       const secret = f.type === 'password';
-      const value = secret ? '' : sheet.values ? sheet.values[f.name] || '' : f.value || ''; // 처음 값은 처리 층이 준 것(password 칸은 늘 빈 칸)
+      const value = secret ? '' : sheet.values ? sheet.values[f.name] || '' : f.value || '';
       form.append(label(f.label, input({ type: secret ? 'password' : 'text', inputMode: f.type === 'number' ? 'numeric' : 'text', autocomplete: secret ? 'one-time-code' : 'off',
-        placeholder: f.placeholder || '', disabled: !!sheet.sending, value }, { field: f.name })));
+        placeholder: f.placeholder || '', disabled: !!sheet.sending, value }, { field: f.name, ...(f.scanInto ? {scanInto:''} : {}) })));
     }
     if (sheet.error) form.append(el('p', 'pinform__error', sheet.error));
     const ok = el('button', 'act', sheet.sending ? '보내는 중…' : sheet.go || '확인');
@@ -106,7 +164,7 @@ window.AppSheet = (() => {
     const form = el('div', 'pinform');
     for (const f of sheet.fields || []) {
       const value = busy && sheet.values ? sheet.values[f.name] || '' : '';
-      form.append(label(f.label, input({ type: 'text', autocomplete: 'off', placeholder: f.placeholder || '', disabled: busy, value }, { field: f.name })));
+      form.append(label(f.label, input({ type: 'text', autocomplete: 'off', placeholder: f.placeholder || '', disabled: busy, value }, { field: f.name, ...(f.scanInto ? {scanInto:''} : {}) })));
     }
     form.append(label('관리자 ID', input({ type: 'text', autocomplete: 'off', placeholder: '관리자 ID', disabled: busy, value: sheet.admin_id || '' }, { pinId: '' })));
     const row = el('div', 'pinform__row');
@@ -121,11 +179,10 @@ window.AppSheet = (() => {
     form.append(el('p', 'pinform__note', PIN_NOTE));
     return [form, buttons([{ text: '그만두기', go: 'close', quiet: true }])];
   }
-  // 비밀 판(PIN · password 칸): 판의 빈 곳 · 바깥을 눌러도 초점이 칸을 떠나지 않게 — 칸 밖 키는 scan.js 가 버림(막는 길 둘)
   document.addEventListener('mousedown', (event) => {
     const box = $('[data-sheet]');
     if (box && !box.hidden && box.querySelector('input[type=password], [data-pin]') && !event.target.closest('input, button, a, label, select, textarea')) event.preventDefault();
   }, true);
 
-  return { render };
+  return { render, blocked };
 })();

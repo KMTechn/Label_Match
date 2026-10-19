@@ -33,7 +33,7 @@
     progress: { kind: 'list', title: '진행 현황', load: 'refresh_progress', rows: [] },
     settings: { kind: 'list', title: '작업자 선택', rows: [], actions: [{ text: '새 이름 등록', go: 'open:register' }] },
     register: { kind: 'form', title: '새 이름 등록', lead: '명단에 없는 이름을 이 PC 에 등록합니다', fields: [{ name: 'name', label: '이름', placeholder: '이름을 넣으세요' }], go: '등록', command: 'register_worker' },
-    cancel_completed: { kind: 'form', title: '완료 트레이 취소', lead: '취소할 트레이의 현품표를 스캔하거나 입력하세요', fields: [{ name: 'label', label: '현품표', placeholder: '현품표를 스캔하세요' }], go: '찾기', command: 'cancel_completed' },
+    cancel_completed: { kind: 'form', title: '완료 트레이 취소', lead: '취소할 트레이의 현품표를 스캔하거나 입력하세요', fields: [{ name: 'label', label: '현품표', placeholder: '현품표를 스캔하세요', scanInto: true }], go: '찾기', command: 'cancel_completed' },
     recovery: { kind: 'list', tag: '관리자', title: '멈춘 작업 확인', load: 'recovery_list', rows: [] },
     pending: { kind: 'list', tag: '관리자', title: '대기 현황', load: 'pending_status', rows: [] },
     raw: { kind: 'list', tag: '관리자', title: '바코드 원문', rows: [] },
@@ -43,7 +43,7 @@
     'LABEL.F5_HOLD': pin('보류 후 계속', '보류'),
     'LABEL.SUPPORT_HANDOFF': pin('지원 인계', '인계'),
     'LABEL.PHS_LOOKUP': pin('실물 현품표 조회', '조회', '실물 현품표를 스캔하고 관리자 ID\nPIN 을 넣으세요',
-      [{ name: 'physical_qr', label: '실물 현품표', placeholder: '현품표를 스캔하세요' }]),
+      [{ name: 'physical_qr', label: '실물 현품표', placeholder: '현품표를 스캔하세요', scanInto: true }]),
   };
 
   const SHEET_PIN = {"admin": true, "history": false, "progress": false, "settings": false, "register": false, "cancel_completed": true, "recovery": false, "LABEL.RECHECK": true, "LABEL.SET_HOLD": false, "LABEL.F5_HOLD": false, "LABEL.SUPPORT_HANDOFF": false, "LABEL.PHS_LOOKUP": false, "pending": false, "raw": false, "about": false};

@@ -1,28 +1,28 @@
 {
  "schema": "ui-parts/1",
  "source": "WorkerAnalysisGUI-web",
- "commit": "a1b37ce25a28f4147f15b3e58b4cc900c8be6f97",
+ "commit": "d6436ff74b3fd0277be66fb7a40e985329a5f51d",
  "dirty": false,
  "app": "lm",
- "parts_fingerprint": "551f9c24957b974a",
+ "parts_fingerprint": "9507a83d248d47f0",
  "files": [
   {
    "path": "app/frame.css",
-   "sha256": "787b7b855e4b8ff4b40eb105d8e23788576d1dfe26be7135745a3b786ed5ebd2",
-   "bytes": 33349,
-   "gzip": 8132
+   "sha256": "13c5709371c87c995105f529001b3754227a71ebc44b0afe6d602a0c87440194",
+   "bytes": 33720,
+   "gzip": 8225
   },
   {
    "path": "app/frame.js",
-   "sha256": "aac5e4cd490ac27b48e1f5c6671b6f3680c830a9f2a37f01534363c87ea9f352",
-   "bytes": 45217,
-   "gzip": 14287
+   "sha256": "f7ac9966238a5430352dede9d50731078b0293b571bccd8dd59c6939fdddc507",
+   "bytes": 43898,
+   "gzip": 13702
   },
   {
    "path": "app/lm/contract.json",
-   "sha256": "bb667c3ed61bf544d67636ba41e83abefed487c03771045b402d820cb75b9e87",
-   "bytes": 38414,
-   "gzip": 9549
+   "sha256": "1616dfe54fa178f251afa25bde5cc3d1088cd235bc9e2b9eb27ad24ad31ded27",
+   "bytes": 39039,
+   "gzip": 9781
   },
   {
    "path": "app/lm/fixtures/about.json",
@@ -410,21 +410,21 @@
   },
   {
    "path": "app/lm/lm.js",
-   "sha256": "f065991f503d46db0bb03a1996fd40468adb7e2309c355080d3d7395442fd4b5",
-   "bytes": 26245,
-   "gzip": 8408
+   "sha256": "115c50bb421056edd8582f33eb725ab55c1c1c34a69db954c1d6512993338342",
+   "bytes": 26277,
+   "gzip": 8415
   },
   {
    "path": "app/scan.js",
-   "sha256": "e375a35a0bc4cfb8da8199f1d7926a9e3be6b45bd5f2671d0707a81fcac1daf1",
-   "bytes": 13604,
-   "gzip": 5136
+   "sha256": "b86f0cfdd6fecd53893bc42483a06f184840807b6d31ccbebffdf84707c190cc",
+   "bytes": 16385,
+   "gzip": 5477
   },
   {
    "path": "app/sheet.js",
-   "sha256": "0f0c1421063eacb5aa9bc4e96ae32e40b0aa2c96f4c0e5e2329488c22e9cee0e",
-   "bytes": 7654,
-   "gzip": 2981
+   "sha256": "0db6633d274b6fce3e6e34f6604a14815ecce7c134b34bfeb8d8b150d8c3734f",
+   "bytes": 9263,
+   "gzip": 2998
   },
   {
    "path": "app/transport.js",

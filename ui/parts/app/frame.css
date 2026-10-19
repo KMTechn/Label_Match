@@ -319,6 +319,21 @@ body > .band { margin: 12px 24px 0; }
 .sheet__title { margin: 0; font-size: var(--s5); font-weight: 700; }
 .sheet__head .link { margin-left: auto; }
 .sheet__body { display: grid; gap: 14px; }
+body > .sheet-scan-blocked {
+  position: fixed;
+  z-index: 5;
+  display: grid;
+  align-content: start;
+  gap: 0;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--amber-text);
+  background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--surface);
+  box-shadow: 0 2px 6px #0003;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+}
 .sheet__lead { font-size: var(--s4); line-height: 1.5; color: var(--ink-2); }
 .sheet__lead b { color: var(--red-text); }
 .sheet__facts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; padding: 12px 14px; border-radius: var(--r-card); background: var(--sunk); font-size: var(--s3); }

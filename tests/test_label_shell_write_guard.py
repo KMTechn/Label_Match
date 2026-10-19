@@ -16,7 +16,7 @@ from tests.test_screen_precreation_recovery import shell_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTUAL_WRITE_GUARD = label_match_screen.shell_write_guard
-READY_SHA256 = "a8183b660932778c08ebdf1ee24f137b4c2540a66207850afeff9990bbfb3198"
+READY_SHA256 = "19389ecbdc0af9288f93015929975e5c603ff3c2066290d166742efea952ab71"
 
 
 def test_shell_copy_matches_v3163_ready():
@@ -25,7 +25,7 @@ def test_shell_copy_matches_v3163_ready():
     raw = ready_path.read_bytes()
     assert hashlib.sha256(raw).hexdigest() == READY_SHA256
     ready = json.loads(raw)
-    assert ready["version"] == "v3.16.3"
+    assert ready["version"] == "v3.16.3.1"
     for entry in ready["files"]:
         path = ROOT / _shell_file_relative(ready, entry["path"])
         assert path.stat().st_size == entry["bytes"]
