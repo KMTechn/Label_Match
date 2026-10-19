@@ -3746,7 +3746,7 @@ from label_data_generation import (
     CURRENT_VERSION, DataGenerationError, check_user_data_open,
     record_user_data_open, release_identity,
 )
-APP_VERSION = "v2.0.115"
+APP_VERSION = "v2.0.116"
 LABEL_MATCH_NEW_SCREEN_ARGUMENT = "--new-screen"
 # Set by label_match_screen before the app is built: the Tk root starts hidden.
 LABEL_MATCH_SCREEN_HOST = {"requested": False, "active": False, "run": None, "catalog_unconfirmed": False}
