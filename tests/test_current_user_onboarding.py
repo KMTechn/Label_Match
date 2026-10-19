@@ -1400,3 +1400,50 @@ def test_onboarding_forwards_server_base_url_to_registration_and_keeps_ready_pro
 
     assert rerun["action"] == "REUSED"
     assert len(registrations) == 2
+
+
+def test_g88_settings_uses_only_supplied_environment(tmp_path, monkeypatch):
+    import uuid
+    import current_user_onboarding as module
+    marker = uuid.uuid4().hex
+    monkeypatch.setenv("G88_METADATA_TOKEN", marker)
+    target = tmp_path / "settings.json"
+    payload = {"save_path": marker}
+    module._write_machine_json_atomic(target, payload, environ={})
+    assert json.loads(target.read_text(encoding="utf-8")) == payload
+
+
+def test_g88_settings_preserves_file_on_selected_secret(tmp_path):
+    import uuid
+    import current_user_onboarding as module
+    marker = uuid.uuid4().hex
+    target = tmp_path / "settings.json"
+    _write_json(target, {"status": "OLD"})
+    before = target.read_bytes()
+    with pytest.raises(ValueError):
+        module._write_machine_json_atomic(target, {"save_path": marker}, environ={"G88_METADATA_TOKEN": marker})
+    assert target.read_bytes() == before
+
+
+
+def test_g88_ready_onboarding_ignores_unrelated_process_secret(tmp_path, monkeypatch):
+    import uuid
+    marker = uuid.uuid4().hex
+    environment = {"LOCALAPPDATA": str(tmp_path / marker), "ProgramData": str(tmp_path / "programdata")}
+    app_root = tmp_path / "app"
+    paths = resolve_current_user_onboarding_paths(app_root, environ=environment)
+    _write_json(app_root / "config" / "app_settings.json", {"custom_save_path": str(paths.data_root)})
+    _ready_state(paths)
+    before = paths.credential_path.read_bytes()
+    monkeypatch.setenv("G88_METADATA_TOKEN", marker)
+    report = onboard_current_user(
+        app_root, environ=environment, require_bootstrap_integrity=False,
+        registration_runner=lambda _paths: pytest.fail("READY PC must reuse registration"),
+        profile_loader=_profile_loader, credential_loader=_credential_loader,
+        ledger_factory=_ledger_factory, autostart_installer=_autostart,
+        relay_launcher=_relay_start, scheduled_task_remover=_scheduled_task_absent, legacy_task_quiescence_reader=_legacy_task_quiescent,
+    )
+    assert report["status"] == "READY"
+    assert json.loads(paths.onboarding_report_path.read_text(encoding="utf-8"))["status"] == "READY"
+    assert paths.credential_path.read_bytes() == before
+    assert json.loads(paths.settings_path.read_text(encoding="utf-8"))["custom_save_path"] == str(paths.data_root)

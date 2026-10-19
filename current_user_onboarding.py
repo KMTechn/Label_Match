@@ -493,10 +493,11 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> dict[str, str]
     return _write_json_bytes_atomic(path, serialized)
 
 
-def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any], *,
+                               environ: Mapping[str, str] | None = None) -> None:
     from failure_redaction import assert_machine_metadata_text
     serialized = json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    assert_machine_metadata_text(serialized)
+    assert_machine_metadata_text(serialized, environ=environ)
     _write_json_bytes_atomic(path, serialized)
 
 
@@ -1024,7 +1025,8 @@ def _create_ledger(path: Path) -> None:
     OperationLeaseStore(path)
 
 
-def _ensure_user_settings(paths: CurrentUserOnboardingPaths) -> dict[str, Any]:
+def _ensure_user_settings(paths: CurrentUserOnboardingPaths, *,
+                          environ: Mapping[str, str] | None = None) -> dict[str, Any]:
     if paths.settings_path.is_file():
         _read_json(paths.settings_path, "current-user settings")
         return {"status": "REUSED", "path": str(paths.settings_path)}
@@ -1034,7 +1036,7 @@ def _ensure_user_settings(paths: CurrentUserOnboardingPaths) -> dict[str, Any]:
     )
     template = next((path for path in candidates if path.is_file()), None)
     payload = _read_json(template, "packaged settings template") if template else {}
-    _write_machine_json_atomic(paths.settings_path, payload)
+    _write_machine_json_atomic(paths.settings_path, payload, environ=environ)
     return {
         "status": "CREATED",
         "path": str(paths.settings_path),
@@ -1691,7 +1693,8 @@ def onboard_current_user(
                     raise ValueError("current-user business ledger readback failed")
             report["ledger_status"] = "READY"
             with writer_admission(ONBOARDING_WRITER_SOURCE):
-                report["settings"] = dict(settings_factory(paths))
+                report["settings"] = dict(_ensure_user_settings(paths, environ=environ)
+                    if settings_factory is _ensure_user_settings else settings_factory(paths))
             settings_status = str(report["settings"].get("status") or "")
             if settings_status not in {"CREATED", "REUSED"}:
                 raise ValueError("current-user settings placement was not proven")
