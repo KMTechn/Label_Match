@@ -883,9 +883,9 @@ def test_common_status_uses_510_bottom_row_with_one_line_and_no_forbidden_words(
     app._render_logistics_connection("normal", count, None,
                                      progress_observation=(stamp, connected) if connected is not None else None)
     footer = app.logistics_connection_label
-    assert footer.master is app.operator_right_pane
-    assert footer.grid_options["row"] == 2
-    assert footer.grid_options["row"] > app.operator_action_frame.grid_options["row"]
+    assert footer.master is app.startup_send_footer
+    assert footer.grid_options['row'] == 0
+    _assert_footer_below_actions(app)
     assert footer.winfo_ismapped() and not app.relay_screen_status_label.winfo_ismapped()
     assert footer.cget("text") == expected
     assert footer.cget("wraplength") == 0 and footer.cget("width") == 1
