@@ -823,6 +823,21 @@ def test_relay_screen_status_follows_relay_files_and_keeps_state_on_torn_read(
     assert "_relay_screen_status_after_id" in inspect.getsource(Label_Match._cancel_pending_ui_jobs)
 
 
+def _assert_footer_below_actions(app):
+    footer = app.startup_send_footer
+    branch = app.operator_action_frame
+    for _ in range(16):
+        if branch.master is footer.master:
+            break
+        assert isinstance(branch.master, FakeWidget)
+        branch = branch.master
+    else:
+        raise AssertionError("action hierarchy does not reach the footer parent")
+    assert footer.master is branch.master
+    assert footer.grid_options["row"] >= branch.grid_options["row"] + branch.grid_options.get("rowspan", 1)
+    return footer
+
+
 @pytest.mark.parametrize("scale", [1.0, 1.2, 3.0])
 @pytest.mark.parametrize("base_font_size", [14, 18], ids=["default-text", "large-text"])
 def test_common_status_fits_1024_footer_row_without_wrapping(
@@ -838,8 +853,8 @@ def test_common_status_fits_1024_footer_row_without_wrapping(
 
     # The coordinator keeps sub-510's dedicated row; common wording stays on one line.
     assert footer is app.logistics_connection_label
-    assert footer.master is app.operator_right_pane
-    assert footer.grid_options["row"] == 2
+    assert footer.master is app.startup_send_footer
+    assert footer.grid_options['row'] == 0
     assert not relay.winfo_ismapped()
     assert footer.cget("text") == "관리자 확인 2건"
     assert not footer.cget("wraplength")
@@ -847,6 +862,7 @@ def test_common_status_fits_1024_footer_row_without_wrapping(
     footer_width = _LayoutFont(font=footer.cget("font")).measure(footer.cget("text"))
     assert footer_width <= available
     assert _LayoutFont(font=footer.cget("font")).metrics("linespace") <= 32
+    _assert_footer_below_actions(app)
 
 
 @pytest.mark.parametrize("connected,count,review,age,expected", [
