@@ -58,7 +58,33 @@ def test_all_sixteen_generated_settings_additions_and_historical_before_pins():
         '4272c5601e035f6a111e493a4acfa5d8d182978f',
         '06a474b46095fa044a0c46a045b3445cece1ee57',
     }
+    # Fixed 693a696 baseline differences; each path has its introduction.
+    baseline_replacements = {
+        'app/event_stream_policy.py': set(before_fix["startup_release_replacements"]),  # 74672202: all 23 historical stocks
+        'app/kmtech_shared.lock.json': scan_guard_stock_revisions,  # 018905d3: stocks e7b9075b/4272c560/06a474b4
+        'app/kmtech_shared.manifest.json': scan_guard_stock_revisions,  # 018905d3: stocks e7b9075b/4272c560/06a474b4
+        'app/kmtech_shared/__init__.py': scan_guard_stock_revisions,  # 018905d3: stocks e7b9075b/4272c560/06a474b4
+        'app/kmtech_shared/data_generation.py': scan_guard_stock_revisions,  # b3eb1da3: stocks e7b9075b/4272c560/06a474b4
+        'app/kmtech_shared/powershell/data_generation.ps1': {'2c46de16f2303117e88d4794bf3793f0d7de8c76', '464830d78a305acb7aa01a7a7afc9e72a924a5c9', '55cab723e215ab3ffd12ef7e3cc9e8d3c1569e8a', 'a56a58769c43d1b19abdd9881425f95a49dbd7f7', 'd9160b6ab5dce3e7a0010679f4ae8f28077eea76', '89155f17233fb1c8b5bae2a9e470832772a4d785', 'e7b9075b2383889e77f524be7a1f0f80d7630033', '4272c5601e035f6a111e493a4acfa5d8d182978f', '06a474b46095fa044a0c46a045b3445cece1ee57'},  # b3eb1da3: nine affected historical stocks
+        'app/kmtech_shared/powershell/portable.ps1': scan_guard_stock_revisions,  # 018905d3: stocks e7b9075b/4272c560/06a474b4
+        'app/kmtech_zero_pe.vendor.json': scan_guard_stock_revisions,  # 018905d3: stocks e7b9075b/4272c560/06a474b4
+        'app/tools/failure_redaction_rules.json': scan_guard_stock_revisions,  # eb6e917d: stocks e7b9075b/4272c560/06a474b4
+        'tools/apply_prepared_update.ps1': scan_guard_stock_revisions,  # 8d819a90: stocks e7b9075b/4272c560/06a474b4
+        'tools/failure_redaction_rules.json': scan_guard_stock_revisions,  # eb6e917d: stocks e7b9075b/4272c560/06a474b4
+    }
+    baseline = declarations("693a696bcd82a8355a0aeecb7a6ba8f03d1b65da")
+    accepted_scan_guard = declarations("2e45833f4c3eec9b200a3c959d39cd4080c57753")
     for revision, paths in before_fix['startup_release_replacements'].items():
+        baseline_paths = {path for path, revisions in baseline_replacements.items()
+                          if revision in revisions}
+        scan_guard_paths = (scan_guard_replacements
+                            if revision in scan_guard_stock_revisions else set())
+        for relative in baseline_paths:
+            assert (current["startup_release_replacements"][revision][relative][0]
+                    == baseline["startup_release_replacements"][revision][relative][0])
+        for relative in scan_guard_paths:
+            assert (current["startup_release_replacements"][revision][relative][0]
+                    == accepted_scan_guard["startup_release_replacements"][revision][relative][0])
         assert (
             (reviewed_parents := (
                 declarations("ebeb1ef368355a8dceebf7d33f9d1270d8cbda3d")["startup_release_replacements"][revision],
@@ -66,7 +92,7 @@ def test_all_sixteen_generated_settings_additions_and_historical_before_pins():
             ))
             and set(current["startup_release_replacements"][revision])
             == (set().union(*reviewed_parents)
-                | (scan_guard_replacements if revision in scan_guard_stock_revisions else set()))
+                | baseline_paths | scan_guard_paths)
             and all(
                 current["startup_release_replacements"][revision][relative][0] == pair[0]
                 for parent in reviewed_parents
