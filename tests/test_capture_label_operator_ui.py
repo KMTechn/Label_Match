@@ -17,6 +17,7 @@ import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import Mock
 from types import MethodType, SimpleNamespace
 
 import pytest
@@ -772,12 +773,15 @@ def test_m7_fixtures_call_only_bound_production_state_methods_headlessly(capsys)
         entry=MemoryWidget(),
         big_display_label=MemoryWidget(),
         status_label=MemoryWidget(),
-        _render_operator_workbench=lambda: None,
+        _render_operator_workbench=Mock(return_value=None),
         _retry_blocked_submission=lambda: None,
         _ui_lane_diagnostic_text=lambda error: type(error).__name__,
     )
     app.update_big_display = lambda text, _color: app.big_display_label.configure(
         text=text
+    )
+    app._package_pin_ui = Mock(
+        wraps=MethodType(Label_Match._package_pin_ui, app)
     )
     app._refresh_operator_workbench = MethodType(
         Label_Match._refresh_operator_workbench, app
@@ -835,6 +839,12 @@ def test_m7_fixtures_call_only_bound_production_state_methods_headlessly(capsys)
         capsys.readouterr().out
     )
 
+    assert app._package_pin_ui.call_count > 0
+    assert app._render_operator_workbench.call_count >= app._package_pin_ui.call_count
+    for ui_call in app._package_pin_ui.call_args_list:
+        assert ui_call.args == (app._render_operator_workbench,)
+        assert ui_call.kwargs == {}
+
 
 def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
     from Label_Match import Label_Match
@@ -879,9 +889,12 @@ def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
         history_tree=None,
         session_tree=None,
         entry=FakeEntry(),
-        _render_operator_workbench=lambda: None,
+        _render_operator_workbench=Mock(return_value=None),
         _retry_blocked_submission=lambda: None,
         _ui_lane_diagnostic_text=lambda error: type(error).__name__,
+    )
+    app._package_pin_ui = Mock(
+        wraps=MethodType(Label_Match._package_pin_ui, app)
     )
     app._refresh_operator_workbench = MethodType(
         Label_Match._refresh_operator_workbench, app
@@ -909,6 +922,12 @@ def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
             continue
         apply_state_fixture(app, fixtures[state_id])
         assert notebook.selections[-1] is session_tab
+
+    assert app._package_pin_ui.call_count > 0
+    assert app._render_operator_workbench.call_count >= app._package_pin_ui.call_count
+    for ui_call in app._package_pin_ui.call_args_list:
+        assert ui_call.args == (app._render_operator_workbench,)
+        assert ui_call.kwargs == {}
 
 
 def test_apply_fixture_seeds_real_activity_rows_without_touching_business_maps():
