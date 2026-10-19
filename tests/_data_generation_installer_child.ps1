@@ -105,7 +105,10 @@ Set-Location -LiteralPath $Root
 $refused = $false
 $guidance = $false
 try { . ([ScriptBlock]::Create($block)) }
-catch { $refused=$true; $guidance = $_.Exception.Message.Contains('자료') -and $_.Exception.Message.Contains('복구') }
+catch { $refused = $true; $guidance = $_.Exception.Message -cin @(
+    "이 PC의 자료 판을 확인하지 못해 프로그램을 열 수 없습니다.`n현장 관리자에게 알리세요.",
+    "이 PC의 자료는 더 새 판에서 이미 열려 이 판으로는 열 수 없습니다.`n현장 관리자에게 알리세요."
+) }
 $changed = 0
 foreach ($path in $before.Keys) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-FileHash -LiteralPath $path).Hash -ne $before[$path]) { $changed++ }
