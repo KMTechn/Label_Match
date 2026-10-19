@@ -405,7 +405,7 @@ def test_retained_legacy_clock_plan_preserves_request_and_failure_lane(clock_cas
             assert result.reason_code == "OPERATION_LEASE_NOT_YET_VALID"
             case.app._show_deferred_validation_result(result)
             notice = case.app._deferred_capture_pending_notice()
-            assert "시간" in notice.message and "자동" in notice.message and "IT" in notice.message
+            assert notice.message == '현품표를 저장했지만 PC 시각을 확인해야 합니다\n현장 관리자에게 알리세요\n코드: IT'
             assert "intent" not in notice.message and "OPERATION_LEASE" not in notice.message
         if expected == "RECONCILE_PENDING_VALIDATION":
             assert result.reason_code == "OPERATION_LEASE_COMMIT_UNKNOWN"
