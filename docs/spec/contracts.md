@@ -377,7 +377,7 @@ commit 뒤 cache 삭제 전 crash에서는 exact CANCELLED 접수의 stale cache
 | source `member_count` | 현재 유효 TRANSFER/work-group 제품 구성원 수. PHS2 한 번의 스캔 수와 다름; `INHERIT_ALL`은 그 집합 전체 | 현재 source snapshot/version 기준. unit와 barcode hash를 각각 대조 |
 | QA 표본 3개 | 명시 호환 경로의 검증 표본. 포장 전체 멤버십 수나 중앙 표준 필수 입력 수가 아님 | 표준 PHS2 입력은 1회; 표본을 제품 총량으로 합산하지 않음 |
 | F4 교체 목록 | 1쌍 이상 실제 대상 멤버 수 이내. 3쌍 이상은 추가 capability 필요 | 명시적 단일 제출·중앙 원자 처리·같은 key 재생. 전체 구성 수 보존 |
-| 포장 세트 | `PACKAGING_SET_COUNT`, 웹 `total_sets_completed`. 포장 완료 세트 수이며 제품 개수와 환산하지 않음 | 취소·부분 제출 등을 제외하는 projection 규칙. 원본 PHS2/최종 라벨은 제품 barcode에서 제외 |
+| 포장 세트 | `PACKAGING_SET_COUNT`, 웹 `total_sets_completed`. 포장 완료 세트 수이며 제품 개수와 환산하지 않음 | 취소·옛 수동 마감(PARTIAL_MANUAL_COMPLETION) 등을 제외하는 projection 규칙. 같은 현품표 재스캔으로 미달 확정한 「부분 제출」 상자는 포장 완료 세트 1 로 센다(사용자 10/19 결정). 원본 PHS2/최종 라벨은 제품 barcode에서 제외 |
 | CSV row / accepted row | event 전달·투영 처리 건수. 포장 세트나 제품 개수와 다름 | 중복·quarantine·처리 행 합계와 source identity로 ACK 검증 |
 
 근거: [package draft/command](../../package_logistics.py), [서버 Label event normalize](../../../WorkerAnalysisGUI-web/common_projection_sync.py), [포장 projection](../../../WorkerAnalysisGUI-web/common_projection.py)의 `_label_match_payload_passed` 및 포장·취소 집계, [dashboard_standard.source.js](../../../WorkerAnalysisGUI-web/static/dashboard_standard.source.js) `total_sets_completed` 표시. `Pcs/EA/piece`의 전 제품 공통 환산은 미확정이며 [LM-B06](BACKLOG.md#lm-b06)·[공통 용어](../../../Program_Spec_Hub/GLOSSARY.md)에서 관리한다.
