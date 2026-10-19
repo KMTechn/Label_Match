@@ -7452,7 +7452,7 @@ class Label_Match(tk.Tk):
     def _worker_record_context(self):
         current = self.__dict__.get("current_set_info") or {}
         record = current.get('shortage_undo_snapshot') or current
-        if current.get("id"):
+        if current.get('shortage_undo_snapshot') or current.get("id"):
             identity = label_worker_roster.record_identity(record)
         else:
             selected = self._selected_worker_record()
