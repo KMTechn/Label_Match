@@ -783,6 +783,11 @@ def test_m7_fixtures_call_only_bound_production_state_methods_headlessly(capsys)
     app._package_pin_ui = Mock(
         wraps=MethodType(Label_Match._package_pin_ui, app)
     )
+    for method_name in (
+        "_clear_package_pin_requests", "_resume_broken_ui_lane",
+        "_refuse_scans_behind_completion",
+    ):
+        setattr(app, method_name, Mock(wraps=MethodType(getattr(Label_Match, method_name), app)))
     app._refresh_operator_workbench = MethodType(
         Label_Match._refresh_operator_workbench, app
     )
@@ -844,6 +849,9 @@ def test_m7_fixtures_call_only_bound_production_state_methods_headlessly(capsys)
     for ui_call in app._package_pin_ui.call_args_list:
         assert ui_call.args == (app._render_operator_workbench,)
         assert ui_call.kwargs == {}
+    assert app._clear_package_pin_requests.call_count > 0
+    assert app._resume_broken_ui_lane.call_count > 0
+    assert app._refuse_scans_behind_completion.call_count > 0
 
 
 def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
@@ -896,6 +904,11 @@ def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
     app._package_pin_ui = Mock(
         wraps=MethodType(Label_Match._package_pin_ui, app)
     )
+    for method_name in (
+        "_clear_package_pin_requests", "_resume_broken_ui_lane",
+        "_refuse_scans_behind_completion",
+    ):
+        setattr(app, method_name, Mock(wraps=MethodType(getattr(Label_Match, method_name), app)))
     app._refresh_operator_workbench = MethodType(
         Label_Match._refresh_operator_workbench, app
     )
@@ -928,6 +941,9 @@ def test_apply_fixture_selects_history_only_for_readonly_and_restores_session():
     for ui_call in app._package_pin_ui.call_args_list:
         assert ui_call.args == (app._render_operator_workbench,)
         assert ui_call.kwargs == {}
+    assert app._clear_package_pin_requests.call_count > 0
+    assert app._resume_broken_ui_lane.call_count > 0
+    assert app._refuse_scans_behind_completion.call_count > 0
 
 
 def test_apply_fixture_seeds_real_activity_rows_without_touching_business_maps():
