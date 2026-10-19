@@ -8,6 +8,8 @@ stock 빌더가 배포하는 .ps1/.psm1/.psd1의 비ASCII 내용은 UTF-8 BOM(EF
 
 구조화 가림의 추가 범위는 REDACTION-CONTRACT 0f(SHA256 c82c9bdccd16bb0caa0e423fb7578278646ba0e40ac18bd58291c00e70946ccf)의 동결 4벡터를 따른다. 아래 0e 기록은 조립 v2의 역사적 범위로 보존하며 10/8 컷 전 통합은 독립 검토 P1·P2 0 후 코디가 수행한다.
 
+공통 가림 계약 #31 다음 판 본 판은 `docs/failure-redaction-contract.md`(SHA256 c12e742fe3c5ba90c0771c69ddccbbe0e75b8b41c1f1672a9920c22f15fb78a8)와 `tests/fixtures/failure_redaction_vectors.json`(SHA256 9f19eeef81d08093d956e4ad6f9a781b9648ce74da7a2eccd090cc7f202f01d3)을 바이트 그대로 고정하며 `docs/failure-redaction-contract.sha256.json`이 두 값을 가진다. 필수 18개 벡터는 그대로이고 metadata 벡터 9개가 더해졌다. 포장 전용 구조화 4벡터(mapping·list·nested·unbalanced password)는 공통 파일에 섞지 않고 `tests/fixtures/failure_redaction_app_vectors.json`에 따로 둔다.
+
 | 조기 실패 reason_code | 뜻과 고정 안내 |
 | --- | --- |
 | `SERVER_BASE_URL_INVALID` | 서버 URL origin 문법 또는 port 범위 거절. 서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요. |

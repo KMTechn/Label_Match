@@ -8,7 +8,11 @@ from failure_redaction import redact_for_sink, redact_json_for_sink
 from tests.test_shared_ancestor_protection import run_functions
 
 ROOT = Path(__file__).resolve().parents[1]
-VECTORS = json.loads((ROOT / "tests/fixtures/failure_redaction_vectors.json").read_text(encoding="utf-8"))["vectors"]
+VECTOR_FILE = ROOT / "tests/fixtures/failure_redaction_vectors.json"
+APP_VECTOR_FILE = ROOT / "tests/fixtures/failure_redaction_app_vectors.json"
+# The shared file is byte-pinned to the contract; Label_Match's own vectors stay in a separate file.
+VECTORS = [*json.loads(VECTOR_FILE.read_text(encoding="utf-8"))["vectors"],
+           *json.loads(APP_VECTOR_FILE.read_text(encoding="utf-8"))["vectors"]]
 
 
 def test_python_exception_mapping_masks_single_quoted_secret_and_keeps_cause():
@@ -79,6 +83,8 @@ def test_python_sink_contract(vector):
 @pytest.mark.parametrize("engine", ["powershell.exe", "pwsh.exe"])
 def test_powershell_sink_contract(tmp_path, engine):
     output = tmp_path / "results.json"
+    combined = tmp_path / "vectors.json"
+    combined.write_text(json.dumps({"vectors": VECTORS}, ensure_ascii=False), encoding="utf-8")
     result = run_functions(tmp_path, ROOT / "INSTALL_CANONICAL_PORTABLE.ps1", ['Protect-LabelFailureText'], r'''
 $vectors=Get-Content -LiteralPath $env:LM_VECTOR_FILE -Raw -Encoding UTF8 | ConvertFrom-Json
 $results=@()
@@ -93,7 +99,7 @@ foreach($v in $vectors.vectors) {
  $results+=,[ordered]@{id=$v.id;actual=$actual}
 }
 [IO.File]::WriteAllText($env:LM_VECTOR_OUTPUT,($results|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
-''', engine=engine, values={"LM_VECTOR_FILE": str(ROOT / "tests/fixtures/failure_redaction_vectors.json"),
+''', engine=engine, values={"LM_VECTOR_FILE": str(combined),
                             "LM_VECTOR_OUTPUT": str(output)})
     assert result.returncode == 0, result.stdout + result.stderr
     for vector, row in zip(VECTORS, json.loads(output.read_text(encoding="utf-8"))):

@@ -1,6 +1,6 @@
 {
   "schema": "kmtech-sink-redaction-vectors-v1",
-  "contract": "W\\w9setupprep\\REDACTION-CONTRACT.md",
+  "contract": "docs/failure-redaction-contract.md",
   "note": "All values are synthetic test strings, not real secrets. | 10-05 20:0x: +2 vectors for contract 2a identifier exception (UUID/32/64-hex values of *_TRANSACTION_ID/_SESSION_ID/_ATTEMPT_ID kept, other values redacted). | 10-06 02:1x: +4 vectors (sub-308) for exception-prefix consumption and redact-before-truncate of long assignments; text_generator = head + fill_char*fill_bytes + tail.",
   "vectors": [
     {
@@ -199,30 +199,85 @@
         "tail": ""
       },
       "expected": "RuntimeError: password=[REDACTED:field]"
+    }
+  ],
+  "metadata_vectors": [
+    {
+      "id": "metadata-omitted-environment",
+      "operation": "assert_metadata_has_no_secrets",
+      "text": "{\"fixture\":\"synthetic-long-value\"}",
+      "environ": null,
+      "expected": "pass"
     },
     {
-      "id": "mapping-password",
+      "id": "metadata-explicit-empty-environment",
+      "operation": "assert_metadata_has_no_secrets",
+      "text": "{\"fixture\":\"synthetic-long-value\"}",
       "environ": {},
-      "text": "RuntimeError: \"password\": {\"left\": \"d884efb39c5944f28a0122208e16e6f0abc6ff39ea2b1f6df61263cb7f5246d0\", \"right\": \"1739a7d06c71b5c5c99428312398ec1d75134fe523c2e62c0b4abd0bf15272e6\"}; stage=FAILED",
-      "expected": "RuntimeError: \"password\": \"[REDACTED:field]\"; stage=FAILED"
+      "expected": "pass"
     },
     {
-      "id": "list-password",
-      "environ": {},
-      "text": "RuntimeError: \"password\": [\"9520dbf65e0440fe0820c9e18eb20c361db53134b0ebf65d94a72d05065f87b8\", \"1a2209206ad104b6fdbdccafd429911c64810b4b5c648b5af06d1035bfe84ed1\"]; stage=FAILED",
-      "expected": "RuntimeError: \"password\": \"[REDACTED:field]\"; stage=FAILED"
+      "id": "metadata-short-three",
+      "operation": "assert_metadata_has_no_secrets",
+      "text": "{\"fixture\":\"s3!\"}",
+      "environ": {
+        "S412_BOOTSTRAP_TOKEN": "s3!"
+      },
+      "expected": "pass"
     },
     {
-      "id": "nested-password",
-      "environ": {},
-      "text": "RuntimeError: \"password\": {\"left\": [\"3777173b63eaddfd434cb668eaae0a0099d3161aaf69c0b2017bfd9e2740376b\", {\"right\": \"486ceb4cec5d6f19326e310a42504cdd9e32fff399ababefec0d01000ce61e3b\"}]}; stage=FAILED",
-      "expected": "RuntimeError: \"password\": \"[REDACTED:field]\"; stage=FAILED"
+      "id": "metadata-exact-four",
+      "operation": "assert_metadata_has_no_secrets",
+      "text": "{\"fixture\":\"s3!X\"}",
+      "environ": {
+        "S412_BOOTSTRAP_TOKEN": "s3!X"
+      },
+      "expected": "reject"
     },
     {
-      "id": "unbalanced-password",
-      "environ": {},
-      "text": "RuntimeError: \"password\": {\"left\": \"c80011fe24142e041f492361dffa775dc57c4f32c6064a7f235a6ac7c32b14e2\", \"right\": \"16dce12de56ee0116c4875426d83c23140ea96d0635f49af5f6c6542a8a541a0\"",
-      "expected": "RuntimeError: \"password\": \"[REDACTED:field]\""
+      "id": "metadata-long-missing",
+      "operation": "assert_metadata_has_no_secrets",
+      "text": "{\"status\":\"READY\"}",
+      "environ": {
+        "S412_BOOTSTRAP_TOKEN": "synthetic-long-value"
+      },
+      "expected": "pass"
+    },
+    {
+      "id": "metadata-long-raw",
+      "operation": "assert_metadata_has_no_secrets",
+      "text": "{\"fixture\":\"synthetic-long-value\"}",
+      "environ": {
+        "S412_BOOTSTRAP_TOKEN": "synthetic-long-value"
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "metadata-json-escape",
+      "operation": "assert_metadata_has_no_secrets",
+      "text": "{\"fixture\": \"s4!\\uac00\"}",
+      "environ": {
+        "S412_BOOTSTRAP_TOKEN": "s4!가"
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "metadata-common-four-preserved",
+      "operation": "assert_metadata_has_no_secrets",
+      "text": "{\"present\":true}",
+      "environ": {
+        "S412_BOOTSTRAP_TOKEN": "true"
+      },
+      "expected": "reject"
+    },
+    {
+      "id": "credential-value-is-not-metadata",
+      "operation": "credential_write",
+      "text": "{\"secret_ref\":\"synthetic-long-value\",\"credential_schema_version\":\"credential-reference-v1\"}",
+      "environ": {
+        "S412_BOOTSTRAP_TOKEN": "synthetic-long-value"
+      },
+      "expected": "pass"
     }
   ]
 }

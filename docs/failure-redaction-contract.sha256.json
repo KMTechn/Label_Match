@@ -1,0 +1,9 @@
+{
+  "version": "contract31-next-main",
+  "CONTRACT_SHA256": "c12e742fe3c5ba90c0771c69ddccbbe0e75b8b41c1f1672a9920c22f15fb78a8",
+  "VECTORS_SHA256": "9f19eeef81d08093d956e4ad6f9a781b9648ce74da7a2eccd090cc7f202f01d3",
+  "files": {
+    "CONTRACT_SHA256": "docs/failure-redaction-contract.md",
+    "VECTORS_SHA256": "tests/fixtures/failure_redaction_vectors.json"
+  }
+}
