@@ -270,7 +270,7 @@ def test_lm_tk_permanent_delete_failure_refuses_following_enters():
     assert received == []
     assert sounds == ['fail', 'fail']
     assert len(notices) == 2
-    assert all('다시 스캔하세요' in text for text in notices)
+    assert notices == ['입력 칸 오류 — 프로그램을 다시 켜세요'] * 2
 
 
 @pytest.mark.parametrize('entry_case', ['normal','disabled','delete_exception'])
