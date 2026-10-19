@@ -35,6 +35,26 @@ class FakeWidget:
         self.options[key] = value
 
 
+class FakeEntry(FakeWidget):
+    def __init__(self):
+        super().__init__()
+        self.content = ""
+
+    def cget(self, key):
+        return self.options.get(key, "normal" if key == "state" else None)
+
+    def get(self):
+        return self.content
+
+    def delete(self, *_args):
+        if self.cget("state") == "normal":
+            self.content = ""
+
+    def insert(self, index, text):
+        if self.cget("state") == "normal":
+            self.content = self.content + text if index == "end" else text + self.content
+
+
 class FakeTree(FakeWidget):
     def __init__(self):
         super().__init__()
@@ -142,7 +162,7 @@ def _render_app(raw=(), parsed=(), **current_overrides):
     app.qa_scan_frame = "qa"
     app.exact_rescan_frame = "exact"
     app.live_scan_notebook = FakeNotebook("qa", "exact", selected="exact")
-    app.entry = FakeWidget()
+    app.entry = FakeEntry()
     app.manual_complete_button = FakeWidget()
     app.exact_rescan_button = FakeWidget()
     app.reset_button = FakeWidget()
@@ -392,7 +412,7 @@ def _fresh_gate_app(*, cached_view, fresh_view):
     app = _action_app(cached_view)
     app.operator_workbench_ready = True
     app.initialized_successfully = True
-    app.entry = FakeWidget()
+    app.entry = FakeEntry()
     app.render_calls = []
 
     def render():

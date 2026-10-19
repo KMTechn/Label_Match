@@ -231,8 +231,9 @@ def test_scan_during_confirmation_reaches_business_input_once(app):
     payload = 'CLC=AAA2270730100|SPC=YYY|PHS=1'
     app.entry.content = payload
     accepted = []
-    def process(_event):
-        accepted.append(app.entry.get())
+    def process(_event, *, raw=None):
+        accepted.append(raw)
+        assert app.entry.get() == ""
         app.entry.delete(0, 'end')
         return 'break'
     app.process_input = process

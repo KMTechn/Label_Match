@@ -23061,7 +23061,7 @@ class Label_Match(tk.Tk):
         if not cleared:
             # Never reuse an entry whose old text could join a later scan.
             self._scan_entry_broken = True
-            self.update_big_display("입력칸을 비울 수 없어 스캔을 받지 않았습니다. 다시 스캔하세요.", "red")
+            self.update_big_display("입력 칸 오류 — 프로그램을 다시 켜세요", "red")
             self._play_sound("fail")
             return "break"
         return self.intake_scan(entered_scan, event=event, from_entry=False)

@@ -398,7 +398,9 @@ def door(entry_text=""):
                  "_render_operator_workbench", "process_input", "_ui_lane_is_busy", "update_big_display", "_play_sound"):
         setattr(self, name, mock.Mock(name=name))
     self._reject_residual_tag_input = types.MethodType(Label_Match.Label_Match._reject_residual_tag_input, self)
-    self._consume_scan_entry = mock.Mock()
+    self._consume_scan_entry = mock.Mock(
+        side_effect=lambda: setattr(self.entry.get, "return_value", ""))
+    self.initial_entry_text = entry_text
     self._partial_submit_confirm_state = lambda: None
     self._clear_partial_submit_confirmation = lambda: None
     self.intake_scan = types.MethodType(Label_Match.Label_Match.intake_scan, self)
@@ -408,7 +410,7 @@ def door(entry_text=""):
 def test_tk_entry_and_screen_text_share_one_scan_door():
     tk_self = door(" A110 ")
     Label_Match.Label_Match._handle_scan_enter(tk_self)
-    tk_self.process_input.assert_called_once_with(None)  # 입력 칸 길: 지금 부름 그대로(raw 없음) — process_input 이 Entry 를 읽음
+    tk_self.process_input.assert_called_once_with(None, raw=tk_self.initial_entry_text.strip())  # 입력 칸 길: 지금 부름 그대로(raw 없음) — process_input 이 Entry 를 읽음
     screen_self = door()
     screen_self.intake_scan("A110", event=None)
     screen_self.process_input.assert_called_once_with(None, raw="A110")

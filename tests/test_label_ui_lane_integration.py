@@ -1091,7 +1091,7 @@ def test_background_validation_waits_for_an_empty_entry_and_a_pause():
     app, root = _app_with_lane()
     app._app_close_in_progress = False
     app.entry = _ScannerEntry()
-    app.process_input = lambda event=None: app.entry.delete(0, "end")
+    app.process_input = lambda event=None, *, raw=None: app.entry.delete(0, "end")
     rescheduled = []
     app._schedule_deferred_validation_worker = lambda delay_ms=1000: rescheduled.append(delay_ms)
     started = []
@@ -1225,8 +1225,9 @@ def test_broken_lane_keeps_critical_warning_and_scan_entry_fail_closed():
     app._ui_lane_busy_task = ""
     app._app_close_in_progress = False
     app.status_label = FakeWidget()
-    app.entry.get = lambda: raw_input
-    app.entry.delete = lambda *_args: deleted.append(True)
+    pending_input = [raw_input]
+    app.entry.get = lambda: pending_input[0]
+    app.entry.delete = lambda *_args: (deleted.append(True), pending_input.__setitem__(0, ""))
     app._capture_central_phs2_scan = capture_work
     app.ui_lane = TkSerialUiLane(
         root,
@@ -1266,8 +1267,8 @@ def test_broken_lane_keeps_critical_warning_and_scan_entry_fail_closed():
     assert app.status_label.options["style"] == "Error.TLabel"
     assert app.status_label.mapped is True
     assert app.entry.options["state"] == "disabled"
-    assert app.entry.get() == raw_input
-    assert deleted == []
+    assert app.entry.get() == ""
+    assert deleted == [True]
     assert path_result is False
     capture_work.assert_not_called()
     assert admission.accepted is False

@@ -145,8 +145,10 @@ def test_deferred_stop_keyboard_enter_never_requests_close(recovery_app, tmp_pat
     typing[0] = ""
     instance.process_input = Mock()
     event.widget = instance.entry
+    entered_scan = typing[0]
     instance._handle_scan_enter(event)
-    instance.process_input.assert_called_once_with(event)
+    instance.process_input.assert_called_once_with(event, raw=entered_scan)
+    assert typing[0] == ""
     instance.on_closing.assert_not_called()
     assert instance._app_stop_deferred == deferred and path.is_file()
     # The button command still begins the existing local consent flow.

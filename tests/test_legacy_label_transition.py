@@ -628,10 +628,12 @@ def test_on_start_notice_keeps_the_scan_entry_open(monkeypatch):
     for name in ("workflow_notice_frame", "workflow_notice_title_label",
                  "workflow_notice_label", "workflow_notice_action_button"):
         setattr(app, name, FakeWidget())
+    from tests.test_label_operator_action_gates import FakeEntry
+    app.entry = FakeEntry()
     app.sounds = []
     app._play_sound = lambda key, *a: app.sounds.append(key)
     entered = []
-    app.process_input = lambda event=None: entered.append(event)
+    app.process_input = lambda event=None, *, raw=None: entered.append(event)
 
     app._announce_transition_set(label_transition.PHS2_MALFORMED)
 
