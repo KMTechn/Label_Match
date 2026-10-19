@@ -7451,22 +7451,30 @@ class Label_Match(tk.Tk):
 
     def _worker_record_context(self):
         current = self.__dict__.get("current_set_info") or {}
-        identity = label_worker_roster.record_identity(current.get('shortage_undo_snapshot') or current)
+        record = current.get('shortage_undo_snapshot') or current
+        if "worker_name_snapshot" in record:
+            identity = label_worker_roster.record_identity(record)
+        else:
+            selected = self._selected_worker_record()
+            identity = label_worker_roster.record_identity(selected) if selected["worker_name_snapshot"] else {}
         enabled = self.__dict__.get("_worker_identity_enabled", False) is True
         store = self.__dict__.get("_roster_b")
         if store and any(row["worker_id"] == identity.get("worker_id") for row in store.local["workers"]):
             enabled = self.__dict__.get("_worker_roster_stage_b", False) is True
         return identity, enabled
 
+    def _selected_worker_record(self):
+        store = self.__dict__.get("_roster_b")
+        selected = store.active_worker(worker_id=self.__dict__.get("worker_id")) if store and self.__dict__.get("worker_id") else None
+        identity = selected["worker_id"] if selected else (self.__dict__.get("worker_id")
+            if not label_worker_roster.uses_legacy_names(self.__dict__.get("_worker_roster")) else None)
+        name = selected["display_name"] if selected else persistent_operator_name(self.worker_name)
+        return {"worker_id": identity, "worker_name_snapshot": name}
+
     def _bind_current_worker_record(self):
         current = self.current_set_info
         if "worker_name_snapshot" not in current:
-            store = self.__dict__.get("_roster_b")
-            selected = store.active_worker(worker_id=self.__dict__.get("worker_id")) if store and self.__dict__.get("worker_id") else None
-            identity = selected["worker_id"] if selected else (self.__dict__.get("worker_id")
-                if not label_worker_roster.uses_legacy_names(self.__dict__.get("_worker_roster")) else None)
-            name = selected["display_name"] if selected else persistent_operator_name(self.worker_name)
-            current.update(worker_id=identity, worker_name_snapshot=name)
+            current.update(self._selected_worker_record())
         self._sync_worker_record_context()
 
     def _worker_roster_choices(self):
