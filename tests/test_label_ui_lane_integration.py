@@ -961,7 +961,7 @@ def _begin_locking_save(app, gate):
 
 
 @pytest.mark.parametrize("kept", ["", "ITEM-001-P1-1"], ids=["scan-dropped", "value-kept"])
-def test_scan_refused_during_a_save_says_whether_it_was_kept(kept):
+def test_scan_refused_during_a_save_consumes_snapshot_and_reports_retry(kept):
     """The locked entry drops a scan made during the save: say so and warn.
     Only a value already in the entry is kept (w9scanflow F3)."""
 
@@ -973,12 +973,12 @@ def test_scan_refused_during_a_save_says_whether_it_was_kept(kept):
         _begin_locking_save(app, gate)
         _scanner(app, "ITEM-001-P1-22")
 
-        assert app.entry.get() == kept
+        assert app.entry.get() == ""
         assert [event for event, _details in app.events] == []
         if kept:
-            assert app.big_display_label.options["text"] == "이전 작업 처리 중 · 입력 보존"
+            assert app.big_display_label.options["text"] == "이전 작업 처리 중 · 다시 스캔하세요"
             assert app.status_label.options["text"] == (
-                "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+                "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 다시 스캔하세요."
             )
             assert app.sounds == []
         else:

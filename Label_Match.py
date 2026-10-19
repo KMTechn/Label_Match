@@ -5496,7 +5496,7 @@ class Label_Match(tk.Tk):
         dropped = scan_dropped and not broken
         headline = "처리 상태 확인 필요" if broken else (
             "처리 완료 후 종료합니다" if closing else
-            "이전 작업 처리 중 · 스캔 안 받음" if dropped else "이전 작업 처리 중 · 입력 보존"
+            "이전 작업 처리 중 · 스캔 안 받음" if dropped else "이전 작업 처리 중 · 다시 스캔하세요"
         )
         if "big_display_label" in self.__dict__:
             self.update_big_display(headline, "red" if broken else "primary")
@@ -5507,7 +5507,7 @@ class Label_Match(tk.Tk):
                     "처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요." if broken else
                     "새 작업은 받지 않습니다. 처리 완료 후 종료합니다." if closing else
                     "처리 중이라 이번 스캔은 받지 않았습니다. 끝나면 다시 스캔하세요." if dropped else
-                    "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+                    "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 다시 스캔하세요."
                 )
                 status_label.config(text=status_text, style="Error.TLabel" if broken else "Status.TLabel")
                 status_label.grid()
@@ -23041,18 +23041,37 @@ class Label_Match(tk.Tk):
 
     def _handle_scan_enter(self, event=None):
         entry = self.__dict__.get("entry")
-        try:
-            entered_scan = entry.get().strip() if entry is not None else ""
-        except (TclError, AttributeError):
-            entered_scan = ""
-        return self.intake_scan(entered_scan, event=event, from_entry=True)
+        entered_scan = ""
+        cleared = False
+        if not self.__dict__.get("_scan_entry_broken", False):
+            try:
+                entered_scan = entry.get().strip() if entry is not None else ""
+                # Own the text before any gate, notice, render or callback.
+                # A transient Tcl delete failure gets one synchronous retry.
+                for _ in range(2):
+                    try:
+                        self._consume_scan_entry()
+                        cleared = not entry.get()
+                    except (TclError, AttributeError):
+                        pass
+                    if cleared:
+                        break
+            except (TclError, AttributeError):
+                pass
+        if not cleared:
+            # Never reuse an entry whose old text could join a later scan.
+            self._scan_entry_broken = True
+            self.update_big_display("입력칸을 비울 수 없어 스캔을 받지 않았습니다. 다시 스캔하세요.", "red")
+            self._play_sound("fail")
+            return "break"
+        return self.intake_scan(entered_scan, event=event, from_entry=False)
 
     def intake_scan(self, text, *, event=None, from_entry=False):
         """One scan door for the Tk entry and the new screen (APP-SCREENS-1013).
 
-        The entry path passes what the entry holds and process_input still reads
-        and consumes the entry; the screen passes its scan text, which is never
-        placed in the entry.
+        Tk consumes its snapshot before calling this door, just as the screen
+        passes text without placing it in the entry. Explicit from_entry callers
+        retain the compatibility path that consumes their own entry value.
         """
         raw = None if from_entry else str(text or "")
         entered_scan = str(text or "").strip()

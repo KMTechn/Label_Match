@@ -2978,7 +2978,7 @@ def test_lane_notice_body_survives_layout_and_clears_after_idle(
     expected = (
         "처리 상태를 확인할 수 없습니다. 추가 스캔을 중지하고 관리자에게 문의하세요."
         if reason == "broken" else
-        "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+        "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 다시 스캔하세요."
     )
     for refresh in (lambda: None, app._apply_operator_responsive_layout, app._render_operator_workbench):
         refresh()
