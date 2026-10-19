@@ -477,7 +477,7 @@ function Write-BootstrapUtf8Json {
     if (-not (Get-Command Assert-KmtechMachineMetadataText -ErrorAction SilentlyContinue)) {
         . (Join-Path $PSScriptRoot 'failure_redaction.ps1')
     }
-    Assert-KmtechMachineMetadataText -Text ($json + [Environment]::NewLine)
+    Assert-KmtechMachineMetadataText -Text ($json + [Environment]::NewLine) -Environment (Get-KmtechSinkEnvironment)
     [IO.File]::WriteAllText($temporary, $json + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
     if (-not (Get-Command Invoke-LabelPinnedAtomicReplace -ErrorAction SilentlyContinue)) {
         . (Join-Path $PSScriptRoot 'label_writer_fence.ps1')

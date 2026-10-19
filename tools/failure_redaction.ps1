@@ -26,6 +26,12 @@ function Get-KmtechSinkEnvironment {
     return $values
 }
 
+function Test-KmtechShortSecretValue {
+    # One shared boundary: the diagnostic redactor and the machine metadata check skip these.
+    param([AllowEmptyString()][string]$Value)
+    return $Value.Length -lt 4
+}
+
 function ConvertTo-KmtechRedactedSinkText {
     param([AllowEmptyString()][string]$Text, [Collections.IDictionary]$Environment = $null, [switch]$JsonLeaf)
     $rules = $Script:KmtechRedactionRules
@@ -45,7 +51,7 @@ function ConvertTo-KmtechRedactedSinkText {
         })
         foreach($name in $entries){
             $secret=[string]$Environment[$name]
-            if($secret.Length -lt 4){continue}
+            if(Test-KmtechShortSecretValue $secret){continue}
             $escaped=ConvertTo-Json -InputObject $secret -Compress
             $escaped=$escaped.Substring(1,$escaped.Length-2)
             foreach($form in @($escaped,$secret)|Select-Object -Unique){
@@ -80,7 +86,7 @@ function ConvertTo-KmtechRedactedSinkText {
         }
         return [pscustomobject]@{text=$normalized;masked=$state.masked}
     }
-    $hasKnown=@($entries|Where-Object {([string]$Environment[$_]).Length -ge 4}).Count -gt 0
+    $hasKnown=@($entries|Where-Object {-not (Test-KmtechShortSecretValue ([string]$Environment[$_]))}).Count -gt 0
     $wasJson=$false
     if($hasKnown){
         if(-not $JsonLeaf -and ($Text.TrimStart().StartsWith('{') -or $Text.TrimStart().StartsWith('['))){
@@ -92,7 +98,7 @@ function ConvertTo-KmtechRedactedSinkText {
     foreach ($name in $entries) {
         $value = [string]$Environment[$name]
         if (-not $value) { continue }
-        if ($value.Length -lt 4) { $notes.Add("[REDACTION_NOTE:short_value_skipped:$name]"); continue }
+        if (Test-KmtechShortSecretValue $value) { $notes.Add("[REDACTION_NOTE:short_value_skipped:$name]"); continue }
         $replacement = "[REDACTED:$name]"
         $escaped = ($value | ConvertTo-Json -Compress)
         $escaped = $escaped.Substring(1,$escaped.Length-2)
@@ -196,7 +202,7 @@ function Get-KmtechSinkReplacements {
     $result = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
     foreach ($name in $environment.Keys) {
         $value = [string]$environment[$name]
-        if ($value.Length -lt 4) { continue }
+        if (Test-KmtechShortSecretValue $value) { continue }
         $escaped = ($value | ConvertTo-Json -Compress)
         $escaped = $escaped.Substring(1,$escaped.Length-2)
         $unicode = -join @($value.ToCharArray() | ForEach-Object { '\u{0:x4}' -f [int]$_ })
@@ -209,14 +215,19 @@ function Get-KmtechSinkReplacements {
 
 function Assert-KmtechMachineMetadataText {
     param([AllowEmptyString()][string]$Text, [Collections.IDictionary]$Environment = $null)
-    if ($null -eq $Environment) { $Environment = Get-KmtechSinkEnvironment }
+    # Only the supplied environment is inspected: omitting it means an empty one,
+    # so every caller passes the environment it writes for.
+    if ($null -eq $Environment) { $Environment = @{} }
     foreach ($name in $Environment.Keys) {
         $value = [string]$Environment[$name]
-        if (-not $value -or -not (Test-KmtechSecretEnvironmentValue -Name ([string]$name) -Value $value)) { continue }
+        if (-not $value -or (Test-KmtechShortSecretValue $value) -or
+            -not (Test-KmtechSecretEnvironmentValue -Name ([string]$name) -Value $value)) { continue }
         $escaped = ($value | ConvertTo-Json -Compress)
         $escaped = $escaped.Substring(1, $escaped.Length - 2)
         $unicode = -join @($value.ToCharArray() | ForEach-Object { '\u{0:x4}' -f [int]$_ })
-        foreach ($form in @($value, $escaped, $unicode, $value.Replace("'", "''"), $value.Replace('"', '""')) | Select-Object -Unique) {
+        # JSON written with ASCII-only escapes spells only the non-ASCII characters as \uXXXX.
+        $asciiEscaped = [regex]::Replace($escaped, '[^\x00-\x7F]', [Text.RegularExpressions.MatchEvaluator]{ param($m) '\u' + ([int][char]$m.Value).ToString('x4') })
+        foreach ($form in @($value, $escaped, $asciiEscaped, $unicode, $value.Replace("'", "''"), $value.Replace('"', '""')) | Select-Object -Unique) {
             if ($Text.Contains($form)) { throw 'PRODUCT_METADATA_SECRET_VALUE_REFUSED' }
         }
     }
@@ -227,7 +238,7 @@ function ConvertTo-KmtechRedactedSinkObject {
     if($null -eq $Environment){$Environment=Get-KmtechSinkEnvironment}
     $known=@{}
     foreach($name in $Environment.Keys){
-        if(([string]$Environment[$name]).Length -ge 4 -and
+        if(-not (Test-KmtechShortSecretValue ([string]$Environment[$name])) -and
             (Test-KmtechSecretEnvironmentValue -Name ([string]$name) -Value ([string]$Environment[$name]))){
             $known[$name]=$Environment[$name]
         }

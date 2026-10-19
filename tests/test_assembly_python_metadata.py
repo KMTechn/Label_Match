@@ -29,7 +29,7 @@ def synthetic_lookup(monkeypatch):
     selected = {}
     original = failure_redaction.assert_machine_metadata_text
     monkeypatch.setattr(failure_redaction, 'assert_machine_metadata_text',
-                        lambda text: original(text, environ=selected))
+                        lambda text, environ=None: original(text, environ=selected))
     return selected
 
 

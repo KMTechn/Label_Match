@@ -33,7 +33,7 @@ $actual=[IO.File]::ReadAllBytes($path)
 if($actual.Length -le 65536 -or [Convert]::ToBase64String($actual) -cne [Convert]::ToBase64String($expected)){throw 'METADATA_BYTES_DIFFER'}
 $rejected=0
 foreach($value in @('SyntheticMetadataSecret_0987654321','\u0053\u0079\u006e\u0074\u0068\u0065\u0074\u0069\u0063\u004d\u0065\u0074\u0061\u0064\u0061\u0074\u0061\u0053\u0065\u0063\u0072\u0065\u0074\u005f\u0030\u0039\u0038\u0037\u0036\u0035\u0034\u0033\u0032\u0031')) {
- try {Assert-KmtechMachineMetadataText $value;throw 'METADATA_SECRET_ACCEPTED'}
+ try {Assert-KmtechMachineMetadataText $value -Environment (Get-KmtechSinkEnvironment);throw 'METADATA_SECRET_ACCEPTED'}
  catch {if($_.Exception.Message -cne 'PRODUCT_METADATA_SECRET_VALUE_REFUSED'){throw};$rejected++}
 }
 $refused=Join-Path $env:LM_METADATA_ROOT 'missing-parent/refused.json'

@@ -10,6 +10,8 @@ stock 빌더가 배포하는 .ps1/.psm1/.psd1의 비ASCII 내용은 UTF-8 BOM(EF
 
 공통 가림 계약 #31 다음 판 본 판은 `docs/failure-redaction-contract.md`(SHA256 c12e742fe3c5ba90c0771c69ddccbbe0e75b8b41c1f1672a9920c22f15fb78a8)와 `tests/fixtures/failure_redaction_vectors.json`(SHA256 9f19eeef81d08093d956e4ad6f9a781b9648ce74da7a2eccd090cc7f202f01d3)을 바이트 그대로 고정하며 `docs/failure-redaction-contract.sha256.json`이 두 값을 가진다. 필수 18개 벡터는 그대로이고 metadata 벡터 9개가 더해졌다. 포장 전용 구조화 4벡터(mapping·list·nested·unbalanced password)는 공통 파일에 섞지 않고 `tests/fixtures/failure_redaction_app_vectors.json`에 따로 둔다.
 
+machine metadata의 쓰기 전 비밀 거절(`failure_redaction.assert_machine_metadata_text`, PowerShell `Assert-KmtechMachineMetadataText`)은 계약 #31 다음 판 본 판을 따른다. 넘겨받은 환경만 검사하며 생략·`None`은 빈 환경이다(함수 안에서 프로세스 환경을 읽지 않는다). 값 길이 4 미만은 진단 가림과 같은 판정 함수(`_is_short_secret_value`, `Test-KmtechShortSecretValue`)로 건너뛰고, 4자 이상은 흔한 값(예: `true`)이어도 거절한다. 모든 부르는 곳이 환경을 명시로 넘긴다: 대상 환경이 따로 없는 쓰기(업데이트 기록·relay 표지·설치기 audit/기록)는 프로세스 환경(`os.environ`, `Get-KmtechSinkEnvironment`)을, 온보딩 첫 설정 쓰기는 온보딩 환경을 넘긴다. `tests/test_metadata_assert_call_sites.py`가 부르는 곳(Python 3, PowerShell 2)에 환경 인수가 빠지지 않았음을 AST·파서 토큰으로 고정한다. credential·DPAPI·키 쓰기는 이 거절 검사를 지나지 않는다. 오류 코드 `PRODUCT_METADATA_SECRET_VALUE_REFUSED`, 공개 진단 꼴, 가림 함수 동작은 바뀌지 않았다. Python은 코드포인트, PowerShell은 UTF-16 길이로 4자를 세므로 BMP 밖 문자(예: 이모지 두 글자)는 PowerShell 쪽이 더 엄격하게 거절한다.
+
 | 조기 실패 reason_code | 뜻과 고정 안내 |
 | --- | --- |
 | `SERVER_BASE_URL_INVALID` | 서버 URL origin 문법 또는 port 범위 거절. 서버 주소는 인증정보가 없는 HTTPS 호스트 주소로 입력하세요. |

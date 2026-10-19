@@ -497,7 +497,7 @@ def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any], *,
                                environ: Mapping[str, str] | None = None) -> None:
     from failure_redaction import assert_machine_metadata_text
     serialized = json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    assert_machine_metadata_text(serialized, environ=environ)
+    assert_machine_metadata_text(serialized, environ=os.environ if environ is None else environ)
     _write_json_bytes_atomic(path, serialized)
 
 

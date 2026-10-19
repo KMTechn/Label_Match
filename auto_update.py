@@ -607,7 +607,7 @@ def write_json_durable(path: Path, payload: Mapping[str, Any]) -> None:
         from failure_redaction import assert_machine_metadata_text
         serialized = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"),
                                 ensure_ascii=True) + "\n"
-        assert_machine_metadata_text(serialized)
+        assert_machine_metadata_text(serialized, environ=os.environ)
     _assert_no_reparse_components(path)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     with temporary.open("x", encoding="utf-8", newline="\n") as output:

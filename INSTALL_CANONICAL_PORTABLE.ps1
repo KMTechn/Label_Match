@@ -1889,7 +1889,7 @@ function New-LabelMachineWorkerPendingMarker([string]$InstallId, $Worker, $Sourc
 
 function Save-LabelMachineMetadata([string]$Path, $Value) {
     $json = ($Value | ConvertTo-Json -Depth 30) + [Environment]::NewLine
-    Assert-KmtechMachineMetadataText -Text $json
+    Assert-KmtechMachineMetadataText -Text $json -Environment (Get-KmtechSinkEnvironment)
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
     $temp = "$Path.tmp.$PID"
     [IO.File]::WriteAllText($temp, $json, (New-Object Text.UTF8Encoding($false)))
@@ -3008,7 +3008,7 @@ if (-not $?) { throw 'Placement helper returned an unsuccessful pipeline.' }
 exit 0
 '@
     $redactionPrelude = '$Script:KmtechRedactionRules = ' + "'" + (($Script:KmtechRedactionRules | ConvertTo-Json -Compress).Replace("'","''")) + "' | ConvertFrom-Json" + [Environment]::NewLine
-    foreach ($name in @('Test-KmtechSecretEnvironmentValue','Get-KmtechSinkEnvironment','ConvertTo-KmtechRedactedSinkText','ConvertTo-KmtechRedactedSinkObject','ConvertTo-KmtechPublicRecord','Assert-KmtechMachineMetadataText')) {
+    foreach ($name in @('Test-KmtechSecretEnvironmentValue','Test-KmtechShortSecretValue','Get-KmtechSinkEnvironment','ConvertTo-KmtechRedactedSinkText','ConvertTo-KmtechRedactedSinkObject','ConvertTo-KmtechPublicRecord','Assert-KmtechMachineMetadataText')) {
         $redactionPrelude += 'function ' + $name + ' {' + (Get-Command $name).Definition + '}' + [Environment]::NewLine
     }
     # Keep the launcher's param block first; preceding statements turn param

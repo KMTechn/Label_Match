@@ -208,12 +208,21 @@ def _secret_environment_entries(environ):
             yield name, value
 
 
+def _is_short_secret_value(value):
+    """One shared boundary: the diagnostic redactor and the metadata check skip these."""
+    return len(value) < 4
+
+
 def assert_machine_metadata_text(text, environ=None):
-    """Refuse secrets before writing unchanged machine metadata bytes."""
-    environ = os.environ if environ is None else environ
+    """Refuse secrets before writing unchanged machine metadata bytes.
+
+    Only the supplied environment is inspected; omitting it means an empty one.
+    Callers pass the environment they write for (the process one when there is none).
+    """
+    environ = {} if environ is None else environ
     for _name, value in _secret_environment_entries(environ):
         value = str(value or "")
-        if not value:
+        if not value or _is_short_secret_value(value):
             continue
         units = value.encode('utf-16-be', errors='surrogatepass')
         unicode_escaped = ''.join('\\u%04x' % int.from_bytes(units[index:index + 2], 'big')
@@ -268,7 +277,7 @@ def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
     text = text.decode('utf-8', errors='replace') if isinstance(text, bytes) else str(text)
     entries = list(_secret_environment_entries(environ))
     replacements = [(str(value), f"[REDACTED:{name}]") for name, value in
-                    sorted(entries, key=lambda row: (-len(row[1]), row[0])) if len(str(value or "")) >= 4]
+                    sorted(entries, key=lambda row: (-len(row[1]), row[0])) if not _is_short_secret_value(str(value or ""))]
     replacements += [(value, RULES['field']) for value in
                      sorted({str(item) for item in redact_values if len(str(item)) >= 4}, key=len, reverse=True)]
     if replacements:
@@ -286,7 +295,7 @@ def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
     for name, value in sorted(entries, key=lambda row: (-len(row[1]), row[0])):
         if not value:
             continue
-        if len(value) < 4:
+        if _is_short_secret_value(value):
             notes.append(f"[REDACTION_NOTE:short_value_skipped:{name}]")
             continue
         escaped = json.dumps(value, ensure_ascii=True)[1:-1]

@@ -60,7 +60,7 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
 def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any], *, deadline=None) -> None:
     from failure_redaction import assert_machine_metadata_text
     serialized = json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    assert_machine_metadata_text(serialized)
+    assert_machine_metadata_text(serialized, environ=os.environ)
     _write_json_bytes_atomic(path, serialized, deadline=deadline)
 
 

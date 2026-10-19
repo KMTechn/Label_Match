@@ -81,7 +81,8 @@ def test_actual_installer_publication_tolerates_a_read_overlap(tmp_path, engine,
     result = run_functions(tmp_path, ROOT / "INSTALL_CANONICAL_PORTABLE.ps1", [publisher], r"""
 function ConvertTo-KmtechRedactedSinkObject($Value){return $Value}
 function ConvertTo-KmtechPublicDiagnosticTree($Value){return $Value}
-function Assert-KmtechMachineMetadataText([string]$Text){}
+function Get-KmtechSinkEnvironment{return @{}}
+function Assert-KmtechMachineMetadataText([string]$Text,$Environment){}
 Add-Type -TypeDefinition @'
 using System.IO;using System.Threading;
 public static class PublishingReader {

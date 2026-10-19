@@ -803,3 +803,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - G45 / LM113 L1: ROLLBACK_PENDING + claim NONE/ABSENT에서 검증된 앞 판 active·일반 relay 하나·정착 phase와 같은 세대 ALLOW 증명으로 일반 GUI를 허용한다. 상태 쓰기·trial/READY 권한은 없고 writer 부재 뒤 SYSTEM 정착은 그사이 쓴 자료·원장을 보존한다. 실제 현장 수용은 별도 회차다.
 - D-05 포장: 켤 때 지난 이름을 이번 실행의 작업자로 쓰지 않음(작업자 미정·고르기 판 자동 열림·콤보 빈 값). 설정 파일 값은 보존하고 「지난번」 표시만. 복구된 미완 세트가 있어도 고르기 판이 열리고, 활성 세트 중 설정 변경 막음은 「미정에서 처음 고르기」 한 번만 푼다. 세트 기록 주인은 세트 스냅샷, 세트 밖 기록은 고른 사람(고르기 전엔 「작업자 미정」 표시).
 - 포장 보류 스캔(완료 저장 뒤로 미룬 스캔): lane 종단 장애·격리 성공 두 길 모두 「받지 않았습니다 — 관리자 확인 뒤 다시 스캔하세요」 거절·fail 소리 뒤 목록을 비움(조용한 소실 0). 종단 안내문과 격리 보류 안내에 건수를 덧붙임. 격리 스냅샷 held_scans 기록은 유지(재처리 0).
+- G88(machine metadata 비밀 거절): 계약 #31 다음 판 본 판을 들였다. 선택 판(JSON 낱말 `true/false/null`·숫자 낱말 경계)은 보류이며 흔한 4자 값은 거절한다. 남은 일: Python 코드포인트와 PowerShell UTF-16 길이 판정이 BMP 밖 문자에서 갈리는 경계는 계약 개정 때 한 기준으로 맞춘다(지금은 시험으로 현재 동작을 고정).
