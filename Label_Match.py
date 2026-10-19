@@ -1,3 +1,4 @@
+from dataclasses import replace as replace_dataclass
 import os
 import sys
 if __name__ == "__main__":
@@ -15977,6 +15978,9 @@ class Label_Match(tk.Tk):
         return True
 
     def process_input(self, event=None, *, _scan_behind_completion=None, raw=None):
+        if self.__dict__.get("_scan_entry_broken", False):
+            self._refuse_broken_scan_entry()
+            return
         notice = self.__dict__.get("_workflow_blocking_notice")
         if (notice is not None and notice.kind == "submission_blocked"
                 and self.__dict__.get("_workflow_notice_action") == self._show_package_recovery_workbench):
@@ -22532,6 +22536,11 @@ class Label_Match(tk.Tk):
             self.__dict__.get("_workflow_blocking_notice")
             or self.__dict__.get("_workflow_notice")
         )
+        scan_entry_broken = bool(self.__dict__.get("_scan_entry_broken", False))
+        if scan_entry_broken:
+            blocking_notice = WorkflowNotice(
+                "입력 칸 오류 — 프로그램을 다시 켜세요",
+                "입력 칸 오류 — 프로그램을 다시 켜세요", tone="error")
         history_error = self.__dict__.get('_history_active_load_error')
         if blocking_notice is None and history_error:
             blocking_notice = WorkflowNotice(
@@ -22591,8 +22600,13 @@ class Label_Match(tk.Tk):
             **self._packing_settings_snapshot_fields(),
         )
         view = present_workflow(snapshot)
+        if scan_entry_broken:
+            view = replace_dataclass(
+                view, current_stage_label="입력 칸 오류 — 프로그램을 다시 켜세요",
+                next_action="입력 칸 오류 — 프로그램을 다시 켜세요",
+                notice=blocking_notice, tone="error", scan_input_enabled=False)
         self._last_workflow_view = view
-        deferred_capture_notice = (
+        deferred_capture_notice = None if scan_entry_broken else (
             self._deferred_capture_pending_notice(view)
             or self._deferred_capture_failure_notice()
         )
@@ -22609,7 +22623,8 @@ class Label_Match(tk.Tk):
             try:
                 headline.configure(
                     text=(
-                        deferred_capture_notice.title
+                        "입력 칸 오류 — 프로그램을 다시 켜세요" if scan_entry_broken
+                        else deferred_capture_notice.title
                         if deferred_capture_notice is not None
                         else self._workflow_headline_text(view)
                     ),
@@ -22899,7 +22914,8 @@ class Label_Match(tk.Tk):
                 and not self.__dict__.get("history_active_load_pending", False)
                 and not self.__dict__.get("_history_active_load_error"))
             entry_enabled = bool(
-                (view.scan_input_enabled or completion_queue_open or query_scan_return_open)
+                not scan_entry_broken
+                and (view.scan_input_enabled or completion_queue_open or query_scan_return_open)
                 and self.__dict__.get("initialized_successfully", False)
                 and not self.__dict__.get(
                     "_app_close_in_progress", False
@@ -23040,31 +23056,46 @@ class Label_Match(tk.Tk):
         self._deferred_observability_auto_selected = True
 
     def _handle_scan_enter(self, event=None):
+        if self.__dict__.get("_scan_entry_broken", False):
+            self._refuse_broken_scan_entry()
+            return "break"
         entry = self.__dict__.get("entry")
-        entered_scan = ""
+        entered_scan, read_failed = "", False
+        try:
+            entered_scan = entry.get().strip() if entry is not None else ""
+        except (TclError, AttributeError):
+            read_failed = True
         cleared = False
-        if not self.__dict__.get("_scan_entry_broken", False):
+        for _ in range(2):
             try:
-                entered_scan = entry.get().strip() if entry is not None else ""
-                # Own the text before any gate, notice, render or callback.
-                # A transient Tcl delete failure gets one synchronous retry.
-                for _ in range(2):
-                    try:
-                        self._consume_scan_entry()
-                        cleared = not entry.get()
-                    except (TclError, AttributeError):
-                        pass
-                    if cleared:
-                        break
+                self._consume_scan_entry()
+                cleared = not entry.get()
             except (TclError, AttributeError):
                 pass
+            if cleared:
+                break
         if not cleared:
-            # Never reuse an entry whose old text could join a later scan.
             self._scan_entry_broken = True
-            self.update_big_display("입력 칸 오류 — 프로그램을 다시 켜세요", "red")
+            self._refuse_broken_scan_entry()
+            return "break"
+        if read_failed:
+            self.update_big_display("다시 스캔하세요", "error")
             self._play_sound("fail")
             return "break"
         return self.intake_scan(entered_scan, event=event, from_entry=False)
+
+    def _refuse_broken_scan_entry(self):
+        if not self.__dict__.get("_scan_entry_broken", False):
+            return False
+        entry = self.__dict__.get("entry")
+        if entry is not None:
+            try:
+                entry.configure(state="disabled")
+            except (TclError, AttributeError):
+                pass
+        self.update_big_display("입력 칸 오류 — 프로그램을 다시 켜세요", "error")
+        self._play_sound("fail")
+        return True
 
     def intake_scan(self, text, *, event=None, from_entry=False):
         """One scan door for the Tk entry and the new screen (APP-SCREENS-1013).
@@ -23073,6 +23104,9 @@ class Label_Match(tk.Tk):
         passes text without placing it in the entry. Explicit from_entry callers
         retain the compatibility path that consumes their own entry value.
         """
+        if self.__dict__.get("_scan_entry_broken", False):
+            self._refuse_broken_scan_entry()
+            return "break"
         raw = None if from_entry else str(text or "")
         entered_scan = str(text or "").strip()
         self._last_scan_enter_at = time.monotonic()
@@ -24108,6 +24142,10 @@ class Label_Match(tk.Tk):
 
     def _apply_history_view_mode(self):
         if "entry" not in self.__dict__:
+            return
+        if self.__dict__.get("_scan_entry_broken", False):
+            self.entry.config(state="disabled")
+            self._render_operator_workbench()
             return
         if self.history_view_updates_active_state:
             if self.initialized_successfully:
