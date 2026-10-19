@@ -1024,7 +1024,14 @@ def test_off_registered_legacy_label_is_explained_at_first_scan(tmp_path, monkey
     assert app.current_set_info["raw"] == [MASTER]
     [(title, message)] = app.errors
     assert title == "[옛 방식 포장 불가]"
-    assert "과도기 모드가 꺼져" in message and "관리자" in message
+    # Approved operator wording: 8290f94f1078, LEGACY_LABEL_TRANSITION_OFF_REJECT.
+    assert message == (
+        "옛 현품표라 제품 스캔을 계속할 수 없습니다\n"
+        "현장 관리자에게 알리세요\n"
+        "코드: PHS2 확인을 누른 뒤 새 현품표로 다시 시작하세요. "
+        "새 현품표 QR이 손상된 경우에만 현품표 스캔 직후 F4로 실제 TRANSFER ID를 스캔하고, "
+        "그 밖에는 관리자에게 알리세요."
+    )
     assert "디스크" not in message
     assert _events(tmp_path, "TRAY_COMPLETE") == []
     [(_row, rejected)] = _events(tmp_path, "ERROR_INPUT")
@@ -1041,7 +1048,13 @@ def test_off_first_scan_view_names_cause_and_keeps_f1_and_base_f4():
 
     assert view.current_stage == "legacy_label_blocked"
     assert view.notice.title == "옛 방식 현품표 · 5단계 포장 불가"
-    assert "과도기 모드가 꺼져" in view.notice.message and "F4" in view.notice.message
+    # Approved operator wording: 8290f94f1078, legacy_label_blocked notice.
+    assert view.notice.message == (
+        "옛 현품표라 제품 스캔을 계속할 수 없습니다\n"
+        "현장 관리자에게 알리세요\n"
+        "코드: PHS2 현품표 QR이 손상됐으면 F4 키를 누르고 이적 화면의 TRANSFER ID를 스캔하세요\n"
+        "아니면 F1 키로 취소하고 현장 관리자에게 알리세요"
+    )
     assert "디스크" not in view.notice.message
     assert app.big_display_label.options["text"] == "옛 방식 현품표"
     assert view.f4_enabled and view.cancel_current_enabled and view.scan_input_enabled
