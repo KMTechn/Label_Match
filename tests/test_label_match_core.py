@@ -1333,14 +1333,23 @@ def test_partial_manual_pass_updates_duplicates_without_summary_count():
     app._update_summary_tree = lambda: None
     app._reset_current_set = lambda **kwargs: None
     app.after = lambda delay, callback: None
+    app.update_big_display = lambda *args, **kwargs: None
+    app._save_current_set_state = lambda: True
+    app.data_manager.save_current_state = lambda state, **kwargs: True
+    app.data_manager.prepare_audit_event = lambda event_type, details, **kwargs: {}
 
-    module.Label_Match._finalize_set(app, app.Results.PASS, is_manual_complete=True)
+    # Manual PARTIAL completion is refused (LM-17, 734922f1); a partial
+    # submission is requested and then confirmed on the same-label scan path.
+    assert module.Label_Match._request_scanner_shortage(app)
+    assert module.Label_Match._submit_partial_scanner(app)
 
     assert app.scan_count == {}
     assert app.global_scanned_set == {"PRODUCT_MASTER1_1", "PRODUCT_MASTER1_2"}
     assert app.data_manager.events[0][0] == module.Label_Match.Events.TRAY_COMPLETE
     details = app.data_manager.events[0][1]
-    assert details["is_partial_submission"] is True
+    # The confirmed shortage is the partial-submission marker; is_partial_submission
+    # now belongs only to the retired manual PARTIAL call.
+    assert details["shortage_confirmed"] is True
     assert details["final_result"] == "통과"
     assert details["production_date"] is None
     assert details["set_id"] in app.set_details_map
