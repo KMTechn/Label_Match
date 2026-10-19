@@ -15,7 +15,7 @@ import py_compile
 import socket
 import subprocess
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import Mock
 from types import MethodType, SimpleNamespace
@@ -730,7 +730,8 @@ def test_apply_conflict_fixture_uses_real_nonblocking_review_renderer():
     assert len(app._package_cancellation_review_rows) == CANCELLATION_CONFLICT_COUNT
     notice = app._package_cancellation_review_notice
     assert notice.title == CANCELLATION_CONFLICT_TITLE
-    assert notice.message == CANCELLATION_CONFLICT_MESSAGE
+    # Approved worker-facing wording: 8290f94f1078.
+    assert notice.message == '확인이 필요한 취소가 3건건 있습니다\n해당 트레이를 반출하지 말고 현장 관리자에게 알리세요'
     assert "IMMUTABLE_CAS" not in notice.message
     assert "PACKAGE-CANCEL-CAPTURE-001" not in notice.message
     assert notice.kind == "package_cancellation_review"
@@ -1023,6 +1024,11 @@ def test_apply_fixture_seeds_real_activity_rows_without_touching_business_maps()
         app.scan_count,
     )
     fixtures = {fixture.state_id: fixture for fixture in build_state_fixtures()}
+    # The activity fixture uses the worker notice approved in 8290f94f1078.
+    fixtures["submission_blocked"] = replace(
+        fixtures["submission_blocked"],
+        notice_message='이 PC에 완료 기록을 저장하지 못했습니다\n실물을 이동하지 말고 현장 관리자에게 알리세요',
+    )
 
     for state_id in DEFAULT_STATE_IDS:
         apply_state_fixture(app, fixtures[state_id])
