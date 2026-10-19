@@ -46,6 +46,18 @@ def test_all_sixteen_generated_settings_additions_and_historical_before_pins():
     actual = {revision for revision, paths in current['startup_release_additions'].items() if SETTINGS in paths}
     assert len(expected) == 16 and actual == expected
     assert len(current['startup_release_replacements']) == 23
+    scan_guard_replacements = {
+        'app/shell/SHELL-READY.json',  # Shell v3.16.3.1 READY provenance (19389ecb).
+        'app/shell/bridge.py',  # Shell READY files[]: shell-v3.16.3.1/bridge.py.
+        'app/shell/host.py',  # Shell READY files[]: shell-v3.16.3.1/host.py.
+        'app/ui/parts/app/scan.js',  # UI MANIFEST d6436ff7 files[]: app/scan.js.
+        'app/ui/parts/app/sheet.js',  # UI MANIFEST d6436ff7 files[]: app/sheet.js.
+    }
+    scan_guard_stock_revisions = {
+        'e7b9075b2383889e77f524be7a1f0f80d7630033',
+        '4272c5601e035f6a111e493a4acfa5d8d182978f',
+        '06a474b46095fa044a0c46a045b3445cece1ee57',
+    }
     for revision, paths in before_fix['startup_release_replacements'].items():
         assert (
             (reviewed_parents := (
@@ -53,7 +65,8 @@ def test_all_sixteen_generated_settings_additions_and_historical_before_pins():
                 declarations("732b0a536f30d582cd95602b243bb34a57d8b473")["startup_release_replacements"][revision],
             ))
             and set(current["startup_release_replacements"][revision])
-            == set().union(*reviewed_parents)
+            == (set().union(*reviewed_parents)
+                | (scan_guard_replacements if revision in scan_guard_stock_revisions else set()))
             and all(
                 current["startup_release_replacements"][revision][relative][0] == pair[0]
                 for parent in reviewed_parents
