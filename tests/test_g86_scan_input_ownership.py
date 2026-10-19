@@ -86,6 +86,11 @@ class Pump:
 def methods(relative, names, extra=None):
     path = ROOT / relative
     tree = ast.parse(path.read_text(encoding='utf-8-sig'))
+    names = set(names)
+    if relative == "Label_Match.py":
+        names.update(node.name for node in ast.walk(tree)
+                     if isinstance(node, ast.FunctionDef)
+                     and node.name == "_refuse_broken_scan_entry")
     selected = []
     for owner in tree.body:
         if isinstance(owner, ast.ClassDef):
