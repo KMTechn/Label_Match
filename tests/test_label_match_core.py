@@ -248,6 +248,7 @@ def test_compact_phs2_stays_one_scan_fail_closed_when_central_client_is_missing(
         "LBL=LBL-NO-CLIENT|HSH=0123456789abcdef"
     )
     app = object.__new__(module.Label_Match)
+    app.worker_name = "worker"
     app.package_logistics_client = None
     app.current_set_info = {
         "id": None,
@@ -330,6 +331,7 @@ def test_transfer_seal_qr_is_rejected_as_packaging_start_label():
         f"HSH={'a' * 64}|EPOCH=1|PLANE=AUTHORITATIVE|PE=1"
     )
     app = object.__new__(module.Label_Match)
+    app.worker_name = "worker"
     app.current_set_info = {
         "id": None,
         "raw": [],
@@ -3148,6 +3150,7 @@ def test_new_format_unique_master_duplicate_blocks_base64_and_decoded_equivalent
         phase="A",
     )
     app = object.__new__(module.Label_Match)
+    app.worker_name = "worker"
     app.current_set_info = {
         "id": None,
         "raw": [],
@@ -3207,6 +3210,7 @@ def test_completed_phs2_remains_duplicate_blocked_until_central_cancel():
     }
 
     app = object.__new__(module.Label_Match)
+    app.worker_name = "worker"
     app.current_set_info = {
         "id": None,
         "raw": [],
@@ -6281,6 +6285,7 @@ def test_idle_instruction_resets_completion_progress_when_no_active_set():
 def test_process_input_accepts_literal_gs_final_label_and_writes_tray_complete():
     module = load_label_match_module()
     app = object.__new__(module.Label_Match)
+    app.worker_name = "worker"
     app.Results = module.Label_Match.Results
     app.Events = module.Label_Match.Events
     app.TOTAL_SCAN_COUNT = module.Label_Match.TOTAL_SCAN_COUNT
@@ -6516,7 +6521,7 @@ class _FakeLoggingDataManager:
         self.events = []
         self.flushed = False
 
-    def log_event(self, event_type, details):
+    def log_event(self, event_type, details, *, worker_identity=None, identity_enabled=None):
         self.events.append((event_type, details))
 
     def flush(self, timeout=None):
