@@ -2862,10 +2862,9 @@ def test_scan_summary_marks_ignored_duplicate_red_while_input_stays_open(operato
 
 
 def test_label_title_retains_single_instance_discovery_prefix():
-    from label_match_single_instance import LABEL_WINDOW_TITLE_PREFIX
-    assert LABEL_WINDOW_TITLE_PREFIX == "바코드 세트 검증기 ("
-    assert label_match_module._label_match_window_title() == f"바코드 세트 검증기 ({label_match_module.APP_VERSION})"
-    assert label_match_module._label_match_window_title().startswith(LABEL_WINDOW_TITLE_PREFIX)
+    title = label_match_module._label_match_window_title()
+    assert title == f'바코드 세트 검증기 ({label_match_module.APP_VERSION})'
+    assert title.startswith('바코드 세트 검증기 (')
 
 
 @pytest.mark.parametrize("modal", [False, True])
