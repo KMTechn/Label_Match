@@ -288,20 +288,11 @@ def test_direct_registration_defaults_are_outside_canonical_code(monkeypatch):
 
 
 def test_actual_user_removal_ignores_corrupt_machine_control_and_preserves_data(tmp_path, monkeypatch):
-    from tests.test_current_user_onboarding import _environment, _ready_state
-    app = tmp_path / "machine/current"; app.mkdir(parents=True)
-    control = app.parent / "update-control"; control.mkdir()
-    (control / "policy.json").write_bytes(b'{"cut":')
-    environment = _environment(tmp_path)
-    paths = onboarding.resolve_current_user_onboarding_paths(app, environ=environment)
-    _ready_state(paths)
-    paths.ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    paths.ledger_path.write_bytes(b"quantity=7;pending=UNKNOWN")
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    monkeypatch.setattr(update, "load_policy", lambda *_a: pytest.fail("removal read policy"))
-    result = onboarding.remove_current_user_setup(app, environ=environment,
-        autostart_remover=lambda: {"status": "ABSENT"},
-        relay_stopper=lambda *_a: {"status": "ABSENT"},
-        scheduled_task_remover=lambda *_a: {"status": "ABSENT"})
-    assert result["status"] == "PASS_DATA_PRESERVED"
-    assert all(path.read_bytes() == raw for path, raw in before.items())
+    fixed, app, environment, paths = _canonical_user_setup(tmp_path / 'source', monkeypatch)
+    control = app.parent.parent / 'update-control'
+    (control / 'policy.json').write_bytes(b'{"cut":')
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    monkeypatch.setattr(update, 'load_policy', lambda *_a: pytest.fail('removal read policy'))
+    result = onboarding.remove_current_user_setup(app, environ=environment, autostart_remover=lambda: {'status': 'ABSENT'}, relay_stopper=lambda *_a: {'status': 'ABSENT'}, scheduled_task_remover=lambda *_a: {'status': 'ABSENT'})
+    assert result['status'] == 'PASS_DATA_PRESERVED'
+    assert all((path.read_bytes() == raw for path, raw in before.items()))
