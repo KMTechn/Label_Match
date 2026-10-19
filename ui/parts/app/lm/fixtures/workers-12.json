@@ -38,7 +38,7 @@
           "index": 1,
           "key": "master_label",
           "label": "현품표",
-          "value": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=A110|CLC=C0325|LBL=L0325|HSH=0f3a9c2b7d1e4a56",
+          "value": "PHS=2|SRC=KMTECH_INPUT_TAG|ITG=A110|CLC=C0325|LBL=L0325|HSH=0f3a9c2b7d1e4a56|QT=24",
           "filled": true,
           "state": "complete",
           "role": "master_label"

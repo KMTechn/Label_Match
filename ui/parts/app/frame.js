@@ -1,3 +1,4 @@
+// Shared app frame.
 'use strict';
 window.AppFrame = (() => {
   const SVG = 'http://www.w3.org/2000/svg';
@@ -391,7 +392,7 @@ window.AppFrame = (() => {
       ok: ['dot', `회사 서버 연결됨 · 전송 대기 ${queue.pending}건`],
     };
     const [dot, text] = s.app ? SERVER[conn.state] || SERVER.ok : ['dot dot--off', '시작 준비 중'];
-    $('[data-status]').className = conn.state === 'offline' ? 'status status--offline' : 'status'; // 바탕색은 끊김 때만
+    $('[data-status]').className = conn.state === 'offline' ? 'status status--offline' : 'status';
     $('[data-server]').replaceChildren(el('span', dot), conn.label || text);
     const update = $('[data-update]');
     if (update) {
@@ -403,6 +404,7 @@ window.AppFrame = (() => {
     $('[data-clock]').textContent = ui.clock || '';
   }
 
+  const formEdits = new WeakMap();
   const ui = { focus: 'on', admin_open: false, sheet: null, stopped: '', clock: '', notices: [] };
   const LOCAL_PUSH = { pedal: 1, focus_state: 1 };
   const FN_KEY = /^(F([1-9]|1[01])|Escape|Delete|Ctrl\+[A-Z])$/;
@@ -487,7 +489,7 @@ window.AppFrame = (() => {
     if (!s || typeof s !== 'object') return;
     const seq = s.last_request_seq ?? s.last_seq;
     if (typeof seq === 'number') {
-      if (seq < shown) return; // 늦게 온 옛 state 는 버린다
+      if (seq < shown) return;
       shown = seq;
     }
     current = s;
@@ -543,7 +545,7 @@ window.AppFrame = (() => {
     else if (kind === 'open') { const [sheet, id] = rest.split(/:(.*)/); open(sheet, id); }
     else if (kind === 'command') {
       const [name, id] = rest.split(/:(.*)/);
-      if (!fromProcess() && (ui.sheet || ui.admin_open)) open(null); // 처리 층 판의 단추는 밑의 화면 판을 건드리지 않음
+      if (!fromProcess() && (ui.sheet || ui.admin_open)) open(null);
       bridge('command', name, id === undefined ? {} : { id }).then(answer, () => refresh().catch(() => {}));
     }
   }
@@ -579,7 +581,7 @@ window.AppFrame = (() => {
   }
   function submitPin(event) {
     const sheet = ui.sheet;
-    if (sheet !== shownSheet()) return; // 처리 층 modal 판이 위에 있으면 밑의 PIN 판은 안 보냄
+    if (sheet !== shownSheet()) return;
     if (!sheet || sheet.kind !== 'pin' || sheet.pin !== 'enter') return;
     const box = $('[data-sheet-body]');
     const pin = box.querySelector('[data-pin]');
@@ -602,7 +604,7 @@ window.AppFrame = (() => {
     const values = {};
     for (const input of box.querySelectorAll('[data-field]')) values[input.dataset.field] = input.value.trim();
     const args = { ...values, ...(sheet.target === undefined ? {} : { target: sheet.target }), admin_id: adminId, pin: pin.value };
-    pin.value = ''; pin.pinTimes = []; // PIN 은 화면에 남기지 않는다
+    pin.value = ''; pin.pinTimes = [];
     ui.sheet = { ...sheet, pin: 'checking', admin_id: args.admin_id, values };
     paint();
     const done = (reply) => {
@@ -616,31 +618,66 @@ window.AppFrame = (() => {
       answer(reply);
     }, () => done({ ok: false, result: { kind: 'warn', text: 'PIN 을 확인하지 못했습니다', sub: '잠시 후 다시 넣으세요 — 작업은 계속할 수 있습니다' } }));
   }
-  function submitForm() { // PIN 없는 글 칸 판 → command(sheet.command || 판 이름, {칸: 값}) — 답 ok+sheet 면 그 판, ok 면 result 를 보이거나 닫힘,
-    const sheet = shownSheet(); //   아니면 넣은 값 그대로 오류 한 줄(password 칸 값은 판에 남기지 않음)
+  function submitForm() {
+    const sheet = shownSheet();
     if (!sheet || sheet.kind !== 'form' || sheet.sending) return;
-    const values = {}, kept = {};
-    for (const input of $('[data-sheet-body]').querySelectorAll('[data-field]')) {
+    const values = {}, kept = {}, scanned = new Set();
+    const fields = () => [...$('[data-sheet-body]').querySelectorAll('[data-field]')];
+    const focusField = document.activeElement?.dataset.field;
+    for (const input of fields()) {
       values[input.dataset.field] = input.type === 'password' ? input.value : input.value.trim();
       if (input.type !== 'password') kept[input.dataset.field] = values[input.dataset.field];
+      if (input.matches('[data-scan-into]') && input.scanFromScanner) scanned.add(input.dataset.field);
       if (input.type === 'password') input.value = '';
     }
-    if (fromProcess()) { // 처리 층 판: 판은 처리 층 것 — 보내고 다음 state 를 그림
-      bridge('command', sheet.command || sheet.name, values).then(answer, () => refresh().catch(() => {}));
+    let pending = sheet;
+    if (!fromProcess()) {
+      pending = ui.sheet = { ...sheet, sending: true, values: kept, error: '' };
+      paint();
+    }
+    const read = () => fields().map(node => ({node, value:node.value, edit:formEdits.get(node)}));
+    let snapshot = read();
+    const owns = () => shownSheet() === pending && snapshot.every(item => item.node.isConnected && item.node.value === item.value && formEdits.get(item.node) === item.edit);
+    const focusScan = () => fields().find(input => input.dataset.field === (scanned.has(focusField) ? focusField : [...scanned][0]))?.focus();
+    const failedProcess = (reply) => {
+      if (!owns()) return;
+      for (const input of fields()) {
+        if (scanned.has(input.dataset.field)) { input.value = ''; input.scanFromScanner = false; }
+        if (input.type !== 'password') kept[input.dataset.field] = input.value;
+      }
+      pending.values = { ...pending.values, ...kept };
+      snapshot = read(); focusScan();
+      const apply = (s) => {
+        if (!owns()) return;
+        const next = s?.sheet;
+        const same = next?.kind === 'form' && ['name','target','command','fields'].every(key => JSON.stringify(next[key]) === JSON.stringify(sheet[key]));
+        const view = same ? { ...next, values: { ...next.values, ...kept } } : next;
+        take(same ? { ...s, sheet: view } : s);
+        if (same && shownSheet() === view) focusScan();
+      };
+      if (reply?.state) apply(reply.state);
+      else { const n = ++asked; KMShell.call('state', []).then(s => { if (n === asked) apply(s); }).catch(() => {}); }
+    };
+    if (pending === sheet) {
+      bridge('command', sheet.command || sheet.name, values).then(reply => {
+        if (!reply || !reply.ok) failedProcess(reply); else answer(reply);
+      }, () => failedProcess());
       return;
     }
-    ui.sheet = { ...sheet, sending: true, values: kept, error: '' };
-    paint();
     const settle = (reply) => {
-      if (!ui.sheet || ui.sheet.name !== sheet.name) return;
+      if (!owns()) return false;
       if (reply.ok && reply.sheet) ui.sheet = { ...reply.sheet, name: sheet.name };
       else if (reply.ok) ui.sheet = reply.result ? { ...sheet, kind: 'result', result: reply.result, actions: [{ text: '작업 화면으로', go: 'close' }] } : null;
-      else ui.sheet = { ...sheet, values: kept, error: (reply.result && reply.result.text) || '전송하지 못했습니다\n다시 누르세요' };
+      else {
+        for (const name of scanned) kept[name] = '';
+        ui.sheet = { ...sheet, values: kept, error: (reply.result && reply.result.text) || '전송하지 못했습니다\n다시 누르세요' };
+      }
       paint();
+      if (!reply.ok) focusScan();
+      return true;
     };
     bridge('command', sheet.command || sheet.name, sheet.target === undefined ? values : { ...values, target: sheet.target }).then((reply) => {
-      settle(reply || {});
-      answer(reply);
+      if (settle(reply || {})) answer(reply);
     }, () => settle({}));
   }
   function focusChanged() {
@@ -657,14 +694,14 @@ window.AppFrame = (() => {
     push(event) {
       if (!event || typeof event !== 'object') return;
       if (app && app.onPush) app.onPush(event, ui);
-      if (event.kind === 'alert' && event.message) { // 처리 층 알림 글(messagebox 자리) — 띠로, 「확인」 으로 닫음
+      if (event.kind === 'alert' && event.message) {
         ui.notices = [...ui.notices, String(event.message)].slice(-3);
         paint();
       }
       if (event.state) take(event.state);
       else if (!LOCAL_PUSH[event.kind]) refresh().catch(() => {});
     },
-    focus(state) { // host 가 창 활성 · 비활성을 알림 — 스캔 받이의 F12 되살림(물리 키 물음)도 이 길
+    focus(state) {
       if (state === 'page_focus') { focusChanged(); return; }
       if (state !== 'win_activated' && state !== 'win_deactivated') return;
       hostActive = state === 'win_activated';
@@ -672,7 +709,7 @@ window.AppFrame = (() => {
       focusChanged();
     },
     transportStopped(message) { ui.stopped = String(message || '프로그램과 화면 연결이 끊겼습니다'); paint(); },
-    control(op) { // host 가 화면 되살림 뒤 포커스 판정에 읽음(HOST-USE §5)
+    control(op) {
       if (op === 'get_state') return { active: hostActive && document.hasFocus() && document.visibilityState === 'visible' };
       throw new Error('unknown control operation');
     },
@@ -696,15 +733,15 @@ window.AppFrame = (() => {
     for (const type of ['scanbuffer', 'scanpending', 'scanresult', 'scanevidence']) {
       document.addEventListener(type, (event) => {
         if (app.onScan) app.onScan(type, event.detail, ui);
-        if (type === 'scanresult') answer(event.detail); // 처리 층 답 → 작업 칸을 state 로 다시 그림
+        if (type === 'scanresult') answer(event.detail);
       });
     }
     document.addEventListener('click', (event) => {
       if (partial() && !event.target.closest('[data-partial]')) return;
       const shown = shownSheet();
-      if (shown && shown.modal && fromProcess() && !event.target.closest('[data-sheet]')) return; // 처리 층 modal 판 밑(관리자 ▾ · 위 줄 · 작업 단추)은 안 먹음
+      if (shown && shown.modal && fromProcess() && !event.target.closest('[data-sheet]')) return;
       const target = event.target.closest('button');
-      if (ui.admin_open && !event.target.closest('[data-admin], [data-admin-btn]')) open(null); // 메뉴 밖을 누르면 닫힘
+      if (ui.admin_open && !event.target.closest('[data-admin], [data-admin-btn]')) open(null);
       if (!target) return;
       if (target.matches('[data-text-size]')) {
         textLevel = (textLevel + 1) % 4;
@@ -712,7 +749,7 @@ window.AppFrame = (() => {
         document.documentElement.removeAttribute('data-text-expanded');
         extra.setAttribute('aria-expanded', 'false');
         paint();
-        target.blur(); // 이 앱의 스캔 받이는 document: 단추 초점을 비우고 버퍼는 그대로.
+        target.blur();
       }
       else if (target.matches('[data-text-extra]')) {
         extra.setAttribute('aria-expanded', document.documentElement.toggleAttribute('data-text-expanded'));
@@ -741,7 +778,7 @@ window.AppFrame = (() => {
         }
       }
       if (!app.keys || !app.keys.Enter || event.repeat || event.isComposing || (event.code !== 'Enter' && event.code !== 'NumpadEnter')) return;
-      if (shownSheet() || ui.admin_open || !window.AppScan || window.AppScan.editable(document.activeElement) || window.AppScan.control()) return; // 단추 등에 초점 = 그 요소가 눌림(M60)
+      if (shownSheet() || ui.admin_open || !window.AppScan || window.AppScan.editable(document.activeElement) || window.AppScan.control()) return;
       const sink = window.AppScan.state();
       if (!sink.buffer && !sink.queued) go(app.keys.Enter);
     }, true);
@@ -759,6 +796,7 @@ window.AppFrame = (() => {
       setTimeout(() => { input.pinDiff = null; }, 0);
     });
     document.addEventListener('input', (event) => {
+      if (event.target.matches('[data-field]')) formEdits.set(event.target, {});
       const input = pinField(event);
       if (!input) return;
       input.pinTimes = input.pinDiff ? input.pinDiff(input.value, event.timeStamp) : Array(input.value.length).fill(null);
@@ -784,7 +822,7 @@ window.AppFrame = (() => {
         if (shown && shown.kind === 'form') submitForm(); else submitPin(event);
         return;
       }
-      if (event.key === 'Escape' && ui.admin_open) { open(null); return; } // Esc 차례: 관리자 메뉴 → 판(처리 층 판은 cancel)
+      if (event.key === 'Escape' && ui.admin_open) { open(null); return; }
       if (event.key === 'Escape' && shownSheet()) { closeSheet(); return; }
       const name = event.ctrlKey && !event.altKey && /^Key[A-Z]$/.test(event.code) && event.code !== 'KeyV' ? `Ctrl+${event.code.slice(3)}` : event.key;
       const action = app.keys && FN_KEY.test(name) && app.keys[name];
@@ -795,7 +833,7 @@ window.AppFrame = (() => {
     setInterval(tick, 15000);
     focusChanged();
     const connect = () => refresh().catch(() => {
-      if (!KMShell.status().timedOut) setTimeout(connect, 500); // 셸 다리 준비 전 — 15초 넘으면 transport.js 가 kmshellerror
+      if (!KMShell.status().timedOut) setTimeout(connect, 500);
     });
     connect();
   }

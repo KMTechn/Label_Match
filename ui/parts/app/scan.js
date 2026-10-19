@@ -1,9 +1,10 @@
-// Shared scan sink (shell v3.10); contracts and pinned sources: docs/spec/app-editing-scan.md.
-// Keep F12/V152, secret(), owns(), waiting and scan metadata unchanged.
+// Shared scan sink; contract and pinned source rules: docs/spec/app-editing-scan.md.
+
+
 'use strict';
-// Framing correction: IW components_v2.py:665,765–833 @a211ea4;
-// RW ui/scan_entry.py @347a50e3. Enter/Tab in both; no idle timer.
-// F12 frame: ui/integration.py:7589–7684 @198add5 (V152 event order).
+
+
+
 window.AppScan = (() => {
   const shifted = {Digit1:'!',Digit2:'@',Digit3:'#',Digit4:'$',Digit5:'%',Digit6:'^',Digit7:'&',Digit8:'*',Digit9:'(',Digit0:')',
     Minus:'_',Equal:'+',BracketLeft:'{',BracketRight:'}',Backslash:'|',Semicolon:':',Quote:'"',Comma:'<',Period:'>',Slash:'?',Backquote:'~'};
@@ -11,6 +12,9 @@ window.AppScan = (() => {
   const num = {NumpadDecimal:'.',NumpadAdd:'+',NumpadSubtract:'-',NumpadMultiply:'*',NumpadDivide:'/'};
   let buffer = '', seq = 0, first = null, nKeys = 0, profile = 'rw', started = false;
   let paths = {key:0, code:0, keypress:0, paste:0};
+  let incompleteTimer = null;
+  let continuation = null;
+  const phs2Head = 'PHS=2|SRC=KMTECH_INPUT_TAG|';
   let keys = [], events = [];
   let pressed = false, generation = 0, pressedAt = null, releasedAt = null, frame = null, focusRaise = null;
   let outside = false, waiting = null, focusSerial = 0, attachedAt = null, recovered = false, recoveryFirst = true;
@@ -21,9 +25,9 @@ window.AppScan = (() => {
     if (element.isContentEditable || element.tagName === 'TEXTAREA') return true;
     return element.tagName === 'INPUT' && !['button','submit','reset','checkbox','radio','range','color','file','hidden','image'].includes(element.type);
   }
-  // Editing has a separate, private candidate. It never enters the scan buffer,
-  // queued events, shell logs or event detail. Native typing/paste stays native.
-  // No timing classifier in the sink/IW ScanEntry: task fallback = 6 keys / 40 ms.
+
+
+
   let editingRun = null, editingSuffix = null;
   function editingSnapshot(node) {
     if ('value' in node) {
@@ -62,14 +66,23 @@ window.AppScan = (() => {
     }
     editingSuffix = null;
     if (event.key === 'F12' || event.code === 'F12') return;
-    if (event.key === 'Shift') return; // Scanner uppercase/punctuation may bracket characters with Shift.
+    if (event.key === 'Shift') return;
     const node = document.activeElement, at = event.timeStamp;
-    if (!editable(node) || node.closest('[data-scan-into]') || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.keyCode === 229 || event.repeat) {
+    const into = node && node.closest('[data-scan-into]');
+    if (!editable(node) || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.keyCode === 229 || event.repeat) {
       editingRun = null; return;
     }
     if (suffix) {
       const run = editingRun; editingRun = null;
       if (!run || run.node !== node || run.count < 6 || at - run.last > 40 || at < run.last) return;
+      if (run.into) {
+        if (run.replace) {
+          node.value = run.part();
+          node.setSelectionRange(node.value.length,node.value.length);
+        }
+        node.scanFromScanner = true;
+        return;
+      }
       run.restore();
       event.preventDefault(); event.stopImmediatePropagation(); editingSuffix = event.key;
       document.dispatchEvent(new CustomEvent('scanblocked', {detail:{n_keys:run.count,reason:'editing'}}));
@@ -82,8 +95,11 @@ window.AppScan = (() => {
     const printable = event.key && event.key.length === 1 && event.key.charCodeAt(0) >= 0x20 || physical(event) !== null;
     if (!printable) { editingRun = null; return; }
     if (!editingRun || editingRun.node !== node || at - editingRun.last > 40 || at < editingRun.last) {
-      editingRun = {node, restore:editingSnapshot(node), count:0, last:at};
+      const start = node.selectionStart, suffixLength = node.value?.length - node.selectionEnd;
+      editingRun = {node, restore:editingSnapshot(node), count:0, last:at,into:!!into,replace:!!node.scanFromScanner,
+        part:()=>node.value.slice(start,node.value.length - suffixLength)};
     }
+    if (into) node.scanFromScanner = false;
     editingRun.count++; editingRun.last = at;
   }
   function physical(event) {
@@ -111,12 +127,16 @@ window.AppScan = (() => {
     KMShell.call('log_batch',[batch]).catch(() => { events = batch.concat(events); });
   }
   function evidenceChanged() { document.dispatchEvent(new CustomEvent('scanevidence',{detail:frame ? {...frame} : null})); }
+  function newFrame(at) {
+    const value = {source:'webview_event_order',pedal_pressed:pressed,press_generation:generation,
+      first_character_at:at,pressed_at:pressed ? pressedAt : null,released_at:null};
+    if (pressed && focusRaise && focusRaise.generation === generation) value.focus_return_raise = {...focusRaise};
+    return value;
+  }
   function observe(kind, at) {
     if (kind === 'clear') { frame = null; evidenceChanged(); return null; }
     if (!frame) {
-      frame = {source:'webview_event_order',pedal_pressed:pressed,press_generation:generation,
-        first_character_at:kind === 'character' ? at : null,pressed_at:pressed ? pressedAt : null,released_at:null};
-      if (pressed && focusRaise && focusRaise.generation === generation) frame.focus_return_raise = {...focusRaise};
+      frame = newFrame(kind === 'character' ? at : null);
     }
     if (kind === 'enter') { const result = {...frame,enter_at:at}; frame = null; evidenceChanged(); return result; }
     evidenceChanged(); return null;
@@ -125,44 +145,97 @@ window.AppScan = (() => {
     if (!pressed) { generation++; pressedAt = at; }
     pressed = true;
     if (frame) Object.assign(frame,{pedal_pressed:true,press_generation:generation,pressed_at:pressedAt});
+    if (continuation) for (const part of continuation) Object.assign(part.frame,{pedal_pressed:true,press_generation:generation,pressed_at:pressedAt});
     evidenceChanged();
   }
   function pedalUp(at) {
     pressed = false; releasedAt = at;
     if (frame) frame.released_at = at;
+    if (continuation) for (const part of continuation) part.frame.released_at = at;
     evidenceChanged();
   }
   function changed() { document.dispatchEvent(new CustomEvent('scanbuffer',{detail:{text:buffer}})); }
+  function clearBuffer() {
+    buffer = ''; first = null; nKeys = 0; paths = {key:0,code:0,keypress:0,paste:0};
+    continuation = null;
+  }
+  function cancelIncomplete() {
+    if (incompleteTimer !== null) clearTimeout(incompleteTimer);
+    incompleteTimer = null;
+  }
+  function armIncomplete(at = performance.now()) {
+    cancelIncomplete();
+    incompleteTimer = setTimeout(() => {
+      incompleteTimer = null;
+      if (!buffer || profile !== 'iw') return;
+      const count = nKeys;
+      const length = buffer.length;
+      clearBuffer(); observe('clear',performance.timeOrigin + performance.now()); changed();
+      eventLog('incomplete_phs2_dropped',{length}); flush();
+
+      if (window.AppSheet) {
+        window.AppSheet.blocked();
+        const band = document.querySelector('[data-scan-blocked]');
+        if (band) {
+          if (!band.classList.contains('sheet-scan-blocked')) band.style.display = 'block';
+          band.replaceChildren(window.AppFrame.el('div','','방금 읽힘이 끊겼습니다'),window.AppFrame.el('div','','현품표를 다시 찍으세요'));
+          window.AppSheet.blocked();
+        }
+      }
+      try { Promise.resolve(KMShell.call('scan_blocked',[{reason:'field',n_keys:count}])).catch(()=>{}); }
+      catch { /* Optional shell sound follows the existing blocked-input rule. */ }
+    },Math.max(0,300 - (performance.now() - at)));
+  }
   function append(text, path, event) {
+    if (continuation) continuation.push({start:buffer.length,end:buffer.length + text.length,at:stamp(event),
+      keys:nKeys - (path === 'paste' ? 0 : 1),paths:{...paths},frame:newFrame(stamp(event))});
     if (!buffer) first = stamp(event);
     if (path === 'paste' || /[^\s]/.test(text)) observe('character',stamp(event));
     buffer += text; paths[path] += 1; changed();
+    if (continuation) {
+      const next = buffer.lastIndexOf(phs2Head);
+      if (next > 0) {
+        const part = continuation.find(part => part.start <= next && part.end > next);
+        if (part) {
+          buffer = buffer.slice(next); first = part.at; nKeys -= part.keys;
+          for (const name of Object.keys(paths)) paths[name] -= part.paths[name];
+          frame = part.frame; continuation = [];
+          eventLog('incomplete_phs2_dropped',{length:next}); flush(); evidenceChanged(); changed();
+        }
+      }
+      continuation = continuation.filter(part => part.end > buffer.length - phs2Head.length);
+    }
+    if (incompleteTimer !== null) armIncomplete(event.timeStamp);
   }
   function completePHS2(text) {
-    // Match Python str.strip(), including NEL and excluding JavaScript's BOM.
+
     const strip = value => value.replace(/^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g,'');
     const order = ['PHS','SRC','ITG','CLC','LBL','HSH'];
     const parts = strip(text).split('|'), fields = {};
+    if (parts.length === order.length + 1) order.push('QT');
     if (parts.length !== order.length) return false;
     for (let i=0;i<parts.length;i++) {
       const pair = parts[i].split('=');
       if (pair.length !== 2 || pair[0] !== order[i] || !pair[1] || pair[1] !== strip(pair[1]) || /[\x00-\x1f]/.test(pair[1])) return false;
       fields[pair[0]] = pair[1];
     }
+    if (fields.QT !== undefined && !/^[1-9][0-9]{0,3}$/.test(fields.QT)) return false;
     return fields.PHS === '2' && fields.SRC === 'KMTECH_INPUT_TAG' &&
       !!strip(fields.ITG) && !!strip(fields.CLC) && !!strip(fields.LBL) && /^[0-9a-f]{16}$/i.test(fields.HSH);
   }
   function submit(event) {
     if (!buffer) return;
-    if (profile === 'iw' && buffer.startsWith('PHS=2|SRC=KMTECH_INPUT_TAG|') && !completePHS2(buffer)) {
-      eventLog('incomplete_phs2',{text:buffer}); flush(); return;
+    if (profile === 'iw' && buffer.startsWith(phs2Head) && !completePHS2(buffer)) {
+      continuation ||= [];
+      eventLog('incomplete_phs2',{length:buffer.length}); flush(); armIncomplete(event.timeStamp); return;
     }
+    cancelIncomplete();
     const text = buffer;
     const meta = {seq:++seq,at:stamp(event),source:'scanner',t_first:first,t_enter:stamp(event),n_keys:nKeys,paths:{...paths},
       evidence:observe('enter',stamp(event)),t_attach:attachedAt,recovered,recovery_first_scan:recoveryFirst};
     recoveryFirst = false;
-    buffer = ''; first = null; nKeys = 0; paths = {key:0,code:0,keypress:0,paste:0};
-    // Dispatch immediately, without awaiting any previous scan or logging call.
+    clearBuffer();
+
     const response = KMShell.call('scan',[text,meta]);
     document.dispatchEvent(new CustomEvent('scanpending',{detail:{seq:meta.seq,text}}));
     changed(); flush();
@@ -186,7 +259,8 @@ window.AppScan = (() => {
     if (tab) return;
     if (event.key === 'Backspace' || event.code === 'Backspace') {
       event.preventDefault(); buffer = Array.from(buffer).slice(0,-1).join(''); nKeys++;
-      if (!buffer) { first = null; observe('clear',stamp(event)); }
+      if (continuation) continuation = continuation.filter(part=>part.start < buffer.length).map(part=>({...part,end:Math.min(part.end,buffer.length)}));
+      if (!buffer) { clearBuffer(); cancelIncomplete(); observe('clear',stamp(event)); }
       changed(); return;
     }
     const fromCode = physical(event);
@@ -222,9 +296,10 @@ window.AppScan = (() => {
       timeStamp:event.timeStamp,editing,getModifierState:name=>name === 'CapsLock' ? caps : name === 'NumLock' ? numlock : false,
       preventDefault:()=>event.preventDefault(),pasteText:event.type === 'paste' && !editing ? event.clipboardData.getData('text') : ''};
     if (event.type !== 'paste') logKey(copy);
+    if (incompleteTimer !== null && !editing && event.type === 'keydown') armIncomplete(event.timeStamp);
     if (waiting) {
       if (event.code === 'F12' || event.key === 'F12') event.preventDefault();
-      // Keep native editable input and Ctrl+V/Alt-number delivery available.
+
       if (!editing && !(event.type === 'keydown' && ((event.ctrlKey || event.metaKey) && event.code === 'KeyV' || event.altKey && /^Numpad[0-9]$/.test(event.code)))) event.preventDefault();
       waiting.queue.push(copy); return;
     }
@@ -239,6 +314,7 @@ window.AppScan = (() => {
       const at = performance.timeOrigin + performance.now(); pedalDown(at);
       focusRaise = {generation,at};
       if (frame) frame.focus_return_raise = {...focusRaise};
+      if (continuation) for (const part of continuation) part.frame.focus_return_raise = {...focusRaise};
     }
     eventLog('f12_physical',{result,ms,phase:'focus_return'});
     eventLog('key_queue',{held:pending.queue.length,released_after_ms:ms});
@@ -260,13 +336,15 @@ window.AppScan = (() => {
   }
   function start(selected, lastSeq, options = {}) {
     profile = selected; seq = lastSeq;
+    if (profile !== 'iw') { cancelIncomplete(); continuation = null; }
     if (started) return;
     started = true;
     attachedAt = performance.timeOrigin + performance.now(); recovered = !!options.recovery;
-    // Window capture precedes the form's document Enter handler, including while
-    // the F12 focus-return reply holds the existing non-editing queue.
+
+
     for (const type of ['keydown','keypress','keyup']) window.addEventListener(type,editingCapture,true);
     for (const type of ['paste','compositionstart','focusout','pointerdown']) window.addEventListener(type,()=>{ editingRun = null; },true);
+    window.addEventListener('input',event=>{ if (event.target.closest('[data-scan-into]')) event.target.scanFromScanner = false; },true);
     for (const type of ['keydown','keypress','keyup','paste']) document.addEventListener(type,capture,true);
     window.addEventListener('blur',()=>focusEvent('blur')); window.addEventListener('focus',()=>focusEvent('focus'));
     setInterval(flush,250);
