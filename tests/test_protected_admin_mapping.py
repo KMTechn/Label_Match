@@ -101,8 +101,14 @@ class _ClosableManager:
 
     def __init__(self) -> None:
         self.closed = False
+        self.calls = []
+
+    def flush(self, timeout=None) -> bool:
+        self.calls.append(("flush", timeout))
+        return True
 
     def close(self, timeout=None) -> bool:
+        self.calls.append(("close", timeout))
         self.closed = True
         return True
 
@@ -567,6 +573,7 @@ def test_settings_login_rejects_identity_text_clears_failures_and_authenticates_
     app.save_directory = str(tmp_path / "data")
     app.unique_id = "local-test"
     app.data_manager = _ClosableManager()
+    previous_manager = app.data_manager
     app._has_background_work = lambda: False
     app._block_view_only_action = lambda *_args, **_kwargs: False
     app._block_duplicate_history_load = lambda *_args, **_kwargs: False
@@ -590,6 +597,7 @@ def test_settings_login_rejects_identity_text_clears_failures_and_authenticates_
     )
     assert app.worker_name == "포장실"
     assert not created
+    assert previous_manager.calls == []
 
     app.worker_name_var.set(OTHER_SIX_DIGIT_VALUE)
     module.Label_Match._save_settings_and_close(
@@ -601,6 +609,7 @@ def test_settings_login_rejects_identity_text_clears_failures_and_authenticates_
     assert app.worker_name_var.get() == ""
     assert app.worker_name == "포장실"
     assert not created
+    assert previous_manager.calls == []
 
     app.worker_name_var.set(SYNTHETIC_ADMIN_CODE)
     module.Label_Match._save_settings_and_close(
@@ -614,6 +623,11 @@ def test_settings_login_rejects_identity_text_clears_failures_and_authenticates_
     assert app._authenticated_protected_admin is True
     assert app.worker_name_var.get() == PROTECTED_ADMIN_DISPLAY_NAME
     assert created[-1][1]["authenticated_admin"] is True
+    assert previous_manager.calls == [
+        ("flush", module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS),
+        ("close", module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS),
+    ]
+    assert previous_manager.closed
 
 
 def test_installer_dry_run_is_write_free_and_report_has_no_verifier(
