@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import ast
 
 import pytest
 
@@ -379,23 +380,15 @@ def test_tk_geometry_compensates_for_the_initial_monitor_dpi(monkeypatch, tmp_pa
 
 
 def test_constructor_orders_capture_prepare_before_widgets_and_reveal_after_bindings():
-    source = (
-        Path(__file__).resolve().parents[1] / "Label_Match.py"
-    ).read_text(encoding="utf-8")
-    constructor_start = source.index("    def __init__(self, run_tests=False):")
-    constructor_end = source.index("\n    def _start_package_outbox_drain", constructor_start)
-    constructor = source[constructor_start:constructor_end]
-
-    assert constructor.index("_label_match_prepare_capture_startup(") < constructor.index(
-        "self._create_widgets()"
-    )
-    assert constructor.index("self._create_widgets()") < constructor.index(
-        "self.show_loading_overlay()"
-    )
-    assert constructor.index("self.protocol(\"WM_DELETE_WINDOW\"") < constructor.index(
-        "_label_match_reveal_capture_startup("
-    )
-    assert constructor.count("_label_match_reveal_capture_startup(") == 1
+    source = (Path(__file__).resolve().parents[1] / 'Label_Match.py').read_text(encoding='utf-8')
+    module = ast.parse(source)
+    app_class = next((node for node in module.body if isinstance(node, ast.ClassDef) and node.name == 'Label_Match'))
+    constructor_node = next((node for node in app_class.body if isinstance(node, ast.FunctionDef) and node.name == '__init__'))
+    constructor = '\n'.join(source.splitlines()[constructor_node.lineno - 1:constructor_node.end_lineno])
+    assert constructor.index('_label_match_prepare_capture_startup(') < constructor.index('self._create_widgets()')
+    assert constructor.index('self._create_widgets()') < constructor.index('self.show_loading_overlay()')
+    assert constructor.index('self.protocol("WM_DELETE_WINDOW"') < constructor.index('_label_match_reveal_capture_startup(')
+    assert constructor.count('_label_match_reveal_capture_startup(') == 1
     assert constructor.count("self.state('zoomed')") == 1
 
 
