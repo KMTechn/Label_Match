@@ -104,8 +104,13 @@ def test_fault_quarantines_original_before_new_lane_and_accepts_next_scan(recove
     monkeypatch.setattr(app.package_outbox, "hold_workbench_set", hold_original)
     old = _finish_fault(app, root)
 
-    assert "격리된 체크포인트가 비교 원본" in app._ui_lane_review_notice.message
-    assert "parked 상태는 작업 제출 때 스냅숏" in app._ui_lane_review_notice.message
+    # Approved operator wording: 8290f94f1078, _resume_broken_ui_lane.
+    assert app._ui_lane_review_notice.message == (
+        '이 포장 작업을 보류했습니다\n'
+        '다음 트레이를 계속하세요\n'
+        '보류 스캔 1건은 받지 않았습니다 — 관리자 확인 뒤 다시 스캔하세요\n'
+        '코드: parked'
+    )
     assert old.state is LaneState.CLOSED and not old.worker_thread.is_alive()
     assert app.ui_lane is not old and app.ui_lane.state is LaneState.IDLE
     assert app._ui_lane_generation == 1
