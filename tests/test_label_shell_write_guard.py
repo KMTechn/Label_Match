@@ -39,7 +39,7 @@ def test_screen_runner_installs_the_admission_guard(monkeypatch, tmp_path, shell
 
     def run_app(profile, data, *, write_guard, **options):
         captured["guard"] = write_guard
-        return 0
+        return "web"
 
     monkeypatch.setitem(sys.modules, "host", types.SimpleNamespace(run_app=run_app))
     monkeypatch.setattr(label_match_screen, "shell_data_dir", lambda: tmp_path)
