@@ -1097,10 +1097,20 @@ def test_connection_status_has_its_own_bottom_row_below_actions(operator_workben
             for column in range(grid.get("column", 0), grid.get("column", 0) + grid.get("columnspan", 1)):
                 assert (row, column) not in cells, (widget.kind, cells.get((row, column)))
                 cells[row, column] = widget.kind
-    assert status.master is actions.master is right
+    footer = _assert_footer_below_actions(app)
+    assert status.master is footer
+    assert actions.master is right
+    footer_cells = {}
+    for widget in footer.children:
+        if not widget.winfo_ismapped() or not widget.grid_options:
+            continue
+        grid = widget.grid_options
+        for row in range(grid.get("row", 0), grid.get("row", 0) + grid.get("rowspan", 1)):
+            for column in range(grid.get("column", 0), grid.get("column", 0) + grid.get("columnspan", 1)):
+                assert (row, column) not in footer_cells
+                footer_cells[row, column] = widget.kind
     status_row = status.grid_options["row"]
-    assert status_row > actions.grid_options["row"]
-    assert status_row == max(row for row, _column in cells)
+    assert status_row == max(row for row, _column in footer_cells)
 
 
 def test_workbench_renderer_uses_snapshot_adapter_then_pure_presenter():
