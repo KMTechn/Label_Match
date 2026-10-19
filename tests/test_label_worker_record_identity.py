@@ -542,7 +542,9 @@ def test_csv_golden_preserves_columns_filename_and_details(tmp_path, enabled):
         raw = path.read_bytes()
         assert raw.startswith(b'\xef\xbb\xbftimestamp,worker_name,event,details\r\n')
         if not enabled:
-            assert raw == (Path(__file__).parent / 'fixtures/worker-record-identity-off.csv').read_bytes()
+            expected = (Path(__file__).parent / 'fixtures/worker-record-identity-off.csv').read_bytes()
+            expected = expected.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            assert raw == expected
         row = next(csv.DictReader(path.open(encoding='utf-8-sig', newline='')))
         payload = json.loads(row['details'])
         assert ('worker_id' in payload) is enabled
