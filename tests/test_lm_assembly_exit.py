@@ -313,7 +313,11 @@ def test_accepted_shell_start_failure_drains_real_lane_and_next_start_uses_marke
         def after_cancel(self, _ident):
             pass
         def mainloop(self):
+            deadline = time.monotonic() + 5.0
+            pumps = 0
             while not self._tk_shutdown_requested:
+                pumps += 1
+                assert pumps <= 500 and time.monotonic() < deadline
                 try:
                     self.callbacks.get(timeout=0.1)()
                 except queue.Empty:
@@ -376,7 +380,7 @@ def test_accepted_shell_start_failure_drains_real_lane_and_next_start_uses_marke
     try:
         if failure == "retry_sequence":
             host.show_startup_notice=lambda title, count=2: notices.append(count)
-            assert screen.screen_runner(module)() == 'exit'
+            assert screen.screen_runner(module)() == 3
             first = host._read_retry(data)
             assert first["count"] == 1 and first["cause"] == "WEBVIEW_ENV_FAILED"
             assert first["detail"] == "RuntimeError"
@@ -385,7 +389,7 @@ def test_accepted_shell_start_failure_drains_real_lane_and_next_start_uses_marke
             # A new invocation owns fresh process-local admission state; the
             # actual shell retry files remain from the preceding invocation.
             fresh_exit_state.__wrapped__(monkeypatch)
-            assert screen.screen_runner(module)() == 'exit'
+            assert screen.screen_runner(module)() == 3
             second = host._read_retry(data)
             assert second["count"] == 2 and second["detail"] == first["detail"]
             assert notices == [1, 2] and exits == [3, 3]
@@ -393,7 +397,7 @@ def test_accepted_shell_start_failure_drains_real_lane_and_next_start_uses_marke
             assert len(windows) == 2 and len(apps) == 2
             assert all(not app.ui_lane.worker_thread.is_alive() for app in apps)
             return
-        assert screen.screen_runner(module)() == 'exit'
+        assert screen.screen_runner(module)() == 3
         assert exits == [3] and notices == ['포장']
         assert len(windows) == 1 and not windows[0].visible
         assert len(apps) == 1 and not apps[0].ui_lane.worker_thread.is_alive()
