@@ -63,8 +63,13 @@ def carried(failed_install):
     if root == control:
         yield control, payload, audit, record
         return
+    # Only the runner's own private writer root may be carried into; fences that
+    # earlier tests of the same run left there are not this test's concern.
+    private = os.environ.get('KMTECH_TEST_CA_WRITER_ROOT')
+    assert private and root == Path(private).resolve(), 'unexpected writer control root'
     root.mkdir(parents=True, exist_ok=True)
-    assert not (root / fence.ACTIVE_FILENAME).exists()
+    (root / fence.ACTIVE_FILENAME).unlink(missing_ok=True)
+    shutil.rmtree(root / 'settled', ignore_errors=True)
     (control / fence.ACTIVE_FILENAME).replace(root / fence.ACTIVE_FILENAME)
     trusted_path = next(fence._installer_owner_root().glob('*.json'))
     trusted = json.loads(trusted_path.read_text(encoding='utf-8'))
