@@ -26,6 +26,11 @@ param(
     [string]$InstallerRunId = "",
     [int]$InstallerOwnerProcessId = 0,
     [string]$InstallerOwnerProcessStartedAtFileTime = "",
+    [switch]$WriteInstallerOwnerRecordOnly,
+    [string]$InstallerOwnerWriterInventorySha256 = "",
+    [string]$InstallerOwnerOrchestratorSha256 = "",
+    [string]$InstallerOwnerWriterContractSha256 = "",
+    [string]$InstallerOwnerSessionStartedAtUtc = "",
     [string]$StartupUpdateRestorePreimage = "",
     [string]$StartupUpdateRestoreSha256 = "",
     [string]$LegacyRelayTransition = "",
@@ -863,7 +868,11 @@ function Protect-LabelInstallerOwnerFile([string]$Path,[string]$MachineFenceRoot
     else{Assert-ProtectedCodeAncestors $Path}
 }
 
-function Write-LabelInstallerOwnerRecord([string]$InstallRoot) {
+function Write-LabelInstallerOwnerRecord([string]$InstallRoot, $Tuple = $null) {
+    # With a caller tuple (-WriteInstallerOwnerRecordOnly) the record is written
+    # BEFORE the fence exists, so a killed installer never leaves a fence without
+    # its protected owner. An orphan record without a fence is inert: every
+    # reader needs an active fence that equals the same tuple.
     if ($InstallerRunId -cnotmatch '^\d{8}T\d{9}Z-[0-9a-f]{32}$' -or
         $InstallerOwnerProcessId -le 0 -or $InstallerOwnerProcessStartedAtFileTime -cnotmatch '^[1-9][0-9]{0,18}$') {
         throw 'INSTALLER_OWNER_BINDING_INVALID'
@@ -874,9 +883,16 @@ function Write-LabelInstallerOwnerRecord([string]$InstallRoot) {
             throw 'INSTALLER_OWNER_PROCESS_DIFFERS'
         }
     } finally { $owner.Dispose() }
-    $lease = Enter-LabelCanonicalPlacement -TimeoutMilliseconds 15000
+    $lease = $null
+    if ($null -ne $Tuple) {
+        if ([string]$Tuple.session_id -cne $WriterFenceSessionId -or
+            [string]$Tuple.attempt_id -cne $WriterFenceAttemptId -or
+            [string]$Tuple.replacement_transaction_id -cne $WriterFenceReplacementTransactionId) {
+            throw 'INSTALLER_OWNER_TUPLE_DIFFERS'
+        }
+    } else { $lease = Enter-LabelCanonicalPlacement -TimeoutMilliseconds 15000 }
     try {
-        $active = Read-LabelWriterFence $WriterFenceControlRoot
+        if ($null -ne $Tuple) { $active = $Tuple } else { $active = Read-LabelWriterFence $WriterFenceControlRoot }
         if ([string]$active.session_id -cne $WriterFenceSessionId -or
             [string]$active.attempt_id -cne $WriterFenceAttemptId -or
             [string]$active.replacement_transaction_id -cne $WriterFenceReplacementTransactionId) {
@@ -906,7 +922,7 @@ function Write-LabelInstallerOwnerRecord([string]$InstallRoot) {
         # Existing code-parent DACL supplies the protected inherited access.
         Protect-LabelInstallerOwnerFile $path
         if ((Get-Content -LiteralPath $path -Raw -Encoding UTF8) -cne $json) { throw 'INSTALLER_OWNER_READBACK_DIFFERS' }
-    } finally { Exit-LabelWriterAdmission $lease }
+    } finally { if ($null -ne $lease) { Exit-LabelWriterAdmission $lease } }
 }
 
 function Write-LabelProtectedReusedProof([string]$PlacementRoot) {
@@ -2450,6 +2466,17 @@ if (
         $ExpectedSourceByteCount -lt 1
     )
 ) { throw "Trusted portable source inventory pins are required." }
+if ($WriteInstallerOwnerRecordOnly) {
+    if ($DryRun -or $Uninstall -or $LegacyRelayTransition -or $StartupUpdateRestorePreimage -or $WorkerShortcutOperation -or
+        $InstallerOwnerWriterInventorySha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $InstallerOwnerOrchestratorSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $InstallerOwnerWriterContractSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $InstallerOwnerSessionStartedAtUtc -cnotmatch '^[0-9TZ:.\-+]{10,40}$' -or
+        $WriterFenceSessionId -cnotmatch '^[0-9a-f]{32}$' -or $WriterFenceAttemptId -cnotmatch '^[0-9a-f]{32}$' -or
+        $WriterFenceReplacementTransactionId -cnotmatch '^[0-9a-f]{32}$') {
+        throw 'INSTALLER_OWNER_RECORD_ONLY_INVALID'
+    }
+}
 if ($LegacyRelayTransition -and
     ($DryRun -or $Uninstall -or $StartupUpdateRestorePreimage -or $WriterFenceAttemptId -cnotmatch '^[0-9a-f]{32}$')) {
     throw 'LEGACY_RELAY_TRANSITION_INVALID'
@@ -2460,7 +2487,13 @@ if (-not $DryRun.IsPresent -and -not $testOverride) {
         (-not $LegacyRelayTransition -or $LegacyRelayTransition -ceq 'Disable')) {
         try {
             Initialize-LabelProtectedInstallBase $installRootFull
-            if (-not $LegacyRelayTransition) { Write-LabelInstallerOwnerRecord $installRootFull }
+            if ($WriteInstallerOwnerRecordOnly) {
+                Write-LabelInstallerOwnerRecord $installRootFull ([pscustomobject]@{
+                    session_id=$WriterFenceSessionId;attempt_id=$WriterFenceAttemptId;replacement_transaction_id=$WriterFenceReplacementTransactionId
+                    writer_inventory_sha256=$InstallerOwnerWriterInventorySha256;orchestrator_sha256=$InstallerOwnerOrchestratorSha256
+                    writer_contract_sha256=$InstallerOwnerWriterContractSha256;session_started_at_utc=$InstallerOwnerSessionStartedAtUtc})
+            }
+            elseif (-not $LegacyRelayTransition) { Write-LabelInstallerOwnerRecord $installRootFull }
             Write-ElevationLog 'PREPARATION' ($Script:LabelAncestorPreparationEvents.ToArray() | ConvertTo-Json -Depth 8 -Compress)
         }
         catch {
@@ -2476,8 +2509,10 @@ if (-not $DryRun.IsPresent -and -not $testOverride) {
             throw $preparationFailure
         }
     }
+    if ($WriteInstallerOwnerRecordOnly) { Write-ElevationLog 'OWNER_RECORD_ONLY' 'Protected installer owner record written before the fence.'; return }
     Write-ElevationLog 'STARTED' 'Elevated Label code placement started.'
 }
+if ($WriteInstallerOwnerRecordOnly) { return }
 
 if ($WorkerShortcutOperation) {
     if ($DryRun -or $Uninstall -or $LegacyRelayTransition -or $StartupUpdateRestorePreimage) {

@@ -1106,21 +1106,34 @@ capture8의 교정 wrapper 실측은 [동일 사용자 제거 native exit 0](D:/
 
 현장 안내(갇힌 PC의 공식 순서): ① 감사 파일이 문맥을 가지면(보통 `PREIMAGE_SAVED` 이후) 설치와 같은 작업 사용자의 **관리자 PowerShell**에서 `INSTALL_CANONICAL_PORTABLE.ps1 -SourceRoot <같은 판 stock> -ResumeRollbackAuditPath <감사 파일> -ExpectedRollbackAuditSha256 <감사 SHA256>`을 한 번 실행한다. ② 그 뒤 필요하면 같은 작업자 일반 세션에서 `--remove-current-user-setup`을 실행하고 `PASS_DATA_PRESERVED`를 확인한 뒤 공식 `INSTALL_CANONICAL_PORTABLE.ps1`을 다시 실행한다. 문맥이 없는 죽은 시도(`RESUME_ROLLBACK_REQUIRED`가 아닌 거절 없이 통과)는 ①을 건너뛰고 ②만 한다. 거절되면 쓰는 프로세스나 relay가 남았는지 먼저 확인한다. `tests/test_dead_installer_fence_entries.py`가 입구 넷의 거절, 열리는 조건과 닫힌 채로 남는 조건, 정리 뒤 `Start-LabelWriterFence` 통과를, `tests/test_dead_installer_resume_rollback.py`와 `tests/test_install_recovery.py`의 `resume_unfinished_*`가 문맥 있는 죽은 시도의 사용자 제거 거절·이어 되돌리기 증명·복원을 격리 자료로 고정한다. 실제 설치기 강제 종료 뒤 현장 PC 확인은 NOT VERIFIED다.
 
-<a id="performance"></a>
 **울타리 튜플 미리 저장과 주인 기록 대체(G99c).** 설치기는 울타리(`Start-LabelWriterFence`)를 만들기 **전에** 감사의 `writer_fence`에 울타리 튜플(session·attempt·transaction·시작 시각·orchestrator·contract·inventory·주인 프로세스 id/시작 시각, 상태 `PENDING_FENCE`)을 저장하고 되읽어 같은지 확인한다(`Save-LabelPreFenceWriterTuple`). 울타리를 만든 직후 죽어도 감사에 튜플이 없는 울타리가 남지 않는다. 입구(`_failed_installer_removal_sources`·`prove_dead_unfinished_installer`)는 이미 그렇게 죽은 감사(`writer_fence` 키가 **없는** 감사)도 받는다: 보호 주인 기록(`.installer-owner-*.json`)이 울타리와 같고, 감사의 `run_id`·파일 이름이 그 주인 기록의 `run_id`와 같으면 주인 기록의 튜플·프로세스 값이 감사 튜플을 대신해 같은 판정(주인 프로세스 종료·세션 권한 뮤텍스 비어 있음·기계 한가함·문맥 유무에 따른 갈림)을 거친다. 다른 run 의 감사, 다른 울타리의 튜플, 튜플이 있으나 모순되는 감사는 그대로 거절한다.
 
-죽은 시점별 결과(문맥 = 설치기가 첫 변경 전에 저장하는 `recovery_context`):
+**주인 기록을 울타리 앞에 쓴다(118 검토 고침).** 보호 주인 기록은 설치기가 아니라 관리자 권한 배치 도우미가 쓰므로, 울타리 뒤에 도우미가 뜰 때까지(일반 길은 릴레이 멈춤·사용자 몫 제거·프로세스 0 확인이 모두 들어가 수 분) 「울타리는 있고 주인 기록은 없는」 창이 있었다. 두 길 모두 이제 **울타리 만들기 앞**에 도우미를 한 번 더 띄워(`-WriteInstallerOwnerRecordOnly`, 설치기의 `Invoke-LabelPreFenceOwnerRecord`) 호출자가 준 울타리 튜플로 주인 기록을 쓰고 설치기가 되읽는다. 이 모드는 울타리를 읽지 않고 admission lease도 잡지 않는다(울타리가 아직 없다). 이어서 정상 배치 도우미가 같은 기록을 울타리와 대조해 그대로 둔다(바이트 불변). 그래서 울타리가 있으면 주인 기록도 항상 있다. 울타리를 만들기 전에 죽으면 울타리 없는 **고아 주인 기록**만 남는데, 입구(`_failed_installer_removal_sources`)·앱 시작 검사(`startup_check` 의 `MACHINE_DEPLOY_FENCE`)·lifecycle 권한 검증은 모두 같은 튜플의 활성 울타리를 요구하므로 고아 기록은 아무것도 막지 않는다. 기록은 증거로 남는다(기존 정책, 128 개 상한). 기계 길도 일반 길과 같은 순서다: 감사에 `PENDING_FENCE` 튜플과 **문맥 표지**(`recovery_context.kind = MACHINE_WORKER_DEFERRED`, 작업자 SID만 — 비밀 없음)를 저장·되읽기 → 주인 기록 → 울타리.
+
+기계 길의 문맥 표지는 이어 되돌리기를 위한 것이 아니다: 사용자 길의 이어 되돌리기는 기계 배치를 복원할 수 없으므로 표지가 있으면 죽음 증명은 이어 되돌리기에 **답하지 않고**(`_saved_recovery_context` 가 표지를 문맥으로 세지 않음), 대신 되돌림 중(`RESTORING`) 울타리도 코드 복사 중과 같이 취급해 사용자 몫 제거가 그 울타리 하나를 정리하고 공식 다시 설치가 이어진다(코드는 다시 설치가 통째로 바꾼다).
+
+죽은 시점별 결과(고친 뒤; 문맥 = 설치기가 첫 변경 전에 저장하는 `recovery_context`). 일반 길:
 
 | 시점 | 남는 것 | 사용자 몫 제거 | 공식 다시 설치 | 이어 되돌리기 | 앱 시작 |
 |---|---|---|---|---|---|
-| ① 울타리 앞 | 울타리 없음 | 통과(정리할 것 없음) | 통과 | 해당 없음 | 통과 |
-| ② 울타리 뒤·주인 기록 앞 | 울타리·감사 튜플, 주인 기록 없음 | 거절 | 거절 | 거절 | 거절 |
+| ① 울타리 앞(주인 기록 앞/뒤) | 울타리 없음; 감사 튜플·고아 주인 기록 있을 수 있음 | 통과(정리할 것 없음) | 통과 | 해당 없음 | 통과 |
+| ② 울타리 직후(주인 기록은 이미 있음) | 울타리·감사 튜플·주인 기록, 문맥 있거나 없음(문맥은 울타리 뒤 저장) | 문맥 없음: 정리 후 통과 / 있음: `RESUME_ROLLBACK_REQUIRED` | 문맥 없음: 정리 뒤 통과 / 있음: 이어 되돌리기 뒤 | 문맥 있으면 받음 | 거절(울타리) |
 | ③ 코드 복사 중 | 울타리·주인 기록, 감사 튜플 있거나 없음, 문맥 있거나 없음 | 문맥 없음: 정리 후 통과 / 문맥 있음: `RESUME_ROLLBACK_REQUIRED` | 문맥 없음: 정리 뒤 통과 / 문맥 있음: 이어 되돌리기 뒤 | 문맥 있으면 받음 | 거절(울타리) |
 | ④ 되돌림 중 | 울타리 `RESTORING`·주인 기록·문맥 | 거절 | 이어 되돌리기 뒤 | 받음 | 거절(울타리) |
 
-②는 주인 기록을 쓰는 배치 도우미가 아직 안 돈 짧은 틈이라 보호 증거가 없어 열지 않는다(감사는 사용자 쓰기 영역이므로 감사 튜플만으로 열지 않는다. 결정 대기).
+기계 길(`-WorkerAccount`):
+
+| 시점 | 남는 것 | 사용자 몫 제거 | 공식 다시 설치 | 이어 되돌리기 | 앱 시작 |
+|---|---|---|---|---|---|
+| ① 울타리 앞 | 감사 `PENDING_FENCE` 튜플·문맥 표지, 고아 주인 기록 있을 수 있음, 울타리 없음 | 통과 | 통과 | 해당 없음 | 통과 |
+| ② 울타리 직후 | 울타리 `INSTALLING`·주인 기록·튜플·표지 | 정리 후 통과 | 정리 뒤 통과 | 답하지 않음(기계 길) | 거절(울타리) |
+| ③ 코드 복사 중 | ② + 코드 반쯤 | ②와 같음(코드 반쪽의 lifecycle 자식 실패는 VM 몫) | ② | 답하지 않음 | 거절 |
+| ④ 되돌림 중 | 울타리 `RESTORING`·주인 기록·튜플·표지 | 정리 후 통과 | 정리 뒤 통과 | 답하지 않음 | 거절 |
+
+(표의 「정리」 = `abandoned_fence_settled`: 죽음 증명 — 주인 프로세스 종료·세션 권한 뮤텍스·쓰는 프로세스 0 — 이 서야 한다. 갇힘 0 확인 = `tests/test_dead_installer_stage_matrix.py` 단계마다 열림 단언 + PS 순서 시험(주인 기록 호출 < 울타리 만들기, 두 길). 실제 UAC·배치 도우미 두 번째 기동은 시험 PC 몫이며 사용자 길은 승인 창이 한 번 더 뜰 수 있다.)
 
 
+<a id="performance"></a>
 ## 처리량·동시성·최신성
 
 <a id="responsiveness-w2"></a>
@@ -1329,6 +1342,23 @@ SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 �
 전·후 SDDL은 기존 `canonical-portable-<run>-elevated.jsonl`의 PREPARATION에 보존한다. 바탕 준비의 원 예외는 유지하고 child 61–66을 부모의 한국어 INSTALLATION_PREPARATION 진단으로 전달한다(61 기본/목표 집합 밖, 62 재분석, 63 소유자, 64 앱 부모 생성, 65 control 생성 예약, 66 기타). 이 변경은 control/evidence 위치·실행 wrapper·배치 ACL 재설정·실패 복구를 이적 방식으로 옮기지 않는다. 격리 D: 실제 NTFS/PS5.1·PS7 함수 회귀는 source 범위이며 선언 재생성·새 packet·빈 guest 설치는 중앙 랩 수용 전 NOT TESTED다.
 
 Python relay 시작은 임시 bootstrap 종료 뒤에도 최대 600초(설치기의 설치 뒤·되돌림 뒤 relay 준비 대기와 같은 상한. 까닭: 찬 첫 읽기에서 설치 코드 트리 전체 무결성 확인이 75초를 넘김. 확인 자체는 줄이지 않고, relay 자식이 0 아닌 코드로 끝나면 바로 실패) 안에서 fresh active-version relay 증거를 기다린다. launcher의 0 exit·생존만을 ALIVE로 반환하지 않으며 timeout/비정상 exit는 실패로 남기고 실제 자식을 강제 종료하지 않는다. 실제 느린 첫 cycle·두 번 시작·native 수명은 랩 NOT TESTED다.
+
+**고정 상한 판정표(G100b 닫기).** 「첫 설정·relay 시작 사슬」 안인지, 그리고 relay 준비 대기와 같은 뜻인지 줄마다 판정했다. 같은 뜻만 `RELAY_PREPARE_SECONDS`(600 s)에 묶고(정적 시험 `tests/test_first_setup_wait_and_single_read.py`), 나머지는 까닭을 적고 손대지 않는다.
+
+| 값 | 자리 | 사슬 안? | 같은 뜻? | 처리 |
+|---|---|---|---|---|
+| 600 (75에서) | `auto_update.py` bootstrap·복구 두 자리 `RELAY_PREPARE_SECONDS` | 예 | 예(원본) | 한 값 |
+| 600.0 | `user_relay.py` `bootstrap_readiness_seconds`·`min(600.0, …)` | 예 | 예 | 한 값(정적 시험) |
+| `AddSeconds(600)`·`600-(…)` | 설치기 relay 상태 증명·되돌림 relay ready 대기 | 예 | 예 | 한 값(정적 시험) |
+| 600000 ms | 설치기 `Wait-LabelRegistrationChild` 기본값(첫 설정 `--onboard-current-user` 자식의 바깥 상한) | 예 | **예 — 안쪽이 relay를 최대 600 s 기다리므로 바깥이 더 작으면 자식을 중간에 죽인다** | `RELAY_PREPARE_SECONDS*1000` 과 같음을 정적 시험으로 묶음 |
+| 720000 ms | 설치기 `Wait-LabelPlacementChild` 기본값(관리자 배치 도우미: 코드 복사·ACL·검증) | 예(설치 사슬) | 아니오 — relay 준비는 배치 뒤 설치기 본체가 기다린다 | 손 0 — 배치 도우미 전체 상한 |
+| 90000 ms (`-TimeoutMilliseconds 90000` 여덟 자리) | 설치기 `Enter-LabelWriterAdmission`·`Stop-LabelWriterFence` 대기 | 예 | 아니오 — 쓰기 admission·울타리 잠금 대기 | 손 0 — 잠금 대기 |
+| 120000 ms | 설치기 죽음 증명 자식 `WaitForExit(120000)` | 아니오(막힌 PC 구제 길) | 아니오 | 손 0 — 정지 증명(읽기 전용) |
+| `Start-Sleep -Seconds 3` | 설치기 되돌림 중 relay 재시작 뒤 안정 대기 | 아니오(되돌림) | 아니오 | 손 0 — 되돌림 안정 대기 |
+| `CLOSING_WAIT_SECONDS` 120 | `shell/host.py` 닫는 중 안내창 | 아니오 | 아니오 | 손 0 — 창 닫기 대기 |
+| 60·120·240 | `auto_update.py` 적용 진행·SYSTEM 되돌림·시작 때 업데이트 대기 | 아니오 | 아니오 | 손 0(앞 표 그대로) |
+
+**한 번 읽기의 한계.** 같은 프로세스의 두 번째 확인(`verify_bootstrap_integrity`·`version_writer_inventory_sha256`)은 트리 파일의 크기·mtime_ns 가 첫 확인 때와 같으면 바이트를 다시 읽지 않는다. 그래서 **같은 크기·같은 mtime 으로 되돌려 쓴 변조는 두 번째 확인이 못 본다**(바탕은 매 확인마다 바이트를 비교했다). 첫 확인이 도는 동안의 바뀜과 크기·mtime 이 바뀐 변조는 그대로 거절한다. 전제는 보호 트리(관리자 쓰기)이고 보장 하향이므로 구현 유지 여부는 관리자 승인 대기다. `test_known_limit_second_check_does_not_read_bytes_of_a_same_size_same_mtime_change` 가 한계를 그대로 보인다(고침이 아니다).
 
 한국어 안내를 가진 INSTALL_THIS_PC.ps1·INSTALL_CANONICAL_PORTABLE.ps1은 UTF-8 BOM을 유지한다. 호스트 Windows PowerShell 5.1이 실제 두 파일을 ParseFile로 읽고 한국어 문자열과 전체 decoded source를 보존한 회귀는 PROVEN이다. 기본 codepage 65001 환경이며 다른 ANSI codepage의 실제 -File 설치/안내는 랩 NOT TESTED다. stock packet·companion의 최종 byte 선언은 중앙 출시 컷에서 다시 고정한다.
 

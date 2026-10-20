@@ -755,14 +755,28 @@ def installer_lifecycle_authority(root, owner_record, install_root, *, source):
 def _unfinished_install_run(
     audit: Mapping[str, Any], active: Mapping[str, Any], *, for_resume: bool = False
 ) -> bool:
-    fence_states = _RESUMABLE_FENCE_STATUSES if for_resume else _UNFINISHED_FENCE_STATUSES
+    # The machine (worker kit) path has no user-path rollback to resume: a run
+    # killed while it restored is settled like one killed while it copied code.
+    fence_states = (_RESUMABLE_FENCE_STATUSES
+                    if for_resume or _machine_recovery_context(audit) else _UNFINISHED_FENCE_STATUSES)
     return (audit.get("status") in _UNFINISHED_INSTALL_STATUSES
             and active.get("status") in fence_states)
 
 
-def _saved_recovery_context(audit: Mapping[str, Any]) -> bool:
+_MACHINE_CONTEXT_KIND = "MACHINE_WORKER_DEFERRED"
+
+
+def _machine_recovery_context(audit: Mapping[str, Any]) -> bool:
+    """The machine path saves only a kind marker (no secrets, no restore inputs)."""
     context = audit.get("recovery_context")
-    return isinstance(context, dict) and bool(context)
+    return isinstance(context, dict) and context.get("kind") == _MACHINE_CONTEXT_KIND
+
+
+def _saved_recovery_context(audit: Mapping[str, Any]) -> bool:
+    # A machine marker is not a resumable context: the supported rollback resume
+    # (user path) cannot restore a machine placement, so it never answers for it.
+    context = audit.get("recovery_context")
+    return isinstance(context, dict) and bool(context) and not _machine_recovery_context(audit)
 
 
 def _installer_machine_idle(trusted: Mapping[str, Any], environ: Mapping[str, str]) -> bool:

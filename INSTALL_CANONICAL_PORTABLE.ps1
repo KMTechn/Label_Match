@@ -2949,7 +2949,7 @@ $parameterNames = @(
 $actualParameterNames = @($payload.parameters.PSObject.Properties.Name)
 if (
     @($parameterNames | Where-Object { $_ -notin $actualParameterNames }).Count -ne 0 -or
-    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit','InstallerRunId','InstallerOwnerProcessId','InstallerOwnerProcessStartedAtFileTime','LegacyRelayTransition','LegacyRelayPreimageSha256','WorkerSid','WorkerAccount','OperatorLocalAppDataRoot','WorkerShortcutOperation','WorkerShortcutRecordPath','VerifiedWorkerShortcutHelperPath','ExpectedWorkerShortcutHelperSha256')) }).Count -ne 0
+    @($actualParameterNames | Where-Object { $_ -notin ($parameterNames + @('Uninstall','StartupUpdateRestorePreimage','StartupUpdateRestoreSha256','ExpectedActiveCommit','InstallerRunId','InstallerOwnerProcessId','InstallerOwnerProcessStartedAtFileTime','LegacyRelayTransition','LegacyRelayPreimageSha256','WorkerSid','WorkerAccount','OperatorLocalAppDataRoot','WorkerShortcutOperation','WorkerShortcutRecordPath','VerifiedWorkerShortcutHelperPath','ExpectedWorkerShortcutHelperSha256','WriteInstallerOwnerRecordOnly','InstallerOwnerWriterInventorySha256','InstallerOwnerOrchestratorSha256','InstallerOwnerWriterContractSha256','InstallerOwnerSessionStartedAtUtc')) }).Count -ne 0
 ) { throw 'Elevated helper parameter contract differs.' }
 $expectedSourceFileCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceFileCount'
 $expectedSourceByteCount = Get-RequiredExternalInteger $payload.parameters 'ExpectedSourceByteCount'
@@ -2985,6 +2985,8 @@ foreach ($name in @('ExpectedActiveCommit','StartupUpdateRestorePreimage','Start
     $property = $payload.parameters.PSObject.Properties[$name]
     $invokeParameters[$name] = if ($null -eq $property) { '' } else { [string]$property.Value }
 }
+foreach($n in @('InstallerOwnerWriterInventorySha256','InstallerOwnerOrchestratorSha256','InstallerOwnerWriterContractSha256','InstallerOwnerSessionStartedAtUtc')){$p=$payload.parameters.PSObject.Properties[$n];if($null -ne $p){$invokeParameters[$n]=[string]$p.Value}}
+if($null -ne $payload.parameters.PSObject.Properties['WriteInstallerOwnerRecordOnly'] -and (Get-RequiredExternalBoolean $payload.parameters 'WriteInstallerOwnerRecordOnly')){$invokeParameters.WriteInstallerOwnerRecordOnly=$true}
 foreach($n in @('InstallerRunId','InstallerOwnerProcessStartedAtFileTime')){$p=$payload.parameters.PSObject.Properties[$n];if($null -ne $p){$invokeParameters[$n]=[string]$p.Value}}
 if($null -ne $payload.parameters.PSObject.Properties['InstallerOwnerProcessId']){$op=Get-RequiredExternalInteger $payload.parameters 'InstallerOwnerProcessId';if($op -le 0 -or $op -gt [int]::MaxValue){throw 'Invalid installer owner PID.'};$invokeParameters.InstallerOwnerProcessId=[int]$op}
 $Script:LabelWriterFenceAdmissionProductionRoot = [string]$invokeParameters.WriterFenceControlRoot
@@ -4743,6 +4745,69 @@ function Save-LabelPreFenceWriterTuple {
     }
 }
 
+function Invoke-LabelPreFenceOwnerRecord($Frozen, [hashtable]$HelperParameters, [hashtable]$Tuple) {
+    # 118 review: the protected owner record (written by the elevated helper) is
+    # published BEFORE the fence exists, from the caller's tuple, and read back.
+    # An installer killed at any later point then always leaves a fence together
+    # with its owner record; a kill before the fence leaves only an inert record.
+    if ($testMode) { return }
+    $parameters = $HelperParameters.Clone()
+    $parameters.WriteInstallerOwnerRecordOnly = $true
+    $parameters.InstallerOwnerWriterInventorySha256 = [string]$Tuple.writer_inventory_sha256
+    $parameters.InstallerOwnerOrchestratorSha256 = [string]$Tuple.orchestrator_sha256
+    $parameters.InstallerOwnerWriterContractSha256 = [string]$Tuple.writer_contract_sha256
+    $parameters.InstallerOwnerSessionStartedAtUtc = [string]$Tuple.session_started_at_utc
+    if ((InvokeFrozenPlacementHelper $Frozen $parameters) -ne 0) { throw 'INSTALLER_OWNER_RECORD_PREFENCE_FAILED' }
+    $path = Join-Path (Split-Path -Parent ([string]$parameters.InstallRoot)) ('.installer-owner-' + [string]$Tuple.session_id + '-' + ([string]$parameters.InstallerRunId -split '-')[-1] + '.json')
+    $recordText = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    $record = $recordText | ConvertFrom-Json
+    foreach ($name in @('session_id','attempt_id','replacement_transaction_id',
+        'orchestrator_sha256','writer_contract_sha256','writer_inventory_sha256')) {
+        if ([string]$record.$name -cne [string]$Tuple[$name]) { throw 'Installer owner record readback differs.' }
+    }
+    # Compare the start time as text: a JSON parser may turn it into a date object.
+    if ($recordText -cnotmatch ('"session_started_at_utc":"' + [regex]::Escape([string]$Tuple.session_started_at_utc) + '"')) {
+        throw 'Installer owner record readback differs.'
+    }
+    if ([string]$record.run_id -cne [string]$parameters.InstallerRunId -or
+        [string]$record.owner_process_id -cne [string]$parameters.InstallerOwnerProcessId -or
+        [string]$record.owner_process_started_at_filetime -cne [string]$parameters.InstallerOwnerProcessStartedAtFileTime) {
+        throw 'Installer owner record readback differs.'
+    }
+}
+
+function Save-LabelMachinePreFenceRecord {
+    # Dot-source in the machine transaction scope BEFORE Start-LabelWriterFence.
+    # Same idea as Save-LabelPreFenceWriterTuple (tuple saved and read back before
+    # the fence) plus a kind-only context marker: the machine path has no user
+    # rollback inputs and the marker carries no secret (only the worker SID that
+    # the audit already holds). A dead run is settled by removal/reinstall.
+    $audit.writer_fence = [ordered]@{
+        status = 'PENDING_FENCE'
+        owner_process_id = [int]$PID
+        owner_process_started_at_filetime = $ownerStartedAtFileTime
+        orchestrator_sha256 = $orchestrator
+        writer_contract_sha256 = $contract
+        session_started_at_utc = $sessionStartedAt
+        session_id = $session
+        attempt_id = $attempt
+        replacement_transaction_id = $transaction
+        writer_inventory_sha256 = $Script:LabelWriterFenceInventorySha256
+        token_recorded = $false
+    }
+    $audit.recovery_context = [ordered]@{kind = 'MACHINE_WORKER_DEFERRED'; worker_sid = [string]$Worker.sid}
+    Save $auditFile $audit
+    $readback = Get-Content -LiteralPath $auditFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($name in @('session_id','attempt_id','replacement_transaction_id','session_started_at_utc',
+        'orchestrator_sha256','writer_contract_sha256','writer_inventory_sha256',
+        'owner_process_id','owner_process_started_at_filetime')) {
+        if ($null -eq $readback.writer_fence -or [string]$readback.writer_fence.$name -cne [string]$audit.writer_fence[$name]) {
+            throw 'Machine writer fence tuple readback differs.'
+        }
+    }
+    if ([string]$readback.recovery_context.kind -cne 'MACHINE_WORKER_DEFERRED') { throw 'Machine recovery context readback differs.' }
+}
+
 function Assert-LabelDeadUnfinishedInstaller([string]$AuditPath) {
     # Death proof of the unfinished run: protected owner record equals the fence
     # tuple, the owner process ended with the same start time, no product writer
@@ -5908,6 +5973,8 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
     $delegation = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
     $orchestrator = Sha (Join-Path $Source 'INSTALL_CANONICAL_PORTABLE.ps1')
     $contract = $frozen.writer_fence_sha256
+    $ownerStartedAtFileTime = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString()
+    $sessionStartedAt = [DateTime]::UtcNow.ToString('o')
     if ($transition.candidate_inventory_sha256 -cne $Script:LabelWriterFenceInventorySha256) { throw 'Machine writer inventory differs.' }
     $Script:LabelWriterFenceInstalledIdentity = [pscustomobject]@{session_id=$session;attempt_id=$attempt;replacement_transaction_id=$transaction;
         orchestrator_sha256=$orchestrator;writer_contract_sha256=$contract;inventory_sha256=$transition.installed_inventory_sha256}
@@ -5930,22 +5997,11 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
     try {
         $authority = Enter-LabelWriterSessionAuthority -SessionId $session -AttemptId $attempt -OrchestratorSha256 $orchestrator `
             -ReplacementTransactionId $transaction -WriterContractSha256 $contract
-        [void](Start-LabelWriterFence -ControlRoot $control -Status 'INSTALLING' -SessionId $session -AttemptId $attempt `
-            -ReplacementTransactionId $transaction -SessionStartedAtUtc ([DateTime]::UtcNow.ToString('o')) `
-            -OrchestratorSha256 $orchestrator -WriterContractSha256 $contract -AuthorityOwnedByCaller)
-        $fenced = $true
-        $audit.writer_fence=[ordered]@{status='INSTALLING';control_root=[string]$control;session_id=$session;attempt_id=$attempt;
-            replacement_transaction_id=$transaction;orchestrator_sha256=$orchestrator;writer_contract_sha256=$contract;
-            writer_inventory_sha256=$Script:LabelWriterFenceInventorySha256;token_recorded=$false}
         $markers = @('KMTech\Label_Match\data\data-generation.json','KMTech\Label_Match\config\data-generation.json',
             'KMTech\Logistics\profiles\Label_Match\data-generation.json','KMTech\Bootstrap\Label_Match\data-generation.json',
             'KMTech\DirectSync\label_match\data-generation.json','KMTech\DirectSync\label_match\queue\data-generation.json',
             ('KMTech\DirectSync\label_match\control\writer-session\data-generation\' + $Worker.sid + '.json')) |
             ForEach-Object { Join-Path $Worker.local_app_data $_ }
-        [void](Set-LabelWriterFenceDelegation -ControlRoot $control -Status 'INSTALLING' -SessionId $session -AttemptId $attempt `
-            -ReplacementTransactionId $transaction -DelegationToken $delegation -LifetimeSeconds 600 `
-            -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage',
-                'auto_update_supported_lifecycle_transition','auto_update_persist_switch','auto_update_write_json_durable','auto_update_fixed_helper'))
         $parameters = @{SourceRoot=$Source;InstallRoot=$Install;ElevationLogPath=(Join-Path $auditRoot ($run+'-elevated.jsonl'));
             InstallerRunId=$run;InstallerOwnerProcessId=[int]$PID;InstallerOwnerProcessStartedAtFileTime=[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString();
             ExpectedBootstrapScriptSha256=$frozen.helper_sha256;VerifiedBootstrapScriptPath=$frozen.helper_path;BootstrapIntegrityPreloaded=$true;
@@ -5954,6 +6010,23 @@ function Invoke-LabelMachineWorkerInstall($Worker, [string]$Source, [string]$Ins
             WriterFenceReplacementTransactionId=$transaction;WriterFenceDelegationToken=$delegation;DataGenerationSubjectSid=$Worker.sid;DataGenerationMarkerPaths=@($markers);
             WorkerSid=$Worker.sid;OperatorLocalAppDataRoot=$Worker.local_app_data;AllowNoncanonicalLayoutForTest=[bool]$testMode;ReplaceExistingVerifiedPortable=[bool]$existing;DryRun=$false}
         if ($null -ne $Lifecycle -and $Lifecycle.lifecycle_state -ceq 'INSTALLED') { $parameters.ExpectedActiveCommit=[string]$Lifecycle.from_commit }
+        # 118 review: tuple + kind-only context are saved and the protected owner
+        # record is published (elevated helper, read back) BEFORE the fence exists.
+        . Save-LabelMachinePreFenceRecord
+        Invoke-LabelPreFenceOwnerRecord $frozen $parameters @{writer_inventory_sha256=$Script:LabelWriterFenceInventorySha256
+            orchestrator_sha256=$orchestrator;writer_contract_sha256=$contract;session_started_at_utc=$sessionStartedAt
+            session_id=$session;attempt_id=$attempt;replacement_transaction_id=$transaction}
+        [void](Start-LabelWriterFence -ControlRoot $control -Status 'INSTALLING' -SessionId $session -AttemptId $attempt `
+            -ReplacementTransactionId $transaction -SessionStartedAtUtc $sessionStartedAt `
+            -OrchestratorSha256 $orchestrator -WriterContractSha256 $contract -AuthorityOwnedByCaller)
+        $fenced = $true
+        $audit.writer_fence=[ordered]@{status='INSTALLING';control_root=[string]$control;owner_process_id=[int]$PID;owner_process_started_at_filetime=$ownerStartedAtFileTime;session_started_at_utc=$sessionStartedAt;session_id=$session;attempt_id=$attempt;
+            replacement_transaction_id=$transaction;orchestrator_sha256=$orchestrator;writer_contract_sha256=$contract;
+            writer_inventory_sha256=$Script:LabelWriterFenceInventorySha256;token_recorded=$false}
+        [void](Set-LabelWriterFenceDelegation -ControlRoot $control -Status 'INSTALLING' -SessionId $session -AttemptId $attempt `
+            -ReplacementTransactionId $transaction -DelegationToken $delegation -LifetimeSeconds 600 `
+            -DelegatedSources @('canonical_placement','auto_update_task_mutation','auto_update_restore_preimage',
+                'auto_update_supported_lifecycle_transition','auto_update_persist_switch','auto_update_write_json_durable','auto_update_fixed_helper'))
         # Already elevated: the same launcher omits RunAs, preserving its pins and delegation.
         $exit = InvokeFrozenPlacementHelper $frozen $parameters
         if ($exit -ne 0) {
@@ -6859,6 +6932,24 @@ try {
         Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
     }
     . Save-LabelPreFenceWriterTuple
+    if ($null -eq $firstRegistrationResume) {
+        Invoke-LabelPreFenceOwnerRecord $frozenPlacement @{
+            InstallerRunId=$runId; InstallerOwnerProcessId=[int]$PID
+            InstallerOwnerProcessStartedAtFileTime=$writerOwnerStartedAtFileTime
+            SourceRoot=$source; InstallRoot=$install; ElevationLogPath=$elevationLogPath
+            ExpectedBootstrapScriptSha256=[string]$frozenPlacement.helper_sha256
+            VerifiedBootstrapScriptPath=[string]$frozenPlacement.helper_path; BootstrapIntegrityPreloaded=$true
+            ExpectedSourceAggregateSha256=[string]$receiptSource.bootstrap_aggregate_sha256
+            ExpectedSourceFileCount=[int]$receiptSource.file_count; ExpectedSourceByteCount=[uint64]$receiptSource.byte_count
+            WriterFenceFunctionsPreloaded=$true; WriterFenceControlRoot=$writerFenceControlRoot
+            DataGenerationSubjectSid=$generationSubjectSid; DataGenerationMarkerPaths=@($generationMarkerPaths)
+            WriterFenceSessionId=$writerSessionId; WriterFenceAttemptId=$writerAttemptId
+            WriterFenceReplacementTransactionId=$writerTransactionId; WriterFenceDelegationToken=$writerDelegationToken
+            AllowNoncanonicalLayoutForTest=[bool]$testMode; ReplaceExistingVerifiedPortable=[bool]$existingVerified; DryRun=$false
+        } @{writer_inventory_sha256=$Script:LabelWriterFenceInventorySha256;orchestrator_sha256=$writerOrchestratorSha256
+            writer_contract_sha256=$writerContractSha256;session_started_at_utc=$writerStartedAt
+            session_id=$writerSessionId;attempt_id=$writerAttemptId;replacement_transaction_id=$writerTransactionId}
+    }
     [void](Start-LabelWriterFence `
         -ControlRoot $writerFenceControlRoot `
         -Status 'QUIESCING' `

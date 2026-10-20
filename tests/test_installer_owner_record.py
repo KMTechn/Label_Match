@@ -59,3 +59,47 @@ if($case -in @('wrong-start','wrong-pid','wrong-fence')){
 'PASS'
 ''',engine=engine,values={'LM_OWNER_ROOT':str(tmp_path),'LM_OWNER_CASE':case})
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
+@pytest.mark.parametrize('case', ('prefence-publish', 'prefence-wrong-session'))
+def test_owner_record_is_published_before_the_fence_from_the_caller_tuple(tmp_path, engine, case):
+    """118 review: no fence exists yet, so no fence read and no admission lease."""
+    result = run_functions(tmp_path, ROOT/'INSTALL_THIS_PC.ps1', ['Write-LabelInstallerOwnerRecord'], r'''
+$InstallRoot=Join-Path $env:LM_OWNER_ROOT 'current'
+$InstallerRunId='20261004T000000000Z-'+('a'*32)
+$InstallerOwnerProcessId=$PID
+$InstallerOwnerProcessStartedAtFileTime=[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString()
+$WriterFenceControlRoot=Join-Path $env:LM_OWNER_ROOT 'control'
+$WriterFenceSessionId='1'*32;$WriterFenceAttemptId='2'*32;$WriterFenceReplacementTransactionId='3'*32
+$tuple=[pscustomobject]@{session_id=$WriterFenceSessionId;attempt_id=$WriterFenceAttemptId;replacement_transaction_id=$WriterFenceReplacementTransactionId;
+ writer_inventory_sha256=('4'*64);orchestrator_sha256=('5'*64);writer_contract_sha256=('6'*64);session_started_at_utc='2026-10-04T00:00:00Z'}
+$script:protected=0
+function Enter-LabelCanonicalPlacement {param($TimeoutMilliseconds) throw 'no fence yet: no admission lease'}
+function Exit-LabelWriterAdmission {param($Lease) throw 'no lease to release'}
+function Read-LabelWriterFence {param($Root) throw 'no fence yet'}
+function Assert-ProtectedCodeAncestors {param($Path)}
+function Assert-NoReparsePoint {param($Path,$Context)}
+function Protect-LabelInstallerOwnerFile {param($Path) $script:protected++}
+if($env:LM_OWNER_CASE -ceq 'prefence-wrong-session'){$tuple.session_id='f'*32}
+$path=Join-Path $env:LM_OWNER_ROOT ('.installer-owner-'+$WriterFenceSessionId+'-'+('a'*32)+'.json')
+$failure=$null
+try {Write-LabelInstallerOwnerRecord $InstallRoot $tuple} catch {$failure=$_}
+if($env:LM_OWNER_CASE -ceq 'prefence-wrong-session'){
+ if($null -eq $failure -or (Test-Path -LiteralPath $path)){throw 'Other fence tuple published an owner record'}
+} else {
+ if($null -ne $failure){throw $failure}
+ $record=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json
+ foreach($key in @('session_id','attempt_id','replacement_transaction_id','writer_inventory_sha256','orchestrator_sha256','writer_contract_sha256')){
+  if([string]$record.$key -cne [string]$tuple.$key){throw ('Tuple field differs: '+$key)}
+ }
+ # PowerShell 7 turns an ISO string into a date object when parsed: compare the raw text.
+ if((Get-Content -LiteralPath $path -Raw) -cnotmatch [regex]::Escape('"session_started_at_utc":"2026-10-04T00:00:00Z"')){throw 'Session start differs'}
+ if($record.owner_process_id -ne $PID -or $script:protected -ne 1){throw 'Owner binding differs'}
+ $before=[IO.File]::ReadAllBytes($path)
+ Write-LabelInstallerOwnerRecord $InstallRoot $tuple
+ if([Convert]::ToBase64String($before) -cne [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))){throw 'Owner proof rewritten'}
+}
+'PASS'
+''',engine=engine,values={'LM_OWNER_ROOT':str(tmp_path),'LM_OWNER_CASE':case})
+    assert result.returncode == 0, result.stdout + result.stderr

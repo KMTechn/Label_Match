@@ -115,3 +115,47 @@ def test_second_writer_inventory_does_not_reread_the_tree(monkeypatch, tmp_path)
     (bundle / "app" / "m.py").write_bytes(b"z=2\n")
     auto_update.version_writer_inventory_sha256(bundle)
     assert len(reads) > first
+
+
+def test_known_limit_second_check_does_not_read_bytes_of_a_same_size_same_mtime_change(monkeypatch, tmp_path):
+    """Documented limit (operations.md 「한 번 읽기」 한계, BACKLOG G100b), not a fix.
+
+    The second check trusts size + mtime_ns of the tree this process already
+    verified. A file put back with the same size and the same mtime_ns is not
+    seen: the second check reads no bytes and answers the cached PASS. The first
+    check (changes while it runs) and any size/mtime change are still caught.
+    """
+    import os
+    paths = _tree(tmp_path)
+    monkeypatch.setattr(onboarding, "_verify_bootstrap_integrity_uncached",
+                        lambda p, *, required: {"status": "PASS"})
+    onboarding._BOOTSTRAP_INTEGRITY_PASS.clear()
+    target = paths.app_root / "a.py"
+    assert onboarding.verify_bootstrap_integrity(paths, required=True)["status"] == "PASS"
+    stat = target.lstat()
+    target.write_bytes(b"x=2\n")  # same size as b"x=1\n"
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert target.lstat().st_size == stat.st_size and target.lstat().st_mtime_ns == stat.st_mtime_ns
+    reads = []
+    original = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: reads.append(self) or original(self))
+    assert onboarding.verify_bootstrap_integrity(paths, required=True)["status"] == "PASS"
+    assert reads == []  # the second check did not read the changed bytes
+
+
+def test_registration_child_cap_equals_the_relay_wait_and_other_ps_caps_are_other_meanings():
+    """Table check (operations.md 「고정 상한 판정표」): only values with the relay-prepare
+    meaning are tied to RELAY_PREPARE_SECONDS; the rest are pinned as different caps."""
+    ps = INSTALLER.read_text(encoding="utf-8")
+    ms = auto_update.RELAY_PREPARE_SECONDS * 1000
+    # Outer cap of the first-setup registration child, which itself waits up to
+    # RELAY_PREPARE_SECONDS for the relay: it must not be smaller (else it kills it).
+    assert f"function Wait-LabelRegistrationChild([Diagnostics.Process]$Process, [int]$TimeoutMilliseconds={ms})" in ps
+    assert "Wait-LabelRegistrationChild $process" in ps
+    # Different meanings, left alone on purpose.
+    assert "function Wait-LabelPlacementChild([Diagnostics.Process]$Process, [Diagnostics.Process]$Parent, [int]$TimeoutMilliseconds=720000)" in ps
+    assert ps.count("-TimeoutMilliseconds 90000") >= 6          # writer-admission / fence waits
+    assert "$process.WaitForExit(120000)" in ps                  # dead-installer proof child
+    assert "Start-Sleep -Seconds 3" in ps                        # rollback relay restart settle
+    host = (ROOT / "shell" / "host.py").read_text(encoding="utf-8")
+    assert "CLOSING_WAIT_SECONDS = 120" in host                  # window closing dialog
