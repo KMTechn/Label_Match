@@ -1358,7 +1358,7 @@ Python relay 시작은 임시 bootstrap 종료 뒤에도 최대 600초(설치기
 | `CLOSING_WAIT_SECONDS` 120 | `shell/host.py` 닫는 중 안내창 | 아니오 | 아니오 | 손 0 — 창 닫기 대기 |
 | 60·120·240 | `auto_update.py` 적용 진행·SYSTEM 되돌림·시작 때 업데이트 대기 | 아니오 | 아니오 | 손 0(앞 표 그대로) |
 
-**한 번 읽기의 한계.** 같은 프로세스의 두 번째 확인(`verify_bootstrap_integrity`·`version_writer_inventory_sha256`)은 트리 파일의 크기·mtime_ns 가 첫 확인 때와 같으면 바이트를 다시 읽지 않는다. 그래서 **같은 크기·같은 mtime 으로 되돌려 쓴 변조는 두 번째 확인이 못 본다**(바탕은 매 확인마다 바이트를 비교했다). 첫 확인이 도는 동안의 바뀜과 크기·mtime 이 바뀐 변조는 그대로 거절한다. 전제는 보호 트리(관리자 쓰기)이고 보장 하향이므로 구현 유지 여부는 관리자 승인 대기다. `test_known_limit_second_check_does_not_read_bytes_of_a_same_size_same_mtime_change` 가 한계를 그대로 보인다(고침이 아니다).
+**한 번 읽기의 한계.** 같은 프로세스의 두 번째 확인(`verify_bootstrap_integrity`·`version_writer_inventory_sha256`)은 트리 파일의 크기·mtime_ns 가 첫 확인 때와 같으면 바이트를 다시 읽지 않는다. 그래서 **같은 크기·같은 mtime 으로 되돌려 쓴 변조는 두 번째 확인이 못 본다**(바탕은 매 확인마다 바이트를 비교했다). 첫 확인이 도는 동안의 바뀜과 크기·mtime 이 바뀐 변조는 그대로 거절한다. 전제는 보호 트리(관리자 쓰기)이고 관리자 권한 변조는 이 확인으로 못 막는다 — 관리자 10/20 18:0x 받음(내부용 기준). `test_known_limit_second_check_does_not_read_bytes_of_a_same_size_same_mtime_change` 가 한계를 그대로 보인다(고침이 아니다). 크기·mtime 이 바뀐 파일은 `test_changed_file_after_pass_is_still_rejected_or_reverified`·`test_same_size_file_with_a_new_mtime_is_reverified_and_rejected` 가 두 번째 확인에서도 거절함을 보인다.
 
 한국어 안내를 가진 INSTALL_THIS_PC.ps1·INSTALL_CANONICAL_PORTABLE.ps1은 UTF-8 BOM을 유지한다. 호스트 Windows PowerShell 5.1이 실제 두 파일을 ParseFile로 읽고 한국어 문자열과 전체 decoded source를 보존한 회귀는 PROVEN이다. 기본 codepage 65001 환경이며 다른 ANSI codepage의 실제 -File 설치/안내는 랩 NOT TESTED다. stock packet·companion의 최종 byte 선언은 중앙 출시 컷에서 다시 고정한다.
 
@@ -1498,7 +1498,7 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 
 지원 시작 업데이트 작업의 소유 판정은 `ServiceAccount`와 숫자 `5`, `Highest`·`HighestAvailable`과 숫자 `1`을 같은 스케줄러 되읽기로 받는다. 다른 주체·로그온 유형·실행 수준·action은 기존대로 거절한다. 제거 입구와 업데이트 관측 입구가 같은 판정을 사용하며 작업 등록·권한 정책은 바꾸지 않는다.
 
-기계 설치기는 코드·입구 readback 뒤 공용 바탕화면·공용 시작 메뉴를 준비한다. 작업자 세션의 canonical 설치기는 최종 relay/Run 확인 뒤 개인 바탕화면·시작 메뉴의 옛 깨진 링크를 준비한다. 대상은 current/runtime/pythonw.exe, 인수는 `-I -B "<current>/app/main.py"`, 작업 폴더는 current, 이름은 새로 만들 때 「포장」, 아이콘은 current/app/assets/logo.ico, WindowStyle=1이다. 설치 루트 아래의 사라진 대상과 속성·해시로 증명한 옛 launch-label-match.cmd 링크를 같은 자리에서 바꾸며 다른 앱·다른 루트·그 밖의 파일이 있는 대상은 그대로 둔다. 공용 각 자리에서 바꿀 링크가 없으면 새 링크를 만든다.
+기계 설치기는 코드·입구 readback 뒤 공용 시작 메뉴만 준비한다(6362fa93 부터 · 공용 바탕화면 링크 0). 작업자 준비 단계에서 그 작업자의 바탕화면·시작 메뉴에 「KMTech 포장.lnk」 를 만들고 제거가 치우는 것(이적 꼴)은 10/28 판 몫이다(BACKLOG). 작업자 세션의 canonical 설치기는 최종 relay/Run 확인 뒤 개인 바탕화면·시작 메뉴의 옛 깨진 링크를 준비한다. 대상은 current/runtime/pythonw.exe, 인수는 `-I -B "<current>/app/main.py"`, 작업 폴더는 current, 이름은 새로 만들 때 「포장」, 아이콘은 current/app/assets/logo.ico, WindowStyle=1이다. 설치 루트 아래의 사라진 대상과 속성·해시로 증명한 옛 launch-label-match.cmd 링크를 같은 자리에서 바꾸며 다른 앱·다른 루트·그 밖의 파일이 있는 대상은 그대로 둔다. 공용 각 자리에서 바꿀 링크가 없으면 새 링크를 만든다.
 
 설치 감사의 worker_shortcuts는 common_record_path와 user_record_path를 기록한다. 각 JSON은 원래 대상·인수·아이콘 등 속성과 .preimages/의 원본 링크·해시, 새 링크 해시를 보존한다. 실패한 설치의 코드 복원 뒤 canonical rollback이 개인과 공용 기록을 각각 소비한다. 지원 제거에서 기계 helper에 WorkerShortcutRecordPath·VerifiedWorkerShortcutHelperPath·ExpectedWorkerShortcutHelperSha256을 제공하면 같은 공용 복원 경계를 사용한다. 옛 앱 복귀를 수행하는 작업자 도구는 보존한 해시 검증 helper tools/label_worker_shortcuts.ps1에 -InstallRoot <current> -RecordPath <user JSON> -UserOnly -Rollback(또는 -Uninstall)을 넘겨 개인 링크를 복원한다. 이 바로 가기 명령은 코드·자료를 복원하는 설치 명령과 별개이며, 코드 복원 뒤 실행한다.
 
