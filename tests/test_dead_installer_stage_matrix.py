@@ -31,6 +31,11 @@ pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows named mutex req
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1'
 CONTEXT = {'operator_sid': 'S-1-5-21-1-2-3-1001', 'source_root': 'x', 'values': {}}
+# The machine (worker kit) path has no user-path rollback inputs to resume from:
+# its context only marks the kind, so a dead run is settled like a no-context run.
+MACHINE_CONTEXT = {'kind': 'MACHINE_WORKER_DEFERRED', 'operator_sid': 'S-1-5-21-1-2-3-1001', 'source_root': 'x'}
+MACHINE_INSTALLER = ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1'
+HELPER = ROOT / 'INSTALL_THIS_PC.ps1'
 
 # stage -> (fence status, audit status, audit keeps tuple, context saved, owner record present)
 CASES = {
@@ -39,10 +44,17 @@ CASES = {
     'S3-code-copy-tuple-context': ('INSTALLING', 'PREIMAGE_SAVED', True, True, True),
     'S4-rollback-no-tuple-context': ('RESTORING', 'PREIMAGE_SAVED', False, True, True),
     'S4-rollback-tuple-context': ('RESTORING', 'PREIMAGE_SAVED', True, True, True),
-    'S2-after-fence-no-owner-record': ('QUIESCING', 'PREIMAGE_SAVED', True, False, False),
+    # (118 review) The owner record is written BEFORE the fence, so a fence never
+    # exists without it: the run killed right after the fence is made has both.
+    'S2-fence-just-made-owner-written-first': ('QUIESCING', 'PREIMAGE_SAVED', True, False, True),
+    # Machine path: tuple saved before the fence, kind-only context, owner first.
+    'M2-machine-fence-just-made': ('INSTALLING', 'PREIMAGE_SAVED', True, 'machine', True),
+    'M3-machine-code-copy': ('INSTALLING', 'PREIMAGE_SAVED', True, 'machine', True),
+    'M5-machine-rollback': ('RESTORING', 'PREIMAGE_SAVED', True, 'machine', True),
 }
-# After the fix every case but S2 must leave one door that is accepted.
-STUCK_BY_DESIGN = {'S2-after-fence-no-owner-record'}
+# Every stage leaves one accepted door; nothing is stuck by design any more.
+STUCK_BY_DESIGN = frozenset()
+MACHINE_CASES = tuple(name for name in CASES if name.startswith('M'))
 
 
 def _shape(carried, monkeypatch, case):
@@ -52,7 +64,7 @@ def _shape(carried, monkeypatch, case):
     if not tuple_kept:
         record.pop('writer_fence')
     if context:
-        record['recovery_context'] = CONTEXT
+        record['recovery_context'] = MACHINE_CONTEXT if context == 'machine' else CONTEXT
     audit.write_text(json.dumps(record), encoding='utf-8')
     payload['status'] = fence_status
     (control / fence.ACTIVE_FILENAME).write_text(json.dumps(payload), encoding='utf-8')
@@ -86,8 +98,10 @@ def test_dead_installer_is_not_stuck_at_any_stage(carried, monkeypatch, tmp_path
     with open(tmp_path.parent / 'g99c-table.jsonl', 'a', encoding='utf-8') as handle:
         handle.write(json.dumps({'case': case, **out}, ensure_ascii=False) + chr(10))
     removal_door = out['removal'] == 'settled' and out['reinstall'] == 'STARTED'
-    if case in STUCK_BY_DESIGN:
-        assert not out['resume'] and not removal_door
+    assert case not in STUCK_BY_DESIGN
+    if case in MACHINE_CASES:
+        # No resume exists for the machine path: removal then reinstall must open.
+        assert removal_door and not out['resume'], out
         return
     assert out['resume'] or removal_door, out
 
@@ -135,3 +149,41 @@ def test_s1_killed_before_the_fence_exists_leaves_nothing_to_settle(carried, mon
     with open(tmp_path.parent / 'g99c-table.jsonl', 'a', encoding='utf-8') as handle:
         handle.write(json.dumps({'case': 'S1-before-fence', 'resume': 'n/a', 'app_start': 'passes (no fence)',
                                  'removal': 'PASS-not-settled', 'reinstall': 'STARTED'}) + chr(10))
+
+
+def test_general_path_writes_the_owner_record_before_it_creates_the_fence():
+    text = INSTALLER.read_text(encoding='utf-8')
+    body = text[text.index('$mutated = $false\n$Script:LabelRollbackCandidateRelays'):]
+    fence = body.index('[void](Start-LabelWriterFence `\n        -ControlRoot $writerFenceControlRoot')
+    call = body.index('Invoke-LabelPreFenceOwnerRecord')
+    assert body.index('. Save-LabelPreFenceWriterTuple') < call < fence
+    assert call > body.index('Enter-LabelWriterSessionAuthority')
+
+
+def test_machine_path_saves_tuple_context_and_owner_record_before_the_fence():
+    text = MACHINE_INSTALLER.read_text(encoding='utf-8')
+    start = text.index('$authority = $null; $fenced = $false;$machineFenceReleaseProven=$false')
+    body = text[start:start + 9000]
+    fence = body.index("[void](Start-LabelWriterFence -ControlRoot $control -Status 'INSTALLING'")
+    delegation = body.index('Set-LabelWriterFenceDelegation')
+    for name in ('Save-LabelMachinePreFenceRecord', 'Invoke-LabelPreFenceOwnerRecord'):
+        assert name in body[:fence], name
+    assert body.index('Save-LabelMachinePreFenceRecord') < body.index('Invoke-LabelPreFenceOwnerRecord') < fence < delegation
+    helper = text[text.index('function Save-LabelMachinePreFenceRecord'):]
+    helper = helper[:helper.index('\nfunction ')]
+    assert 'PENDING_FENCE' in helper and 'MACHINE_WORKER_DEFERRED' in helper
+    assert helper.index('Save $auditFile $audit') < helper.index('Get-Content') < helper.index('readback differs')
+
+
+def test_helper_has_an_owner_record_only_mode_that_needs_no_fence():
+    helper = HELPER.read_text(encoding='utf-8')
+    assert '[switch]$WriteInstallerOwnerRecordOnly' in helper
+    function = helper[helper.index('function Write-LabelInstallerOwnerRecord'):]
+    function = function[:function.index('\nfunction ')]
+    assert '$Tuple' in function
+    # With a caller tuple the fence is not read and no admission lease is taken.
+    assert function.index('if ($null -ne $Tuple)') < function.index('Read-LabelWriterFence')
+    text = MACHINE_INSTALLER.read_text(encoding='utf-8')
+    assert text.count('WriteInstallerOwnerRecordOnly') >= 3  # allowed names, mapping, caller
+    for name in ('InstallerOwnerWriterInventorySha256', 'InstallerOwnerSessionStartedAtUtc'):
+        assert name in text and name in helper
