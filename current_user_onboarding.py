@@ -659,17 +659,33 @@ def verify_bootstrap_integrity(paths: CurrentUserOnboardingPaths, *, required: b
             if candidate.is_file():
                 rows.append((candidate.relative_to(paths.app_root).as_posix(), candidate.read_bytes()))
         return tuple(rows)
+    def shape():
+        # Metadata only (no file bytes): names, sizes and mtimes of the same walk.
+        rows = []
+        for candidate in sorted(paths.app_root.rglob("*")):
+            if _is_reparse_point(candidate):
+                raise ValueError("bootstrap code path is redirected")
+            info = candidate.lstat()
+            rows.append((candidate.relative_to(paths.app_root).as_posix(), candidate.is_file(),
+                         info.st_size, info.st_mtime_ns))
+        return tuple(rows)
     with remote_request():
-        observed = inputs()
         key = (paths.app_root.absolute(), paths.bootstrap_integrity_path.absolute())
         cached = _BOOTSTRAP_INTEGRITY_PASS.get(key)
+        # A tree this process already verified is not read again while its
+        # metadata is unchanged (G100b: each full read cost ~50 s on a loaded PC);
+        # any metadata change falls through to the full byte comparison below.
+        if cached is not None and cached[2] == shape():
+            return dict(cached[1])
+        observed = inputs()
         if cached is not None and cached[0] == observed:
             return dict(cached[1])
+        before = shape()
         result = _verify_bootstrap_integrity_uncached(paths, required=required)
-        if inputs() != observed:
+        if inputs() != observed or shape() != before:
             raise ValueError("bootstrap code changed during verification")
         if result.get("status") == "PASS":
-            _BOOTSTRAP_INTEGRITY_PASS[key] = (observed, dict(result))
+            _BOOTSTRAP_INTEGRITY_PASS[key] = (observed, dict(result), before)
         return result
 
 

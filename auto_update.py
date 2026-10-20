@@ -36,6 +36,10 @@ RELAY_READY_CHECKS = ("relay_initialized", *READY_CHECKS[1:])
 
 APPLY_PROGRESS_TIMEOUT = 60
 STARTUP_WAIT_SECONDS = 240
+# One value for every wait on a relay that a first setup / bootstrap starts (G100b).
+# user_relay.bootstrap_readiness_seconds and the installer relay waits equal it
+# (pinned by tests/test_first_setup_wait_and_single_read.py).
+RELAY_PREPARE_SECONDS = 600
 UPDATE_RELAY_STOP_REQUESTED = "UPDATE_RELAY_STOP_REQUESTED"
 STARTUP_PROGRESS_MESSAGE = "업데이트가 진행 중입니다. 잠시 후 다시 실행하세요."
 UPDATE_MUTEX_RECOVERY_MESSAGE = (
@@ -655,18 +659,33 @@ def version_writer_inventory_sha256(bundle: Path) -> str:
             _assert_no_reparse_components(path)
             result.append((path.relative_to(bundle).as_posix(), path.read_bytes()))
         return tuple(result)
+    def shape():
+        # Metadata only (no file bytes) of the same file set.
+        paths = [*_runtime_files(bundle / "app", ".py"), *_runtime_files(bundle / "app", ".ps1"),
+                 bundle / "INSTALL_THIS_PC.ps1"]
+        rows = []
+        for path in sorted(paths):
+            _assert_no_reparse_components(path)
+            info = path.lstat()
+            rows.append((path.relative_to(bundle).as_posix(), info.st_size, info.st_mtime_ns))
+        return tuple(rows)
     with remote_request():
-        observed = inputs()
         cached = _VERSION_WRITER_INVENTORY_PASS.get(selected)
+        # Same bundle already verified by this process and metadata unchanged:
+        # do not read every file again (G100b); otherwise compare the bytes.
+        if cached is not None and len(cached) > 2 and cached[2] == shape():
+            return cached[1]
+        observed = inputs()
         if cached is None or cached[0] != observed:
             cached = next((entry for entry in _VERSION_WRITER_INVENTORY_PASS.values() if entry[0] == observed), None)
         if cached is not None and cached[0] == observed:
-            _VERSION_WRITER_INVENTORY_PASS[selected] = cached
+            _VERSION_WRITER_INVENTORY_PASS[selected] = (cached[0], cached[1], shape())
             return cached[1]
+        before = shape()
         result = _version_writer_inventory_sha256(bundle)
-        if inputs() != observed:
+        if inputs() != observed or shape() != before:
             raise ValueError("writer inventory changed during verification")
-        _VERSION_WRITER_INVENTORY_PASS[selected] = (observed, result)
+        _VERSION_WRITER_INVENTORY_PASS[selected] = (observed, result, before)
         return result
 
 
@@ -2888,7 +2907,7 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
     if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
         assert_ordinary_recovery(control, policy, active["sha"], started_at)
     if deadline is None:
-        deadline = time.monotonic() + 75
+        deadline = time.monotonic() + RELAY_PREPARE_SECONDS
     pid = _launch_bootstrap_version(control, active["sha"], arguments, deadline=deadline, deferred_at=started_at)
     relay_pid = pid if arguments[:1] and arguments[0] in {"--label-match-user-relay", "--label-match-direct-sync-relay"} else None
     if not wait_current_relay(control, policy, active["sha"], started_at=started_at,
@@ -3200,7 +3219,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                     # The ordinary stale-owner recovery starts after the apply
                     # wait has ended; give its relay a bounded readiness window.
                     writer_result = recovery_writer_result(control, policy, active, arguments,
-                        role=role, deadline=time.monotonic() + 75, state=state, claim_status="UNKNOWN")
+                        role=role, deadline=time.monotonic() + RELAY_PREPARE_SECONDS, state=state, claim_status="UNKNOWN")
                     if writer_result is not None:
                         return writer_result
                     if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared_pending(control, policy, state):
@@ -3221,7 +3240,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
             active = read_json(control / "active.json")
             if gui_recovery_state(state, claim_status):
                 writer_result = recovery_writer_result(control, policy, active, arguments,
-                    role=role, deadline=time.monotonic() + 75, state=state, claim_status=claim_status)
+                    role=role, deadline=time.monotonic() + RELAY_PREPARE_SECONDS, state=state, claim_status=claim_status)
                 if writer_result is not None:
                     return writer_result
     assert_ordinary_recovery(control, policy, active["sha"], now_utc())
