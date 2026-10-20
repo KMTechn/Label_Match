@@ -947,6 +947,15 @@ def _failed_installer_removal_sources(
                 if counted_files > 128:
                     return None
             owner = audit.get("writer_fence")
+            if ("writer_fence" not in audit and path.name == 'canonical-portable-' + run_id + '.json'
+                    and audit.get('run_id') == run_id):
+                # G99c: a run killed after it made the fence but before its audit
+                # recorded the tuple carries none. The protected owner record
+                # (already equal to this fence) names the same run, so it stands
+                # in for the tuple; every other check below is unchanged. An audit
+                # of another run or with a different/garbled tuple is not adopted.
+                owner = {key: trusted.get(key) for key in (*_INSTALLER_TUPLE_FIELDS,
+                         'owner_process_id', 'owner_process_started_at_filetime')}
             if not isinstance(owner, dict) or any(owner.get(key) != active[key] for key in _INSTALLER_TUPLE_FIELDS):
                 continue
             # Every record claiming this identity must agree; never discard a

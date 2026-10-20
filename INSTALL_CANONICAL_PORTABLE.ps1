@@ -4714,6 +4714,35 @@ function Save-LabelPreChangeRecoveryContext {
     }
 }
 
+function Save-LabelPreFenceWriterTuple {
+    # Dot-source in the transaction scope BEFORE Start-LabelWriterFence (G99c).
+    # The fence tuple (the same values the protected owner record later carries)
+    # is saved in the audit and read back first, so an installer killed right
+    # after it made the fence never leaves a fence whose audit has no tuple.
+    $audit.writer_fence = [ordered]@{
+        status = 'PENDING_FENCE'
+        owner_process_id = [int]$PID
+        owner_process_started_at_filetime = $writerOwnerStartedAtFileTime
+        orchestrator_sha256 = $writerOrchestratorSha256
+        writer_contract_sha256 = $writerContractSha256
+        session_started_at_utc = $writerStartedAt
+        session_id = $writerSessionId
+        attempt_id = $writerAttemptId
+        replacement_transaction_id = $writerTransactionId
+        writer_inventory_sha256 = $Script:LabelWriterFenceInventorySha256
+        token_recorded = $false
+    }
+    Save $auditPath $audit
+    $readback = (Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json).writer_fence
+    foreach ($name in @('session_id','attempt_id','replacement_transaction_id','session_started_at_utc',
+        'orchestrator_sha256','writer_contract_sha256','writer_inventory_sha256',
+        'owner_process_id','owner_process_started_at_filetime')) {
+        if ($null -eq $readback -or [string]$readback.$name -cne [string]$audit.writer_fence[$name]) {
+            throw 'Writer fence tuple readback differs.'
+        }
+    }
+}
+
 function Assert-LabelDeadUnfinishedInstaller([string]$AuditPath) {
     # Death proof of the unfinished run: protected owner record equals the fence
     # tuple, the owner process ended with the same start time, no product writer
@@ -6829,6 +6858,7 @@ try {
         $firstRegistrationAttempt.status = 'RUNNING'
         Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
     }
+    . Save-LabelPreFenceWriterTuple
     [void](Start-LabelWriterFence `
         -ControlRoot $writerFenceControlRoot `
         -Status 'QUIESCING' `
