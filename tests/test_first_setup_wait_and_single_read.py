@@ -95,6 +95,23 @@ def test_changed_file_after_pass_is_still_rejected_or_reverified(monkeypatch, tm
     assert onboarding.verify_bootstrap_integrity(paths, required=True)["status"] == "FAIL"
 
 
+def test_same_size_file_with_a_new_mtime_is_reverified_and_rejected(monkeypatch, tmp_path):
+    import os
+    paths = _tree(tmp_path)
+    results = [{"status": "PASS"}, {"status": "FAIL"}]
+    monkeypatch.setattr(onboarding, "_verify_bootstrap_integrity_uncached",
+                        lambda p, *, required: results.pop(0))
+    onboarding._BOOTSTRAP_INTEGRITY_PASS.clear()
+    target = paths.app_root / "a.py"
+    assert onboarding.verify_bootstrap_integrity(paths, required=True)["status"] == "PASS"
+    stat = target.lstat()
+    target.write_bytes(b"x=2\n")  # same size as b"x=1\n"
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert target.lstat().st_size == stat.st_size
+    assert onboarding.verify_bootstrap_integrity(paths, required=True)["status"] == "FAIL"
+    assert results == []
+
+
 def test_second_writer_inventory_does_not_reread_the_tree(monkeypatch, tmp_path):
     import writer_sink_inventory
     bundle = tmp_path / "b"
