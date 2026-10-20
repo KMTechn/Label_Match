@@ -75,7 +75,7 @@ def failed_install(tmp_path, monkeypatch):
     monkeypatch.setenv(fence.CONTROL_ROOT_OVERRIDE_ENV, str(control))
     # The trust-admission seam is separate from native NTFS/PID/mutex behavior.
     # Host elevation is forbidden; production's native ACL rejection has its own test.
-    protected = Path(os.environ['LM_NTFS_TEST_ROOT']) / ('owner-' + uuid.uuid4().hex[:8])
+    protected = Path(os.environ.get('LM_NTFS_TEST_ROOT') or tmp_path) / ('owner-' + uuid.uuid4().hex[:8])
     protected.mkdir()
     record['run_id'] = '20261004T000000000Z-' + uuid.uuid4().hex
     record['writer_fence']['owner_process_started_at_filetime'] = created
@@ -87,6 +87,9 @@ def failed_install(tmp_path, monkeypatch):
     (protected / ('.installer-owner-' + payload['session_id'] + '-' + record['run_id'].rsplit('-', 1)[-1] + '.json')).write_text(json.dumps(trusted), encoding='utf-8')
     monkeypatch.setattr(fence, '_installer_owner_root', lambda: protected, raising=False)
     monkeypatch.setattr(fence, '_assert_protected_owner_path', lambda path, **kwargs: None, raising=False)
+    # An unfinished (RUNNING) dead run also needs "no writer process, no relay"; the native
+    # observation is replaced here and has its own tests in test_dead_installer_fence_entries.py.
+    monkeypatch.setattr(fence, '_installer_machine_idle', lambda trusted, environ: True, raising=False)
     yield control, payload, audit, record
 
 
@@ -178,7 +181,8 @@ def test_supported_removal_attempts_later_steps_after_independent_failure(tmp_pa
 @pytest.mark.parametrize("status,live,allowed", (
     ("FAILED_SUPPORTED_REMOVAL_REQUIRED", False, True),
     ("FAILED_SUPPORTED_REMOVAL_REQUIRED", True, False),
-    ("RUNNING", False, False),
+    ("RUNNING", False, True),
+    ("RUNNING", True, False),
     ("COMPLETE", False, False),
     ("FAILED_PRETRANSACTION", False, False),
 ))
@@ -197,7 +201,12 @@ def test_supported_removal_required_accepts_only_exact_dead_failure(failed_insta
         with pytest.raises(fence.WriterFencedError):
             _remove(events)
         assert events == []
-    assert (control / fence.ACTIVE_FILENAME).read_bytes() == original
+    if allowed and status == 'RUNNING':
+        # A dead run that never recorded a failure has no rollback left to resume:
+        # its exact fence is settled after the removal so the official reinstall can start.
+        assert not (control / fence.ACTIVE_FILENAME).exists()
+    else:
+        assert (control / fence.ACTIVE_FILENAME).read_bytes() == original
 
 
 @pytest.mark.parametrize('case', ('missing-protected', 'forged-pid', 'forged-run', 'forged-start',
