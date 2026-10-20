@@ -12,13 +12,14 @@ NAMES = ['Protect-LabelFailureText', 'Get-LabelLaunchFailure', 'Invoke-LabelRoll
          'Get-LabelPortableDataVersion', 'Assert-LabelRollbackGeneration', 'Assert-LabelDataDowngrade',
          'RestoreScheduledTask', 'Assert-LabelRollbackTaskPreimage', 'TextSha', 'ByteSha',
          'Test-RelayPersistentRetry', 'Get-RequiredExternalBoolean', 'Save-LabelRollbackContext',
-         'Invoke-LabelResumeRollback']
+         'Invoke-LabelResumeRollback', 'ReplacementPreimage']
 
 
 @pytest.mark.parametrize('engine', ['powershell.exe', 'pwsh.exe'])
 @pytest.mark.parametrize('case', ['onboarding', 'early', 'unproven', 'code_failed', 'task_failed',
                                  'startup_failed', 'g_ready', 'g_unready', 'resume', 'resume_unproven',
-                                 'released_allow', 'released_refuse', 'fresh_strict', 'resume_strict', 'placement_strict', 'resume_placement_strict', 'catch_placement_strict'])
+                                 'released_allow', 'released_refuse', 'fresh_strict', 'resume_strict', 'placement_strict', 'resume_placement_strict', 'catch_placement_strict',
+                                 'resume_unfinished_strict', 'resume_unfinished_placement_strict', 'resume_unfinished_live_refused'])
 def test_exact_preimages_and_safe_resume_with_real_generation(tmp_path, engine, case,
         generation_marker_paths=None, version_root=None, rollback_target_version=None):
     result = run_functions(tmp_path, INSTALLER, NAMES, r'''
@@ -158,6 +159,13 @@ if($case -like '*strict') {
  Set-StrictMode -Version Latest
 }
 if($case -like 'resume*') {
+ if($case -like 'resume_unfinished*') {
+  # A run that died: unfinished audit status, forward fence, context saved before any change
+  # (the code preimage folder did not exist yet, so the context cannot name it).
+  $audit.status='PREIMAGE_SAVED';$audit.writer_fence.status='QUIESCING'
+  $replacementRollbackRoot='';$replacementBackupsBefore=@()
+  function Assert-LabelDeadUnfinishedInstaller {param($AuditPath) $script:events.Add('death-proof');if($case -ceq 'resume_unfinished_live_refused'){throw 'Dead installer is unproven.'}}
+ }
  Save-LabelRollbackContext;Save $auditPath $audit
  $ResumeRollbackAuditPath=$auditPath;$ExpectedRollbackAuditSha256=Sha $auditPath;$testMode=$true;$PlanOnly=$false
  $empty=Join-Path $root 'empty.ps1';[IO.File]::WriteAllText($empty,'')
@@ -165,7 +173,7 @@ if($case -like 'resume*') {
  function ReceiptSource {param($Source,$Manifest) return $receiptSource}
  function Read-LabelWriterFence {return [pscustomobject]@{session_id=$writerSessionId;attempt_id=$writerAttemptId;
   replacement_transaction_id=$writerTransactionId;orchestrator_sha256=$writerOrchestratorSha256;writer_contract_sha256=$writerContractSha256}}
- try{. Invoke-LabelResumeRollback}catch{if($case -in @('resume','resume_strict','resume_placement_strict')){throw}}
+ try{. Invoke-LabelResumeRollback}catch{if($case -in @('resume','resume_strict','resume_placement_strict','resume_unfinished_strict','resume_unfinished_placement_strict')){throw}}
 } else {
  if($case -ceq 'catch_placement_strict'){
   $ast=[Management.Automation.Language.Parser]::ParseFile($env:LM_CONTRACT_SOURCE,[ref]$tokens,[ref]$errors)
@@ -189,14 +197,17 @@ if($case -like 'resume*') {
  }else{try{. Invoke-LabelCanonicalRollback}catch{$script:rollbackCaught=$_}}
 }
 if($case -like '*strict' -and $null -ne $script:rollbackCaught){throw $script:rollbackCaught}
-if($case -like '*placement_strict') {
+if($case -ceq 'resume_unfinished_live_refused') {
+ if($script:events.Contains('code') -or $script:events.Contains('release') -or $script:events.Contains('relay') -or -not $script:events.Contains('death-proof')){throw 'Unproven dead installer was rolled back'}
+ if($audit.status -cne 'PREIMAGE_SAVED'){throw 'Refused resume rewrote the audit status'}
+} elseif($case -like '*placement_strict') {
  if($script:held -or -not $script:events.Contains('release') -or -not $script:events.Contains('code')){throw 'Exact legacy code recovery did not finish'}
  if($audit.rollback.code_placement -cne 'RESTORED_PREIMAGE' -or -not $audit.rollback.runtime_restored){throw 'Legacy recovery audit differs'}
  $restored=[IO.File]::ReadAllBytes((Join-Path $install 'legacy.bin'))
  if((ByteSha $restored) -cne (ByteSha $legacyBytes) -or $restored.Length -ne 6){throw 'Old folder bytes differ'}
  if(-not (Test-Path -LiteralPath (Join-Path $replacementRollbackRoot 'legacy.bin'))){throw 'Recovery preimage was discarded'}
  if($case -like 'resume*' -and $audit.status -cne 'FAILED_ROLLED_BACK'){throw 'Supported resume status differs'}
-} elseif($case -in @('onboarding','early','resume','released_allow','fresh_strict','resume_strict')) {
+} elseif($case -in @('onboarding','early','resume','released_allow','fresh_strict','resume_strict','resume_unfinished_strict')) {
  if($script:held -or -not $script:events.Contains('release') -or -not $script:events.Contains('relay')){throw 'Proven restoration did not resume old relay'}
  if($script:runState.data -cne $before.data -or $script:runState.kind -cne $before.kind -or ($taskBefore.exists -and $script:taskXml -cne $legacyXml)){throw 'Autostart bytes differ'}
  if(-not $script:events.Contains('startup') -or (Test-Path -LiteralPath $install)){throw 'Absent code/startup restoration failed'}
@@ -211,7 +222,7 @@ if($case -like '*placement_strict') {
  if(-not $script:events.Contains('run') -or -not $script:events.Contains('task') -or -not $script:events.Contains('startup')){throw 'Independent autostart restoration was skipped'}
 }
 $phases=@($audit.rollback.steps | ForEach-Object phase)
-if($case -notlike 'g_*' -and $case -cne 'released_refuse' -and @($phases | Where-Object {$_ -ceq 'user_preimage_admission'}).Count -ne 1){throw 'Nested parent phase was lost'}
+if($case -notlike 'g_*' -and $case -cne 'released_refuse' -and $case -cne 'resume_unfinished_live_refused' -and @($phases | Where-Object {$_ -ceq 'user_preimage_admission'}).Count -ne 1){throw 'Nested parent phase was lost'}
 if(@($phases | Where-Object {$_ -ceq 'run_restore'}).Count -gt 1){throw 'Nested child phase was duplicated'}
 'PASS'
 ''', engine=engine, values={'LM_RECOVERY_ROOT': str(tmp_path), 'LM_RECOVERY_CASE': case,
