@@ -203,11 +203,11 @@ def test_bootstrap_without_proof_fails_after_600_seconds(monkeypatch, relay_boot
     clock, wait = _clocked_bootstrap(monkeypatch, relay_bootstrap, proof_at=None)
     with pytest.raises(user_relay.UserRelayError, match="did not prove the protected active-version relay"):
         user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
-    assert 600 <= clock[0] < 603
+    assert 600 <= clock[0] < 605
 
 
-def test_bootstrap_proof_after_600_seconds_is_rejected(monkeypatch, relay_bootstrap):
-    clock, wait = _clocked_bootstrap(monkeypatch, relay_bootstrap, proof_at=601)
+def test_bootstrap_proof_after_600_seconds_plus_survival_is_rejected(monkeypatch, relay_bootstrap):
+    clock, wait = _clocked_bootstrap(monkeypatch, relay_bootstrap, proof_at=605)
     with pytest.raises(user_relay.UserRelayError):
         user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
 
