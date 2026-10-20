@@ -1085,6 +1085,21 @@ capture8의 교정 wrapper 실측은 [동일 사용자 제거 native exit 0](D:/
 
 백업·복원은 데이터와 미전송 효과를 함께 다뤄야 한다. 현행 [보존 정책](../../DIRECT_SYNC_DATA_PLATFORM_NOTES.md)은 미확정 spool/status 삭제 금지와 ACKED retention의 read-only 후보 판정을 제공하지만, 완전한 운영 백업 도구·주기·RPO/RTO·검증된 복원본을 이 조사에서 확인하지 않았다. DB 단독 복사나 코드 rollback만으로 앱 CSV/queue/keyring/F5 journal까지 일관된 시점으로 복원됐다고 할 수 없다. 서로 다른 PC의 DPAPI/identity를 단순 파일 이동으로 복구할 수 있다고 가정하지 않는다. 실제 복원 방식·중앙 receipt 대조·중복 방지 확인을 소유 운영 절차에 확정할 필요가 있다.
 
+### 설치기가 통째로 죽은 뒤의 지원 제거 입구 (G99)
+
+설치기 프로세스가 전원 끊김·재부팅·창 닫힘으로 통째로 죽으면 실패 기록이나 복구 문맥을 남기지 못한다. 쓰기 울타리(`active.json`)만 남고 설치 감사는 끝나지 않은 상태(`RUNNING`, 설치기가 실제로 쓰는 값은 `PREIMAGE_SAVED`)로 멈춘다. 이 상태에서는 공식 입구 넷이 모두 거절한다. 지원 사용자 제거는 실패 상태만 받았고, 다시 설치는 `LABEL_WRITER_FENCE_ALREADY_ACTIVE`로 멈추며, 이어 되돌리기는 실패 상태와 복구 문맥을 요구하고, 앱 시작은 `ACTIVE_WRITER_FENCE`로 거절한다.
+
+기존 실패 상태(`ROLLBACK_FAILED` 등)와 같은 좁은 문이 끝나지 않은 감사에도 열린다. 아래가 **모두** 증명될 때만 열리고, 하나라도 거짓이거나 모르면 지금처럼 `WriterFencedError(ACTIVE_WRITER_FENCE)`로 거절한다.
+
+- 울타리가 canonical 설치기의 것이고 상태가 `QUIESCING` 또는 `INSTALLING`이다. 되돌리기 중(`RESTORING`·`RESTORE_FAILED`)의 울타리는 지원 되돌리기 재개 몫이라 받지 않는다.
+- 보호된 주인 기록 `.installer-owner-<session>-<run>.json`이 정확히 하나이고 울타리 튜플·run·설치 루트와 같다. 같은 run의 감사 기록이 정확히 하나이며 그 `writer_fence`가 주인 기록과 같고 상태가 끝나지 않은 값이다. `COMPLETE`·`PASS`·`FAILED_PRETRANSACTION`·그 밖의 상태, 기록 없음, 여럿, 모순은 거절한다.
+- 주인 프로세스가 끝났고(PID가 없거나, 같은 PID의 시작 시각이 기록과 같고 이미 종료) 시작 시각이 다르면 모름으로 거절한다. 세션 권한 뮤텍스를 지금 잡을 수 있다.
+- 쓰는 제품 프로세스(앱·relay·업데이트 도우미)가 없다(`process_snapshot`·`writer_processes`). relay 인스턴스 lease가 비어 있다. 관측 실패·`update-control` 없음은 거절한다.
+
+받는 출처는 실패 상태 때와 같은 `current_user_setup_removal`·`scheduled_task_remove`·`user_relay_autostart_remove`·`user_relay_stop_request` 넷뿐이고 자료는 보존한다(`PASS_DATA_PRESERVED`). 제거가 통과하면 같은 admission 안에서 **그 울타리 하나만** 정리한다. 울타리 바이트를 `writer-session/settled/<sha256>.json`에 정확한 사본으로 두고 되읽어 같음을 확인한 뒤에만 `active.json`을 지우며, 결과를 제거 보고서의 `abandoned_fence_settled`(session·attempt 해시, 사본 해시·경로)에 적는다. 울타리가 중간에 바뀌었거나 사본 되읽기가 다르면 정리하지 않고 제거를 실패로 보고한다. 실패 상태의 울타리는 지원 되돌리기 재개를 위해 지금처럼 남기며 정리하지 않는다. 감사 기록과 보호 주인 기록은 지우지 않는다.
+
+현장 안내: 같은 작업자 일반 세션에서 `--remove-current-user-setup`을 실행하고 `PASS_DATA_PRESERVED`를 확인한 뒤 공식 `INSTALL_CANONICAL_PORTABLE.ps1`을 다시 실행한다. 거절되면 쓰는 프로세스나 relay가 남았는지 먼저 확인한다. `tests/test_dead_installer_fence_entries.py`가 입구 넷의 거절, 열리는 조건과 닫힌 채로 남는 조건, 정리 뒤 `Start-LabelWriterFence` 통과를 격리 자료로 고정한다. 실제 설치기 강제 종료 뒤 현장 PC 확인은 NOT VERIFIED다.
+
 <a id="performance"></a>
 ## 처리량·동시성·최신성
 
