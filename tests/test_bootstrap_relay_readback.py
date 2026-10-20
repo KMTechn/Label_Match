@@ -219,3 +219,14 @@ def test_installer_relay_readiness_ceiling_is_600_seconds():
     assert "[double]$TimeoutSeconds = 600) {" in text
     assert "$TimeoutSeconds -gt 600) { throw 'Rollback readiness deadline differs.' }" in text
     assert "AddSeconds(75)" not in text and "-gt 75)" not in text
+
+
+def test_installer_relay_proof_loop_compares_utc_with_its_utc_deadline():
+    # $relayStartedAt is UtcNow, so the loop must read UtcNow too: PowerShell
+    # compares DateTime ticks without Kind, and local time east of UTC would
+    # already be past a UTC deadline before the first proof read.
+    text = (Path(__file__).resolve().parents[1] / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
+    assert "$relayStartedAt=[DateTime]::UtcNow" in text
+    assert "$deadline = $relayStartedAt.AddSeconds(600)" in text
+    assert "while ([DateTime]::UtcNow -lt $deadline) {" in text
+    assert "while ((Get-Date) -lt $deadline) {" not in text
