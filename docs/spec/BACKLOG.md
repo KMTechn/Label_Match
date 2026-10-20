@@ -808,3 +808,6 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - w9firstupd / G99 포장: 설치기 프로세스가 통째로 죽어 울타리만 남고 감사가 끝나지 않은 PC(공식 입구 넷 거절)를 푸는 입구를 더했다. 지원 `--remove-current-user-setup`이 죽음(보호 주인 기록·프로세스 종료)과 쓰는 프로세스 0·relay 0을 증명하면 실패 상태 때와 같은 좁은 출처 넷만 받고, 통과 뒤 그 울타리 하나를 `settled/`에 정확한 사본으로 두고 지운다. 언제 열리고 무엇만 받는지는 [운영](operations.md#설치기가-통째로-죽은-뒤의-지원-제거-입구-g99). 현장 안내: 같은 작업자 일반 세션에서 `--remove-current-user-setup` → 공식 다시 설치. 남은 일: 주인 기록을 쓰기 전에 죽거나 `update-control`이 없는 첫 설치 중단, 되돌리기 중(`RESTORING`) 죽음은 이 입구 밖이다. 실제 설치기 강제 종료 뒤 현장 PC 확인은 NOT VERIFIED.
 
 - relay 준비 대기 상한 600초(포장 117): 찬 첫 읽기(설치 코드 트리 전체 무결성 확인) 실제 소요 시간 실측은 VM 10/21 몫. 실측 뒤 상한 재조정 여부 판단.
+
+- w9firstupd / 포장 118: G100b — 첫 설정·relay 시작 사슬의 relay 준비 대기를 한 값 `auto_update.RELAY_PREPARE_SECONDS`(600 s)로 모았다(bootstrap :2891·두 복구 자리 75 → 600, `user_relay` bootstrap_readiness_seconds 600, 설치기 `AddSeconds(600)`은 정적 시험으로 같음을 묶음). 이미 통과한 트리는 같은 프로세스에서 다시 읽지 않는다(메타데이터 같으면 캐시, 다르면 바이트 비교). 남은: 메타데이터(크기·mtime)가 같게 바뀐 파일은 같은 프로세스 안에서 두 번째 확인이 못 본다(첫 확인 동안의 바뀜 거절은 그대로). VM 10/21 실측.
+- w9firstupd / 포장 118: G99c — 설치기가 울타리 전에 감사에 튜플을 저장하고, 입구는 튜플 없는 감사도 보호 주인 기록으로 받는다. 남은: ② 울타리 뒤·주인 기록 앞에 죽은 설치기는 보호 증거가 없어 아직 못 푼다(결정 대기). 코드가 반쯤 복사된 PC의 lifecycle 자식(`--label-match-lifecycle-context`) 실패는 울타리가 아니라 코드 상태 때문이라 이어 되돌리기로만 풀린다 — VM 확인 몫.

@@ -1107,6 +1107,20 @@ capture8의 교정 wrapper 실측은 [동일 사용자 제거 native exit 0](D:/
 현장 안내(갇힌 PC의 공식 순서): ① 감사 파일이 문맥을 가지면(보통 `PREIMAGE_SAVED` 이후) 설치와 같은 작업 사용자의 **관리자 PowerShell**에서 `INSTALL_CANONICAL_PORTABLE.ps1 -SourceRoot <같은 판 stock> -ResumeRollbackAuditPath <감사 파일> -ExpectedRollbackAuditSha256 <감사 SHA256>`을 한 번 실행한다. ② 그 뒤 필요하면 같은 작업자 일반 세션에서 `--remove-current-user-setup`을 실행하고 `PASS_DATA_PRESERVED`를 확인한 뒤 공식 `INSTALL_CANONICAL_PORTABLE.ps1`을 다시 실행한다. 문맥이 없는 죽은 시도(`RESUME_ROLLBACK_REQUIRED`가 아닌 거절 없이 통과)는 ①을 건너뛰고 ②만 한다. 거절되면 쓰는 프로세스나 relay가 남았는지 먼저 확인한다. `tests/test_dead_installer_fence_entries.py`가 입구 넷의 거절, 열리는 조건과 닫힌 채로 남는 조건, 정리 뒤 `Start-LabelWriterFence` 통과를, `tests/test_dead_installer_resume_rollback.py`와 `tests/test_install_recovery.py`의 `resume_unfinished_*`가 문맥 있는 죽은 시도의 사용자 제거 거절·이어 되돌리기 증명·복원을 격리 자료로 고정한다. 실제 설치기 강제 종료 뒤 현장 PC 확인은 NOT VERIFIED다.
 
 <a id="performance"></a>
+**울타리 튜플 미리 저장과 주인 기록 대체(G99c).** 설치기는 울타리(`Start-LabelWriterFence`)를 만들기 **전에** 감사의 `writer_fence`에 울타리 튜플(session·attempt·transaction·시작 시각·orchestrator·contract·inventory·주인 프로세스 id/시작 시각, 상태 `PENDING_FENCE`)을 저장하고 되읽어 같은지 확인한다(`Save-LabelPreFenceWriterTuple`). 울타리를 만든 직후 죽어도 감사에 튜플이 없는 울타리가 남지 않는다. 입구(`_failed_installer_removal_sources`·`prove_dead_unfinished_installer`)는 이미 그렇게 죽은 감사(`writer_fence` 키가 **없는** 감사)도 받는다: 보호 주인 기록(`.installer-owner-*.json`)이 울타리와 같고, 감사의 `run_id`·파일 이름이 그 주인 기록의 `run_id`와 같으면 주인 기록의 튜플·프로세스 값이 감사 튜플을 대신해 같은 판정(주인 프로세스 종료·세션 권한 뮤텍스 비어 있음·기계 한가함·문맥 유무에 따른 갈림)을 거친다. 다른 run 의 감사, 다른 울타리의 튜플, 튜플이 있으나 모순되는 감사는 그대로 거절한다.
+
+죽은 시점별 결과(문맥 = 설치기가 첫 변경 전에 저장하는 `recovery_context`):
+
+| 시점 | 남는 것 | 사용자 몫 제거 | 공식 다시 설치 | 이어 되돌리기 | 앱 시작 |
+|---|---|---|---|---|---|
+| ① 울타리 앞 | 울타리 없음 | 통과(정리할 것 없음) | 통과 | 해당 없음 | 통과 |
+| ② 울타리 뒤·주인 기록 앞 | 울타리·감사 튜플, 주인 기록 없음 | 거절 | 거절 | 거절 | 거절 |
+| ③ 코드 복사 중 | 울타리·주인 기록, 감사 튜플 있거나 없음, 문맥 있거나 없음 | 문맥 없음: 정리 후 통과 / 문맥 있음: `RESUME_ROLLBACK_REQUIRED` | 문맥 없음: 정리 뒤 통과 / 문맥 있음: 이어 되돌리기 뒤 | 문맥 있으면 받음 | 거절(울타리) |
+| ④ 되돌림 중 | 울타리 `RESTORING`·주인 기록·문맥 | 거절 | 이어 되돌리기 뒤 | 받음 | 거절(울타리) |
+
+②는 주인 기록을 쓰는 배치 도우미가 아직 안 돈 짧은 틈이라 보호 증거가 없어 열지 않는다(감사는 사용자 쓰기 영역이므로 감사 튜플만으로 열지 않는다. 결정 대기).
+
+
 ## 처리량·동시성·최신성
 
 <a id="responsiveness-w2"></a>
