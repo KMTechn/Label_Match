@@ -7051,7 +7051,7 @@ try {
     $deadline = $relayStartedAt.AddSeconds(600)
     $relay = $null
     $relayPersistentRetry = $false
-    while ((Get-Date) -lt $deadline) {
+    while ([DateTime]::UtcNow -lt $deadline) {
         if (
             (Test-Path $relayPath) -and
             (Get-Item $relayPath).LastWriteTimeUtc -ge $started.AddSeconds(-1)
