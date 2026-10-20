@@ -515,6 +515,13 @@ _FAILED_INSTALL_STATUSES = frozenset({
     "ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE", "FAILED_ROLLED_BACK",
     "FAILED_SUPPORTED_REMOVAL_REQUIRED",
 })
+# An installer killed mid-run (power loss, reboot, closed window) records no
+# failure: its audit keeps the status it had while running and its fence stays.
+# The installer itself writes PREIMAGE_SAVED; RUNNING is the generic value.
+_UNFINISHED_INSTALL_STATUSES = frozenset({"RUNNING", "PREIMAGE_SAVED"})
+# Only forward-run fence states qualify; a rollback in progress (RESTORING,
+# RESTORE_FAILED) keeps its fence for the supported rollback resume.
+_UNFINISHED_FENCE_STATUSES = frozenset({"QUIESCING", "INSTALLING"})
 _PRIVILEGED_OWNER_SIDS = frozenset({"S-1-5-18", "S-1-5-32-544",
     "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"})
 
@@ -741,6 +748,81 @@ def installer_lifecycle_authority(root, owner_record, install_root, *, source):
                 _WRITER_LOCAL.installer_authority_root = previous
 
 
+def _unfinished_install_run(audit: Mapping[str, Any], active: Mapping[str, Any]) -> bool:
+    return (audit.get("status") in _UNFINISHED_INSTALL_STATUSES
+            and active.get("status") in _UNFINISHED_FENCE_STATUSES)
+
+
+def _installer_machine_idle(trusted: Mapping[str, Any], environ: Mapping[str, str]) -> bool:
+    """Read-only proof that no product writer process and no relay is running.
+
+    A recorded failure already ended both before the installer reported it. An
+    installer killed mid-run proves neither, so they are observed with the update
+    helper's process snapshot and the relay instance lease. Anything that cannot
+    be observed is not idle.
+    """
+    try:
+        from auto_update import control_root, process_snapshot, writer_processes
+        from current_user_onboarding import resolve_current_user_onboarding_paths
+        from user_relay import _acquire_relay_lease
+
+        app_root = Path(str(trusted["install_root"]))
+        control = control_root(app_root / "app")
+        if control is None or writer_processes(process_snapshot(control), own_pid=os.getpid()):
+            return False
+        relay = _acquire_relay_lease(
+            resolve_current_user_onboarding_paths(app_root, environ=environ).direct_sync_root
+            / "user-relay-instance")
+        if relay is None:
+            return False
+        relay.close()
+        return True
+    except Exception:
+        return False
+
+
+def settle_dead_installer_fence() -> dict[str, str] | None:
+    """Retire the exact fence of a dead, unfinished installer after user removal.
+
+    Only the admission that proved the death (it left a thread-local record) can
+    settle, and only the unchanged fence bytes: they are copied to
+    settled/<sha256>.json, read back, and then the active file is removed so the
+    official reinstall can start. A recorded failure never reaches this; its
+    fence stays for the supported rollback resume.
+    """
+    scope = getattr(_WRITER_LOCAL, "dead_installer_settlement", None)
+    if scope is None or getattr(_WRITER_LOCAL, "failed_removal_authority", None) is None:
+        return None
+    root, active, original, environ = scope
+    path = root / ACTIVE_FILENAME
+    if active_fence(root, environ=environ) != active or path.read_bytes() != original:
+        raise ValueError("writer fence changed before removal settlement")
+    digest = hashlib.sha256(original).hexdigest()
+    copy = root / "settled" / (digest + ".json")
+    _assert_no_reparse_components(copy)
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_reparse_components(copy)
+    if not copy.exists():
+        with copy.open("xb") as handle:
+            handle.write(original)
+            handle.flush()
+            os.fsync(handle.fileno())
+    _assert_no_reparse_components(copy)
+    if (copy.read_bytes() != original or path.read_bytes() != original
+            or active_fence(root, environ=environ) != active):
+        raise ValueError("writer fence copy readback differs")
+    path.unlink()
+    if path.exists():
+        raise ValueError("writer fence absence was not proven")
+    _WRITER_LOCAL.dead_installer_settlement = None
+    return {
+        "session_id_sha256": _sha256_text(active["session_id"]),
+        "attempt_id_sha256": _sha256_text(active["attempt_id"]),
+        "fence_copy_sha256": digest,
+        "fence_copy_path": root.name + "/settled/" + digest + ".json",
+    }
+
+
 def _failed_installer_removal_sources(
     root: Path, active: Mapping[str, Any], environ: Mapping[str, str]
 ) -> frozenset[str] | None:
@@ -824,12 +906,18 @@ def _failed_installer_removal_sources(
                     'owner_process_id', 'owner_process_started_at_filetime'))
                 or audit.get('run_id') != run_id or path.name != 'canonical-portable-' + run_id + '.json'
                 or audit.get('schema') != 'label-match-canonical-portable-install-v1'
-                or audit.get('status') not in _FAILED_INSTALL_STATUSES
+                or (audit.get('status') not in _FAILED_INSTALL_STATUSES
+                    and not _unfinished_install_run(audit, active))
                 or _normalized_control_root(str(audit.get('install_root') or '')) != _normalized_control_root(trusted['install_root'])):
                 return None
             matches.append((path, audit))
         if len(matches) != 1 or not _installer_process_exited(trusted.get('owner_process_id'), trusted.get('owner_process_started_at_filetime')):
             return None
+        # A run that recorded no failure also needs a proven-idle machine.
+        unfinished = matches[0][1].get('status') not in _FAILED_INSTALL_STATUSES
+        if unfinished and not _installer_machine_idle(trusted, environ):
+            return None
+        original = (root / ACTIVE_FILENAME).read_bytes() if unfinished else b''
         _assert_protected_owner_path(trusted_path)
         if (_bounded_json(trusted_path) != trusted or _bounded_json(matches[0][0]) != matches[0][1]
             or set(audit_root.glob('canonical-portable-*.json')) != set(files)
@@ -838,6 +926,8 @@ def _failed_installer_removal_sources(
             return None
         _WRITER_LOCAL.failed_removal_authority = claim
         claim = None
+        if unfinished:
+            _WRITER_LOCAL.dead_installer_settlement = (root, dict(active), original, environ)
         return frozenset({"current_user_setup_removal", "scheduled_task_remove",
                           "user_relay_autostart_remove", "user_relay_stop_request"})
     except (OSError, WriterFenceError, ValueError, TypeError):
@@ -1112,6 +1202,7 @@ def _writer_admission(
     finally:
         failed_removal_authority = getattr(_WRITER_LOCAL, "failed_removal_authority", None)
         _WRITER_LOCAL.failed_removal_authority = None
+        _WRITER_LOCAL.dead_installer_settlement = None
         if failed_removal_authority is not None:
             failed_removal_authority.release()
         _WRITER_LOCAL.remote_apply_error = None
@@ -1402,6 +1493,7 @@ __all__ = [
     "active_fence",
     "canonical_control_root",
     "session_authority_mutex_name",
+    "settle_dead_installer_fence",
     "writer_admission",
     "writer_admission_mutex_name",
     "writer_sink",

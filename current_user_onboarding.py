@@ -48,7 +48,7 @@ from user_relay import (
     reuse_or_start_user_relay_process,
     user_relay_stop_path,
 )
-from writer_session_fence import writer_admission, writer_sink
+from writer_session_fence import settle_dead_installer_fence, writer_admission, writer_sink
 from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
 from startup_timing import startup_timing_event, startup_timing_step, startup_timed
 
@@ -1944,6 +1944,9 @@ def remove_current_user_setup(
                 report_path=paths.removal_report_path, status=status,
             ) from first_failure
         report.update({"status": "PASS_DATA_PRESERVED", "completed_at": _now()})
+        settled = settle_dead_installer_fence()
+        if settled is not None:
+            report["abandoned_fence_settled"] = settled
         _write_json_atomic(paths.removal_report_path, report)
         return report
     except CurrentUserOnboardingError as exc:
