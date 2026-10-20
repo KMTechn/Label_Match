@@ -1087,18 +1087,24 @@ capture8의 교정 wrapper 실측은 [동일 사용자 제거 native exit 0](D:/
 
 ### 설치기가 통째로 죽은 뒤의 지원 제거 입구 (G99)
 
-설치기 프로세스가 전원 끊김·재부팅·창 닫힘으로 통째로 죽으면 실패 기록이나 복구 문맥을 남기지 못한다. 쓰기 울타리(`active.json`)만 남고 설치 감사는 끝나지 않은 상태(`RUNNING`, 설치기가 실제로 쓰는 값은 `PREIMAGE_SAVED`)로 멈춘다. 이 상태에서는 공식 입구 넷이 모두 거절한다. 지원 사용자 제거는 실패 상태만 받았고, 다시 설치는 `LABEL_WRITER_FENCE_ALREADY_ACTIVE`로 멈추며, 이어 되돌리기는 실패 상태와 복구 문맥을 요구하고, 앱 시작은 `ACTIVE_WRITER_FENCE`로 거절한다.
+설치기 프로세스가 전원 끊김·재부팅·창 닫힘으로 통째로 죽으면 실패 기록을 남기지 못한다. 쓰기 울타리(`active.json`)만 남고 설치 감사는 끝나지 않은 상태(`RUNNING`, 설치기가 실제로 쓰는 값은 `PREIMAGE_SAVED`)로 멈춘다. 이 상태에서는 공식 입구 넷이 모두 거절했다. 지원 사용자 제거는 실패 상태만 받았고, 다시 설치는 `LABEL_WRITER_FENCE_ALREADY_ACTIVE`로 멈추며, 이어 되돌리기는 실패 상태를 요구하고, 앱 시작은 `ACTIVE_WRITER_FENCE`로 거절한다.
+
+**복구 문맥 미리 저장(G99b).** 설치기는 첫 변경(릴레이 중지·사용자 제거·코드 배치) 전에, 울타리를 시작해 감사의 `writer_fence`를 적는 같은 저장에서 `recovery_context`(운영자 SID·원본 루트·설치기·writer 계약 해시·되돌림 입력·배치 전 `.current.rollback.*` 목록)를 감사에 함께 저장하고 되읽어 같은지 확인한다(`Save-LabelPreChangeRecoveryContext`). 비밀·토큰 값은 들어가지 않는다(실패 시 저장하던 것과 같은 내용). 실패 경로가 같은 문맥을 다시 저장할 때 식별·검증된 사전 사본 값이 달라지면 감사 `rollback.recovery_context_drift`에 이름을 남긴다. 코드 사전 사본 폴더는 배치가 만들므로 문맥에는 배치 전 목록만 들어가고, 이어 되돌리기가 새로 생긴 정확히 하나를 설치 사전 목록과 대조해 찾는다.
+
+그래서 죽은 시도는 문맥 유무로 갈린다. 문맥이 **있는** 죽은 시도(코드가 바뀌었을 수 있다)는 아래 지원 사용자 제거 문이 받지 않고 `WriterFencedError(RESUME_ROLLBACK_REQUIRED)`로 거절하며 이어 되돌리기를 안내한다. 문맥이 **없는** 죽은 시도(아직 아무것도 바꾸지 않음)만 아래 문을 그대로 쓴다.
 
 기존 실패 상태(`ROLLBACK_FAILED` 등)와 같은 좁은 문이 끝나지 않은 감사에도 열린다. 아래가 **모두** 증명될 때만 열리고, 하나라도 거짓이거나 모르면 지금처럼 `WriterFencedError(ACTIVE_WRITER_FENCE)`로 거절한다.
 
-- 울타리가 canonical 설치기의 것이고 상태가 `QUIESCING` 또는 `INSTALLING`이다. 되돌리기 중(`RESTORING`·`RESTORE_FAILED`)의 울타리는 지원 되돌리기 재개 몫이라 받지 않는다.
+- 울타리가 canonical 설치기의 것이고 상태가 `QUIESCING` 또는 `INSTALLING`이며 감사에 `recovery_context`가 없다. 되돌리기 중(`RESTORING`·`RESTORE_FAILED`)의 울타리와 문맥이 있는 시도는 이 문이 받지 않는다. 이어 되돌리기(아래)가 받는다.
 - 보호된 주인 기록 `.installer-owner-<session>-<run>.json`이 정확히 하나이고 울타리 튜플·run·설치 루트와 같다. 같은 run의 감사 기록이 정확히 하나이며 그 `writer_fence`가 주인 기록과 같고 상태가 끝나지 않은 값이다. `COMPLETE`·`PASS`·`FAILED_PRETRANSACTION`·그 밖의 상태, 기록 없음, 여럿, 모순은 거절한다.
 - 주인 프로세스가 끝났고(PID가 없거나, 같은 PID의 시작 시각이 기록과 같고 이미 종료) 시작 시각이 다르면 모름으로 거절한다. 세션 권한 뮤텍스를 지금 잡을 수 있다.
 - 쓰는 제품 프로세스(앱·relay·업데이트 도우미)가 없다(`process_snapshot`·`writer_processes`). relay 인스턴스 lease가 비어 있다. 관측 실패·`update-control` 없음은 거절한다.
 
 받는 출처는 실패 상태 때와 같은 `current_user_setup_removal`·`scheduled_task_remove`·`user_relay_autostart_remove`·`user_relay_stop_request` 넷뿐이고 자료는 보존한다(`PASS_DATA_PRESERVED`). 제거가 통과하면 같은 admission 안에서 **그 울타리 하나만** 정리한다. 울타리 바이트를 `writer-session/settled/<sha256>.json`에 정확한 사본으로 두고 되읽어 같음을 확인한 뒤에만 `active.json`을 지우며, 결과를 제거 보고서의 `abandoned_fence_settled`(session·attempt 해시, 사본 해시·경로)에 적는다. 울타리가 중간에 바뀌었거나 사본 되읽기가 다르면 정리하지 않고 제거를 실패로 보고한다. 실패 상태의 울타리는 지원 되돌리기 재개를 위해 지금처럼 남기며 정리하지 않는다. 감사 기록과 보호 주인 기록은 지우지 않는다.
 
-현장 안내: 같은 작업자 일반 세션에서 `--remove-current-user-setup`을 실행하고 `PASS_DATA_PRESERVED`를 확인한 뒤 공식 `INSTALL_CANONICAL_PORTABLE.ps1`을 다시 실행한다. 거절되면 쓰는 프로세스나 relay가 남았는지 먼저 확인한다. `tests/test_dead_installer_fence_entries.py`가 입구 넷의 거절, 열리는 조건과 닫힌 채로 남는 조건, 정리 뒤 `Start-LabelWriterFence` 통과를 격리 자료로 고정한다. 실제 설치기 강제 종료 뒤 현장 PC 확인은 NOT VERIFIED다.
+**이어 되돌리기가 받는 죽은 시도.** `Invoke-LabelResumeRollback`은 실패 상태에 더해 감사 상태 `RUNNING`·`PREIMAGE_SAVED`이고 `recovery_context`가 있는 죽은 시도(울타리 `QUIESCING`·`INSTALLING`·`RESTORING`)를 받는다. 받기 전에 같은 죽음 증명(보호 주인 기록 = 울타리 튜플, 주인 프로세스 종료·시작 시각 같음, 세션 권한 뮤텍스 잡을 수 있음, 쓰는 제품 프로세스·relay 0, 같은 감사 파일)을 `writer_session_fence.prove_dead_unfinished_installer`로 확인하며 이 증명은 아무것도 바꾸지 않는다. 증명되면 미리 저장된 문맥으로 기존 되돌림(옛 코드를 사전 사본과 같은 바이트로 복원, Run·작업·표지·relay 원복, 울타리 해제)을 한 번 수행해 감사를 `FAILED_ROLLED_BACK`(실패하면 `ROLLBACK_FAILED`)과 단계 기록으로 마감한다. 살아 있는 설치기·시작 시각이 다른 PID·쓰는 프로세스·relay가 있거나 남의 울타리면 거절한다. 이어 되돌리기로 `FAILED_ROLLED_BACK`이 되면 지금 실패 상태 길(지원 사용자 제거·공식 다시 설치)이 그대로 열린다.
+
+현장 안내(갇힌 PC의 공식 순서): ① 감사 파일이 문맥을 가지면(보통 `PREIMAGE_SAVED` 이후) 설치와 같은 작업 사용자의 **관리자 PowerShell**에서 `INSTALL_CANONICAL_PORTABLE.ps1 -SourceRoot <같은 판 stock> -ResumeRollbackAuditPath <감사 파일> -ExpectedRollbackAuditSha256 <감사 SHA256>`을 한 번 실행한다. ② 그 뒤 필요하면 같은 작업자 일반 세션에서 `--remove-current-user-setup`을 실행하고 `PASS_DATA_PRESERVED`를 확인한 뒤 공식 `INSTALL_CANONICAL_PORTABLE.ps1`을 다시 실행한다. 문맥이 없는 죽은 시도(`RESUME_ROLLBACK_REQUIRED`가 아닌 거절 없이 통과)는 ①을 건너뛰고 ②만 한다. 거절되면 쓰는 프로세스나 relay가 남았는지 먼저 확인한다. `tests/test_dead_installer_fence_entries.py`가 입구 넷의 거절, 열리는 조건과 닫힌 채로 남는 조건, 정리 뒤 `Start-LabelWriterFence` 통과를, `tests/test_dead_installer_resume_rollback.py`와 `tests/test_install_recovery.py`의 `resume_unfinished_*`가 문맥 있는 죽은 시도의 사용자 제거 거절·이어 되돌리기 증명·복원을 격리 자료로 고정한다. 실제 설치기 강제 종료 뒤 현장 PC 확인은 NOT VERIFIED다.
 
 <a id="performance"></a>
 ## 처리량·동시성·최신성
