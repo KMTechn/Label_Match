@@ -166,3 +166,56 @@ def test_relay_bootstrap_without_relay_mode_refuses_before_gui(relay_bootstrap):
     with pytest.raises(ValueError, match="explicit relay mode"):
         updates.bootstrap(relay_bootstrap.current / "app", [], role="relay")
     assert relay_bootstrap.launched == []
+
+
+def _clocked_bootstrap(monkeypatch, fixture, *, proof_at, exit_at=None, exit_code=1):
+    """Fake clock + fake wait: relay proof appears at proof_at; child exits at exit_at."""
+    clock = [0.0]
+    monkeypatch.setattr(user_relay.time, "monotonic", lambda: clock[0])
+    def wait(seconds):
+        clock[0] += seconds
+    def poll():
+        if exit_at is not None and clock[0] >= exit_at:
+            return exit_code
+        return None
+    monkeypatch.setattr(updates, "start_ordinary_process",
+                        lambda command, **kw: SimpleNamespace(pid=42, poll=poll))
+    owner = {"process_id": 77, "updated_at": "t"}
+    monkeypatch.setattr(user_relay, "_existing_user_relay_owner",
+                        lambda *a, **k: owner if (proof_at is not None and clock[0] >= proof_at) else None)
+    return clock, wait
+
+
+def test_bootstrap_relay_proof_at_90_seconds_is_accepted(monkeypatch, relay_bootstrap):
+    clock, wait = _clocked_bootstrap(monkeypatch, relay_bootstrap, proof_at=90)
+    result = user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
+    assert result["status"] == "ALIVE" and result["process_id"] == 77
+
+
+def test_bootstrap_child_nonzero_exit_fails_immediately(monkeypatch, relay_bootstrap):
+    clock, wait = _clocked_bootstrap(monkeypatch, relay_bootstrap, proof_at=None, exit_at=30)
+    with pytest.raises(user_relay.UserRelayError):
+        user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
+    assert clock[0] < 40
+
+
+def test_bootstrap_without_proof_fails_after_600_seconds(monkeypatch, relay_bootstrap):
+    clock, wait = _clocked_bootstrap(monkeypatch, relay_bootstrap, proof_at=None)
+    with pytest.raises(user_relay.UserRelayError, match="did not prove the protected active-version relay"):
+        user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
+    assert 600 <= clock[0] < 603
+
+
+def test_bootstrap_proof_after_600_seconds_is_rejected(monkeypatch, relay_bootstrap):
+    clock, wait = _clocked_bootstrap(monkeypatch, relay_bootstrap, proof_at=601)
+    with pytest.raises(user_relay.UserRelayError):
+        user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
+
+
+def test_installer_relay_readiness_ceiling_is_600_seconds():
+    text = (Path(__file__).resolve().parents[1] / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
+    assert "$relayStartedAt.AddSeconds(600)" in text
+    assert "$remainingReadySeconds=600-(" in text
+    assert "[double]$TimeoutSeconds = 600) {" in text
+    assert "$TimeoutSeconds -gt 600) { throw 'Rollback readiness deadline differs.' }" in text
+    assert "AddSeconds(75)" not in text and "-gt 75)" not in text
