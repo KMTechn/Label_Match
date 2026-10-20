@@ -3260,8 +3260,8 @@ function Assert-RollbackRelayPreimage([object[]]$ExpectedRelays) {
 }
 
 function Wait-LabelRollbackRelayReady([object[]]$ExpectedRelays,[string]$StatusPath,[string]$ExpectedSha,
-    [DateTime]$StartedAt,[double]$TimeoutSeconds = 75) {
-    if ($TimeoutSeconds -le 0 -or $TimeoutSeconds -gt 75) { throw 'Rollback readiness deadline differs.' }
+    [DateTime]$StartedAt,[double]$TimeoutSeconds = 600) {
+    if ($TimeoutSeconds -le 0 -or $TimeoutSeconds -gt 600) { throw 'Rollback readiness deadline differs.' }
     if ($ExpectedRelays.Count -eq 0) { [void](Assert-RollbackRelayPreimage $ExpectedRelays); return $true }
     if ($ExpectedRelays.Count -ne 1 -or $ExpectedSha -cnotmatch '^[0-9a-f]{40}$') { throw 'Rollback readiness identity differs.' }
     $timer=[Diagnostics.Stopwatch]::StartNew()
@@ -7048,7 +7048,7 @@ try {
     ) { throw 'Relay process proof failed.' }
     [void](Assert-LabelInstallerRelayPreimageSession @($process) $generationSubjectSid)
 
-    $deadline = $relayStartedAt.AddSeconds(75)
+    $deadline = $relayStartedAt.AddSeconds(600)
     $relay = $null
     $relayPersistentRetry = $false
     while ((Get-Date) -lt $deadline) {
@@ -7065,7 +7065,7 @@ try {
     if ($null -eq $relay -or -not $relayPersistentRetry) {
         throw 'Fresh relay status proof failed.'
     }
-    $remainingReadySeconds=75-([DateTime]::UtcNow-$relayStartedAt).TotalSeconds
+    $remainingReadySeconds=600-([DateTime]::UtcNow-$relayStartedAt).TotalSeconds
     if($remainingReadySeconds -le 0){throw 'Fresh relay readiness deadline expired.'}
     [void](Wait-LabelRollbackRelayReady @($process) $relayPath ([string]$installedManifest.source_commit) $relayStartedAt $remainingReadySeconds)
 

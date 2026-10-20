@@ -694,7 +694,7 @@ def reuse_or_start_user_relay_process(
     *,
     launcher: Callable[[Sequence[str]], Any] | None = None,
     survival_seconds: float = 2.0,
-    bootstrap_readiness_seconds: float = 75.0,
+    bootstrap_readiness_seconds: float = 600.0,
     wait: Callable[[float], None] = time.sleep,
     allow_recent_reuse: bool = True,
 ) -> dict[str, Any]:
@@ -761,7 +761,7 @@ def start_user_relay_process(
     *,
     launcher: Callable[[Sequence[str]], Any] | None = None,
     survival_seconds: float = 2.0,
-    bootstrap_readiness_seconds: float = 75.0,
+    bootstrap_readiness_seconds: float = 600.0,
     wait: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     from current_user_onboarding import _machine_worker_context
@@ -791,7 +791,7 @@ def start_user_relay_process(
     wait(survival)
     return_code = process.poll()
     if is_bootstrap and return_code in (None, 0):
-        deadline = time.monotonic() + max(0.0, min(75.0, float(bootstrap_readiness_seconds)))
+        deadline = time.monotonic() + max(0.0, min(600.0, float(bootstrap_readiness_seconds)))
         owner = existing_owner()
         while owner is None and time.monotonic() < deadline:
             if process.poll() not in (None, 0):
