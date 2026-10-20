@@ -806,3 +806,5 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - G88(machine metadata 비밀 거절): 계약 #31 다음 판 본 판을 들였다. 선택 판(JSON 낱말 `true/false/null`·숫자 낱말 경계)은 보류이며 흔한 4자 값은 거절한다. 남은 일: Python 코드포인트와 PowerShell UTF-16 길이 판정이 BMP 밖 문자에서 갈리는 경계는 계약 개정 때 한 기준으로 맞춘다(지금은 시험으로 현재 동작을 고정).
 - G91 막이(포장): 앱 전용 프로필 env 가 옛 공용 ProgramData 프로필·secrets 를 가리키면 무시. 남은: 실제 업무 PC env 값은 얼림 전에 읽지 못해 현장 확인은 NOT TESTED.
 - w9firstupd / G99 포장: 설치기 프로세스가 통째로 죽어 울타리만 남고 감사가 끝나지 않은 PC(공식 입구 넷 거절)를 푸는 입구를 더했다. 지원 `--remove-current-user-setup`이 죽음(보호 주인 기록·프로세스 종료)과 쓰는 프로세스 0·relay 0을 증명하면 실패 상태 때와 같은 좁은 출처 넷만 받고, 통과 뒤 그 울타리 하나를 `settled/`에 정확한 사본으로 두고 지운다. 언제 열리고 무엇만 받는지는 [운영](operations.md#설치기가-통째로-죽은-뒤의-지원-제거-입구-g99). 현장 안내: 같은 작업자 일반 세션에서 `--remove-current-user-setup` → 공식 다시 설치. 남은 일: 주인 기록을 쓰기 전에 죽거나 `update-control`이 없는 첫 설치 중단, 되돌리기 중(`RESTORING`) 죽음은 이 입구 밖이다. 실제 설치기 강제 종료 뒤 현장 PC 확인은 NOT VERIFIED.
+
+- relay 준비 대기 상한 600초(포장 117): 찬 첫 읽기(설치 코드 트리 전체 무결성 확인) 실제 소요 시간 실측은 VM 10/21 몫. 실측 뒤 상한 재조정 여부 판단.
