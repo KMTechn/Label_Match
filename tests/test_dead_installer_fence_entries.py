@@ -143,8 +143,9 @@ def test_stuck_dead_installer_fence_refuses_every_official_entry_while_a_writer_
     assert (stuck.control / fence.ACTIVE_FILENAME).read_bytes() == stuck.original
     # Entry 2: the official reinstall's fence start.
     assert _start_new_fence(tmp_path, stuck.control) == 'REFUSED:LABEL_WRITER_FENCE_ALREADY_ACTIVE'
-    # Entry 3: the supported rollback resume needs a recorded failure plus its saved context.
-    assert _resume_gate(tmp_path, stuck.audit, stuck.record) == 'REFUSED:Rollback audit identity/status differs.'
+    # Entry 3: the supported rollback resume needs its saved context (G99b: an unfinished
+    # status is admitted to the gate, the missing context still refuses it).
+    assert _resume_gate(tmp_path, stuck.audit, stuck.record) == 'REFUSED:Rollback context belongs to a different user or installer.'
     failed = dict(stuck.record, status='ROLLBACK_FAILED')
     assert _resume_gate(tmp_path, stuck.audit, failed) == 'REFUSED:Rollback context belongs to a different user or installer.'
     # Entry 4: the app's start admission (startup_check reports ACTIVE_WRITER_FENCE).

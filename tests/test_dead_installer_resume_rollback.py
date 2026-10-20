@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import writer_session_fence as fence
+from tests.test_shared_ancestor_protection import run_functions
 from tests.test_dead_installer_fence_entries import (  # noqa: F401  (fixtures)
     carried, fence_only_removal, stuck, _remove, _resume_gate, _bind_live_owner, _native_started,
     failed_install,
@@ -109,5 +110,34 @@ def test_installer_saves_the_recovery_context_before_its_first_change():
     start = body.index('$audit.writer_fence = [ordered]@{')
     first_change = body.index('Stop-LabelInstallerRelayPreimage $old')
     pre = body[start:first_change]
-    assert re.search(r'Save-LabelRollbackContext', pre), 'context is not saved before the first change'
-    assert pre.index('Save-LabelRollbackContext') < pre.index('Save $auditPath $audit')
+    # One helper saves the context with the fence record and reads it back.
+    assert re.search(r'^\s*\. Save-LabelPreChangeRecoveryContext\s*$', pre, re.M), 'context is not saved before the first change'
+    helper = text[text.index('function Save-LabelPreChangeRecoveryContext'):]
+    helper = helper[:helper.index('\nfunction ')]
+    assert helper.index('Save-LabelRollbackContext') < helper.index('Save $auditPath $audit') < helper.index('readback differs')
+
+
+@pytest.mark.parametrize('engine', ['powershell.exe', 'pwsh.exe'])
+def test_pre_change_context_is_read_back_and_later_drift_is_recorded(tmp_path, engine):
+    result = run_functions(tmp_path, INSTALLER, ['Save-LabelRollbackContext', 'Save-LabelPreChangeRecoveryContext'], r"""
+$root=$env:LM_CTX_ROOT
+$generationSubjectSid='S-1-5-21-1';$source='src';$writerOrchestratorSha256='o';$writerContractSha256='c';$generationMarkerPaths=@('m')
+$install=Join-Path $root 'current';$existingVerified=$true
+New-Item -ItemType Directory -Path (Join-Path $root '.current.rollback.1') | Out-Null
+$before=[pscustomobject]@{exists=$true;kind='String';data='x'};$replacementRollbackRoot=''
+$auditPath=Join-Path $root 'a.json'
+$audit=[ordered]@{status='PREIMAGE_SAVED';rollback=[ordered]@{}}
+function Save {param($Path,$Value) [IO.File]::WriteAllText($Path,($Value|ConvertTo-Json -Depth 30),[Text.UTF8Encoding]::new($false))}
+. Save-LabelPreChangeRecoveryContext
+$saved=Get-Content -LiteralPath $auditPath -Raw|ConvertFrom-Json
+if($saved.recovery_context.operator_sid -cne 'S-1-5-21-1' -or @($saved.recovery_context.values.replacementBackupsBefore).Count -ne 1){throw 'Pre-change context was not saved'}
+$replacementRollbackRoot=Join-Path $root '.current.rollback.2'
+Save-LabelRollbackContext
+if($audit.rollback.Contains('recovery_context_drift')){throw 'A refined preimage folder is not drift'}
+$before=[pscustomobject]@{exists=$true;kind='String';data='changed'}
+Save-LabelRollbackContext
+if(@($audit.rollback.recovery_context_drift) -notcontains 'before'){throw 'Changed preimage was not recorded'}
+'PASS'
+""", engine=engine, values={'LM_CTX_ROOT': str(tmp_path)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip().endswith('PASS')

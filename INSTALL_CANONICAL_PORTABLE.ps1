@@ -4660,13 +4660,79 @@ function Save-LabelRollbackContext {
         'receiptSource','writerTransition','legacyFirstRegistration','healthyRemovedInstall',
         'firstRegistrationStateVerified','firstRegistrationStarted','firstRegistrationAttempt',
         'firstRegistrationAttemptPath','firstRegistrationStatePaths','firstRegistrationAbsentAncestors',
-        'rollbackSources','restoreSources')) {
+        'rollbackSources','restoreSources','replacementBackupsBefore')) {
         $variable = Get-Variable -Name $name -Scope 1 -ErrorAction SilentlyContinue
         $values[$name] = if ($null -ne $variable) { $variable.Value } else { $null }
     }
+    $previous = if ($audit.Contains('recovery_context')) { $audit.recovery_context } else { $null }
     $audit.recovery_context = [ordered]@{operator_sid=$generationSubjectSid;source_root=$source;
         orchestrator_sha256=$writerOrchestratorSha256;writer_contract_sha256=$writerContractSha256;
         generation_marker_paths=@($generationMarkerPaths);values=$values}
+    if ($null -ne $previous) {
+        # The context saved before the first change is overwritten by the failure
+        # path. Identity and the validated preimages must be the same values; only
+        # the inputs learned later (such as the code preimage folder) may refine.
+        # A comparison problem is recorded; it never blocks the rollback itself.
+        $drift = @()
+        try {
+            foreach ($name in @('operator_sid','source_root','orchestrator_sha256','writer_contract_sha256')) {
+                if ([string]$previous[$name] -cne [string]$audit.recovery_context[$name]) { $drift += $name }
+            }
+            foreach ($name in @('before','taskBefore','stopBefore','existingVerified','installedPreimageInventory',
+                'receiptSource','writerTransition','rollbackSources','restoreSources')) {
+                $was = [string](ConvertTo-Json -InputObject $previous.values[$name] -Depth 30 -Compress)
+                $now = [string](ConvertTo-Json -InputObject $values[$name] -Depth 30 -Compress)
+                if ($was -cne $now) { $drift += $name }
+            }
+        } catch { $drift += 'comparison_failed' }
+        if ($drift.Count -ne 0) { $audit.rollback.recovery_context_drift = @($drift) }
+    }
+}
+
+function Save-LabelPreChangeRecoveryContext {
+    # Dot-source in the transaction scope before the first change. The failure
+    # path saves the same context again; a run that dies before it can still be
+    # rolled back by the supported resume.
+    if ($existingVerified) {
+        $replacementBackupsBefore = @(Get-ChildItem -LiteralPath (Split-Path -Parent $install) -Directory -Force |
+            Where-Object { $_.Name -like '.current.rollback.*' } | ForEach-Object { $_.FullName })
+    }
+    Save-LabelRollbackContext
+    Save $auditPath $audit
+    $readback = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $saved = $readback.recovery_context
+    $context = $audit.recovery_context
+    # Same shape on disk: identity, hashes and the exact set of saved input names.
+    if ($null -eq $saved -or [string]$saved.operator_sid -cne [string]$context.operator_sid -or
+        [string]$saved.source_root -cne [string]$context.source_root -or
+        [string]$saved.orchestrator_sha256 -cne [string]$context.orchestrator_sha256 -or
+        [string]$saved.writer_contract_sha256 -cne [string]$context.writer_contract_sha256 -or
+        (@($saved.values.PSObject.Properties.Name | Sort-Object) -join ',') -cne (@($context.values.Keys | Sort-Object) -join ',') -or
+        (ConvertTo-Json -InputObject $saved.values.before -Depth 30 -Compress) -cne (ConvertTo-Json -InputObject $context.values.before -Depth 30 -Compress) -or
+        (ConvertTo-Json -InputObject $saved.values.replacementBackupsBefore -Depth 30 -Compress) -cne (ConvertTo-Json -InputObject $context.values.replacementBackupsBefore -Depth 30 -Compress)) {
+        throw 'Recovery context readback differs.'
+    }
+}
+
+function Assert-LabelDeadUnfinishedInstaller([string]$AuditPath) {
+    # Death proof of the unfinished run: protected owner record equals the fence
+    # tuple, the owner process ended with the same start time, no product writer
+    # process or relay remains. The same code that serves the supported user
+    # removal answers; nothing is changed.
+    $python = Join-Path $source 'runtime\python.exe'
+    $appRoot = Join-Path $source 'app'
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf) -or -not (Test-Path -LiteralPath $appRoot -PathType Container)) {
+        throw 'Dead installer proof needs the packaged runtime.'
+    }
+    $code = "import sys;from pathlib import Path;p=Path(sys.argv[1]);sys.path[:0]=[str(p),str(p/'site-packages')];from writer_session_fence import prove_dead_unfinished_installer as f;sys.exit(0 if f(sys.argv[2]) else 3)"
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $python
+    $startInfo.Arguments = '-I -B -c {0} {1} {2}' -f (Arg $code), (Arg $appRoot), (Arg $AuditPath)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
+    if (-not $process.WaitForExit(120000)) { try { $process.Kill() } catch { }; throw 'Dead installer proof timed out.' }
+    if ($process.ExitCode -ne 0) { throw 'Dead installer proof failed: the installation may still be running or its owner is unproven.' }
 }
 
 function Invoke-LabelGenerationRefusalRecovery {
@@ -4736,11 +4802,13 @@ function Invoke-LabelResumeRollback {
         $ExpectedRollbackAuditSha256 -cnotmatch '^[0-9a-f]{64}$' -or (Sha $auditPath) -cne $ExpectedRollbackAuditSha256) { throw 'Rollback audit pin/ordinary-file check failed.' }
     $saved = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$saved.schema -cne 'label-match-canonical-portable-install-v1' -or
-        [string]$saved.status -cnotin @('ROLLBACK_FAILED','FAILED_ROLLBACK_INCOMPLETE','FAILED_ROLLED_BACK') -or
+        [string]$saved.status -cnotin @('ROLLBACK_FAILED','FAILED_ROLLBACK_INCOMPLETE','FAILED_ROLLED_BACK','RUNNING','PREIMAGE_SAVED') -or
         -not (Same ([string]$saved.install_root) $install) -or [string]$saved.source_commit -cne [string]$sourceManifest.source_commit) { throw 'Rollback audit identity/status differs.' }
     $context = $saved.recovery_context
     if ($null -eq $context -or [string]$context.operator_sid -cne $generationSubjectSid -or
         [string]$context.orchestrator_sha256 -cne (Sha (Join-Path $source 'INSTALL_CANONICAL_PORTABLE.ps1'))) { throw 'Rollback context belongs to a different user or installer.' }
+    $unfinishedRun = [string]$saved.status -cin @('RUNNING','PREIMAGE_SAVED')
+    if ($unfinishedRun) { Assert-LabelDeadUnfinishedInstaller $auditPath }
     $audit = [ordered]@{}
     foreach ($property in $saved.PSObject.Properties) { $audit[$property.Name] = $property.Value }
     foreach ($name in @('rollback','writer_fence')) {
@@ -4757,6 +4825,23 @@ function Invoke-LabelResumeRollback {
         Set-Variable -Name $name -Value $context.values.$name
     }
     $old = @($old)
+    # The relay readiness step expects the commit of the code the rollback restores.
+    # The main flow sets it after this resume would have run, so derive it from the audit.
+    $candidate = $sourceManifest
+    $savedTransition = $saved.PSObject.Properties['writer_transition']
+    if ($existingVerified -and $null -ne $savedTransition -and $null -ne $savedTransition.Value -and
+        $null -ne $savedTransition.Value.PSObject.Properties['installed_source_commit'] -and
+        [string]$savedTransition.Value.installed_source_commit -cmatch '^[0-9a-f]{40}$') {
+        $candidate = [pscustomobject]@{source_commit=[string]$savedTransition.Value.installed_source_commit}
+    }
+    if ($unfinishedRun) {
+        # The code preimage folder is created by placement, after the context was saved.
+        $replacementBackupsBefore = if ($null -ne $context.values.PSObject.Properties['replacementBackupsBefore']) { @($context.values.replacementBackupsBefore) } else { @() }
+        if ($existingVerified -and [string]::IsNullOrEmpty([string]$replacementRollbackRoot)) {
+            $replacementRollbackRoot = ReplacementPreimage $install $installedPreimageInventory $replacementBackupsBefore
+        }
+        $audit.rollback.resumed_unfinished_run = 'DEAD_INSTALLER_PROVEN'
+    }
     $generationMarkerPaths = @(@($generationMarkerPaths) + @($context.generation_marker_paths) | Select-Object -Unique)
     $receiptSource = ReceiptSource $source $sourceManifest
     $runId = [string]$audit.run_id
@@ -6769,7 +6854,7 @@ try {
         writer_inventory_sha256 = $Script:LabelWriterFenceInventorySha256
         token_recorded = $false
     }
-    Save $auditPath $audit
+    . Save-LabelPreChangeRecoveryContext
     if ($null -ne $firstRegistrationResume) {
         $helperParameters = @{
             InstallerRunId=$runId; InstallerOwnerProcessId=[int]$PID

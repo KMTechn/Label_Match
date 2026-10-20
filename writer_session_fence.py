@@ -522,6 +522,10 @@ _UNFINISHED_INSTALL_STATUSES = frozenset({"RUNNING", "PREIMAGE_SAVED"})
 # Only forward-run fence states qualify; a rollback in progress (RESTORING,
 # RESTORE_FAILED) keeps its fence for the supported rollback resume.
 _UNFINISHED_FENCE_STATUSES = frozenset({"QUIESCING", "INSTALLING"})
+# A run that saved its recovery context before its first change may have changed
+# code, so it is settled only by the supported rollback resume, which also takes
+# a dead run killed while it was restoring.
+_RESUMABLE_FENCE_STATUSES = frozenset({"QUIESCING", "INSTALLING", "RESTORING"})
 _PRIVILEGED_OWNER_SIDS = frozenset({"S-1-5-18", "S-1-5-32-544",
     "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"})
 
@@ -748,9 +752,17 @@ def installer_lifecycle_authority(root, owner_record, install_root, *, source):
                 _WRITER_LOCAL.installer_authority_root = previous
 
 
-def _unfinished_install_run(audit: Mapping[str, Any], active: Mapping[str, Any]) -> bool:
+def _unfinished_install_run(
+    audit: Mapping[str, Any], active: Mapping[str, Any], *, for_resume: bool = False
+) -> bool:
+    fence_states = _RESUMABLE_FENCE_STATUSES if for_resume else _UNFINISHED_FENCE_STATUSES
     return (audit.get("status") in _UNFINISHED_INSTALL_STATUSES
-            and active.get("status") in _UNFINISHED_FENCE_STATUSES)
+            and active.get("status") in fence_states)
+
+
+def _saved_recovery_context(audit: Mapping[str, Any]) -> bool:
+    context = audit.get("recovery_context")
+    return isinstance(context, dict) and bool(context)
 
 
 def _installer_machine_idle(trusted: Mapping[str, Any], environ: Mapping[str, str]) -> bool:
@@ -778,6 +790,35 @@ def _installer_machine_idle(trusted: Mapping[str, Any], environ: Mapping[str, st
         relay.close()
         return True
     except Exception:
+        return False
+
+
+def _same_file(left: Path, right: str) -> bool:
+    try:
+        return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
+    except OSError:
+        return False
+
+
+def prove_dead_unfinished_installer(
+    audit_path: str, environ: Mapping[str, str] | None = None
+) -> bool:
+    """Read-only death proof for the supported rollback resume (G99b).
+
+    True only for the exact protected owner record, an ended owner process whose
+    start time matches, a free session-authority mutex, a forward or restoring
+    fence, an unfinished audit that holds a saved recovery context, and a machine
+    with no product writer process and no relay. Nothing is changed.
+    """
+    values = os.environ if environ is None else environ
+    try:
+        root = canonical_control_root(values)
+        active = active_fence(root, environ=values)
+        if active is None:
+            return False
+        return _failed_installer_removal_sources(
+            root, active, values, resume_proof_for=str(audit_path)) is not None
+    except (OSError, WriterFenceError, ValueError, TypeError, KeyError):
         return False
 
 
@@ -824,9 +865,17 @@ def settle_dead_installer_fence() -> dict[str, str] | None:
 
 
 def _failed_installer_removal_sources(
-    root: Path, active: Mapping[str, Any], environ: Mapping[str, str]
+    root: Path, active: Mapping[str, Any], environ: Mapping[str, str],
+    *, resume_proof_for: str | None = None,
 ) -> frozenset[str] | None:
-    """Only a protected, exact dead installer owner permits user cleanup."""
+    """Only a protected, exact dead installer owner permits user cleanup.
+
+    With ``resume_proof_for`` (the audit path) nothing is admitted or settled:
+    the same death proof is only answered for the supported rollback resume,
+    and only for an unfinished run that saved its recovery context.
+    """
+    for_resume = resume_proof_for is not None
+    _WRITER_LOCAL.resume_rollback_required = False
     local = str(environ.get("LOCALAPPDATA") or "").strip()
     if os.name != "nt" or not local:
         return None
@@ -907,7 +956,8 @@ def _failed_installer_removal_sources(
                 or audit.get('run_id') != run_id or path.name != 'canonical-portable-' + run_id + '.json'
                 or audit.get('schema') != 'label-match-canonical-portable-install-v1'
                 or (audit.get('status') not in _FAILED_INSTALL_STATUSES
-                    and not _unfinished_install_run(audit, active))
+                    and not _unfinished_install_run(audit, active, for_resume=for_resume))
+                or (for_resume and audit.get('status') in _FAILED_INSTALL_STATUSES)
                 or _normalized_control_root(str(audit.get('install_root') or '')) != _normalized_control_root(trusted['install_root'])):
                 return None
             matches.append((path, audit))
@@ -915,6 +965,13 @@ def _failed_installer_removal_sources(
             return None
         # A run that recorded no failure also needs a proven-idle machine.
         unfinished = matches[0][1].get('status') not in _FAILED_INSTALL_STATUSES
+        has_context = _saved_recovery_context(matches[0][1])
+        if for_resume and (not has_context or not _same_file(matches[0][0], resume_proof_for)):
+            return None
+        if unfinished and has_context and not for_resume:
+            # Code may already be changed: only the supported resume restores it.
+            _WRITER_LOCAL.resume_rollback_required = True
+            return None
         if unfinished and not _installer_machine_idle(trusted, environ):
             return None
         original = (root / ACTIVE_FILENAME).read_bytes() if unfinished else b''
@@ -924,6 +981,8 @@ def _failed_installer_removal_sources(
             or set(protected_root.glob('.installer-owner-*.json')) != set(records)
             or active_fence(root, environ=environ) != active):
             return None
+        if for_resume:
+            return frozenset()
         _WRITER_LOCAL.failed_removal_authority = claim
         claim = None
         if unfinished:
@@ -959,6 +1018,14 @@ def _admitted_writer_sources(
             cleanup_sources = _failed_installer_removal_sources(root, active, environ)
             if cleanup_sources is not None:
                 return cleanup_sources
+            if getattr(_WRITER_LOCAL, "resume_rollback_required", False):
+                _WRITER_LOCAL.resume_rollback_required = False
+                raise WriterFencedError(
+                    "RESUME_ROLLBACK_REQUIRED",
+                    "the interrupted installation may have changed code; run the supported "
+                    "rollback resume (INSTALL_CANONICAL_PORTABLE.ps1 -ResumeRollbackAuditPath "
+                    "<audit> -ExpectedRollbackAuditSha256 <sha256>) first",
+                )
         raise WriterFencedError(
             "ACTIVE_WRITER_FENCE",
             "writer denied by the active deployment fence",
@@ -1493,6 +1560,7 @@ __all__ = [
     "active_fence",
     "canonical_control_root",
     "session_authority_mutex_name",
+    "prove_dead_unfinished_installer",
     "settle_dead_installer_fence",
     "writer_admission",
     "writer_admission_mutex_name",

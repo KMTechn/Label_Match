@@ -164,6 +164,9 @@ if($case -like 'resume*') {
   # (the code preimage folder did not exist yet, so the context cannot name it).
   $audit.status='PREIMAGE_SAVED';$audit.writer_fence.status='QUIESCING'
   $replacementRollbackRoot='';$replacementBackupsBefore=@()
+  # The shared harness lacks this host observation (the older resume cases fail on it); the live relay list stands in.
+  function Relays {return @($script:liveRelays)}
+  function Wait-LabelRollbackRelayReady {param($Expected,$Path,$Sha,$Started) $script:events.Add('relay-ready');return $true}
   function Assert-LabelDeadUnfinishedInstaller {param($AuditPath) $script:events.Add('death-proof');if($case -ceq 'resume_unfinished_live_refused'){throw 'Dead installer is unproven.'}}
  }
  Save-LabelRollbackContext;Save $auditPath $audit
@@ -207,6 +210,7 @@ if($case -ceq 'resume_unfinished_live_refused') {
  if((ByteSha $restored) -cne (ByteSha $legacyBytes) -or $restored.Length -ne 6){throw 'Old folder bytes differ'}
  if(-not (Test-Path -LiteralPath (Join-Path $replacementRollbackRoot 'legacy.bin'))){throw 'Recovery preimage was discarded'}
  if($case -like 'resume*' -and $audit.status -cne 'FAILED_ROLLED_BACK'){throw 'Supported resume status differs'}
+ if($case -like 'resume_unfinished*' -and $audit.rollback.resumed_unfinished_run -cne 'DEAD_INSTALLER_PROVEN'){throw 'Dead run proof was not recorded'}
 } elseif($case -in @('onboarding','early','resume','released_allow','fresh_strict','resume_strict','resume_unfinished_strict')) {
  if($script:held -or -not $script:events.Contains('release') -or -not $script:events.Contains('relay')){throw 'Proven restoration did not resume old relay'}
  if($script:runState.data -cne $before.data -or $script:runState.kind -cne $before.kind -or ($taskBefore.exists -and $script:taskXml -cne $legacyXml)){throw 'Autostart bytes differ'}
