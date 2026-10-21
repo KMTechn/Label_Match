@@ -75,6 +75,11 @@ class _RelayPreparationDeadline(float):
         instance._failure_code = ""
         return instance
 
+    def bounded_by(self, deadline: float):
+        """Shorten a trial window without dropping the captured parent identity."""
+        return type(self)(min(self, deadline), parent_pid=self.parent_pid,
+                          parent_identity=self.parent_identity)
+
     def failure_code(self) -> str:
         if self._failure_code:
             return self._failure_code
@@ -2965,12 +2970,16 @@ def _launch_bootstrap_version(control: Path, sha: str, arguments: list[str], *, 
         except WriterFencedError as error:
             if arguments[:1] != ["--label-match-user-relay"] or error.code != "WRITER_GATE_TIMEOUT":
                 raise
+            if isinstance(deadline, _RelayPreparationDeadline):
+                failure = _relay_prepare_failure(deadline)
+                if failure:
+                    raise _RelayPreparationUnavailable(failure) from None
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise
             # launch_version has unwound its writer admission before waiting.
             time.sleep(min(0.1, remaining))
-            if time.monotonic() >= deadline:
+            if not isinstance(deadline, _RelayPreparationDeadline) and time.monotonic() >= deadline:
                 raise
 
 
@@ -3300,13 +3309,16 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                                     if claimed_role == "relay":
                                         publish_relay_ready(version_bundle(control, active["sha"]) / "app", claim["pid"])
                                 else:
-                                    pid = _launch_bootstrap_version(control, active["sha"], startup_arguments, nonce=state["nonce"], deadline=deadline)
+                                    pid = _launch_bootstrap_version(control, active["sha"], startup_arguments, nonce=state["nonce"], deadline=relay_deadline.bounded_by(deadline))
                                     write_json_durable(Path(policy["staging_root"]) / "trial.json", {"pid": pid, "role": role, "nonce": state["nonce"], "transition_id": state["transition_id"], "claimed_at": now_utc()})
                                     failed_role = "relay"
                                     # LM's user settings select both children's data root.
                                     if role == "gui":
-                                        _launch_bootstrap_version(control, active["sha"], ["--label-match-user-relay"], nonce=state["nonce"], deadline=deadline)
+                                        _launch_bootstrap_version(control, active["sha"], ["--label-match-user-relay"], nonce=state["nonce"], deadline=relay_deadline.bounded_by(deadline))
                                 saw_trial = True
+                            except _RelayPreparationUnavailable as error:
+                                emit_support_record({"reason_code": error.code}, stage="update_apply")
+                                return 20
                             except Exception as error:
                                 write_json_durable(failure_path, {
                                     "nonce": state["nonce"], "transition_id": state["transition_id"],
@@ -3393,6 +3405,30 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--install-root", type=Path)
     parser.add_argument("--operator-sid")
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
+    # argparse otherwise treats signed nonfinite numbers as new options. Join
+    # only this option's value, leaving other options and the remainder intact.
+    arguments = list(sys.argv[1:] if arguments is None else arguments)
+    position = 0
+    while position < len(arguments) and arguments[position] != "--":
+        optional = parser._parse_optional(arguments[position])
+        if isinstance(optional, list):
+            if len(optional) != 1:
+                break
+            optional = optional[0]
+        if optional is None or optional[0] is None:
+            break
+        action, option, *details = optional
+        explicit = details[-1]
+        position += 1
+        if action.nargs == 0 or explicit is not None or position == len(arguments):
+            continue
+        value = arguments[position]
+        if option == "--relay-parent-deadline" and value.casefold() in {"-inf", "-infinity", "-nan"}:
+            arguments[position - 1:position + 1] = [option + "=" + value]
+        elif value == "--":
+            break
+        elif parser._parse_optional(value) is None:
+            position += 1
     options = parser.parse_args(arguments)
     has_parent_context = options.relay_parent_pid is not None or options.relay_parent_deadline is not None
     if has_parent_context and not options.bootstrap:

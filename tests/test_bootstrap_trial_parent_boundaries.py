@@ -114,3 +114,15 @@ def test_public_parent_nonfinite_context_returns_contract_exit(monkeypatch, tmp_
         json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     assert result == 20
     assert reports[-1]["reason_code"] == "UPDATE_PREPARATION_FAILED"
+
+
+@pytest.mark.parametrize("prefix", [["--"], ["product-argument"]], ids=["separator", "positional"])
+def test_parent_value_normalization_preserves_forwarded_arguments(monkeypatch, tmp_path, prefix):
+    forwarded = []
+    monkeypatch.setattr(onboarding, "_machine_worker_context", lambda root: None)
+    monkeypatch.setattr(auto_update, "control_root", lambda root: tmp_path)
+    monkeypatch.setattr(auto_update, "bootstrap",
+                        lambda root, arguments, **kwargs: forwarded.append(arguments) or 0)
+    remainder = [*prefix, "--relay-parent-deadline", "-inf"]
+    assert auto_update.main(["--bootstrap", "--role", "relay", *remainder]) == 0
+    assert forwarded == [remainder[1:] if prefix == ["--"] else remainder]

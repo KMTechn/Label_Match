@@ -64,7 +64,14 @@ def test_every_relay_wait_uses_the_one_value():
     assert len(trial_starts) == 2
     for call in trial_starts:
         deadline = next(keyword.value for keyword in call.keywords if keyword.arg == "deadline")
-        assert isinstance(deadline, ast.Name) and deadline.id == "deadline"
+        assert ast.unparse(deadline) == "relay_deadline.bounded_by(deadline)"
+    deadline_class = next(node for node in ast.parse(text).body
+                          if isinstance(node, ast.ClassDef) and node.name == "_RelayPreparationDeadline")
+    bound = next(node for node in deadline_class.body
+                 if isinstance(node, ast.FunctionDef) and node.name == "bounded_by")
+    assert "min(self, deadline)" in ast.unparse(bound)
+    assert "parent_pid=self.parent_pid" in ast.unparse(bound)
+    assert "parent_identity=self.parent_identity" in ast.unparse(bound)
 
 
 def test_installer_and_user_relay_use_the_same_value():
