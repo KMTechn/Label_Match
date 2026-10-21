@@ -1,6 +1,7 @@
 """Same-key enrollment continuation, entirely behind fake transport and keys."""
 
 import copy
+import hashlib
 import datetime as dt
 import json
 import secrets
@@ -26,10 +27,8 @@ from tests.test_register_label_match_worker_pc import (
 
 @lru_cache(maxsize=1)
 def _source_build_id():
-    return subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1],
-        text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    ).strip()
+    # This is fixture release metadata, independent of the repository's git state.
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:40]
 
 
 @pytest.fixture
