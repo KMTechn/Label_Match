@@ -207,6 +207,30 @@ def test_tk_and_native_failure_keeps_original_unavailable_trace(monkeypatch, tmp
     }[notice])
 
 
+@pytest.mark.parametrize("notice", ["onboarding-error", "integrity-warning", "catalog-error"])
+def test_pending_official_stop_is_recorded_after_bounded_native_returns(monkeypatch, tmp_path, notice):
+    root = tmp_path / "relay"
+    monkeypatch.setenv("LABEL_MATCH_DIRECT_SYNC_ROOT", str(root))
+    monkeypatch.setattr(lm.tk, "Tk", Mock(side_effect=lm.tk.TclError("unavailable")))
+    monkeypatch.setattr(user_relay, "_app_stop_process_snapshot", lambda **kwargs: [])
+    monkeypatch.setattr(user_relay, "request_user_relay_stop", lambda *args, **kwargs: {"status": "ABSENT"})
+    returned = []
+    def native(*args):
+        user_relay.request_app_stop(root, app_root=tmp_path / "app", timeout_seconds=0)
+        returned.append(True)
+        return 32000
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: SimpleNamespace(MessageBoxTimeoutW=Mock(side_effect=native)))
+    records = []
+    def trace(stage, **details):
+        assert returned, "native stop trace must follow the bounded call"
+        records.append((stage, details))
+    monkeypatch.setattr(lm, "_label_match_startup_trace", trace)
+    result = show_notice(notice, tmp_path)
+    assert records == [("APP_STOP_REQUESTED_CLOSE", {"message": "멈춤 요청으로 닫힘"})]
+    if notice == "integrity-warning":
+        assert result is False
+
+
 def test_trace_write_failure_does_not_prevent_normal_notice_return(monkeypatch, tmp_path, notice_window):
     monkeypatch.setattr(lm, "_label_match_startup_trace", Mock(side_effect=OSError("unavailable")))
     lm._show_first_run_registration_recovery("POSSESSION_PROOF_REATTACH_REQUIRED")
