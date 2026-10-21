@@ -3113,9 +3113,9 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                     return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=deadline)
                 if action == "START_CURRENT":
                     if state and state["phase"] in {"ROLLED_BACK", "DEFERRED"}:
-                        return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
+                        return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED")
                     return start_current(control, policy, state, active, arguments,
-                                         code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
+                                         code="UPDATE_TERMINAL_RECOVERED")
                 if state and state["phase"] in {"UNKNOWN", "FAILED"}:
                     if claim_status not in {"LIVE", "UNKNOWN"}:
                         writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline, state=state, claim_status=claim_status)

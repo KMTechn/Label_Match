@@ -1,4 +1,5 @@
 """G100b packaging: first setup relay waits share one value; trees are read once per process."""
+import ast
 import re
 import time
 from pathlib import Path
@@ -44,6 +45,19 @@ def test_every_relay_wait_uses_the_one_value():
     assert auto_update.RELAY_PREPARE_SECONDS == 600
     assert not re.search(r"monotonic\(\)\s*\+\s*75\b", text)
     assert text.count("+ RELAY_PREPARE_SECONDS") >= 3
+
+    bootstrap = next(node for node in ast.parse(text).body
+                     if isinstance(node, ast.FunctionDef) and node.name == "_bootstrap")
+    current_branch = next(node for node in ast.walk(bootstrap)
+                          if isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                          and isinstance(node.test.left, ast.Name) and node.test.left.id == "action"
+                          and any(isinstance(value, ast.Constant) and value.value == "START_CURRENT"
+                                  for value in node.test.comparators))
+    starts = [node for node in ast.walk(current_branch)
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+              and node.func.id == "start_current"]
+    assert starts and all(not any(keyword.arg == "deadline" for keyword in call.keywords)
+                          for call in starts)
 
 
 def test_installer_and_user_relay_use_the_same_value():
