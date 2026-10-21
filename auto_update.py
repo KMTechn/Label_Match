@@ -2698,21 +2698,11 @@ def _verify_abandoned_update(control: Path, policy: Mapping[str, Any]) -> None:
 
 
 def _show_update_mutex_recovery_notice() -> None:
-    parent = None
     try:
-        import tkinter as tk
-        from tkinter import messagebox
-        parent = tk.Tk()
-        parent.withdraw()
-        messagebox.showerror("설치 복구 필요", UPDATE_MUTEX_RECOVERY_MESSAGE, parent=parent)
+        from startup_observation import show_stoppable_startup_notice
+        show_stoppable_startup_notice("설치 복구 필요", UPDATE_MUTEX_RECOVERY_MESSAGE)
     except Exception:
         pass  # The fixed stderr guidance remains available when Tk cannot open.
-    finally:
-        if parent is not None:
-            try:
-                parent.destroy()
-            except Exception:
-                pass
 
 
 def _refuse_abandoned_update(policy, *, role: str) -> int:

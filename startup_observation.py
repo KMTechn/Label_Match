@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
+import sys
 import time
 import uuid
 
@@ -19,6 +21,7 @@ STARTUP_BLOCKED_MESSAGE = (
 )
 _identity = {}
 _unknown = []
+_NOTICE_MODULE_STARTED_AT = datetime.now(timezone.utc)
 
 
 from label_atomic_replace import atomic_replace
@@ -67,7 +70,135 @@ def write_startup_result(result):
                 pass
 
 
-def show_startup_blocked_notice(notice=None):
+def _notice_application_module():
+    for name in ("__main__", "Label_Match"):
+        module = sys.modules.get(name)
+        if hasattr(module, "_APP_PROCESS_STARTED_AT"):
+            return module
+    return None
+
+
+def _startup_notice_stop_requested():
+    application = _notice_application_module()
+    reader = getattr(application, "_startup_app_stop_requested", None)
+    if reader is not None:
+        return reader()
+    # The early update gate runs before Label_Match defines its normal reader.
+    # Use the same owner root, schema and process-start cutoff in that notice.
+    from current_user_onboarding import LEGACY_DIRECT_SYNC_ROOT_ENV
+    from user_relay import APP_STOP_SCHEMA, app_stop_request_path, _read_json
+    configured = (os.environ.get("LABEL_MATCH_DIRECT_SYNC_ROOT")
+                  or os.environ.get(LEGACY_DIRECT_SYNC_ROOT_ENV)
+                  or os.environ.get("LABEL_MATCH_DIRECT_SYNC_PROGRAM_DATA_ROOT"))
+    local = os.environ.get("LOCALAPPDATA")
+    if not configured and not local:
+        return False
+    root = Path(configured) if configured else Path(local) / "KMTech" / "DirectSync" / "label_match"
+    path = app_stop_request_path(root)
+    try:
+        if not path.is_file() or path.stat().st_size > 4096:
+            return False
+        payload = _read_json(path) or {}
+        if (payload.get("schema_version") != APP_STOP_SCHEMA
+                or re.fullmatch(r"[0-9a-f]{32}", str(payload.get("request_id") or "")) is None):
+            return False
+        requested_at = datetime.fromisoformat(payload.get("requested_at"))
+        started = getattr(application, "_APP_PROCESS_STARTED_AT", _NOTICE_MODULE_STARTED_AT)
+        return requested_at.tzinfo is not None and requested_at >= started
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _trace_startup_notice_close(stage, **details):
+    trace = getattr(_notice_application_module(), "_label_match_startup_trace", None)
+    if trace is not None:
+        trace(stage, **details)
+        return
+    # The early gate also precedes the usual trace function. Append only the
+    # approved fixed fields to its existing file, without importing the app.
+    record = {"stage": stage, "message": details["message"]}
+    roots = [(os.environ.get("TEMP", ""), ("KMTech-startup-trace",))]
+    if not os.environ.get("PYTEST_CURRENT_TEST") and not any("pytest" in str(arg).lower() for arg in sys.argv):
+        roots.insert(0, (os.environ.get("LOCALAPPDATA", ""), ("KMTech", "startup-trace")))
+    for base, parts in roots:
+        if not base or not os.path.isabs(base):
+            continue
+        try:
+            directory = Path(base).joinpath(*parts)
+            directory.mkdir(parents=True, exist_ok=True)
+            with (directory / f"Label_Match-startup-{os.getpid()}.log").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        except Exception:
+            pass
+
+
+def watch_startup_notice_stop(parent, *, stop_requested=None, trace=None):
+    """Close through the notice's own root; diagnostic failure cannot block it."""
+    reader = _startup_notice_stop_requested if stop_requested is None else stop_requested
+    record = _trace_startup_notice_close if trace is None else trace
+    state = {"stopped": False}
+
+    def poll_stop():
+        if reader():
+            parent.destroy()
+            state["stopped"] = True
+            try:
+                record("APP_STOP_REQUESTED_CLOSE", message="멈춤 요청으로 닫힘")
+            except Exception:
+                pass
+            return
+        parent.after(500, poll_stop)
+
+    parent.after(500, poll_stop)
+    return state
+
+
+def show_stoppable_startup_notice(title, message, *, prepare_root=None):
+    """Return False only when Tk cannot be created, for the native fallback."""
+    import tkinter as tk
+    try:
+        parent = tk.Tk()
+    except Exception:
+        return False
+    try:
+        parent.title(title)
+        parent.resizable(False, False)
+        tk.Label(parent, text=message, font=("맑은 고딕", 14), padx=24, pady=18).pack()
+        button = tk.Button(parent, text="확인", command=parent.destroy, width=10, default="active")
+        button.pack(pady=(0, 16))
+        parent.protocol("WM_DELETE_WINDOW", parent.destroy)
+        parent.bind("<Return>", lambda _event: parent.destroy())
+        parent.bind("<Escape>", lambda _event: parent.destroy())
+        parent.attributes("-topmost", True)
+        parent.lift()
+        parent.focus_force()
+        button.focus_set()
+        (watch_startup_notice_stop if prepare_root is None else prepare_root)(parent)
+        parent.mainloop()
+        return True
+    finally:
+        try:
+            parent.destroy()
+        except Exception:
+            pass
+
+
+def show_bounded_native_notice(title, message, *, warning=False):
+    """Use the existing timed Windows notice API without a retry/continue result."""
+    import ctypes
+    from ctypes import wintypes
+    notice = ctypes.WinDLL("user32", use_last_error=True).MessageBoxTimeoutW
+    notice.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                       wintypes.UINT, wintypes.WORD, wintypes.DWORD]
+    notice.restype = ctypes.c_int
+    flags = 0x00040000 | (0x30 if warning else 0x10)  # MB_TOPMOST | MB_OK | icon
+    result = notice(None, message, title, flags, 0, 30000)
+    if not result:
+        raise OSError("startup notice unavailable")
+    return result == 1  # Only IDOK is confirmation; timeout/close is cancellation.
+
+
+def show_startup_blocked_notice(notice=None, *, prepare_root=None):
     """Fixed wording and a close button, only after an existing refusal."""
     parent = None
     try:
@@ -84,6 +215,7 @@ def show_startup_blocked_notice(notice=None):
         parent.attributes("-topmost", True)
         parent.lift()
         parent.focus_force()
+        (watch_startup_notice_stop if prepare_root is None else prepare_root)(parent)
         parent.mainloop()
     except Exception:
         pass
@@ -95,7 +227,7 @@ def show_startup_blocked_notice(notice=None):
                 pass
 
 
-def observe_startup(reasons=(), *, identity=None, refused=False, notice=None):
+def observe_startup(reasons=(), *, identity=None, refused=False, notice=None, prepare_root=None):
     """Formatting/writing failures cannot change the existing startup decision."""
     try:
         started = time.monotonic()
@@ -117,7 +249,9 @@ def observe_startup(reasons=(), *, identity=None, refused=False, notice=None):
         pass
     if refused:
         try:
-            if notice is None:
+            if prepare_root is not None:
+                show_startup_blocked_notice(notice, prepare_root=prepare_root)
+            elif notice is None:
                 show_startup_blocked_notice()
             else:
                 show_startup_blocked_notice(notice)

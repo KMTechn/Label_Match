@@ -35,7 +35,7 @@ def diagnostic(tmp_path, monkeypatch):
                 "build_id": hashlib.sha1(uuid.uuid4().bytes).hexdigest()}
     observation.begin_startup(identity)
     notices = []
-    monkeypatch.setattr(observation, "show_startup_blocked_notice", lambda: notices.append(True))
+    monkeypatch.setattr(observation, "show_startup_blocked_notice", lambda *_args, **_kwargs: notices.append(True))
     monkeypatch.setattr(check, "check_startup", lambda *a, **k: pytest.fail("GUI repeated the CLI check"))
     return SimpleNamespace(directory=directory, identity=identity, notices=notices)
 

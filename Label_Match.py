@@ -24428,6 +24428,7 @@ def _show_first_run_registration_recovery(cause):
         parent.attributes("-topmost", True)
         parent.lift()
         parent.focus_force()
+        _watch_startup_notice_stop(parent)
         parent.mainloop()
     except Exception:
         _label_match_startup_trace("current_user_onboarding_dialog_unavailable")
@@ -24449,7 +24450,8 @@ def _show_first_run_onboarding_error(failure):
             reasons = [reason]
             if failure.status == "UNKNOWN":
                 reasons.append("UNKNOWN_DATA" if reason == "DATA_GENERATION_REFUSED" else "UNKNOWN_ACCOUNT")
-            observe_startup(reasons, refused=not registration_recovery)
+            observe_startup(reasons, refused=not registration_recovery,
+                            prepare_root=_watch_startup_notice_stop)
         except Exception:
             pass
         if not registration_recovery:
@@ -24457,7 +24459,6 @@ def _show_first_run_onboarding_error(failure):
     if registration_recovery:
         _show_first_run_registration_recovery(cause)
         return
-    parent = None
     try:
         message = FIRST_RUN_ONBOARDING_CAUSE_MESSAGES.get(
             getattr(failure, "cause_code", ""), FIRST_RUN_ONBOARDING_ERROR_MESSAGE,
@@ -24467,28 +24468,11 @@ def _show_first_run_onboarding_error(failure):
             message = str(failure)
         if getattr(failure, "recovery_command", ""):
             message += "\n\n지원 명령: " + failure.recovery_command
-        parent = tk.Tk()
-        parent.withdraw()
-        parent.title(FIRST_RUN_ONBOARDING_ERROR_TITLE)
-        parent.geometry("1x1+0+0")
-        parent.attributes("-topmost", True)
-        parent.deiconify()
-        parent.lift()
-        parent.update()
-        parent.focus_force()
-        messagebox.showerror(
-            FIRST_RUN_ONBOARDING_ERROR_TITLE,
-            f"{message}\n보고서: {failure.report_path}",
-            parent=parent,
+        _show_stoppable_startup_notice(
+            FIRST_RUN_ONBOARDING_ERROR_TITLE, f"{message}\n보고서: {failure.report_path}",
         )
     except Exception:
         _label_match_startup_trace("current_user_onboarding_dialog_unavailable")
-    finally:
-        if parent is not None:
-            try:
-                parent.destroy()
-            except tk.TclError:
-                pass
 
 
 def _show_installation_recovery_required(error):
@@ -24515,9 +24499,10 @@ def _show_installation_recovery_required(error):
 
 def _show_bootstrap_integrity_absent_warning():
     try:
-        messagebox.showwarning(
+        return _show_stoppable_startup_notice(
             BOOTSTRAP_INTEGRITY_ABSENT_WARNING_TITLE,
             BOOTSTRAP_INTEGRITY_ABSENT_WARNING_MESSAGE,
+            warning=True,
         )
     except Exception:
         _label_match_startup_trace("bootstrap_integrity_warning_dialog_unavailable")
@@ -24559,7 +24544,7 @@ def _item_catalog_profile_trace_details(context):
 def _show_item_catalog_startup_error(error):
     context = get_catalog_attempt_context_from_error(error)
     try:
-        messagebox.showerror(
+        _show_stoppable_startup_notice(
             ITEM_CATALOG_STARTUP_ERROR_TITLE,
             (
                 f"""품목 목록을 확인하지 못했습니다\n연결을 확인하고 다시 시도하세요\n코드: {ITEM_CATALOG_STARTUP_ERROR_MESSAGE} · {_item_catalog_profile_details_for_display(context)} · {error.cause_code}"""
@@ -24599,6 +24584,29 @@ def _startup_app_stop_requested():
         return False
 
 
+def _watch_startup_notice_stop(parent):
+    """Let a standalone Tk notice use the existing startup stop contract."""
+    from startup_observation import watch_startup_notice_stop
+    return watch_startup_notice_stop(
+        parent, stop_requested=_startup_app_stop_requested, trace=_label_match_startup_trace,
+    )
+
+
+def _show_stoppable_startup_notice(title, message, *, warning=False):
+    from startup_observation import show_stoppable_startup_notice
+    if not show_stoppable_startup_notice(title, message, prepare_root=_watch_startup_notice_stop):
+        from startup_observation import show_bounded_native_notice
+        confirmed = show_bounded_native_notice(title, message, warning=warning)
+        if _startup_app_stop_requested():
+            try:
+                _label_match_startup_trace("APP_STOP_REQUESTED_CLOSE", message="멈춤 요청으로 닫힘")
+            except Exception:
+                pass
+            return False
+        return confirmed
+    return True
+
+
 def _offer_item_catalog_startup_retry(error):
     context = get_catalog_attempt_context_from_error(error)
     parent = None
@@ -24607,12 +24615,7 @@ def _offer_item_catalog_startup_retry(error):
             return False
         parent = tk.Tk()
         parent.withdraw()
-        def poll_stop():
-            if _startup_app_stop_requested():
-                parent.destroy()
-                return
-            parent.after(500, poll_stop)
-        parent.after(500, poll_stop)
+        stop_state = _watch_startup_notice_stop(parent)
         retry = messagebox.askretrycancel(
             "회사 서버 품목 목록 확인 필요",
             (
@@ -24622,7 +24625,7 @@ def _offer_item_catalog_startup_retry(error):
         )
         if not retry:
             setattr(error, "_catalog_retry_dialog_shown", True)
-        return bool(retry)
+        return bool(retry) and not stop_state["stopped"]
     except Exception:
         _label_match_startup_trace("item_catalog_retry_dialog_unavailable")
         return False
@@ -25037,7 +25040,8 @@ def main(argv=None):
                     == "ABSENT"
                 ):
                     _label_match_startup_trace("bootstrap_integrity_absent")
-                    _show_bootstrap_integrity_absent_warning()
+                    if _show_bootstrap_integrity_absent_warning() is False:
+                        return 0
             except WriterFenceError as exc:
                 _label_match_startup_trace(
                     "current_user_onboarding_fenced", **_onboarding_refusal_codes(exc)
