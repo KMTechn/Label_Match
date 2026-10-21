@@ -1343,9 +1343,9 @@ SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 �
 
 Python relay 시작은 부모가 bootstrap을 띄우는 시각에 한 번 정한 공통 절대 마감 안에서 fresh active-version relay 증거를 기다린다. 부모의 기본 전체 예산은 `RELAY_PREPARE_SECONDS`(600초)이며 survival 확인도 이 안에 포함한다. bootstrap 종료 뒤에 600초를 새로 시작하지 않는다. launcher의 0 exit·생존만을 ALIVE로 반환하지 않으며, 확인된 비정상 exit는 즉시 실패한다. timeout/비정상 exit는 실패로 남기고 실제 자식을 강제 종료하지 않는다. 설치기 설치 뒤·되돌림 뒤 relay 준비 상한은 기존 600초를 유지한다(찬 첫 읽기에서 전체 무결성 확인이 75초를 넘으므로 확인 자체를 줄이지 않는다). 실제 느린 첫 cycle·두 번 시작·native 수명은 랩 NOT TESTED다.
 
-첫 설정의 현재 판 시작도 한 공통 마감을 쓴다. 부모는 `--relay-parent-pid`와 `--relay-parent-deadline`을 일반 relay 인수의 `--` 앞에 전달한다. 자식은 `relay_deadline = min(자기 진입+600, 부모 마감−RELAY_PARENT_RESULT_RESERVE_SECONDS)`를 한 번 정하며 결과 처리 여유 상수는 **10초**다. 모든 현재 판 `start_current`·복구·relay 준비 대기가 이 값을 공유한다. retained DEFERRED, prepared 요청 뒤 DEFERRED, claim ABSENT, FAILED 복구, rollback readback 및 업데이트 관측 뒤 복구에서도 새 예산을 발급하지 않는다. 시작 업데이트 관측과 두 trial launch의 기존 240초 예산은 업데이트 판단에 유지하고, 보호 runtime·활성 판·일반 사용자·소유 증명·자료 세대 검사는 그대로 둔다.
+첫 설정의 현재 판 시작도 한 공통 마감을 쓴다. 부모는 `--relay-parent-pid`와 `--relay-parent-deadline`을 일반 relay 인수의 `--` 앞에 전달한다. 자식은 `relay_deadline = min(자기 진입+600, 부모 마감−RELAY_PARENT_RESULT_RESERVE_SECONDS)`를 한 번 정하며 결과 처리 여유 상수는 **10초**다. 모든 현재 판 `start_current`·복구·relay 준비 대기가 이 값을 공유한다. retained DEFERRED, prepared 요청 뒤 DEFERRED, claim ABSENT, FAILED 복구, rollback readback 및 업데이트 관측 뒤 복구에서도 새 예산을 발급하지 않는다. 시작 업데이트 관측은 기존 240초를 유지하고, 두 trial launch는 부모 신원을 보존한 `min(업데이트 240초 마감, relay_deadline)`을 받아 각 admission 시도·재시도 전에 부모 수명과 공유 예산을 확인한다. 부모 사망·미증명·예산 소진은 exit20으로 끝내며 뒤의 retry·새 launch는 없다. 보호 runtime·활성 판·일반 사용자·소유 증명·자료 세대 검사는 그대로 둔다.
 
-부모 인수 한쪽 누락·값 오류·파싱 실패·NaN·무한대는 `UPDATE_PREPARATION_FAILED`, exit20으로 명시 거절하며 독립 bootstrap의 진입+600으로 바꾸지 않는다. 두 인수가 모두 없는 정식 독립 진입(예약 작업·설치기)만 자기 진입+600을 쓴다. 유효한 유한 마감은 min으로 줄일 수 있고, 지난 마감은 이미 소진된 예산이므로 `UPDATE_APPLY_NO_PROGRESS`, exit20으로 준비 대기·새 relay 시작 없이 실패한다. 부모 경로가 보호 설치 문맥을 잃어도 portable 독립 진입으로 바꾸지 않는다. 원 입력 값은 공개 진단에 넣지 않는다.
+부모 인수 한쪽 누락·값 오류·파싱 실패·NaN·무한대는 `UPDATE_PREPARATION_FAILED`, exit20으로 명시 거절하며 독립 bootstrap의 진입+600으로 바꾸지 않는다. `--relay-parent-deadline=-inf`와 분리한 `--relay-parent-deadline -inf`도 같은 명시 거절이며 parser exit2로 빠지지 않는다. 다른 인수와 전달용 나머지 인수의 parse는 유지한다. 두 인수가 모두 없는 정식 독립 진입(예약 작업·설치기)만 자기 진입+600을 쓴다. 유효한 유한 마감은 min으로 줄일 수 있고, 지난 마감은 이미 소진된 예산이므로 `UPDATE_APPLY_NO_PROGRESS`, exit20으로 준비 대기·새 relay 시작 없이 실패한다. 부모 경로가 보호 설치 문맥을 잃어도 portable 독립 진입으로 바꾸지 않는다. 원 입력 값은 공개 진단에 넣지 않는다.
 
 부모 PID와 생성 신원을 읽어 사망·교체가 확인되면 준비 대기·추가 launch·admission retry를 끝내고 `UPDATE_APPLY_NO_PROGRESS`, exit20으로 실패한다. 관측 불가는 사망으로 단정하지 않으며 `UPDATE_SUPERVISION_UNAVAILABLE`, exit20이다. 이미 시작한 relay는 강제 종료하지 않고 일시 관측 handle만 닫는다. 공개 가림 허용 목록은 바꾸지 않는다. `tests/test_bootstrap_relay_deadline_boundaries.py`의 가상 시계 시험은 진입 지연0/61/120초 × 준비239/241/599초, 60초 경계·초기화·재시작, 값 오류·소진·부모 사망/교체/미증명을 구분하여 잔여 예산 안의 성공과 초과 실패를 확인한다. Windows/Python monotonic의 시스템 공통 시계를 사용하며 현장/native 수용과 실제 첫 설정 실패 원인 확정은 별도다.
 
@@ -1496,7 +1496,7 @@ F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join
 
 ### Bootstrap relay 시작의 일시 admission 대기
 
-Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRITER_GATE_TIMEOUT`만 기존 240초 창에서 0.1초씩 쉬며 재시도한다. 각 시도는 기존 launch_version의 admission을 다시 얻으며 시도 사이에는 admission을 보유하지 않는다. 상한은 240초 + 마지막 admission 대기 최대 5초이며 마감 뒤에는 기존 실패 출구를 유지한다. fence 확정·버려진 소유권 등 다른 거절과 GUI 실행 자체의 timeout은 재시도하지 않는다. 포인터·trial claim·READY·CONFIRMED·G 허가·cohort·잠금 순서는 유지한다. bootstrap 밖의 relay launcher admission과 실제 로그온/pythonw 수용은 별도 범위다.
+Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRITER_GATE_TIMEOUT`만 0.1초씩 쉬며 재시도한다. trial의 시도 창은 `min(업데이트 240초 마감, 공유 relay_deadline)`이며 부모 PID·생성 신원 검사를 함께 보존한다. 각 시도와 경합 뒤 대기 전에 부모 수명·예산을 확인하고, 사망·교체·미증명·소진 뒤에는 retry·새 launch 없이 exit20이다. 각 시도는 기존 launch_version의 admission을 다시 얻으며 시도 사이에는 admission을 보유하지 않는다. 한 admission의 기존 대기 최대 5초는 바꾸지 않는다. fence 확정·버려진 소유권 등 다른 거절과 GUI 실행 자체의 timeout은 재시도하지 않는다. 포인터·trial claim·READY·CONFIRMED·G 허가·cohort·잠금 순서는 유지한다. bootstrap 밖의 relay launcher admission과 실제 로그온/pythonw 수용은 별도 범위다.
 
 
 <a id="worker-shortcuts"></a>
