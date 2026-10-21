@@ -36,7 +36,7 @@ SysWOW64 셸은 허용 목록에 없으며 cwd는 census 관측 항목이 아니
 
 등록 도구는 119 R4부터 HTTP 409 `reattach_proof_required`에 한해 같은 소유 키로 공식 challenge → 서명 → `/api/producer-ingest/v2/reattach`를 한 번 이어 간다. proof의 정확한 필드·audience·nonce·만료와 producer/install/source_host/manifest 결속을 확인하며 새 키·새 신원 발급·신원 삭제 없이 같은 신원의 회전 자격과 영수증을 검증·저장한 뒤 기존 준비 완료 경로로 진행한다. 다른 키의 `producer_identity_conflict`는 기존 관리자 복구를 유지한다. 기존 키를 열지 못하거나 challenge·재결속 검증/통신이 실패하면 원 `POSSESSION_PROOF_REATTACH_REQUIRED`를 보존하고 자동 재시도하지 않는다. 해결되지 않은 기존 신원 거절은 첫 설정의 `RECOVERY_REQUIRED`와 원 `recovery_action`으로 보존하며 Run/업무 자료 준비로 진행하지 않는다. 공개 고정 원인은 `ADMIN_RECOVERY_ACTION` 또는 `POSSESSION_PROOF_REATTACH_REQUIRED`이며 등록 보고만 남은 재시작과 시작 거절 관측에서도 동일하다([첫 설정 안내](operations.md#onboarding-registration-recovery)).
 
-보존된 자격이 있는 재설치도 같은 키 재결속의 정상 대상이다. 서버 호출 전에 기존 저장 자리의 쓰기·교체 권한, current-user scope, producer/install/source_host/manifest·소유 키 지문과 보호 자격/영수증 결속을 확인한다. 틀림·모름·쓰기 불가는 서버를 호출하지 않고 원본과 정상 등록 보고서를 보존한다. 기존 키를 열 수 없어도 정상 보고서를 덮지 않고 기존 관리자 회복 분류와 rc2를 유지한다. 검증된 재결속 회전 응답의 epoch가 기존보다 진행한 경우에만 이름 있는 `reattach_rotation_admitted` 예외로 기존 profile 토큰·producer 보호 자격 자리를 교체한다. 관리자 회복 조건과 구분하며 임시 쓰기·검증·원자 교체와 실패 시 기존 바이트 보존을 따른다.
+보존된 자격이 있는 재설치도 같은 키 재결속의 정상 대상이다. 서버 호출 전에 기존 저장 자리의 폴더 생성·쓰기·교체 권한, current-user scope, producer/install/source_host/manifest·소유 키 지문과 보호 자격/영수증 결속을 확인한다. 틀림·모름·쓰기 불가는 서버를 호출하지 않고 원본과 정상 등록 보고서를 보존한다. 기존 키를 열 수 없어도 정상 보고서를 덮지 않고 기존 관리자 회복 분류와 rc2를 유지한다. 검증된 재결속 회전 응답의 epoch가 기존보다 진행한 경우에만 이름 있는 `reattach_rotation_admitted` 예외로 기존 profile 토큰·producer 보호 자격 자리를 교체한다. 관리자 회복 조건과 구분하며 임시 쓰기·검증·원자 교체와 실패 시 기존 바이트 보존을 따른다.
 
 #### 같은 키 재결속의 저장 중단 진단
 

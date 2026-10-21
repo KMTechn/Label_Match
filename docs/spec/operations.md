@@ -742,7 +742,7 @@ HMAC 서명은 전송 시 새 키로 생성한다. 대기 행의 원 metadata/id
 
 119 R4 등록기는 같은 active producer/install/source_host·소유 키 지문의 HTTP 409 `reattach_proof_required`를 받으면 같은 서버의 `/api/producer-ingest/v2/reattach/challenge` → 기존 현재 사용자 키 서명 → `/api/producer-ingest/v2/reattach`를 한 번 수행한다. challenge의 정확한 proof 필드·audience·nonce 모양·만료(이적과 같은 최대 900초)·신원/manifest 결속 및 응답/영수증의 같은 신원·키 지문·회전 epoch·자격 지문을 확인한 뒤 기존 저장·준비 완료 경로를 사용한다. 새 키 생성·새 발급·신원 삭제·실패 자동 반복은 없다. 키 열기나 challenge/reattach 실패·nonce 불일치·만료는 원 `POSSESSION_PROOF_REATTACH_REQUIRED`를 남긴다. 다른 키의 `producer_identity_conflict`는 기존 관리자 회복 절차를 따른다. 실제 서버·현장 PC 수용과 작업 허가 승인은 별도다.
 
-같은 PC에 보호 자격이 남아 있어도 같은 키 재결속은 기존 저장 자리에서 회전 자격까지 확정한다. 서버 호출 전 저장 자리·교체 권한·current-user scope·producer/install/source_host/manifest·소유 키 지문과 기존 자격 결속을 대조한다. 받을 수 없거나 모르면 서버 호출 0회로 거절하고 기존 정상 보고서와 자격을 보존한다. 키를 열지 못하는 경우도 정상 보고서는 보존하며 기존 관리자 회복 분류와 rc2로 알린다. 검증된 같은 키 응답과 진행한 epoch에만 `reattach_rotation_admitted` 조건으로 기존 profile 토큰과 producer 보호 자격 교체를 허용한다. 새 저장 자리로 우회하거나 관리자 회복 조건을 완화하지 않는다.
+같은 PC에 보호 자격이 남아 있어도 같은 키 재결속은 기존 저장 자리에서 회전 자격까지 확정한다. 서버 호출 전 저장 자리·폴더 생성·교체 권한·current-user scope·producer/install/source_host/manifest·소유 키 지문과 기존 자격 결속을 대조한다. 받을 수 없거나 모르면 서버 호출 0회로 거절하고 기존 정상 보고서와 자격을 보존한다. 키를 열지 못하는 경우도 정상 보고서는 보존하며 기존 관리자 회복 분류와 rc2로 알린다. 검증된 같은 키 응답과 진행한 epoch에만 `reattach_rotation_admitted` 조건으로 기존 profile 토큰과 producer 보호 자격 교체를 허용한다. 새 저장 자리로 우회하거나 관리자 회복 조건을 완화하지 않는다.
 
 회전 직전 별도 `<data_dir>/status/label_match_reattach_persistence.json`에 `REATTACH_IN_PROGRESS`를 원자 저장한다. 회전 뒤 저장 실패는 기존 자격·profile 토큰·등록 문서를 복원하고 같은 별도 파일에 `REATTACH_ROTATED_PERSIST_FAILED`를 남기며 rc3으로 끝난다. 정상 등록 보고서는 일반 BLOCKED로 덮지 않는다. 진행 표지의 `server_credential_rotated=false`는 응답을 확인하기 전의 상태이며 실제 서버가 회전하지 않았다는 뜻으로 사용하지 않는다([고정 형식](contracts.md#같은-키-재결속의-저장-중단-진단)).
 

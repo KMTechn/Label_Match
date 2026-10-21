@@ -2167,19 +2167,35 @@ def _probe_reattach_target(path: Path) -> None:
             ctypes.windll.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
             ctypes.windll.kernel32.CloseHandle(handle)
     parent = path.parent
+    missing = 0
     while not parent.exists():
+        if parent.parent == parent:
+            raise DirectSyncPushError("reattach storage root is unavailable")
+        missing += 1
         parent = parent.parent
-    first = parent / f".{os.getpid()}.{uuid.uuid4().hex}.reattach-probe"
-    second = parent / f".{os.getpid()}.{uuid.uuid4().hex}.reattach-probe"
+    directories = []
+    first = second = None
     try:
+        # Mirror missing parent levels under an owned name: AddFile alone does
+        # not prove AddSubdirectory rights for the eventual storage directory.
+        for level in range(missing):
+            child_name = f".{os.getpid()}.{uuid.uuid4().hex}.reattach-probe" if level == 0 else "d"
+            parent = parent / child_name
+            parent.mkdir()
+            directories.append(parent)
+        first = parent / f".{os.getpid()}.{uuid.uuid4().hex}.reattach-probe"
+        second = parent / f".{os.getpid()}.{uuid.uuid4().hex}.reattach-probe"
         for probe in (first, second):
             with probe.open("xb") as stream:
                 stream.flush()
                 os.fsync(stream.fileno())
         atomic_replace(first, second)
     finally:
-        first.unlink(missing_ok=True)
-        second.unlink(missing_ok=True)
+        for probe in (first, second):
+            if probe is not None:
+                probe.unlink(missing_ok=True)
+        for directory in reversed(directories):
+            directory.rmdir()
 
 
 def _reattach_local_preflight(args, manifest, credential, possession_key):
