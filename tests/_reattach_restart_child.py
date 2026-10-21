@@ -18,7 +18,6 @@ def main(root, mode):
     (root / 'fixture').mkdir()
     (root / 'app').mkdir()
     patch = pytest.MonkeyPatch()
-    patch.setattr(fixtures, '_source_build_id', lambda: 'b468c5d8ce62e5dac77fd5c1454157dbabb11cab')
     case = fixtures.reattach_case.__wrapped__(root / 'fixture', patch)
     paths = onboarding.resolve_current_user_onboarding_paths(root / 'app', environ=_environment(root))
     _retarget_to_official_paths(case, paths)

@@ -5,7 +5,6 @@ import hashlib
 import datetime as dt
 import json
 import secrets
-import subprocess
 import uuid
 from functools import lru_cache
 from pathlib import Path
@@ -27,8 +26,32 @@ from tests.test_register_label_match_worker_pc import (
 
 @lru_cache(maxsize=1)
 def _source_build_id():
-    # This is fixture release metadata, independent of the repository's git state.
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:40]
+    # Match other release fixtures without launching a git child on the host.
+    root = Path(__file__).resolve().parents[1]
+    def small_text(path):
+        assert path.stat().st_size <= 4096
+        return path.read_text(encoding='utf-8').strip()
+    metadata = root / '.git'
+    if metadata.is_file():
+        pointer = small_text(metadata)
+        assert pointer.startswith('gitdir: ')
+        metadata = (root / pointer[len('gitdir: '):]).resolve()
+    head = small_text(metadata / 'HEAD')
+    if head.startswith('ref: '):
+        reference = head[len('ref: '):]
+        common = metadata / 'commondir'
+        common = (metadata / small_text(common)).resolve() if common.is_file() else metadata
+        loose = common / reference
+        if loose.is_file():
+            head = small_text(loose)
+        else:
+            packed = common / 'packed-refs'
+            assert packed.stat().st_size <= 1024 * 1024
+            with packed.open(encoding='utf-8') as stream:
+                head = next(line.split()[0] for line in stream
+                            if line.rstrip().endswith(' ' + reference))
+    assert len(head) == 40 and set(head) <= set('0123456789abcdef')
+    return head
 
 
 @pytest.fixture

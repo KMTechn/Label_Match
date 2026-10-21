@@ -8,12 +8,6 @@ import tests.test_register_label_match_reattach as reattach_tests
 from pathlib import Path
 
 
-@pytest.fixture(autouse=True)
-def no_git_child(monkeypatch):
-    monkeypatch.setattr(reattach_tests, '_source_build_id',
-                        lambda: 'b468c5d8ce62e5dac77fd5c1454157dbabb11cab')
-
-
 def _preserved_binding(case):
     assert case.run() == 0
     saved = json.loads((case.data / case.module.DEFAULT_CREDENTIAL_FILENAME).read_text())

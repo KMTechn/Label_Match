@@ -426,6 +426,16 @@ def _product_apply_claim(item, monkeypatch, *, settled=True):
     assert updates.read_json(item.control / "apply-claim.json")["status"] == ("SETTLED" if settled else "RUNNING")
 
 
+@pytest.mark.parametrize('status', ['REATTACH_IN_PROGRESS', 'REATTACH_ROTATED_PERSIST_FAILED'])
+def test_reattach_continuation_never_uses_the_ready_window_shortcut(steady_start, status):
+    marker = steady_start.paths.direct_sync_root / 'status' / 'label_match_reattach_persistence.json'
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({'status': status}), encoding='utf-8')
+    assert onboarding.try_window_first_start(
+        steady_start.paths.app_root, environ=steady_start.environment) is None
+    assert steady_start.helpers == []
+
+
 def _watch_window_front(monkeypatch):
     def forbidden(*_a, **_k):
         pytest.fail("full verification or registration before window")

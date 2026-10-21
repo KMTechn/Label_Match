@@ -48,9 +48,10 @@ def isolated_profile_rotation_release(request, monkeypatch):
     }:
         return
     import label_data_generation
+    from tests.test_register_label_match_reattach import _source_build_id
     monkeypatch.setattr(label_data_generation, 'release_identity', lambda _root: {
         'version': label_data_generation.CURRENT_VERSION,
-        'build_id': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:40],
+        'build_id': _source_build_id(),
         'data_compatible_min_version': label_data_generation.CURRENT_VERSION,
         'compatibility_verified': False,
     })
