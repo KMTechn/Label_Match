@@ -4994,7 +4994,18 @@ function Expand-LabelOrphanCommand([string]$Command) {
     $texts=[Collections.Generic.List[string]]::new()
     [void]$seen.Add($Command);$texts.Add($Command)
     $encodings=@([Text.UTF8Encoding]::new($false,$true),[Text.UnicodeEncoding]::new($false,$false,$true))
+    # Windows PowerShell 5.1 and pwsh both take '-', '/', an en dash, an em dash or a horizontal bar,
+    # then EC or any case-insensitive prefix of EncodedCommand, then the Base64 payload (bare or quoted).
+    $switch='(?:^|[\s"''(])[-/\u2013\u2014\u2015]([A-Za-z]+)\s+["'']?([A-Za-z0-9+/=]+)'
     for($index=0;$index -lt $texts.Count;$index++){
+        foreach($found in [regex]::Matches($texts[$index],$switch)){
+            $name=$found.Groups[1].Value.ToLowerInvariant()
+            if($name -cne 'ec' -and -not 'encodedcommand'.StartsWith($name,[StringComparison]::Ordinal)){continue}
+            try{[byte[]]$bytes=[Convert]::FromBase64String($found.Groups[2].Value)}
+            catch{if($index -eq 0){throw 'ORPHAN_CENSUS_UNREADABLE'};continue}
+            $decoded=[Text.Encoding]::Unicode.GetString($bytes)
+            if($decoded -and $seen.Add($decoded)){$texts.Add($decoded)}
+        }
         foreach($literal in [regex]::Matches($texts[$index],'[''"]([A-Za-z0-9+/]+={0,2})[''"]')){
             try{[byte[]]$bytes=[Convert]::FromBase64String($literal.Groups[1].Value)}catch{continue}
             foreach($encoding in $encodings){
@@ -5077,9 +5088,6 @@ function Get-LabelOrphanCensus($Owner,$Audit,[string]$AuditPath) {
             continue
         }
         if($possible -and (-not $image -or -not $command -or $created -le 0)){throw 'ORPHAN_CENSUS_UNREADABLE'}
-        if($command -match '(?i)-(?:EncodedCommand|EncodedC|Encoded|Enco|Enc|En|E)\s+([A-Za-z0-9+/=]+)'){
-            try{$command+=' '+[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))}catch{throw 'ORPHAN_CENSUS_UNREADABLE'}
-        }
         $command=Expand-LabelOrphanCommand $command
         $births[$processId]=$created
         foreach($needle in $needles){
@@ -5253,11 +5261,17 @@ function Save-LabelOrphanRelease([string]$Path,$Record) {
     }finally{if($null -ne $stream){$stream.Dispose()};if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -ErrorAction Stop}}
 }
 
+function Get-LabelOrphanMachineAuditRoot {
+    # Same fixed rule as the machine installer that writes its original audit there.
+    $programData = if ($testMode) { $env:PROGRAMDATA } else { [Environment]::GetFolderPath('CommonApplicationData') }
+    return Join-Path (Full $programData 'machine ProgramData') 'KMTech\Label_Match\install-audit'
+}
+
 function Test-LabelOrphanReleaseCandidate($Saved,[string]$AuditPath) {
     if(Test-Path -LiteralPath (Join-Path $writerFenceControlRoot 'active.json')){return $true}
     $run=[string](Get-LabelOrphanValue $Saved 'run_id')
     if($run -cmatch '^[0-9]{8}T[0-9]{9}Z-[0-9a-f]{32}$'){
-        $machine=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ('KMTech/Label_Match/install-audit/machine-writer-'+$run+'/active.json')
+        $machine=Join-Path (Get-LabelOrphanMachineAuditRoot) ('machine-writer-'+$run+'\active.json')
         if(Test-Path -LiteralPath $machine){return $true}
     }
     $attempt=[string](Get-LabelOrphanValue (Get-LabelOrphanValue $Saved 'writer_fence') 'attempt_id')
@@ -5285,6 +5299,9 @@ function Assert-LabelOrphanReleaseFormat($Record) {
 }
 
 function Invoke-LabelOrphanFenceRelease($Saved,[string]$AuditPath,[string]$AuditSha256) {
+    # Only the two fixed original audit roots (operator LocalAppData, machine ProgramData) are evidence.
+    $auditParent=Split-Path -Parent $AuditPath
+    if(-not(Same $auditParent (Join-Path $lad 'KMTech\Label_Match\install-audit')) -and -not(Same $auditParent (Get-LabelOrphanMachineAuditRoot))){throw 'ORPHAN_AUDIT_ROOT_DIFFERS'}
     $ownerTuple=Get-LabelOrphanTuple (Get-LabelOrphanValue $Saved 'writer_fence')
     $run=[string](Get-LabelOrphanValue $Saved 'run_id')
     if($run -cnotmatch '^[0-9]{8}T[0-9]{9}Z-[0-9a-f]{32}$' -or
@@ -5304,8 +5321,11 @@ function Invoke-LabelOrphanFenceRelease($Saved,[string]$AuditPath,[string]$Audit
             if((Get-LabelOrphanValue $Saved.writer_fence $name) -cne (Get-LabelOrphanValue $owner $name)){throw 'ORPHAN_OWNER_IDENTITY_DIFFERS'}
         }
         $control=Full ([string]$owner.control_root) 'orphan fence root'
-        $machine=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ('KMTech/Label_Match/install-audit/machine-writer-'+$run)
+        $machine=Join-Path (Get-LabelOrphanMachineAuditRoot) ('machine-writer-'+$run)
         if(-not(Same $control $writerFenceControlRoot) -and -not(Same $control $machine)){throw 'ORPHAN_CONTROL_ROOT_DIFFERS'}
+        # Each original audit root admits only its own control root, including testMode.
+        $expectedControl=if(Same $auditParent (Get-LabelOrphanMachineAuditRoot)){$machine}else{$writerFenceControlRoot}
+        if(-not(Same $control $expectedControl)){throw 'ORPHAN_AUDIT_ROOT_DIFFERS'}
         $Script:LabelWriterFenceAdmissionProductionRoot=$control
         $Script:LabelWriterFenceInstalledIdentity=[pscustomobject]@{session_id=$ownerTuple.session_id;attempt_id=$ownerTuple.attempt_id;
             replacement_transaction_id=$ownerTuple.replacement_transaction_id;orchestrator_sha256=$ownerTuple.orchestrator_sha256;
@@ -5413,7 +5433,13 @@ function Invoke-LabelResumeRollback {
     }
     $localAuditRoot = Join-Path $lad 'KMTech\Label_Match\install-audit'
     $auditPath = Full $ResumeRollbackAuditPath 'rollback audit'
-    if (-not (Same (Split-Path -Parent $auditPath) $localAuditRoot)) { throw 'Rollback audit is outside the original operator audit root.' }
+    # A machine install keeps its only original audit under the fixed machine ProgramData audit root.
+    # That root is accepted below only as evidence for the terminal-audit fence exit; no other root is.
+    $machineAudit = $false
+    if (-not (Same (Split-Path -Parent $auditPath) $localAuditRoot)) {
+        if (-not (Same (Split-Path -Parent $auditPath) (Get-LabelOrphanMachineAuditRoot))) { throw 'Rollback audit is outside the original operator audit root.' }
+        $machineAudit = $true
+    }
     $item = Get-Item -Force -LiteralPath $auditPath
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 1048576 -or
         $ExpectedRollbackAuditSha256 -cnotmatch '^[0-9a-f]{64}$' -or (Sha $auditPath) -cne $ExpectedRollbackAuditSha256) { throw 'Rollback audit pin/ordinary-file check failed.' }
@@ -5433,6 +5459,7 @@ function Invoke-LabelResumeRollback {
         $Script:LabelOrphanFenceReleased = $true
         return
     }
+    if ($machineAudit) { throw 'Rollback audit is outside the original operator audit root.' }
     if ([string]$saved.schema -cne 'label-match-canonical-portable-install-v1' -or
         [string]$saved.status -cnotin @('ROLLBACK_FAILED','FAILED_ROLLBACK_INCOMPLETE','FAILED_ROLLED_BACK','RUNNING','PREIMAGE_SAVED') -or
         -not (Same ([string]$saved.install_root) $install) -or [string]$saved.source_commit -cne [string]$sourceManifest.source_commit) { throw 'Rollback audit identity/status differs.' }

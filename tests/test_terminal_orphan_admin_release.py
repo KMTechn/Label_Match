@@ -24,7 +24,7 @@ def test_saved_terminal_audits_admin_release_finishes_without_replaying(carried,
     for index, row in enumerate(rows):
         saved = Path(row.pop('copy')).read_bytes()
         record = json.loads(saved.decode('utf-8-sig'))
-        case_root = tmp_path / ('admin-case-' + str(index))
+        case_root = tmp_path.parent / ('m' + hashlib.sha256(str(tmp_path).encode('utf-8')).hexdigest()[:8] + str(index))
         install = case_root / 'managed/current'
         install.mkdir(parents=True)
         for name in ('INSTALL_THIS_PC.ps1', 'tools/bootstrap_integrity.ps1', 'tools/label_writer_fence.ps1', 'app/payload.txt'):
