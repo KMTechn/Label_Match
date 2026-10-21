@@ -5452,7 +5452,9 @@ function Invoke-LabelResumeRollback {
     $item = Get-Item -Force -LiteralPath $auditPath
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 1048576 -or
         $ExpectedRollbackAuditSha256 -cnotmatch '^[0-9a-f]{64}$' -or (Sha $auditPath) -cne $ExpectedRollbackAuditSha256) { throw 'Rollback audit pin/ordinary-file check failed.' }
-    $saved = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $resumeJsonOptions = @{}
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $resumeJsonOptions.DateKind = 'String' }
+    $saved = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json @resumeJsonOptions
     # Terminal evidence has a separate, administrator-only fence exit. A
     # failure without a residual fence retains the existing rollback-resume path.
     if ([string]$saved.schema -ceq 'label-match-canonical-portable-install-v1' -and

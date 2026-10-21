@@ -30,18 +30,18 @@ INSTALLER = ROOT / "INSTALL_CANONICAL_PORTABLE.ps1"
 # Primary audit saves only; optional EvidencePath copies share the same state.
 # The final two machine saves apply when release was skipped or failed.
 SITES = (
-    (6694, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
-    (6720, "machine", ("ROLLBACK_FAILED",)),
-    (6731, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
-    (6735, "machine", ("ROLLBACK_FAILED",)),
-    (6743, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
-    (6765, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
-    (6773, "machine", ("ROLLBACK_FAILED",)),
-    (7912, "user", ("RECOVERY_REQUIRED",)),
-    (8019, "user", ("ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
-    (8038, "user", ("ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
-    (8044, "user", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
-    (5559, "user", ("ROLLBACK_FAILED",)),
+    (6696, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
+    (6722, "machine", ("ROLLBACK_FAILED",)),
+    (6733, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
+    (6737, "machine", ("ROLLBACK_FAILED",)),
+    (6745, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
+    (6767, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
+    (6775, "machine", ("ROLLBACK_FAILED",)),
+    (7914, "user", ("RECOVERY_REQUIRED",)),
+    (8021, "user", ("ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
+    (8040, "user", ("ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
+    (8046, "user", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
+    (5561, "user", ("ROLLBACK_FAILED",)),
 )
 
 
@@ -232,5 +232,5 @@ def test_terminal_save_inventory_is_bound_to_the_candidate_source():
     for line, lane, statuses in SITES:
         assert "Save $audit" in lines[line - 1], f"Save checkpoint moved: {line}"
     assert "ConvertTo-Json -Depth 30" in lines[1770]
-    assert "Stop-LabelWriterFence" in lines[6751]
-    assert "unproven child" in lines[6747]
+    assert "Stop-LabelWriterFence" in lines[6753]
+    assert "unproven child" in lines[6749]
