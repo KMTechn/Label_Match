@@ -15,11 +15,16 @@ def no_git_child(monkeypatch):
 
 def _preserved_binding(case):
     assert case.run() == 0
-    target = case.module._secret_path(
-        case.data, 'producer_' + case.identity['producer_id'] + '_secret')
+    saved = json.loads((case.data / case.module.DEFAULT_CREDENTIAL_FILENAME).read_text())
+    target = case.module._secret_path(case.data, saved['secret_ref'].split(':', 1)[1])
     target.parent.mkdir(exist_ok=True)
     target.write_bytes(b'protected-existing')
     case.calls.clear()
+    previous_epoch = case.report()['credential_epoch']
+    def next_generation(response):
+        response['credential_epoch'] = previous_epoch + 1
+        response['client_receipt']['credential_epoch'] = previous_epoch + 1
+    case.response_change = next_generation
     report = case.data / 'status' / case.module.DEFAULT_REPORT_FILENAME
     return target, report, report.read_bytes()
 
