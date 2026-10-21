@@ -219,13 +219,20 @@ def test_pending_official_stop_is_recorded_after_bounded_native_returns(monkeypa
         user_relay.request_app_stop(root, app_root=tmp_path / "app", timeout_seconds=0)
         returned.append(True)
         return 32000
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: SimpleNamespace(MessageBoxTimeoutW=Mock(side_effect=native)))
+    original_library = ctypes.WinDLL
+    def library(name, *args, **kwargs):
+        if name == "user32":
+            return SimpleNamespace(MessageBoxTimeoutW=Mock(side_effect=native))
+        return original_library(name, *args, **kwargs)
+    monkeypatch.setattr(ctypes, "WinDLL", library)
     records = []
     def trace(stage, **details):
-        assert returned, "native stop trace must follow the bounded call"
+        if stage == "APP_STOP_REQUESTED_CLOSE":
+            assert returned, "native stop trace must follow the bounded call"
         records.append((stage, details))
     monkeypatch.setattr(lm, "_label_match_startup_trace", trace)
     result = show_notice(notice, tmp_path)
+    assert returned == [True]
     assert records == [("APP_STOP_REQUESTED_CLOSE", {"message": "멈춤 요청으로 닫힘"})]
     if notice == "integrity-warning":
         assert result is False
