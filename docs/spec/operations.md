@@ -1341,18 +1341,22 @@ SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 �
 
 전·후 SDDL은 기존 `canonical-portable-<run>-elevated.jsonl`의 PREPARATION에 보존한다. 바탕 준비의 원 예외는 유지하고 child 61–66을 부모의 한국어 INSTALLATION_PREPARATION 진단으로 전달한다(61 기본/목표 집합 밖, 62 재분석, 63 소유자, 64 앱 부모 생성, 65 control 생성 예약, 66 기타). 이 변경은 control/evidence 위치·실행 wrapper·배치 ACL 재설정·실패 복구를 이적 방식으로 옮기지 않는다. 격리 D: 실제 NTFS/PS5.1·PS7 함수 회귀는 source 범위이며 선언 재생성·새 packet·빈 guest 설치는 중앙 랩 수용 전 NOT TESTED다.
 
-Python relay 시작은 임시 bootstrap 종료 뒤에도 최대 600초(설치기의 설치 뒤·되돌림 뒤 relay 준비 대기와 같은 상한. 까닭: 찬 첫 읽기에서 설치 코드 트리 전체 무결성 확인이 75초를 넘김. 확인 자체는 줄이지 않고, relay 자식이 0 아닌 코드로 끝나면 바로 실패) 안에서 fresh active-version relay 증거를 기다린다. launcher의 0 exit·생존만을 ALIVE로 반환하지 않으며 timeout/비정상 exit는 실패로 남기고 실제 자식을 강제 종료하지 않는다. 실제 느린 첫 cycle·두 번 시작·native 수명은 랩 NOT TESTED다.
+Python relay 시작은 부모가 bootstrap을 띄우는 시각에 한 번 정한 공통 절대 마감 안에서 fresh active-version relay 증거를 기다린다. 부모의 기본 전체 예산은 `RELAY_PREPARE_SECONDS`(600초)이며 survival 확인도 이 안에 포함한다. bootstrap 종료 뒤에 600초를 새로 시작하지 않는다. launcher의 0 exit·생존만을 ALIVE로 반환하지 않으며, 확인된 비정상 exit는 즉시 실패한다. timeout/비정상 exit는 실패로 남기고 실제 자식을 강제 종료하지 않는다. 설치기 설치 뒤·되돌림 뒤 relay 준비 상한은 기존 600초를 유지한다(찬 첫 읽기에서 전체 무결성 확인이 75초를 넘으므로 확인 자체를 줄이지 않는다). 실제 느린 첫 cycle·두 번 시작·native 수명은 랩 NOT TESTED다.
 
-첫 설정의 현재 판 시작도 위 relay 준비 상한을 쓴다. prepared 후보가 없는 정상 `DEFERRED`·`CONFIRMED` 상태에서 `_bootstrap()`의 `START_CURRENT`는 시작 업데이트 대기의 240초 deadline을 `start_current()`로 넘기지 않고, 기존 `RELAY_PREPARE_SECONDS`(600초) 준비 대기를 시작한다. 시작 업데이트 대기 240초와 보호 runtime·활성 판·일반 사용자·relay 소유 증명 검사는 유지한다. `tests/test_bootstrap_relay_prepare_deadline.py`는 실제 bootstrap·relay 준비 증명 경계를 지나 300초 준비 성공과 즉시 준비·prepared 후보가 있는 경로를 가상 시계로 확인한다. 이 경계 재현은 실제 첫 설정 실패의 근본 원인을 확정한 현장 증거와 구분한다.
+첫 설정의 현재 판 시작도 한 공통 마감을 쓴다. 부모는 `--relay-parent-pid`와 `--relay-parent-deadline`을 일반 relay 인수의 `--` 앞에 전달한다. 자식은 `relay_deadline = min(자기 진입+600, 부모 마감−RELAY_PARENT_RESULT_RESERVE_SECONDS)`를 한 번 정하며 결과 처리 여유 상수는 **10초**다. 모든 현재 판 `start_current`·복구·relay 준비 대기가 이 값을 공유한다. retained DEFERRED, prepared 요청 뒤 DEFERRED, claim ABSENT, FAILED 복구, rollback readback 및 업데이트 관측 뒤 복구에서도 새 예산을 발급하지 않는다. 시작 업데이트 관측과 두 trial launch의 기존 240초 예산은 업데이트 판단에 유지하고, 보호 runtime·활성 판·일반 사용자·소유 증명·자료 세대 검사는 그대로 둔다.
+
+부모 인수 한쪽 누락·값 오류·파싱 실패·NaN·무한대는 `UPDATE_PREPARATION_FAILED`, exit20으로 명시 거절하며 독립 bootstrap의 진입+600으로 바꾸지 않는다. 두 인수가 모두 없는 정식 독립 진입(예약 작업·설치기)만 자기 진입+600을 쓴다. 유효한 유한 마감은 min으로 줄일 수 있고, 지난 마감은 이미 소진된 예산이므로 `UPDATE_APPLY_NO_PROGRESS`, exit20으로 준비 대기·새 relay 시작 없이 실패한다. 부모 경로가 보호 설치 문맥을 잃어도 portable 독립 진입으로 바꾸지 않는다. 원 입력 값은 공개 진단에 넣지 않는다.
+
+부모 PID와 생성 신원을 읽어 사망·교체가 확인되면 준비 대기·추가 launch·admission retry를 끝내고 `UPDATE_APPLY_NO_PROGRESS`, exit20으로 실패한다. 관측 불가는 사망으로 단정하지 않으며 `UPDATE_SUPERVISION_UNAVAILABLE`, exit20이다. 이미 시작한 relay는 강제 종료하지 않고 일시 관측 handle만 닫는다. 공개 가림 허용 목록은 바꾸지 않는다. `tests/test_bootstrap_relay_deadline_boundaries.py`의 가상 시계 시험은 진입 지연0/61/120초 × 준비239/241/599초, 60초 경계·초기화·재시작, 값 오류·소진·부모 사망/교체/미증명을 구분하여 잔여 예산 안의 성공과 초과 실패를 확인한다. Windows/Python monotonic의 시스템 공통 시계를 사용하며 현장/native 수용과 실제 첫 설정 실패 원인 확정은 별도다.
 
 **고정 상한 판정표(G100b 닫기).** 「첫 설정·relay 시작 사슬」 안인지, 그리고 relay 준비 대기와 같은 뜻인지 줄마다 판정했다. 같은 뜻만 `RELAY_PREPARE_SECONDS`(600 s)에 묶고(정적 시험 `tests/test_first_setup_wait_and_single_read.py`), 나머지는 까닭을 적고 손대지 않는다.
 
 | 값 | 자리 | 사슬 안? | 같은 뜻? | 처리 |
 |---|---|---|---|---|
-| 600 (75에서) | `auto_update.py` bootstrap·복구 두 자리 `RELAY_PREPARE_SECONDS` | 예 | 예(원본) | 한 값 |
-| 600.0 | `user_relay.py` `bootstrap_readiness_seconds`·`min(600.0, …)` | 예 | 예 | 한 값(정적 시험) |
+| 600 (75에서) | `auto_update.py` `RELAY_PREPARE_SECONDS` | 예 | 예(원본) | 독립 진입 한 마감, 부모가 있으면 전달 마감−결과 여유 이하를 공유 |
+| 600.0 | `user_relay.py` `bootstrap_readiness_seconds`·`min(600.0, …)` | 예 | 예 | spawn 기준 부모 전체 마감에 survival 포함(정적 시험) |
 | `AddSeconds(600)`·`600-(…)` | 설치기 relay 상태 증명·되돌림 relay ready 대기 | 예 | 예 | 한 값(정적 시험) |
-| 600000 ms | 설치기 `Wait-LabelRegistrationChild` 기본값(첫 설정 `--onboard-current-user` 자식의 바깥 상한) | 예 | **예 — 안쪽이 relay를 최대 600 s 기다리므로 바깥이 더 작으면 자식을 중간에 죽인다** | `RELAY_PREPARE_SECONDS*1000` 과 같음을 정적 시험으로 묶음 |
+| 600000 ms | 설치기 `Wait-LabelRegistrationChild` 기본값 | 예 | 값은 같지만 relay 준비 중첩은 아님: 실제 호출은 `--check-data-generation-only` 또는 `--defer-canonical-relay-start`, relay 시작은 별도 | 기존 값과 정적 상한 단언 유지, Python 부모의 예산 확장 근거로 쓰지 않음 |
 | 720000 ms | 설치기 `Wait-LabelPlacementChild` 기본값(관리자 배치 도우미: 코드 복사·ACL·검증) | 예(설치 사슬) | 아니오 — relay 준비는 배치 뒤 설치기 본체가 기다린다 | 손 0 — 배치 도우미 전체 상한 |
 | 90000 ms (`-TimeoutMilliseconds 90000` 여덟 자리) | 설치기 `Enter-LabelWriterAdmission`·`Stop-LabelWriterFence` 대기 | 예 | 아니오 — 쓰기 admission·울타리 잠금 대기 | 손 0 — 잠금 대기 |
 | 120000 ms | 설치기 죽음 증명 자식 `WaitForExit(120000)` | 아니오(막힌 PC 구제 길) | 아니오 | 손 0 — 정지 증명(읽기 전용) |

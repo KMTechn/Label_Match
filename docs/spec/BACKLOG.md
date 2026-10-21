@@ -1,3 +1,4 @@
+- w9firstupdsub435 / REVIEW-119-LM P1 둘: 현재 판 relay의 모든 시작·복구·준비 대기는 한 절대 마감을 공유한다. 부모는 spawn 기준 기본600초에 survival을 포함해 PID/마감을 전달하며, 자식은 결과 여유10초를 뺀 값 이하로 줄인다. 부모 경로의 값 오류·누락 재발급0, 지난 마감 준비/새 시작0, 비정상 exit 즉시 실패. 부모 사망/교체/미증명은 기존 코드로 exit20이며 이미 시작한 relay 강제 종료0이다. 독립 진입만 자기 진입+600이다. 시작 업데이트240·보호 증명·설치기 상한·공개 가림 허용 목록은 유지한다. 잔여 예산 행렬·부모 사망·반복의 headless 회귀와 실제 현장 수용은 구분한다([운영 계약](operations.md)).
 - w9firstupd / G63·G64 P3: 제품 고침 0. 주인이 멈춘 뒤 우리 코드가 그 폴더 앞뒤를 대는 SQLite 읽기 자리는 0 이고, active_work_probe 는 앱·키트 흐름에서 부름 0 이다. -wal·-shm 휘발·immutable 판정 금지 규칙은 contracts.md 「수량·시각·로컬 파일」 끝 두 문단.
 - w9firstupdsub309 / G62 지킴: 독립 PowerShell 진입 10개의 dot-source·Import 적재 집합과 선택 함수·고정 본문을 PS5.1 AST로 읽어 Verb-Noun 함수 정의를 대조한다. OS 허용 목록은 이름별 이유를 명시하며 제품 스크립트는 실행하지 않는다.
 - w9firstupdsub306 / G60 지킴: git 추적 비 시험 .ps1/.psm1 중 비 ASCII 파일은 UTF-8 BOM 정확히 하나를 요구하는 별도 조립 관문 시험으로 고정한다.
