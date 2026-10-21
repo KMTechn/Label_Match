@@ -12,7 +12,7 @@ BRANCHES = ["retained_deferred", "request_deferred", "absent_claim", "failed_rec
 def branch_bootstrap(monkeypatch, bootstrap_relay):
     actual_bootstrap = auto_update._bootstrap
 
-    def run(kind, ready_after, *, setup_delay=0, entry_work=0):
+    def run(kind, ready_after, *, setup_delay=0, entry_work=0, busy_until=0):
         phase = {"retained_deferred": "DEFERRED", "failed_recovery": "FAILED"}.get(kind, "CONFIRMED")
 
         def enter(root, arguments, *, role):
@@ -25,7 +25,7 @@ def branch_bootstrap(monkeypatch, bootstrap_relay):
                                   failure_decision={"selected_sha": active["sha"]})
             if kind == "absent_claim":
                 monkeypatch.setattr(auto_update, "apply_claim_status", lambda _: "ABSENT")
-            if kind in {"absent_claim", "failed_recovery"}:
+            if kind in {"absent_claim", "failed_recovery"} or busy_until:
                 monkeypatch.setattr(auto_update, "current_generation_status", lambda *a: "ALLOW")
             if kind == "request_deferred":
                 request = auto_update.request_apply_task
@@ -38,6 +38,16 @@ def branch_bootstrap(monkeypatch, bootstrap_relay):
                 monkeypatch.setattr(auto_update, "request_apply_task", defer)
             if setup_delay:
                 auto_update.time.sleep(setup_delay)
+            if busy_until:
+                update_lock = auto_update.update_lock
+                available_at = auto_update.time.monotonic() + busy_until
+
+                def contested_lock(*args, **kwargs):
+                    if auto_update.time.monotonic() < available_at:
+                        raise RuntimeError("update mutex ownership is busy")
+                    return update_lock(*args, **kwargs)
+
+                monkeypatch.setattr(auto_update, "update_lock", contested_lock)
             if entry_work:
                 load_policy = auto_update.load_policy
 
@@ -77,3 +87,19 @@ def test_bootstrap_entry_work_consumes_the_shared_budget(branch_bootstrap):
     assert observed.elapsed == pytest.approx(600)
     assert observed.readiness_waits[0]["remaining"] == pytest.approx(595)
 
+
+def test_expired_child_budget_does_not_start_a_new_relay(branch_bootstrap):
+    observed = branch_bootstrap("normal", 0, entry_work=601)
+    assert observed.result == 20
+    assert observed.launches == []
+    assert observed.elapsed == pytest.approx(601)
+
+
+@pytest.mark.parametrize("ready_after,expected", [(500, 0), (float("inf"), 20)],
+                         ids=["ready-in-original-budget", "no-budget-renewal"])
+def test_repeated_update_contention_keeps_one_relay_deadline(branch_bootstrap, ready_after, expected):
+    observed = branch_bootstrap("normal", ready_after, busy_until=300)
+    assert observed.result == expected
+    assert observed.readiness_waits[0]["started_at"] == pytest.approx(1240)
+    assert observed.readiness_waits[0]["deadline"] == pytest.approx(1600)
+    assert observed.elapsed == pytest.approx(ready_after if expected == 0 else 600)
