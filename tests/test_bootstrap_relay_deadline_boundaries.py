@@ -1,7 +1,12 @@
 """Review-119 boundaries through the real bootstrap and parent wait algorithms."""
+import inspect
+from types import SimpleNamespace
+
 import pytest
 
 import auto_update
+import current_user_onboarding as onboarding
+import user_relay
 from test_bootstrap_relay_prepare_deadline import bootstrap_relay as _bootstrap_relay_fixture
 
 
@@ -14,8 +19,10 @@ def branch_bootstrap(tmp_path):
     actual_bootstrap = auto_update._bootstrap
 
     def run(kind, ready_after, *, setup_delay=0, entry_work=0, busy_until=0,
-            parent_deadline=NO_PARENT, parent_pid=42, parent_dies_at=None):
+            parent_deadline=NO_PARENT, parent_pid=42, parent_dies_at=None,
+            parent_unverified_at=None, parent_replaced_at=None):
         phase = {"retained_deferred": "DEFERRED", "failed_recovery": "FAILED"}.get(kind, "CONFIRMED")
+        public_records = []
 
         def enter(monkeypatch, root, arguments, *, role):
             control = auto_update.control_root(root)
@@ -66,6 +73,10 @@ def branch_bootstrap(tmp_path):
                 def identity(pid):
                     if pid == 42 and parent_dies_at is not None and auto_update.time.monotonic() >= 1000 + parent_dies_at:
                         return {"status": "ABSENT"}
+                    if pid == 42 and parent_unverified_at is not None and auto_update.time.monotonic() >= 1000 + parent_unverified_at:
+                        return {"status": "UNKNOWN"}
+                    if pid == 42 and parent_replaced_at is not None and auto_update.time.monotonic() >= 1000 + parent_replaced_at:
+                        return {"status": "LIVE", "creation_identity": "300"}
                     return {"status": "LIVE", "creation_identity": "100" if pid == 42 else "200"}
 
                 monkeypatch.setattr(auto_update, "native_process_identity", identity)
@@ -74,9 +85,17 @@ def branch_bootstrap(tmp_path):
         # Each attempt starts with the real functions and its own patch scope.
         with pytest.MonkeyPatch.context() as monkeypatch:
             bootstrap_relay = _bootstrap_relay_fixture.__wrapped__(monkeypatch, tmp_path)
+
+            def bootstrap_entry(root, arguments, *, role):
+                monkeypatch.setattr(auto_update, "emit_support_record",
+                                    lambda fields, **kwargs: public_records.append(fields))
+                return enter(monkeypatch, root, arguments, role=role)
+
             monkeypatch.setattr(auto_update, "_bootstrap",
-                                lambda root, arguments, *, role: enter(monkeypatch, root, arguments, role=role))
-            return bootstrap_relay(phase, ready_after=ready_after, prepared=kind == "request_deferred")
+                                bootstrap_entry)
+            observed = bootstrap_relay(phase, ready_after=ready_after, prepared=kind == "request_deferred")
+            observed.public_records = public_records
+            return observed
 
     return run
 
@@ -163,6 +182,7 @@ def test_parent_value_errors_never_issue_an_independent_budget(branch_bootstrap,
     assert observed.elapsed == 0
     assert observed.launches == []
     assert observed.current_starts == observed.readiness_waits == []
+    assert observed.public_records[-1]["reason_code"] == "UPDATE_PREPARATION_FAILED"
 
 
 def test_past_parent_deadline_is_already_exhausted(branch_bootstrap):
@@ -177,6 +197,7 @@ def test_parent_death_stops_preparation_before_deadline(branch_bootstrap):
     assert observed.result == 20
     assert observed.elapsed <= 30.1
     assert len(observed.launches) <= 1
+    assert observed.public_records[-1]["reason_code"] == "UPDATE_APPLY_NO_PROGRESS"
 
 
 def test_parent_dead_before_entry_cannot_start_a_relay(branch_bootstrap):
@@ -194,3 +215,100 @@ def test_restart_with_same_parent_context_cannot_renew_budget(branch_bootstrap):
     assert restarted.result == 20
     assert restarted.launches == restarted.readiness_waits == []
     assert restarted.elapsed == pytest.approx(600)
+
+
+@pytest.mark.parametrize("kind", BRANCHES)
+def test_parent_deadline_reaches_each_current_branch(branch_bootstrap, kind):
+    observed = branch_bootstrap(kind, 300, parent_deadline="1600")
+    assert observed.result == 0
+    assert observed.current_starts[0]["input_deadline"] == pytest.approx(1590)
+    assert observed.elapsed == pytest.approx(300)
+
+
+@pytest.mark.parametrize("offset,expected", [(-0.1, 0), (0, 20), (0.1, 20)])
+def test_child_result_reserve_boundary(branch_bootstrap, offset, expected):
+    observed = branch_bootstrap("normal", 590 + offset, parent_deadline="1600")
+    assert observed.result == expected
+    assert observed.elapsed <= 590
+
+
+@pytest.mark.parametrize("kind,code", [("unverified", "UPDATE_SUPERVISION_UNAVAILABLE"),
+                                       ("replaced", "UPDATE_APPLY_NO_PROGRESS")])
+def test_parent_lifetime_failure_is_not_reissued_as_an_independent_budget(branch_bootstrap, kind, code):
+    kwargs = {"parent_unverified_at" if kind == "unverified" else "parent_replaced_at": 30}
+    observed = branch_bootstrap("normal", 300, parent_deadline="1600", **kwargs)
+    assert observed.result == 20
+    assert observed.elapsed <= 30.1
+    assert observed.public_records[-1]["reason_code"] == code
+
+
+def test_finite_future_parent_deadline_is_capped_by_entry_budget(branch_bootstrap):
+    observed = branch_bootstrap("normal", 0, parent_deadline="999999")
+    assert observed.result == 0
+    assert observed.current_starts[0]["input_deadline"] == pytest.approx(1600)
+
+
+def test_deadline_without_parent_marker_is_rejected(branch_bootstrap):
+    observed = branch_bootstrap("normal", 0, parent_deadline="1600", parent_pid=None)
+    assert observed.result == 20 and observed.launches == []
+    assert observed.public_records[-1]["reason_code"] == "UPDATE_PREPARATION_FAILED"
+
+
+@pytest.fixture
+def parent_wait(monkeypatch, tmp_path):
+    def run(proof_at, *, readiness_seconds=600, survival_seconds=2, exit_at=None):
+        clock, commands = [1000.0], []
+
+        def wait(seconds):
+            clock[0] = round(clock[0] + seconds, 9)
+
+        def launch(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(pid=777, poll=lambda: 1 if exit_at is not None and clock[0] >= 1000 + exit_at else 0)
+
+        monkeypatch.setattr(user_relay.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(onboarding, "_machine_worker_context", lambda root: None)
+        monkeypatch.setattr(onboarding, "resolve_current_user_onboarding_paths",
+                            lambda root: SimpleNamespace(direct_sync_root=tmp_path / "direct-sync"))
+        monkeypatch.setattr(user_relay, "build_user_relay_command",
+                            lambda root: ["test-runtime", "--bootstrap", "--role", "relay", "--", "--label-match-user-relay"])
+        monkeypatch.setattr(user_relay, "_existing_user_relay_owner",
+                            lambda *a, **k: {"process_id": 888, "updated_at": "test-time"}
+                            if commands and proof_at is not None and clock[0] >= 1000 + proof_at else None)
+        monkeypatch.setattr(auto_update, "start_ordinary_process", launch)
+        result = error = None
+        try:
+            result = inspect.unwrap(user_relay.start_user_relay_process)(
+                tmp_path, wait=wait, survival_seconds=survival_seconds,
+                bootstrap_readiness_seconds=readiness_seconds)
+        except user_relay.UserRelayError as caught:
+            error = type(caught).__name__
+        return SimpleNamespace(result=result, error=error, elapsed=clock[0] - 1000, commands=commands)
+
+    return run
+
+
+@pytest.mark.parametrize("proof_at,expected_alive", [(0, True), (589, True), (599.9, True),
+                                                     (600, False), (604, False), (None, False)])
+def test_parent_total_budget_includes_survival_and_transmits_one_deadline(parent_wait, proof_at, expected_alive):
+    observed = parent_wait(proof_at)
+    assert observed.elapsed <= 600
+    assert bool(observed.result and observed.result["status"] == "ALIVE") is expected_alive
+    assert bool(observed.error) is not expected_alive
+    command = observed.commands[0]
+    assert float(command[command.index("--relay-parent-deadline") + 1]) == 1600
+    assert command.index("--relay-parent-pid") < command.index("--")
+    assert command.index("--relay-parent-deadline") < command.index("--")
+
+
+@pytest.mark.parametrize("readiness,survival", [(0, 2), (1, 2), (20, 2), (600, 700), (900, 2)])
+def test_parent_shorter_option_never_extends_the_spawn_deadline(parent_wait, readiness, survival):
+    observed = parent_wait(None, readiness_seconds=readiness, survival_seconds=survival)
+    assert observed.error == "UserRelayError"
+    assert observed.elapsed == pytest.approx(min(readiness, 600))
+
+
+def test_parent_abnormal_bootstrap_exit_fails_without_waiting_for_deadline(parent_wait):
+    observed = parent_wait(None, exit_at=30)
+    assert observed.error == "UserRelayError"
+    assert observed.elapsed <= 30.1
