@@ -32,6 +32,9 @@ def prepare_case(root, patch, seed_name='fixture-parent'):
     sid = '-'.join(['S', '1', '5', '21', *(str(100 + i) for i in range(4))])
     patch.setattr(case.module, '_current_machine_guid', lambda: context['machine_guid'])
     patch.setattr(case.module, '_current_user_sid', lambda: sid)
+    import tools.register_label_match_worker_pc as official_registration
+    patch.setattr(official_registration, '_current_machine_guid', lambda: context['machine_guid'])
+    patch.setattr(official_registration, '_current_user_sid', lambda: sid)
     patch.setattr(case.module.socket, 'gethostname', lambda: context['pc_name'])
     candidate = case.module._derive_identity(SimpleNamespace(
         data_dir=str(case.data), identity_path=str(paths.identity_path),

@@ -34,7 +34,7 @@ SysWOW64 셸은 허용 목록에 없으며 cwd는 census 관측 항목이 아니
 
 기준일 화면 계약(w9firstupdsub208): 최근 결과 sub와 today.rows[].raw는 축약 Tk 값 대신 원문, work.exchange는 remove/insert/done과 remove.code·insert.code를 보낸다. today.summary[].count는 트레이 수이고 optional products는 완료 metadata의 전체 제품 수 합계다. 근거가 빠지면 생략하며 today.rows[].products의 표본 수/취소 자격 뜻을 유지한다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다.
 
-등록 도구는 119 R4부터 HTTP 409 `reattach_proof_required`에 한해 같은 소유 키로 공식 challenge → 서명 → `/api/producer-ingest/v2/reattach`를 한 번 이어 간다. proof의 정확한 필드·audience·nonce·만료와 producer/install/source_host/manifest 결속을 확인하며 새 키·새 신원 발급·신원 삭제 없이 같은 신원의 회전 자격과 영수증을 검증·저장한 뒤 기존 준비 완료 경로로 진행한다. 다른 키의 `producer_identity_conflict`는 기존 관리자 복구를 유지한다. 기존 키를 열지 못하거나 challenge·재결속 검증/통신이 실패하면 원 `POSSESSION_PROOF_REATTACH_REQUIRED`를 보존하고 자동 재시도하지 않는다. 해결되지 않은 기존 신원 거절은 첫 설정의 `RECOVERY_REQUIRED`와 원 `recovery_action`으로 보존하며 Run/업무 자료 준비로 진행하지 않는다. 공개 고정 원인은 `ADMIN_RECOVERY_ACTION` 또는 `POSSESSION_PROOF_REATTACH_REQUIRED`이며 등록 보고만 남은 재시작과 시작 거절 관측에서도 동일하다([첫 설정 안내](operations.md#onboarding-registration-recovery)).
+등록 도구는 119 R4부터 HTTP 409 `reattach_proof_required`에 한해 같은 소유 키로 공식 challenge → 서명 → `/api/producer-ingest/v2/reattach`를 한 번 이어 간다. proof의 정확한 필드·audience·nonce·만료와 producer/install/source_host/manifest 결속을 확인하며 새 키·새 신원 발급·신원 삭제 없이 같은 신원의 회전 자격과 영수증을 검증·저장한 뒤 기존 준비 완료 경로로 진행한다. 다른 키의 `producer_identity_conflict`는 기존 관리자 복구를 유지한다. 기존 키를 열지 못하거나 challenge·재결속 검증/통신이 실패하면 원 `POSSESSION_PROOF_REATTACH_REQUIRED`를 보존하고 이번 실행을 끝낸다. 다음 공식 시작에서 결속을 검증할 수 있는 첫 회전의 단독 보고서는 아래 재시도 입구를 따른다. 해결되지 않은 기존 신원 거절은 첫 설정의 `RECOVERY_REQUIRED`와 원 `recovery_action`으로 보존하며 Run/업무 자료 준비로 진행하지 않는다. 공개 고정 원인은 `ADMIN_RECOVERY_ACTION` 또는 `POSSESSION_PROOF_REATTACH_REQUIRED`이며 시작 거절 관측에서도 동일하다([첫 설정 안내](operations.md#onboarding-registration-recovery)).
 
 보존된 자격이 있는 재설치도 같은 키 재결속의 정상 대상이다. 서버 호출 전에 기존 저장 자리의 폴더 생성·쓰기·교체 권한, current-user scope, producer/install/source_host/manifest·소유 키 지문과 보호 자격/영수증 결속을 확인한다. 틀림·모름·쓰기 불가는 서버를 호출하지 않고 원본과 정상 등록 보고서를 보존한다. 기존 키를 열 수 없어도 정상 보고서를 덮지 않고 기존 관리자 회복 분류와 rc2를 유지한다. 검증된 재결속 회전 응답의 epoch가 기존보다 진행한 경우에만 이름 있는 `reattach_rotation_admitted` 예외로 기존 profile 토큰·producer 보호 자격 자리를 교체한다. 관리자 회복 조건과 구분하며 임시 쓰기·검증·원자 교체와 실패 시 기존 바이트 보존을 따른다.
 
@@ -48,9 +48,12 @@ SysWOW64 셸은 허용 목록에 없으며 cwd는 census 관측 항목이 아니
 | `status` | 회전 POST 직전 `REATTACH_IN_PROGRESS`, 검증된 회전 뒤 저장 실패는 `REATTACH_ROTATED_PERSIST_FAILED` |
 | `server_credential_rotated` | 회전 응답 검증 전 false, 검증 뒤 true. 진행 표지의 false는 서버 미회전을 증명하지 않음 |
 | `recovery_action` | `POSSESSION_PROOF_REATTACH_REQUIRED` |
-| `producer_id`, `producer_install_id`, `source_host_id` | 보존된 신원·manifest·정상 보고서·영수증과 같은 결속 |
+| `producer_id`, `producer_install_id`, `source_host_id` | 보존된 신원·manifest·정상 보고서·영수증과 같은 결속. 첫 회전은 현재 PC·사용자에서 다시 유도한 결정적 신원과 대조 |
 | `manifest_hash`, `possession_key_fingerprint` | 같은 manifest와 기존 소유 키 지문. 키 지문은 기존 계약의 불투명 문자열을 정확 비교 |
-| `credential_epoch` | 이번 회전 전 로컬에서 확인한 세대의 정수 epoch |
+| `retained` | 기존 정상 문서가 있으면 true, 없는 첫 회전이면 false |
+| `credential_epoch` | retained=true는 이번 회전 전 로컬에서 확인한 정수 epoch, retained=false는 이전 로컬 세대 없음(null) |
+
+회전 POST 직전 표지조차 저장하지 못한 첫 시도의 새 단독 `POSSESSION_PROOF_REATTACH_REQUIRED` 등록 보고서에도 `retained=false`, `credential_epoch=null`, producer/install/source_host·manifest hash·소유 키 지문을 남긴다. 다음 공식 시작은 보고서의 기존 endpoint 입력을 URL 검증하고 현재 경로·PC·사용자에서 신원과 manifest를 다시 유도한다. 기존 현재 사용자 키를 열어 얻은 지문까지 모두 맞을 때만 `ABSENT_RETRYABLE`과 원 `POSSESSION_PROOF_REATTACH_REQUIRED` cause로 기존 runner를 한 번 호출한다. 틀림·모름은 `RECOVERY_REQUIRED`·HTTP 0회다. 재시도는 키 생성 함수를 호출하지 않고 기존 키만 연다.
 
 진행 표지를 원자 저장한 뒤에만 회전 POST를 보낸다. 검증된 후속 영수증을 자격 파일보다 먼저 저장하여 중단 중 새/옛 파일을 보존된 정상 보고서 또는 이 후속 영수증과 각각 대조할 수 있게 한다. 저장 I/O 예외에서는 실행 메모리에 보존한 profile 토큰·producer 자격·등록 문서 원본 바이트를 복원하고 별도 실패 진단을 남긴다. 정상 보고서를 일반 BLOCKED로 덮지 않으며 CLI는 3으로 끝난다. 사전 판정 거절은 서버 호출 0회·rc2다.
 

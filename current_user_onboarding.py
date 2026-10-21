@@ -881,7 +881,9 @@ def inspect_current_user_state(
             if credential_input is not None and credential_input.error is not None:
                 raise credential_input.error
             require_install_server_origin_matches(
-                paths, credential=_read_json(paths.credential_path, "producer credential"))
+                paths, credential=_read_json(
+                    paths.credential_path if paths.credential_path.is_file() else paths.registration_report_path,
+                    "producer credential or first reattach report"))
             return {**retry, "present": present}
     except Exception as exc:
         return {"status": "RECOVERY_REQUIRED", "present": present,
