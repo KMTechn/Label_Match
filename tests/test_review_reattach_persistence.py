@@ -144,6 +144,22 @@ def test_unwritable_first_slot_returns_the_existing_recovery_classification(reat
     assert case.report()['status'] == 'POSSESSION_PROOF_REATTACH_REQUIRED'
 
 
+def test_preflight_checks_missing_directory_creation_before_files(tmp_path, monkeypatch):
+    from tests.test_register_label_match_worker_pc import load_registration_module
+    module = load_registration_module()
+    existing = tmp_path / 'existing'
+    existing.mkdir()
+    mkdir = Path.mkdir
+    def denied(path, *args, **kwargs):
+        if path.parent == existing and not path.exists():
+            raise PermissionError()
+        return mkdir(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'mkdir', denied)
+    with pytest.raises(PermissionError):
+        module._probe_reattach_target(existing / 'not-created' / 'credential.dpapi')
+    assert list(existing.iterdir()) == []
+
+
 def test_unavailable_retained_key_keeps_the_normal_report_and_admin_classification(
     reattach_case, monkeypatch, capsys,
 ):
