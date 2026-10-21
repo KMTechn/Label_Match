@@ -49,7 +49,9 @@ def bootstrap_relay(monkeypatch, tmp_path):
 
         def launch(root, selected, arguments, **kwargs):
             assert root == control and selected == sha
-            assert kwargs == {"deferred_at": started_at}
+            assert set(kwargs) == {"deferred_at", "relay_deadline"}
+            assert kwargs["deferred_at"] == started_at
+            assert isinstance(kwargs["relay_deadline"], auto_update._RelayPreparationDeadline)
             launches.append(list(arguments))
             rows.append(dict(pid=pid, role="relay", sha=sha, sid=policy["operator_sid"],
                              ordinary_user=True, observable=True, created_at=started_at))

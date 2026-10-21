@@ -22,7 +22,7 @@ def admitted_launch(monkeypatch, tmp_path):
                  "transition_id": "c" * 32, "candidate_sha": active["sha"], "trial_pid": None}
         parent_pid = 4242
         parent_deadline = 1011.0 if mode == "budget-exhausted" else 1030.0
-        invalid_at = 1001.0 if mode in {"parent-death", "budget-exhausted"} else None
+        invalid_at = None if mode == "within-budget" else 1001.0
         admissions, spawns, reports, calls = [], [], [], {}
         bundle = auto_update.version_bundle(control, active["sha"])
         (bundle / "app").mkdir(parents=True)
@@ -32,6 +32,8 @@ def admitted_launch(monkeypatch, tmp_path):
             clock[0] = round(clock[0] + seconds, 7)
 
         def identity(pid):
+            if pid == parent_pid and mode == "parent-unverified" and clock[0] >= invalid_at:
+                return {"status": "UNKNOWN"}
             if pid == parent_pid and mode == "parent-death" and clock[0] >= invalid_at:
                 return {"status": "ABSENT"}
             return {"status": "LIVE", "creation_identity": "1" if pid == parent_pid else "2"}
@@ -152,3 +154,11 @@ def test_other_starting_points_recheck_after_successful_admission(admitted_launc
     assert evidence["result"] == 20
     assert evidence["spawns"] == ([0.0] if starting_point == "trial-secondary" else [])
     assert evidence["reason_codes"][-1] == "UPDATE_APPLY_NO_PROGRESS"
+
+
+def test_successful_admission_with_unverified_parent_does_not_spawn(admitted_launch):
+    evidence = admitted_launch("parent-unverified")
+    assert evidence["result"] == 20
+    assert evidence["spawns"] == []
+    assert all("released" in record for record in evidence["admissions"])
+    assert evidence["reason_codes"][-1] == "UPDATE_SUPERVISION_UNAVAILABLE"

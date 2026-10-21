@@ -2830,7 +2830,8 @@ def request_apply_task(control: Path, policy: Mapping[str, Any]) -> None:
 
 
 @writer_sink("auto_update_launch_version")
-def launch_version(control: Path, sha: str, arguments: list[str], *, nonce: str = "", deferred_at: str = "") -> int:
+def launch_version(control: Path, sha: str, arguments: list[str], *, nonce: str = "", deferred_at: str = "",
+                   relay_deadline: float | None = None) -> int:
     bundle = version_bundle(control, sha)
     if version_manifest(bundle)["source_commit"] != sha:
         raise ValueError("active version identity differs")
@@ -2846,7 +2847,14 @@ def launch_version(control: Path, sha: str, arguments: list[str], *, nonce: str 
         "--label-match-user-relay", "--label-match-direct-sync-relay"
     })
     entry = headless_product_arguments(bundle, arguments) if headless else [str(bundle / "app/main.py"), *arguments]
-    process = start_ordinary_process([str(bundle / "runtime/pythonw.exe"), "-I", "-B", *entry], cwd=str(bundle), environment=environment)
+    command = [str(bundle / "runtime/pythonw.exe"), "-I", "-B", *entry]
+    # The writer decorator may have waited successfully. Check after that wait
+    # and all launch preparation, immediately before creating the new process.
+    if relay_deadline is not None:
+        failure = _relay_prepare_failure(relay_deadline)
+        if failure:
+            raise _RelayPreparationUnavailable(failure)
+    process = start_ordinary_process(command, cwd=str(bundle), environment=environment)
     return process.pid
 
 
@@ -2966,7 +2974,7 @@ def _launch_bootstrap_version(control: Path, sha: str, arguments: list[str], *, 
             if failure:
                 raise _RelayPreparationUnavailable(failure)
         try:
-            return launch_version(control, sha, arguments, **kwargs)
+            return launch_version(control, sha, arguments, relay_deadline=deadline, **kwargs)
         except WriterFencedError as error:
             if arguments[:1] != ["--label-match-user-relay"] or error.code != "WRITER_GATE_TIMEOUT":
                 raise

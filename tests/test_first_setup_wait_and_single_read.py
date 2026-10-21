@@ -72,6 +72,24 @@ def test_every_relay_wait_uses_the_one_value():
     assert "min(self, deadline)" in ast.unparse(bound)
     assert "parent_pid=self.parent_pid" in ast.unparse(bound)
     assert "parent_identity=self.parent_identity" in ast.unparse(bound)
+    launch = next(node for node in ast.parse(text).body
+                  if isinstance(node, ast.FunctionDef) and node.name == "launch_version")
+    spawn_index = next(index for index, statement in enumerate(launch.body)
+                       if isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Call)
+                       and isinstance(statement.value.func, ast.Name)
+                       and statement.value.func.id == "start_ordinary_process")
+    final_guard = launch.body[spawn_index - 1]
+    assert isinstance(final_guard, ast.If)
+    assert ast.unparse(final_guard.test) == "relay_deadline is not None"
+    assert "_relay_prepare_failure(relay_deadline)" in ast.unparse(final_guard)
+    assert "raise _RelayPreparationUnavailable(failure)" in ast.unparse(final_guard)
+    admission = next(node for node in ast.parse(text).body
+                     if isinstance(node, ast.FunctionDef) and node.name == "_launch_bootstrap_version")
+    version_start = next(node for node in ast.walk(admission)
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                         and node.func.id == "launch_version")
+    shared = next(keyword.value for keyword in version_start.keywords if keyword.arg == "relay_deadline")
+    assert ast.unparse(shared) == "deadline"
 
 
 def test_installer_and_user_relay_use_the_same_value():
