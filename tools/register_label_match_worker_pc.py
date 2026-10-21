@@ -2187,16 +2187,16 @@ def _reattach_local_preflight(args, manifest, credential, possession_key):
     data = Path(credential["secret_data_dir"])
     targets = {
         "identity": _producer_identity_path(args),
-        "manifest": _resolved_output_path(args.manifest_path, data / DEFAULT_MANIFEST_FILENAME),
-        "credential": _resolved_output_path(args.credential_path, data / DEFAULT_CREDENTIAL_FILENAME),
-        "receipt": _resolved_output_path(args.receipt_path, data / "evidence" / DEFAULT_RECEIPT_FILENAME),
-        "report": _resolved_output_path(args.report_path, data / "status" / DEFAULT_REPORT_FILENAME),
+        "manifest": _resolved_output_path(getattr(args, "manifest_path", ""), data / DEFAULT_MANIFEST_FILENAME),
+        "credential": _resolved_output_path(getattr(args, "credential_path", ""), data / DEFAULT_CREDENTIAL_FILENAME),
+        "receipt": _resolved_output_path(getattr(args, "receipt_path", ""), data / "evidence" / DEFAULT_RECEIPT_FILENAME),
+        "report": _resolved_output_path(getattr(args, "report_path", ""), data / "status" / DEFAULT_REPORT_FILENAME),
         "producer_secret": _secret_path(data, credential["secret_ref"].split(":", 1)[1]),
     }
     # The same resolver is used by the bundle installer; no alternate storage slot.
     from logistics_runtime_profile import default_profile_path, MAX_TLS_CA_BUNDLE_BYTES
     profile = assert_path_has_no_reparse_components(
-        args.logistics_profile_path or default_profile_path(), label="reattach logistics profile")
+        getattr(args, "logistics_profile_path", "") or default_profile_path(), label="reattach logistics profile")
     targets.update(profile=profile,
                    logistics_secret=profile.parent / LOGISTICS_TOKEN_REF.split(":", 1)[1],
                    tls=profile.parent / TLS_CA_BUNDLE_RELATIVE_PATH,
@@ -2997,6 +2997,19 @@ def main(argv: list[str] | None = None, *, defer_canonical_data_open: bool = Fal
             print("POSSESSION_PROOF_REATTACH_REQUIRED")
             print(f"registration_report={report_path.resolve()}")
             return 2
+        if (isinstance(exc, PossessionKeyRecoveryRequired)
+                and not report.get("admin_recovery_requested") and report_path.is_file()):
+            try:
+                previous = _reattach_document(report_path)
+                preserve = previous.get("status") in {
+                    "SELF_ENROLLMENT_REGISTERED", "ADMIN_RECOVERY_REGISTERED",
+                }
+            except Exception:
+                preserve = True
+            if preserve:
+                print(ADMIN_RECOVERY_ACTION)
+                print(f"registration_report={report_path.resolve()}")
+                return 2
         if isinstance(exc, _ReattachPreflightRejected):
             # Preflight never changes the server or overwrites a surviving report.
             if not report_path.exists():
