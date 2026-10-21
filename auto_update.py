@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import hashlib
 import ast
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -36,10 +37,10 @@ RELAY_READY_CHECKS = ("relay_initialized", *READY_CHECKS[1:])
 
 APPLY_PROGRESS_TIMEOUT = 60
 STARTUP_WAIT_SECONDS = 240
-# One value for every wait on a relay that a first setup / bootstrap starts (G100b).
-# user_relay.bootstrap_readiness_seconds and the installer relay waits equal it
-# (pinned by tests/test_first_setup_wait_and_single_read.py).
+# Maximum shared by the parent, independent bootstrap and installer relay waits.
+# A parented bootstrap reserves result time inside its inherited absolute deadline.
 RELAY_PREPARE_SECONDS = 600
+RELAY_PARENT_RESULT_RESERVE_SECONDS = 10
 UPDATE_RELAY_STOP_REQUESTED = "UPDATE_RELAY_STOP_REQUESTED"
 STARTUP_PROGRESS_MESSAGE = "업데이트가 진행 중입니다. 잠시 후 다시 실행하세요."
 UPDATE_MUTEX_RECOVERY_MESSAGE = (
@@ -56,6 +57,93 @@ class UpdateMutexRecoveryRequired(RuntimeError):
     def __init__(self, policy):
         super().__init__("UPDATE_MUTEX_ABANDONED_RECOVERY_REQUIRED")
         self.policy = policy
+
+
+class _RelayPreparationUnavailable(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+class _RelayPreparationDeadline(float):
+    """One deadline and parent lifetime, shared without process-global state."""
+
+    def __new__(cls, value, *, parent_pid=None, parent_identity=None):
+        instance = super().__new__(cls, value)
+        instance.parent_pid = parent_pid
+        instance.parent_identity = parent_identity
+        instance._failure_code = ""
+        return instance
+
+    def failure_code(self) -> str:
+        if self._failure_code:
+            return self._failure_code
+        if time.monotonic() >= self:
+            self._failure_code = "UPDATE_APPLY_NO_PROGRESS"
+        elif self.parent_pid is not None:
+            try:
+                parent = native_process_identity(self.parent_pid)
+                if parent.get("status") == "ABSENT":
+                    self._failure_code = "UPDATE_APPLY_NO_PROGRESS"
+                elif parent.get("status") != "LIVE" or not parent.get("creation_identity"):
+                    self._failure_code = "UPDATE_SUPERVISION_UNAVAILABLE"
+                elif parent["creation_identity"] != self.parent_identity:
+                    self._failure_code = "UPDATE_APPLY_NO_PROGRESS"
+            except (OSError, ValueError, TypeError, KeyError):
+                self._failure_code = "UPDATE_SUPERVISION_UNAVAILABLE"
+        return self._failure_code
+
+
+def _relay_prepare_failure(deadline: float) -> str:
+    if isinstance(deadline, _RelayPreparationDeadline):
+        return deadline.failure_code()
+    return "UPDATE_APPLY_NO_PROGRESS" if time.monotonic() >= deadline else ""
+
+
+def _relay_prepare_result(deadline: float) -> int:
+    failure = _relay_prepare_failure(deadline)
+    if failure:
+        emit_support_record({"reason_code": failure}, stage="update_apply")
+        return 20
+    return 0
+
+
+def _relay_preparation_deadline(parent_deadline, parent_pid) -> _RelayPreparationDeadline:
+    entry = time.monotonic()
+    independent = entry + RELAY_PREPARE_SECONDS
+    if parent_deadline is None and parent_pid is None:
+        return _RelayPreparationDeadline(independent)
+    try:
+        if (parent_deadline is None or parent_pid is None
+                or isinstance(parent_deadline, bool) or isinstance(parent_pid, bool)
+                or not re.fullmatch(r"[0-9]+", str(parent_pid))):
+            raise ValueError
+        received = float(parent_deadline)
+        pid = int(parent_pid)
+        if not math.isfinite(received) or pid <= 0:
+            raise ValueError
+    except (ValueError, TypeError, OverflowError):
+        raise _RelayPreparationUnavailable("UPDATE_PREPARATION_FAILED") from None
+    value = min(independent, received - RELAY_PARENT_RESULT_RESERVE_SECONDS)
+    if value <= entry:
+        return _RelayPreparationDeadline(value)
+    if pid != os.getppid():
+        raise _RelayPreparationUnavailable("UPDATE_SUPERVISION_UNAVAILABLE")
+    try:
+        parent = native_process_identity(pid)
+        if parent.get("status") == "ABSENT":
+            raise _RelayPreparationUnavailable("UPDATE_APPLY_NO_PROGRESS")
+        own = native_process_identity(os.getpid())
+        if parent.get("status") != "LIVE" or own.get("status") != "LIVE":
+            raise _RelayPreparationUnavailable("UPDATE_SUPERVISION_UNAVAILABLE")
+        parent_birth = int(parent["creation_identity"])
+        own_birth = int(own["creation_identity"])
+        if parent_birth > own_birth:
+            raise _RelayPreparationUnavailable("UPDATE_APPLY_NO_PROGRESS")
+    except (OSError, ValueError, TypeError, KeyError):
+        raise _RelayPreparationUnavailable("UPDATE_SUPERVISION_UNAVAILABLE") from None
+    return _RelayPreparationDeadline(value, parent_pid=pid,
+                                     parent_identity=parent["creation_identity"])
 
 
 def support_record(fields=None, *, stage):
@@ -2814,11 +2902,13 @@ def current_relay_ready(control: Path, policy: Mapping[str, Any], sha: str, *,
 def wait_current_relay(control: Path, policy: Mapping[str, Any], sha: str, *,
                        started_at: str, deadline: float, pid: int | None = None) -> bool:
     while time.monotonic() < deadline:
+        if _relay_prepare_failure(deadline):
+            return False
         try:
             if read_json(control / "active.json")["sha"] != sha:
                 return False
             if current_relay_ready(control, policy, sha, started_at=started_at, pid=pid):
-                return time.monotonic() < deadline
+                return not _relay_prepare_failure(deadline)
         except (OSError, ValueError, TypeError, KeyError):
             pass  # Contested/incomplete proof never establishes readiness.
         time.sleep(min(0.1, max(0, deadline - time.monotonic())))
@@ -2866,6 +2956,10 @@ def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str,
 def _launch_bootstrap_version(control: Path, sha: str, arguments: list[str], *, deadline: float, **kwargs) -> int:
     """Retry transient relay admission within this bootstrap's existing window."""
     while True:
+        if isinstance(deadline, _RelayPreparationDeadline):
+            failure = _relay_prepare_failure(deadline)
+            if failure:
+                raise _RelayPreparationUnavailable(failure)
         try:
             return launch_version(control, sha, arguments, **kwargs)
         except WriterFencedError as error:
@@ -2908,18 +3002,25 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
         assert_ordinary_recovery(control, policy, active["sha"], started_at)
     if deadline is None:
         deadline = time.monotonic() + RELAY_PREPARE_SECONDS
-    pid = _launch_bootstrap_version(control, active["sha"], arguments, deadline=deadline, deferred_at=started_at)
+    pid = None
+    failure = _relay_prepare_failure(deadline)
+    if not failure:
+        try:
+            pid = _launch_bootstrap_version(control, active["sha"], arguments, deadline=deadline, deferred_at=started_at)
+        except _RelayPreparationUnavailable as error:
+            failure = error.code
     relay_pid = pid if arguments[:1] and arguments[0] in {"--label-match-user-relay", "--label-match-direct-sync-relay"} else None
-    if not wait_current_relay(control, policy, active["sha"], started_at=started_at,
-                              deadline=deadline, pid=relay_pid):
-        failed_report = support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS",
+    if pid is None or not wait_current_relay(control, policy, active["sha"], started_at=started_at,
+                                            deadline=deadline, pid=relay_pid):
+        failure = failure or _relay_prepare_failure(deadline) or "UPDATE_APPLY_NO_PROGRESS"
+        failed_report = support_record({"reason_code": failure,
             "transition_code": (state or {}).get("failure_decision", {}).get("code", code),
             "retained_candidate": (state or {}).get("retained_candidate") is True}, stage="update_apply")
         try:
             write_json_durable(Path(policy["staging_root"]) / "startup-support.json", failed_report)
         except (OSError, ValueError, TypeError, WriterFenceError):
             emit_support_record({"reason_code": "REPORT_UNAVAILABLE"}, stage="update_apply")
-        emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS"}, stage="update_apply")
+        emit_support_record({"reason_code": failure}, stage="update_apply")
         return 20
     return 0
 
@@ -2945,6 +3046,10 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
     Only its inherited recovery boundary permits launching that missing relay.
     This path grants no trial authority and publishes no persistent records.
     """
+    failure = _relay_prepare_failure(deadline)
+    if failure:
+        emit_support_record({"reason_code": failure}, stage="update_apply")
+        return 20
     try:
         rows = writer_processes(process_snapshot(control), own_pid=os.getpid())
         if not rows:
@@ -2953,7 +3058,7 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
             if (role != "gui" or any(row.get("role") == "gui" for row in rows)
                     or not gui_recovery_state(state, claim_status)
                     or arguments[:1] in (["--label-match-user-relay"], ["--label-match-direct-sync-relay"])):
-                return 0
+                return _relay_prepare_result(deadline)
             if len(rows) != 1 or rows[0].get("role") != "relay":
                 raise ValueError("ordinary GUI recovery requires exactly one relay")
             if type(rows[0].get("pid")) is not int or rows[0]["pid"] <= 0:
@@ -2963,7 +3068,7 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
                 raise ValueError("ordinary recovery relay is not in the past")
             rows = assert_ordinary_recovery(control, policy, active["sha"], boundary)
             if any(row.get("role") == "gui" for row in rows):
-                return 0
+                return _relay_prepare_result(deadline)
             if len(rows) != 1 or rows[0].get("role") != "relay":
                 raise ValueError("the proved ordinary relay cohort changed")
             if type(rows[0].get("pid")) is not int or rows[0]["pid"] <= 0:
@@ -2975,7 +3080,7 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
                 raise ValueError("ordinary recovery relay is not in the past")
             _launch_bootstrap_version(control, active["sha"], arguments,
                                       deadline=deadline, deferred_at=boundary)
-            return 0
+            return _relay_prepare_result(deadline)
         started_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
         if started_at:
             if _utc(started_at) >= _utc(now_utc()):
@@ -2999,26 +3104,37 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
         if relays:
             if current_relay_ready(control, policy, active["sha"],
                                    started_at=started_at, pid=relays[0]["pid"]):
-                return 0
+                return _relay_prepare_result(deadline)
         else:
             pid = _launch_bootstrap_version(control, active["sha"], arguments,
                                             deadline=deadline, deferred_at=started_at)
             if arguments[:1] == ["--label-match-direct-sync-relay"]:
                 # This finite helper is observed as a writer, not a resident
                 # relay. Its successful launch cannot publish resident READY.
-                return 0
+                return _relay_prepare_result(deadline)
             if wait_current_relay(control, policy, active["sha"], started_at=started_at,
                                   deadline=deadline, pid=pid):
-                return 0
+                return _relay_prepare_result(deadline)
+    except _RelayPreparationUnavailable as error:
+        emit_support_record({"reason_code": error.code}, stage="update_apply")
+        return 20
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         if role != "relay" and not (role == "gui" and gui_recovery_state(state, claim_status)):
             raise
-    emit_progress_guidance()
+    failure = _relay_prepare_failure(deadline)
+    if failure:
+        emit_support_record({"reason_code": failure}, stage="update_apply")
+    else:
+        emit_progress_guidance()
     return 20
 
 
-def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
+def bootstrap(app_root: Path, arguments: list[str], *, role: str,
+              parent_deadline=None, parent_pid=None) -> int:
     try:
+        if parent_deadline is not None or parent_pid is not None:
+            return _bootstrap(app_root, arguments, role=role,
+                              parent_deadline=parent_deadline, parent_pid=parent_pid)
         return _bootstrap(app_root, arguments, role=role)
     except UpdateMutexRecoveryRequired as error:
         return _refuse_abandoned_update(error.policy, role=role)
@@ -3034,14 +3150,22 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
 
 
 
-def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
+def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
+               parent_deadline=None, parent_pid=None) -> int:
+    try:
+        relay_deadline = _relay_preparation_deadline(parent_deadline, parent_pid)
+    except _RelayPreparationUnavailable as error:
+        emit_support_record({"reason_code": error.code}, stage="update_apply")
+        return 20
+    failure = _relay_prepare_failure(relay_deadline)
+    if failure:
+        emit_support_record({"reason_code": failure}, stage="update_apply")
+        return 20
     if role == "relay":
         if not arguments or arguments[0] not in {"--label-match-user-relay", "--label-match-direct-sync-relay"}:
             raise ValueError("relay bootstrap requires an explicit relay mode")
         from current_user_onboarding import _machine_worker_context
         _machine_worker_context(app_root)
-    import time
-
     control = control_root(app_root)
     if control is None:
         raise ValueError("bootstrap requires the installed ordinary-user context")
@@ -3055,6 +3179,10 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
     apply_started = False
     deadline = time.monotonic() + STARTUP_WAIT_SECONDS
     while time.monotonic() < deadline:
+        failure = _relay_prepare_failure(relay_deadline)
+        if failure:
+            emit_support_record({"reason_code": failure}, stage="update_apply")
+            return 20
         try:
             with update_lock(control, policy["operator_sid"],
                              abandoned_check=lambda: _verify_abandoned_update(control, policy)):
@@ -3072,7 +3200,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                 startup_arguments = list(arguments)
                 if role == "gui" and gui_recovery_state(state, claim_status):
                     writer_result = recovery_writer_result(control, policy, active, arguments,
-                        role=role, deadline=deadline, state=state, claim_status=claim_status)
+                        role=role, deadline=relay_deadline, state=state, claim_status=claim_status)
                     if writer_result is not None:
                         return writer_result
                     if state["phase"] == "ROLLBACK_PENDING" and claim_status == "ABSENT":
@@ -3082,53 +3210,53 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                     if active["sha"] != recovery_sha(state, pointer_sha=active["sha"]):
                         action = "WAIT_FOR_RECOVERY"
                     else:
-                        return start_current(control, policy, state, active, startup_arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
+                        return start_current(control, policy, state, active, startup_arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=relay_deadline)
                 if state and state["phase"] in {"CONFIRMED", "ROLLED_BACK"} and saw_trial:
                     if state["phase"] == "ROLLED_BACK":
                         if role == "relay" and state.get("trial_role", "gui") == "relay":
                             if (state.get("trial_sha") == active["sha"]
                                     and wait_current_relay(control, policy, active["sha"],
-                                        started_at=state["trial_started_at"], deadline=deadline,
+                                        started_at=state["trial_started_at"], deadline=relay_deadline,
                                         pid=state["trial_pid"])):
-                                return 0
+                                return _relay_prepare_result(relay_deadline)
                             emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS"}, stage="update_apply")
                             return 20
-                        return start_current(control, policy, state, active, startup_arguments, code="UPDATE_PREVIOUS_CONFIRMED", deadline=deadline)
+                        return start_current(control, policy, state, active, startup_arguments, code="UPDATE_PREVIOUS_CONFIRMED", deadline=relay_deadline)
                     if role == "gui" and state.get("trial_role", "gui") == "relay":
                         return start_current(control, policy, state, active, startup_arguments,
-                                             code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
-                    return 0  # The verified trial owns its normal relay.
+                                             code="UPDATE_TERMINAL_RECOVERED", deadline=relay_deadline)
+                    return _relay_prepare_result(relay_deadline)  # The verified trial owns its normal relay.
                 if state and state["phase"] == "DEFERRED" and requested_at and _utc(state["deferred_at"]) >= _utc(requested_at):
                     code = state.get("reason_code")
                     if code not in {"UPDATE_PREPARATION_FAILED", "UPDATE_EXISTING_WRITER"}:
                         code = "UPDATE_TERMINAL_RECOVERED"
-                    return start_current(control, policy, state, active, arguments, code=code, deadline=deadline)
+                    return start_current(control, policy, state, active, arguments, code=code, deadline=relay_deadline)
                 if claim_status == "ABSENT":
-                    writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline, state=state, claim_status=claim_status)
+                    writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=relay_deadline, state=state, claim_status=claim_status)
                     if writer_result is not None:
                         return writer_result
                     if current_generation_status(control, policy, active["sha"]) != "ALLOW":
                         emit_progress_guidance()
                         return 20
-                    return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=deadline)
+                    return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=relay_deadline)
                 if action == "START_CURRENT":
                     if state and state["phase"] in {"ROLLED_BACK", "DEFERRED"}:
-                        return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED")
+                        return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=relay_deadline)
                     return start_current(control, policy, state, active, arguments,
-                                         code="UPDATE_TERMINAL_RECOVERED")
+                                         code="UPDATE_TERMINAL_RECOVERED", deadline=relay_deadline)
                 if state and state["phase"] in {"UNKNOWN", "FAILED"}:
                     if claim_status not in {"LIVE", "UNKNOWN"}:
-                        writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline, state=state, claim_status=claim_status)
+                        writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=relay_deadline, state=state, claim_status=claim_status)
                         if writer_result is not None:
                             return writer_result
                         if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared:
-                            return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=deadline)
+                            return start_current(control, policy, state, active, arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=relay_deadline)
                 if action in {"REQUEST_APPLY", "REQUEST_TRIAL", "WAIT_FOR_RECOVERY", "WAIT_FOR_TRIAL"} and not requested:
                     if ((action == "REQUEST_APPLY" or (state and state.get("phase") == "DEFERRED"
                             and state.get("reason_code") == UPDATE_RELAY_STOP_REQUESTED))
                             and relay_stop_requested(policy)):
                         return start_current(control, policy, state, active, arguments,
-                                             code=UPDATE_RELAY_STOP_REQUESTED, deadline=deadline)
+                                             code=UPDATE_RELAY_STOP_REQUESTED, deadline=relay_deadline)
                     requested_at = now_utc()
                     progress_deadline = time.monotonic() + APPLY_PROGRESS_TIMEOUT
                     try:
@@ -3139,11 +3267,11 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                             continue
                         if not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
                             if state and state["phase"] == "APPLIED_PENDING_READY":
-                                writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline, state=state, claim_status=claim_status)
+                                writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=relay_deadline, state=state, claim_status=claim_status)
                                 if writer_result is not None:
                                     return writer_result
                             code = "UPDATE_SUPERVISION_UNAVAILABLE" if state and state["phase"] == "APPLIED_PENDING_READY" else "UPDATE_APPLY_REQUEST_FAILED"
-                            return start_current(control, policy, state, active, arguments, code=code, deadline=deadline)
+                            return start_current(control, policy, state, active, arguments, code=code, deadline=relay_deadline)
                         raise
                     requested = True
                     # The task may already have settled or switched this journal.
@@ -3191,14 +3319,14 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                     claim_status = apply_claim_status(control)
                     if claim_status == "ABSENT":
                         if state and state["phase"] == "APPLIED_PENDING_READY":
-                            writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=deadline, state=state, claim_status=claim_status)
+                            writer_result = recovery_writer_result(control, policy, active, arguments, role=role, deadline=relay_deadline, state=state, claim_status=claim_status)
                             if writer_result is not None:
                                 return writer_result
-                        return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=deadline)
+                        return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=relay_deadline)
                     if claim_status in {"LIVE", "UNKNOWN"}:
                         apply_started = True
                     if not apply_started and time.monotonic() >= progress_deadline:
-                        return start_current(control, policy, state, active, arguments, code="UPDATE_APPLY_NO_PROGRESS", deadline=deadline)
+                        return start_current(control, policy, state, active, arguments, code="UPDATE_APPLY_NO_PROGRESS", deadline=relay_deadline)
         except RuntimeError as error:
             if str(error) not in {'update mutex ownership was abandoned', 'update mutex ownership is busy'}:
                 raise
@@ -3216,14 +3344,14 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
                 if stale_claim and apply_claim_status(control) == "UNKNOWN":
                     state = optional_record(control / "transition.json")
                     active = read_json(control / "active.json")
-                    # The ordinary stale-owner recovery starts after the apply
-                    # wait has ended; give its relay a bounded readiness window.
+                    # Stale-owner recovery shares the original relay deadline;
+                    # finishing the apply wait cannot issue a fresh budget.
                     writer_result = recovery_writer_result(control, policy, active, arguments,
-                        role=role, deadline=time.monotonic() + RELAY_PREPARE_SECONDS, state=state, claim_status="UNKNOWN")
+                        role=role, deadline=relay_deadline, state=state, claim_status="UNKNOWN")
                     if writer_result is not None:
                         return writer_result
                     if current_generation_status(control, policy, active["sha"]) == "ALLOW" and not prepared_pending(control, policy, state):
-                        return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=deadline)
+                        return start_current(control, policy, state, active, arguments, code="UPDATE_SUPERVISION_UNAVAILABLE", report_once=True, deadline=relay_deadline)
         except RuntimeError as error:
             if str(error) not in {'update mutex ownership was abandoned', 'update mutex ownership is busy'}:
                 raise
@@ -3240,12 +3368,12 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str) -> int:
             active = read_json(control / "active.json")
             if gui_recovery_state(state, claim_status):
                 writer_result = recovery_writer_result(control, policy, active, arguments,
-                    role=role, deadline=time.monotonic() + RELAY_PREPARE_SECONDS, state=state, claim_status=claim_status)
+                    role=role, deadline=relay_deadline, state=state, claim_status=claim_status)
                 if writer_result is not None:
                     return writer_result
     assert_ordinary_recovery(control, policy, active["sha"], now_utc())
     result = start_current(control, policy, optional_record(control / "transition.json"), active,
-                           arguments, code="UPDATE_APPLY_NO_PROGRESS", deadline=deadline)
+                           arguments, code="UPDATE_APPLY_NO_PROGRESS", deadline=relay_deadline)
     emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS", "exit_code": result}, stage="update_apply", policy=policy)
     return result
 
@@ -3259,11 +3387,17 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--apply-prepared", action="store_true")
     parser.add_argument("--control-root", type=Path)
     parser.add_argument("--role", choices=("gui", "relay"), default="gui")
+    parser.add_argument("--relay-parent-pid", nargs="?", const="")
+    parser.add_argument("--relay-parent-deadline", nargs="?", const="")
     parser.add_argument("--print-logon-task", action="store_true")
     parser.add_argument("--install-root", type=Path)
     parser.add_argument("--operator-sid")
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args(arguments)
+    has_parent_context = options.relay_parent_pid is not None or options.relay_parent_deadline is not None
+    if has_parent_context and not options.bootstrap:
+        emit_support_record({"reason_code": "UPDATE_PREPARATION_FAILED"}, stage="update_apply")
+        return 20
     if options.print_logon_task:
         if options.apply_prepared or options.bootstrap or options.arguments or options.install_root is None:
             raise ValueError("logon task generation arguments differ")
@@ -3282,12 +3416,19 @@ def main(arguments: list[str] | None = None) -> int:
             from current_user_onboarding import _machine_worker_context
             _machine_worker_context(Path(__file__).resolve().parent)
         if control_root(Path(__file__).resolve().parent) is None:
+            if has_parent_context:
+                emit_support_record({"reason_code": "UPDATE_PREPARATION_FAILED"}, stage="update_apply")
+                return 20
             if options.role == "relay":
                 from label_match_relay_entry import main as relay_main
                 return relay_main(args)
             from Label_Match import main as application_main
 
             return int(application_main(args) or 0)
+        if has_parent_context:
+            return bootstrap(Path(__file__).resolve().parent, args, role=options.role,
+                             parent_deadline=options.relay_parent_deadline,
+                             parent_pid=options.relay_parent_pid)
         return bootstrap(Path(__file__).resolve().parent, args, role=options.role)
     # Source/old-layout launch remains the ordinary portable main entrypoint.
     from Label_Match import main as application_main

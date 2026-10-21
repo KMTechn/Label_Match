@@ -784,24 +784,35 @@ def start_user_relay_process(
     reused = _reuse_existing_user_relay(existing_owner, survival, wait)
     if reused is not None:
         return reused
-    from auto_update import start_ordinary_process
+    from auto_update import RELAY_PREPARE_SECONDS, start_ordinary_process
+    parent_deadline = time.monotonic() + max(
+        0.0, min(float(RELAY_PREPARE_SECONDS), float(bootstrap_readiness_seconds)))
+    if is_bootstrap:
+        separator = command.index("--") if "--" in command else len(command)
+        command = [*command[:separator], "--relay-parent-pid", str(os.getpid()),
+                   "--relay-parent-deadline", repr(parent_deadline), *command[separator:]]
     process = start_ordinary_process(command, cwd=str(Path(app_root).expanduser().resolve()))
     if process.pid <= 0:
         raise UserRelayError("current-user relay launch did not return a process id")
-    wait(survival)
+    wait(min(survival, max(0.0, parent_deadline - time.monotonic())) if is_bootstrap else survival)
     return_code = process.poll()
     if is_bootstrap and return_code in (None, 0):
-        deadline = time.monotonic() + max(0.0, min(600.0, float(bootstrap_readiness_seconds)))
-        owner = existing_owner()
-        while owner is None and time.monotonic() < deadline:
+        owner = None
+        while time.monotonic() < parent_deadline:
             if process.poll() not in (None, 0):
                 break
-            wait(0.1)
             owner = existing_owner()
+            if owner is not None:
+                if time.monotonic() >= parent_deadline:
+                    owner = None
+                break
+            wait(min(0.1, max(0.0, parent_deadline - time.monotonic())))
         if owner is None:
             raise UserRelayError("bootstrap did not prove the protected active-version relay")
         if process.poll() not in (None, 0):
             raise UserRelayError("bootstrap exited unsuccessfully before relay ownership readback")
+        if time.monotonic() >= parent_deadline:
+            raise UserRelayError("bootstrap did not prove the protected active-version relay")
         return {"status": "ALIVE", "process_id": owner["process_id"],
                 "bootstrap_process_id": process.pid, "survival_seconds": survival,
                 "owner_status_updated_at": owner["updated_at"]}

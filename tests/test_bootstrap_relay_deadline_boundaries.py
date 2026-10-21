@@ -20,7 +20,7 @@ def branch_bootstrap(tmp_path):
 
     def run(kind, ready_after, *, setup_delay=0, entry_work=0, busy_until=0,
             parent_deadline=NO_PARENT, parent_pid=42, parent_dies_at=None,
-            parent_unverified_at=None, parent_replaced_at=None):
+            parent_unverified_at=None, parent_replaced_at=None, launch_busy_until=0):
         phase = {"retained_deferred": "DEFERRED", "failed_recovery": "FAILED"}.get(kind, "CONFIRMED")
         public_records = []
 
@@ -65,6 +65,16 @@ def branch_bootstrap(tmp_path):
                     return load_policy(*args)
 
                 monkeypatch.setattr(auto_update, "load_policy", delayed_policy)
+            if launch_busy_until:
+                launch = auto_update.launch_version
+                available_at = auto_update.time.monotonic() + launch_busy_until
+
+                def contested_launch(*args, **kwargs):
+                    if auto_update.time.monotonic() < available_at:
+                        raise auto_update.WriterFencedError("WRITER_GATE_TIMEOUT", "synthetic admission contention")
+                    return launch(*args, **kwargs)
+
+                monkeypatch.setattr(auto_update, "launch_version", contested_launch)
             context = {}
             if parent_deadline is not NO_PARENT:
                 context = {"parent_deadline": parent_deadline, "parent_pid": parent_pid}
@@ -312,3 +322,68 @@ def test_parent_abnormal_bootstrap_exit_fails_without_waiting_for_deadline(paren
     observed = parent_wait(None, exit_at=30)
     assert observed.error == "UserRelayError"
     assert observed.elapsed <= 30.1
+
+
+@pytest.mark.parametrize("unverified,code", [(False, "UPDATE_APPLY_NO_PROGRESS"),
+                                            (True, "UPDATE_SUPERVISION_UNAVAILABLE")])
+def test_parent_lifetime_failure_stops_launch_admission_retries(branch_bootstrap, unverified, code):
+    kwargs = {"parent_unverified_at" if unverified else "parent_dies_at": 30}
+    observed = branch_bootstrap("normal", 300, parent_deadline="1600", launch_busy_until=400, **kwargs)
+    assert observed.result == 20 and observed.elapsed <= 30.1
+    assert observed.launches == []
+    assert observed.public_records[-1]["reason_code"] == code
+
+
+def test_main_forwards_parent_context_outside_ordinary_relay_arguments(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(onboarding, "_machine_worker_context", lambda root: None)
+    monkeypatch.setattr(auto_update, "control_root", lambda root: tmp_path)
+
+    def bootstrap(root, arguments, **kwargs):
+        seen.update(arguments=arguments, **kwargs)
+        return 17
+
+    monkeypatch.setattr(auto_update, "bootstrap", bootstrap)
+    result = auto_update.main(["--bootstrap", "--role", "relay", "--relay-parent-pid", "42",
+                               "--relay-parent-deadline", "1600", "--", "--label-match-user-relay"])
+    assert result == 17
+    assert seen == {"arguments": ["--label-match-user-relay"], "role": "relay",
+                    "parent_pid": "42", "parent_deadline": "1600"}
+
+
+@pytest.mark.parametrize("context", [["--relay-parent-pid", "42"],
+                                     ["--relay-parent-deadline", "1600"],
+                                     ["--relay-parent-pid"],
+                                     ["--relay-parent-deadline"],
+                                     ["--relay-parent-pid", "42", "--relay-parent-deadline=nan"]])
+def test_main_parent_context_errors_cannot_take_the_independent_entry(monkeypatch, tmp_path, context):
+    records = []
+    monkeypatch.setattr(onboarding, "_machine_worker_context", lambda root: None)
+    monkeypatch.setattr(auto_update, "control_root", lambda root: tmp_path)
+    monkeypatch.setattr(auto_update, "emit_support_record", lambda fields, **kwargs: records.append(fields))
+    result = auto_update.main(["--bootstrap", "--role", "relay", *context, "--", "--label-match-user-relay"])
+    assert result == 20
+    assert records[-1]["reason_code"] == "UPDATE_PREPARATION_FAILED"
+
+
+def test_parented_main_cannot_fall_back_to_portable_entry(monkeypatch):
+    records = []
+    monkeypatch.setattr(onboarding, "_machine_worker_context", lambda root: None)
+    monkeypatch.setattr(auto_update, "control_root", lambda root: None)
+    monkeypatch.setattr(auto_update, "emit_support_record", lambda fields, **kwargs: records.append(fields))
+    result = auto_update.main(["--bootstrap", "--role", "relay", "--relay-parent-pid", "42",
+                               "--relay-parent-deadline", "1600", "--", "--label-match-user-relay"])
+    assert result == 20 and records[-1]["reason_code"] == "UPDATE_PREPARATION_FAILED"
+
+
+def test_bootstrap_wrapper_preserves_the_parent_context(monkeypatch, tmp_path):
+    seen = {}
+
+    def child(root, arguments, **kwargs):
+        seen.update(kwargs)
+        return 17
+
+    monkeypatch.setattr(auto_update, "_bootstrap", child)
+    assert auto_update.bootstrap(tmp_path, ["--label-match-user-relay"], role="relay",
+                                 parent_pid="42", parent_deadline="1600") == 17
+    assert seen == {"role": "relay", "parent_pid": "42", "parent_deadline": "1600"}

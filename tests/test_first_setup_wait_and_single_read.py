@@ -44,20 +44,27 @@ def test_every_relay_wait_uses_the_one_value():
     text = (ROOT / "auto_update.py").read_text(encoding="utf-8")
     assert auto_update.RELAY_PREPARE_SECONDS == 600
     assert not re.search(r"monotonic\(\)\s*\+\s*75\b", text)
-    assert text.count("+ RELAY_PREPARE_SECONDS") >= 3
 
     bootstrap = next(node for node in ast.parse(text).body
                      if isinstance(node, ast.FunctionDef) and node.name == "_bootstrap")
-    current_branch = next(node for node in ast.walk(bootstrap)
-                          if isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
-                          and isinstance(node.test.left, ast.Name) and node.test.left.id == "action"
-                          and any(isinstance(value, ast.Constant) and value.value == "START_CURRENT"
-                                  for value in node.test.comparators))
-    starts = [node for node in ast.walk(current_branch)
-              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-              and node.func.id == "start_current"]
-    assert starts and all(not any(keyword.arg == "deadline" for keyword in call.keywords)
-                          for call in starts)
+    assignments = [node for node in ast.walk(bootstrap) if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == "relay_deadline"
+                           for target in node.targets)]
+    assert len(assignments) == 1
+    assert assignments[0] in list(ast.walk(bootstrap.body[0]))
+    calls = [node for node in ast.walk(bootstrap)
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
+    current_waits = [call for call in calls
+                     if call.func.id in {"start_current", "recovery_writer_result", "wait_current_relay"}]
+    assert len(current_waits) == 22  # 14 starts, seven recovery paths, one rollback readback.
+    for call in current_waits:
+        deadline = next(keyword.value for keyword in call.keywords if keyword.arg == "deadline")
+        assert isinstance(deadline, ast.Name) and deadline.id == "relay_deadline"
+    trial_starts = [call for call in calls if call.func.id == "_launch_bootstrap_version"]
+    assert len(trial_starts) == 2
+    for call in trial_starts:
+        deadline = next(keyword.value for keyword in call.keywords if keyword.arg == "deadline")
+        assert isinstance(deadline, ast.Name) and deadline.id == "deadline"
 
 
 def test_installer_and_user_relay_use_the_same_value():
@@ -66,10 +73,28 @@ def test_installer_and_user_relay_use_the_same_value():
     ps = INSTALLER.read_text(encoding="utf-8")
     assert f"AddSeconds({value})" in ps and f"{value}-([DateTime]::UtcNow-$relayStartedAt)" in ps
     import inspect
-    sig = inspect.signature(user_relay.start_user_relay) if hasattr(user_relay, "start_user_relay") else None
     src = Path(user_relay.__file__).read_text(encoding="utf-8")
-    assert f"bootstrap_readiness_seconds: float = {value}.0" in src
-    assert f"min({value}.0," in src
+    for function in (user_relay.start_user_relay_process, user_relay.reuse_or_start_user_relay_process):
+        assert inspect.signature(function).parameters["bootstrap_readiness_seconds"].default == value
+    parent = next(node for node in ast.parse(src).body
+                  if isinstance(node, ast.FunctionDef) and node.name == "start_user_relay_process")
+    deadlines = [node for node in ast.walk(parent) if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == "parent_deadline" for target in node.targets)]
+    assert len(deadlines) == 1
+    assert isinstance(deadlines[0].value, ast.BinOp) and isinstance(deadlines[0].value.op, ast.Add)
+    assert ast.unparse(deadlines[0].value.left) == "time.monotonic()"
+    assert "min(float(RELAY_PREPARE_SECONDS), float(bootstrap_readiness_seconds))" in ast.unparse(deadlines[0])
+    spawn = next(node for node in ast.walk(parent) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name) and node.func.id == "start_ordinary_process")
+    assert deadlines[0].lineno < spawn.lineno
+    loop = next(node for node in ast.walk(parent) if isinstance(node, ast.While))
+    assert ast.unparse(loop.test) == "time.monotonic() < parent_deadline"
+    child_source = (ROOT / "auto_update.py").read_text(encoding="utf-8")
+    child = next(node for node in ast.parse(child_source).body
+                 if isinstance(node, ast.FunctionDef) and node.name == "_relay_preparation_deadline")
+    assert auto_update.RELAY_PARENT_RESULT_RESERVE_SECONDS == 10
+    assert "min(independent, received - RELAY_PARENT_RESULT_RESERVE_SECONDS)" in ast.unparse(child)
+    assert "independent = entry + RELAY_PREPARE_SECONDS" in ast.unparse(child)
 
 
 def _tree(root):
