@@ -1,5 +1,6 @@
 """Bounded, headless coverage of official stop during standalone notices."""
 
+import ctypes
 import json
 from pathlib import Path
 import subprocess
@@ -14,6 +15,7 @@ import auto_update
 import item_catalog_sync
 import startup_observation
 import user_relay
+from tests.test_portable_gui_onboarding import portable_gui
 
 
 @pytest.fixture
@@ -165,10 +167,87 @@ def test_tk_creation_failure_uses_native_with_identical_message(monkeypatch, tmp
     assert native.call_args.args[1].encode("utf-8") == expected_message(notice, tmp_path).encode("utf-8")
 
 
+@pytest.mark.parametrize("warning", [False, True])
+def test_bounded_native_preserves_text_and_uses_supplied_finite_timeout(monkeypatch, warning):
+    native = Mock(return_value=32000)  # IDTIMEOUT, never an affirmative choice.
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: SimpleNamespace(MessageBoxTimeoutW=native))
+    title, message = "안내", "원래 문구\n둘째 줄"
+    assert startup_observation.show_bounded_native_notice(
+        title, message, warning=warning, timeout_ms=30000,
+    ) is None
+    native.assert_called_once()
+    args = native.call_args.args
+    assert args[1].encode("utf-8") == message.encode("utf-8")
+    assert args[2].encode("utf-8") == title.encode("utf-8")
+    assert args[3] & 0xF0 == (0x30 if warning else 0x10)
+    assert args[-1] == 30000 and args[-1] < user_relay.APP_STOP_TIMEOUT_SECONDS * 1000
+
+
 def test_trace_write_failure_does_not_prevent_normal_notice_return(monkeypatch, tmp_path, notice_window):
     monkeypatch.setattr(lm, "_label_match_startup_trace", Mock(side_effect=OSError("unavailable")))
     lm._show_first_run_registration_recovery("POSSESSION_PROOF_REATTACH_REQUIRED")
     assert notice_window.parents[0].destroyed_in_loop
+
+
+def test_early_mutex_notice_uses_owner_request_and_existing_trace_file(monkeypatch, tmp_path, notice_window):
+    # The executable's first update gate precedes the app's reader and trace
+    # definitions. It must still stop without importing or starting the app.
+    application = SimpleNamespace(_APP_PROCESS_STARTED_AT=lm._APP_PROCESS_STARTED_AT)
+    monkeypatch.setattr(startup_observation, "_notice_application_module", lambda: application)
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    auto_update._show_update_mutex_recovery_notice()
+    assert notice_window.parents[0].destroyed_in_loop
+    records = [json.loads(line) for path in (tmp_path / "KMTech-startup-trace").glob("*.log")
+               for line in path.read_text(encoding="utf-8").splitlines()]
+    assert records == [{"stage": "APP_STOP_REQUESTED_CLOSE", "message": "멈춤 요청으로 닫힘"}]
+
+
+def test_manual_notice_close_keeps_message_and_does_not_claim_official_stop(monkeypatch, tmp_path, notice_window):
+    def manual_close(parent):
+        parent.buttons[0].values["command"]()
+    # Keep the same fake root, but close through the default button instead of
+    # publishing a stop. No request file or stop audit should be produced.
+    create = lm.tk.Tk
+    def parent_factory():
+        parent = create()
+        parent.mainloop = lambda: manual_close(parent)
+        return parent
+    monkeypatch.setattr(lm.tk, "Tk", parent_factory)
+    show_notice("onboarding-error", tmp_path)
+    parent = notice_window.parents[0]
+    assert parent.destroyed
+    assert parent.labels[0].values["text"].encode("utf-8") == expected_message("onboarding-error", tmp_path).encode("utf-8")
+    assert not user_relay.app_stop_request_path(tmp_path / "relay").exists()
+    assert not [stage for stage, _ in notice_window.traces if stage == "APP_STOP_REQUESTED_CLOSE"]
+
+
+@pytest.mark.parametrize("cause", ["POSSESSION_PROOF_REATTACH_REQUIRED", "ADMIN_RECOVERY_ACTION", "TEST_NOTICE"])
+def test_stop_during_failed_onboarding_preserves_exit_cause_and_report(
+    monkeypatch, tmp_path, portable_gui, notice_window, cause,
+):
+    report = tmp_path / "preserved-report.json"
+    report.write_bytes(b"preserved-report")
+    failure = lm.CurrentUserOnboardingError(
+        "unchanged", report_path=report, status="RECOVERY_REQUIRED", cause_code=cause,
+    )
+    attempts = []
+    def onboard(*args, **kwargs):
+        attempts.append(True)
+        raise failure
+    forbidden = Mock(side_effect=AssertionError("no business startup after refusal"))
+    monkeypatch.setattr(lm, "validate_pending_worker_install", lambda _root: None)
+    monkeypatch.setattr(lm, "check_user_data_open", lambda _root: None)
+    monkeypatch.setattr(lm, "verify_factory_contract_startup", lambda: None)
+    monkeypatch.setattr(lm, "onboard_current_user", onboard)
+    monkeypatch.setattr(lm, "resolve_data_scope", forbidden)
+    monkeypatch.setattr(lm, "_run_label_match_application", forbidden)
+    monkeypatch.setattr(startup_observation, "write_startup_result", lambda _result: False)
+    assert lm.main(["--old-screen"]) == lm.ONBOARDING_EXIT_CODE
+    assert attempts == [True]
+    assert failure.status == "RECOVERY_REQUIRED" and failure.cause_code == cause
+    assert report.read_bytes() == b"preserved-report"
+    assert notice_window.parents[0].destroyed_in_loop
+    forbidden.assert_not_called()
 
 
 def test_official_stop_waits_for_isolated_notice_process_exit(monkeypatch, tmp_path):
