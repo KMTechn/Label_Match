@@ -38,7 +38,7 @@ def test_saved_terminal_audits_admin_release_finishes_without_replaying(carried,
         record.update(install_root=str(install), code_state='UNKNOWN', code_preimage='ABSENT',
                       rollback={'applied': False}, source_commit='a' * 40)
         seeds.append(dict(case_root=str(case_root), audit=record, active=active, row=row,
-                          owner_created=original['writer_fence']['owner_process_started_at_filetime']))
+                          owner_created=original['writer_fence']['owner_process_started_at_filetime'], layout="machine" if row["lane"] == "machine" else "user"))
     seed = tmp_path / 'admin-seeds.json'
     seed.write_text(json.dumps(seeds), encoding='utf-8')
     output = tmp_path / 'admin-results.json'
@@ -65,6 +65,9 @@ def test_saved_terminal_audits_admin_release_finishes_without_replaying(carried,
                 item['startup_open'] = _startup_fence_gate() != 'ACTIVE_WRITER_FENCE'
     (tmp_path / 'admin-final-results.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
     assert len(results) == 49
+    machine_rows = [item for item, seed in zip(results, seeds) if seed['layout'] == 'machine']
+    assert machine_rows
+    assert all(item['audit_in_machine_root'] and not item['audit_in_operator_root'] for item in machine_rows)
     assert all(item['audit_unchanged'] and item['replay_count'] == 0 for item in results)
     assert all(item['released'] and item['reinstall_open'] and item['startup_open'] and
                item['idempotent'] and item['subsequent_fence_preserved'] for item in results), 'administrator exit did not finish for every Save site'

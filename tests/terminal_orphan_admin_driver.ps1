@@ -17,7 +17,7 @@ function Assert-LabelOrphanProtectedPath([string]$Path,[string]$MachineRoot=''){
     if($script:CaseMode -ceq 'protected_unreadable'){throw 'ORPHAN_TEST_PROTECTED_UNREADABLE'}
 }
 function Get-LabelOrphanProcessRows {
-    if(-not [OrphanTestMutexProbe]::CanAcquire((Get-LabelWriterAdmissionMutexName $writerFenceControlRoot))){throw 'TEST_CENSUS_HELD_WRITER_ADMISSION'}
+    if(-not [OrphanTestMutexProbe]::CanAcquire((Get-LabelWriterAdmissionMutexName $fenceControl))){throw 'TEST_CENSUS_HELD_WRITER_ADMISSION'}
     if($script:CaseMode -ceq 'census_failure'){throw 'ORPHAN_TEST_CIM_FAILURE'}
     return $script:CensusRows
 }
@@ -45,7 +45,7 @@ public static class OrphanTestMutexProbe {
 '@
 $script:RealOrphanCode=(Get-Command Get-LabelOrphanCode).ScriptBlock
 function Get-LabelOrphanCode($Audit){
-    if(-not [OrphanTestMutexProbe]::CanAcquire((Get-LabelWriterAdmissionMutexName $writerFenceControlRoot))){throw 'TEST_INVENTORY_HELD_WRITER_ADMISSION'}
+    if(-not [OrphanTestMutexProbe]::CanAcquire((Get-LabelWriterAdmissionMutexName $fenceControl))){throw 'TEST_INVENTORY_HELD_WRITER_ADMISSION'}
     & $script:RealOrphanCode $Audit
 }
 function Save-LabelOrphanRelease([string]$Path,$Record){
@@ -62,7 +62,7 @@ function Save-LabelOrphanRelease([string]$Path,$Record){
     }
     & $script:RealReleaseSave $Path $published
     if($Record.state -ceq 'RELEASING'){
-        $script:WriterRaceRefused=-not [OrphanTestMutexProbe]::CanAcquire((Get-LabelWriterAdmissionMutexName $writerFenceControlRoot))
+        $script:WriterRaceRefused=-not [OrphanTestMutexProbe]::CanAcquire((Get-LabelWriterAdmissionMutexName $fenceControl))
         if($script:CaseMode -cin @('record_stop_once','minimal_record_stop_once') -and -not $script:FaultInjected){$script:FaultInjected=$true;throw 'ORPHAN_TEST_AFTER_RECORD'}
         if($script:CaseMode -ceq 'operator_edit'){$script:RunForTest=[pscustomobject]@{exists=$true;kind='String';data='operator-edited-command'}}
         if($script:CaseMode -ceq 'fence_swap'){
@@ -90,6 +90,7 @@ $jsonArgs=@{}
 if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$jsonArgs.DateKind='String'}
 $seeds=Get-Content -LiteralPath $Seed -Raw -Encoding UTF8|ConvertFrom-Json @jsonArgs
 $results=@()
+$originalProgramData=$env:PROGRAMDATA
 foreach($seedCase in $seeds){
     $script:CaseMode=[string](Get-LabelOrphanValue $seedCase 'mode')
     $script:CensusRows=@();$script:ReleaseEvents=@();$script:FaultInjected=$false;$script:InjectedFenceHash=''
@@ -105,11 +106,32 @@ foreach($seedCase in $seeds){
     [void][IO.Directory]::CreateDirectory($localAuditRoot)
     $writerFenceControlRoot=Join-Path $root 'control'
     [void][IO.Directory]::CreateDirectory($writerFenceControlRoot)
+    # A machine install keeps its only original audit and its fence under the fixed machine
+    # ProgramData root; the audit is not copied into the operator LocalAppData root.
+    $env:PROGRAMDATA=$originalProgramData
+    $layout=[string](Get-LabelOrphanValue $seedCase 'layout')
+    $fenceControl=$writerFenceControlRoot
+    $machineAuditRoot=''
+    if($layout -ceq 'machine'){
+        $env:PROGRAMDATA=Join-Path $root 'pd'
+        $machineAuditRoot=Join-Path $env:PROGRAMDATA 'KMTech/Label_Match/install-audit'
+        $localAuditRoot=$machineAuditRoot
+        [void][IO.Directory]::CreateDirectory($localAuditRoot)
+        $fenceControl=Join-Path $machineAuditRoot ('machine-writer-'+[string]$seedCase.audit.run_id)
+        [void][IO.Directory]::CreateDirectory($fenceControl)
+    }
+    if($script:CaseMode -ceq 'machine_audit_operator_fence'){$fenceControl=$writerFenceControlRoot}
+    if($script:CaseMode -ceq 'operator_audit_machine_fence'){
+        $env:PROGRAMDATA=Join-Path $root 'pd'
+        $machineAuditRoot=Join-Path $env:PROGRAMDATA 'KMTech/Label_Match/install-audit'
+        $fenceControl=Join-Path $machineAuditRoot ('machine-writer-'+[string]$seedCase.audit.run_id)
+        [void][IO.Directory]::CreateDirectory($fenceControl)
+    }
     $stop=Join-Path $root 'relay.stop.json'
     $CanonicalTaskName='direct-sync-relay-label-match'
     $testMode=$true;$PlanOnly=$false;$generationSubjectSid='S-1-5-21-1'
     $generationMarkerPaths=@()
-    $Script:LabelWriterFenceAdmissionProductionRoot=$writerFenceControlRoot
+    $Script:LabelWriterFenceAdmissionProductionRoot=$fenceControl
     $codeClass=[string](Get-LabelOrphanValue $seedCase 'code_class')
     if(-not $codeClass){$codeClass='CANDIDATE'}
     $inventory=if(Test-Path -LiteralPath $install){(PortableInventory $install).sha256}else{''}
@@ -128,11 +150,11 @@ foreach($seedCase in $seeds){
     $ResumeRollbackAuditPath=Join-Path $localAuditRoot ('canonical-portable-'+$seedCase.audit.run_id+'.json')
     Save $ResumeRollbackAuditPath $seedCase.audit
     $ExpectedRollbackAuditSha256=Sha $ResumeRollbackAuditPath
-    $activePath=Join-Path $writerFenceControlRoot 'active.json'
+    $activePath=Join-Path $fenceControl 'active.json'
     $script:ActivePathForTest=$activePath
     [IO.File]::WriteAllText($activePath,($seedCase.active|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
     $owner=[ordered]@{schema='label-match-installer-owner-v1';run_id=[string]$seedCase.audit.run_id;
-        install_root=$install;control_root=$writerFenceControlRoot}
+        install_root=$install;control_root=$fenceControl}
     foreach($field in @('session_id','attempt_id','replacement_transaction_id','writer_inventory_sha256','orchestrator_sha256','writer_contract_sha256','session_started_at_utc','owner_process_id','owner_process_started_at_filetime')){
         $owner[$field]=$seedCase.audit.writer_fence.$field
     }
@@ -154,13 +176,45 @@ foreach($seedCase in $seeds){
         $seedCase.audit.writer_fence.owner_process_started_at_filetime=$owner.owner_process_started_at_filetime
         [IO.File]::WriteAllText($ownerPath,($owner|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
     }
-    if($script:CaseMode -cin @('census_helper','census_bootstrap','census_unreadable','census_encoded','census_nested','census_self','census_unrelated','census_descendant')){
+    if($script:CaseMode -ceq 'owner_other_control'){
+        $owner.control_root=Join-Path (Split-Path -Parent $fenceControl) ('machine-writer-20260101T000000000Z-'+[Guid]::NewGuid().ToString('N'))
+        [IO.File]::WriteAllText($ownerPath,($owner|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
+    }
+    if($script:CaseMode -ceq 'owner_other_tuple'){
+        $owner.attempt_id=[Guid]::NewGuid().ToString('N')
+        [IO.File]::WriteAllText($ownerPath,($owner|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
+    }
+    if($script:CaseMode -ceq 'fence_other_control'){
+        $operatorActive=Join-Path $writerFenceControlRoot 'active.json'
+        [IO.File]::WriteAllText($operatorActive,($seedCase.active|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
+        Remove-Item -LiteralPath $activePath -ErrorAction Stop
+        $activePath=$operatorActive
+    }
+    if($script:CaseMode -ceq 'machine_no_fence'){Remove-Item -LiteralPath $activePath -ErrorAction Stop}
+    if($script:CaseMode -ceq 'audit_other_root'){
+        $localAuditRoot=Join-Path $root 'other-audit'
+        [void][IO.Directory]::CreateDirectory($localAuditRoot)
+        $ResumeRollbackAuditPath=Join-Path $localAuditRoot ('canonical-portable-'+$seedCase.audit.run_id+'.json')
+        $script:ReleasePathForTest=Join-Path $localAuditRoot ('orphan-fence-release-'+$owner.attempt_id+'.json')
+    }
+    if($script:CaseMode -ceq 'install_other'){$seedCase.audit.install_root=Join-Path $root 'managed/other-current'}
+    if($script:CaseMode -cin @('census_helper','census_bootstrap','census_unreadable','census_encoded','census_nested','census_self','census_unrelated','census_descendant',
+        'census_spelling','census_spelling_unrelated','census_nested_unquoted','census_undecodable')){
         $command=if($script:CaseMode -ceq 'census_unrelated'){'unrelated maintenance'}else{'-File "'+$install+'\helper.ps1"'}
         if($script:CaseMode -ceq 'census_encoded'){$command='-EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))}
         if($script:CaseMode -ceq 'census_nested'){
             $nested=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(('{"attempt_id":"'+$owner.attempt_id+'"}')))
             $wrapped='$payload='''+$nested+''';[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))'
             $command='-EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
+        }
+        if($script:CaseMode -ceq 'census_spelling'){$command=[string]$seedCase.spelling+' '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))}
+        if((Get-LabelOrphanValue $seedCase 'quote_payload')){$parts=$command -split ' ',2;$command=$parts[0]+' '+[char]34+$parts[1]+[char]34}
+        if($script:CaseMode -ceq 'census_spelling_unrelated'){$command=[string]$seedCase.spelling+' '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('unrelated maintenance'))}
+        if($script:CaseMode -ceq 'census_undecodable'){$command=[string]$seedCase.spelling+' ABC'}
+        if($script:CaseMode -ceq 'census_nested_unquoted'){
+            $inner=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+            $wrapped='powershell.exe -NoProfile '+[string]$seedCase.spelling+' '+$inner
+            $command=[string]$seedCase.spelling+' '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
         }
         $script:CensusRows=@([pscustomobject]@{ProcessId=$(if($script:CaseMode -ceq 'census_self'){$PID}else{60001});ParentProcessId=$(if($script:CaseMode -ceq 'census_descendant'){$owner.owner_process_id}else{1});
             Name=$(if($script:CaseMode -ceq 'census_bootstrap'){'python.exe'}else{'powershell.exe'});ExecutablePath='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';
@@ -231,8 +285,11 @@ foreach($seedCase in $seeds){
     $ExpectedRollbackAuditSha256=Sha $ResumeRollbackAuditPath
     $originalFenceHash=if(Test-Path -LiteralPath $activePath){Sha $activePath}else{''}
     $item=[ordered]@{site=$seedCase.row.site;status=$seedCase.row.status;fence_status=$seedCase.row.fence_status;
-        released=$false;reinstall_open=$false;idempotent=$false;control=$writerFenceControlRoot;error_type='';error_line=0;reason='';
+        released=$false;reinstall_open=$false;idempotent=$false;control=$fenceControl;error_type='';error_line=0;reason='';
         mode=$script:CaseMode;first_failure_proven=$false;observed_code_class='';subsequent_fence_preserved=$false}
+    $item['layout']=$(if($layout){$layout}else{'user'})
+    $item['audit_in_machine_root']=[bool]$machineAuditRoot -and (Same (Split-Path -Parent $ResumeRollbackAuditPath) $machineAuditRoot)
+    $item['audit_in_operator_root']=Same (Split-Path -Parent $ResumeRollbackAuditPath) (Join-Path $lad 'KMTech/Label_Match/install-audit')
     if($script:CaseMode -ceq 'legacy_no_fence'){
         try{Invoke-LabelResumeRollback}catch{}
         $item['legacy_path_reached']=$script:ReplayCount -gt 0
@@ -264,7 +321,7 @@ foreach($seedCase in $seeds){
         $item.idempotent=(Sha $releasePath) -ceq $releaseHash -and -not(Test-Path -LiteralPath $activePath)
         $script:TestingPublicRelease=$false
         $new=[Guid]::NewGuid().ToString('N')
-        [void](Start-LabelWriterFence -ControlRoot $writerFenceControlRoot -Status 'QUIESCING' -SessionId $new -AttemptId $new `
+        [void](Start-LabelWriterFence -ControlRoot $fenceControl -Status 'QUIESCING' -SessionId $new -AttemptId $new `
             -ReplacementTransactionId $new -SessionStartedAtUtc ([DateTime]::UtcNow.ToString('o')) `
             -OrchestratorSha256 $owner.orchestrator_sha256 -WriterContractSha256 $owner.writer_contract_sha256 -AuthorityOwnedByCaller)
         $item.reinstall_open=Test-Path -LiteralPath $activePath
@@ -274,6 +331,7 @@ foreach($seedCase in $seeds){
     } catch {
         $item.error_type=$_.Exception.GetType().Name;$item.error_line=$_.InvocationInfo.ScriptLineNumber
         if($_.Exception.Message -cmatch '^ORPHAN_[A-Z_]+$'){$item.reason=$_.Exception.Message}
+        if($_.Exception.Message -ceq 'Rollback audit is outside the original operator audit root.'){$item.reason='AUDIT_ROOT_REJECTED'}
     }
     $script:TestingPublicRelease=$false
     $item['fence_unchanged']=(Test-Path -LiteralPath $activePath) -and (Sha $activePath) -ceq $originalFenceHash
@@ -287,4 +345,5 @@ foreach($seedCase in $seeds){
     if($null -ne $observerMutex){$observerMutex.Dispose()}
     $results += [pscustomobject]$item
 }
+$env:PROGRAMDATA=$originalProgramData
 [IO.File]::WriteAllText($Output,($results|ConvertTo-Json -Depth 15),[Text.UTF8Encoding]::new($false))
