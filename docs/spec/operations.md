@@ -746,7 +746,7 @@ HMAC 서명은 전송 시 새 키로 생성한다. 대기 행의 원 metadata/id
 
 회전 직전 별도 `<data_dir>/status/label_match_reattach_persistence.json`에 `REATTACH_IN_PROGRESS`를 원자 저장한다. 회전 뒤 저장 실패는 기존 자격·profile 토큰·등록 문서를 복원하고 같은 별도 파일에 `REATTACH_ROTATED_PERSIST_FAILED`를 남기며 rc3으로 끝난다. 정상 등록 보고서는 일반 BLOCKED로 덮지 않는다. 진행 표지의 `server_credential_rotated=false`는 응답을 확인하기 전의 상태이며 실제 서버가 회전하지 않았다는 뜻으로 사용하지 않는다([고정 형식](contracts.md#같은-키-재결속의-저장-중단-진단)).
 
-이 진단이나 진행 표지가 남으면 다음 공식 시작/첫 설정은 기존 신원·manifest·정상 보고서·소유 키와 각 파일 결속을 확인해 기존 `ABSENT_RETRYABLE` 등록 입구로 한 번 진행한다. 원인은 `REATTACH_ROTATED_PERSIST_FAILED` 또는 `REATTACH_INTERRUPTED`다. 같은 기존 키로 challenge부터 새로 재결속하여 후속 자격을 저장하고 정상 readback 뒤 진단을 지운다. 재시도 거절/저장 실패는 이번 시작을 멈추며 다음 실행까지 반복하지 않는다. 결속 틀림·모름, 설치 서버 주소 변경은 기존 복구 거절을 유지한다. 키·신원을 지우거나 새로 발급하지 않는다. 등록 READY는 CREATE_PACKAGE 작업 허가나 실제 포장 쓰기 200의 증명이 아니다.
+이 진단이나 진행 표지가 남으면 다음 공식 시작/첫 설정은 기존 신원·manifest·정상 보고서·소유 키와 각 파일 결속을 확인해 기존 `ABSENT_RETRYABLE` 등록 입구로 한 번 진행한다. 이전 READY 보고서가 있어도 시작 단축 경로를 사용하지 않는다. 원인은 `REATTACH_ROTATED_PERSIST_FAILED` 또는 `REATTACH_INTERRUPTED`다. 같은 기존 키로 challenge부터 새로 재결속하여 후속 자격을 저장하고 정상 readback 뒤 진단을 지운다. 재시도 거절/저장 실패는 이번 시작을 멈추며 다음 실행까지 반복하지 않는다. 결속 틀림·모름, 설치 서버 주소 변경은 기존 복구 거절을 유지한다. 키·신원을 지우거나 새로 발급하지 않는다. 등록 READY는 CREATE_PACKAGE 작업 허가나 실제 포장 쓰기 200의 증명이 아니다.
 
 첫 설정은 등록 보고서의 `ADMIN_RECOVERY_REQUIRED`와 `POSSESSION_PROOF_REATTACH_REQUIRED`를 일반 `SETUP_FAILED`로 바꾸지 않는다. 첫 실패와 보고서만 남은 다음 시작 모두 `RECOVERY_REQUIRED`로 멈추며 고정 원인은 각각 `ADMIN_RECOVERY_ACTION`, `POSSESSION_PROOF_REATTACH_REQUIRED`다. 업무 자료·Run·전송 프로그램은 준비 완료를 확인하기 전에 시작하지 않는다. 등록 보고와 원 신원은 보존한다.
 

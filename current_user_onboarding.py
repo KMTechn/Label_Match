@@ -1322,6 +1322,8 @@ def try_window_first_start(app_root, *, environ=None, arguments=()):
         if state.get("candidate_sha") is not None and recovery_sha(state, pointer_sha=active["sha"]) != active["sha"]:
             return miss("RECOVERY_IDENTITY")
         paths = resolve_current_user_onboarding_paths(root, environ=environ)
+        if os.path.lexists(paths.direct_sync_root / "status" / "label_match_reattach_persistence.json"):
+            return miss("ONBOARDING_STATUS")
         if user_relay_stop_path(paths.direct_sync_root).exists():
             return miss("RELAY_STOP")
         if read_startup_send_hold(paths.direct_sync_root) is not None:

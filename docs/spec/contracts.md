@@ -54,7 +54,7 @@ SysWOW64 셸은 허용 목록에 없으며 cwd는 census 관측 항목이 아니
 
 진행 표지를 원자 저장한 뒤에만 회전 POST를 보낸다. 검증된 후속 영수증을 자격 파일보다 먼저 저장하여 중단 중 새/옛 파일을 보존된 정상 보고서 또는 이 후속 영수증과 각각 대조할 수 있게 한다. 저장 I/O 예외에서는 실행 메모리에 보존한 profile 토큰·producer 자격·등록 문서 원본 바이트를 복원하고 별도 실패 진단을 남긴다. 정상 보고서를 일반 BLOCKED로 덮지 않으며 CLI는 3으로 끝난다. 사전 판정 거절은 서버 호출 0회·rc2다.
 
-다음 공식 시작/첫 설정은 진단 또는 진행 표지의 모든 결속을 확인하면 READY를 반환하지 않고 기존 `ABSENT_RETRYABLE` 입구를 사용한다. cause는 각각 `REATTACH_ROTATED_PERSIST_FAILED`, `REATTACH_INTERRUPTED`다. 기존 등록 mutex와 runner로 enroll 409 → 같은 키 challenge/reattach를 한 실행당 한 번만 수행한다. 부분 새 세대도 같은 신원·manifest·키와 파일별 자격/영수증 결속이 맞을 때만 받아들이며, 틀림·모름은 `RECOVERY_REQUIRED`다. 설치 서버 주소와 credential 입력 검증도 유지한다. 성공한 등록 readback 뒤 이 진단만 지우고 정상 READY 판정을 진행하며 실패하면 이번 시작을 멈춘다. 새 키·새 발급·신원 삭제·관리자 회복 자동 전환·실행 안 무한 재시도는 없다.
+다음 공식 시작/첫 설정은 진단 또는 진행 표지의 모든 결속을 확인하면 READY를 반환하지 않고 기존 `ABSENT_RETRYABLE` 입구를 사용한다. 시작 단축 경로도 표지가 있으면 기존 READY 보고서를 재사용하지 않고 전체 시작 검사로 보낸다. cause는 각각 `REATTACH_ROTATED_PERSIST_FAILED`, `REATTACH_INTERRUPTED`다. 기존 등록 mutex와 runner로 enroll 409 → 같은 키 challenge/reattach를 한 실행당 한 번만 수행한다. 부분 새 세대도 같은 신원·manifest·키와 파일별 자격/영수증 결속이 맞을 때만 받아들이며, 틀림·모름은 `RECOVERY_REQUIRED`다. 설치 서버 주소와 credential 입력 검증도 유지한다. 성공한 등록 readback 뒤 이 진단만 지우고 정상 READY 판정을 진행하며 실패하면 이번 시작을 멈춘다. 새 키·새 발급·신원 삭제·관리자 회복 자동 전환·실행 안 무한 재시도는 없다.
 
 표지 PID의 실제 실행 파일은 두 번째 프로세스 자신의 실행 파일을 기준으로 대조해 다른 실행 파일을 거절한다. 다만 같은 실행 파일의 다른 프로세스와 자료 뿌리 mutex 소유자의 결속까지 증명하지 않으므로 같은 사용자 권한의 표지 위변조를 완전히 막는 것은 아니다.
 
