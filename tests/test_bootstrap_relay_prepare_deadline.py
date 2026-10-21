@@ -1,6 +1,7 @@
 """Exercise the first-setup relay wait through the actual bootstrap boundary."""
 from contextlib import nullcontext
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,10 @@ def bootstrap_relay(monkeypatch, tmp_path):
         clock = [initial]
         candidate = [prepared]
         launches, requests, reports, rows = [], [], [], []
+        actions, current_starts, readiness_waits = [], [], []
+        startup_action = auto_update.startup_action
+        start_current = auto_update.start_current
+        wait_current_relay = auto_update.wait_current_relay
         status_path = user_relay_status_path(direct_sync)
         status = dict(status="RUNNING", source_commit=sha, ordinary_user=True,
                       process_id=pid, updated_at=started_at,
@@ -56,6 +61,21 @@ def bootstrap_relay(monkeypatch, tmp_path):
             candidate[0] = False
             state["phase"] = "CONFIRMED"
 
+        def observed_action(transition, **kwargs):
+            action = startup_action(transition, **kwargs)
+            actions.append(dict(phase=transition["phase"], prepared=kwargs["prepared_present"],
+                                action=action))
+            return action
+
+        def observed_current(*args, **kwargs):
+            current_starts.append(dict(started_at=clock[0], input_deadline=kwargs.get("deadline")))
+            return start_current(*args, **kwargs)
+
+        def observed_wait(*args, **kwargs):
+            readiness_waits.append(dict(started_at=clock[0], deadline=kwargs["deadline"],
+                                        remaining=kwargs["deadline"] - clock[0]))
+            return wait_current_relay(*args, **kwargs)
+
         monkeypatch.setattr(auto_update.time, "monotonic", lambda: clock[0])
         monkeypatch.setattr(auto_update.time, "sleep", sleep)
         monkeypatch.setattr(auto_update, "now_utc", lambda: started_at)
@@ -65,6 +85,9 @@ def bootstrap_relay(monkeypatch, tmp_path):
         monkeypatch.setattr(auto_update, "update_lock", lambda *a, **k: nullcontext())
         monkeypatch.setattr(auto_update, "optional_record", read_record)
         monkeypatch.setattr(auto_update, "read_json", read_record)
+        monkeypatch.setattr(auto_update, "startup_action", observed_action)
+        monkeypatch.setattr(auto_update, "start_current", observed_current)
+        monkeypatch.setattr(auto_update, "wait_current_relay", observed_wait)
         monkeypatch.setattr(auto_update, "prepared_pending", lambda *a: candidate[0])
         monkeypatch.setattr(auto_update, "relay_stop_requested", lambda selected_policy: False)
         monkeypatch.setattr(auto_update, "launch_version", launch)
@@ -78,8 +101,15 @@ def bootstrap_relay(monkeypatch, tmp_path):
 
         result = auto_update._bootstrap(tmp_path / "current" / "app",
                                        ["--label-match-user-relay"], role="relay")
+        observation = dict(phase=phase, prepared_on_entry=prepared, relay_ready_after_s=ready_after,
+                           bootstrap_started_at=initial, bootstrap_exit=result,
+                           elapsed_virtual_s=clock[0] - initial, actions=actions,
+                           current_starts=current_starts, readiness_waits=readiness_waits)
+        (tmp_path / "bootstrap-deadline-observation.json").write_text(
+            json.dumps(observation, indent=2) + "\n", encoding="utf-8")
         return SimpleNamespace(result=result, elapsed=clock[0] - initial,
-                               launches=launches, requests=requests, reports=reports)
+                               launches=launches, requests=requests, reports=reports,
+                               current_starts=current_starts, readiness_waits=readiness_waits)
     return run
 
 
@@ -94,3 +124,4 @@ def test_bootstrap_keeps_relay_preparation_separate_from_update_wait(bootstrap_r
     assert observed.launches == [["--label-match-user-relay"]]
     assert len(observed.requests) == int(prepared)
     assert len(observed.reports) == 1
+    assert len(observed.current_starts) == len(observed.readiness_waits) == 1
