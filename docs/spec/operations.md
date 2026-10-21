@@ -740,6 +740,8 @@ HMAC 서명은 전송 시 새 키로 생성한다. 대기 행의 원 metadata/id
 <a id="onboarding-registration-recovery"></a>
 ### 첫 설정의 기존 PC 등록 안내
 
+119 R4 등록기는 같은 active producer/install/source_host·소유 키 지문의 HTTP 409 `reattach_proof_required`를 받으면 같은 서버의 `/api/producer-ingest/v2/reattach/challenge` → 기존 현재 사용자 키 서명 → `/api/producer-ingest/v2/reattach`를 한 번 수행한다. challenge의 정확한 proof 필드·audience·nonce 모양·만료(이적과 같은 최대 900초)·신원/manifest 결속 및 응답/영수증의 같은 신원·키 지문·회전 epoch·자격 지문을 확인한 뒤 기존 저장·준비 완료 경로를 사용한다. 새 키 생성·새 발급·신원 삭제·실패 자동 반복은 없다. 키 열기나 challenge/reattach 실패·nonce 불일치·만료는 원 `POSSESSION_PROOF_REATTACH_REQUIRED`를 남긴다. 다른 키의 `producer_identity_conflict`는 기존 관리자 회복 절차를 따른다. 실제 서버·현장 PC 수용과 작업 허가 승인은 별도다.
+
 첫 설정은 등록 보고서의 `ADMIN_RECOVERY_REQUIRED`와 `POSSESSION_PROOF_REATTACH_REQUIRED`를 일반 `SETUP_FAILED`로 바꾸지 않는다. 첫 실패와 보고서만 남은 다음 시작 모두 `RECOVERY_REQUIRED`로 멈추며 고정 원인은 각각 `ADMIN_RECOVERY_ACTION`, `POSSESSION_PROOF_REATTACH_REQUIRED`다. 업무 자료·Run·전송 프로그램은 준비 완료를 확인하기 전에 시작하지 않는다. 등록 보고와 원 신원은 보존한다.
 
 107은 자동 재연결 길 A를 포함하지 않는다. 두 고정 원인의 사용자 안내는 모두 「이 PC는 이미 등록돼 있습니다」 / 「현장 관리자에게 알리세요」이며, 아래 작은 줄에 「코드: <실제 고정 원인>」을 표시한다. 「자세히」를 누르면 「현장 관리자: 관리자 계정으로 이 PC 등록 회복을 실행하세요」를 표시한다(WMX0010·WMX0006–0007). 새 화면과 옛 화면의 실제 첫 설정 실패·등록 보고만 남은 다음 시작은 공통 시작 거절 창 대신 이 안내 한 창을 사용한다. 시작 거절 관측에는 실제 원인 코드를 남기며, 등록·신원·자격 바이트를 바꾸거나 다시 enroll하지 않는다. WMX0004–0005의 재연결 중·실패 글은 107에서 사용하지 않는다. 화면 실제 수용은 별도다.

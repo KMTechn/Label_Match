@@ -47,6 +47,10 @@ from kmtech_zero_pe import (  # noqa: E402
     b64url_encode,
     canonical_json_bytes,
 )
+from kmtech_zero_pe.possession_key import (  # noqa: E402
+    ReattachProofError,
+    validated_reattach_proof,
+)
 from kmtech_factory_contracts.bundle import (  # noqa: E402
     load_contract_document,
     verify_bundled_contracts,
@@ -83,6 +87,10 @@ DEFAULT_RECEIPT_FILENAME = "producer_self_enrollment_receipt.json"
 DEFAULT_REPORT_FILENAME = "label_match_worker_pc_registration.json"
 ENROLLMENT_CONTRACT_VERSION = "producer-self-enrollment-v2"
 ENROLLMENT_PATH = "/api/producer-ingest/v2/enroll"
+REATTACH_CHALLENGE_PATH = "/api/producer-ingest/v2/reattach/challenge"
+REATTACH_PATH = "/api/producer-ingest/v2/reattach"
+REATTACH_COMPLETE_CONTRACT_VERSION = "producer-reattach-complete-v1"
+REATTACH_AUTHORIZATION_STATES = frozenset({"OPERATION_PENDING", "OPERATION_READY"})
 ADMIN_RECOVERY_AUTHORIZATION_CONTRACT_VERSION = (
     "producer-admin-recovery-authorization-v1"
 )
@@ -808,6 +816,7 @@ def _enroll(
     enrollment_token: str,
     timeout_seconds: int,
     tls_ca_bundle_path: str = "",
+    allow_redirects: bool = True,
 ) -> dict[str, Any]:
     require_enrollment_mutex_owned()
     headers = {"X-Producer-Enrollment-Token": enrollment_token} if enrollment_token else {}
@@ -816,6 +825,7 @@ def _enroll(
         "json": dict(payload),
         "headers": headers,
         "timeout": max(1, int(timeout_seconds)),
+        "allow_redirects": allow_redirects,
     }
     selected_ca = str(tls_ca_bundle_path or "").strip()
     if selected_ca:
@@ -843,6 +853,112 @@ def _enroll(
     if not isinstance(response_payload, dict):
         raise DirectSyncPushError("self-enroll response must be a JSON object")
     return response_payload
+
+
+def _possession_reattach(
+    args: argparse.Namespace,
+    manifest: Mapping[str, Any],
+    credential: Mapping[str, Any],
+    possession_key: Mapping[str, Any],
+    *,
+    enrollment_token: str,
+) -> dict[str, Any]:
+    """Continue once with the existing key and the server's bound challenge."""
+    endpoint = str(credential["endpoint_url"])
+    origin = urlparse(endpoint)
+    bindings = {
+        "producer_id": str(credential["producer_id"]),
+        "producer_install_id": str(manifest["pc_identity"]["producer_install_id"]),
+        "source_host_id": str(manifest["pc_identity"]["source_host_id"]),
+        "manifest_hash": manifest_hash(manifest),
+    }
+    fingerprint = str(possession_key["fingerprint"])
+
+    def post(path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return _enroll(
+            payload,
+            enrollment_url=f"{origin.scheme}://{origin.netloc}{path}",
+            enrollment_token=enrollment_token,
+            timeout_seconds=args.enrollment_timeout_seconds,
+            tls_ca_bundle_path=str(getattr(args, "tls_ca_bundle_path", "") or "").strip(),
+            allow_redirects=False,
+        )
+
+    # Never provision during continuation, even if the key vanished since enroll.
+    with PersistentPossessionKey.open_existing(scope=POSSESSION_KEY_SCOPE) as key:
+        descriptor = key.descriptor().as_dict()
+        if (
+            descriptor.get("fingerprint") != fingerprint
+            or descriptor.get("scope") != POSSESSION_KEY_SCOPE
+            or descriptor.get("machine_key") is not False
+            or descriptor.get("contract_version") != POSSESSION_KEY_CONTRACT_VERSION
+        ):
+            raise DirectSyncPushError("possession reattach local key binding is invalid")
+        challenge = post(REATTACH_CHALLENGE_PATH, {
+            "contract_version": "producer-reattach-challenge-request-v1", **bindings,
+        })
+        if (
+            challenge.get("contract_version") != "producer-reattach-challenge-v1"
+            or challenge.get("possession_key_fingerprint") != fingerprint
+        ):
+            raise DirectSyncPushError("possession reattach challenge binding is invalid")
+        try:
+            proof = validated_reattach_proof(challenge.get("proof_payload"))
+        except ReattachProofError as exc:
+            raise DirectSyncPushError("possession reattach proof is invalid") from exc
+        expires = _dt.datetime.strptime(proof["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc)
+        remaining = (expires - _dt.datetime.now(_dt.timezone.utc)).total_seconds()
+        if (
+            any(proof[field] != value for field, value in bindings.items())
+            or not re.fullmatch(r"reattach-[0-9a-f]{32}", proof["challenge_id"])
+            or not re.fullmatch(r"[A-Za-z0-9_-]{43}", proof["nonce"])
+            or not 0 < remaining <= 900
+        ):
+            raise DirectSyncPushError("possession reattach challenge identity or expiry is invalid")
+        result = post(REATTACH_PATH, {
+            "contract_version": REATTACH_COMPLETE_CONTRACT_VERSION,
+            "producer_id": bindings["producer_id"],
+            "endpoint_url": endpoint,
+            "manifest": manifest,
+            "proof": proof,
+            "signature": key.sign_reattach_proof(proof),
+        })
+
+    expected = {
+        "contract_version": REATTACH_COMPLETE_CONTRACT_VERSION,
+        "status": "reattached", "identity_action": "REATTACHED",
+        **{field: value for field, value in bindings.items() if field != "manifest_hash"},
+        "endpoint_url": endpoint,
+        "active_manifest_hashes": [bindings["manifest_hash"]],
+    }
+    possession = result.get("possession_key")
+    receipt = result.get("client_receipt")
+    epoch = result.get("credential_epoch")
+    if (
+        any(result.get(field) != value for field, value in expected.items())
+        or type(epoch) is not int or epoch < 2
+        or result.get("authorization_state") not in REATTACH_AUTHORIZATION_STATES
+        or not isinstance(result.get("key_id"), str) or not result["key_id"].strip()
+        or not isinstance(possession, Mapping)
+        or possession.get("contract_version") != POSSESSION_KEY_CONTRACT_VERSION
+        or possession.get("fingerprint") != fingerprint
+        or not isinstance(receipt, Mapping)
+        or any(receipt.get(field) != value for field, value in expected.items())
+        or receipt.get("receipt_schema_version") != "producer-self-enrollment-client-receipt-v1"
+        or receipt.get("possession_key_fingerprint") != fingerprint
+        or type(receipt.get("credential_epoch")) is not int
+        or receipt["credential_epoch"] != epoch
+        or receipt.get("key_id") != result["key_id"]
+        or receipt.get("authorization_state") != result["authorization_state"]
+    ):
+        raise DirectSyncPushError("possession reattach response binding is invalid")
+    secret = _secret_from_response(result)
+    if (
+        result.get("secret_fingerprint_sha256") != _fingerprint(secret)
+        or receipt.get("secret_fingerprint_sha256") != result["secret_fingerprint_sha256"]
+    ):
+        raise DirectSyncPushError("possession reattach secret readback is invalid")
+    return result
 
 
 def _validate_v2_enrollment_response(
@@ -2030,26 +2146,42 @@ def _apply_registration_locked(
             "possession_public_jwk": dict(possession_key["public_jwk"]),
             "producer_id": credential["producer_id"],
         }
-        response_payload = _enroll(
-            enrollment_payload,
-            enrollment_url=enrollment_url,
-            enrollment_token=token,
-            timeout_seconds=args.enrollment_timeout_seconds,
-            tls_ca_bundle_path=str(
-                getattr(args, "tls_ca_bundle_path", "") or ""
-            ).strip(),
-        )
-        _validate_v2_enrollment_response(
-            response_payload,
-            expected_fingerprint=str(possession_key["fingerprint"]),
-            expected_producer_id=str(credential["producer_id"]),
-            expected_install_id=str(report["producer_install_id"]),
-            expected_source_host_id=str(report["source_host_id"]),
-            expected_endpoint_url=str(credential["endpoint_url"]),
-            expected_manifest_hash=str(report["manifest_hash"]),
-        )
         registration_contract_version = ENROLLMENT_CONTRACT_VERSION
         registration_url = enrollment_url
+        try:
+            response_payload = _enroll(
+                enrollment_payload,
+                enrollment_url=enrollment_url,
+                enrollment_token=token,
+                timeout_seconds=args.enrollment_timeout_seconds,
+                tls_ca_bundle_path=str(
+                    getattr(args, "tls_ca_bundle_path", "") or ""
+                ).strip(),
+            )
+        except ProducerEnrollmentHTTPError as exc:
+            if exc.status_code != 409 or exc.error_code != "reattach_proof_required":
+                raise
+            try:
+                response_payload = _possession_reattach(
+                    args, manifest, credential, possession_key, enrollment_token=token,
+                )
+            except Exception:
+                # Keep the original stable recovery state; do not replay enroll,
+                # expose proof/transport details, or replace an unavailable key.
+                raise exc from None
+            registration_contract_version = REATTACH_COMPLETE_CONTRACT_VERSION
+            registration_origin = urlparse(str(credential["endpoint_url"]))
+            registration_url = f"{registration_origin.scheme}://{registration_origin.netloc}{REATTACH_PATH}"
+        if registration_contract_version == ENROLLMENT_CONTRACT_VERSION:
+            _validate_v2_enrollment_response(
+                response_payload,
+                expected_fingerprint=str(possession_key["fingerprint"]),
+                expected_producer_id=str(credential["producer_id"]),
+                expected_install_id=str(report["producer_install_id"]),
+                expected_source_host_id=str(report["source_host_id"]),
+                expected_endpoint_url=str(credential["endpoint_url"]),
+                expected_manifest_hash=str(report["manifest_hash"]),
+            )
     possession_fingerprint = str(possession_key["fingerprint"])
     report.update(
         {
@@ -2180,6 +2312,8 @@ def _apply_registration_locked(
             "registration_action": (
                 "admin_recovery"
                 if admin_recovery_requested
+                else "possession_reattach"
+                if registration_contract_version == REATTACH_COMPLETE_CONTRACT_VERSION
                 else "initial_enrollment"
             ),
             "registration_contract_version": registration_contract_version,

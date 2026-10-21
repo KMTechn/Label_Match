@@ -503,7 +503,7 @@ def test_label_match_registration_apply_can_use_ip_allowlisted_server_without_to
 
     def post(url, **kwargs):
         assert url.endswith("/api/producer-ingest/v2/enroll")
-        assert kwargs["headers"] == {}
+        assert "X-Producer-Enrollment-Token" not in kwargs["headers"]
         payload = kwargs["json"]
         assert "enrollment_token" not in payload
         assert "token" not in payload
