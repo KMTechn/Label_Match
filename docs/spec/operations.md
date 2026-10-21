@@ -1343,6 +1343,8 @@ SYSTEM 요청 실패·60초 안에 apply 시작 증거가 나타나지 않음 �
 
 Python relay 시작은 임시 bootstrap 종료 뒤에도 최대 600초(설치기의 설치 뒤·되돌림 뒤 relay 준비 대기와 같은 상한. 까닭: 찬 첫 읽기에서 설치 코드 트리 전체 무결성 확인이 75초를 넘김. 확인 자체는 줄이지 않고, relay 자식이 0 아닌 코드로 끝나면 바로 실패) 안에서 fresh active-version relay 증거를 기다린다. launcher의 0 exit·생존만을 ALIVE로 반환하지 않으며 timeout/비정상 exit는 실패로 남기고 실제 자식을 강제 종료하지 않는다. 실제 느린 첫 cycle·두 번 시작·native 수명은 랩 NOT TESTED다.
 
+첫 설정의 현재 판 시작도 위 relay 준비 상한을 쓴다. prepared 후보가 없는 정상 `DEFERRED`·`CONFIRMED` 상태에서 `_bootstrap()`의 `START_CURRENT`는 시작 업데이트 대기의 240초 deadline을 `start_current()`로 넘기지 않고, 기존 `RELAY_PREPARE_SECONDS`(600초) 준비 대기를 시작한다. 시작 업데이트 대기 240초와 보호 runtime·활성 판·일반 사용자·relay 소유 증명 검사는 유지한다. `tests/test_bootstrap_relay_prepare_deadline.py`는 실제 bootstrap·relay 준비 증명 경계를 지나 300초 준비 성공과 즉시 준비·prepared 후보가 있는 경로를 가상 시계로 확인한다. 이 경계 재현은 실제 첫 설정 실패의 근본 원인을 확정한 현장 증거와 구분한다.
+
 **고정 상한 판정표(G100b 닫기).** 「첫 설정·relay 시작 사슬」 안인지, 그리고 relay 준비 대기와 같은 뜻인지 줄마다 판정했다. 같은 뜻만 `RELAY_PREPARE_SECONDS`(600 s)에 묶고(정적 시험 `tests/test_first_setup_wait_and_single_read.py`), 나머지는 까닭을 적고 손대지 않는다.
 
 | 값 | 자리 | 사슬 안? | 같은 뜻? | 처리 |
