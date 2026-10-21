@@ -52,8 +52,13 @@ SysWOW64 셸은 허용 목록에 없으며 cwd는 census 관측 항목이 아니
 | `manifest_hash`, `possession_key_fingerprint` | 같은 manifest와 기존 소유 키 지문. 키 지문은 기존 계약의 불투명 문자열을 정확 비교 |
 | `retained` | 기존 정상 문서가 있으면 true, 없는 첫 회전이면 false |
 | `credential_epoch` | retained=true는 이번 회전 전 로컬에서 확인한 정수 epoch, retained=false는 이전 로컬 세대 없음(null) |
+| `endpoint_url` | retained=false 첫 회전의 등록 입력 주소. 허용 URL 검증과 manifest 재유도, 설치 서버 origin 대조에 사용 |
 
 회전 POST 직전 표지조차 저장하지 못한 첫 시도의 새 단독 `POSSESSION_PROOF_REATTACH_REQUIRED` 등록 보고서에도 `retained=false`, `credential_epoch=null`, producer/install/source_host·manifest hash·소유 키 지문을 남긴다. 다음 공식 시작은 보고서의 기존 endpoint 입력을 URL 검증하고 현재 경로·PC·사용자에서 신원과 manifest를 다시 유도한다. 기존 현재 사용자 키를 열어 얻은 지문까지 모두 맞을 때만 `ABSENT_RETRYABLE`과 원 `POSSESSION_PROOF_REATTACH_REQUIRED` cause로 기존 runner를 한 번 호출한다. 틀림·모름은 `RECOVERY_REQUIRED`·HTTP 0회다. 재시도는 키 생성 함수를 호출하지 않고 기존 키만 연다.
+
+첫 회전의 진행/실패 표지도 같은 endpoint·retained=false·null epoch와 완전한 결속을 담는다. 정상 보고서·영수증이 없어도 현재 PC·사용자의 결정적 신원과 현재 경로·endpoint로 재유도한 manifest, 기존 키 지문이 모두 맞으면 같은 재시도 입구로 진행한다. 부분 저장 파일이 있으면 각 파일의 같은 신원·manifest·키/자격 결속도 확인한다. 원복은 이번 시도에서 새로 만든 파일만 되돌리고 다음 시작의 결속 표지는 남긴다.
+
+키 지문·manifest 칸이 없는 R3 옛 단독 재결속 요구 보고서는 producer_id·producer_install_id·source_host_id 셋이 현재 PC·사용자에서 다시 유도한 결정적 신원과 정확히 일치할 때 한 번 재시도하며, 키 판정은 서버가 한다. 같은 키는 enroll 409 뒤 재결속하고 다른 키의 `producer_identity_conflict`는 기존 관리자 회복으로 멈춘다. 신원 셋 중 하나라도 없거나 다르면 `RECOVERY_REQUIRED`·HTTP 0회다. 새 보고서의 일부 결속만 누락된 경우에는 이 옛 형식 예외를 적용하지 않는다.
 
 진행 표지를 원자 저장한 뒤에만 회전 POST를 보낸다. 검증된 후속 영수증을 자격 파일보다 먼저 저장하여 중단 중 새/옛 파일을 보존된 정상 보고서 또는 이 후속 영수증과 각각 대조할 수 있게 한다. 저장 I/O 예외에서는 실행 메모리에 보존한 profile 토큰·producer 자격·등록 문서 원본 바이트를 복원하고 별도 실패 진단을 남긴다. 정상 보고서를 일반 BLOCKED로 덮지 않으며 CLI는 3으로 끝난다. 사전 판정 거절은 서버 호출 0회·rc2다.
 

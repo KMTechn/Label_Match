@@ -2128,6 +2128,7 @@ def _validate_first_reattach_binding(binding, identity, manifest, possession_key
         or any(pc_identity.get(name) != identity.get(name) for name in (
             "pc_id", "producer_install_id", "source_host_id"))
         or binding.get("manifest_hash") != manifest_hash(manifest)
+        or binding.get("endpoint_url") != manifest.get("sync", {}).get("server_ingest_target")
         or not isinstance(fingerprint, str) or not fingerprint
         or binding.get("possession_key_fingerprint") != fingerprint
         or possession_key.get("scope") != POSSESSION_KEY_SCOPE
@@ -2155,7 +2156,88 @@ def _validate_first_reattach_binding(binding, identity, manifest, possession_key
         raise DirectSyncPushError("first reattach retry evidence is invalid")
 
 
-def _inspect_first_reattach_report(paths, report):
+def _validate_first_reattach_report(report, identity, manifest, possession_key):
+    """The approved R3 exception delegates only the missing key binding to the server."""
+    legacy = not any(name in report for name in (
+        "retained", "credential_epoch", "manifest_hash", "possession_key_fingerprint"))
+    if not legacy:
+        _validate_first_reattach_binding(report, identity, manifest, possession_key, report_only=True)
+        return
+    if (
+        report.get("report_version") != "label-match-worker-pc-registration-v1"
+        or report.get("status") != "POSSESSION_PROOF_REATTACH_REQUIRED"
+        or report.get("recovery_action") != "POSSESSION_PROOF_REATTACH_REQUIRED"
+        or report.get("secret_material_persisted") is not False
+        or any(not identity.get(name) or report.get(name) != identity[name] for name in (
+            "producer_id", "producer_install_id", "source_host_id"))
+        or report.get("endpoint_url") != manifest["sync"]["server_ingest_target"]
+        or possession_key.get("scope") != POSSESSION_KEY_SCOPE
+        or possession_key.get("machine_key") is not False
+        or possession_key.get("contract_version") != POSSESSION_KEY_CONTRACT_VERSION
+        or not isinstance(possession_key.get("fingerprint"), str) or not possession_key["fingerprint"]
+    ):
+        raise DirectSyncPushError("legacy first reattach report binding differs")
+
+
+def _validate_first_reattach_documents(targets, identity, manifest, credential, possession_key):
+    """Any files left by a partial first save must still belong to this binding."""
+    digest = manifest_hash(manifest)
+    fingerprint = possession_key["fingerprint"]
+    bindings = {name: identity[name] for name in ("producer_id", "producer_install_id", "source_host_id")}
+    if os.path.lexists(targets["identity"]):
+        stored = _reattach_document(targets["identity"])
+        if (stored.get("schema_version") != PRODUCER_IDENTITY_SCHEMA_VERSION
+                or any(stored.get(name) != value for name, value in bindings.items())
+                or ("pc_id" in stored and stored["pc_id"] != identity["pc_id"])):
+            raise DirectSyncPushError("first reattach stored identity differs")
+    if os.path.lexists(targets["manifest"]) and manifest_hash(_reattach_document(targets["manifest"])) != digest:
+        raise DirectSyncPushError("first reattach stored manifest differs")
+    receipt = None
+    for name in ("receipt", "report"):
+        if not os.path.lexists(targets[name]):
+            continue
+        value = _reattach_document(targets[name])
+        if name == "report" and value.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED":
+            _validate_first_reattach_report(value, identity, manifest, possession_key)
+            continue
+        if (any(value.get(field) != expected for field, expected in bindings.items())
+                or value.get("possession_key_fingerprint") != fingerprint
+                or value.get("endpoint_url") != credential["endpoint_url"]
+                or (value.get("active_manifest_hashes") != [digest] if name == "receipt"
+                    else value.get("manifest_hash") != digest)):
+            raise DirectSyncPushError("first reattach saved document binding differs")
+        if name == "receipt" or value.get("secret_material_persisted") is True:
+            if (type(value.get("credential_epoch")) is not int or value["credential_epoch"] < 2
+                    or not isinstance(value.get("key_id"), str) or not value["key_id"]
+                    or not isinstance(value.get("secret_fingerprint_sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", value["secret_fingerprint_sha256"])):
+                raise DirectSyncPushError("first reattach saved credential binding is incomplete")
+        if name == "receipt":
+            receipt = value
+    if os.path.lexists(targets["credential"]):
+        stored = _reattach_document(targets["credential"])
+        if (receipt is None or stored.get("key_id") != receipt["key_id"]
+                or any(stored.get(name) != credential[name] for name in (
+                    "producer_id", "endpoint_url", "secret_ref", "secret_data_dir", "dpapi_scope"))):
+            raise DirectSyncPushError("first reattach stored credential differs")
+    if os.path.lexists(targets["producer_secret"]):
+        path = assert_path_has_no_reparse_components(targets["producer_secret"], label="first reattach credential")
+        if (receipt is None or not path.is_file() or path.is_symlink() or path.stat().st_nlink != 1
+                or not 0 < path.stat().st_size <= PRODUCER_IDENTITY_MAX_BYTES
+                or _fingerprint(_dpapi_unprotect_current_user(path.read_bytes())) != receipt["secret_fingerprint_sha256"]):
+            raise DirectSyncPushError("first reattach protected credential differs")
+    if os.path.lexists(targets["profile"]) or os.path.lexists(targets["logistics_secret"]):
+        profile = _reattach_document(targets["profile"])
+        secret = assert_path_has_no_reparse_components(targets["logistics_secret"], label="first reattach logistics credential")
+        if (profile.get("source_host_id") != identity["source_host_id"]
+                or profile.get("device_id") != identity["pc_id"]
+                or profile.get("credential_scope") != "current_user"
+                or not secret.is_file() or secret.is_symlink() or secret.stat().st_nlink != 1
+                or not 0 < secret.stat().st_size <= PRODUCER_IDENTITY_MAX_BYTES):
+            raise DirectSyncPushError("first reattach profile binding differs")
+
+
+def _inspect_first_reattach_report(paths, report, *, report_only=True):
     """Read only; never provision a key or persist the derived installation identity."""
     endpoint = report.get("endpoint_url")
     validate_endpoint_url(endpoint)
@@ -2170,8 +2252,32 @@ def _inspect_first_reattach_report(paths, report):
         identity_registry_status="self_enrolled")
     with PersistentPossessionKey.open_existing(scope=POSSESSION_KEY_SCOPE) as key:
         descriptor = key.descriptor().as_dict()
-    _validate_first_reattach_binding(report, identity, manifest, descriptor, report_only=True)
-    return {"status": "ABSENT_RETRYABLE", "cause_code": "POSSESSION_PROOF_REATTACH_REQUIRED"}
+    credential = {"producer_id": identity["producer_id"], "endpoint_url": endpoint,
+                  "secret_ref": f"dpapi:{identity['secret_ref']}",
+                  "secret_data_dir": str(paths.direct_sync_root), "dpapi_scope": "current_user"}
+    if report_only:
+        _validate_first_reattach_report(report, identity, manifest, descriptor)
+    else:
+        _validate_first_reattach_binding(report, identity, manifest, descriptor)
+    _validate_first_reattach_documents({
+        "identity": paths.identity_path, "manifest": paths.producer_manifest_path,
+        "credential": paths.credential_path, "receipt": paths.registration_receipt_path,
+        "report": paths.registration_report_path, "profile": paths.logistics_profile_path,
+        "logistics_secret": paths.logistics_secret_path,
+        "producer_secret": _secret_path(paths.direct_sync_root, identity["secret_ref"]),
+    }, identity, manifest, credential, descriptor)
+    cause = ("POSSESSION_PROOF_REATTACH_REQUIRED" if report_only else
+             "REATTACH_ROTATED_PERSIST_FAILED" if report["status"] == "REATTACH_ROTATED_PERSIST_FAILED"
+             else "REATTACH_INTERRUPTED")
+    return {"status": "ABSENT_RETRYABLE", "cause_code": cause}
+
+
+def _reattach_retry_credential(paths):
+    """Supply the already-validated first/retained endpoint to the origin guard."""
+    if os.path.lexists(paths.credential_path):
+        return _reattach_document(paths.credential_path)
+    marker_path = paths.credential_path.parent / "status" / REATTACH_PERSISTENCE_FILENAME
+    return _reattach_document(marker_path if os.path.lexists(marker_path) else paths.registration_report_path)
 
 
 def _inspect_reattach_retry(paths):
@@ -2183,11 +2289,12 @@ def _inspect_reattach_retry(paths):
                     paths.identity_path, paths.producer_manifest_path, paths.credential_path,
                     paths.logistics_profile_path, paths.logistics_secret_path))):
             report = _reattach_document(paths.registration_report_path)
-            if (report.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED"
-                    and "retained" in report):
+            if report.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED":
                 return _inspect_first_reattach_report(paths, report)
         return None
     marker = _reattach_document(marker_path)
+    if marker.get("retained") is False:
+        return _inspect_first_reattach_report(paths, marker, report_only=False)
     identity, manifest, credential, report, receipt = (
         _reattach_document(path) for path in (
             paths.identity_path, paths.producer_manifest_path, paths.credential_path,
@@ -2308,7 +2415,7 @@ def _reattach_local_preflight(args, manifest, credential, possession_key):
     epoch = 0
     marker = _reattach_document(targets["marker"]) if targets["marker"].exists() else None
     retained = any(targets[name].exists() for name in ("manifest", "credential", "receipt", "producer_secret"))
-    first_retry = marker is not None and marker.get("retained") is False and not retained
+    first_retry = marker is not None and marker.get("retained") is False
     if first_retry:
         candidate = _derive_identity(argparse.Namespace(
             data_dir=str(data), identity_path=str(targets["identity"])),
@@ -2316,6 +2423,8 @@ def _reattach_local_preflight(args, manifest, credential, possession_key):
         if credential["producer_id"] != candidate["producer_id"]:
             raise DirectSyncPushError("first reattach requested producer differs")
         _validate_first_reattach_binding(marker, candidate, manifest, possession_key)
+        _validate_first_reattach_documents(targets, candidate, manifest, credential, possession_key)
+        retained = False
     if retained:
         stored_manifest, stored_credential, receipt, report = (
             document(name) for name in ("manifest", "credential", "receipt", "report"))
@@ -2365,14 +2474,13 @@ def _reattach_local_preflight(args, manifest, credential, possession_key):
         raise DirectSyncPushError("reattach retry has no bound original registration")
     elif targets["report"].exists():
         previous_report = document("report")
-        if previous_report.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED" and "retained" in previous_report:
+        if previous_report.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED":
             candidate = _derive_identity(argparse.Namespace(
                 data_dir=str(data), identity_path=str(targets["identity"])),
                 credential["endpoint_url"], load_existing=False)
             if credential["producer_id"] != candidate["producer_id"]:
                 raise DirectSyncPushError("first reattach requested producer differs")
-            _validate_first_reattach_binding(
-                previous_report, candidate, manifest, possession_key, report_only=True)
+            _validate_first_reattach_report(previous_report, candidate, manifest, possession_key)
     if targets["profile"].exists() or targets["logistics_secret"].exists():
         from logistics_runtime_profile import load_logistics_runtime_profile
         from tools.install_logistics_runtime_profile import unprotect_current_user_secret
@@ -2418,6 +2526,7 @@ def _reattach_local_preflight(args, manifest, credential, possession_key):
                 "possession_key_fingerprint": possession_key["fingerprint"],
                 "retained": retained,
                 "credential_epoch": epoch if retained else None,
+                **({"endpoint_url": credential["endpoint_url"]} if not retained else {}),
             }}
 
 

@@ -326,3 +326,167 @@ def test_r3_report_without_fingerprint_retries_only_matching_identity(tmp_path, 
         assert runs == []
         assert case.calls == []
         assert paths.registration_report_path.read_bytes() == before
+
+
+def test_first_partial_save_exit_resumes_from_the_bound_marker(tmp_path, monkeypatch):
+    mode = "partial_exit"
+    root = tmp_path / 'fresh'
+    root.mkdir()
+    (root / 'fixture-context.json').write_text(json.dumps({
+        'machine_guid': uuid.uuid4().hex, 'pc_name': 'review-' + uuid.uuid4().hex[:12],
+    }))
+    child = subprocess.run([
+        sys.executable, '-B', str(Path(__file__).with_name('_review467_first_rotation_child.py')),
+        str(root), mode,
+    ], capture_output=True, cwd=Path(__file__).resolve().parents[1],
+       creationflags=subprocess.CREATE_NO_WINDOW)
+    assert child.returncode == 0
+    first = json.loads((root / 'first-phase.json').read_text())
+    assert first['had_normal_report_before'] is False
+    assert first['had_receipt_before'] is False
+    assert first['had_identity_before'] is False
+    assert first['retained_key_reused'] is True
+    paths_before = onboarding.resolve_current_user_onboarding_paths(root / 'app', environ=_environment(root))
+    protected_paths = [paths_before.identity_path, paths_before.producer_manifest_path,
+        paths_before.credential_path, paths_before.registration_report_path,
+        paths_before.registration_receipt_path, paths_before.logistics_profile_path,
+        paths_before.logistics_secret_path,
+        paths_before.direct_sync_root / 'status' / 'label_match_reattach_persistence.json']
+    preimages = {p: p.read_bytes() if p.exists() else None for p in protected_paths}
+    case, paths, server_path, base_url = prepare_case(root, monkeypatch)
+    preparation_preserved_product_files = all(
+        (p.read_bytes() if p.exists() else None) == original for p, original in preimages.items()
+    )
+    assert preparation_preserved_product_files
+    import tools.register_label_match_worker_pc as official_registration
+    runs = []
+    def registered(argv, **kwargs):
+        runs.append(True)
+        return case.module.main(argv, **kwargs)
+    monkeypatch.setattr(official_registration, 'main', registered)
+    state = onboarding.inspect_current_user_state(paths)
+    completed = False
+    failure = None
+    try:
+        result = onboarding.onboard_current_user(
+            root / 'app', environ=_environment(root), server_base_url=base_url,
+            require_bootstrap_integrity=False, profile_loader=_profile_loader,
+            credential_loader=_credential_loader, ledger_factory=_ledger_factory,
+            autostart_installer=_autostart, scheduled_task_remover=_scheduled_task_absent,
+            legacy_task_quiescence_reader=_legacy_task_quiescent, relay_launcher=_relay_start,
+        )
+        completed = result['status'] == 'READY'
+    except onboarding.CurrentUserOnboardingError as exc:
+        failure = {'status': exc.status, 'cause_code': exc.cause_code}
+    observation = {
+        'first': first, 'state_before_official_start': state['status'],
+        'next_official_start_ready': completed, 'failure': failure,
+        'official_registration_runner_calls': len(runs),
+        'next_start_http_calls': len(case.calls),
+        'server_epoch_after': json.loads(server_path.read_text())['epoch'],
+        'parent_preparation_preserved_product_files': preparation_preserved_product_files,
+    }
+    (tmp_path / 'first-rotation-observation.json').write_text(json.dumps(observation))
+    assert completed, 'first rotation did not recover through the next official start'
+    assert len(runs) == 1
+    assert len(case.calls) == 3
+
+
+def test_first_partial_receipt_for_another_identity_refuses_http(tmp_path, monkeypatch):
+    mode = "partial_exit"
+    root = tmp_path / 'fresh'
+    root.mkdir()
+    (root / 'fixture-context.json').write_text(json.dumps({
+        'machine_guid': uuid.uuid4().hex, 'pc_name': 'review-' + uuid.uuid4().hex[:12],
+    }))
+    child = subprocess.run([
+        sys.executable, '-B', str(Path(__file__).with_name('_review467_first_rotation_child.py')),
+        str(root), mode,
+    ], capture_output=True, cwd=Path(__file__).resolve().parents[1],
+       creationflags=subprocess.CREATE_NO_WINDOW)
+    assert child.returncode == 0
+    first = json.loads((root / 'first-phase.json').read_text())
+    assert first['had_normal_report_before'] is False
+    assert first['had_receipt_before'] is False
+    assert first['had_identity_before'] is False
+    assert first['retained_key_reused'] is True
+    paths_before = onboarding.resolve_current_user_onboarding_paths(root / 'app', environ=_environment(root))
+    protected_paths = [paths_before.identity_path, paths_before.producer_manifest_path,
+        paths_before.credential_path, paths_before.registration_report_path,
+        paths_before.registration_receipt_path, paths_before.logistics_profile_path,
+        paths_before.logistics_secret_path,
+        paths_before.direct_sync_root / 'status' / 'label_match_reattach_persistence.json']
+    preimages = {p: p.read_bytes() if p.exists() else None for p in protected_paths}
+    case, paths, server_path, base_url = prepare_case(root, monkeypatch)
+    preparation_preserved_product_files = all(
+        (p.read_bytes() if p.exists() else None) == original for p, original in preimages.items()
+    )
+    assert preparation_preserved_product_files
+    import tools.register_label_match_worker_pc as official_registration
+    runs = []
+    def registered(argv, **kwargs):
+        runs.append(True)
+        return case.module.main(argv, **kwargs)
+    monkeypatch.setattr(official_registration, 'main', registered)
+
+    receipt = json.loads(paths.registration_receipt_path.read_text())
+    receipt["producer_install_id"] = uuid.uuid4().hex
+    paths.registration_receipt_path.write_text(json.dumps(receipt))
+    state = onboarding.inspect_current_user_state(paths)
+    assert state["status"] == "RECOVERY_REQUIRED"
+    assert runs == []
+    assert case.calls == []
+
+
+@pytest.mark.parametrize("mode", ["producer_io", "marker_before"])
+def test_first_retry_supplies_its_endpoint_to_the_install_origin_guard(tmp_path, monkeypatch, mode):
+    root = tmp_path / 'fresh'
+    root.mkdir()
+    (root / 'fixture-context.json').write_text(json.dumps({
+        'machine_guid': uuid.uuid4().hex, 'pc_name': 'review-' + uuid.uuid4().hex[:12],
+    }))
+    child = subprocess.run([
+        sys.executable, '-B', str(Path(__file__).with_name('_review467_first_rotation_child.py')),
+        str(root), mode,
+    ], capture_output=True, cwd=Path(__file__).resolve().parents[1],
+       creationflags=subprocess.CREATE_NO_WINDOW)
+    assert child.returncode == 0
+    first = json.loads((root / 'first-phase.json').read_text())
+    assert first['had_normal_report_before'] is False
+    assert first['had_receipt_before'] is False
+    assert first['had_identity_before'] is False
+    assert first['retained_key_reused'] is True
+    paths_before = onboarding.resolve_current_user_onboarding_paths(root / 'app', environ=_environment(root))
+    protected_paths = [paths_before.identity_path, paths_before.producer_manifest_path,
+        paths_before.credential_path, paths_before.registration_report_path,
+        paths_before.registration_receipt_path, paths_before.logistics_profile_path,
+        paths_before.logistics_secret_path,
+        paths_before.direct_sync_root / 'status' / 'label_match_reattach_persistence.json']
+    preimages = {p: p.read_bytes() if p.exists() else None for p in protected_paths}
+    case, paths, server_path, base_url = prepare_case(root, monkeypatch)
+    preparation_preserved_product_files = all(
+        (p.read_bytes() if p.exists() else None) == original for p, original in preimages.items()
+    )
+    assert preparation_preserved_product_files
+    import tools.register_label_match_worker_pc as official_registration
+    runs = []
+    def registered(argv, **kwargs):
+        runs.append(True)
+        return case.module.main(argv, **kwargs)
+    monkeypatch.setattr(official_registration, 'main', registered)
+
+    expected = case.module._endpoint_from_args(__import__("types").SimpleNamespace(
+        endpoint_url="", server_base_url=base_url))
+    seen = []
+    def changed(_paths, *, credential=None):
+        seen.append(credential["endpoint_url"] == expected)
+        raise onboarding.CurrentUserOnboardingError(
+            "installed origin differs", report_path=paths.onboarding_report_path,
+            cause_code="INSTALL_SERVER_ORIGIN_CHANGED")
+    monkeypatch.setattr(onboarding, "require_install_server_origin_matches", changed)
+    state = onboarding.inspect_current_user_state(paths)
+    assert state["status"] == "RECOVERY_REQUIRED"
+    assert state["cause_code"] == "INSTALL_SERVER_ORIGIN_CHANGED"
+    assert seen == [True]
+    assert runs == []
+    assert case.calls == []

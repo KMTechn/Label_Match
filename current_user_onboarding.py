@@ -875,15 +875,13 @@ def inspect_current_user_state(
     }
     present = {name: path.is_file() for name, path in state_paths.items()}
     try:
-        from tools.register_label_match_worker_pc import _inspect_reattach_retry
+        from tools.register_label_match_worker_pc import _inspect_reattach_retry, _reattach_retry_credential
         retry = _inspect_reattach_retry(paths)
         if retry is not None:
             if credential_input is not None and credential_input.error is not None:
                 raise credential_input.error
             require_install_server_origin_matches(
-                paths, credential=_read_json(
-                    paths.credential_path if paths.credential_path.is_file() else paths.registration_report_path,
-                    "producer credential or first reattach report"))
+                paths, credential=_reattach_retry_credential(paths))
             return {**retry, "present": present}
     except Exception as exc:
         return {"status": "RECOVERY_REQUIRED", "present": present,

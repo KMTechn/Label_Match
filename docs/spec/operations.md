@@ -744,6 +744,8 @@ HMAC 서명은 전송 시 새 키로 생성한다. 대기 행의 원 metadata/id
 
 실패한 실행 안에서는 enroll을 반복하지 않는다. 회전 직전 진행 표지 저장에 실패해 정상 문서 없이 단독 재결속 요구 보고서만 남는 새 첫 시도는 다음 공식 시작에서 보고서의 `retained=false`·이전 세대 없음(null)·결정적 신원/manifest·기존 키 지문 결속을 확인한다. 모두 맞으면 같은 키를 열어 기존 `ABSENT_RETRYABLE` 입구와 runner로 한 번 진행하며, 틀림·모름이면 HTTP 호출 없이 복구 요구를 유지한다([결속 형식](contracts.md#같은-키-재결속의-저장-중단-진단)).
 
+키 지문·manifest가 없는 R3 옛 단독 보고서도 producer/install/source_host 셋이 현재 PC·사용자의 결정적 신원과 정확히 맞을 때 한 번 재시도하며, 키 판정은 서버에 맡긴다. 다른 키의 producer_identity_conflict는 기존 관리자 회복으로 멈추고, 신원 셋 중 하나라도 다르거나 없으면 HTTP 0회로 거절한다. 이번부터의 첫 회전 표지/단독 보고서에는 endpoint까지 완전한 결속을 남긴다. 정상 문서 없는 표지는 현재 경로·해당 endpoint의 manifest 재유도와 기존 키 대조로 재시도하며, 설치 서버 origin 검사에는 이 endpoint를 재구성 자격으로 넘긴다. 원복이 첫 회전에 새로 만든 파일을 지워도 표지는 남긴다.
+
 같은 PC에 보호 자격이 남아 있어도 같은 키 재결속은 기존 저장 자리에서 회전 자격까지 확정한다. 서버 호출 전 저장 자리·폴더 생성·교체 권한·current-user scope·producer/install/source_host/manifest·소유 키 지문과 기존 자격 결속을 대조한다. 받을 수 없거나 모르면 서버 호출 0회로 거절하고 기존 정상 보고서와 자격을 보존한다. 키를 열지 못하는 경우도 정상 보고서는 보존하며 기존 관리자 회복 분류와 rc2로 알린다. 검증된 같은 키 응답과 진행한 epoch에만 `reattach_rotation_admitted` 조건으로 기존 profile 토큰과 producer 보호 자격 교체를 허용한다. 새 저장 자리로 우회하거나 관리자 회복 조건을 완화하지 않는다.
 
 회전 직전 별도 `<data_dir>/status/label_match_reattach_persistence.json`에 `REATTACH_IN_PROGRESS`를 원자 저장한다. 회전 뒤 저장 실패는 기존 자격·profile 토큰·등록 문서를 복원하고 같은 별도 파일에 `REATTACH_ROTATED_PERSIST_FAILED`를 남기며 rc3으로 끝난다. 정상 등록 보고서는 일반 BLOCKED로 덮지 않는다. 진행 표지의 `server_credential_rotated=false`는 응답을 확인하기 전의 상태이며 실제 서버가 회전하지 않았다는 뜻으로 사용하지 않는다([고정 형식](contracts.md#같은-키-재결속의-저장-중단-진단)).

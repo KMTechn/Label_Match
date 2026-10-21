@@ -46,6 +46,8 @@ def prepare_case(root, patch, seed_name='fixture-parent'):
     case.reused_initial_key = True
     _use_real_profile(case, patch, paths.logistics_profile_path)
     _install_test_producer_crypto(case)
+    patch.setattr(official_registration, "_dpapi_unprotect_current_user", case.module._dpapi_unprotect_current_user)
+    patch.setattr(official_registration, "_secret_path", case.module._secret_path)
     server_path = root / 'server-state.json'
     if not server_path.exists():
         fingerprint = fixtures.fake_possession_descriptor()['fingerprint']
@@ -107,6 +109,13 @@ def main(root, mode):
                 raise OSError('injected owned diagnostic write failure')
             return real_json(path, payload)
         patch.setattr(case.module, '_write_json', unavailable)
+    elif mode == "partial_exit":
+        real_write = case.module._write_dpapi_secret
+        def exit_after_store(*args, **kwargs):
+            real_write(*args, **kwargs)
+            phase(False, None)
+            __import__("os")._exit(0)
+        patch.setattr(case.module, "_write_dpapi_secret", exit_after_store)
     else:
         def unavailable(*_args, **_kwargs):
             raise OSError('injected owned producer storage failure')
