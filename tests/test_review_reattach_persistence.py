@@ -169,8 +169,9 @@ def _retarget_to_official_paths(case, paths):
     case.report = lambda: json.loads(paths.registration_report_path.read_text())
 
 
+@pytest.mark.parametrize('mode', ['failed', 'progress', 'partial'])
 def test_process_exit_then_official_onboarding_reattaches_same_key_to_ready(
-    reattach_case, tmp_path, monkeypatch,
+    reattach_case, tmp_path, monkeypatch, mode,
 ):
     import subprocess
     import sys
@@ -180,7 +181,7 @@ def test_process_exit_then_official_onboarding_reattaches_same_key_to_ready(
     )
     root = tmp_path / 'restart-scenario'
     child = subprocess.run(
-        [sys.executable, '-B', str(Path(__file__).with_name('_reattach_restart_child.py')), str(root)],
+        [sys.executable, '-B', str(Path(__file__).with_name('_reattach_restart_child.py')), str(root), mode],
         cwd=Path(__file__).resolve().parents[1], capture_output=True,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
     )
@@ -196,6 +197,7 @@ def test_process_exit_then_official_onboarding_reattaches_same_key_to_ready(
     _retarget_to_official_paths(case, paths)
     _install_test_producer_crypto(case)
     _use_real_profile(case, monkeypatch, paths.logistics_profile_path)
+    _install_fake_server_admission(case, server_path)
     include_bundle = case.response_change
     def next_generation(response):
         include_bundle(response)
@@ -227,6 +229,25 @@ def test_process_exit_then_official_onboarding_reattaches_same_key_to_ready(
     assert case.initial_key_calls == []
     assert case.signed[0]['producer_id'] == case.identity['producer_id']
     assert json.loads(server_path.read_text())['retired_generations'] == 2
+    assert not (paths.direct_sync_root / 'status' / case.module.REATTACH_PERSISTENCE_FILENAME).exists()
+
+
+def _install_fake_server_admission(case, server_path):
+    post = case.module.requests.post
+    def admitted(url, **kwargs):
+        if url.endswith('/challenge') or url.endswith('/reattach'):
+            state = json.loads(server_path.read_text())
+            payload = kwargs['json']
+            proof = payload.get('proof', payload)
+            if (proof['producer_id'] != state['producer_id']
+                    or proof['source_host_id'] != state['source_host_id']):
+                return SimpleNamespace(status_code=404, json=lambda: {'error': {'code': 'producer_identity_not_found'}})
+            if (state['producer_status'] != 'active' or state['key_status'] != 'active'
+                    or state['identity_released_epoch'] >= state['epoch']):
+                return SimpleNamespace(status_code=409, json=lambda: {'error': {'code': 'producer_credential_disabled'}})
+            assert state['fingerprint'] == reattach_tests.fake_possession_descriptor()['fingerprint']
+        return post(url, **kwargs)
+    case.module.requests.post = admitted
 
 
 def test_existing_binding_is_not_invalidated_before_local_storage_rejection(reattach_case, tmp_path, monkeypatch):
