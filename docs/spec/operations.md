@@ -1137,7 +1137,7 @@ capture8의 교정 wrapper 실측은 [동일 사용자 제거 native exit 0](D:/
 
 `RECOVERY_REQUIRED`·`ROLLBACK_FAILED`·`FAILED_ROLLBACK_INCOMPLETE` 감사 뒤 자기 설치 울타리만 남으면, **원 설치의 작업 사용자 관리자 PowerShell**에서 다음 기존 지원 입구를 사용한다. 기계 설치와 일반 설치 모두 같다. 원 감사 파일과 SHA256을 그대로 지정한다.
 
-기계 원 감사는 `%ProgramData%\KMTech\Label_Match\install-audit\canonical-portable-<run>.json`을 그대로 지정하고 정리 기록도 같은 폴더에 남긴다. 기계 감사는 그 뿌리의 `machine-writer-<run>` 울타리만, 작업자 LocalAppData 감사는 작업자 통제 뿌리의 울타리만 받으며 엇갈린 짝과 다른 감사 뿌리는 거절한다. census는 두 PowerShell 엔진의 `-e`부터 `-encodedcommand`까지 모든 접두 철자와 `-ec`의 인용 유무·중첩을 조사하며 해독 불가는 관측 불가로 거절한다.
+기계 원 감사는 `%ProgramData%\KMTech\Label_Match\install-audit\canonical-portable-<run>.json`을 그대로 지정하고 정리 기록도 같은 폴더에 남긴다. 기계 감사는 그 뿌리의 `machine-writer-<run>` 울타리만, 작업자 LocalAppData 감사는 작업자 통제 뿌리의 울타리만 받으며 엇갈린 짝과 다른 감사 뿌리는 거절한다. census는 두 PowerShell 엔진의 `-e`부터 `-encodedcommand`까지 모든 접두 철자와 `-ec`의 인용 유무·중첩을 조사하며, 어느 깊이든 인수가 Base64 문자 집합 밖이거나 Base64·UTF-16LE 해독에 실패하면 관측 불가로 거절한다. 스위치 뒤 인수가 없는 경우의 기존 동작은 유지한다.
 
 ```powershell
 & '<승인 packet>\INSTALL_CANONICAL_PORTABLE.ps1' -SourceRoot '<승인 packet>' -ResumeRollbackAuditPath '<원 감사 JSON>' -ExpectedRollbackAuditSha256 '<원 감사 SHA256>'

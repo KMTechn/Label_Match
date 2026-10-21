@@ -4996,14 +4996,23 @@ function Expand-LabelOrphanCommand([string]$Command) {
     $encodings=@([Text.UTF8Encoding]::new($false,$true),[Text.UnicodeEncoding]::new($false,$false,$true))
     # Windows PowerShell 5.1 and pwsh both take '-', '/', an en dash, an em dash or a horizontal bar,
     # then EC or any case-insensitive prefix of EncodedCommand, then the Base64 payload (bare or quoted).
-    $switch='(?:^|[\s"''(])[-/\u2013\u2014\u2015]([A-Za-z]+)\s+["'']?([A-Za-z0-9+/=]+)'
+    $switch='(?:^|[\s"''(])[-/\u2013\u2014\u2015]([A-Za-z]+)(?=\s)'
     for($index=0;$index -lt $texts.Count;$index++){
         foreach($found in [regex]::Matches($texts[$index],$switch)){
             $name=$found.Groups[1].Value.ToLowerInvariant()
             if($name -cne 'ec' -and -not 'encodedcommand'.StartsWith($name,[StringComparison]::Ordinal)){continue}
-            try{[byte[]]$bytes=[Convert]::FromBase64String($found.Groups[2].Value)}
-            catch{if($index -eq 0){throw 'ORPHAN_CENSUS_UNREADABLE'};continue}
-            $decoded=[Text.Encoding]::Unicode.GetString($bytes)
+            # Scan switch names separately so an unrelated flag cannot consume the next switch.
+            $argumentMatch=[regex]::Match($texts[$index].Substring($found.Index+$found.Length),'^\s+("[^"]*"|''[^'']*''|[^\s]+)')
+            if(-not $argumentMatch.Success){continue} # No argument retains the existing behavior.
+            $argument=$argumentMatch.Groups[1].Value
+            if($argument.Length -ge 2 -and ($argument[0] -eq [char]34 -or $argument[0] -eq [char]39) -and $argument[-1] -eq $argument[0]){
+                $argument=$argument.Substring(1,$argument.Length-2)
+            }
+            if($argument -cnotmatch '\A[A-Za-z0-9+/]*={0,2}\z'){throw 'ORPHAN_CENSUS_UNREADABLE'}
+            try{
+                [byte[]]$bytes=[Convert]::FromBase64String($argument)
+                $decoded=$encodings[1].GetString($bytes)
+            }catch{throw 'ORPHAN_CENSUS_UNREADABLE'}
             if($decoded -and $seen.Add($decoded)){$texts.Add($decoded)}
         }
         foreach($literal in [regex]::Matches($texts[$index],'[''"]([A-Za-z0-9+/]+={0,2})[''"]')){

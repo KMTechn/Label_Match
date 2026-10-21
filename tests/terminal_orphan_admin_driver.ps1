@@ -199,8 +199,9 @@ foreach($seedCase in $seeds){
     }
     if($script:CaseMode -ceq 'install_other'){$seedCase.audit.install_root=Join-Path $root 'managed/other-current'}
     if($script:CaseMode -cin @('census_helper','census_bootstrap','census_unreadable','census_encoded','census_nested','census_self','census_unrelated','census_descendant',
-        'census_spelling','census_spelling_unrelated','census_nested_unquoted','census_undecodable')){
+        'census_spelling','census_spelling_unrelated','census_nested_unquoted','census_undecodable','census_command')){
         $command=if($script:CaseMode -ceq 'census_unrelated'){'unrelated maintenance'}else{'-File "'+$install+'\helper.ps1"'}
+        if($script:CaseMode -ceq 'census_command'){$command=[string]$seedCase.command_line}
         if($script:CaseMode -ceq 'census_encoded'){$command='-EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))}
         if($script:CaseMode -ceq 'census_nested'){
             $nested=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(('{"attempt_id":"'+$owner.attempt_id+'"}')))
