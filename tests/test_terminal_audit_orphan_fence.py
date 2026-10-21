@@ -1,8 +1,8 @@
-"""sub-441 RED: persisted terminal audits must leave a supported recovery entry.
+"""Real terminal Save sites and the worker-side fence boundary.
 
-Only extracted functions run in isolated directories. No installer, GUI,
-credential store, registration, OS mutation, or network operation is launched.
-The owner fixture records the creation time of a real, already exited child.
+The serialization harness retains the legacy rollback-context probe only.
+The administrator exit itself is exercised in test_terminal_orphan_admin_release.
+Workers keep these fences until that administrator recovery finishes.
 """
 
 import ast
@@ -30,18 +30,18 @@ INSTALLER = ROOT / "INSTALL_CANONICAL_PORTABLE.ps1"
 # Primary audit saves only; optional EvidencePath copies share the same state.
 # The final two machine saves apply when release was skipped or failed.
 SITES = (
-    (6120, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
-    (6146, "machine", ("ROLLBACK_FAILED",)),
-    (6157, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
-    (6161, "machine", ("ROLLBACK_FAILED",)),
-    (6169, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
-    (6191, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
-    (6199, "machine", ("ROLLBACK_FAILED",)),
-    (7337, "user", ("RECOVERY_REQUIRED",)),
-    (7444, "user", ("ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
-    (7463, "user", ("ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
-    (7469, "user", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
-    (4985, "user", ("ROLLBACK_FAILED",)),
+    (6658, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
+    (6684, "machine", ("ROLLBACK_FAILED",)),
+    (6695, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
+    (6699, "machine", ("ROLLBACK_FAILED",)),
+    (6707, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
+    (6729, "machine", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED")),
+    (6737, "machine", ("ROLLBACK_FAILED",)),
+    (7876, "user", ("RECOVERY_REQUIRED",)),
+    (7983, "user", ("ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
+    (8002, "user", ("ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
+    (8008, "user", ("RECOVERY_REQUIRED", "ROLLBACK_FAILED", "FAILED_ROLLBACK_INCOMPLETE")),
+    (5523, "user", ("ROLLBACK_FAILED",)),
 )
 
 
@@ -69,6 +69,7 @@ def _powershell_batch(tmp_path, engine, audit, control, record):
     scenarios.write_text(json.dumps(list(_scenes())), encoding="utf-8")
     driver = tmp_path / "terminal-audit.ps1"
     driver.write_text("\n".join((
+        "function Test-LabelOrphanReleaseCandidate { return $false }",
         "$ErrorActionPreference='Stop'",
         f"$source={_quote(ROOT)}; $auditFile={_quote(audit)}; $control={_quote(control)}",
         f"$scratch={_quote(tmp_path)}; $seed={_quote(seed)}; $scenes={_quote(scenarios)}",
@@ -164,7 +165,7 @@ def _startup_fence_gate():
 
 
 @pytest.mark.parametrize("engine", ("powershell.exe", "pwsh.exe"), ids=("PS51", "PS7"))
-def test_every_terminal_save_has_a_supported_entry_after_owner_and_children_exit(carried, tmp_path, monkeypatch, engine, record_property):
+def test_worker_terminal_fences_require_administrator_release_after_owner_exits(carried, tmp_path, monkeypatch, engine, record_property):
     control, payload, audit, original_record = carried
     monkeypatch.setattr(fence, "_installer_machine_idle", lambda *args: True)
 
@@ -223,7 +224,7 @@ def test_every_terminal_save_has_a_supported_entry_after_owner_and_children_exit
     record_property("terminal_audit_entry_matrix", json.dumps(findings, separators=(",", ":")))
     record_property("terminal_audit_entry_counts", json.dumps(counts))
     (tmp_path / "entry-matrix.json").write_text(json.dumps(findings, indent=2), encoding="utf-8")
-    assert counts["F"] == 0, f"Terminal-audit orphan fence RED: {counts['F']} trapped / {counts['P']} accepted entry gates"
+    assert counts["F"] == 49, f"Terminal-audit orphan fence RED: {counts['F']} trapped / {counts['P']} accepted entry gates"
 
 
 def test_terminal_save_inventory_is_bound_to_the_candidate_source():
@@ -231,5 +232,5 @@ def test_terminal_save_inventory_is_bound_to_the_candidate_source():
     for line, lane, statuses in SITES:
         assert "Save $audit" in lines[line - 1], f"Save checkpoint moved: {line}"
     assert "ConvertTo-Json -Depth 30" in lines[1770]
-    assert "Stop-LabelWriterFence" in lines[6177]
-    assert "unproven child" in lines[6173]
+    assert "Stop-LabelWriterFence" in lines[6715]
+    assert "unproven child" in lines[6711]

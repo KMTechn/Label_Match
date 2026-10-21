@@ -4883,6 +4883,529 @@ function Invoke-LabelGenerationRefusalRecovery {
     }
 }
 
+function Get-LabelOrphanValue($Value,[string]$Name) {
+    if($null -eq $Value){return $null}
+    if($Value -is [Collections.IDictionary]){return $Value[$Name]}
+    $property=$Value.PSObject.Properties[$Name]
+    if($null -ne $property){return $property.Value}
+    return $null
+}
+
+function Initialize-LabelOrphanNative {
+    if('LabelOrphanNative' -as [type]){return}
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class LabelOrphanNative {
+ [StructLayout(LayoutKind.Sequential)] struct FileInfo {
+  public uint Attributes, CreatedLow, CreatedHigh, AccessedLow, AccessedHigh, WrittenLow, WrittenHigh;
+  public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+ }
+ [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+ [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr process,out long created,out long exited,out long kernel,out long user);
+ [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle,uint timeout);
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+ [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetFileInformationByHandle(IntPtr file,out FileInfo info);
+ public static bool Exited(uint pid,ulong birth) {
+  if(pid==0 || birth==0) return false;
+  IntPtr h=OpenProcess(0x00101000,false,pid);
+  if(h==IntPtr.Zero) return Marshal.GetLastWin32Error()==87;
+  try { long c,e,k,u; return GetProcessTimes(h,out c,out e,out k,out u) &&
+    unchecked((ulong)c)==birth && WaitForSingleObject(h,0)==0; }
+  finally { CloseHandle(h); }
+ }
+ public static bool SingleLink(IntPtr file) {
+  FileInfo info; return GetFileInformationByHandle(file,out info) && info.Links==1;
+ }
+ public static ulong Created(uint pid) {
+  IntPtr h=OpenProcess(0x001000,false,pid); if(h==IntPtr.Zero) return 0;
+  try { long c,e,k,u; return GetProcessTimes(h,out c,out e,out k,out u) ? unchecked((ulong)c) : 0; }
+  finally { CloseHandle(h); }
+ }
+}
+'@
+}
+
+function Assert-LabelOrphanProtectedPath([string]$Path,[string]$MachineRoot='') {
+    $programData=[IO.Path]::GetFullPath([Environment]::GetFolderPath('CommonApplicationData')).TrimEnd('\')
+    $leaf=$true
+    for($part=$Path;$part;$part=[IO.Path]::GetDirectoryName($part)){
+        $item=Get-Item -LiteralPath $part -Force -ErrorAction Stop
+        if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'ORPHAN_PROTECTED_REPARSE'}
+        $acl=Get-Acl -LiteralPath $part -ErrorAction Stop
+        $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if($owner -cnotin @('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')){throw 'ORPHAN_PROTECTED_OWNER'}
+        $mask=if($leaf){0x500D0156}else{0x500D0150}
+        if($MachineRoot){
+            if([StringComparer]::OrdinalIgnoreCase.Equals($part.TrimEnd('\'),$programData) -or $programData.StartsWith($part.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){$mask=0}
+            elseif([StringComparer]::OrdinalIgnoreCase.Equals($part,$MachineRoot) -or $part.StartsWith($MachineRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){
+                if([StringComparer]::OrdinalIgnoreCase.Equals($part,$MachineRoot) -and -not $acl.AreAccessRulesProtected){throw 'ORPHAN_MACHINE_DACL'}
+            }else{$mask=0x500D0040}
+        }
+        $descriptor=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0)
+        if($mask -and $null -eq $descriptor.DiscretionaryAcl){throw 'ORPHAN_PROTECTED_NULL_DACL'}
+        foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){
+            if($rule.AccessControlType -eq 'Allow' -and
+                ($leaf -or -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) -and
+                $rule.IdentityReference.Value -cnotin @('S-1-5-18','S-1-5-32-544') -and
+                ([long]$rule.FileSystemRights -band $mask)){throw 'ORPHAN_PROTECTED_MUTABLE'}
+        }
+        $leaf=$false
+    }
+}
+
+function Read-LabelOrphanJson([string]$Path) {
+    for($part=$Path;$part;$part=[IO.Path]::GetDirectoryName($part)){
+        if([IO.File]::GetAttributes($part) -band [IO.FileAttributes]::ReparsePoint){throw 'ORPHAN_RECORD_REPARSE'}
+    }
+    $stream=[IO.File]::Open($Path,'Open','Read','Read')
+    try {
+        Initialize-LabelOrphanNative
+        if($stream.Length -lt 1 -or $stream.Length -gt 1048576 -or
+            -not [LabelOrphanNative]::SingleLink($stream.SafeFileHandle.DangerousGetHandle())){throw 'ORPHAN_RECORD_INVALID'}
+        [byte[]]$bytes=([IO.BinaryReader]::new($stream)).ReadBytes([int]$stream.Length)
+        $options=@{}
+        if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$options.DateKind='String'}
+        return ([Text.UTF8Encoding]::new($false,$true)).GetString($bytes).TrimStart([char]0xFEFF)|ConvertFrom-Json @options
+    }finally{$stream.Dispose()}
+}
+
+function Get-LabelOrphanTuple($Record) {
+    $tuple=[ordered]@{}
+    foreach($name in @('session_id','attempt_id','replacement_transaction_id','writer_inventory_sha256','orchestrator_sha256','writer_contract_sha256','session_started_at_utc')){
+        $value=Get-LabelOrphanValue $Record $name
+        if($value -isnot [string]){throw 'ORPHAN_TUPLE_INVALID'}
+        if($name -ceq 'session_started_at_utc'){
+            [void][DateTimeOffset]::Parse($value,[Globalization.CultureInfo]::InvariantCulture)
+        }elseif($value -cnotmatch $(if($name -cin @('session_id','attempt_id','replacement_transaction_id')){'^[0-9a-f]{32}$'}else{'^[0-9a-f]{64}$'})){
+            throw 'ORPHAN_TUPLE_INVALID'
+        }
+        $tuple[$name]=$value
+    }
+    return $tuple
+}
+
+function Get-LabelOrphanProcessRows {
+    return @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+}
+
+function Expand-LabelOrphanCommand([string]$Command) {
+    $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $texts=[Collections.Generic.List[string]]::new()
+    [void]$seen.Add($Command);$texts.Add($Command)
+    $encodings=@([Text.UTF8Encoding]::new($false,$true),[Text.UnicodeEncoding]::new($false,$false,$true))
+    for($index=0;$index -lt $texts.Count;$index++){
+        foreach($literal in [regex]::Matches($texts[$index],'[''"]([A-Za-z0-9+/]+={0,2})[''"]')){
+            try{[byte[]]$bytes=[Convert]::FromBase64String($literal.Groups[1].Value)}catch{continue}
+            foreach($encoding in $encodings){
+                try{$decoded=$encoding.GetString($bytes)}catch{continue}
+                if($decoded -and $seen.Add($decoded)){$texts.Add($decoded)}
+            }
+        }
+    }
+    return [string]::Join(' ',$texts.ToArray())
+}
+
+function Get-LabelOrphanCensus($Owner,$Audit,[string]$AuditPath) {
+    $needles=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach($value in @($install,(Split-Path -Parent $install),$source,(Split-Path -Parent $AuditPath),$Owner.attempt_id,$Owner.replacement_transaction_id)){
+        if($value){[void]$needles.Add([string]$value)}
+    }
+    $pending=[Collections.Generic.Queue[object]]::new();$pending.Enqueue($Audit)
+    $children=@()
+    while($pending.Count){
+        $value=$pending.Dequeue()
+        if($null -eq $value -or $value -is [string] -or $value -is [ValueType]){continue}
+        if($value -is [Array]){foreach($element in $value){if($null -ne $element){$pending.Enqueue($element)}};continue}
+        foreach($property in $value.PSObject.Properties){
+            if($property.Value -is [string] -and $property.Name -match '(?i)(source|staging|helper|guardian).*(root|path)$' -and [IO.Path]::IsPathRooted($property.Value)){
+                [void]$needles.Add($property.Value)
+            }elseif($null -ne $property.Value -and $property.Value -isnot [string] -and $property.Value -isnot [ValueType]){$pending.Enqueue($property.Value)}
+        }
+        foreach($prefix in @('child','helper')){
+            $childId=Get-LabelOrphanValue $value ($prefix+'_process_id')
+            $childBirth=Get-LabelOrphanValue $value ($prefix+'_process_started_at_filetime')
+            if($null -ne $childId -or $null -ne $childBirth){
+                if($childId -notmatch '^[1-9][0-9]*$' -or $childBirth -notmatch '^[1-9][0-9]*$'){throw 'ORPHAN_CHILD_IDENTITY_UNREADABLE'}
+                $children+=@{id=[long]$childId;birth=[long]$childBirth}
+            }
+        }
+    }
+    # Placement result files retain the child's native identity after a dead
+    # guardian. Do not execute a guardian or decode any record as commands.
+    $auditRoot=Split-Path -Parent $AuditPath
+    $resultLocations=@(@{root=$auditRoot;prefix=('canonical-portable-'+$Owner.run_id)})
+    $elevation=[string](Get-LabelOrphanValue $Audit 'elevation_log_path')
+    if($elevation){
+        $elevation=Full $elevation 'orphan elevation evidence'
+        $resultLocations+=@{root=(Split-Path -Parent $elevation);prefix=([IO.Path]::GetFileName($elevation))}
+    }
+    $resultFiles=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach($location in $resultLocations){
+        foreach($file in @(Get-ChildItem -LiteralPath $location.root -File -Filter ($location.prefix+'*') -ErrorAction Stop)){
+            if($file.Name -match '-guardian-[0-9a-f]{32}\.[0-9]+\.json$'){[void]$resultFiles.Add($file.FullName)}
+        }
+    }
+    foreach($file in $resultFiles){
+        $result=Read-LabelOrphanJson $file
+        if((Get-LabelOrphanValue $result 'schema') -cne 'label-placement-session-result-v1' -or
+            (Get-LabelOrphanValue $result 'transaction_id') -cne $Owner.replacement_transaction_id){throw 'ORPHAN_CHILD_RESULT_DIFFERS'}
+        $childId=Get-LabelOrphanValue $result 'child_process_id'
+        $childBirth=Get-LabelOrphanValue $result 'child_process_started_at_filetime'
+        if($childId -notmatch '^[1-9][0-9]*$' -or $childBirth -notmatch '^[1-9][0-9]*$'){throw 'ORPHAN_CHILD_IDENTITY_UNREADABLE'}
+        $children+=@{id=[long]$childId;birth=[long]$childBirth}
+    }
+    foreach($child in $children){
+        if($child.id -gt [uint32]::MaxValue -or -not [LabelOrphanNative]::Exited([uint32]$child.id,[uint64]$child.birth)){throw 'ORPHAN_CHILD_NOT_DEAD'}
+    }
+    $rows=@(Get-LabelOrphanProcessRows)
+    $related=[Collections.Generic.HashSet[long]]::new()
+    $births=@{}
+    foreach($row in $rows){
+        $processId=[long]$row.ProcessId
+        $imageName=[string]$row.Name
+        $possible=$imageName -match '^(?i:powershell|pwsh|pythonw?|Label_Match|.*relay.*|.*bootstrap.*)(?:\.exe)?$'
+        $image=[string]$row.ExecutablePath;$command=[string]$row.CommandLine
+        $created=0L
+        try {if($null -ne $row.CreationDate){$created=([DateTime]$row.CreationDate).ToUniversalTime().ToFileTimeUtc()}}catch{}
+        if($processId -eq $PID){
+            if($created -le 0 -or [LabelOrphanNative]::Created([uint32]$processId) -ne [uint64][Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc()){throw 'ORPHAN_CENSUS_SELF_UNREADABLE'}
+            continue
+        }
+        if($processId -le 0){
+            if($possible -or $image -or $command){throw 'ORPHAN_CENSUS_UNREADABLE'}
+            continue
+        }
+        if($possible -and (-not $image -or -not $command -or $created -le 0)){throw 'ORPHAN_CENSUS_UNREADABLE'}
+        if($command -match '(?i)-(?:EncodedCommand|EncodedC|Encoded|Enco|Enc|En|E)\s+([A-Za-z0-9+/=]+)'){
+            try{$command+=' '+[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))}catch{throw 'ORPHAN_CENSUS_UNREADABLE'}
+        }
+        $command=Expand-LabelOrphanCommand $command
+        $births[$processId]=$created
+        foreach($needle in $needles){
+            if($image.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or $command.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -ge 0){[void]$related.Add($processId);break}
+        }
+        if($processId -eq [long]$Owner.owner_process_id){
+            if([LabelOrphanNative]::Created([uint32]$processId) -ne [uint64]$Owner.owner_process_started_at_filetime){throw 'ORPHAN_OWNER_PID_REUSED'}
+            [void]$related.Add($processId)
+        }
+        foreach($child in $children){
+            if($processId -eq $child.id){
+                if([LabelOrphanNative]::Created([uint32]$processId) -ne [uint64]$child.birth){throw 'ORPHAN_CHILD_PID_REUSED'}
+                [void]$related.Add($processId)
+            }
+        }
+        if([long]$row.ParentProcessId -eq [long]$Owner.owner_process_id -and
+            ($created -le 0 -or $created -ge [long]$Owner.owner_process_started_at_filetime)){[void]$related.Add($processId)}
+        foreach($child in $children){
+            if([long]$row.ParentProcessId -eq $child.id -and ($created -le 0 -or $created -ge $child.birth)){[void]$related.Add($processId)}
+        }
+    }
+    do {
+        $changed=$false
+        foreach($row in $rows){
+            $id=[long]$row.ProcessId;$parent=[long]$row.ParentProcessId
+            if($id -ne $PID -and $related.Contains($parent) -and $births.ContainsKey($parent) -and $births.ContainsKey($id) -and
+                ($births[$id] -le 0 -or $births[$parent] -le 0 -or $births[$id] -ge $births[$parent])){
+                if($related.Add($id)){$changed=$true}
+            }
+        }
+    }while($changed)
+    if($related.Count){throw 'ORPHAN_CENSUS_RELATED_ALIVE'}
+    return [ordered]@{method='CIM Win32_Process/native FILETIME';related_alive=0;unreadable_related=0}
+}
+
+function Get-LabelOrphanCode($Audit) {
+    $transition=Get-LabelOrphanValue $Audit 'writer_transition'
+    $candidate=[string](Get-LabelOrphanValue $transition 'candidate_portable_inventory_sha256')
+    $installed=[string](Get-LabelOrphanValue $transition 'installed_portable_inventory_sha256')
+    foreach($hash in @($candidate,$installed)){if($hash -and $hash -cnotmatch '^[0-9a-f]{64}$'){throw 'ORPHAN_INVENTORY_PIN_INVALID'}}
+    $preimage=[string](Get-LabelOrphanValue $Audit 'code_preimage')
+    if(($preimage -ceq 'PRESENT' -and -not $installed) -or ($preimage -ceq 'ABSENT' -and $installed)){throw 'ORPHAN_PREIMAGE_DIFFERS'}
+    $values=Get-LabelOrphanValue (Get-LabelOrphanValue $Audit 'recovery_context') 'values'
+    foreach($pair in @(@('installedPreimageInventory',$installed),@('receiptSource',$candidate))){
+        $known=[string](Get-LabelOrphanValue (Get-LabelOrphanValue $values $pair[0]) 'sha256')
+        if($known -and $known -cne $pair[1]){throw 'ORPHAN_PREIMAGE_DIFFERS'}
+    }
+    $state=[string](Get-LabelOrphanValue $Audit 'code_state')
+    if($state -cnotin @('','UNKNOWN','PRESENT','ABSENT')){throw 'ORPHAN_CODE_STATE_INVALID'}
+    $rollback=Get-LabelOrphanValue $Audit 'rollback'
+    $applied=Get-LabelOrphanValue $rollback 'applied'
+    if($null -ne $applied -and $applied -isnot [bool]){throw 'ORPHAN_ROLLBACK_STATE_INVALID'}
+    $inventory='';$class='ABSENT'
+    if(Test-Path -LiteralPath $install){
+        $directories=[Collections.Generic.Stack[string]]::new();$directories.Push($install)
+        while($directories.Count){
+            $directory=$directories.Pop()
+            $entry=Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+            if(-not $entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'ORPHAN_CODE_REPARSE'}
+            foreach($entry in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)){
+                if($entry.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'ORPHAN_CODE_REPARSE'}
+                if($entry.PSIsContainer){$directories.Push($entry.FullName)}
+            }
+        }
+        $inventory=[string](PortableInventory $install).sha256
+        $classes=@()
+        if($candidate -and $candidate -ceq $inventory -and -not($applied -eq $true -and (Get-LabelOrphanValue $rollback 'code_restored') -eq $true)){$classes+='CANDIDATE'}
+        if($installed -and $installed -ceq $inventory -and -not($state -ceq 'PRESENT' -and $applied -eq $false)){$classes+='INSTALLED'}
+        if($classes.Count -ne 1){throw 'ORPHAN_CURRENT_INVENTORY_DIFFERS'}
+        $class=[string]$classes[0]
+        if($state -ceq 'ABSENT'){throw 'ORPHAN_CODE_STATE_DIFFERS'}
+        if($class -ceq 'CANDIDATE' -and $applied -eq $true -and (Get-LabelOrphanValue $rollback 'code_restored') -eq $true){throw 'ORPHAN_RESTORED_CODE_DIFFERS'}
+        if($class -ceq 'INSTALLED' -and $state -ceq 'PRESENT' -and $applied -eq $false){throw 'ORPHAN_RETAINED_CODE_DIFFERS'}
+    }elseif($preimage -cne 'ABSENT' -or $state -ceq 'PRESENT'){throw 'ORPHAN_CODE_ABSENCE_DIFFERS'}
+    return [ordered]@{class=$class;inventory_sha256=$inventory}
+}
+
+function Get-LabelOrphanFile([string]$Path) {
+    try {
+        $path=Full $Path 'orphan observation path'
+        for($part=$path;$part;$part=[IO.Path]::GetDirectoryName($part)){
+            if((Test-Path -LiteralPath $part) -and ([IO.File]::GetAttributes($part) -band [IO.FileAttributes]::ReparsePoint)){throw 'ORPHAN_ARTIFACT_REPARSE'}
+        }
+        if(-not(Test-Path -LiteralPath $path)){return [ordered]@{path=$path;exists=$false;kind='ABSENT';sha256=''}}
+        $item=Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if($item.PSIsContainer){return [ordered]@{path=$path;exists=$true;kind='DIRECTORY';sha256=''}}
+        return [ordered]@{path=$path;exists=$true;kind='FILE';sha256=(Sha $path)}
+    }catch{return [ordered]@{path=$Path;exists=$null;kind='UNREADABLE';sha256='';failure_type=$_.Exception.GetType().Name}}
+}
+
+function Assert-LabelOrphanFileSnapshot($Actual,$Expected) {
+    $exists=Get-LabelOrphanValue $Expected 'exists'
+    if($null -ne $exists -and ($exists -isnot [bool] -or $exists -ne $Actual.exists)){throw 'ORPHAN_ARTIFACT_DIFFERS'}
+    $hash=[string](Get-LabelOrphanValue $Expected 'sha256')
+    if($hash -and ($Actual.kind -cne 'FILE' -or $Actual.sha256 -cne $hash)){throw 'ORPHAN_ARTIFACT_DIFFERS'}
+}
+
+function Get-LabelOrphanArtifacts($Audit,[string]$CodeClass) {
+    $expected=Get-LabelOrphanValue $Audit $(if($CodeClass -ceq 'CANDIDATE'){'after'}else{'preimage'})
+    $knownRun=@('exists','kind','data'|Where-Object {$null -ne (Get-LabelOrphanValue $expected $_)})
+    try {
+        $run=Snapshot
+        foreach($name in $knownRun){
+            if((Get-LabelOrphanValue $expected $name) -cne (Get-LabelOrphanValue $run $name)){throw 'ORPHAN_RUN_DIFFERS'}
+        }
+        $runState=[ordered]@{exists=$run.exists;kind=$run.kind;data_sha256=(ByteSha ([Text.Encoding]::UTF8.GetBytes([string]$run.data)))}
+    }catch{
+        if($knownRun.Count){throw 'ORPHAN_RUN_DIFFERS'}
+        $runState=[ordered]@{exists=$null;kind='UNREADABLE';failure_type=$_.Exception.GetType().Name}
+    }
+    $observations=[ordered]@{run=$runState}
+    $stopPath=[string](Get-LabelOrphanValue $Audit 'stop_marker_path')
+    if(-not $stopPath){$stopPath=$stop}
+    $observations.stop=Get-LabelOrphanFile $stopPath
+    $stopAbsent=Get-LabelOrphanValue $Audit 'stop_marker_absent'
+    if($null -ne $stopAbsent -and ($stopAbsent -isnot [bool] -or $null -eq $observations.stop.exists -or $stopAbsent -ne (-not $observations.stop.exists))){throw 'ORPHAN_STOP_DIFFERS'}
+    if($CodeClass -cne 'CANDIDATE'){Assert-LabelOrphanFileSnapshot $observations.stop (Get-LabelOrphanValue $Audit 'stop_marker_preimage')}
+    $expectedTask=if($CodeClass -cne 'CANDIDATE'){Get-LabelOrphanValue $Audit 'scheduled_task_preimage'}else{$null}
+    $knownTask=@('exists','enabled','xml_sha256'|Where-Object {$null -ne (Get-LabelOrphanValue $expectedTask $_)})
+    try {
+        $task=Get-LabelCurrentUserScheduledTasks
+        $taskState=[ordered]@{exists=($null -ne $task);enabled=$false;xml_sha256=''}
+        if($null -ne $task){$taskState.enabled=[bool]$task.Settings.Enabled;$taskState.xml_sha256=ByteSha ([Text.Encoding]::UTF8.GetBytes([string](Export-ScheduledTask -TaskName $CanonicalTaskName -TaskPath '\' -ErrorAction Stop)))}
+        foreach($name in $knownTask){if((Get-LabelOrphanValue $expectedTask $name) -cne $taskState[$name]){throw 'ORPHAN_TASK_DIFFERS'}}
+    }catch{
+        if($knownTask.Count){throw 'ORPHAN_TASK_DIFFERS'}
+        $taskState=[ordered]@{exists=$null;failure_type=$_.Exception.GetType().Name}
+    }
+    $observations.task=$taskState
+    $pendingPath=Join-Path (Split-Path -Parent $install) 'update-control/worker-pending.json'
+    $observations.worker_pending=Get-LabelOrphanFile $pendingPath
+    $pending=Get-LabelOrphanValue $Audit 'worker_pending'
+    if($null -ne $pending){
+        $knownPath=[string](Get-LabelOrphanValue $pending 'path')
+        if($observations.worker_pending.kind -cne 'FILE' -or ($knownPath -and -not(Same $knownPath $pendingPath))){throw 'ORPHAN_PENDING_DIFFERS'}
+        $currentPending=Read-LabelOrphanJson $pendingPath
+        foreach($name in @('install_id','inventory_sha256')){
+            $known=Get-LabelOrphanValue $pending $name
+            if($null -ne $known -and $known -cne (Get-LabelOrphanValue $currentPending $name)){throw 'ORPHAN_PENDING_DIFFERS'}
+        }
+    }
+    $observations.shortcuts=@()
+    $shortcut=Get-LabelOrphanValue $Audit 'machine_shortcut'
+    $published=Get-LabelOrphanValue (Get-LabelOrphanValue $Audit 'shortcuts') 'published'
+    foreach($entry in @($shortcut)+@($published)){
+        if($null -eq $entry){continue}
+        $path=[string](Get-LabelOrphanValue $entry 'path')
+        if(-not $path){continue}
+        $actual=Get-LabelOrphanFile $path
+        if($actual.kind -cne 'FILE'){throw 'ORPHAN_SHORTCUT_DIFFERS'}
+        $hash=[string](Get-LabelOrphanValue $entry 'sha256')
+        if($hash -and $hash -cne $actual.sha256){throw 'ORPHAN_SHORTCUT_DIFFERS'}
+        $observations.shortcuts+=,$actual
+    }
+    return $observations
+}
+
+function Save-LabelOrphanRelease([string]$Path,$Record) {
+    for($part=(Split-Path -Parent $Path);$part;$part=[IO.Path]::GetDirectoryName($part)){
+        if([IO.File]::GetAttributes($part) -band [IO.FileAttributes]::ReparsePoint){throw 'ORPHAN_RELEASE_REPARSE'}
+    }
+    $temporary=$Path+'.tmp.'+[Guid]::NewGuid().ToString('N')
+    $stream=$null
+    try {
+        $stream=[IO.File]::Open($temporary,'CreateNew','Write','None')
+        [byte[]]$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Record|ConvertTo-Json -Depth 20)+[Environment]::NewLine)
+        $stream.Write($bytes,0,$bytes.Length);$stream.Flush($true);$stream.Dispose();$stream=$null
+        if(Test-Path -LiteralPath $Path){[void](Read-LabelOrphanJson $Path);Invoke-LabelPinnedAtomicReplace $temporary $Path -Mode Replace}
+        else{Invoke-LabelPinnedAtomicReplace $temporary $Path -Mode Move}
+        if((Sha $Path) -cne (ByteSha $bytes)){throw 'ORPHAN_RELEASE_READBACK_DIFFERS'}
+    }finally{if($null -ne $stream){$stream.Dispose()};if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -ErrorAction Stop}}
+}
+
+function Test-LabelOrphanReleaseCandidate($Saved,[string]$AuditPath) {
+    if(Test-Path -LiteralPath (Join-Path $writerFenceControlRoot 'active.json')){return $true}
+    $run=[string](Get-LabelOrphanValue $Saved 'run_id')
+    if($run -cmatch '^[0-9]{8}T[0-9]{9}Z-[0-9a-f]{32}$'){
+        $machine=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ('KMTech/Label_Match/install-audit/machine-writer-'+$run+'/active.json')
+        if(Test-Path -LiteralPath $machine){return $true}
+    }
+    $attempt=[string](Get-LabelOrphanValue (Get-LabelOrphanValue $Saved 'writer_fence') 'attempt_id')
+    if($attempt -cmatch '^[0-9a-f]{32}$' -and
+        (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $AuditPath) ('orphan-fence-release-'+$attempt+'.json')))){return $true}
+    return $false
+}
+
+function Assert-LabelOrphanReleaseFormat($Record) {
+    $strings=@('schema','attempt_id','session_id','replacement_transaction_id','audit_path','audit_sha256','audit_status',
+        'observed_code_class','observed_inventory_sha256','owner_created_at','owner_dead_proven_at_utc','fence_tuple_sha256','entry','state','released_at_utc')
+    foreach($name in $strings){if((Get-LabelOrphanValue $Record $name) -isnot [string]){throw 'ORPHAN_RELEASE_RECORD_INVALID'}}
+    $pidValue=Get-LabelOrphanValue $Record 'owner_pid'
+    if(($pidValue -isnot [int] -and $pidValue -isnot [long]) -or $pidValue -le 0){throw 'ORPHAN_RELEASE_RECORD_INVALID'}
+    $census=Get-LabelOrphanValue $Record 'census'
+    if((Get-LabelOrphanValue $census 'method') -isnot [string] -or [string]::IsNullOrWhiteSpace($census.method)){throw 'ORPHAN_RELEASE_RECORD_INVALID'}
+    foreach($name in @('related_alive','unreadable_related')){
+        $count=Get-LabelOrphanValue $census $name
+        if(($count -isnot [int] -and $count -isnot [long]) -or $count -ne 0){throw 'ORPHAN_RELEASE_RECORD_INVALID'}
+    }
+    $hash=Get-LabelOrphanValue $Record 'observed_fence_sha256'
+    if($null -ne $hash -and ($hash -isnot [string] -or $hash -cnotmatch '^[0-9a-f]{64}$')){throw 'ORPHAN_RELEASE_RECORD_INVALID'}
+    $observations=Get-LabelOrphanValue $Record 'observations'
+    if($null -ne $observations -and $observations -isnot [Collections.IDictionary] -and $observations -isnot [pscustomobject]){throw 'ORPHAN_RELEASE_RECORD_INVALID'}
+}
+
+function Invoke-LabelOrphanFenceRelease($Saved,[string]$AuditPath,[string]$AuditSha256) {
+    $ownerTuple=Get-LabelOrphanTuple (Get-LabelOrphanValue $Saved 'writer_fence')
+    $run=[string](Get-LabelOrphanValue $Saved 'run_id')
+    if($run -cnotmatch '^[0-9]{8}T[0-9]{9}Z-[0-9a-f]{32}$' -or
+        [IO.Path]::GetFileName($AuditPath) -cne ('canonical-portable-'+$run+'.json')){throw 'ORPHAN_AUDIT_IDENTITY'}
+    $ownerPath=Join-Path (Split-Path -Parent $install) ('.installer-owner-'+$ownerTuple.session_id+'-'+($run -split '-')[-1]+'.json')
+    Assert-LabelOrphanProtectedPath $ownerPath
+    $ownerHandle=[IO.File]::Open($ownerPath,'Open','Read','Read')
+    $authority=$null;$admission=$null
+    $oldProduction=$Script:LabelWriterFenceAdmissionProductionRoot
+    $oldIdentity=$Script:LabelWriterFenceInstalledIdentity
+    try {
+        $owner=Read-LabelOrphanJson $ownerPath
+        $tupleJson=$ownerTuple|ConvertTo-Json -Compress
+        if($owner.schema -cne 'label-match-installer-owner-v1' -or $owner.run_id -cne $run -or
+            -not(Same $owner.install_root $install) -or ((Get-LabelOrphanTuple $owner)|ConvertTo-Json -Compress) -cne $tupleJson){throw 'ORPHAN_OWNER_BINDING_DIFFERS'}
+        foreach($name in @('owner_process_id','owner_process_started_at_filetime')){
+            if((Get-LabelOrphanValue $Saved.writer_fence $name) -cne (Get-LabelOrphanValue $owner $name)){throw 'ORPHAN_OWNER_IDENTITY_DIFFERS'}
+        }
+        $control=Full ([string]$owner.control_root) 'orphan fence root'
+        $machine=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ('KMTech/Label_Match/install-audit/machine-writer-'+$run)
+        if(-not(Same $control $writerFenceControlRoot) -and -not(Same $control $machine)){throw 'ORPHAN_CONTROL_ROOT_DIFFERS'}
+        $Script:LabelWriterFenceAdmissionProductionRoot=$control
+        $Script:LabelWriterFenceInstalledIdentity=[pscustomobject]@{session_id=$ownerTuple.session_id;attempt_id=$ownerTuple.attempt_id;
+            replacement_transaction_id=$ownerTuple.replacement_transaction_id;orchestrator_sha256=$ownerTuple.orchestrator_sha256;
+            writer_contract_sha256=$ownerTuple.writer_contract_sha256;inventory_sha256=$ownerTuple.writer_inventory_sha256}
+        $authority=Enter-LabelWriterSessionAuthority $ownerTuple.session_id $ownerTuple.attempt_id $ownerTuple.orchestrator_sha256 $ownerTuple.replacement_transaction_id $ownerTuple.writer_contract_sha256
+        foreach($candidateOwner in @(Get-ChildItem -LiteralPath (Split-Path -Parent $ownerPath) -File -Filter ('.installer-owner-'+$ownerTuple.session_id+'-*.json') -ErrorAction Stop)){
+            if(Same $candidateOwner.FullName $ownerPath){continue}
+            Assert-LabelOrphanProtectedPath $candidateOwner.FullName
+            $otherOwner=Read-LabelOrphanJson $candidateOwner.FullName
+            if(((Get-LabelOrphanTuple $otherOwner)|ConvertTo-Json -Compress) -ceq $tupleJson){throw 'ORPHAN_OWNER_AMBIGUOUS'}
+        }
+        $active=Read-LabelWriterFence $control -AllowAbsent
+        $path=Join-Path $control 'active.json'
+        if((Same $control $machine) -and $null -ne $active){Assert-LabelOrphanProtectedPath $path $control}
+        $releasePath=Join-Path (Split-Path -Parent $AuditPath) ('orphan-fence-release-'+$ownerTuple.attempt_id+'.json')
+        $tupleHash=ByteSha ([Text.Encoding]::UTF8.GetBytes($tupleJson))
+        $release=$null
+        if(Test-Path -LiteralPath $releasePath){
+            $release=Read-LabelOrphanJson $releasePath
+            Assert-LabelOrphanReleaseFormat $release
+            if($release.schema -cne 'label-orphan-fence-release-v1' -or $release.attempt_id -cne $ownerTuple.attempt_id -or
+                $release.session_id -cne $ownerTuple.session_id -or $release.replacement_transaction_id -cne $ownerTuple.replacement_transaction_id -or
+                $release.audit_sha256 -cne $AuditSha256 -or $release.audit_status -cne $Saved.status -or -not(Same $release.audit_path $AuditPath) -or
+                $release.fence_tuple_sha256 -cne $tupleHash -or $release.entry -cne '-ResumeRollbackAuditPath' -or
+                $release.state -cnotin @('RELEASING','RELEASED')){throw 'ORPHAN_RELEASE_BINDING_DIFFERS'}
+            if($release.owner_pid -ne $owner.owner_process_id -or $release.owner_created_at -cne [string]$owner.owner_process_started_at_filetime -or
+                $release.observed_code_class -cnotin @('CANDIDATE','INSTALLED','ABSENT') -or
+                ($release.observed_code_class -cne 'ABSENT' -and $release.observed_inventory_sha256 -cnotmatch '^[0-9a-f]{64}$') -or
+                ($release.observed_code_class -ceq 'ABSENT' -and $release.observed_inventory_sha256 -cne '') -or
+                [string]::IsNullOrWhiteSpace($release.owner_dead_proven_at_utc) -or
+                [string]::IsNullOrWhiteSpace($release.census.method) -or $release.census.related_alive -ne 0 -or $release.census.unreadable_related -ne 0){throw 'ORPHAN_RELEASE_RECORD_INVALID'}
+            [void][DateTimeOffset]::Parse([string]$release.owner_dead_proven_at_utc,[Globalization.CultureInfo]::InvariantCulture)
+            if($release.state -ceq 'RELEASED'){
+                if($null -ne $active){throw 'ORPHAN_RELEASE_FENCE_RETURNED'}
+                if([string]::IsNullOrWhiteSpace($release.released_at_utc)){throw 'ORPHAN_RELEASE_RECORD_INVALID'}
+                [void][DateTimeOffset]::Parse([string]$release.released_at_utc,[Globalization.CultureInfo]::InvariantCulture)
+                return
+            }
+        }
+        if($null -eq $active -and $null -eq $release){throw 'ORPHAN_SELF_FENCE_ABSENT'}
+        $original=''
+        if($null -ne $active){
+            if((Get-LabelOrphanTuple $active|ConvertTo-Json -Compress) -cne $tupleJson){throw 'ORPHAN_FENCE_BINDING_DIFFERS'}
+            $original=Sha $path
+            if($null -ne $release -and $null -ne (Get-LabelOrphanValue $release 'observed_fence_sha256') -and $release.observed_fence_sha256 -cne $original){throw 'ORPHAN_RELEASING_FENCE_DIFFERS'}
+        }
+        Initialize-LabelOrphanNative
+        $ownerId=Get-LabelOrphanValue $owner 'owner_process_id';$birth=[string](Get-LabelOrphanValue $owner 'owner_process_started_at_filetime')
+        if(($ownerId -isnot [int] -and $ownerId -isnot [long]) -or $ownerId -le 0 -or $ownerId -gt [uint32]::MaxValue -or
+            $birth -cnotmatch '^[1-9][0-9]{0,18}$' -or -not [LabelOrphanNative]::Exited([uint32]$ownerId,[uint64]$birth)){throw 'ORPHAN_OWNER_NOT_DEAD'}
+        $census=Get-LabelOrphanCensus $owner $Saved $AuditPath
+        $code=Get-LabelOrphanCode $Saved
+        $artifacts=Get-LabelOrphanArtifacts $Saved $code.class
+        if($null -eq $release){
+            $release=[ordered]@{schema='label-orphan-fence-release-v1';attempt_id=$ownerTuple.attempt_id;session_id=$ownerTuple.session_id;
+                replacement_transaction_id=$ownerTuple.replacement_transaction_id;audit_path=$AuditPath;audit_sha256=$AuditSha256;audit_status=$Saved.status;
+                observed_code_class=$code.class;observed_inventory_sha256=$code.inventory_sha256;owner_pid=$ownerId;owner_created_at=$birth;
+                owner_dead_proven_at_utc=[DateTime]::UtcNow.ToString('o');census=$census;fence_tuple_sha256=$tupleHash;
+                observed_fence_sha256=$original;entry='-ResumeRollbackAuditPath';state='RELEASING';released_at_utc='';observations=$artifacts}
+            # K11: census, inventory and artifact observation stay outside writer admission.
+            $admission=Enter-LabelWriterAdmission $control
+            try {
+                if((Sha $AuditPath) -cne $AuditSha256 -or
+                    (Sha $path) -cne $original -or (Get-LabelOrphanTuple (Read-LabelWriterFence $control)|ConvertTo-Json -Compress) -cne $tupleJson){throw 'ORPHAN_RELEASE_PROOF_CHANGED'}
+                Save-LabelOrphanRelease $releasePath $release
+            }finally{Exit-LabelWriterAdmission $admission;$admission=$null}
+        }else{
+            if($release.observed_code_class -cne $code.class -or $release.observed_inventory_sha256 -cne $code.inventory_sha256 -or
+                $release.owner_pid -ne $ownerId -or $release.owner_created_at -cne $birth){throw 'ORPHAN_RELEASING_RESULT_DIFFERS'}
+        }
+        [void](Get-LabelOrphanCensus $owner $Saved $AuditPath)
+        $current=Get-LabelOrphanCode $Saved
+        if($current.class -cne $code.class -or $current.inventory_sha256 -cne $code.inventory_sha256 -or
+            (Sha $AuditPath) -cne $AuditSha256){throw 'ORPHAN_RELEASE_PROOF_CHANGED'}
+        $artifacts=Get-LabelOrphanArtifacts $Saved $code.class
+        if($release -is [Collections.IDictionary]){$release.observations=$artifacts}
+        else{$release|Add-Member -NotePropertyName observations -NotePropertyValue $artifacts -Force}
+        $admission=Enter-LabelWriterAdmission $control
+        if((Sha $AuditPath) -cne $AuditSha256){throw 'ORPHAN_RELEASE_PROOF_CHANGED'}
+        if($null -ne $active){
+            if((Sha $path) -cne $original -or (Get-LabelOrphanTuple (Read-LabelWriterFence $control)|ConvertTo-Json -Compress) -cne $tupleJson){throw 'ORPHAN_FENCE_CHANGED'}
+            Remove-Item -LiteralPath $path -ErrorAction Stop
+        }
+        if(Test-Path -LiteralPath $path){throw 'ORPHAN_FENCE_ABSENCE_UNPROVEN'}
+        if($release -is [Collections.IDictionary]){$release.state='RELEASED';$release.released_at_utc=[DateTime]::UtcNow.ToString('o')}
+        else{$release.state='RELEASED';$release.released_at_utc=[DateTime]::UtcNow.ToString('o')}
+        Save-LabelOrphanRelease $releasePath $release
+    }finally{
+        try{if($null -ne $admission){Exit-LabelWriterAdmission $admission}}
+        finally{
+            try{if($null -ne $authority){Exit-LabelWriterSessionAuthority $authority}}
+            finally{
+                $Script:LabelWriterFenceAdmissionProductionRoot=$oldProduction
+                $Script:LabelWriterFenceInstalledIdentity=$oldIdentity
+                $ownerHandle.Dispose()
+            }
+        }
+    }
+}
+
 function Invoke-LabelResumeRollback {
     if ($PlanOnly -or [string]::IsNullOrWhiteSpace($ExpectedRollbackAuditSha256)) { throw 'Supported rollback resume requires the exact audit SHA256.' }
     if (-not $testMode -and -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -4895,6 +5418,21 @@ function Invoke-LabelResumeRollback {
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 1048576 -or
         $ExpectedRollbackAuditSha256 -cnotmatch '^[0-9a-f]{64}$' -or (Sha $auditPath) -cne $ExpectedRollbackAuditSha256) { throw 'Rollback audit pin/ordinary-file check failed.' }
     $saved = Get-Content -LiteralPath $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    # Terminal evidence has a separate, administrator-only fence exit. A
+    # failure without a residual fence retains the existing rollback-resume path.
+    if ([string]$saved.schema -ceq 'label-match-canonical-portable-install-v1' -and
+        [string]$saved.status -cin @('RECOVERY_REQUIRED','ROLLBACK_FAILED','FAILED_ROLLBACK_INCOMPLETE') -and
+        (Test-LabelOrphanReleaseCandidate $saved $auditPath)) {
+        if (-not (Same ([string]$saved.install_root) $install)) { throw 'ORPHAN_INSTALL_ROOT_DIFFERS' }
+        $releaseReceipt = ReceiptSource $source $sourceManifest
+        $releaseHelper = Join-Path $source 'tools/label_writer_fence.ps1'
+        [byte[]]$releaseHelperBytes = PinnedFileBytes $releaseHelper ([string]$releaseReceipt.critical_file_sha256.writer_fence_helper)
+        . ([scriptblock]::Create(([Text.Encoding]::UTF8.GetString($releaseHelperBytes)).TrimStart([char]0xFEFF)))
+        $saved = Read-LabelOrphanJson $auditPath
+        Invoke-LabelOrphanFenceRelease $saved $auditPath $ExpectedRollbackAuditSha256
+        $Script:LabelOrphanFenceReleased = $true
+        return
+    }
     if ([string]$saved.schema -cne 'label-match-canonical-portable-install-v1' -or
         [string]$saved.status -cnotin @('ROLLBACK_FAILED','FAILED_ROLLBACK_INCOMPLETE','FAILED_ROLLED_BACK','RUNNING','PREIMAGE_SAVED') -or
         -not (Same ([string]$saved.install_root) $install) -or [string]$saved.source_commit -cne [string]$sourceManifest.source_commit) { throw 'Rollback audit identity/status differs.' }
@@ -6418,8 +6956,9 @@ $onboardingPath = Join-Path $statusRoot 'current_user_onboarding.json'
 $removalPath = Join-Path $statusRoot 'current_user_removal.json'
 $relayPath = Join-Path $statusRoot 'label_match_user_relay.json'
 if ($ResumeRollbackAuditPath) {
+    $Script:LabelOrphanFenceReleased = $false
     . Invoke-LabelResumeRollback
-    'rollback_resume_status=PROVEN'
+    if (-not $Script:LabelOrphanFenceReleased) { 'rollback_resume_status=PROVEN' }
     exit 0
 }
 $generationDowngradeDecision = Assert-LabelDataDowngrade -MarkerPaths $generationMarkerPaths -SubjectSid $generationSubjectSid `

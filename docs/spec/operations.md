@@ -1100,9 +1100,9 @@ capture8의 교정 wrapper 실측은 [동일 사용자 제거 native exit 0](D:/
 - 주인 프로세스가 끝났고(PID가 없거나, 같은 PID의 시작 시각이 기록과 같고 이미 종료) 시작 시각이 다르면 모름으로 거절한다. 세션 권한 뮤텍스를 지금 잡을 수 있다.
 - 쓰는 제품 프로세스(앱·relay·업데이트 도우미)가 없다(`process_snapshot`·`writer_processes`). relay 인스턴스 lease가 비어 있다. 관측 실패·`update-control` 없음은 거절한다.
 
-받는 출처는 실패 상태 때와 같은 `current_user_setup_removal`·`scheduled_task_remove`·`user_relay_autostart_remove`·`user_relay_stop_request` 넷뿐이고 자료는 보존한다(`PASS_DATA_PRESERVED`). 제거가 통과하면 같은 admission 안에서 **그 울타리 하나만** 정리한다. 울타리 바이트를 `writer-session/settled/<sha256>.json`에 정확한 사본으로 두고 되읽어 같음을 확인한 뒤에만 `active.json`을 지우며, 결과를 제거 보고서의 `abandoned_fence_settled`(session·attempt 해시, 사본 해시·경로)에 적는다. 울타리가 중간에 바뀌었거나 사본 되읽기가 다르면 정리하지 않고 제거를 실패로 보고한다. 실패 상태의 울타리는 지원 되돌리기 재개를 위해 지금처럼 남기며 정리하지 않는다. 감사 기록과 보호 주인 기록은 지우지 않는다.
+받는 출처는 실패 상태 때와 같은 `current_user_setup_removal`·`scheduled_task_remove`·`user_relay_autostart_remove`·`user_relay_stop_request` 넷뿐이고 자료는 보존한다(`PASS_DATA_PRESERVED`). 제거가 통과하면 같은 admission 안에서 **그 울타리 하나만** 정리한다. 울타리 바이트를 `writer-session/settled/<sha256>.json`에 정확한 사본으로 두고 되읽어 같음을 확인한 뒤에만 `active.json`을 지우며, 결과를 제거 보고서의 `abandoned_fence_settled`(session·attempt 해시, 사본 해시·경로)에 적는다. 울타리가 중간에 바뀌었거나 사본 되읽기가 다르면 정리하지 않고 제거를 실패로 보고한다. 작업자 지원 제거는 끝·실패 감사의 울타리를 지금처럼 보존한다. RR/RF/FRI의 자기 잔류 울타리는 아래 G104 관리자 지원 입구에서만 증명 뒤 정리한다. 감사 기록과 보호 주인 기록은 지우지 않는다.
 
-**이어 되돌리기가 받는 죽은 시도.** `Invoke-LabelResumeRollback`은 실패 상태에 더해 감사 상태 `RUNNING`·`PREIMAGE_SAVED`이고 `recovery_context`가 있는 죽은 시도(울타리 `QUIESCING`·`INSTALLING`·`RESTORING`)를 받는다. 받기 전에 같은 죽음 증명(보호 주인 기록 = 울타리 튜플, 주인 프로세스 종료·시작 시각 같음, 세션 권한 뮤텍스 잡을 수 있음, 쓰는 제품 프로세스·relay 0, 같은 감사 파일)을 `writer_session_fence.prove_dead_unfinished_installer`로 확인하며 이 증명은 아무것도 바꾸지 않는다. 증명되면 미리 저장된 문맥으로 기존 되돌림(옛 코드를 사전 사본과 같은 바이트로 복원, Run·작업·표지·relay 원복, 울타리 해제)을 한 번 수행해 감사를 `FAILED_ROLLED_BACK`(실패하면 `ROLLBACK_FAILED`)과 단계 기록으로 마감한다. 살아 있는 설치기·시작 시각이 다른 PID·쓰는 프로세스·relay가 있거나 남의 울타리면 거절한다. 이어 되돌리기로 `FAILED_ROLLED_BACK`이 되면 지금 실패 상태 길(지원 사용자 제거·공식 다시 설치)이 그대로 열린다.
+**이어 되돌리기가 받는 죽은 시도.** `Invoke-LabelResumeRollback`은 끝·실패 감사와 자기 잔류 울타리 조합을 아래 G104 정리로 먼저 보낸다. 그 밖의 기존 실패 감사와 감사 상태 `RUNNING`·`PREIMAGE_SAVED`이고 `recovery_context`가 있는 죽은 시도(울타리 `QUIESCING`·`INSTALLING`·`RESTORING`)를 받는다. 받기 전에 같은 죽음 증명(보호 주인 기록 = 울타리 튜플, 주인 프로세스 종료·시작 시각 같음, 세션 권한 뮤텍스 잡을 수 있음, 쓰는 제품 프로세스·relay 0, 같은 감사 파일)을 `writer_session_fence.prove_dead_unfinished_installer`로 확인하며 이 증명은 아무것도 바꾸지 않는다. 증명되면 미리 저장된 문맥으로 기존 되돌림(옛 코드를 사전 사본과 같은 바이트로 복원, Run·작업·표지·relay 원복, 울타리 해제)을 한 번 수행해 감사를 `FAILED_ROLLED_BACK`(실패하면 `ROLLBACK_FAILED`)과 단계 기록으로 마감한다. 살아 있는 설치기·시작 시각이 다른 PID·쓰는 프로세스·relay가 있거나 남의 울타리면 거절한다. 이어 되돌리기로 `FAILED_ROLLED_BACK`이 되면 지금 실패 상태 길(지원 사용자 제거·공식 다시 설치)이 그대로 열린다.
 
 현장 안내(갇힌 PC의 공식 순서): ① 감사 파일이 문맥을 가지면(보통 `PREIMAGE_SAVED` 이후) 설치와 같은 작업 사용자의 **관리자 PowerShell**에서 `INSTALL_CANONICAL_PORTABLE.ps1 -SourceRoot <같은 판 stock> -ResumeRollbackAuditPath <감사 파일> -ExpectedRollbackAuditSha256 <감사 SHA256>`을 한 번 실행한다. ② 그 뒤 필요하면 같은 작업자 일반 세션에서 `--remove-current-user-setup`을 실행하고 `PASS_DATA_PRESERVED`를 확인한 뒤 공식 `INSTALL_CANONICAL_PORTABLE.ps1`을 다시 실행한다. 문맥이 없는 죽은 시도(`RESUME_ROLLBACK_REQUIRED`가 아닌 거절 없이 통과)는 ①을 건너뛰고 ②만 한다. 거절되면 쓰는 프로세스나 relay가 남았는지 먼저 확인한다. `tests/test_dead_installer_fence_entries.py`가 입구 넷의 거절, 열리는 조건과 닫힌 채로 남는 조건, 정리 뒤 `Start-LabelWriterFence` 통과를, `tests/test_dead_installer_resume_rollback.py`와 `tests/test_install_recovery.py`의 `resume_unfinished_*`가 문맥 있는 죽은 시도의 사용자 제거 거절·이어 되돌리기 증명·복원을 격리 자료로 고정한다. 실제 설치기 강제 종료 뒤 현장 PC 확인은 NOT VERIFIED다.
 
@@ -1132,6 +1132,24 @@ capture8의 교정 wrapper 실측은 [동일 사용자 제거 native exit 0](D:/
 
 (표의 「정리」 = `abandoned_fence_settled`: 죽음 증명 — 주인 프로세스 종료·세션 권한 뮤텍스·쓰는 프로세스 0 — 이 서야 한다. 갇힘 0 확인 = `tests/test_dead_installer_stage_matrix.py` 단계마다 열림 단언 + PS 순서 시험(주인 기록 호출 < 울타리 만들기, 두 길). 실제 UAC·배치 도우미 두 번째 기동은 시험 PC 몫이며 사용자 길은 승인 창이 한 번 더 뜰 수 있다.)
 
+
+### 끝·실패 감사의 자기 잔류 울타리 지원 정리 (G104)
+
+`RECOVERY_REQUIRED`·`ROLLBACK_FAILED`·`FAILED_ROLLBACK_INCOMPLETE` 감사 뒤 자기 설치 울타리만 남으면, **원 설치의 작업 사용자 관리자 PowerShell**에서 다음 기존 지원 입구를 사용한다. 기계 설치와 일반 설치 모두 같다. 원 감사 파일과 SHA256을 그대로 지정한다.
+
+```powershell
+& '<승인 packet>\INSTALL_CANONICAL_PORTABLE.ps1' -SourceRoot '<승인 packet>' -ResumeRollbackAuditPath '<원 감사 JSON>' -ExpectedRollbackAuditSha256 '<원 감사 SHA256>'
+```
+
+이 갈래는 원 감사·상태·`rollback.applied`·`code_state`를 바꾸지 않고 **울타리만 정리**한다. 복원·보상·relay·바로 가기를 다시 실행하거나 아직 안 한 준비를 완료로 표시하지 않는다. 앱 시작·`--remove-current-user-setup`·작업자 첫 준비는 이 관리자 정리를 대신하지 않는다. 이미 실행 중인 자식이나 relay를 종료하지 않는다.
+
+다음 조건을 모두 되읽는다. 감사·보호된 설치 주인 기록·active의 session/attempt/transaction/inventory/orchestrator/contract/started_at 튜플이 같고, 주인의 PID/생성시각으로 종료를 증명해야 한다. 관리자 CIM 조사는 install/source/staging/audit/helper/guardian 경로 또는 attempt/transaction을 가리키는 프로세스와 후손을 센다. 관련 helper·registration·placement·relay·bootstrap 하나라도 살아 있거나 관련 이미지의 경로·명령줄·생성시각을 못 읽으면 거절한다. CIM 실패·PID 재사용·손상·다른 결속도 거절하고 울타리를 보존한다.
+
+현재 코드 전체 inventory가 감사의 candidate와 같으면 `CANDIDATE`, installed preimage와 같으면 `INSTALLED`, 원 code_preimage가 ABSENT이고 current가 없으면 `ABSENT`로 관측한다. 부분 복사·어느 inventory와도 다름·알려진 값의 모순은 거절한다. UNKNOWN/누락만 관측으로 해소하며 원 감사에는 쓰지 않는다. Run·stop·작업·worker-pending·바로 가기는 읽기만 한다. 해당 결과에 대해 감사가 알려진 값을 남겼으면 같아야 하며, 없는 값은 관측만 기록한다.
+
+같은 install-audit 폴더의 `orphan-fence-release-<attempt_id>.json`이 정리 결과다(스키마 `label-orphan-fence-release-v1`). 고정 이름에 `RELEASING`을 원자 저장한 뒤 자기 active만 지우고 부재를 되읽어 `RELEASED`를 저장한다. 같은 감사·SHA로 다시 부르면 `RELEASED`와 active 부재를 확인하고 같은 기록을 반환한다. `RELEASING`에서 중단됐으면 같은 결속·현재 결과·자식 부재를 다시 증명한 뒤 이어 마감한다. 바뀐 active나 결과는 정리하지 않는다. 수동 active 삭제나 감사 상태 편집은 지원 절차가 아니다.
+
+`RELEASED`는 설치·복원·작업자 READY 성공이 아니다. 울타리 관문이 열린 뒤 공식 다시 설치를 진행하고 필요한 작업자 첫 준비·앱 시작을 별도로 확인한다. current가 없으면 재설치가 먼저다. 부분 상태 등 거절된 원인과 자료·등록·전송 대기는 보존해 지원 담당자에게 넘긴다.
 
 <a id="performance"></a>
 ## 처리량·동시성·최신성
@@ -1612,13 +1630,13 @@ Native files in the portable app: the builder pins eight PE files. pywebview 6.2
 
 The canonical unsigned native hashes are `label_native_policy.UNSIGNED_NATIVE_SHA256`. The portable builder checks both public installer copies and `tools/apply_prepared_update.ps1` against those exact pins and the actual bytes before building. Verify and update selection use the same `Assert-StartupUpdateVersion` check. The supported relay-stop release preflight uses the same Python policy. Each readback accepts the old empty list or exactly the three pinned files; duplicates, extra paths, absent files and changed hashes fail.
 
-Recovery card: 같은 작업자 지원 제거(main --remove-current-user-setup) → 관리자 INSTALL_THIS_PC.ps1 -Uninstall → 고친 승인 키트 재설치 → 같은 작업자 첫 설정 READY 확인; 자료·설정·등록·전송 대기 보존.
+Recovery card: 끝·실패 감사와 자기 잔류 울타리면 G104 관리자 resume 입구 → RELEASED/active 부재 → 공식 다시 설치 → 같은 작업자 첫 설정 READY를 별도로 확인한다. 그 밖의 기존 지원 제거는 같은 작업자 `main --remove-current-user-setup` → 관리자 코드 전용 제거 → 승인 키트 재설치를 따른다. 자료·설정·등록·전송 대기는 보존한다.
 
 ### 공개 기계 helper의 임대 범위 (w9firstupdsub193)
 
 공개 설치기는 검증한 helper 바이트를 메모리 ScriptBlock으로 실행한다. 배치 helper의 lifecycle 조회·활성화는 호출 helper가 보유한 임대를 `-Lease ([ref]$writerFenceLease)`로 받아 같은 참조를 해제·재취득한다. launcher의 script 범위에 있는 임대를 찾거나 바꾸지 않는다. 지원 제거 뒤 `removed.json` 또는 `update-control`이 남아도 기존 lifecycle 판정을 실행하며, 임대 없음·fence 변경·자식 실패의 거절은 유지한다.
 
-기계 `RECOVERY_REQUIRED`의 지원 복구는 원 감사·자료·등록·대기를 보존하고 실제 작업자 persistence·제품/자식 종료·fence 상태를 확인한 뒤 승인 packet의 `INSTALL_THIS_PC.ps1 -Uninstall -InstallRoot <canonical>` 코드 전용 제거를 사용한다. 이 틀에는 `-WorkerSid`를 추가하지 않는다. 제거 readback 뒤 고친 packet을 공개 기계 입구로 새 거래에 설치하고 같은 작업자의 첫 설정 READY를 별도로 확인한다. 감사 수정·수동 fence 해제·일반 rollback-resume로 상태를 바꾸지 않는다. PS5.1/7의 격리 메모리 helper 회귀는 현장 재설치·READY의 성공 증거와 구별한다.
+기계 `RECOVERY_REQUIRED`·`ROLLBACK_FAILED`·`FAILED_ROLLBACK_INCOMPLETE`와 자기 잔류 울타리는 위 G104의 관리자 `INSTALL_CANONICAL_PORTABLE.ps1 -SourceRoot <승인 packet> -ResumeRollbackAuditPath <원 감사> -ExpectedRollbackAuditSha256 <원 감사 SHA256>`으로 먼저 정리한다. 원 감사·자료·등록·대기를 보존하며 `orphan-fence-release-<attempt_id>.json`의 RELEASED와 active 부재를 되읽는다. 그 뒤 공식 다시 설치와 같은 작업자의 첫 설정 READY를 별도로 확인한다. 감사 수정·수동 fence 삭제·복원/보상 재실행은 이 정리 절차가 아니다. 거절된 부분 상태는 그대로 보존해 지원 담당자에게 넘긴다. PS5.1/7의 격리 메모리 helper 회귀는 실제 현장 재설치·READY 성공 증거와 구별한다.
 
 ## Atomic file publication
 
