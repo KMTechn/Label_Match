@@ -253,3 +253,76 @@ def test_first_rotation_marker_preflight_accepts_the_same_existing_key(tmp_path,
     assert len(case.calls) == 3
     assert case.report()["status"] == "SELF_ENROLLMENT_REGISTERED"
     assert not (paths.direct_sync_root / "status" / case.module.REATTACH_PERSISTENCE_FILENAME).exists()
+
+
+@pytest.mark.parametrize("legacy_identity", ["same", "wrong", "missing"])
+def test_r3_report_without_fingerprint_retries_only_matching_identity(tmp_path, monkeypatch, legacy_identity):
+    mode = "marker_before"
+    root = tmp_path / 'fresh'
+    root.mkdir()
+    (root / 'fixture-context.json').write_text(json.dumps({
+        'machine_guid': uuid.uuid4().hex, 'pc_name': 'review-' + uuid.uuid4().hex[:12],
+    }))
+    child = subprocess.run([
+        sys.executable, '-B', str(Path(__file__).with_name('_review467_first_rotation_child.py')),
+        str(root), mode,
+    ], capture_output=True, cwd=Path(__file__).resolve().parents[1],
+       creationflags=subprocess.CREATE_NO_WINDOW)
+    assert child.returncode == 0
+    first = json.loads((root / 'first-phase.json').read_text())
+    assert first['had_normal_report_before'] is False
+    assert first['had_receipt_before'] is False
+    assert first['had_identity_before'] is False
+    assert first['retained_key_reused'] is True
+    paths_before = onboarding.resolve_current_user_onboarding_paths(root / 'app', environ=_environment(root))
+    protected_paths = [paths_before.identity_path, paths_before.producer_manifest_path,
+        paths_before.credential_path, paths_before.registration_report_path,
+        paths_before.registration_receipt_path, paths_before.logistics_profile_path,
+        paths_before.logistics_secret_path,
+        paths_before.direct_sync_root / 'status' / 'label_match_reattach_persistence.json']
+    preimages = {p: p.read_bytes() if p.exists() else None for p in protected_paths}
+    case, paths, server_path, base_url = prepare_case(root, monkeypatch)
+    preparation_preserved_product_files = all(
+        (p.read_bytes() if p.exists() else None) == original for p, original in preimages.items()
+    )
+    assert preparation_preserved_product_files
+    import tools.register_label_match_worker_pc as official_registration
+    runs = []
+    def registered(argv, **kwargs):
+        runs.append(True)
+        return case.module.main(argv, **kwargs)
+    monkeypatch.setattr(official_registration, 'main', registered)
+
+    report = json.loads(paths.registration_report_path.read_text())
+    for field in ("retained", "credential_epoch", "manifest_hash", "possession_key_fingerprint"):
+        report.pop(field, None)
+    if legacy_identity == "wrong":
+        report["producer_install_id"] = uuid.uuid4().hex
+    elif legacy_identity == "missing":
+        report.pop("source_host_id")
+    paths.registration_report_path.write_text(json.dumps(report))
+    before = paths.registration_report_path.read_bytes()
+    def no_provisioning(**_kwargs):
+        pytest.fail("an old proof-required report must reuse the existing key")
+    monkeypatch.setattr(case.module.PersistentPossessionKey, "provision_initial", no_provisioning)
+    state = onboarding.inspect_current_user_state(paths)
+    def start():
+        return onboarding.onboard_current_user(
+            root / 'app', environ=_environment(root), server_base_url=base_url,
+            require_bootstrap_integrity=False, profile_loader=_profile_loader,
+            credential_loader=_credential_loader, ledger_factory=_ledger_factory,
+            autostart_installer=_autostart, scheduled_task_remover=_scheduled_task_absent,
+            legacy_task_quiescence_reader=_legacy_task_quiescent, relay_launcher=_relay_start,
+        )
+    if legacy_identity == "same":
+        assert state["status"] == "ABSENT_RETRYABLE"
+        assert start()["status"] == "READY"
+        assert len(runs) == 1
+        assert len(case.calls) == 3
+    else:
+        assert state["status"] == "RECOVERY_REQUIRED"
+        with pytest.raises(onboarding.CurrentUserOnboardingError):
+            start()
+        assert runs == []
+        assert case.calls == []
+        assert paths.registration_report_path.read_bytes() == before
