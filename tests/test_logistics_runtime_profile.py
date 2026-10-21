@@ -37,6 +37,41 @@ from tools.check_logistics_runtime_profile import main as readiness_main
 from current_user_onboarding import resolve_current_user_onboarding_paths
 
 
+@pytest.fixture(autouse=True)
+def isolated_profile_rotation_release(request, monkeypatch):
+    if request.node.originalname not in {
+        'test_recovery_rotates_only_token_when_every_non_secret_binding_matches',
+        'test_recovery_rotation_rejects_every_non_secret_binding_mismatch',
+        'test_initial_enrollment_still_rejects_existing_rotated_token',
+        'test_recovery_token_replace_interruption_preserves_original_and_cleans_temp',
+        'test_recovery_post_replace_readback_failure_rolls_back_original',
+    }:
+        return
+    import label_data_generation
+    monkeypatch.setattr(label_data_generation, 'release_identity', lambda _root: {
+        'version': label_data_generation.CURRENT_VERSION,
+        'build_id': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:40],
+        'data_compatible_min_version': label_data_generation.CURRENT_VERSION,
+        'compatibility_verified': False,
+    })
+
+
+def test_staged_profile_corruption_keeps_the_original_without_replacement(tmp_path, monkeypatch):
+    target = tmp_path / 'runtime-profile.json'
+    original, candidate = os.urandom(16), os.urandom(16)
+    target.write_bytes(original)
+    read = Path.read_bytes
+    def corrupted(path):
+        if path.parent == target.parent and path.name.endswith('.profile.tmp'):
+            return original
+        return read(path)
+    monkeypatch.setattr(Path, 'read_bytes', corrupted)
+    with pytest.raises(RuntimeError):
+        profile_installer_module._atomic_write(target, candidate)
+    assert target.read_bytes() == original
+    assert not list(tmp_path.glob('*.tmp'))
+
+
 def test_gui_startup_builds_client_without_network_readiness_probe(monkeypatch):
     calls = []
     sentinel = object()
