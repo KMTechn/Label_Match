@@ -139,6 +139,7 @@ def test_first_rotation_unbound_retry_is_recovery_without_http(tmp_path, monkeyp
     assert runs == []
     assert case.calls == []
     assert all((p.read_bytes() if p.exists() else None) == before for p, before in original.items())
+    assert failure.value.status == "RECOVERY_REQUIRED"
 
 
 def test_first_report_retry_opens_existing_key_without_provisioning(tmp_path, monkeypatch):
@@ -321,8 +322,9 @@ def test_r3_report_without_fingerprint_retries_only_matching_identity(tmp_path, 
         assert len(case.calls) == 3
     else:
         assert state["status"] == "RECOVERY_REQUIRED"
-        with pytest.raises(onboarding.CurrentUserOnboardingError):
+        with pytest.raises(onboarding.CurrentUserOnboardingError) as failure:
             start()
+        assert failure.value.status == "RECOVERY_REQUIRED"
         assert runs == []
         assert case.calls == []
         assert paths.registration_report_path.read_bytes() == before

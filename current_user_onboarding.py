@@ -886,7 +886,8 @@ def inspect_current_user_state(
     except Exception as exc:
         return {"status": "RECOVERY_REQUIRED", "present": present,
                 "reason": "same-key reattach continuation binding is invalid",
-                **({"cause_code": exc.cause_code} if isinstance(exc, CurrentUserOnboardingError) else {})}
+                "cause_code": (exc.cause_code if isinstance(exc, CurrentUserOnboardingError)
+                               else "POSSESSION_PROOF_REATTACH_REQUIRED")}
     if not any(present.values()):
         return {"status": "ABSENT", "present": present}
     if present["registration_report"] and sum(present.values()) == 1:
@@ -1512,7 +1513,9 @@ def onboard_current_user(
                 str(state["reason"]), report_path=paths.onboarding_report_path,
                 status="RECOVERY_REQUIRED", cause_code="INSTALL_SERVER_ORIGIN_CHANGED",
             )
-        if state.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED":
+        if (state.get("status") == "POSSESSION_PROOF_REATTACH_REQUIRED"
+                or (state.get("status") == "RECOVERY_REQUIRED"
+                    and state.get("cause_code") == "POSSESSION_PROOF_REATTACH_REQUIRED")):
             report["action"] = "POSSESSION_PROOF_REATTACH_REQUIRED"
             report["recovery_action"] = "POSSESSION_PROOF_REATTACH_REQUIRED"
             report["administrator_guidance"] = "현장 관리자: 관리자 계정으로 이 PC 등록 회복을 실행하세요"
