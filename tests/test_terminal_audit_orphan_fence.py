@@ -189,20 +189,35 @@ def test_every_terminal_save_has_a_supported_entry_after_owner_and_children_exit
         row["startup"] = _startup_fence_gate()
         events = []
         try:
-            _remove(events)
-        except fence.WriterFencedError as error:
-            row["remove"] = error.code
-        else:
-            row["remove"] = "ACCEPTED_FENCE_RETAINED" if (control / fence.ACTIVE_FILENAME).exists() else "ACCEPTED_FENCE_SETTLED"
-        try:
             onboarding.onboard_current_user(CANONICAL)
         except fence.WriterFencedError as error:
             row["first_setup"] = error.code
         else:
             pytest.fail("Unproven first setup reached the onboarding body")
+        try:
+            _remove(events)
+        except fence.WriterFencedError as error:
+            row["remove"] = error.code
+        else:
+            row["remove"] = "ACCEPTED_FENCE_RETAINED" if (control / fence.ACTIVE_FILENAME).exists() else "ACCEPTED_FENCE_SETTLED"
         row["resume_death_proof"] = fence.prove_dead_unfinished_installer(str(audit))
-        row["result"] = "P" if (row["remove"].startswith("ACCEPTED") or row["resume"] == "RESUME_ACCEPTED_CONTEXT") else "F"
-        assert (control / fence.ACTIVE_FILENAME).read_bytes() == before
+        # Entry acceptance alone is not an exit: RF/FRI previously kept active.
+        remaining = (control / fence.ACTIVE_FILENAME).exists()
+        row['fence_released'] = not remaining
+        row['startup_after'] = _startup_fence_gate()
+        row['reinstall_after'] = 'BLOCKED'
+        if remaining:
+            assert (control / fence.ACTIVE_FILENAME).read_bytes() == before
+        else:
+            # Exercise the official PS fence-start guard after settlement, then
+            # retire only the new test fence before checking the app gate again.
+            from tests.test_dead_installer_fence_entries import _start_new_fence
+            row['reinstall_after'] = _start_new_fence(tmp_path, control)
+            (control / fence.ACTIVE_FILENAME).unlink()
+            assert audit.read_bytes() == raw
+        row['result'] = 'P' if (row['fence_released'] and
+                               row['startup_after'] != 'ACTIVE_WRITER_FENCE' and
+                               row['reinstall_after'] == 'STARTED') else 'F'
         findings.append(row)
     counts = {kind: sum(row["result"] == kind for row in findings) for kind in ("F", "P")}
     record_property("terminal_audit_entry_matrix", json.dumps(findings, separators=(",", ":")))
