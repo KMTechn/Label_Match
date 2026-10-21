@@ -139,6 +139,17 @@ def test_unwritable_preflight_preserves_ready_report_without_server_calls(reatta
     assert target.read_bytes() == case.original_protected
 
 
+def test_unwritable_first_slot_returns_the_existing_recovery_classification(reattach_case, monkeypatch):
+    case = reattach_case
+    def denied(*_args, **_kwargs):
+        raise PermissionError()
+    monkeypatch.setattr(case.module, '_probe_reattach_target', denied)
+    assert case.run() == 2
+    assert case.calls == []
+    assert case.identity_path.read_bytes() == case.original_identity
+    assert case.report()['status'] == 'POSSESSION_PROOF_REATTACH_REQUIRED'
+
+
 def test_post_rotation_write_failure_preserves_report_and_allows_retry(reattach_case, monkeypatch):
     case = reattach_case
     target, report, original = _preserved_binding(case)
@@ -170,8 +181,9 @@ def _retarget_to_official_paths(case, paths):
 
 
 @pytest.mark.parametrize('mode', ['failed', 'progress', 'partial'])
+@pytest.mark.parametrize('deny_retry', [False, True])
 def test_process_exit_then_official_onboarding_reattaches_same_key_to_ready(
-    reattach_case, tmp_path, monkeypatch, mode,
+    reattach_case, tmp_path, monkeypatch, mode, deny_retry,
 ):
     import subprocess
     import sys
@@ -187,10 +199,15 @@ def test_process_exit_then_official_onboarding_reattaches_same_key_to_ready(
     )
     assert child.returncode == 0
     result = json.loads((root / 'child-result.json').read_text())
-    assert result['failed_registration_exit'] != 0
+    assert result['registration_returned'] is (mode == 'failed')
+    assert result['failed_registration_exit'] == (3 if mode == 'failed' else None)
     assert result['server_rotated'] is True
     server_path = root / 'server-state.json'
     assert json.loads(server_path.read_text())['retired_generations'] == 1
+    if deny_retry:
+        state = json.loads(server_path.read_text())
+        state['key_status'] = 'revoked'
+        server_path.write_text(json.dumps(state))
     case = reattach_case
     environ = _environment(root)
     paths = onboarding.resolve_current_user_onboarding_paths(root / 'app', environ=environ)
@@ -214,15 +231,28 @@ def test_process_exit_then_official_onboarding_reattaches_same_key_to_ready(
         runs.append(True)
         return case.module.main(argv, **kwargs)
     monkeypatch.setattr(official_registration, 'main', registered)
-    report = onboarding.onboard_current_user(
-        root / 'app', environ=environ,
-        server_base_url=case.report()['endpoint_url'].split('/api/', 1)[0],
-        require_bootstrap_integrity=False,
-        profile_loader=_profile_loader, credential_loader=_credential_loader,
-        ledger_factory=_ledger_factory, autostart_installer=_autostart,
-        scheduled_task_remover=_scheduled_task_absent,
-        legacy_task_quiescence_reader=_legacy_task_quiescent, relay_launcher=_relay_start,
-    )
+    def start():
+        return onboarding.onboard_current_user(
+            root / 'app', environ=environ,
+            server_base_url=case.report()['endpoint_url'].split('/api/', 1)[0],
+            require_bootstrap_integrity=False,
+            profile_loader=_profile_loader, credential_loader=_credential_loader,
+            ledger_factory=_ledger_factory, autostart_installer=_autostart,
+            scheduled_task_remover=_scheduled_task_absent,
+            legacy_task_quiescence_reader=_legacy_task_quiescent, relay_launcher=_relay_start,
+        )
+    if deny_retry:
+        before = paths.registration_report_path.read_bytes()
+        with pytest.raises(onboarding.CurrentUserOnboardingError) as rejected:
+            start()
+        assert rejected.value.cause_code == (
+            'REATTACH_ROTATED_PERSIST_FAILED' if mode == 'failed' else 'REATTACH_INTERRUPTED')
+        assert runs == [True]
+        assert len(case.admission_calls) == 1
+        assert paths.registration_report_path.read_bytes() == before
+        assert json.loads(server_path.read_text())['retired_generations'] == 1
+        return
+    report = start()
     assert report['status'] == 'READY'
     assert runs == [True]
     assert len(case.calls) == 3
@@ -234,11 +264,15 @@ def test_process_exit_then_official_onboarding_reattaches_same_key_to_ready(
 
 def _install_fake_server_admission(case, server_path):
     post = case.module.requests.post
+    case.admission_calls = []
     def admitted(url, **kwargs):
-        if url.endswith('/challenge') or url.endswith('/reattach'):
+        case.admission_calls.append(url)
+        if url.endswith('/enroll') or url.endswith('/challenge') or url.endswith('/reattach'):
             state = json.loads(server_path.read_text())
             payload = kwargs['json']
             proof = payload.get('proof', payload)
+            if url.endswith('/enroll'):
+                proof = {**payload['manifest']['pc_identity'], 'producer_id': payload['producer_id']}
             if (proof['producer_id'] != state['producer_id']
                     or proof['source_host_id'] != state['source_host_id']):
                 return SimpleNamespace(status_code=404, json=lambda: {'error': {'code': 'producer_identity_not_found'}})
@@ -248,6 +282,72 @@ def _install_fake_server_admission(case, server_path):
             assert state['fingerprint'] == reattach_tests.fake_possession_descriptor()['fingerprint']
         return post(url, **kwargs)
     case.module.requests.post = admitted
+
+
+@pytest.mark.parametrize('field', [
+    'producer_id', 'producer_install_id', 'source_host_id', 'manifest_hash',
+    'possession_key_fingerprint', 'credential_epoch',
+])
+def test_unbound_continuation_is_not_ready_and_never_contacts_server(reattach_case, monkeypatch, field):
+    case = reattach_case
+    profile, token_path = _use_real_profile(case, monkeypatch)
+    _, report, original = _preserved_binding(case)
+    def unavailable(*_args, **_kwargs):
+        raise OSError()
+    monkeypatch.setattr(case.module, '_write_dpapi_secret', unavailable)
+    assert case.run() == 3
+    marker_path = case.data / 'status' / case.module.REATTACH_PERSISTENCE_FILENAME
+    marker = json.loads(marker_path.read_text())
+    marker[field] = -1 if field == 'credential_epoch' else __import__('uuid').uuid4().hex
+    marker_path.write_text(json.dumps(marker))
+    paths = SimpleNamespace(
+        identity_path=case.identity_path,
+        producer_manifest_path=case.data / case.module.DEFAULT_MANIFEST_FILENAME,
+        credential_path=case.data / case.module.DEFAULT_CREDENTIAL_FILENAME,
+        registration_report_path=report, logistics_profile_path=profile,
+        logistics_secret_path=token_path,
+    )
+    assert onboarding.inspect_current_user_state(paths)['status'] == 'RECOVERY_REQUIRED'
+    case.calls.clear()
+    assert case.run() == 2
+    assert case.calls == []
+    assert report.read_bytes() == original
+
+
+def test_incompatible_profile_tls_is_rejected_before_rotation(reattach_case, monkeypatch):
+    case = reattach_case
+    _use_real_profile(case, monkeypatch)
+    _, report, original = _preserved_binding(case)
+    ca = case.data / 'new-ca.pem'
+    ca.write_bytes(__import__('secrets').token_bytes(32))
+    case.args += ['--tls-ca-bundle-path', str(ca)]
+    assert case.run() == 2
+    assert case.calls == []
+    assert report.read_bytes() == original
+
+
+def test_bound_continuation_preserves_the_install_server_origin_guard(reattach_case, monkeypatch):
+    case = reattach_case
+    profile, token_path = _use_real_profile(case, monkeypatch)
+    _, report, _ = _preserved_binding(case)
+    def unavailable(*_args, **_kwargs):
+        raise OSError()
+    monkeypatch.setattr(case.module, '_write_dpapi_secret', unavailable)
+    assert case.run() == 3
+    paths = SimpleNamespace(
+        identity_path=case.identity_path,
+        producer_manifest_path=case.data / case.module.DEFAULT_MANIFEST_FILENAME,
+        credential_path=case.data / case.module.DEFAULT_CREDENTIAL_FILENAME,
+        registration_report_path=report, logistics_profile_path=profile,
+        logistics_secret_path=token_path,
+    )
+    def changed(*_args, **_kwargs):
+        raise onboarding.CurrentUserOnboardingError(
+            'origin changed', report_path=report, cause_code='INSTALL_SERVER_ORIGIN_CHANGED')
+    monkeypatch.setattr(onboarding, 'require_install_server_origin_matches', changed)
+    state = onboarding.inspect_current_user_state(paths)
+    assert state['status'] == 'RECOVERY_REQUIRED'
+    assert state['cause_code'] == 'INSTALL_SERVER_ORIGIN_CHANGED'
 
 
 def test_existing_binding_is_not_invalidated_before_local_storage_rejection(reattach_case, tmp_path, monkeypatch):

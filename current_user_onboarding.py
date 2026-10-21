@@ -874,6 +874,19 @@ def inspect_current_user_state(
         "logistics_secret": paths.logistics_secret_path,
     }
     present = {name: path.is_file() for name, path in state_paths.items()}
+    try:
+        from tools.register_label_match_worker_pc import _inspect_reattach_retry
+        retry = _inspect_reattach_retry(paths)
+        if retry is not None:
+            if credential_input is not None and credential_input.error is not None:
+                raise credential_input.error
+            require_install_server_origin_matches(
+                paths, credential=_read_json(paths.credential_path, "producer credential"))
+            return {**retry, "present": present}
+    except Exception as exc:
+        return {"status": "RECOVERY_REQUIRED", "present": present,
+                "reason": "same-key reattach continuation binding is invalid",
+                **({"cause_code": exc.cause_code} if isinstance(exc, CurrentUserOnboardingError) else {})}
     if not any(present.values()):
         return {"status": "ABSENT", "present": present}
     if present["registration_report"] and sum(present.values()) == 1:
@@ -1637,10 +1650,19 @@ def onboard_current_user(
                             status="UNKNOWN",
                         )
                     if return_code != 0:
-                        require_registration_recovery(inspect_current_user_state(
+                        failed_state = inspect_current_user_state(
                             paths, profile_loader=profile_loader,
                             credential_loader=credential_loader, credential_input=credential_input,
-                        ))
+                        )
+                        require_registration_recovery(failed_state)
+                        if failed_state.get("cause_code") in {
+                            "REATTACH_ROTATED_PERSIST_FAILED", "REATTACH_INTERRUPTED",
+                        }:
+                            raise CurrentUserOnboardingError(
+                                "same-key reattach persistence is incomplete",
+                                report_path=paths.onboarding_report_path,
+                                cause_code=failed_state["cause_code"],
+                            )
                         if paths.registration_report_path.is_file():
                             registration_failure = _read_json(
                                 paths.registration_report_path, "registration failure report"

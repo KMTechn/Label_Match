@@ -43,7 +43,7 @@ def main(root, mode):
         server_path.write_text(json.dumps(state))
         if mode == 'progress':
             (root / 'child-result.json').write_text(json.dumps({
-                'failed_registration_exit': 3, 'server_rotated': True,
+                'failed_registration_exit': None, 'registration_returned': False, 'server_rotated': True,
             }))
             __import__('os')._exit(0)
     case.response_change = rotated
@@ -52,7 +52,7 @@ def main(root, mode):
         if mode == 'partial':
             real_write(*args, **kwargs)
             (root / 'child-result.json').write_text(json.dumps({
-                'failed_registration_exit': 3, 'server_rotated': True,
+                'failed_registration_exit': None, 'registration_returned': False, 'server_rotated': True,
             }))
             __import__('os')._exit(0)
         raise OSError()
@@ -60,6 +60,7 @@ def main(root, mode):
     result = case.run()
     (root / 'child-result.json').write_text(json.dumps({
         'failed_registration_exit': result,
+        'registration_returned': True,
         'server_rotated': any(url.endswith('/reattach') for url, _ in case.calls),
     }))
     patch.undo()

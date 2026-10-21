@@ -36,6 +36,26 @@ SysWOW64 셸은 허용 목록에 없으며 cwd는 census 관측 항목이 아니
 
 등록 도구는 119 R4부터 HTTP 409 `reattach_proof_required`에 한해 같은 소유 키로 공식 challenge → 서명 → `/api/producer-ingest/v2/reattach`를 한 번 이어 간다. proof의 정확한 필드·audience·nonce·만료와 producer/install/source_host/manifest 결속을 확인하며 새 키·새 신원 발급·신원 삭제 없이 같은 신원의 회전 자격과 영수증을 검증·저장한 뒤 기존 준비 완료 경로로 진행한다. 다른 키의 `producer_identity_conflict`는 기존 관리자 복구를 유지한다. 기존 키를 열지 못하거나 challenge·재결속 검증/통신이 실패하면 원 `POSSESSION_PROOF_REATTACH_REQUIRED`를 보존하고 자동 재시도하지 않는다. 해결되지 않은 기존 신원 거절은 첫 설정의 `RECOVERY_REQUIRED`와 원 `recovery_action`으로 보존하며 Run/업무 자료 준비로 진행하지 않는다. 공개 고정 원인은 `ADMIN_RECOVERY_ACTION` 또는 `POSSESSION_PROOF_REATTACH_REQUIRED`이며 등록 보고만 남은 재시작과 시작 거절 관측에서도 동일하다([첫 설정 안내](operations.md#onboarding-registration-recovery)).
 
+보존된 자격이 있는 재설치도 같은 키 재결속의 정상 대상이다. 서버 호출 전에 기존 저장 자리의 쓰기·교체 권한, current-user scope, producer/install/source_host/manifest·소유 키 지문과 보호 자격/영수증 결속을 확인한다. 틀림·모름·쓰기 불가는 서버를 호출하지 않고 원본과 정상 등록 보고서를 보존한다. 검증된 재결속 회전 응답의 epoch가 기존보다 진행한 경우에만 이름 있는 `reattach_rotation_admitted` 예외로 기존 profile 토큰·producer 보호 자격 자리를 교체한다. 관리자 회복 조건과 구분하며 임시 쓰기·검증·원자 교체와 실패 시 기존 바이트 보존을 따른다.
+
+#### 같은 키 재결속의 저장 중단 진단
+
+고정 파일은 `<data_dir>/status/label_match_reattach_persistence.json`이다. 자격 원문·서명·nonce는 담지 않는다.
+
+| 필드 | 계약 |
+| --- | --- |
+| `report_version` | `label-match-reattach-persistence-v1` |
+| `status` | 회전 POST 직전 `REATTACH_IN_PROGRESS`, 검증된 회전 뒤 저장 실패는 `REATTACH_ROTATED_PERSIST_FAILED` |
+| `server_credential_rotated` | 회전 응답 검증 전 false, 검증 뒤 true. 진행 표지의 false는 서버 미회전을 증명하지 않음 |
+| `recovery_action` | `POSSESSION_PROOF_REATTACH_REQUIRED` |
+| `producer_id`, `producer_install_id`, `source_host_id` | 보존된 신원·manifest·정상 보고서·영수증과 같은 결속 |
+| `manifest_hash`, `possession_key_fingerprint` | 같은 manifest와 기존 소유 키 지문. 키 지문은 기존 계약의 불투명 문자열을 정확 비교 |
+| `credential_epoch` | 이번 회전 전 로컬에서 확인한 세대의 정수 epoch |
+
+진행 표지를 원자 저장한 뒤에만 회전 POST를 보낸다. 검증된 후속 영수증을 자격 파일보다 먼저 저장하여 중단 중 새/옛 파일을 보존된 정상 보고서 또는 이 후속 영수증과 각각 대조할 수 있게 한다. 저장 I/O 예외에서는 실행 메모리에 보존한 profile 토큰·producer 자격·등록 문서 원본 바이트를 복원하고 별도 실패 진단을 남긴다. 정상 보고서를 일반 BLOCKED로 덮지 않으며 CLI는 3으로 끝난다. 사전 판정 거절은 서버 호출 0회·rc2다.
+
+다음 공식 시작/첫 설정은 진단 또는 진행 표지의 모든 결속을 확인하면 READY를 반환하지 않고 기존 `ABSENT_RETRYABLE` 입구를 사용한다. cause는 각각 `REATTACH_ROTATED_PERSIST_FAILED`, `REATTACH_INTERRUPTED`다. 기존 등록 mutex와 runner로 enroll 409 → 같은 키 challenge/reattach를 한 실행당 한 번만 수행한다. 부분 새 세대도 같은 신원·manifest·키와 파일별 자격/영수증 결속이 맞을 때만 받아들이며, 틀림·모름은 `RECOVERY_REQUIRED`다. 설치 서버 주소와 credential 입력 검증도 유지한다. 성공한 등록 readback 뒤 이 진단만 지우고 정상 READY 판정을 진행하며 실패하면 이번 시작을 멈춘다. 새 키·새 발급·신원 삭제·관리자 회복 자동 전환·실행 안 무한 재시도는 없다.
+
 표지 PID의 실제 실행 파일은 두 번째 프로세스 자신의 실행 파일을 기준으로 대조해 다른 실행 파일을 거절한다. 다만 같은 실행 파일의 다른 프로세스와 자료 뿌리 mutex 소유자의 결속까지 증명하지 않으므로 같은 사용자 권한의 표지 위변조를 완전히 막는 것은 아니다.
 
 자료 뿌리 범위의 한 개만 잠금은 소스·portable 입구에서 무거운 import·시작 준비·셸보다 먼저 잡는다. PID 표지는 같은 뿌리의 식별자를 이름으로 삼고 LOCALAPPDATA의 사용자 폴더에만 둔다. 표지 PID가 살아 있고 실행 파일 절대 경로가 같을 때만 그 PID의 보이는 최상위 창을 찾는다(제목 검색 없음). 최소화 창은 복원하고 foreground 거절 때 작업 표시줄을 깜박인다. 창이 있으면 안내 없이 rc0으로 끝난다. 창이 없으면 「포장」 제목·확인 단추 하나의 켜지는 중/닫는 중 안내를 5초 뒤 닫고 rc0으로 끝난다. 표지는 기존 writer sink 안에서 쓰고 DELETE_ON_CLOSE 핸들로 소유하므로 종료 admission을 닫은 뒤 새 쓰기 없이 정리한다. 운영 자식·relay·업데이트 helper는 기존 별도 진입을 유지한다.

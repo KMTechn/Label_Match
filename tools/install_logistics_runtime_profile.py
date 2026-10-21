@@ -294,6 +294,8 @@ def _atomic_write(path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        if temporary.read_bytes() != data:
+            raise RuntimeError("staged runtime profile bytes differ")
         atomic_replace(temporary, path)
     finally:
         try:
@@ -430,6 +432,8 @@ def _rotate_existing_profile_token(
     if selected_scope != "current_user":
         raise ValueError("recovery profile rotation requires current_user credential scope")
     protected = protect_current_user_secret(token)
+    if unprotect_current_user_secret(protected) != token:
+        raise RuntimeError("staged runtime credential readback failed")
     replaced = False
     try:
         if target.read_bytes() != original_profile_bytes:
