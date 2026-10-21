@@ -144,6 +144,21 @@ def test_unwritable_first_slot_returns_the_existing_recovery_classification(reat
     assert case.report()['status'] == 'POSSESSION_PROOF_REATTACH_REQUIRED'
 
 
+def test_unavailable_retained_key_keeps_the_normal_report_and_admin_classification(
+    reattach_case, monkeypatch, capsys,
+):
+    case = reattach_case
+    _, report, original = _preserved_binding(case)
+    capsys.readouterr()
+    def unavailable(_report):
+        raise case.module.PossessionKeyRecoveryRequired('identity_file', {'available': False})
+    monkeypatch.setattr(case.module, '_prepare_possession_key', unavailable)
+    assert case.run() == 2
+    assert case.calls == []
+    assert report.read_bytes() == original
+    assert case.module.ADMIN_RECOVERY_ACTION in capsys.readouterr().out
+
+
 def test_post_rotation_write_failure_preserves_report_and_allows_retry(reattach_case, monkeypatch):
     case = reattach_case
     target, report, original = _preserved_binding(case)
