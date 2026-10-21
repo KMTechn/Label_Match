@@ -79,8 +79,8 @@ def test_startup_fence_error_keeps_app_stopped_and_explains_recovery(
     assert len(reports) == 1
     assert reports[0].status == "BLOCKED"
     assert reports[0].cause_code == "INSTALLATION_RECOVERY_REQUIRED"
-    assert "자료와 복구 기록을 보존" in str(reports[0])
-    assert "관리자에게 지원 복구를 요청" in capsys.readouterr().err
+    assert message in str(reports[0])
+    assert message in capsys.readouterr().err
     notice = [kw for event, kw in traces if event == "installation_recovery_required"]
     assert len(notice) == 1
     assert notice[0]["guard_code"] == "ACTIVE_WRITER_FENCE"
