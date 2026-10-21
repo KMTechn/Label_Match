@@ -168,19 +168,43 @@ def test_tk_creation_failure_uses_native_with_identical_message(monkeypatch, tmp
 
 
 @pytest.mark.parametrize("warning", [False, True])
-def test_bounded_native_preserves_text_and_uses_supplied_finite_timeout(monkeypatch, warning):
+def test_bounded_native_preserves_text_and_uses_fixed_timeout(monkeypatch, warning):
     native = Mock(return_value=32000)  # IDTIMEOUT, never an affirmative choice.
     monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: SimpleNamespace(MessageBoxTimeoutW=native))
     title, message = "안내", "원래 문구\n둘째 줄"
     assert startup_observation.show_bounded_native_notice(
-        title, message, warning=warning, timeout_ms=30000,
-    ) is None
+        title, message, warning=warning,
+    ) is False
     native.assert_called_once()
     args = native.call_args.args
     assert args[1].encode("utf-8") == message.encode("utf-8")
     assert args[2].encode("utf-8") == title.encode("utf-8")
     assert args[3] & 0xF0 == (0x30 if warning else 0x10)
     assert args[-1] == 30000 and args[-1] < user_relay.APP_STOP_TIMEOUT_SECONDS * 1000
+
+
+@pytest.mark.parametrize("notice", ["onboarding-error", "integrity-warning", "catalog-error"])
+@pytest.mark.parametrize("native_failure", ["unavailable", "zero-result"])
+def test_tk_and_native_failure_keeps_original_unavailable_trace(monkeypatch, tmp_path, notice, native_failure):
+    monkeypatch.setattr(lm.tk, "Tk", Mock(side_effect=lm.tk.TclError("unavailable")))
+    native = Mock(return_value=0)
+    api = Mock(return_value=SimpleNamespace(MessageBoxTimeoutW=native))
+    if native_failure == "unavailable":
+        api.side_effect = OSError("unavailable")
+    monkeypatch.setattr(ctypes, "WinDLL", api)
+    unbounded = Mock(side_effect=AssertionError("no unbounded fallback"))
+    monkeypatch.setattr(lm.messagebox, "showerror", unbounded)
+    monkeypatch.setattr(lm.messagebox, "showwarning", unbounded)
+    trace = Mock()
+    monkeypatch.setattr(lm, "_label_match_startup_trace", trace)
+    assert show_notice(notice, tmp_path) is None
+    api.assert_called_once()
+    unbounded.assert_not_called()
+    trace.assert_called_once_with({
+        "onboarding-error": "current_user_onboarding_dialog_unavailable",
+        "integrity-warning": "bootstrap_integrity_warning_dialog_unavailable",
+        "catalog-error": "item_catalog_startup_dialog_unavailable",
+    }[notice])
 
 
 def test_trace_write_failure_does_not_prevent_normal_notice_return(monkeypatch, tmp_path, notice_window):
@@ -248,6 +272,31 @@ def test_stop_during_failed_onboarding_preserves_exit_cause_and_report(
     assert report.read_bytes() == b"preserved-report"
     assert notice_window.parents[0].destroyed_in_loop
     forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("native_result", [32000, 1])
+def test_native_warning_timeout_cancels_startup_instead_of_confirming(monkeypatch, portable_gui, native_result):
+    monkeypatch.setattr(lm, "validate_pending_worker_install", lambda _root: None)
+    monkeypatch.setattr(lm, "check_user_data_open", lambda _root: None)
+    monkeypatch.setattr(lm, "verify_factory_contract_startup", lambda: None)
+    monkeypatch.setattr(auto_update, "startup_gate", lambda *args, **kwargs: None)
+    monkeypatch.setattr(lm, "onboard_current_user",
+                        lambda *args, **kwargs: {"bootstrap_integrity": {"status": "ABSENT"}})
+    monkeypatch.setattr(lm.tk, "Tk", Mock(side_effect=lm.tk.TclError("unavailable")))
+    native = Mock(return_value=native_result)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: SimpleNamespace(MessageBoxTimeoutW=native))
+    data_scope = Mock(return_value=object())
+    business = Mock(return_value=37)
+    monkeypatch.setattr(lm, "resolve_data_scope", data_scope)
+    monkeypatch.setattr(lm, "run_guarded_entrypoint", business)
+    assert lm.main(["--old-screen"]) == (0 if native_result == 32000 else 37)
+    native.assert_called_once()
+    if native_result == 32000:
+        data_scope.assert_not_called()
+        business.assert_not_called()
+    else:
+        data_scope.assert_called_once()
+        business.assert_called_once()
 
 
 def test_official_stop_waits_for_isolated_notice_process_exit(monkeypatch, tmp_path):
