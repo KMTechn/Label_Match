@@ -1,5 +1,7 @@
 - w9firstupdsub483 / LM R4 live 첫 설정 공식 stop: 성공한 내구 경계와 살아 있는 relay owner 대기에 협력 취소를 연결하고, 정상 rc 0/APP_STOP_REQUESTED_CLOSE 및 정상 보고서·기존 보호 거절을 보존한다. 순수 process/task 조회만 기존 10초 감독 자식으로 분리하며 mutation/Verify/실제 relay는 포함하지 않는다. 격리 main→onboarding→공식 fresh 부재 모델과 query timeout을 확인하며, 실제 현장 150초 수용·기존 보호 P2 종결은 독립 검토/후속 앱 회차에 남는다([원격 정상 멈춤](operations.md#remote-app-stop)).
 
+- v2.0.120: inspection4 의 v2.0.119 다른 build 미검증 표지 때문에 판만 올림, 코드 동작 변경 0
+
 - w9firstupdsub468 / REVIEW-119-LM-R4-1 P1-1: 보존 자격이 있는 같은 PC 재결속 전에 저장 자리·폴더 생성·교체 권한·scope·신원/manifest/키 결속을 검사하고 키 열기 실패에도 정상 보고서와 기존 관리자 회복 분류를 보존하며, 검증된 진행 epoch에만 reattach_rotation_admitted로 기존 profile 토큰·producer 보호 자격을 함께 교체한다. 회전 뒤 저장 실패는 원본과 정상 보고서를 보존하고 별도 고정 진단을 남긴다. 진행 표지 또는 실패 진단이 있으면 READY 시작 단축을 거절하고, 정확히 결속되면 다음 공식 시작의 기존 ABSENT_RETRYABLE 입구에서 같은 키로 한 번 재결속해 READY로 복구하며, 실패/거절은 그 실행을 멈춘다. 새 키·새 발급·신원 삭제·서버/허가 변경은 없다. 격리 자식 종료와 다음 공식 onboarding 회귀를 포함한다([계약](contracts.md#같은-키-재결속의-저장-중단-진단)).
 - w9firstupdsub466 / P3 시험 결함: 8290f94f1078da21af84ccb5df33a2773fada40a의 의도한 현장 문구 표준화에 맞춰 writer fence 시작 거절 시험의 보고서·stderr 단언을 현재 INSTALLATION_RECOVERY_REQUIRED_MESSAGE 전체 상수로 대조한다. 제품 문구·종료값·순서·상태·원인·trace·무쓰기 단언은 보존한다.
 - w9firstupdsub463 / 포장 119 R4 안내 창 멈춤: 본창 전 등록 복구·시작 거절·첫 설정 오류·설치 확인 경고·품목 오류·품목 재시도·설치 mutex 복구 안내가 공식 요청으로 정상 닫히고 기존 startup trace에 APP_STOP_REQUESTED_CLOSE를 남긴다. 문구·안전 취소/종료 rc·원인 code·신원·등록 보고서는 보존한다. Tk 생성 실패의 native 안내에도 상한을 두며, 기존 5초 중복 안내와 30초 화면 실패 안내는 자체 종료 예외다. bounded fake Tk·공식 요청 뒤 격리 Python 자식 종료와 실제 Windows 창 수용은 구분한다([원격 정상 멈춤](operations.md#remote-app-stop)).
