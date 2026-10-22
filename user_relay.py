@@ -639,7 +639,13 @@ def _existing_user_relay_owner(
         key = (str(control), active["sha"], policy["operator_sid"], owner["process_id"],
                process.get("creation_identity"), json.dumps(state, sort_keys=True))
         cached = process_observations.get(key) if process_observations is not None and process.get("status") == "LIVE" else None
-        rows = cached if cached is not None else [row for row in process_snapshot(control) if row.get("pid") == owner["process_id"]]
+        from startup_timing import startup_progress, startup_timing_step
+        if cached is not None:
+            rows = cached
+        else:
+            startup_progress("full_relay_owner_query")
+            with startup_timing_step("full_relay_owner_query"):
+                rows = [row for row in process_snapshot(control) if row.get("pid") == owner["process_id"]]
         if process_observations is not None and process.get("status") == "LIVE":
             process_observations[key] = rows
         if len(rows) != 1 or os.path.normcase(str(status.get("code_root") or "")) != os.path.normcase(str(expected_root)):
@@ -666,7 +672,10 @@ def _reuse_existing_user_relay(
     # A duplicate persistent relay exits cleanly when the instance lease is held.
     # Reuse only the same fresh live owner across the normal survival window;
     # zero exit by itself also covers stop-marker and ordinary loop termination.
+    from startup_timing import startup_stop_checkpoint, startup_wait, startup_progress
+    startup_stop_checkpoint()
     owner = existing_owner()
+    startup_stop_checkpoint()
     if owner is None:
         return None
     if owner.get("fast_path") is True:
@@ -676,10 +685,12 @@ def _reuse_existing_user_relay(
             "owner_status_updated_at": owner["updated_at"], "source_commit": owner["source_commit"],
             "owner_sid": owner["sid"],
         }
-    wait(survival)
+    startup_progress("full_relay_survival_wait")
+    startup_wait(survival, wait)
     confirmed_owner = existing_owner()
     if confirmed_owner is None or confirmed_owner["process_id"] != owner["process_id"]:
         raise UserRelayError("existing current-user relay ownership changed during survival readback")
+    startup_stop_checkpoint()
     return {
         "status": "ALIVE",
         "process_id": confirmed_owner["process_id"],
@@ -794,19 +805,42 @@ def start_user_relay_process(
     process = start_ordinary_process(command, cwd=str(Path(app_root).expanduser().resolve()))
     if process.pid <= 0:
         raise UserRelayError("current-user relay launch did not return a process id")
-    wait(min(survival, max(0.0, parent_deadline - time.monotonic())) if is_bootstrap else survival)
+    from startup_timing import StartupStopRequested
+    try:
+        return _read_started_relay(process, existing_owner, survival, parent_deadline,
+                                   is_bootstrap, wait)
+    except StartupStopRequested:
+        if process.poll() not in (None, 0):
+            raise UserRelayError("current-user relay exited unsuccessfully during stop readback") from None
+        # Bootstrap may still be finishing a task mutation or protected write.
+        # Its existing stop marker is checked at safe boundaries. Keep this
+        # product parent (and the removal guard) alive until its child exits.
+        while process.poll() is None:
+            wait(0.1)
+        if process.poll() != 0:
+            raise UserRelayError("current-user relay exited unsuccessfully during stop cleanup") from None
+        raise
+
+
+def _read_started_relay(process, existing_owner, survival, parent_deadline, is_bootstrap, wait):
+    from startup_timing import startup_stop_checkpoint, startup_wait, startup_progress
+    startup_progress("full_relay_survival_wait")
+    startup_wait(min(survival, max(0.0, parent_deadline - time.monotonic())) if is_bootstrap else survival, wait)
     return_code = process.poll()
     if is_bootstrap and return_code in (None, 0):
         owner = None
+        startup_progress("full_relay_bootstrap_wait")
         while time.monotonic() < parent_deadline:
             if process.poll() not in (None, 0):
                 break
+            startup_stop_checkpoint()
             owner = existing_owner()
+            startup_stop_checkpoint()
             if owner is not None:
                 if time.monotonic() >= parent_deadline:
                     owner = None
                 break
-            wait(min(0.1, max(0.0, parent_deadline - time.monotonic())))
+            startup_wait(min(0.1, max(0.0, parent_deadline - time.monotonic())), wait)
         if owner is None:
             raise UserRelayError("bootstrap did not prove the protected active-version relay")
         if process.poll() not in (None, 0):

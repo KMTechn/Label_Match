@@ -110,17 +110,86 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
     }
     return $owned
 }
+function Invoke-LabelStartupReadOnlyQuery {
+    param(
+        [ValidateSet('Observe','ObserveLifecycle')][string]$QueryMode,
+        [string]$Root,
+        [string]$OperatorSid = '',
+        [scriptblock]$NewProcess = { [Diagnostics.Process]::new() }
+    )
+    # Only these already loaded query functions enter the disposable child.
+    # Authority/inventory validation, Verify and its audit writes remain here.
+    $names = if ($QueryMode -ceq 'Observe') {
+        @('Assert-LabelStartupNoReparsePoint','Get-StartupUpdateProcesses')
+    } else { @('ConvertTo-LabelTaskSid','Get-LabelSupportedStartupTasks') }
+    $query = "`$ErrorActionPreference='Stop';`n"
+    foreach ($name in $names) {
+        $body = (Get-Item -LiteralPath ('Function:\' + $name) -ErrorAction Stop).Definition
+        $query += 'function ' + $name + ' {' + $body + "}`n"
+    }
+    $rootLiteral = "'" + $Root.Replace("'", "''") + "'"
+    $sidLiteral = "'" + $OperatorSid.Replace("'", "''") + "'"
+    if ($QueryMode -ceq 'Observe') {
+        $query += 'ConvertTo-Json -InputObject @(Get-StartupUpdateProcesses ' + $rootLiteral + ' ' + $sidLiteral + ') -Depth 8 -Compress'
+    } else {
+        $query += '$tasks=@(Get-LabelSupportedStartupTasks ' + $rootLiteral + ');'
+        $query += '$legacy=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {[string]$_.TaskName -ieq ''direct-sync-relay-label-match-current-pc''});'
+        $query += '@{task_exists=($tasks.Count -gt 0 -or $legacy.Count -gt 0)} | ConvertTo-Json -Compress'
+    }
+    $process = & $NewProcess
+    $started = $false
+    $owned = $false
+    try {
+        $process.StartInfo.FileName = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+        $process.StartInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($query))
+        $process.StartInfo.UseShellExecute = $false
+        $process.StartInfo.CreateNoWindow = $true
+        $process.StartInfo.RedirectStandardOutput = $true
+        $process.StartInfo.RedirectStandardError = $true
+        if (-not $process.Start()) { throw 'STARTUP_QUERY_OWNERSHIP_UNKNOWN' }
+        $started = $true
+        # Pin the process handle before recording its PID and birth generation;
+        # never reopen a PID or terminate a product/other process by name.
+        $handle = $process.Handle
+        $processId = $process.Id
+        $created = $process.StartTime.ToUniversalTime().Ticks
+        if ($processId -le 0 -or $handle -eq [IntPtr]::Zero -or $created -le 0) { throw 'STARTUP_QUERY_OWNERSHIP_UNKNOWN' }
+        $owned = $true
+        $output = $process.StandardOutput.ReadToEndAsync()
+        $errors = $process.StandardError.ReadToEndAsync()
+        # Reuse the official app-stop snapshot's maximum ten-second query wait.
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        if (-not $process.WaitForExit(10000)) {
+            throw 'STARTUP_QUERY_TIMEOUT_UNKNOWN'
+        }
+        if ($process.ExitCode -ne 0) { throw 'STARTUP_QUERY_FAILED_UNKNOWN' }
+        if (-not $output.Wait([Math]::Max(0, 10000 - [int]$clock.ElapsedMilliseconds))) {
+            throw 'STARTUP_QUERY_INCOMPLETE_UNKNOWN'
+        }
+        $text = $output.GetAwaiter().GetResult()
+        if ([string]::IsNullOrWhiteSpace($text)) { throw 'STARTUP_QUERY_INCOMPLETE_UNKNOWN' }
+        return $text.Trim()
+    } finally {
+        if ($started -and -not $process.HasExited) {
+            if (-not $owned -or $process.Id -ne $processId -or $process.StartTime.ToUniversalTime().Ticks -ne $created -or $process.Handle -ne $handle) {
+                throw 'STARTUP_QUERY_OWNERSHIP_UNKNOWN'
+            }
+            $process.Kill()
+            # Do not let the supervisor disappear while its query is alive.
+            # OS termination itself has no claimed hard wall-clock bound.
+            $process.WaitForExit()
+        }
+        $process.Dispose()
+    }
+}
+
 if ($SupportedLifecycle -and $Mode -cne 'ObserveLifecycle') { throw 'SUPPORTED_OBSERVATION_ONLY' }
 if ($Mode -ceq 'ObserveLifecycle') {
     if (-not $SupportedLifecycle -or $CodeRoot -or
         -not ([IO.Path]::GetFullPath($InstallRoot)).Equals('C:\KMTech\Apps\Label_Match\current',[StringComparison]::OrdinalIgnoreCase)) {
         throw 'SUPPORTED_OBSERVATION_ROOT_DIFFERS'
     }
-    $tasks = @(Get-LabelSupportedStartupTasks $InstallRoot)
-    $legacy = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
-        [string]$_.TaskName -ieq 'direct-sync-relay-label-match-current-pc'
-    })
-    @{task_exists=($tasks.Count -gt 0 -or $legacy.Count -gt 0)} | ConvertTo-Json -Compress
+    Invoke-LabelStartupReadOnlyQuery -QueryMode ObserveLifecycle -Root $InstallRoot
     exit 0
 }
 function Assert-Protected([string]$Path, [switch]$Recursive, [hashtable]$Verified = $null) {
@@ -474,8 +543,7 @@ function Assert-StartupUpdateVersion([string]$Root, [string]$Candidate) {
 $authority = Enter-LabelStartupUpdateAuthority
 if ($Mode -ceq 'Authority') { exit 0 }
 if ($Mode -ceq 'Observe') {
-    $rows = Get-StartupUpdateProcesses $authority.root ([string]$authority.policy.operator_sid)
-    ConvertTo-Json -InputObject @($rows) -Depth 8 -Compress
+    Invoke-LabelStartupReadOnlyQuery -QueryMode Observe -Root $authority.root -OperatorSid ([string]$authority.policy.operator_sid)
     exit 0
 }
 if ($Mode -ceq 'Verify') {

@@ -50,7 +50,8 @@ from user_relay import (
 )
 from writer_session_fence import settle_dead_installer_fence, writer_admission, writer_sink
 from label_data_generation import DataGenerationError, check_user_data_open, record_user_data_open
-from startup_timing import startup_timing_event, startup_timing_step, startup_timed
+from startup_timing import (startup_timing_event, startup_timing_step, startup_timed,
+                            startup_stop_checkpoint, StartupStopRequested)
 
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 ONBOARDING_REPORT_VERSION = "label-match-current-user-onboarding-v1"
@@ -1465,6 +1466,7 @@ def onboard_current_user(
     paths, tls_ca_source, credential_input = prepare_current_user_data_open(app_root, environ=environ)
     assert_registration_storage(Path(app_root), (paths.data_root, paths.settings_path,
         paths.direct_sync_root, paths.logistics_profile_path, paths.ledger_path))
+    startup_stop_checkpoint()
     with writer_admission(ONBOARDING_WRITER_SOURCE):
         for directory in (
             paths.data_root,
@@ -1555,6 +1557,7 @@ def onboard_current_user(
             }
         stop_marker_released = False
     try:
+        startup_stop_checkpoint()
         with startup_timing_step("full_legacy_task_query"):
             report["legacy_task_quiescence"] = dict(legacy_task_quiescence_reader())
             legacy_quiescence = report["legacy_task_quiescence"]
@@ -1576,6 +1579,7 @@ def onboard_current_user(
                     or "disable or remove the legacy Label scheduled task"
                 )
                 raise ValueError(f"{reason}: {remediation}")
+        startup_stop_checkpoint()
         try:
             report["bootstrap_integrity"] = verify_bootstrap_integrity(
                 paths,
@@ -1616,6 +1620,7 @@ def onboard_current_user(
             require_registration_recovery(state)
         if state["status"] == "RECOVERY_REQUIRED":
             raise ValueError(str(state.get("reason") or "partial current-user state"))
+        startup_stop_checkpoint()
         if state["status"] in {"ABSENT", "ABSENT_RETRYABLE"}:
             with EnrollmentMutex() as mutex_receipt:
                 report["enrollment_mutex"] = mutex_receipt
@@ -1710,6 +1715,9 @@ def onboard_current_user(
             raise ValueError(
                 "configured TLS CA bundle was not persisted in the logistics profile"
             )
+        # Registration, rotation, protected persistence and readback are one
+        # non-cancellable unit. Never interrupt it or publish FAILED for stop.
+        startup_stop_checkpoint()
 
         # Keep the read-only downgrade preflight above. Canonical preparation
         # waits until T1; normal startup records READY before business data open.
@@ -1742,6 +1750,8 @@ def onboard_current_user(
                 raise ValueError("current-user settings placement was not proven")
             business_open_in_progress = False
 
+        startup_stop_checkpoint()
+
         stop_path = user_relay_stop_path(paths.direct_sync_root)
         report['relay_resume_required'] = stop_path.exists()
         report["stop_marker_release"] = _portable_stop_marker_release_preflight(
@@ -1749,6 +1759,7 @@ def onboard_current_user(
             environ=environ,
             credential_input=credential_input,
         )
+        startup_stop_checkpoint()
         with writer_admission(ONBOARDING_WRITER_SOURCE):
             report["relay_autostart"] = dict(autostart_installer(setup_root))
         autostart_status = str(report["relay_autostart"].get("status") or "")
@@ -1760,6 +1771,7 @@ def onboard_current_user(
             )
         if autostart_status != "PASS":
             raise ValueError("current-user relay autostart was not proven")
+        startup_stop_checkpoint()
         with startup_timing_step("full_task_retirement"):
             with writer_admission(remove_current_user_scheduled_task.__label_writer_sink__):
                 report["scheduled_task_migration"] = dict(scheduled_task_remover(setup_root))
@@ -1772,6 +1784,7 @@ def onboard_current_user(
                 )
             if migration_status not in {"ABSENT", "DISABLED_RETAINED_OFFICIAL"}:
                 raise ValueError("historical current-user scheduled task retirement was not proven")
+        startup_stop_checkpoint()
         # The marker is a safety fence.  It is released only after canonical
         # install ownership, HKCU, and historical task absence all read back.
         if report["stop_marker_release"].get("marker_present"):
@@ -1790,6 +1803,7 @@ def onboard_current_user(
         else:
             release = {"status": "NOT_REQUIRED"}
         report["stop_marker_release"]["release"] = release
+        startup_stop_checkpoint()
         with startup_timing_step("full_relay_reuse"):
             if defer_canonical_relay_start or defer_machine_worker_relay_start:
                 report["relay_start"] = {"status": "DEFERRED_WORKER_SESSION" if defer_machine_worker_relay_start else "DEFERRED_CANONICAL_INSTALL"}
@@ -1815,9 +1829,11 @@ def onboard_current_user(
                                      "DEFERRED_CANONICAL_INSTALL" if defer_canonical_relay_start else "ALIVE")
             if relay_start_status != expected_relay_status:
                 raise ValueError("current-user relay survival was not proven")
+        startup_stop_checkpoint()
         # Helpers, child launch and survival ran without admission. Reacquire
         # and recheck the fence before applying the environment or READY.
         with writer_admission(ONBOARDING_WRITER_SOURCE):
+            startup_stop_checkpoint()
             apply_current_user_runtime_environment(paths, environ=environ)
             report.update(
                 {
@@ -1835,6 +1851,9 @@ def onboard_current_user(
             if pending_worker is not None and not (defer_machine_worker_relay_start or defer_canonical_relay_start):
                 _complete_worker_install(pending_worker)
         return report
+    except StartupStopRequested:
+        restore_stop_marker_fence()
+        raise
     except EnrollmentMutexError as exc:
         restore_stop_marker_fence()
         report["status"] = exc.report_status

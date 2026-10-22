@@ -1544,6 +1544,10 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 <a id="remote-app-stop"></a>
 ### 원격 정상 멈춤
 
+본창 전 살아 있는 첫 설정도 기존 유효 요청을 받는다. 등록·같은 키 회전·보호 저장과 되읽기, 원장/설정, Run, task Disable/Unregister는 각각 기존 내구 단위를 끝낸 성공 경계에서만 취소한다. 정상 취소는 기존 `APP_STOP_REQUESTED_CLOSE`와 rc 0으로 전달하며 정상 등록 보고서·영수증을 실패 보고서로 덮지 않는다. 원 보호 거절과 실제 실패의 rc/code는 보존한다. relay 생존/owner 준비 대기는 기존 0.1초 반복에서 확인하고, 시작한 bootstrap이 내구 작업을 마치는 동안 제품 부모를 유지한다. bootstrap도 LIVE/UNKNOWN mutation claim이 해소되기 전에 stop으로 정상 반환하지 않는다.
+
+process Observe와 ObserveLifecycle은 기존 권한·무결성·소유 검증을 부모에 남기고 순수 조회 함수만 숨은 자식으로 실행한다. 감독은 직접 만든 자식의 보유 handle·PID·생성 세대에만 적용하며 기존 snapshot의 10초 조회 대기를 사용한다. timeout·부분 출력·비정상 종료·소유 불명은 UNKNOWN이며 빈 snapshot으로 대신하지 않는다. Verify/등록/회전/보호 저장/task 변경/실제 relay는 이 종료 가능한 조회에 들어가지 않는다. 대기 진입과 조회 시간은 기존 값 없는 startup stage 기록으로 구분한다. 기존 CLI 150초와 task 120/150초는 그대로다. 외부 OS I/O·검증·내구 저장·자식 정리의 전체 wall 상한을 입증한 것은 아니므로 모든 경로의 150초 성공을 뜻하지 않는다. 취소 뒤 회복은 같은 작업자의 공식 사용자 제거 → onboard → GUI 순서이며, 새 제거 영수증은 현재 relay marker의 정확한 request ID/SHA에 결속해야 한다. 예전 영수증 재사용이나 marker 수동 삭제는 허용하지 않는다.
+
 업무 밖에 설치 작업자 본인의 일반 권한으로, 보호된 update-control/active.json에서 확인한 활성 SHA의 runtime·script·app-root와 설치 소유자의 실제 relay root를 지정하여 요청한다. `<active_sha>` 세 곳에는 같은 검증된 활성 SHA를 넣는다. 이 관리 명령은 GUI·relay 기동, 등록, 자격 준비를 수행하지 않는다.
 
 ```powershell

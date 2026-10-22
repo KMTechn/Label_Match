@@ -16,6 +16,12 @@ from tests.test_partial_registration_recovery import recovery, put_residue, reco
 from user_relay import request_user_relay_stop, user_relay_stop_path
 
 
+@pytest.fixture()
+def supported_removal_identity(monkeypatch):
+    import label_data_generation as generation
+    monkeypatch.setattr(generation, '_installed_identity', lambda _root: {'version': generation.CURRENT_VERSION, 'build_id': 'a' * 40, 'data_compatible_min_version': generation.CURRENT_VERSION, 'compatibility_verified': False})
+
+
 def used_pc(r, monkeypatch):
     root = Path(r.args.data_dir)
     database = root / 'queue/direct_sync_relay.sqlite3'
@@ -146,7 +152,7 @@ def test_committed_partial_recovery_transfers_used_pc_authority(recovery, monkey
     assert user_relay_stop_path(r.args.data_dir).exists()
 
 
-def test_recovery_then_onboarding_releases_only_the_proven_stop(recovery, monkeypatch):
+def test_recovery_then_onboarding_releases_only_the_proven_stop(recovery, monkeypatch, supported_removal_identity):
     r = recovery
     used_pc(r, monkeypatch)
     portable_install(r)
@@ -236,7 +242,7 @@ def test_after_handoff_interruption_reuses_protected_audit(recovery, monkeypatch
         assert conn.execute('SELECT COUNT(*) FROM direct_sync_credential_recoveries').fetchone()[0] == 1
 
 
-def test_failed_resume_stays_visible_and_supported_removal_allows_retry(recovery, monkeypatch):
+def test_failed_resume_stays_visible_and_supported_removal_allows_retry(recovery, monkeypatch, supported_removal_identity):
     r = recovery
     used_pc(r, monkeypatch)
     portable_install(r)

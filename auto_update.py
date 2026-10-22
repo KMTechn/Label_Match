@@ -23,7 +23,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     sys.path.insert(1, str(Path(__file__).resolve().parent / "site-packages"))
 
-from startup_timing import startup_timed, startup_timing_step
+from startup_timing import startup_timed, startup_timing_step, StartupStopRequested
 from writer_session_fence import WriterFencedError, writer_sink, _assert_no_reparse_components, WriterFenceError
 
 
@@ -2907,6 +2907,7 @@ def wait_current_relay(control: Path, policy: Mapping[str, Any], sha: str, *,
     while time.monotonic() < deadline:
         if _relay_prepare_failure(deadline):
             return False
+        _relay_startup_stop_checkpoint(policy)
         try:
             if read_json(control / "active.json")["sha"] != sha:
                 return False
@@ -3143,6 +3144,8 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str,
             return _bootstrap(app_root, arguments, role=role,
                               parent_deadline=parent_deadline, parent_pid=parent_pid)
         return _bootstrap(app_root, arguments, role=role)
+    except StartupStopRequested:
+        return 0
     except UpdateMutexRecoveryRequired as error:
         return _refuse_abandoned_update(error.policy, role=role)
     except RuntimeError as error:
@@ -3155,6 +3158,12 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str,
         print(json.dumps(record, ensure_ascii=False, sort_keys=True))
         return 20
 
+
+
+def _relay_startup_stop_checkpoint(policy):
+    from startup_timing import StartupStopRequested
+    if relay_stop_requested(policy):
+        raise StartupStopRequested()
 
 
 def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
@@ -3196,6 +3205,11 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                 state = optional_record(control / "transition.json")
                 claim_status = apply_claim_status(control)
                 apply_started = apply_started or claim_status in {"LIVE", "UNKNOWN"} or bool(state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"})
+                if role == "relay" and relay_stop_requested(policy):
+                    if claim_status in {"LIVE", "UNKNOWN"}:
+                        time.sleep(0.1)
+                        continue
+                    _relay_startup_stop_checkpoint(policy)
                 if state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
                     saw_trial = True
                 if claim_status in {"LIVE", "UNKNOWN"} and not (state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}):

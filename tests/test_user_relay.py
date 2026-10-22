@@ -406,7 +406,8 @@ def test_start_reuses_matching_live_relay_instead_of_rejecting_duplicate_exit_ze
     assert result["status"] == "ALIVE"
     assert result["process_id"] == fixture.payload["process_id"]
     assert result["existing_relay_reused"] is True
-    assert waits == [2]
+    assert sum(waits) == pytest.approx(2)
+    assert max(waits) <= 0.1
     assert fixture.launches == []
 
 

@@ -24592,6 +24592,20 @@ def _watch_startup_notice_stop(parent):
     )
 
 
+def _startup_stop_checkpoint():
+    from startup_timing import StartupStopRequested
+    if _startup_app_stop_requested():
+        raise StartupStopRequested()
+
+
+def _startup_stopped_close():
+    try:
+        _label_match_startup_trace("APP_STOP_REQUESTED_CLOSE", message="멈춤 요청으로 닫힘")
+    except Exception:
+        pass
+    return 0
+
+
 def _show_stoppable_startup_notice(title, message, *, warning=False):
     from startup_observation import show_stoppable_startup_notice
     if not show_stoppable_startup_notice(title, message, prepare_root=_watch_startup_notice_stop):
@@ -24941,7 +24955,7 @@ def _onboarding_refusal_codes(exc):
     return codes
 
 
-from startup_timing import observe_startup_timing
+from startup_timing import observe_startup_timing, startup_stop_scope, StartupStopRequested
 
 
 @observe_startup_timing(lambda *args, **kwargs: _label_match_startup_trace(*args, **kwargs))
@@ -24997,10 +25011,10 @@ def main(argv=None):
     verify_factory_contract_startup()
     try:
         if _startup_app_stop_requested():
-            return 0
+            return _startup_stopped_close()
         pending_worker = validate_pending_worker_install(_label_match_runtime_app_root())
         if _startup_app_stop_requested():
-            return 0
+            return _startup_stopped_close()
         check_user_data_open(_label_match_runtime_app_root())
         _label_match_startup_trace("main_enter")
         if _first_run_onboarding_enabled():
@@ -25013,12 +25027,13 @@ def main(argv=None):
                     hold = read_startup_send_hold(sync_root)
                     if hold is not None:
                         verified_hold = (sync_root, hold)
-                onboarding_report = window_first if window_first is not None else onboard_current_user(
-                    app_root,
-                    server_base_url=_first_run_server_base_url(pending_worker),
-                    require_bootstrap_integrity=requires_bootstrap_integrity(app_root),
-                    _startup=True,
-                )
+                with startup_stop_scope(_startup_stop_checkpoint):
+                    onboarding_report = window_first if window_first is not None else onboard_current_user(
+                        app_root,
+                        server_base_url=_first_run_server_base_url(pending_worker),
+                        require_bootstrap_integrity=requires_bootstrap_integrity(app_root),
+                        _startup=True,
+                    )
                 _label_match_startup_trace("startup_path_selected",
                     start_path=onboarding_report.get("start_path", "FULL"),
                     relay_start={"status": (onboarding_report.get("relay_start") or {}).get("status", "UNKNOWN")},
@@ -25027,7 +25042,7 @@ def main(argv=None):
                 # Onboarding's atomic registration/settings unit must finish
                 # before honoring a stop received during that unit.
                 if _startup_app_stop_requested():
-                    return 0
+                    return _startup_stopped_close()
                 if (onboarding_report.get("relay_start") or {}).get("fast_path") is True:
                     relay_reuse_report = window_first if window_first is not None else {
                         "app_root": app_root, "relay_start": onboarding_report["relay_start"],
@@ -25042,6 +25057,8 @@ def main(argv=None):
                     _label_match_startup_trace("bootstrap_integrity_absent")
                     if _show_bootstrap_integrity_absent_warning() is False:
                         return 0
+            except StartupStopRequested:
+                return _startup_stopped_close()
             except WriterFenceError as exc:
                 _label_match_startup_trace(
                     "current_user_onboarding_fenced", **_onboarding_refusal_codes(exc)
@@ -25060,7 +25077,7 @@ def main(argv=None):
                 return ONBOARDING_EXIT_CODE
         settings_path = _default_label_match_settings_path()
         if _startup_app_stop_requested():
-            return 0
+            return _startup_stopped_close()
         data_scope = resolve_data_scope(
             settings_path=settings_path,
             settings_template_path=resource_path(os.path.join("config", "app_settings.json")),
@@ -25072,13 +25089,9 @@ def main(argv=None):
             data_scope=data_scope,
         )
     except WriterFenceError as exc:
-        if _startup_app_stop_requested():
-            return 0
         _show_installation_recovery_required(exc)
         return ONBOARDING_EXIT_CODE
     except CurrentUserOnboardingError as exc:
-        if _startup_app_stop_requested():
-            return 0
         exc._startup_check_refusal = True
         _show_first_run_onboarding_error(exc)
         return ONBOARDING_EXIT_CODE
