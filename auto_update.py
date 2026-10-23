@@ -1213,7 +1213,7 @@ def process_snapshot(control: Path) -> list[dict[str, Any]]:
     # Apply/Verify step) and mutates no product state, so it takes no writer
     # admission: a live relay holds admission for its whole cycle.
     rows = json.loads(_run_fixed_helper(control, "Observe"))
-    if not isinstance(rows, list):
+    if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
         raise ValueError("update process observation is incomplete")
     return rows
 

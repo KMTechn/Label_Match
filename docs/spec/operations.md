@@ -23,7 +23,7 @@
 
 종료 취소 `APP_CLOSE_CANCELLED`와 `멈춤 요청 미룸`은 `local_events/포장실로컬이벤트로그_*.csv`에 보존한다(w9firstupdsub247). 서버 catalog에 없는 이 감사가 업무 CSV에 섞이면 격리·UNKNOWN 영수증으로 정상 relay ACK를 막으므로 앞으로 생성하는 행은 로컬 전용이다. 이미 생성된 업무 CSV·spool·operator_review는 자동 수정하거나 지우지 않는다. 현재 서버 catalog 고정 사본과 구 bundle을 emitter 전체에 대조하는 정책 시험 및 실제 CSV→relay receipt→상태 되읽기 회귀로 확인한다.
 
-v2.0.120 화면 고정은 웹 6ced39fb4056488575e04e17059c0e3e90bd83f2의 exporter 사본 76개 파일(parts fingerprint c83ed483720e2b61)을 고정한다. 다리 글·원문 코드·교환 두 칸·품목별 전체 제품 수와 부분 제출 확인 뒤 즉시 release를 반영했다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다. 셸 v3.16.3.1을 고정한다.
+v2.0.122 화면 고정은 웹 6ced39fb4056488575e04e17059c0e3e90bd83f2의 exporter 사본 76개 파일(parts fingerprint c83ed483720e2b61)을 고정한다. 다리 글·원문 코드·교환 두 칸·품목별 전체 제품 수와 부분 제출 확인 뒤 즉시 release를 반영했다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다. 셸 v3.16.3.1을 고정한다.
 
 입력 칸 스캔 막이: 열린 판에서 스캐너 꼴 입력을 받으면 앰버 띠로 알리고 처리는 0건이다.
 
@@ -1527,6 +1527,8 @@ F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join
 
 
 ### Bootstrap relay 시작의 일시 admission 대기
+
+Observe 질의는 프로세스 0·1·여러 행을 한 겹 JSON 배열로 내보내며, process_snapshot은 Mapping이 아닌 원소를 관측 불가(ValueError)로 거절해 writer 판정과 fence의 fail-closed 경계를 유지한다.
 
 RUNNING 소유자를 증명하기 전에 자기가 시작한 relay 또는 bootstrap 자식이 종료하면 부모는 `RELAY_EXITED_BEFORE_RUNNING`으로 실패한다. 성공 종료한 bootstrap은 첫 rc 0 관측부터 최대 2.0초 동안 0.1초 간격으로 소유자를 다시 읽어 종료와 상태 기록 사이의 경합을 확인한다. 이 유예는 기존 부모 준비 기한을 넘기지 않으며 소유자가 증명되면 즉시 성공하고 끝까지 없으면 같은 코드로 실패한다. 비정상 rc는 즉시 실패한다. 첫 설정의 기존 stop marker는 이 원인 코드를 `RELAY_RESUME_REQUIRED`로 덮지 않는다. 살아 있는 자식의 기존 준비 마감은 유지한다. 업데이트의 복구 writer·되돌림 복구는 새 조기 종료 감지에도 기존 안내·`UPDATE_APPLY_NO_PROGRESS`와 종료값 20을 유지한다. 무음 종료·대기는 `RELAY_STOP_MARKER_PRESENT`, `RELAY_INSTANCE_LEASE_UNAVAILABLE`, `RELAY_STARTUP_HANDLED`, `RELAY_WRITER_FENCED`, `RELAY_STOP_REQUESTED`, `RELAY_COMPLETED`를 기존 지원 레코드 형식으로 남긴다. staging의 `failure-*.json` 진단 사본은 RUNNING 전 갈래와 비정상 종료에만 남기며 RUNNING 뒤 정상 완료·정지·startup 위임에는 만들지 않는다. 뒤의 부모 실패에도 원래 이유를 보존하며 값·경로 없이 고정 코드와 숫자 종료값만 기록한다. 진단의 import·변환·저장·출력 실패는 원래 종료값을 바꾸지 않는다. `WRITER_GATE_TIMEOUT`의 기존 DEFERRED 기록과 자식 출력 DEVNULL은 유지한다.
 

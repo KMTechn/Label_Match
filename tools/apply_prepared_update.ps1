@@ -130,7 +130,7 @@ function Invoke-LabelStartupReadOnlyQuery {
     $rootLiteral = "'" + $Root.Replace("'", "''") + "'"
     $sidLiteral = "'" + $OperatorSid.Replace("'", "''") + "'"
     if ($QueryMode -ceq 'Observe') {
-        $query += 'ConvertTo-Json -InputObject @(Get-StartupUpdateProcesses ' + $rootLiteral + ' ' + $sidLiteral + ') -Depth 8 -Compress'
+        $query += 'ConvertTo-Json -InputObject (Get-StartupUpdateProcesses ' + $rootLiteral + ' ' + $sidLiteral + ') -Depth 8 -Compress'
     } else {
         $query += '$tasks=@(Get-LabelSupportedStartupTasks ' + $rootLiteral + ');'
         $query += '$legacy=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {[string]$_.TaskName -ieq ''direct-sync-relay-label-match-current-pc''});'
