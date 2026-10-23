@@ -1,6 +1,7 @@
 """Relay startup must distinguish a dead child from a live, unready child."""
-from contextlib import nullcontext
+import ast
 import json
+from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -45,10 +46,11 @@ def test_live_unready_bootstrap_keeps_original_deadline(monkeypatch):
             SimpleNamespace(pid=42, poll=lambda: None), lambda: None, 0.0,
             103.0, True, lambda seconds: clock.__setitem__(0, clock[0] + seconds),
         )
-    assert not caught.value.cause_code
+    assert not getattr(caught.value, "cause_code", "")
     assert clock[0] == pytest.approx(103.0)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native relay process supervision")
 def test_wait_current_relay_detects_real_child_exit(monkeypatch, tmp_path):
     child = subprocess.Popen([sys.executable, "-B", "-c", "pass"],
                              creationflags=subprocess.CREATE_NO_WINDOW)
@@ -157,10 +159,43 @@ def test_main_silent_startup_branch_records_reason(monkeypatch, tmp_path, branch
         marker.parent.mkdir(parents=True)
         marker.write_text("preserved")
     reports = []
-    monkeypatch.setattr(user_relay, "_record_relay_reason", lambda code, **k: reports.append(code))
+    monkeypatch.setattr(user_relay, "_record_relay_reason", lambda code, **k: reports.append(code), raising=False)
     assert user_relay.main(["--app-root", str(tmp_path)], credential_input=object()) == 0
     assert reports == [{"stop_marker": "RELAY_STOP_MARKER_PRESENT",
                         "instance_lease": "RELAY_INSTANCE_LEASE_UNAVAILABLE",
                         "startup_deferred": "RELAY_STARTUP_HANDLED"}[branch]]
     if marker.exists():
         assert marker.read_text() == "preserved"
+
+
+@pytest.mark.parametrize("startup_check_refusal", [False, True])
+def test_onboarding_notice_shows_same_relay_reason_in_existing_message_category(
+    tmp_path, monkeypatch, startup_check_refusal,
+):
+    # Compile only the real notice function/constants; no GUI module import or window.
+    source = Path(__file__).resolve().parents[1] / "Label_Match.py"
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+    names = {"FIRST_RUN_ONBOARDING_ERROR_TITLE", "FIRST_RUN_ONBOARDING_ERROR_MESSAGE",
+             "FIRST_RUN_REGISTRATION_RECOVERY_CODES", "FIRST_RUN_REGISTRATION_RECOVERY_MESSAGE",
+             "INSTALLATION_RECOVERY_REQUIRED_MESSAGE", "FIRST_RUN_ONBOARDING_CAUSE_MESSAGES"}
+    nodes = [node for node in tree.body
+             if (isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names
+                                                     for t in node.targets))
+             or (isinstance(node, ast.FunctionDef) and node.name == "_show_first_run_onboarding_error")]
+    notices = []
+    observed = []
+    import startup_observation
+    monkeypatch.setattr(startup_observation, "observe_startup",
+                        lambda *a, **k: observed.append(k["refused"]))
+    namespace = {"_show_stoppable_startup_notice": lambda title, message: notices.append((title, message)),
+                 "_label_match_startup_trace": lambda *a, **k: pytest.fail("notice failed"),
+                 "_watch_startup_notice_stop": lambda _: None}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), "exec"), namespace)
+    namespace["_show_first_run_onboarding_error"](SimpleNamespace(
+        cause_code="RELAY_EXITED_BEFORE_RUNNING", status="FAILED", report_path=tmp_path / "report.json",
+        _startup_check_refusal=startup_check_refusal,
+    ))
+    assert len(notices) == 1
+    assert "기록 전송이 멈췄습니다\n현장 관리자에게 알리세요" in notices[0][1]
+    assert "코드: RELAY_EXITED_BEFORE_RUNNING" in notices[0][1]
+    assert observed == ([False] if startup_check_refusal else [])

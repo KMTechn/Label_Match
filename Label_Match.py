@@ -24382,6 +24382,9 @@ FIRST_RUN_ONBOARDING_CAUSE_MESSAGES = {
     "RELAY_RESUME_REQUIRED": (
         '기록 전송이 멈췄습니다\n현장 관리자에게 알리세요\n코드: READY · ALIVE'
     ),
+    "RELAY_EXITED_BEFORE_RUNNING": (
+        '기록 전송이 멈췄습니다\n현장 관리자에게 알리세요\n코드: RELAY_EXITED_BEFORE_RUNNING'
+    ),
     "BOOTSTRAP_INTEGRITY_INVALID": (
         '설치 파일을 확인하지 못해 프로그램을 시작하지 못했습니다\n현장 관리자에게 알리세요'
     ),
@@ -24443,6 +24446,7 @@ def _show_first_run_registration_recovery(cause):
 def _show_first_run_onboarding_error(failure):
     cause = getattr(failure, "cause_code", "")
     registration_recovery = cause in FIRST_RUN_REGISTRATION_RECOVERY_CODES
+    specific_notice = registration_recovery or cause == "RELAY_EXITED_BEFORE_RUNNING"
     if getattr(failure, "_startup_check_refusal", False):
         try:
             from startup_observation import observe_startup, onboarding_reason
@@ -24450,11 +24454,11 @@ def _show_first_run_onboarding_error(failure):
             reasons = [reason]
             if failure.status == "UNKNOWN":
                 reasons.append("UNKNOWN_DATA" if reason == "DATA_GENERATION_REFUSED" else "UNKNOWN_ACCOUNT")
-            observe_startup(reasons, refused=not registration_recovery,
+            observe_startup(reasons, refused=not specific_notice,
                             prepare_root=_watch_startup_notice_stop)
         except Exception:
             pass
-        if not registration_recovery:
+        if not specific_notice:
             return
     if registration_recovery:
         _show_first_run_registration_recovery(cause)

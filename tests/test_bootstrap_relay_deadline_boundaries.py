@@ -274,7 +274,7 @@ def parent_wait(monkeypatch, tmp_path):
 
         def launch(command, **kwargs):
             commands.append(command)
-            return SimpleNamespace(pid=777, poll=lambda: 1 if exit_at is not None and clock[0] >= 1000 + exit_at else 0)
+            return SimpleNamespace(pid=777, poll=lambda: 1 if exit_at is not None and clock[0] >= 1000 + exit_at else None)
 
         monkeypatch.setattr(user_relay.time, "monotonic", lambda: clock[0])
         monkeypatch.setattr(onboarding, "_machine_worker_context", lambda root: None)
