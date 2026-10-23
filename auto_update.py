@@ -3060,16 +3060,6 @@ def gui_recovery_state(state, claim_status: str) -> bool:
                 and claim_status == "ABSENT"))
 
 
-def _wait_recovery_relay(*args, **kwargs) -> bool:
-    """Keep the recovery caller's existing failure reporting on early exit."""
-    try:
-        return wait_current_relay(*args, **kwargs)
-    except _RelayPreparationUnavailable as error:
-        if error.code != "RELAY_EXITED_BEFORE_RUNNING":
-            raise
-        return False
-
-
 def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
                            arguments: list[str], *, role: str, deadline: float,
                            state=None, claim_status: str = "") -> int | None:
@@ -3264,10 +3254,16 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                 if state and state["phase"] in {"CONFIRMED", "ROLLED_BACK"} and saw_trial:
                     if state["phase"] == "ROLLED_BACK":
                         if role == "relay" and state.get("trial_role", "gui") == "relay":
-                            if (state.get("trial_sha") == active["sha"]
-                                    and _wait_recovery_relay(control, policy, active["sha"],
+                            rollback_relay_ready = False
+                            if state.get("trial_sha") == active["sha"]:
+                                try:
+                                    rollback_relay_ready = wait_current_relay(control, policy, active["sha"],
                                         started_at=state["trial_started_at"], deadline=relay_deadline,
-                                        pid=state["trial_pid"])):
+                                        pid=state["trial_pid"])
+                                except _RelayPreparationUnavailable as error:
+                                    if error.code != "RELAY_EXITED_BEFORE_RUNNING":
+                                        raise
+                            if rollback_relay_ready:
                                 return _relay_prepare_result(relay_deadline)
                             emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS"}, stage="update_apply")
                             return 20
