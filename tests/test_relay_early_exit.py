@@ -69,6 +69,97 @@ def test_wait_current_relay_detects_real_child_exit(monkeypatch, tmp_path):
     assert updates.time.monotonic() - start < 0.5
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native relay process supervision")
+@pytest.mark.parametrize("entry", ["user_main", "headless_main", "headless_to_user_main"])
+def test_unhandled_main_exception_is_recorded_before_first_cycle_and_parent_fails(tmp_path, entry):
+    script = """
+import json
+from pathlib import Path
+import sys
+import auto_update as updates
+import current_user_onboarding as onboarding
+import label_data_generation as generation
+import label_match_product_host as host
+import label_match_relay_entry as headless
+import user_relay
+root = Path(sys.argv[1])
+updates.control_root = lambda _: root / 'control'
+updates.load_policy = lambda _: {'staging_root': str(root / 'stage')}
+generation.release_identity = lambda _: None
+def fail_before_cycle(*args, **kwargs):
+    json.loads('unhandled-message-canary C:/private/canary')
+updates.startup_gate = fail_before_cycle
+arguments = ['--app-root', str(root)]
+if sys.argv[2] == 'user_main':
+    user_relay.main(arguments, credential_input=object())
+else:
+    headless.APP_ROOT = root
+    onboarding._machine_worker_context = lambda _: None
+    if sys.argv[2] == 'headless_to_user_main':
+        host.dispatch_product_mode = lambda argv: user_relay.main(argv[1:], credential_input=object())
+    headless.main([user_relay.USER_RELAY_MODE, *arguments])
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-B", "-c", script, str(tmp_path), entry],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert child.wait(timeout=10) == 1
+    started = user_relay.time.monotonic()
+    with pytest.raises(user_relay.UserRelayError) as caught:
+        user_relay._read_started_relay(
+            child, lambda: None, 0.0, started + 2.0, True, user_relay.time.sleep,
+        )
+    assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
+    assert caught.value.exit_code == 1
+    assert user_relay.time.monotonic() - started < 0.5
+    records = [json.loads(path.read_text()) for path in (tmp_path / "stage").glob("failure-*.json")]
+    assert records == [{
+        "stage": "update_apply", "reason_code": caught.value.cause_code,
+        "exception_type": "JSONDecodeError",
+        "location_module": "label_match_product_host.py" if entry == "headless_main" else "user_relay.py",
+        "location_function": "dispatch_product_mode" if entry == "headless_main" else "_run_user_relay",
+    }]
+
+
+@pytest.mark.parametrize("diagnostic_fails", [False, True])
+@pytest.mark.parametrize("running", [False, True])
+def test_main_diagnostic_keeps_original_exception(monkeypatch, tmp_path, diagnostic_fails, running):
+    error = ValueError("unhandled-message-canary")
+    reports = []
+
+    def fail(*args, **kwargs):
+        if running:
+            user_relay.run_persistent_relay_loop(
+                lambda: {"status": "PASS"}, status_path=tmp_path / "status.json", max_cycles=1,
+            )
+        raise error
+
+    def record(code, **kwargs):
+        if "error" not in kwargs:
+            return
+        reports.append((code, kwargs["error"]))
+        if diagnostic_fails:
+            raise OSError("diagnostic-message-canary")
+
+    monkeypatch.setattr(updates, "startup_gate", fail)
+    import label_data_generation as generation
+    monkeypatch.setattr(generation, "release_identity", lambda _: None)
+    monkeypatch.setattr(user_relay, "_record_relay_reason", record)
+    with pytest.raises(ValueError) as caught:
+        user_relay.main(["--app-root", str(tmp_path)], credential_input=object())
+    assert caught.value is error
+    expected = "RELAY_UNHANDLED_EXCEPTION" if running else "RELAY_EXITED_BEFORE_RUNNING"
+    assert reports == [(expected, error)]
+    # A previous invocation's successful RUNNING must not taint the next main.
+    reports.clear()
+    running = False
+    with pytest.raises(ValueError) as repeated:
+        user_relay.main(["--app-root", str(tmp_path)], credential_input=object())
+    assert repeated.value is error
+    assert reports == [("RELAY_EXITED_BEFORE_RUNNING", error)]
+
+
 def test_live_relay_without_running_keeps_timeout(monkeypatch, tmp_path):
     clock = [100.0]
     monkeypatch.setattr(updates.time, "monotonic", lambda: clock[0])

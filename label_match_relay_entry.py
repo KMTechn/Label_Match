@@ -15,13 +15,22 @@ def main(argv=None) -> int:
     from label_match_product_host import PRODUCT_MODES, dispatch_product_mode
     if not arguments or arguments[0] not in PRODUCT_MODES:
         raise ValueError("headless entry requires an explicit product mode")
-    if arguments[0] in {"--label-match-user-relay", "--label-match-direct-sync-relay"}:
-        from current_user_onboarding import _machine_worker_context
-        _machine_worker_context(APP_ROOT)
-    result = dispatch_product_mode(arguments)
-    if result is None:
-        raise ValueError("headless product mode was not dispatched")
-    return int(result)
+    try:
+        if arguments[0] in {"--label-match-user-relay", "--label-match-direct-sync-relay"}:
+            from current_user_onboarding import _machine_worker_context
+            _machine_worker_context(APP_ROOT)
+        result = dispatch_product_mode(arguments)
+        if result is None:
+            raise ValueError("headless product mode was not dispatched")
+        return int(result)
+    except Exception as error:
+        try:
+            if arguments[0] == "--label-match-user-relay" and not getattr(error, "_relay_exit_recorded", False):
+                from user_relay import _record_relay_reason
+                _record_relay_reason("RELAY_EXITED_BEFORE_RUNNING", app_root=APP_ROOT, error=error)
+        except Exception:
+            pass  # Keep native worker refusal and the original abnormal exit.
+        raise
 
 
 if __name__ == "__main__":

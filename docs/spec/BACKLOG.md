@@ -1,4 +1,4 @@
-- w9firstupdsub505 / relay RUNNING 전 자식 종료를 RELAY_EXITED_BEFORE_RUNNING으로 즉시 알리고, 첫 설정의 marker 기반 꼬리표보다 원인 코드를 보존한다. 무음 종료·fence 대기는 값 없는 고정 지원 기록을 남기며 살아 있는 자식의 준비 마감·재사용·DEVNULL·자료 보존은 유지한다. 판 올림은 sub-504 원인 고침과 합친 뒤 한 번에 한다([relay 운영](operations.md#bootstrap-relay-시작의-일시-admission-대기)).
+- w9firstupdsub505 / relay RUNNING 전 자식 종료를 RELAY_EXITED_BEFORE_RUNNING으로 즉시 알리고, 첫 설정의 marker 기반 꼬리표보다 원인 코드를 보존한다. 무음 종료·fence 대기는 값 없는 고정 지원 기록을 남기며 main의 처리 안 된 예외도 같은 조기 종료 코드(RUNNING 뒤 RELAY_UNHANDLED_EXCEPTION)·예외 형식·제품 파일/함수 이름을 기록한 뒤 기존 종료값을 보존한다. 살아 있는 자식의 준비 마감·재사용·DEVNULL·자료 보존은 유지한다. 판 올림은 sub-504 원인 고침과 합친 뒤 한 번에 한다([relay 운영](operations.md#bootstrap-relay-시작의-일시-admission-대기)).
 - w9firstupdsub483 / LM R4 live 첫 설정 공식 stop: 성공한 내구 경계와 살아 있는 relay owner 대기에 협력 취소를 연결하고, 정상 rc 0/APP_STOP_REQUESTED_CLOSE 및 정상 보고서·기존 보호 거절을 보존한다. 순수 process/task 조회만 기존 10초 감독 자식으로 분리하며 mutation/Verify/실제 relay는 포함하지 않는다. 격리 main→onboarding→공식 fresh 부재 모델과 query timeout을 확인하며, 실제 현장 150초 수용·기존 보호 P2 종결은 독립 검토/후속 앱 회차에 남는다([원격 정상 멈춤](operations.md#remote-app-stop)).
 
 - v2.0.120: inspection4 의 v2.0.119 다른 build 미검증 표지 때문에 판만 올림, 코드 동작 변경 0

@@ -1530,6 +1530,8 @@ F1 복원 회귀의 CSV 관측은 DataManager 비동기 writer의 log_queue.join
 
 RUNNING 소유자를 증명하기 전에 자기가 시작한 relay 또는 bootstrap 자식이 종료하면 부모는 `RELAY_EXITED_BEFORE_RUNNING`으로 즉시 실패하며, 첫 설정의 기존 stop marker는 이 원인 코드를 `RELAY_RESUME_REQUIRED`로 덮지 않는다. 살아 있는 자식의 기존 준비 마감은 유지한다. 무음 종료·대기는 `RELAY_STOP_MARKER_PRESENT`, `RELAY_INSTANCE_LEASE_UNAVAILABLE`, `RELAY_STARTUP_HANDLED`, `RELAY_WRITER_FENCED`, `RELAY_STOP_REQUESTED`, `RELAY_COMPLETED`를 기존 지원 레코드 형식으로 남긴다. staging의 `failure-*.json` 진단 사본은 뒤의 부모 실패에도 원래 이유를 보존하며 값·경로 없이 고정 코드와 숫자 종료값만 기록한다. `WRITER_GATE_TIMEOUT`의 기존 DEFERRED 기록과 자식 출력 DEVNULL은 유지한다.
 
+relay main에서 처리되지 않은 예외는 종료 전에 예외 형식 이름·가장 안쪽 제품 프레임의 파일 이름/함수 이름을 같은 지원 사본에 남긴다. headless 진입에서 user main에 이르기 전 예외도 포함하며 같은 예외의 사본은 중복하지 않는다. RUNNING을 쓰기 전에는 부모와 같은 `RELAY_EXITED_BEFORE_RUNNING`, 쓴 뒤에는 `RELAY_UNHANDLED_EXCEPTION`을 사용한다. 예외 메시지·소스 줄·지역 변수·디렉터리 경로는 기록하지 않으며 원래 예외를 다시 올려 기존 종료값을 보존한다.
+
 Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRITER_GATE_TIMEOUT`만 0.1초씩 쉬며 재시도한다. trial의 시도 창은 `min(업데이트 240초 마감, 공유 relay_deadline)`이며 부모 PID·생성 신원 검사를 함께 보존한다. 각 시도와 경합 뒤 대기 전에 부모 수명·예산을 확인하고, 사망·교체·미증명·소진 뒤에는 retry·새 launch 없이 exit20이다. 각 시도는 기존 launch_version의 admission을 다시 얻으며 시도 사이에는 admission을 보유하지 않는다. 한 admission의 기존 대기 최대 5초는 바꾸지 않는다. fence 확정·버려진 소유권 등 다른 거절과 GUI 실행 자체의 timeout은 재시도하지 않는다. 포인터·trial claim·READY·CONFIRMED·G 허가·cohort·잠금 순서는 유지한다. bootstrap 밖의 relay launcher admission과 실제 로그온/pythonw 수용은 별도 범위다.
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 import ntpath
@@ -38,6 +39,7 @@ APP_STOP_SCHEMA = "label-match-app-stop-v1"
 APP_STOP_TIMEOUT_SECONDS = 150.0
 LABEL_MATCH_SOURCE_GLOB = "포장실작업이벤트로그_*.csv"
 LABEL_MATCH_WORKER_ID = "direct-sync-relay-label-match-current-user"
+_relay_main_running = ContextVar("relay_main_running", default=False)
 
 
 from label_atomic_replace import atomic_replace
@@ -51,13 +53,28 @@ class UserRelayError(RuntimeError):
         self.exit_code = exit_code
 
 
-def _record_relay_reason(reason_code: str, *, app_root=None, exit_code=None) -> None:
+def _record_relay_reason(reason_code: str, *, app_root=None, exit_code=None, error=None) -> None:
     """Keep fixed diagnostic codes even when ordinary writer admission is denied."""
     from auto_update import control_root, load_policy, support_record
 
     fields = {"reason_code": reason_code}
     if type(exit_code) is int:
         fields["exit_code"] = exit_code
+    if error is not None:
+        fields["exception_type"] = type(error).__name__
+        source_root = Path(__file__).resolve().parent
+        for frame, _ in traceback.walk_tb(error.__traceback__):
+            source_name = frame.f_globals.get("__file__")
+            if not source_name:
+                continue
+            source = Path(source_name).resolve()
+            if source.is_relative_to(source_root):
+                relative = source.relative_to(source_root)
+                if relative.parts and relative.parts[0] not in {"site-packages", "tests"}:
+                    # Keep the innermost application frame, without its directory,
+                    # source line, locals, exception sentence, or chained values.
+                    fields["location_module"] = Path(frame.f_code.co_filename).name
+                    fields["location_function"] = frame.f_code.co_name
     report = support_record(fields, stage="update_apply")
     if app_root is not None:
         try:
@@ -996,6 +1013,7 @@ def run_persistent_relay_loop(
                         "updated_at": _now(),
                     },
                 )
+                _relay_main_running.set(True)
         except WriterFencedError:
             if not fence_recorded:
                 _record_relay_reason("RELAY_WRITER_FENCED", app_root=reason_root)
@@ -1330,19 +1348,38 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None, *, credential_input=None) -> int:
-    args = build_parser().parse_args(argv)
-    app_root = (
-        Path(
-            args.app_root
-            or (
-                Path(sys.executable).parent
-                if getattr(sys, "frozen", False)
-                else _default_application_root()
+    app_root = None
+    # Per-call state observes only this context's successful RUNNING write.
+    # No new status schema or cross-process diagnostic protocol is required.
+    running_token = _relay_main_running.set(False)
+    try:
+        args = build_parser().parse_args(argv)
+        app_root = (
+            Path(
+                args.app_root
+                or (
+                    Path(sys.executable).parent
+                    if getattr(sys, "frozen", False)
+                    else _default_application_root()
+                )
             )
+            .expanduser()
+            .resolve()
         )
-        .expanduser()
-        .resolve()
-    )
+        return _run_user_relay(args, app_root, argv, credential_input=credential_input)
+    except Exception as error:
+        try:
+            reason = "RELAY_UNHANDLED_EXCEPTION" if _relay_main_running.get() else "RELAY_EXITED_BEFORE_RUNNING"
+            _record_relay_reason(reason, app_root=app_root, error=error)
+            error._relay_exit_recorded = True
+        except Exception:
+            pass  # Preserve the original exception and the entry point's exit code.
+        raise
+    finally:
+        _relay_main_running.reset(running_token)
+
+
+def _run_user_relay(args, app_root: Path, argv, *, credential_input=None) -> int:
     if args.request_app_stop:
         if args.direct_sync_root:
             direct_sync_root = Path(args.direct_sync_root)
