@@ -3033,7 +3033,8 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
             ready = wait_current_relay(control, policy, active["sha"], started_at=started_at,
                                        deadline=deadline, pid=relay_pid)
         except _RelayPreparationUnavailable as error:
-            failure = error.code
+            if error.code != "RELAY_EXITED_BEFORE_RUNNING":
+                failure = error.code
     if not ready:
         failure = failure or _relay_prepare_failure(deadline) or "UPDATE_APPLY_NO_PROGRESS"
         failed_report = support_record({"reason_code": failure,

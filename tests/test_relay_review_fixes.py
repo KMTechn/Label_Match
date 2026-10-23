@@ -60,11 +60,31 @@ def test_bootstrap_grace_stays_within_parent_deadline(monkeypatch, deadline):
     assert clock[0] == pytest.approx(min(2.0, deadline))
 
 
-def test_bootstrap_rejects_owner_readback_after_grace_expires(monkeypatch):
+def test_bootstrap_accepts_query_started_inside_grace(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(relay.time, "monotonic", lambda: clock[0])
+    starts = []
+    def late_owner():
+        starts.append(clock[0])
+        if clock[0] < 1.9:
+            clock[0] = 1.9
+            return None
+        clock[0] = 2.6
+        return {"process_id": 77, "updated_at": "now"}
+    result = relay._read_started_relay(
+        SimpleNamespace(pid=42, poll=lambda: 0), late_owner, 0.0, 10.0, True,
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+    assert result["process_id"] == 77
+    assert starts == [0.0, 1.9]
+    assert clock[0] == 2.6
+
+
+def test_bootstrap_rejects_owner_readback_after_parent_deadline(monkeypatch):
     clock = [0.0]
     monkeypatch.setattr(relay.time, "monotonic", lambda: clock[0])
     def late_owner():
-        clock[0] = 3.0
+        clock[0] = 10.0
         return {"process_id": 77, "updated_at": "now"}
     with pytest.raises(relay.UserRelayError) as caught:
         relay._read_started_relay(
@@ -236,3 +256,29 @@ def test_rollback_exit_retains_old_reason_and_rc(monkeypatch, tmp_path):
     monkeypatch.setattr(updates, "emit_support_record", lambda fields, **k: records.append(fields))
     assert updates.bootstrap(tmp_path, [relay.USER_RELAY_MODE], role="relay") == 20
     assert records == [{"reason_code": "UPDATE_APPLY_NO_PROGRESS"}]
+
+
+@pytest.mark.parametrize("failure", ["RELAY_EXITED_BEFORE_RUNNING", "RELAY_PARENT_EXITED"])
+def test_start_current_preserves_recovery_reason_and_rc(monkeypatch, tmp_path, failure):
+    monkeypatch.setattr(updates.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(updates, "now_utc", lambda: "2026-10-23T00:00:00Z")
+    monkeypatch.setattr(updates, "_launch_bootstrap_version", lambda *a, **kw: 42)
+    monkeypatch.setattr(updates, "write_json_durable", lambda *a: None)
+    records = []
+    monkeypatch.setattr(updates, "emit_support_record", lambda fields, **kw: records.append(fields))
+    policy = {"staging_root": str(tmp_path)}
+    active = {"sha": "a" * 40}
+    monkeypatch.setattr(updates, "wait_current_relay", lambda *a, **kw: False)
+    assert updates.start_current(tmp_path, policy, None, active, [relay.USER_RELAY_MODE],
+                                 code="UPDATE_TERMINAL_RECOVERED", deadline=100.0) == 20
+    old_reason = records[-1]
+
+    def exited(*args, **kwargs):
+        raise updates._RelayPreparationUnavailable(failure)
+
+    monkeypatch.setattr(updates, "wait_current_relay", exited)
+    assert updates.start_current(tmp_path, policy, None, active, [relay.USER_RELAY_MODE],
+                                 code="UPDATE_TERMINAL_RECOVERED", deadline=100.0) == 20
+    assert records[-1] == (old_reason if failure == "RELAY_EXITED_BEFORE_RUNNING"
+                           else {"reason_code": failure})
+    assert old_reason == {"reason_code": "UPDATE_APPLY_NO_PROGRESS"}

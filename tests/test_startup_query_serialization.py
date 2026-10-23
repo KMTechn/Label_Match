@@ -3,12 +3,16 @@ import json
 import re
 import shutil
 import subprocess
+import time
+from functools import partial
+from types import SimpleNamespace
 
 import pytest
 
 import auto_update
 from tests.test_live_startup_query import _source, _supervisor
 from tests.test_recovery_relay_bootstrap import recovery  # noqa: F401
+from tests.test_bootstrap_relay_readback import relay_bootstrap  # noqa: F401
 
 
 REAL_PROCESS_SNAPSHOT = auto_update.process_snapshot
@@ -26,7 +30,7 @@ def _literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _observe(tmp_path, shell, count, *, parent=None):
+def _observe(tmp_path, shell, count, *, parent=None, role="gui"):
     root = tmp_path / "managed/current"
     root.mkdir(parents=True)
     identity = parent or {"pid": 4100, "sha": "a" * 40, "sid": "operator",
@@ -35,7 +39,8 @@ def _observe(tmp_path, shell, count, *, parent=None):
         json.dumps({"source_commit": identity["sha"]}), encoding="utf-8")
     processes = [dict(ProcessId=identity["pid"] + index, Name="pythonw.exe",
                       ExecutablePath=str(root / "runtime/pythonw.exe"),
-                      CommandLine='"' + str(root / "app/main.py") + '"',
+                       CommandLine='"' + str(root / "app/main.py") + '"'
+                                   + (' --label-match-user-relay' if role == "relay" else ''),
                       CreationDate=identity["created_at"])
                  for index in range(count)]
     process_file = tmp_path / "cim-rows.json"
@@ -141,3 +146,39 @@ def test_absent_claim_relay_bootstrap_uses_real_observe_rows(recovery, monkeypat
     assert recovery.launches == [{"deferred_at": "2026-10-16T10:00:00Z"}]
     assert recovery.ready_calls[-1]["pid"] == recovery.parent["pid"] + 1
     recovery.unchanged()
+
+
+@pytest.mark.parametrize("sample", range(1, 6))
+def test_completed_bootstrap_owner_uses_real_query_child(relay_bootstrap, monkeypatch, tmp_path, sample):
+    import current_user_onboarding
+    import user_relay
+
+    fixture = relay_bootstrap
+    query_root = tmp_path / "query/managed/current"
+    stamp = user_relay._now()
+    identity = {"pid": 77, "sha": fixture.version.name, "sid": "operator", "created_at": stamp}
+    direct = current_user_onboarding.resolve_current_user_onboarding_paths(fixture.current).direct_sync_root
+    fixture.status.update(status="RUNNING", worker_id=user_relay.LABEL_MATCH_WORKER_ID,
+                          process_id=77, app_root=str(fixture.current), code_root=str(query_root),
+                          direct_sync_root=str(direct), updated_at=stamp)
+    monkeypatch.setattr(auto_update, "version_bundle", lambda *a: query_root)
+    monkeypatch.setattr(auto_update, "process_snapshot", REAL_PROCESS_SNAPSHOT)
+
+    def query(*args, **kwargs):
+        return _observe(tmp_path / "query", "PS51", 1, parent=identity, role="relay")
+
+    monkeypatch.setattr(auto_update, "_run_fixed_helper", query)
+    owner = partial(user_relay._existing_user_relay_owner, fixture.current, direct,
+                    is_bootstrap=True, allow_fast_path=False)
+    started = time.perf_counter()
+    result = user_relay._read_started_relay(
+        SimpleNamespace(pid=42, poll=lambda: 0), owner, 0.0,
+        time.monotonic() + 600.0, True, lambda _: None,
+    )
+    elapsed = time.perf_counter() - started
+    (tmp_path / "owner-query-timing.json").write_text(json.dumps({
+        "sample": sample, "seconds": elapsed, "actual_owner": True,
+        "actual_process_snapshot": True, "actual_query_child": True,
+    }), encoding="utf-8")
+    assert result["status"] == "ALIVE" and result["process_id"] == 77
+    assert result["bootstrap_process_id"] == 42

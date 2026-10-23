@@ -1,3 +1,5 @@
+- w9firstupdsub525 / v2.0.122: 유예 안에서 시작한 relay owner 조회는 부모 기한까지 인정하며 유예 뒤 새 조회는 시작하지 않는다. 업데이트 복구 start_current의 조기 종료는 기존 UPDATE_APPLY_NO_PROGRESS/20을 유지한다. 실제 질의 자식 5회와 일반 resume 도달성·쓰기 울타리 digest·② Save를 새 머리에 재결속한다.
+
 - v2.0.122: Observe 이중 배열로 relay 시작 실패(P1) 고침 + relay 조기 종료 감시(sub-505)·검토 지적(sub-513)
 
 - w9firstupdsub505 / relay RUNNING 전 자식 종료를 RELAY_EXITED_BEFORE_RUNNING으로 즉시 알리고, 첫 설정의 marker 기반 꼬리표보다 원인 코드를 보존한다. 무음 종료·fence 대기는 값 없는 고정 지원 기록을 남기며 main의 처리 안 된 예외도 같은 조기 종료 코드(RUNNING 뒤 RELAY_UNHANDLED_EXCEPTION)·예외 형식·제품 파일/함수 이름을 기록한 뒤 기존 종료값을 보존한다. 살아 있는 자식의 준비 마감·재사용·DEVNULL·자료 보존은 유지한다. 판 올림은 sub-504 원인 고침과 합친 뒤 한 번에 한다([relay 운영](operations.md#bootstrap-relay-시작의-일시-admission-대기)).

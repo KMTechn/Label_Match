@@ -911,7 +911,9 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
                     exit_code=return_code,
                 )
             if owner is not None:
-                if time.monotonic() >= readback_deadline:
+                # The grace limits when a query may start. A query already in
+                # flight may prove ownership until the shared parent deadline.
+                if time.monotonic() >= parent_deadline:
                     owner = None
                 break
             startup_wait(min(0.1, max(0.0, readback_deadline - time.monotonic())), wait)
