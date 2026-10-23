@@ -21,6 +21,59 @@ def test_bootstrap_rechecks_owner_after_successful_exit(monkeypatch):
     assert result["process_id"] == 77
 
 
+def test_completed_bootstrap_missing_owner_waits_only_two_seconds(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(relay.time, "monotonic", lambda: clock[0])
+    with pytest.raises(relay.UserRelayError) as caught:
+        relay._read_started_relay(
+            SimpleNamespace(pid=42, poll=lambda: 0), lambda: None, 2.0, 700.0, True,
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+    assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
+    assert caught.value.exit_code == 0
+    assert clock[0] == pytest.approx(104.0)
+
+
+def test_bootstrap_grace_starts_on_first_zero_poll_and_is_not_renewed(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(relay.time, "monotonic", lambda: clock[0])
+    child = SimpleNamespace(pid=42, poll=lambda: 0 if clock[0] >= 0.3 else None)
+    with pytest.raises(relay.UserRelayError) as caught:
+        relay._read_started_relay(
+            child, lambda: None, 0.0, 10.0, True,
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+    assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
+    assert clock[0] == pytest.approx(2.3)
+
+
+@pytest.mark.parametrize("deadline", [0.25, 2.0, 2.5])
+def test_bootstrap_grace_stays_within_parent_deadline(monkeypatch, deadline):
+    clock = [0.0]
+    monkeypatch.setattr(relay.time, "monotonic", lambda: clock[0])
+    with pytest.raises(relay.UserRelayError) as caught:
+        relay._read_started_relay(
+            SimpleNamespace(pid=42, poll=lambda: 0), lambda: None, 0.0, deadline, True,
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+    assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
+    assert clock[0] == pytest.approx(min(2.0, deadline))
+
+
+def test_bootstrap_rejects_owner_readback_after_grace_expires(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(relay.time, "monotonic", lambda: clock[0])
+    def late_owner():
+        clock[0] = 3.0
+        return {"process_id": 77, "updated_at": "now"}
+    with pytest.raises(relay.UserRelayError) as caught:
+        relay._read_started_relay(
+            SimpleNamespace(pid=42, poll=lambda: 0), late_owner, 0.0, 10.0, True,
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+    assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
+
+
 @pytest.mark.parametrize("failure", ["support", "print", "import", "traceback"])
 def test_diagnostic_failure_preserves_successful_main(monkeypatch, tmp_path, failure):
     import builtins

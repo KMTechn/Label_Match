@@ -883,9 +883,14 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
     return_code = process.poll()
     if is_bootstrap:
         owner = None
+        completed = return_code == 0
+        readback_deadline = min(parent_deadline, time.monotonic() + 2.0) if completed else parent_deadline
         startup_progress("full_relay_bootstrap_wait")
-        while time.monotonic() < parent_deadline:
+        while time.monotonic() < readback_deadline:
             return_code = process.poll()
+            if return_code == 0 and not completed:
+                completed = True
+                readback_deadline = min(parent_deadline, time.monotonic() + 2.0)
             if return_code not in (None, 0):
                 raise UserRelayError(
                     "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
@@ -895,19 +900,27 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
             owner = existing_owner()
             startup_stop_checkpoint()
             return_code = process.poll()
+            if return_code == 0 and not completed:
+                completed = True
+                readback_deadline = min(parent_deadline, time.monotonic() + 2.0)
             if return_code == 0 and owner is None:
                 owner = existing_owner()
-            if return_code is not None and (return_code != 0 or owner is None):
+            if return_code not in (None, 0):
                 raise UserRelayError(
                     "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
                     exit_code=return_code,
                 )
             if owner is not None:
-                if time.monotonic() >= parent_deadline:
+                if time.monotonic() >= readback_deadline:
                     owner = None
                 break
-            startup_wait(min(0.1, max(0.0, parent_deadline - time.monotonic())), wait)
+            startup_wait(min(0.1, max(0.0, readback_deadline - time.monotonic())), wait)
         if owner is None:
+            if completed:
+                raise UserRelayError(
+                    "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
+                    exit_code=0,
+                )
             raise UserRelayError("bootstrap did not prove the protected active-version relay")
         if process.poll() not in (None, 0):
             raise UserRelayError("bootstrap exited unsuccessfully before relay ownership readback")

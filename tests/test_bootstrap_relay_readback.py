@@ -102,17 +102,39 @@ def test_installation_context_does_not_relax_ordinary_bootstrap_guard(monkeypatc
     assert relay_bootstrap.launched == []
 
 
-def test_completed_bootstrap_without_running_status_fails_immediately(monkeypatch, relay_bootstrap):
+def test_completed_bootstrap_without_running_status_fails_after_grace(monkeypatch, relay_bootstrap):
     fixture = relay_bootstrap
     calls = []
     monkeypatch.setattr(user_relay, "_read_json", lambda path: {})
-    ticks = iter(range(100))
-    monkeypatch.setattr(user_relay.time, "monotonic", lambda: next(ticks))
+    clock = [0.0]
+    monkeypatch.setattr(user_relay.time, "monotonic", lambda: clock[0])
+    def wait(seconds):
+        calls.append(seconds)
+        clock[0] += seconds
     with pytest.raises(user_relay.UserRelayError) as caught:
-        user_relay.start_user_relay_process(fixture.current, wait=lambda seconds: calls.append(seconds))
+        user_relay.start_user_relay_process(fixture.current, wait=wait)
     assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
     assert caught.value.exit_code == 0
-    assert sum(calls) == pytest.approx(2.0)
+    assert sum(calls) == pytest.approx(4.0)
+
+
+def test_completed_bootstrap_waits_for_delayed_actual_relay_status(monkeypatch, relay_bootstrap):
+    import startup_timing
+    statuses = user_relay._read_json
+    calls = []
+    clock = [0.0]
+    monkeypatch.setattr(user_relay, "_read_json", lambda path: {} if len(calls) < 3 else statuses(path))
+    monkeypatch.setattr(user_relay.time, "monotonic", lambda: clock[0])
+    original_wait = startup_timing.startup_wait
+    def traced_wait(seconds, callback):
+        calls.append(seconds)
+        original_wait(seconds, callback)
+    monkeypatch.setattr(startup_timing, "startup_wait", traced_wait)
+    def wait(seconds):
+        clock[0] += seconds
+    result = user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
+    assert result["process_id"] == 77 and result["bootstrap_process_id"] == 42
+    assert calls == [2.0, 0.1, 0.1]
 
 
 def test_canonical_commands_keep_fixed_run_and_real_version_relay_separate(tmp_path):
@@ -209,7 +231,7 @@ def test_official_relay_start_detects_child_exit_before_running(monkeypatch, rel
         user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
     assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
     assert caught.value.exit_code == exit_code
-    assert clock[0] <= 2.1
+    assert clock[0] == pytest.approx(4.0 if exit_code == 0 else 2.0)
 
 
 def test_bootstrap_without_proof_fails_after_600_seconds(monkeypatch, relay_bootstrap):
