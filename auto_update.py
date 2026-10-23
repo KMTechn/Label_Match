@@ -3060,6 +3060,16 @@ def gui_recovery_state(state, claim_status: str) -> bool:
                 and claim_status == "ABSENT"))
 
 
+def _wait_recovery_relay(*args, **kwargs) -> bool:
+    """Keep the recovery caller's existing failure reporting on early exit."""
+    try:
+        return wait_current_relay(*args, **kwargs)
+    except _RelayPreparationUnavailable as error:
+        if error.code != "RELAY_EXITED_BEFORE_RUNNING":
+            raise
+        return False
+
+
 def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
                            arguments: list[str], *, role: str, deadline: float,
                            state=None, claim_status: str = "") -> int | None:
@@ -3135,7 +3145,7 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
                 # This finite helper is observed as a writer, not a resident
                 # relay. Its successful launch cannot publish resident READY.
                 return _relay_prepare_result(deadline)
-            if wait_current_relay(control, policy, active["sha"], started_at=started_at,
+            if _wait_recovery_relay(control, policy, active["sha"], started_at=started_at,
                                   deadline=deadline, pid=pid):
                 return _relay_prepare_result(deadline)
     except _RelayPreparationUnavailable as error:
@@ -3254,7 +3264,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                     if state["phase"] == "ROLLED_BACK":
                         if role == "relay" and state.get("trial_role", "gui") == "relay":
                             if (state.get("trial_sha") == active["sha"]
-                                    and wait_current_relay(control, policy, active["sha"],
+                                    and _wait_recovery_relay(control, policy, active["sha"],
                                         started_at=state["trial_started_at"], deadline=relay_deadline,
                                         pid=state["trial_pid"])):
                                 return _relay_prepare_result(relay_deadline)

@@ -237,6 +237,29 @@ def test_recovery_relay_readiness_failure_is_not_success(recovery, monkeypatch):
     recovery.unchanged()
 
 
+def test_recovery_early_exit_keeps_previous_failure_result(recovery, monkeypatch):
+    recovery.configure("failed")
+    monkeypatch.setattr(updates, "relay_stop_requested", lambda _: False)
+    # This case targets recovery reporting, independently of the fixture's old
+    # launch-version kwargs contract (the production launch also carries a deadline).
+    monkeypatch.setattr(updates, "_launch_bootstrap_version", lambda *a, **kw: 42)
+    records = []
+    monkeypatch.setattr(updates, "emit_support_record", lambda fields, **kw: records.append(fields))
+    monkeypatch.setattr(updates, "wait_current_relay", lambda *a, **kw: False)
+    expected = updates._bootstrap(recovery.control, ["--label-match-user-relay"], role="relay")
+    expected_records = list(records)
+    records.clear()
+    recovery.configure("failed")
+
+    def exited(*args, **kwargs):
+        raise updates._RelayPreparationUnavailable("RELAY_EXITED_BEFORE_RUNNING")
+
+    monkeypatch.setattr(updates, "wait_current_relay", exited)
+    assert updates._bootstrap(recovery.control, ["--label-match-user-relay"], role="relay") == expected == 20
+    assert records == expected_records
+    recovery.unchanged()
+
+
 def test_onboarding_launcher_reaches_alive_via_real_bootstrap(recovery, monkeypatch):
     recovery.configure("failed")
     monkeypatch.setattr(onboarding, "resolve_current_user_onboarding_paths", lambda *_: SimpleNamespace(direct_sync_root=recovery.control))

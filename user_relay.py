@@ -40,6 +40,8 @@ APP_STOP_TIMEOUT_SECONDS = 150.0
 LABEL_MATCH_SOURCE_GLOB = "포장실작업이벤트로그_*.csv"
 LABEL_MATCH_WORKER_ID = "direct-sync-relay-label-match-current-user"
 _relay_main_running = ContextVar("relay_main_running", default=False)
+_relay_main_active = ContextVar("relay_main_active", default=False)
+_relay_entry_running = ContextVar("relay_entry_running", default=None)
 
 
 from label_atomic_replace import atomic_replace
@@ -53,31 +55,34 @@ class UserRelayError(RuntimeError):
         self.exit_code = exit_code
 
 
-def _record_relay_reason(reason_code: str, *, app_root=None, exit_code=None, error=None) -> None:
+def _record_relay_reason(reason_code: str, *, app_root=None, exit_code=None, error=None,
+                         failure_snapshot=True) -> None:
     """Keep fixed diagnostic codes even when ordinary writer admission is denied."""
-    from auto_update import control_root, load_policy, support_record
+    try:
+        from auto_update import control_root, load_policy, support_record
 
-    fields = {"reason_code": reason_code}
-    if type(exit_code) is int:
-        fields["exit_code"] = exit_code
-    if error is not None:
-        fields["exception_type"] = type(error).__name__
-        source_root = Path(__file__).resolve().parent
-        for frame, _ in traceback.walk_tb(error.__traceback__):
-            source_name = frame.f_globals.get("__file__")
-            if not source_name:
-                continue
-            source = Path(source_name).resolve()
-            if source.is_relative_to(source_root):
-                relative = source.relative_to(source_root)
-                if relative.parts and relative.parts[0] not in {"site-packages", "tests"}:
-                    # Keep the innermost application frame, without its directory,
-                    # source line, locals, exception sentence, or chained values.
-                    fields["location_module"] = Path(frame.f_code.co_filename).name
-                    fields["location_function"] = frame.f_code.co_name
-    report = support_record(fields, stage="update_apply")
-    if app_root is not None:
-        try:
+        fields = {"reason_code": reason_code}
+        if type(exit_code) is int:
+            fields["exit_code"] = exit_code
+        if error is not None:
+            fields["exception_type"] = type(error).__name__
+            source_root = Path(__file__).resolve().parent
+            for frame, _ in traceback.walk_tb(error.__traceback__):
+                source_name = frame.f_globals.get("__file__")
+                if not source_name:
+                    continue
+                source = Path(source_name).resolve()
+                if source.is_relative_to(source_root):
+                    relative = source.relative_to(source_root)
+                    if relative.parts and relative.parts[0] not in {"site-packages", "tests"}:
+                        # Keep only the innermost product file/function names.
+                        fields["location_module"] = Path(frame.f_code.co_filename).name
+                        fields["location_function"] = frame.f_code.co_name
+        report = support_record(fields, stage="update_apply")
+        normal_after_running = _relay_main_running.get() and reason_code in {
+            "RELAY_COMPLETED", "RELAY_STOP_REQUESTED", "RELAY_STARTUP_HANDLED",
+        }
+        if app_root is not None and failure_snapshot and not normal_after_running:
             root = Path(app_root)
             control = control_root(root / "app" if (root / "app").is_dir() else root)
             if control is not None:
@@ -86,9 +91,9 @@ def _record_relay_reason(reason_code: str, *, app_root=None, exit_code=None, err
                 # A later parent failure must not erase this child's original reason.
                 stage = Path(policy["staging_root"])
                 _write_json_atomic(stage / ("failure-" + uuid.uuid4().hex + ".json"), report)
-        except Exception:
-            pass  # Diagnostic storage must not change stop/fence/lease semantics.
-    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    except Exception:
+        pass  # Every diagnostic operation preserves the original relay outcome.
 
 
 def _now() -> str:
@@ -890,6 +895,8 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
             owner = existing_owner()
             startup_stop_checkpoint()
             return_code = process.poll()
+            if return_code == 0 and owner is None:
+                owner = existing_owner()
             if return_code is not None and (return_code != 0 or owner is None):
                 raise UserRelayError(
                     "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
@@ -959,6 +966,7 @@ def run_persistent_relay_loop(
     fixed_metadata = dict(metadata or {})
     reason_root = fixed_metadata.get("code_root") or fixed_metadata.get("app_root")
     fence_recorded = False
+    running_written = False
     while not should_stop():
         try:
             update_preparation = None
@@ -1013,7 +1021,12 @@ def run_persistent_relay_loop(
                         "updated_at": _now(),
                     },
                 )
-                _relay_main_running.set(True)
+                running_written = True
+                if _relay_main_active.get():
+                    _relay_main_running.set(True)
+                observer = _relay_entry_running.get()
+                if observer is not None:
+                    observer[0] = True
         except WriterFencedError:
             if not fence_recorded:
                 _record_relay_reason("RELAY_WRITER_FENCED", app_root=reason_root)
@@ -1056,7 +1069,7 @@ def run_persistent_relay_loop(
             _record_relay_reason("RELAY_WRITER_FENCED", app_root=reason_root)
     if final["status"] != "FENCED":
         _record_relay_reason("RELAY_STOP_REQUESTED" if should_stop() else "RELAY_COMPLETED",
-                             app_root=reason_root)
+                             app_root=reason_root, failure_snapshot=not running_written)
     return final
 
 
@@ -1348,10 +1361,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None, *, credential_input=None) -> int:
+    from startup_timing import StartupStopRequested
     app_root = None
     # Per-call state observes only this context's successful RUNNING write.
     # No new status schema or cross-process diagnostic protocol is required.
     running_token = _relay_main_running.set(False)
+    active_token = _relay_main_active.set(True)
     try:
         args = build_parser().parse_args(argv)
         app_root = (
@@ -1367,6 +1382,8 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
             .resolve()
         )
         return _run_user_relay(args, app_root, argv, credential_input=credential_input)
+    except StartupStopRequested:
+        return 0
     except Exception as error:
         try:
             reason = "RELAY_UNHANDLED_EXCEPTION" if _relay_main_running.get() else "RELAY_EXITED_BEFORE_RUNNING"
@@ -1377,6 +1394,7 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
         raise
     finally:
         _relay_main_running.reset(running_token)
+        _relay_main_active.reset(active_token)
 
 
 def _run_user_relay(args, app_root: Path, argv, *, credential_input=None) -> int:
