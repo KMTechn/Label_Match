@@ -11,7 +11,6 @@ from package_logistics import PackageApiError, PackageOutbox, PackageOutboxProce
 from tests.test_w9scanonly_central import central  # noqa: F401
 from tests.test_deferred_lease_clock_retry import clock_case  # noqa: F401
 from tests.test_w9scanonly_packaging import packaging, completions, products, scan  # noqa: F401
-from tests.test_legacy_label_transition import MASTER
 
 
 def complete(central, transition=True):
@@ -61,9 +60,9 @@ def test_transfer_wait_keeps_row_notice_and_next_completion(central, transition,
         blocking_notice=app.__dict__.get('_workflow_blocking_notice') or app._workflow_notice))
     assert view.scan_input_enabled
     # A different tray can finish while the first tray remains durably pending.
-    app._legacy_label_transition_enabled = True
-    scan(app, MASTER)
-    for value in products(prefix='NEXT'):
+    next_master = case.group['scan_payload'].replace('ITG=', 'ITG=NEXT-')
+    scan(app, next_master)
+    for value in products(item=case.group['item_id'], prefix='NEXT'):
         scan(app, value)
     assert len(completions(app)) == 2
     assert app.package_outbox.get_by_set_id(identity)['status'] == 'PENDING'
@@ -104,7 +103,7 @@ def test_transfer_wait_restart_backoff_and_server_recovery_once(central, monkeyp
     def transport(method, url, headers, body, timeout):
         if method == 'GET':
             return {'ok': True, 'data': case.response}
-        command = body
+        command = json.loads(body) if isinstance(body, (bytes, str)) else body
         sent.append(command['idempotency_key'])
         draft = PackageCommandDraft.from_dict(json.loads(reopened.get_by_set_id(identity)['draft_json']))
         receipt = _work_group_receipt(draft, command)
