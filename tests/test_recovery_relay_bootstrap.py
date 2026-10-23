@@ -245,7 +245,11 @@ def test_recovery_early_exit_keeps_previous_failure_result(recovery, monkeypatch
     monkeypatch.setattr(updates, "_launch_bootstrap_version", lambda *a, **kw: 42)
     records = []
     monkeypatch.setattr(updates, "emit_support_record", lambda fields, **kw: records.append(fields))
-    monkeypatch.setattr(updates, "wait_current_relay", lambda *a, **kw: False)
+    def old_timeout(*args, **kwargs):
+        recovery.clock[0] = float(kwargs["deadline"])
+        return False
+
+    monkeypatch.setattr(updates, "wait_current_relay", old_timeout)
     expected = updates._bootstrap(recovery.control, ["--label-match-user-relay"], role="relay")
     expected_records = list(records)
     records.clear()
@@ -256,7 +260,7 @@ def test_recovery_early_exit_keeps_previous_failure_result(recovery, monkeypatch
 
     monkeypatch.setattr(updates, "wait_current_relay", exited)
     assert updates._bootstrap(recovery.control, ["--label-match-user-relay"], role="relay") == expected == 20
-    assert records == expected_records
+    assert records == expected_records == [{"reason_code": "UPDATE_APPLY_NO_PROGRESS"}]
     recovery.unchanged()
 
 

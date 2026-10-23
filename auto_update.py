@@ -3145,11 +3145,12 @@ def recovery_writer_result(control: Path, policy: Mapping[str, Any], active,
                 # This finite helper is observed as a writer, not a resident
                 # relay. Its successful launch cannot publish resident READY.
                 return _relay_prepare_result(deadline)
-            if _wait_recovery_relay(control, policy, active["sha"], started_at=started_at,
+            if wait_current_relay(control, policy, active["sha"], started_at=started_at,
                                   deadline=deadline, pid=pid):
                 return _relay_prepare_result(deadline)
     except _RelayPreparationUnavailable as error:
-        emit_support_record({"reason_code": error.code}, stage="update_apply")
+        reason = "UPDATE_APPLY_NO_PROGRESS" if error.code == "RELAY_EXITED_BEFORE_RUNNING" else error.code
+        emit_support_record({"reason_code": reason}, stage="update_apply")
         return 20
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         if role != "relay" and not (role == "gui" and gui_recovery_state(state, claim_status)):
