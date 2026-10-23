@@ -161,8 +161,10 @@ def test_launch_version_forwards_only_verified_relay_parent(cohort, monkeypatch,
     captured = []
     monkeypatch.setattr(updates, "start_ordinary_process", lambda _cmd, **kw: captured.append(kw) or SimpleNamespace(pid=99))
     deadline = time.monotonic() + 60
-    if kind == "verified":
+    if kind in {"verified", "trial"}:
         deadline = updates._RelayPreparationDeadline(deadline, parent_pid=cohort.pid, parent_identity="12345")
+        if kind == "trial":
+            deadline = deadline.bounded_by(time.monotonic() + 30)
     elif kind == "independent":
         deadline = updates._RelayPreparationDeadline(deadline)
     updates.launch_version(cohort.control, SHA, ["--label-match-user-relay"],
@@ -172,6 +174,54 @@ def test_launch_version_forwards_only_verified_relay_parent(cohort, monkeypatch,
         assert environment[PARENT_ENV] == f"{cohort.pid}:12345"
     else:
         assert PARENT_ENV not in environment
+
+
+@pytest.mark.parametrize("descendant", [False, True])
+def test_relay_consumes_parent_binding_after_first_gate(cohort, monkeypatch, descendant):
+    import label_data_generation
+    import user_relay
+
+    class ReachedDataBoundary(Exception):
+        pass
+
+    def after_gate(*_a, **_kw):
+        if descendant:
+            # The finite direct-sync relay uses this real subprocess boundary.
+            result = user_relay._run_command([sys.executable, "-B", "-c",
+                "import os; raise SystemExit('KMTECH_LM_RELAY_PARENT' in os.environ)"], 30)
+            assert result["returncode"] == 0
+        else:
+            assert PARENT_ENV not in os.environ
+        raise ReachedDataBoundary
+
+    monkeypatch.setattr(label_data_generation, "normalize_data_arguments", lambda *_: None)
+    monkeypatch.setattr(user_relay, "check_user_data_open", after_gate)
+    args = SimpleNamespace(request_app_stop=False, direct_sync_root="", scan_source_dir="")
+    with pytest.raises(ReachedDataBoundary):
+        user_relay._run_user_relay(args, cohort.bundle, [])
+
+
+def _use_gui_parent(cohort):
+    (cohort.app / "main.py").touch()
+    cohort.rows[0]["CommandLine"] = str(cohort.app / "main.py")
+    cohort.processes.write_text(json.dumps(cohort.rows))
+    assert updates.process_snapshot(cohort.control)[0]["role"] == "gui"
+
+
+def test_later_recovery_proof_refuses_bound_gui_parent(cohort):
+    _use_gui_parent(cohort)
+    with pytest.raises(ValueError, match="earlier or unrelated writer"):
+        updates.assert_ordinary_recovery(cohort.control, cohort.policy, SHA, BOUNDARY)
+
+
+@pytest.mark.parametrize("phase", ["PREPARED", "FAILED", "DEFERRED"])
+def test_later_startup_gate_refuses_bound_gui_parent(cohort, monkeypatch, phase):
+    _use_gui_parent(cohort)
+    (cohort.control / "transition.json").write_text(json.dumps(
+        {"phase": phase, "recovery_pending": True}))
+    monkeypatch.setattr(updates, "update_lock", lambda *_a, **_kw: contextlib.nullcontext())
+    with pytest.raises(ValueError, match="earlier or unrelated writer"):
+        updates.startup_gate(cohort.app, ["--label-match-user-relay"])
 
 
 def _integration_process(config_path, mode, parent_pid=None, parent_deadline=None):

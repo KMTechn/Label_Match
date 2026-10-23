@@ -75,7 +75,7 @@ writer 선언은 `python -B tools/refresh_admin_worker_declarations.py`, 확인�
 
 <a id="onboarding-writer-admission"></a>
 
-v2.0.123 첫 설정 relay는 bootstrap이 확인해 전달한 부모 PID·생성 신원을 현재 native 신원과 대조하고, 같은 판·계정·일반 권한인 부모 행 하나만 일반 복구 검사에서 건너뛴다. 부모 결속이 없거나 잘못됐거나 신원이 다르면 기존 거절을 유지하며 다른 writer와 ROLLBACK_PENDING의 relay 한 개 조건은 그대로다.
+v2.0.123 첫 설정 relay는 첫 관문의 바쁨 갈래에서만 bootstrap이 확인해 전달한 부모 PID·생성 신원을 현재 native 신원과 대조하고, 같은 판·계정·일반 권한인 부모 행 하나만 일반 복구 검사에서 건너뛴다. 첫 관문 통과 직후 부모 결속 환경 값을 지워 자손에게 상속하지 않으며, 뒤 단계의 복구 증명은 값이 있어도 부모 행을 건너뛰지 않는다. trial/nonce 시작에는 이 값을 전달하지 않는다. 부모 결속이 없거나 잘못됐거나 신원이 다르면 기존 거절을 유지하며 다른 writer와 ROLLBACK_PENDING의 relay 한 개 조건은 그대로다.
 
 
 설치 주소와 등록에 사용한 relay endpoint가 다르면 첫 시작은 `RECOVERY_REQUIRED`·`INSTALL_SERVER_ORIGIN_CHANGED`와 「회사 서버 주소가 설치 때와 다릅니다.\n현장 관리자에게 알리세요.」 안내로 멈춘다. 완료된 기계 대기 표지의 명시적 주소도 대조하며 서버가 반환한 profile 호스트는 비교하지 않는다. 옛 relay를 새로 시작하거나 재사용하지 않고 등록·로컬 자료·보낼 것을 보존한다. 자료 삭제·자동 재등록·프로세스 강제 종료는 하지 않는다. 관리자는 기존 지원 복구 절차로 설치와 등록을 확인한다. 주소 기록이 없거나 판독할 수 없으면 기존 시작 판정을 유지한다. 실제 설치/안내 화면·실행 중인 옛 relay의 종료는 별도 랩 수용이다.

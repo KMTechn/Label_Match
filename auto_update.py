@@ -2741,7 +2741,8 @@ def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> 
         state = optional_record(control / "transition.json") if control is not None else None
         if deferred_at and control is not None and (not state or state.get("phase") in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}):
             policy = load_policy(control)
-            assert_ordinary_recovery(control, policy, version_manifest(app_root.parent)["source_commit"], deferred_at)
+            assert_ordinary_recovery(control, policy, version_manifest(app_root.parent)["source_commit"], deferred_at,
+                                     allow_relay_parent=role == "relay")
             assert_version_writer(app_root, source="gui_settings_save", environ=os.environ)
             emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS", "exit_code": 0}, stage="update_apply", policy=policy)
             return None
@@ -2829,7 +2830,7 @@ def launch_version(control: Path, sha: str, arguments: list[str], *, nonce: str 
     environment.pop("KMTECH_LM_UPDATE_TRIAL_NONCE", None)
     environment.pop("KMTECH_LM_UPDATE_DEFERRED_AT", None)
     environment.pop("KMTECH_LM_RELAY_PARENT", None)
-    if (isinstance(relay_deadline, _RelayPreparationDeadline)
+    if (not nonce and isinstance(relay_deadline, _RelayPreparationDeadline)
             and relay_deadline.parent_pid is not None and relay_deadline.parent_identity is not None):
         environment["KMTECH_LM_RELAY_PARENT"] = f"{relay_deadline.parent_pid}:{relay_deadline.parent_identity}"
     if nonce:
@@ -2947,7 +2948,8 @@ def current_generation_status(control: Path, policy: Mapping[str, Any], sha: str
 
 
 
-def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str, started_at: str) -> list[dict[str, Any]]:
+def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str, started_at: str, *,
+                             allow_relay_parent: bool = False) -> list[dict[str, Any]]:
     """Read-only proof under startup update ownership or existing writer admission."""
     if read_json(control / "active.json")["sha"] != sha:
         raise ValueError("ordinary recovery code is not the active version")
@@ -2961,7 +2963,8 @@ def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str,
                 or apply_claim_status(control) not in {"NONE", "ABSENT"}
                 or len([row for row in rows if row.get("role") == "relay"]) != 1):
             raise ValueError("pending rollback requires the previous active code and one ordinary relay")
-    parent = re.fullmatch(r"([1-9][0-9]*):([1-9][0-9]*)", os.environ.get("KMTECH_LM_RELAY_PARENT", ""))
+    parent = (re.fullmatch(r"([1-9][0-9]*):([1-9][0-9]*)", os.environ.get("KMTECH_LM_RELAY_PARENT", ""))
+              if allow_relay_parent else None)
     parent_skipped = False
     for row in rows:
         if (parent is not None and not parent_skipped

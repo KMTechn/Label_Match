@@ -1433,6 +1433,7 @@ def _run_user_relay(args, app_root: Path, argv, *, credential_input=None) -> int
     if update_result is not None:
         _record_relay_reason("RELAY_STARTUP_HANDLED", app_root=app_root)
         return update_result
+    os.environ.pop("KMTECH_LM_RELAY_PARENT", None)
     from current_user_onboarding import (
         apply_current_user_runtime_environment,
         resolve_current_user_onboarding_paths,
