@@ -197,6 +197,42 @@ def test_true_relay_failure_keeps_setup_failure_and_protected_report(tmp_path):
     assert report["cause_code"] == "SETUP_FAILED"
 
 
+@pytest.mark.parametrize("marker_present", [False, True])
+@pytest.mark.parametrize("typed_error", [False, True])
+def test_relay_exit_reason_survives_onboarding_failure_marker(
+    tmp_path, monkeypatch, marker_present, typed_error,
+):
+    environment = _environment(tmp_path)
+    paths = onboarding.resolve_current_user_onboarding_paths(tmp_path / "app", environ=environment)
+    _ready_state(paths)
+    marker = user_relay.user_relay_stop_path(paths.direct_sync_root)
+    if marker_present:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("preserved marker")
+    monkeypatch.setattr(onboarding, "_portable_stop_marker_release_preflight",
+                        lambda *a, **k: {"marker_present": False})
+
+    def failed(_root):
+        if typed_error:
+            raise onboarding.CurrentUserOnboardingError(
+                "RELAY_EXITED_BEFORE_RUNNING", report_path=paths.onboarding_report_path,
+                cause_code="RELAY_EXITED_BEFORE_RUNNING",
+            )
+        error = user_relay.UserRelayError("RELAY_EXITED_BEFORE_RUNNING")
+        error.cause_code = "RELAY_EXITED_BEFORE_RUNNING"
+        raise error
+
+    with pytest.raises(onboarding.CurrentUserOnboardingError) as caught:
+        _onboard(paths, environment, relay_launcher=failed)
+    assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
+    report = json.loads(paths.onboarding_report_path.read_text(encoding="utf-8"))
+    assert report["cause_code"] == "RELAY_EXITED_BEFORE_RUNNING"
+    from failure_redaction import public_failure_record
+    assert public_failure_record(caught.value, "SUPPORT")["reason_code"] == "RELAY_EXITED_BEFORE_RUNNING"
+    if marker_present:
+        assert marker.read_text() == "preserved marker"
+
+
 def test_lifecycle_helper_runs_without_admission_and_locked_readback_denies_change(tmp_path, monkeypatch):
     control = tmp_path / "update-control"
     control.mkdir()

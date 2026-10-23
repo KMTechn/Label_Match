@@ -27,7 +27,8 @@ def relay_bootstrap(monkeypatch, tmp_path):
     records = {"active.json": {"sha": sha}, "transition.json": {
         "schema": updates.SCHEMA, "phase": "DEFERRED", "deferred_at": user_relay._now(),
     }}
-    policy = {"operator_sid": "operator", "staging_root": str(tmp_path / "stage")}
+    policy = {"operator_sid": "operator", "staging_root": str(tmp_path / "stage"),
+              "operator_local_app_data": str(tmp_path / "operator-local")}
     monkeypatch.setattr(updates, "load_policy", lambda _: policy)
     monkeypatch.setattr(updates, "process_security", lambda _: {
         "sid": policy["operator_sid"], "elevated": False,
@@ -101,17 +102,17 @@ def test_installation_context_does_not_relax_ordinary_bootstrap_guard(monkeypatc
     assert relay_bootstrap.launched == []
 
 
-def test_completed_bootstrap_waits_for_delayed_actual_relay_status(monkeypatch, relay_bootstrap):
+def test_completed_bootstrap_without_running_status_fails_immediately(monkeypatch, relay_bootstrap):
     fixture = relay_bootstrap
-    statuses = user_relay._read_json
     calls = []
-    monkeypatch.setattr(user_relay, "_read_json", lambda path: {} if len(calls) < 3 else statuses(path))
+    monkeypatch.setattr(user_relay, "_read_json", lambda path: {})
     ticks = iter(range(100))
     monkeypatch.setattr(user_relay.time, "monotonic", lambda: next(ticks))
-    result = user_relay.start_user_relay_process(fixture.current, wait=lambda seconds: calls.append(seconds))
-    assert result["process_id"] == 77
-    assert result["bootstrap_process_id"] == 42
-    assert calls == [2.0, 0.1, 0.1]
+    with pytest.raises(user_relay.UserRelayError) as caught:
+        user_relay.start_user_relay_process(fixture.current, wait=lambda seconds: calls.append(seconds))
+    assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
+    assert caught.value.exit_code == 0
+    assert sum(calls) == pytest.approx(2.0)
 
 
 def test_canonical_commands_keep_fixed_run_and_real_version_relay_separate(tmp_path):
@@ -197,6 +198,18 @@ def test_bootstrap_child_nonzero_exit_fails_immediately(monkeypatch, relay_boots
     with pytest.raises(user_relay.UserRelayError):
         user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
     assert clock[0] < 40
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_official_relay_start_detects_child_exit_before_running(monkeypatch, relay_bootstrap, exit_code):
+    clock, wait = _clocked_bootstrap(
+        monkeypatch, relay_bootstrap, proof_at=None, exit_at=0, exit_code=exit_code,
+    )
+    with pytest.raises(user_relay.UserRelayError) as caught:
+        user_relay.start_user_relay_process(relay_bootstrap.current, wait=wait)
+    assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
+    assert caught.value.exit_code == exit_code
+    assert clock[0] <= 2.1
 
 
 def test_bootstrap_without_proof_fails_after_600_seconds(monkeypatch, relay_bootstrap):

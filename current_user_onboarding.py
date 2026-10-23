@@ -1871,7 +1871,7 @@ def onboard_current_user(
         raise failure from exc
     except CurrentUserOnboardingError as exc:
         restore_stop_marker_fence()
-        if report.get('relay_resume_required'):
+        if report.get('relay_resume_required') and exc.cause_code in {"", "SETUP_FAILED"}:
             exc.cause_code = 'RELAY_RESUME_REQUIRED'
         report["status"] = exc.status
         report["failure"] = str(exc)
@@ -1887,7 +1887,7 @@ def onboard_current_user(
         from auto_update import launch_failure_details
         report["launch_failure_details"] = launch_failure_details(exc)
         from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout
-        cause_code = (
+        cause_code = getattr(exc, "cause_code", "") or (
             'BUSINESS_DATA_OPEN_FAILED' if business_open_in_progress and managed is not None else
             'RELAY_RESUME_REQUIRED' if report.get('relay_resume_required') else
             "NETWORK_OR_SERVER_UNAVAILABLE"

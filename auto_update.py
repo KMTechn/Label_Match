@@ -2904,6 +2904,7 @@ def current_relay_ready(control: Path, policy: Mapping[str, Any], sha: str, *,
 
 def wait_current_relay(control: Path, policy: Mapping[str, Any], sha: str, *,
                        started_at: str, deadline: float, pid: int | None = None) -> bool:
+    child_identity = None
     while time.monotonic() < deadline:
         if _relay_prepare_failure(deadline):
             return False
@@ -2915,6 +2916,14 @@ def wait_current_relay(control: Path, policy: Mapping[str, Any], sha: str, *,
                 return not _relay_prepare_failure(deadline)
         except (OSError, ValueError, TypeError, KeyError):
             pass  # Contested/incomplete proof never establishes readiness.
+        if pid is not None:
+            child = native_process_identity(pid)
+            if (child.get("status") == "ABSENT"
+                    or (child_identity is not None and child.get("status") == "LIVE"
+                        and child.get("creation_identity") != child_identity)):
+                raise _RelayPreparationUnavailable("RELAY_EXITED_BEFORE_RUNNING")
+            if child.get("status") == "LIVE" and child.get("creation_identity"):
+                child_identity = child["creation_identity"]
         time.sleep(min(0.1, max(0, deadline - time.monotonic())))
     return False
 
@@ -3018,8 +3027,14 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
         except _RelayPreparationUnavailable as error:
             failure = error.code
     relay_pid = pid if arguments[:1] and arguments[0] in {"--label-match-user-relay", "--label-match-direct-sync-relay"} else None
-    if pid is None or not wait_current_relay(control, policy, active["sha"], started_at=started_at,
-                                            deadline=deadline, pid=relay_pid):
+    ready = False
+    if pid is not None:
+        try:
+            ready = wait_current_relay(control, policy, active["sha"], started_at=started_at,
+                                       deadline=deadline, pid=relay_pid)
+        except _RelayPreparationUnavailable as error:
+            failure = error.code
+    if not ready:
         failure = failure or _relay_prepare_failure(deadline) or "UPDATE_APPLY_NO_PROGRESS"
         failed_report = support_record({"reason_code": failure,
             "transition_code": (state or {}).get("failure_decision", {}).get("code", code),
@@ -3146,6 +3161,9 @@ def bootstrap(app_root: Path, arguments: list[str], *, role: str,
         return _bootstrap(app_root, arguments, role=role)
     except StartupStopRequested:
         return 0
+    except _RelayPreparationUnavailable as error:
+        emit_support_record({"reason_code": error.code}, stage="update_apply")
+        return 20
     except UpdateMutexRecoveryRequired as error:
         return _refuse_abandoned_update(error.policy, role=role)
     except RuntimeError as error:

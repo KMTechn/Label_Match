@@ -45,6 +45,34 @@ from label_atomic_replace import atomic_replace
 class UserRelayError(RuntimeError):
     """Raised when current-user relay persistence cannot be proven."""
 
+    def __init__(self, message: str, *, cause_code: str = "", exit_code: int | None = None):
+        super().__init__(message)
+        self.cause_code = cause_code
+        self.exit_code = exit_code
+
+
+def _record_relay_reason(reason_code: str, *, app_root=None, exit_code=None) -> None:
+    """Keep fixed diagnostic codes even when ordinary writer admission is denied."""
+    from auto_update import control_root, load_policy, support_record
+
+    fields = {"reason_code": reason_code}
+    if type(exit_code) is int:
+        fields["exit_code"] = exit_code
+    report = support_record(fields, stage="update_apply")
+    if app_root is not None:
+        try:
+            root = Path(app_root)
+            control = control_root(root / "app" if (root / "app").is_dir() else root)
+            if control is not None:
+                policy = load_policy(control)
+                # Existing support snapshots are diagnostics, never recovery input.
+                # A later parent failure must not erase this child's original reason.
+                stage = Path(policy["staging_root"])
+                _write_json_atomic(stage / ("failure-" + uuid.uuid4().hex + ".json"), report)
+        except Exception:
+            pass  # Diagnostic storage must not change stop/fence/lease semantics.
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -820,6 +848,10 @@ def start_user_relay_process(
         if process.poll() != 0:
             raise UserRelayError("current-user relay exited unsuccessfully during stop cleanup") from None
         raise
+    except UserRelayError as error:
+        if error.cause_code:
+            _record_relay_reason(error.cause_code, app_root=root, exit_code=error.exit_code)
+        raise
 
 
 def _read_started_relay(process, existing_owner, survival, parent_deadline, is_bootstrap, wait):
@@ -827,15 +859,25 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
     startup_progress("full_relay_survival_wait")
     startup_wait(min(survival, max(0.0, parent_deadline - time.monotonic())) if is_bootstrap else survival, wait)
     return_code = process.poll()
-    if is_bootstrap and return_code in (None, 0):
+    if is_bootstrap:
         owner = None
         startup_progress("full_relay_bootstrap_wait")
         while time.monotonic() < parent_deadline:
-            if process.poll() not in (None, 0):
-                break
+            return_code = process.poll()
+            if return_code not in (None, 0):
+                raise UserRelayError(
+                    "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
+                    exit_code=return_code,
+                )
             startup_stop_checkpoint()
             owner = existing_owner()
             startup_stop_checkpoint()
+            return_code = process.poll()
+            if return_code is not None and (return_code != 0 or owner is None):
+                raise UserRelayError(
+                    "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
+                    exit_code=return_code,
+                )
             if owner is not None:
                 if time.monotonic() >= parent_deadline:
                     owner = None
@@ -852,7 +894,8 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
                 "owner_status_updated_at": owner["updated_at"]}
     if return_code is not None:
         raise UserRelayError(
-            f"current-user relay exited before survival readback: {return_code}"
+            "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
+            exit_code=return_code,
         )
     return {
         "status": "ALIVE",
@@ -897,6 +940,8 @@ def run_persistent_relay_loop(
     cycle_count = 0
     last_cycle: dict[str, Any] = {"status": "NOT_TESTED"}
     fixed_metadata = dict(metadata or {})
+    reason_root = fixed_metadata.get("code_root") or fixed_metadata.get("app_root")
+    fence_recorded = False
     while not should_stop():
         try:
             update_preparation = None
@@ -952,6 +997,9 @@ def run_persistent_relay_loop(
                     },
                 )
         except WriterFencedError:
+            if not fence_recorded:
+                _record_relay_reason("RELAY_WRITER_FENCED", app_root=reason_root)
+                fence_recorded = True
             if max_cycles is not None:
                 cycle = {
                     "status": "FENCED",
@@ -986,6 +1034,11 @@ def run_persistent_relay_loop(
             "status": "FENCED",
             "reason": "deployment writer fence denied the final status mutation",
         }
+        if not fence_recorded:
+            _record_relay_reason("RELAY_WRITER_FENCED", app_root=reason_root)
+    if final["status"] != "FENCED":
+        _record_relay_reason("RELAY_STOP_REQUESTED" if should_stop() else "RELAY_COMPLETED",
+                             app_root=reason_root)
     return final
 
 
@@ -1308,6 +1361,7 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
     code = app_root / "app" if (app_root / "app").is_dir() else app_root
     update_result = startup_gate(code, [USER_RELAY_MODE, *(argv or [])], role="relay")
     if update_result is not None:
+        _record_relay_reason("RELAY_STARTUP_HANDLED", app_root=app_root)
         return update_result
     from current_user_onboarding import (
         apply_current_user_runtime_environment,
@@ -1360,9 +1414,11 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
         directory.mkdir(parents=True, exist_ok=True)
     stop_path = user_relay_stop_path(direct_sync_root)
     if stop_path.exists():
+        _record_relay_reason("RELAY_STOP_MARKER_PRESENT", app_root=app_root)
         return 0
     lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
     if lease is None:
+        _record_relay_reason("RELAY_INSTANCE_LEASE_UNAVAILABLE", app_root=app_root)
         return 0
     try:
         from auto_update import prepare_feed_packet
