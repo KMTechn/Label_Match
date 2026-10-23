@@ -161,6 +161,16 @@ class PackageOutboxProcessor:
                             expected_claim=row,
                         )
                         counts["conflict"] += int(applied)
+                    elif (
+                        exc.status_code == 409
+                        and exc.code == "PHS_WORK_GROUP_TRANSFER_NOT_READY"
+                        and draft is not None
+                        and draft.scanner_only
+                        and not row.get("command_json")
+                    ):
+                        counts["retry"] += int(self.outbox.mark_retry(
+                            key, exc, expected_claim=row, transfer_wait=True,
+                        ))
                     elif exc.status_code == 409 and exc.code == "UPSTREAM_COMPLETION_PENDING" and exc.retryable is True:
                         counts["retry"] += int(self.outbox.mark_retry(key, exc, expected_claim=row))
                     elif (

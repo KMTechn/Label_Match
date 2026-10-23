@@ -6100,6 +6100,14 @@ class Label_Match(tk.Tk):
         status = str((row or {}).get("status") or "").strip().upper()
         current = self.__dict__.get("current_set_info", {}) or {}
         set_id = str(current.get("id") or "").strip()
+        if (status in {"PENDING", "SENDING"}
+                and int((row or {}).get("local_completion_committed") or 0)):
+            self._workflow_blocking_notice = None
+            self._workflow_notice = None
+            self._workflow_notice_action = None
+            self._workflow_notice_action_text = "확인"
+            self._package_pin_ui(self._render_operator_workbench)
+            return False
         if status == "CONFLICT":
             recoverable_prewrite_conflict = (
                 _label_match_is_recoverable_prewrite_package_conflict(row)
@@ -6403,9 +6411,11 @@ class Label_Match(tk.Tk):
         for prefix, outbox_name in (
             ("package_create", "package_outbox"),
             ("package_cancellation", "package_cancellation_outbox"),
+            ("package_transfer_wait", "package_outbox"),
         ):
             outbox = self.__dict__.get(outbox_name)
-            available = outbox is not None and hasattr(outbox, "list_conflicts")
+            reader = "list_transfer_waiting" if prefix == "package_transfer_wait" else "list_conflicts"
+            available = outbox is not None and hasattr(outbox, reader)
             reconcile = getattr(outbox, "dismiss_superseded_recoverable_prewrite_conflicts", None)
             if prefix == "package_create" and callable(reconcile):
                 try:
@@ -6413,7 +6423,9 @@ class Label_Match(tk.Tk):
                 except Exception as exc:
                     print(f"과거 중앙 포장 충돌 정리 오류: {exc}")
             try:
-                conflicts = list(outbox.list_conflicts(limit=21)) if available else None
+                conflicts = (list(outbox.list_transfer_waiting())
+                             if available and prefix == "package_transfer_wait"
+                             else list(outbox.list_conflicts(limit=21)) if available else None)
                 if conflicts is not None and prefix == "package_create":
                     read_cancel = getattr(outbox, "get_repack_cancellation_receipt", None)
                     if callable(read_cancel):
@@ -6458,7 +6470,8 @@ class Label_Match(tk.Tk):
         self._package_review_snapshot = snapshot
         cancellation_count = 0
         for prefix, available, rows in snapshot.reviews:
-            label = "포장" if prefix == "package_create" else "취소"
+            label = ("포장" if prefix == "package_create" else "이적 기록"
+                     if prefix == "package_transfer_wait" else "취소")
             rows_name = f"_{prefix}_review_rows"
             notice_name = f"_{prefix}_review_notice"
             stale_name = f"_{prefix}_review_stale"
@@ -6488,6 +6501,14 @@ class Label_Match(tk.Tk):
                 cancellation_count = len(conflicts)
             if not conflicts:
                 self.__dict__[notice_name] = None
+                continue
+
+            if prefix == "package_transfer_wait":
+                self.__dict__[notice_name] = WorkflowNotice(
+                    title=f"이적 기록 기다림 {len(conflicts)}건",
+                    message="완료 기록은 이 PC에 보존했습니다. 다른 트레이는 계속하세요.",
+                    kind="scanner_notice", tone="warning",
+                )
                 continue
 
             count_text = "20건 이상" if len(conflicts) > 20 else f"{len(conflicts)}건"
@@ -10006,6 +10027,12 @@ class Label_Match(tk.Tk):
                 rows[set_id] = {"set_id": set_id, "package": package,
                                 "exchange": None, "current": None,
                                 "held": outbox.get_workbench_hold(set_id)}
+        list_waiting = getattr(outbox, "list_transfer_waiting", None)
+        for package in list_waiting() if callable(list_waiting) else ():
+            set_id = package["set_id"]
+            candidate = rows.setdefault(set_id, {"set_id": set_id, "package": package,
+                "exchange": None, "current": None, "held": outbox.get_workbench_hold(set_id)})
+            candidate["reason"] = "이적 기록 기다림"
         list_repack_reviews = getattr(outbox, "list_repack_reviews", None)
         for package in list_repack_reviews(limit=1000) if callable(list_repack_reviews) else ():
             set_id = str(package.get("set_id") or "").strip()
@@ -12412,6 +12439,8 @@ class Label_Match(tk.Tk):
                 ) else "보류" if held else (
                     str(package.get("status") or "") or
                     str(exchange["status"] if exchange is not None else "복구 확인"))
+                if item.get("reason"):
+                    condition = item["reason"]
                 if (item.get("unverified")
                         or self.__dict__.get("_package_recovery_file_issues", {}).get(item["set_id"])):
                     condition += " · 파일 미검증"
@@ -12431,7 +12460,7 @@ class Label_Match(tk.Tk):
                 if item.get("prior_pin_unknown"):
                     condition += " · 이전 관리자 요청 UNKNOWN 인계"
                 detail_rows.append(f"{item['set_id']} · {condition}")
-                reason = "이 건의 상태를 다시 확인하거나 보류로 두세요."
+                reason = item.get("reason") or "이 건의 상태를 다시 확인하거나 보류로 두세요."
                 if held:
                     reason = "보류한 건입니다. 다시 확인하거나 보류로 두고 다른 작업을 계속하세요."
                 if (item.get("unverified") or item.get("orphan_path")
@@ -22811,6 +22840,8 @@ class Label_Match(tk.Tk):
             "_package_create_review_notice"
         ) or self.__dict__.get(
             "_package_cancellation_review_notice"
+        ) or self.__dict__.get(
+            "_package_transfer_wait_review_notice"
         ) or self.__dict__.get(
             "_phs_label_guidance_notice"
         ) or self.__dict__.get(

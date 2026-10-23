@@ -843,7 +843,8 @@ class PackageOutbox:
                                       WHERE hold.set_id=package.set_id)"""
             ).fetchall()]
 
-    def mark_retry(self, key: str, error: Exception, *, expected_claim=None) -> bool:
+    def mark_retry(self, key: str, error: Exception, *, expected_claim=None,
+                   transfer_wait: bool = False) -> bool:
         cas, parameters = _sending_claim_cas("package_command_outbox", expected_claim)
         retry_after_seconds = _bounded_retry_after_seconds(
             getattr(error, "retry_after_seconds", None)
@@ -855,15 +856,28 @@ class PackageOutbox:
         )
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if transfer_wait:
+                claimed = conn.execute(
+                    "SELECT attempt_count FROM package_command_outbox WHERE idempotency_key=?",
+                    (key,),
+                ).fetchone()
+                attempts = int(claimed["attempt_count"]) if claimed is not None else 1
+                delay = min(600, 30 * 2 ** min(5, max(0, attempts - 1)))
+                retry_after_at = self._utc_after(min(600, max(delay, retry_after_seconds or 0)))
             cursor = conn.execute(
                 """UPDATE package_command_outbox
                        SET status='PENDING',last_error_code=?,last_error_message=?,
-                           retry_after_at=?,updated_at=?
+                           retry_after_at=?,updated_at=?,
+                           transfer_wait_started_at=CASE WHEN ? THEN
+                               COALESCE(transfer_wait_started_at,?)
+                               ELSE transfer_wait_started_at END
                      WHERE idempotency_key=? AND status='SENDING'""" + cas,
                 (
                     str(getattr(error, "code", error.__class__.__name__)),
                     str(error),
                     retry_after_at,
+                    self._utc_now(),
+                    int(transfer_wait),
                     self._utc_now(),
                     key,
                     *parameters,
@@ -871,6 +885,18 @@ class PackageOutbox:
             )
             conn.commit()
             return cursor.rowcount == 1
+
+    def list_transfer_waiting(self) -> list[dict[str, Any]]:
+        """Read upload-lag waits without turning them into manual workbench holds."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM package_command_outbox
+                     WHERE status IN ('PENDING','SENDING')
+                       AND transfer_wait_started_at IS NOT NULL
+                       AND command_json IS NULL
+                     ORDER BY transfer_wait_started_at,idempotency_key"""
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def replace_packing_settings_version(
         self, key: str, version: int, error: Exception, *, expected_claim

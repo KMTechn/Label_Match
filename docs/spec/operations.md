@@ -211,6 +211,8 @@ F3 진입/action gate·성공음/이력·중앙 worker dispatch·재시도/자�
 
 `package_outbox_processor.py`는 claim→저장 명령/receipt 조회→전송→receipt 검증→ACK/retry/conflict의 기존 순서를 소유한다. `package_logistics.PackageOutboxProcessor`가 원 writer admission과 call-time client/receipt 검증 경계를 유지하며 취소 processor는 기존 파일에 남는다.
 
+이 PC 완료의 보내기 준비에서 409 `PHS_WORK_GROUP_TRANSFER_NOT_READY`이면 이적 기록 기다림으로 보류 시작 시각과 같은 멱등 열쇠를 보존하고 30초부터 최대 10분 간격으로 기한 없이 자동 재시도한다. 일반 전송 재시도와 이 보류는 다음 현품표의 스캔·완료를 막지 않으며, 보류 건수와 이유는 기존 안내 띠·관리자 복구 작업대에서 확인한다. 서버가 이적 기록을 받으면 다음 재시도에 자동 반영하며 다른 충돌·확정 거절은 기존대로 관리자 확인 대상이다.
+
 `package_validation.py`는 client의 static source projection·work-group·transfer seal 검증만 소유한다. 세 메서드는 client 상태·HTTP·저장에 접근하지 않으며 기존 signature의 façade가 위임한다. work-group의 seal 검증은 기존 class 메서드를 호출 시 전달한다. 요청 순서·transport·API 오류 변환·command 조립은 client에 남겨 LM-3에서 별도 판단한다.
 
 검증은 [LM-2 실행 기록](D:/KMTech/program-improvement-20260912/work/Label_Match/w6lm2/RESULT.md)의 AST·동일 입력 전후 벡터·기존 focused 시험에 한정한다. GUI·설치·프린터·실물 모니터·relay 실서버는 별도 검증 대상이다.

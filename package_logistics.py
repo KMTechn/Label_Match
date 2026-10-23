@@ -355,6 +355,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
                       OR review_status IS NULL),
             receipt_json TEXT,
             retry_after_at TEXT,
+            transfer_wait_started_at TEXT,
             last_attempt_at TEXT,
             local_completion_committed INTEGER NOT NULL DEFAULT 0
                 CHECK(local_completion_committed IN (0,1)),
@@ -505,6 +506,10 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
     if "retry_after_at" not in command_columns:
         conn.execute(
             "ALTER TABLE package_command_outbox ADD COLUMN retry_after_at TEXT"
+        )
+    if "transfer_wait_started_at" not in command_columns:
+        conn.execute(
+            "ALTER TABLE package_command_outbox ADD COLUMN transfer_wait_started_at TEXT"
         )
     if "review_status" not in command_columns:
         conn.execute(
