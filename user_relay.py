@@ -903,7 +903,7 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
             if return_code == 0 and not completed:
                 completed = True
                 readback_deadline = min(parent_deadline, time.monotonic() + 2.0)
-            if return_code == 0 and owner is None:
+            if return_code == 0 and owner is None and time.monotonic() < readback_deadline:
                 owner = existing_owner()
             if return_code not in (None, 0):
                 raise UserRelayError(

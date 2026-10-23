@@ -74,6 +74,23 @@ def test_bootstrap_rejects_owner_readback_after_grace_expires(monkeypatch):
     assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
 
 
+def test_bootstrap_does_not_start_another_query_after_slow_read_exhausts_grace(monkeypatch):
+    clock = [0.0]
+    reads = []
+    monkeypatch.setattr(relay.time, "monotonic", lambda: clock[0])
+    def slow_missing_owner():
+        reads.append(clock[0])
+        clock[0] += 3.0
+        return None
+    with pytest.raises(relay.UserRelayError) as caught:
+        relay._read_started_relay(
+            SimpleNamespace(pid=42, poll=lambda: 0), slow_missing_owner, 0.0, 10.0, True,
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+    assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
+    assert reads == [0.0]
+
+
 @pytest.mark.parametrize("failure", ["support", "print", "import", "traceback"])
 def test_diagnostic_failure_preserves_successful_main(monkeypatch, tmp_path, failure):
     import builtins
