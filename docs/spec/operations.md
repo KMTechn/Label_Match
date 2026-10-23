@@ -23,7 +23,7 @@
 
 종료 취소 `APP_CLOSE_CANCELLED`와 `멈춤 요청 미룸`은 `local_events/포장실로컬이벤트로그_*.csv`에 보존한다(w9firstupdsub247). 서버 catalog에 없는 이 감사가 업무 CSV에 섞이면 격리·UNKNOWN 영수증으로 정상 relay ACK를 막으므로 앞으로 생성하는 행은 로컬 전용이다. 이미 생성된 업무 CSV·spool·operator_review는 자동 수정하거나 지우지 않는다. 현재 서버 catalog 고정 사본과 구 bundle을 emitter 전체에 대조하는 정책 시험 및 실제 CSV→relay receipt→상태 되읽기 회귀로 확인한다.
 
-v2.0.122 화면 고정은 웹 6ced39fb4056488575e04e17059c0e3e90bd83f2의 exporter 사본 76개 파일(parts fingerprint c83ed483720e2b61)을 고정한다. 다리 글·원문 코드·교환 두 칸·품목별 전체 제품 수와 부분 제출 확인 뒤 즉시 release를 반영했다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다. 셸 v3.16.3.1을 고정한다.
+v2.0.123 화면 고정은 웹 6ced39fb4056488575e04e17059c0e3e90bd83f2의 exporter 사본 76개 파일(parts fingerprint c83ed483720e2b61)을 고정한다. 다리 글·원문 코드·교환 두 칸·품목별 전체 제품 수와 부분 제출 확인 뒤 즉시 release를 반영했다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다. 셸 v3.16.3.1을 고정한다.
 
 입력 칸 스캔 막이: 열린 판에서 스캐너 꼴 입력을 받으면 앰버 띠로 알리고 처리는 0건이다.
 
@@ -74,6 +74,9 @@ writer 선언은 `python -B tools/refresh_admin_worker_declarations.py`, 확인�
 첫 업데이트의 writer 선언은 `writer_sink_inventory.derive_writer_sink_inventory`와 기존 `release_digest`로 재생성한다. 거절 보고 POST의 guarded sink 1개를 추가해 83개 sink이며, Python/PowerShell pin과 후보 파일 해시·embedded probe pin을 함께 갱신한다. 역사적 before 해시와 기존 거절 조건은 보존하고, stock `55cab72`의 정확한 갱신 쌍에는 실제 portable 공급 파일의 변경·추가만 선언한다.
 
 <a id="onboarding-writer-admission"></a>
+
+v2.0.123 첫 설정 relay는 bootstrap이 확인해 전달한 부모 PID·생성 신원을 현재 native 신원과 대조하고, 같은 판·계정·일반 권한인 부모 행 하나만 일반 복구 검사에서 건너뛴다. 부모 결속이 없거나 잘못됐거나 신원이 다르면 기존 거절을 유지하며 다른 writer와 ROLLBACK_PENDING의 relay 한 개 조건은 그대로다.
+
 
 설치 주소와 등록에 사용한 relay endpoint가 다르면 첫 시작은 `RECOVERY_REQUIRED`·`INSTALL_SERVER_ORIGIN_CHANGED`와 「회사 서버 주소가 설치 때와 다릅니다.\n현장 관리자에게 알리세요.」 안내로 멈춘다. 완료된 기계 대기 표지의 명시적 주소도 대조하며 서버가 반환한 profile 호스트는 비교하지 않는다. 옛 relay를 새로 시작하거나 재사용하지 않고 등록·로컬 자료·보낼 것을 보존한다. 자료 삭제·자동 재등록·프로세스 강제 종료는 하지 않는다. 관리자는 기존 지원 복구 절차로 설치와 등록을 확인한다. 주소 기록이 없거나 판독할 수 없으면 기존 시작 판정을 유지한다. 실제 설치/안내 화면·실행 중인 옛 relay의 종료는 별도 랩 수용이다.
 

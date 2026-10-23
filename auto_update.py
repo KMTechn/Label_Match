@@ -2828,6 +2828,10 @@ def launch_version(control: Path, sha: str, arguments: list[str], *, nonce: str 
     environment = dict(os.environ)
     environment.pop("KMTECH_LM_UPDATE_TRIAL_NONCE", None)
     environment.pop("KMTECH_LM_UPDATE_DEFERRED_AT", None)
+    environment.pop("KMTECH_LM_RELAY_PARENT", None)
+    if (isinstance(relay_deadline, _RelayPreparationDeadline)
+            and relay_deadline.parent_pid is not None and relay_deadline.parent_identity is not None):
+        environment["KMTECH_LM_RELAY_PARENT"] = f"{relay_deadline.parent_pid}:{relay_deadline.parent_identity}"
     if nonce:
         environment["KMTECH_LM_UPDATE_TRIAL_NONCE"] = _sha(nonce, length=32)
     if deferred_at:
@@ -2957,7 +2961,20 @@ def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str,
                 or apply_claim_status(control) not in {"NONE", "ABSENT"}
                 or len([row for row in rows if row.get("role") == "relay"]) != 1):
             raise ValueError("pending rollback requires the previous active code and one ordinary relay")
+    parent = re.fullmatch(r"([1-9][0-9]*):([1-9][0-9]*)", os.environ.get("KMTECH_LM_RELAY_PARENT", ""))
+    parent_skipped = False
     for row in rows:
+        if (parent is not None and not parent_skipped
+                and type(row.get("pid")) is int and str(row["pid"]) == parent[1]
+                and row.get("sha") == sha and row.get("sid") == policy["operator_sid"]
+                and row.get("ordinary_user") is True):
+            try:
+                identity = native_process_identity(int(parent[1]))
+                if identity.get("status") == "LIVE" and identity.get("creation_identity") == parent[2]:
+                    parent_skipped = True
+                    continue
+            except (OSError, ValueError, TypeError, KeyError, OverflowError):
+                pass  # An unproved/reused parent remains an ordinary writer below.
         if (row.get("sha") != sha or row.get("sid") != policy["operator_sid"]
                 or row.get("ordinary_user") is not True or row.get("role") not in {"gui", "relay"}
                 or _utc(row.get("created_at")) < started):
