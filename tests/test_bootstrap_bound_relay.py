@@ -20,7 +20,8 @@ def bound_relay(tmp_path, monkeypatch):
         control, stage = tmp_path / "control", tmp_path / "stage"
         sha = state["previous_sha"] if phase == "ROLLBACK_PENDING_READY" else state["candidate_sha"]
         app = updates.version_bundle(control, sha) / "app"
-        policy = {"operator_sid": "S-1-5-21-111-222-333-1001", "staging_root": str(stage)}
+        policy = {"operator_sid": "S-1-5-21-111-222-333-1001", "staging_root": str(stage),
+                  "operator_local_app_data": str(tmp_path / "operator-local")}
         write(control / "transition.json", state)
         write(control / "active.json", {"sha": sha})
         paths = SimpleNamespace(ledger_path=tmp_path / "ledger.db",
@@ -49,6 +50,10 @@ def bound_relay(tmp_path, monkeypatch):
         monkeypatch.setattr(updates, "assert_ordinary_recovery", lambda *a: None)
         rows, launches, events = [], [], []
         monkeypatch.setattr(updates, "process_snapshot", lambda root: list(rows))
+        monkeypatch.setattr(updates, "native_process_identity", lambda pid: {
+            "status": "LIVE" if any(row["pid"] == pid for row in rows) else "ABSENT",
+            "creation_identity": str(pid * 100) if any(row["pid"] == pid for row in rows) else None,
+        })
 
         def launch(root, selected, arguments, **kwargs):
             launches.append((selected, arguments))

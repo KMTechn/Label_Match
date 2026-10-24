@@ -12,6 +12,8 @@ import hashlib
 
 import json
 
+import math
+
 from pathlib import Path, PurePosixPath
 
 import re
@@ -31,7 +33,14 @@ SELECT = {'_sha', '_utc', 'startup_action', 'writer_processes', 'assert_ordinary
           'process_matches_trial', 'ready_matches', 'confirm_transition', 'recovery_sha',
           'prepare_transition', 'apply_transition', 'request_rollback', '_RollbackReadyPending'}
 
-SELECT.update({'current_relay_ready', 'wait_current_relay'})
+SELECT.update({'current_relay_ready', 'wait_current_relay',
+               '_bootstrap_relay_readback', '_bootstrap_relay_snapshot'})
+SELECT.update({'_initial_ready_lock', '_RelayPreparationUnavailable',
+               '_RelayPreparationDeadline', '_relay_preparation_deadline',
+               '_relay_prepare_failure', '_relay_prepare_result',
+               '_relay_startup_stop_checkpoint'})
+SELECT.update({'startup_bootstrap_reason', '_startup_trial_lock',
+               'UpdateMutexRecoveryRequired', '_refuse_abandoned_update'})
 
 CACHE = {}
 SELECT.add("gui_recovery_state")
@@ -89,7 +98,9 @@ class World:
         ns = {'__builtins__': {**vars(builtins), '__import__': self.importer},
               'Path': MemoryPath, 'Mapping': dict, 'Any': object, 'datetime': dt.datetime,
               'timezone': dt.timezone, 're': re, 'hashlib': hashlib, 'json': json,
-              'os': self.os, 'time': self.time, 'uuid': types.SimpleNamespace(uuid4=self.uuid),
+              'os': self.os, 'time': self.time, 'math': math,
+              'contextmanager': contextlib.contextmanager,
+              'uuid': types.SimpleNamespace(uuid4=self.uuid),
               'WriterFencedError': type('WriterFencedError', (RuntimeError,), {}),
               'WriterFenceError': type('WriterFenceError', (RuntimeError,), {})}
         if label not in CACHE:
@@ -98,14 +109,15 @@ class World:
             for node in tree.body:
                 if isinstance(node, ast.Assign):
                     for target in node.targets:
-                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT'}:
+                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT', 'RELAY_PREPARE_SECONDS', 'RELAY_PARENT_RESULT_RESERVE_SECONDS'}:
                             constants[target.id] = ast.literal_eval(node.value)
             nodes = []
             for node in tree.body:
                 if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in SELECT:
                     self.inventory[node.name] = {'line': node.lineno, 'end_line': node.end_lineno,
                         'sha256': hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest()}
-                    node.decorator_list = []
+                    node.decorator_list = [d for d in node.decorator_list
+                                           if isinstance(d, ast.Name) and d.id == 'contextmanager']
                     nodes.append(node)
             module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), *nodes], type_ignores=[])
             CACHE[label] = (constants,self.inventory,compile(ast.fix_missing_locations(module), label+'/auto_update.py', 'exec'))
@@ -173,6 +185,8 @@ class World:
         self.files[str(path)] = copy.deepcopy(value)
         self.events.append('write:'+path.name+':'+str(value.get('phase', value.get('status', 'record'))))
     def identity(self, pid):
+        if any(row.get('pid') == pid for row in self.rows):
+            return {'status': 'LIVE', 'creation_identity': str(pid * 100)}
         return {'status': self.owner_status, 'creation_identity': 'memory-owner'}
     def snapshot(self, control):
         if self.auto_ready and self.state['phase'] == 'ROLLBACK_PENDING_READY':
@@ -222,6 +236,7 @@ class World:
         self.files[str(self.stage/'ready.json')] = receipt
     def importer(self, name, *args, **kwargs):
         if name == '__future__': return builtins.__import__(name, *args, **kwargs)
+        if name == 'startup_timing': return builtins.__import__(name, *args, **kwargs)
         if name == 'time': return self.time
         if name == 'subprocess': return types.SimpleNamespace(Popen=self.spawn, CREATE_NO_WINDOW=0)
         if name == 'contextlib': return contextlib

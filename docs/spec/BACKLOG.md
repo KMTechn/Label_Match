@@ -1,4 +1,6 @@
-- v2.0.124: 첫 설정 bootstrap 생존 중 소유자 mutex 바쁨을 기존 마감까지 다시 확인하고 일반 조회 예외에 고정 지원 코드를 남김.
+- v2.0.124: 첫 설정 bootstrap 생존 중 소유자 mutex 바쁨을 기존 마감까지 다시 확인하고 일반 조회 예외에 고정 지원 코드를 남김. SYSTEM 업데이트 확인창 획득 busy도 기존120초 안에서만 pending으로 재시도함. rollback READY 확인창도 기존 timeout_seconds(기본120초) while 안의 획득 busy만 재시도함. 재개한 APPLIED_PENDING_READY/ROLLBACK_PENDING_READY의 최초 SYSTEM 획득도 journal의 원120초 안에서만 exact busy를 재시도하며, 잠금 전 판독은 시간 상한에만 쓰고 획득 뒤 재판독·증명을 유지함. abandoned·다른/본문 오류·마감 뒤 busy와 기존 증명·fail-closed/UNKNOWN 처리는 유지함.
+- v2.0.124 bootstrap 후속(ANSWER-11·12 및 22:0x): 기존 claim 폴링의 Observe/READY 읽기를 잠금 밖에서 수행하고 root→trial 재획득 뒤 transition/nonce/phase·active·claim/ready·native PID/birth를 재확인한다. terminal/recovery의 이미 띄운 relay 준비 대기도 root 밖에서 수행한 뒤 같은 root 재획득·재검증을 거친다. 부재 증명 Observe→launch/최초 claim 생성은 잠금 안 한 덩어리로 유지한다. nonce trial startup busy는 같은 transition 원120초 안에서만 재시도하며 오류·만료는 기존 처리다. 자연15초/느린30초의 새 소스 전체 검증·공식 빌드는 미완료다.
+- ANSWER-15: root 안 부재 증명→Popen→native PID/birth 보관(필요한 claim 기록)은 원자적으로 유지한다. 둘째 bootstrap은 이미 보이는 같은 ordinary relay를 기존 복구 판정으로 재사용하고, 준비 전이면 둘 다 root 밖에서 각 요청의 원 마감으로 기다린다. 성공·준비 전 종료·마감 뒤에는 같은 root를 재획득해 상태/active/nonce/claim/ready/native 세대를 확인한다. 달라진 증명은 기존 실패 길로 닫고, 같으면 기존 종료 코드를 유지한다. 새 공유 기록·마감·재시작 규칙은 없다.
 
 - v2.0.123: 첫 설정 relay 부모 행 거짓 거절 고침. 부모 예외는 첫 관문의 바쁨 갈래에서만 쓰고 통과 직후 환경에서 제거하며 뒤 단계·자손·trial/nonce로 전달하지 않는다(w9firstupdsub546).
 

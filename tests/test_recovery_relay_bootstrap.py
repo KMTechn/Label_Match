@@ -30,7 +30,8 @@ def recovery(tmp_path, monkeypatch):
     control.mkdir()
     stage.mkdir()
     sha = "a" * 40
-    policy = {"operator_sid": "operator", "staging_root": str(stage)}
+    policy = {"operator_sid": "operator", "staging_root": str(stage),
+              "operator_local_app_data": str(tmp_path / "operator-local")}
     files = [control / name for name in ("active.json", "transition.json", "apply-claim.json")]
     files += [stage / name for name in ("trial.json", "startup-support.json", "trial-failure.json")]
     for path in files:
@@ -58,6 +59,10 @@ def recovery(tmp_path, monkeypatch):
     monkeypatch.setattr(updates, "prepared_pending", lambda *_: False)
     monkeypatch.setattr(updates, "current_generation_status", lambda *_: "ALLOW")
     monkeypatch.setattr(updates, "process_snapshot", lambda *_: list(rows))
+    monkeypatch.setattr(updates, "native_process_identity", lambda pid: {
+        "status": "LIVE" if any(row["pid"] == pid for row in rows) else "ABSENT",
+        "creation_identity": str(pid * 100) if any(row["pid"] == pid for row in rows) else None,
+    })
     monkeypatch.setattr(updates, "now_utc", lambda: PRESENT)
     monkeypatch.setenv("KMTECH_LM_UPDATE_DEFERRED_AT", BOUNDARY)
     monkeypatch.delenv("KMTECH_LM_UPDATE_TRIAL_NONCE", raising=False)
@@ -69,15 +74,17 @@ def recovery(tmp_path, monkeypatch):
     def launch(_control, target, arguments, **kwargs):
         assert lock._is_owned()
         assert target == sha
-        assert kwargs == {"deferred_at": BOUNDARY}
+        assert set(kwargs) == {"deferred_at", "relay_deadline"}
+        assert kwargs["deferred_at"] == BOUNDARY
+        assert kwargs["relay_deadline"] == updates.RELAY_PREPARE_SECONDS
         assert arguments[0] in ("--label-match-user-relay", "--label-match-direct-sync-relay")
-        launches.append(kwargs)
+        launches.append({"deferred_at": kwargs["deferred_at"]})
         rows.append({**parent, "pid": parent["pid"] + 1,
                      "role": "writer" if arguments[0] == "--label-match-direct-sync-relay" else "relay"})
         return rows[-1]["pid"]
 
     def ready(*args, **kwargs):
-        assert lock._is_owned()
+        assert not lock._is_owned()  # ANSWER15: READY wait releases bootstrap root.
         ready_calls.append(kwargs)
         relays = [row for row in rows if row["role"] == "relay"]
         return len(relays) == 1 and kwargs.get("pid", relays[0]["pid"]) == relays[0]["pid"]
@@ -225,7 +232,7 @@ def test_recovery_relay_timeout_is_failure(recovery, monkeypatch):
         raise WriterFencedError("WRITER_GATE_TIMEOUT", "busy")
     monkeypatch.setattr(updates, "launch_version", timeout)
     assert updates._bootstrap(recovery.control, ["--label-match-user-relay"], role="relay") == 20
-    assert len(attempts) == 3
+    assert len(attempts) == updates.RELAY_PREPARE_SECONDS // 100
     recovery.unchanged()
 
 
@@ -243,6 +250,8 @@ def test_recovery_early_exit_keeps_previous_failure_result(recovery, monkeypatch
     # This case targets recovery reporting, independently of the fixture's old
     # launch-version kwargs contract (the production launch also carries a deadline).
     monkeypatch.setattr(updates, "_launch_bootstrap_version", lambda *a, **kw: 42)
+    child_identity = {"status": "LIVE", "creation_identity": "4200"}
+    monkeypatch.setattr(updates, "native_process_identity", lambda pid: dict(child_identity))
     records = []
     monkeypatch.setattr(updates, "emit_support_record", lambda fields, **kw: records.append(fields))
     def old_timeout(*args, **kwargs):
@@ -256,6 +265,7 @@ def test_recovery_early_exit_keeps_previous_failure_result(recovery, monkeypatch
     recovery.configure("failed")
 
     def exited(*args, **kwargs):
+        child_identity.update(status="ABSENT", creation_identity=None)
         raise updates._RelayPreparationUnavailable("RELAY_EXITED_BEFORE_RUNNING")
 
     monkeypatch.setattr(updates, "wait_current_relay", exited)

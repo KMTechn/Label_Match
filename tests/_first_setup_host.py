@@ -24,6 +24,190 @@ def write(path, value):
     path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
 
 
+def _observation_path(root, pid):
+    return root / "relay-lifecycle-observations" / (hashlib.sha256(str(pid).encode()).hexdigest() + ".json")
+
+
+def _write_observation(path, value):
+    import uuid
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    temporary.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _run_with_trace(callback, trace, *args, **kwargs):
+    previous = sys.gettrace()
+    sys.settrace(trace)
+    try:
+        return callback(*args, **kwargs)
+    finally:
+        sys.settrace(previous)
+
+
+def _host_load_snapshot(config):
+    try:
+        selected = json.loads(Path(config).read_bytes()).get("host_load_snapshot")
+        if not selected:
+            return {"available": False}
+        path = Path(selected)
+        if path.stat().st_size > 16384:
+            return {"available": False, "error_type": "OversizedObservation"}
+        value = json.loads(path.read_bytes())
+        value["snapshot_age_seconds"] = round(time.monotonic() - value.pop("monotonic"), 3)
+        return {"available": True, **value}
+    except Exception as error:
+        return {"available": False, "error_type": type(error).__name__}
+
+
+def _claim_update_observe_delay(root, state, active, claim, seconds):
+    """Claim one delayed read of an existing applied-candidate trial."""
+    if (not state or state.get("phase") != "APPLIED_PENDING_READY" or not claim
+            or not state.get("nonce") or not state.get("transition_id")
+            or not state.get("candidate_sha") or not state.get("applied_at")
+            or claim.get("nonce") != state.get("nonce")
+            or claim.get("transition_id") != state.get("transition_id")
+            or claim.get("role") not in {"relay", "gui"}
+            or not isinstance(claim.get("pid"), int) or isinstance(claim["pid"], bool)
+            or claim["pid"] <= 0 or not active
+            or active.get("sha") != state.get("candidate_sha")):
+        return None
+    try:
+        with (Path(root) / "update-slow-observe-started").open("x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        return None
+    return dict(phase=state["phase"], candidate_pid=claim["pid"], requested_seconds=seconds,
+                applied_at=state["applied_at"], nonce_match=True,
+                transition_id_match=True, active_candidate_match=True)
+
+
+def _wait_observed_sync_child(process, config, timeout):
+    """Observe the existing wait without changing its timeout or child lifetime."""
+    import threading
+    import uuid
+    path = Path(config).parent / "direct-sync-child-observations" / (uuid.uuid4().hex + ".json")
+    began = time.monotonic()
+    record = {"timeout_seconds": timeout, "host_before": _host_load_snapshot(config)}
+    try:
+        creation = _native_process_times(process)["creation_identity"]
+    except Exception as error:
+        creation = None
+        record["native_identity_error_type"] = type(error).__name__
+    try:
+        result = process.wait(timeout=timeout)
+        record["wait_return_code"] = result
+        return result
+    except BaseException as error:
+        record["wait_error_type"] = type(error).__name__
+        raise
+    finally:
+        ended_ns = time.time_ns()
+        record.update(elapsed_seconds=round(time.monotonic() - began, 6),
+                      host_after=_host_load_snapshot(config))
+        try:
+            record["native_at_wait_end"] = _native_guard_process(
+                process, creation, process.pid, ended_ns)
+            _write_observation(path, record)
+            if record["native_at_wait_end"].get("native_alive"):
+                def observe_exit():
+                    # Keep the original Popen handle; never signal or reap a child.
+                    while True:
+                        try:
+                            native = _native_guard_process(process, creation, process.pid, ended_ns)
+                            if not native.get("native_alive"):
+                                record.update(native_after_wait=native,
+                                              host_at_later_exit=_host_load_snapshot(config),
+                                              last_fixed_child_log=_fixed_child_log(process))
+                                _write_observation(path, record)
+                                return
+                        except Exception:
+                            return
+                        time.sleep(0.25)
+                threading.Thread(target=observe_exit, daemon=True).start()
+        except Exception:
+            pass
+
+
+def _native_process_times(process):
+    """Query only the original Popen handle, including after its child exits."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = wintypes.HANDLE(int(process._handle))
+    kernel.GetProcessId.argtypes = [wintypes.HANDLE]
+    kernel.GetProcessId.restype = wintypes.DWORD
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    born, exited, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+    if not kernel.GetProcessTimes(handle, ctypes.byref(born), ctypes.byref(exited),
+                                  ctypes.byref(kernel_time), ctypes.byref(user_time)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    pid = kernel.GetProcessId(handle)
+    if not pid:
+        raise ctypes.WinError(ctypes.get_last_error())
+    wait = kernel.WaitForSingleObject(handle, 0)
+    if wait not in (0, 258):
+        raise ctypes.WinError(ctypes.get_last_error())
+    code = wintypes.DWORD()
+    if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    ticks = lambda value: (value.dwHighDateTime << 32) | value.dwLowDateTime
+    birth_ns = ticks(born) * 100 - 11644473600000000000
+    exit_ns = None if wait == 258 else ticks(exited) * 100 - 11644473600000000000
+    return {"pid": pid, "creation_identity": ticks(born), "alive": wait == 258,
+            "exit_code": None if wait == 258 else code.value,
+            "exit_time_unix_ns": exit_ns,
+            "cpu_kernel_seconds": ticks(kernel_time) / 10_000_000,
+            "cpu_user_seconds": ticks(user_time) / 10_000_000,
+            "cpu_seconds": (ticks(kernel_time) + ticks(user_time)) / 10_000_000,
+            "wall_seconds": ((time.time_ns() if exit_ns is None else exit_ns) - birth_ns) / 1_000_000_000}
+
+
+def _native_guard_process(process, expected_creation, expected_pid, guard_ns):
+    state = _native_process_times(process)
+    return {"native_alive": state["alive"],
+            "native_pid_creation_matches": state["pid"] == expected_pid
+                and state["creation_identity"] == expected_creation,
+            "native_exit_code": state["exit_code"],
+            "native_cpu_seconds": state["cpu_seconds"],
+            "native_cpu_kernel_seconds": state["cpu_kernel_seconds"],
+            "native_cpu_user_seconds": state["cpu_user_seconds"],
+            "native_wall_seconds": state["wall_seconds"],
+            "native_exit_guard_seconds": None if state["alive"] else
+                round((state["exit_time_unix_ns"] - guard_ns) / 1_000_000_000, 6)}
+
+
+def _fixed_child_log(process):
+    import re
+    path = process.host_test_output
+    size = path.stat().st_size
+    with path.open("rb") as stream:
+        stream.seek(max(0, size - 65536))
+        raw = stream.read(65536)
+    text = raw.decode("utf-8", errors="replace")
+    marker = None
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        code = record.get("reason_code") if isinstance(record, dict) else None
+        if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,95}", code):
+            marker = code
+    frames = [{"file": Path(file).name, "function": function, "line": int(line)}
+              for file, line, function in re.findall(
+                  r'File "([^"\r\n]+)", line (\d+), in ([A-Za-z_][A-Za-z_0-9]*|<module>)', text)
+              if Path(file).name in {"auto_update.py", "user_relay.py", "label_match_relay_entry.py",
+                  "label_match_product_host.py", "writer_session_fence.py", "label_data_generation.py"}]
+    return {"last_fixed_marker": marker, "product_frames": frames,
+            "log_tail_truncated": size > len(raw), "log_tail_sha256": hashlib.sha256(raw).hexdigest()}
+
+
 def inventory(root):
     rows = []
     for path in sorted(root.rglob("*"),
@@ -92,7 +276,7 @@ Export-ModuleMember -Function Get-Acl,Set-Acl
             .replace("'PARENT'", "'" + str(root.parent).replace("'", "''") + "'"), encoding="utf-8-sig")
 
 
-def observe_script(helper, current, processes):
+def observe_script(helper, current, processes, *, diagnostic=None, target_pid=None):
     source = helper.read_text(encoding="utf-8-sig")
     supervisor = source[source.index("function Invoke-LabelStartupReadOnlyQuery {"):
                         source.index("if ($SupportedLifecycle -and")]
@@ -105,15 +289,24 @@ def observe_script(helper, current, processes):
         if ($item.OrdinaryUser -ceq $false) { [void][KMTechStartupUpdateToken]::Elevated.Add([uint32]$item.ProcessId) }
     }
     function Get-CimInstance {
+        $diagnostic = @{input_row_present=$false;native_live=$false;native_generation_matches=$false;emitted_row_present=$false}
         foreach ($item in $script:testProcesses) {
+            $isTarget = [int]$item.ProcessId -eq DIAGNOSTICPID
+            if ($isTarget) { $diagnostic.input_row_present=$true }
             $item.CreationDate = [datetime]$item.CreationDate
             $native=$null
             try {
                 $native=[Diagnostics.Process]::GetProcessById([int]$item.ProcessId)
                 $difference=$native.StartTime.ToUniversalTime().Ticks-$item.CreationDate.ToUniversalTime().Ticks
+                if ($isTarget) {
+                    $diagnostic.native_live=-not $native.HasExited
+                    $diagnostic.native_generation_matches=$difference -ge 0 -and $difference -lt 10
+                }
+                if ($isTarget -and -not $native.HasExited -and $difference -ge 0 -and $difference -lt 10) { $diagnostic.emitted_row_present=$true }
                 if (-not $native.HasExited -and $difference -ge 0 -and $difference -lt 10) { $item }
-            } catch {} finally { if ($null -ne $native) { $native.Dispose() } }
+            } catch { if ($isTarget) { $diagnostic.native_error_type=$_.Exception.GetType().Name } } finally { if ($null -ne $native) { $native.Dispose() } }
         }
+        try { [IO.File]::WriteAllText('DIAGNOSTICPATH', ($diagnostic | ConvertTo-Json -Compress)) } catch {}
     }
     function Invoke-CimMethod {
         param($InputObject,$MethodName)
@@ -121,6 +314,8 @@ def observe_script(helper, current, processes):
         return @{ReturnValue=0;Sid=$sid}
     }
 '''.replace("PROCESSES", str(processes).replace("'", "''")).replace("WORKER", SID)
+    adapters = adapters.replace("DIAGNOSTICPID", str(target_pid or 0)).replace(
+        "DIAGNOSTICPATH", str(diagnostic or processes.with_suffix(".diagnostic.json")).replace("'", "''"))
     query = query.replace("    # Query only app-related rows;",
                           adapters + "\n    # Query only app-related rows;", 1)
     return (supervisor + "\nfunction Assert-LabelStartupNoReparsePoint {}\n" + query
@@ -151,7 +346,7 @@ def refresh_file_pins(bundle, manifest):
         manifest[field] = hashlib.sha256((bundle / name).read_bytes()).hexdigest()
 
 
-def prepare(root, source, packet, *, preserved=False, signer=None, feed_shape="signed"):
+def prepare(root, source, packet, *, preserved=False, signer=None, feed_shape="signed", slow_observe=15):
     """Make a test-only installed tree from authenticated, already built stock."""
     current = root / "machine/current"
     current.mkdir(parents=True)
@@ -214,8 +409,9 @@ def prepare(root, source, packet, *, preserved=False, signer=None, feed_shape="s
     (root / "stage").mkdir()
     config = root / "host-config.json"
     write(config, {"root": str(root), "repo": str(source), "current": str(current),
-                   "selected": str(selected), "control": str(control), "slow_observe": 15,
-                   "feed_shape": feed_shape})
+                   "selected": str(selected), "control": str(control), "slow_observe": slow_observe,
+                   "feed_shape": feed_shape,
+                   "host_load_snapshot": os.environ.get("LABEL_MATCH_HOST_TEST_LOAD_SNAPSHOT", "")})
     native_acl(root)
     if preserved:
         process = launch(config, "seed")
@@ -267,8 +463,8 @@ def overlay_release(config, source):
         inventory(bundle)
 
 
-def offer_update(config, signer):
-    """Use the existing signed canonical update-fixture format for 124 → 125."""
+def prepare_update(config, signer):
+    """Prepare the signed 125 fixture before any installed relay is alive."""
     import auto_update as updates
     from tests.test_update_manifest import canonical_manifest
     value = json.loads(config.read_text())
@@ -281,16 +477,59 @@ def offer_update(config, signer):
     receipt = (candidate / "bootstrap-integrity.json").resolve()
     assert receipt.is_relative_to((root / "offer").resolve())
     receipt.unlink()
-    label = candidate / "app/Label_Match.py"
-    raw = label.read_bytes()
-    assert b'APP_VERSION = "v2.0.124"' in raw
-    label.write_bytes(raw.replace(b'APP_VERSION = "v2.0.124"', b'APP_VERSION = "v2.0.125"', 1))
-    # As in test_auto_update_endpoints, this is only an application-version
-    # copy. Data format/constants, code paths, and the trusted key stay intact.
+    # The release builder requires a clean committed tree and packages Git
+    # blobs (build_portable_release_candidate.py:558-572,650-710). A scratch
+    # release commit is outside this test's authority, so use the approved
+    # source-copy route with the same existing declaration generators.
+    source = Path(value["repo"])
+    source125 = root / "source125"
+    with (root / "source125.private.log").open("xb") as stream:
+        subprocess.run(["git", "-c", "core.autocrlf=false", "clone", "--shared",
+                        str(source), str(source125)], check=True, stdout=stream,
+                       stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
+    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=source,
+                                      creationflags=subprocess.CREATE_NO_WINDOW)
+    for name in filter(None, tracked.decode().split("\0")):
+        target = source125 / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / name, target)
+    for name, constant in (("Label_Match.py", "APP_VERSION"),
+                           ("label_data_generation.py", "CURRENT_VERSION")):
+        path = source125 / name
+        raw = path.read_bytes()
+        old = (constant + ' = "v2.0.124"').encode()
+        assert raw.count(old) == 1
+        path.write_bytes(raw.replace(old, (constant + ' = "v2.0.125"').encode(), 1))
+    declarations = []
+    # Historical layouts add long relative paths. Keep their private work root
+    # beside the pytest case, below the Windows copytree path limit.
+    declaration_work = root.parent / ("d125-" + hashlib.sha256(str(root).encode()).hexdigest()[:8])
+    assert not declaration_work.exists()
+    write(root / "source125-work-root.json", {"path": str(declaration_work)})
+    tools = [("refresh_admin_worker_declarations.py", []),
+             ("refresh_first_update_declarations.py",
+              ["--work-root", str(declaration_work)]),
+             ("refresh_atomic_replace_declarations.py", [])]
+    for tool, extra in tools:
+        for mode in ("write", "check"):
+            args = [sys.executable, "-s", "-B", str(source125 / "tools" / tool), *extra]
+            if mode == "check":
+                args.append("--check")
+            with (root / (tool + "-" + mode + ".private.log")).open("xb") as stream:
+                result = subprocess.run(args, cwd=source125, stdout=stream,
+                                        stderr=subprocess.STDOUT,
+                                        creationflags=subprocess.CREATE_NO_WINDOW)
+            declarations.append({"tool": tool, "mode": mode, "returncode": result.returncode})
+            write(root / "source125-declaration-proof.json", declarations)
+            assert result.returncode == 0, "inspect isolated declaration result"
+    copy_release_sources(source125, candidate)
     hot = hashlib.sha1((before["source_commit"] + ":host125").encode()).hexdigest()
     manifest = json.loads((candidate / "portable-manifest.json").read_bytes())
     manifest.update(version="v2.0.125", source_commit=hot)
+    refresh_file_pins(candidate, manifest)
+    manifest["writer_sink_inventory_contract_sha256"] = updates.version_writer_inventory_sha256(candidate)
     write(candidate / "portable-manifest.json", manifest)
+    assert updates.version_manifest(candidate)["version"] == "v2.0.125"
     after = updates.version_identity(lambda name: (candidate / name).read_bytes())
     forward = {"from_commit": before["source_commit"], "to_commit": hot,
                "from_contract_sha256": before["contract_sha256"], "to_contract_sha256": after["contract_sha256"]}
@@ -317,8 +556,36 @@ def offer_update(config, signer):
         json.dumps(feed, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()))
     write(root / "offer-info.json", {"source_commit": hot, "artifact_url": url,
                                      "packet": str(packet), "from_commit": before["source_commit"]})
-    (root / "offer-ready").touch()
     return hot
+
+
+def offer_update(config):
+    """Publish only the already validated fixture after 124 reaches READY."""
+    info = json.loads((config.parent / "offer-info.json").read_bytes())
+    (config.parent / "offer-ready").touch()
+    return info["source_commit"]
+
+
+def _register_native_launch(config, entry, arguments, process):
+    from datetime import datetime, timedelta, timezone
+    config = Path(config)
+    value = json.loads(config.read_bytes())
+    setup = entry in {"onboard", "seed", "keep-relay", "read-owner", "stop"}
+    app = Path(value["current"]) / "app" if setup else Path(entry).parent
+    identity = _native_process_times(process)
+    created = datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(
+        microseconds=int(identity["creation_identity"]) // 10)
+    product_entry = app / "label_match_relay_entry.py" if setup else Path(entry)
+    product_arguments = ["--onboard-current-user", "--app-root", str(app.parent)] if setup else arguments
+    system = "--apply-prepared" in arguments
+    _write_observation(config.parent / "processes" / (str(process.pid) + ".json"), {
+        "ProcessId": process.pid, "Name": "pythonw.exe",
+        "ExecutablePath": str(app.parent / "runtime/pythonw.exe"),
+        "CommandLine": subprocess.list2cmdline([str(app.parent / "runtime/pythonw.exe"),
+                                               "-I", "-B", str(product_entry), *product_arguments]),
+        "CreationDate": created.isoformat(), "CreationIdentity": identity["creation_identity"],
+        "Sid": "S-1-5-18" if system else SID, "OrdinaryUser": not system,
+    })
 
 
 def launch(config, entry="onboard", arguments=(), *, environment=None):
@@ -334,6 +601,10 @@ def launch(config, entry="onboard", arguments=(), *, environment=None):
         process = native(command, env=environment, stdin=subprocess.DEVNULL, stdout=stream,
                          stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
     process.host_test_output = output
+    _register_native_launch(config, entry, arguments, process)
+    if os.environ.get("LABEL_MATCH_HOST_TEST_LOCK_TIMELINE") == "1":
+        from tests._first_setup_lock_observer import observe_launch
+        observe_launch(config, entry, arguments, process, _native_process_times, _fixed_child_log)
     return process
 
 
@@ -442,6 +713,119 @@ def install_os(config, app):
                     for frame in traceback.extract_tb(error.__traceback__)]})
             raise
     updates.prepare_feed_packet = observed_prepare
+    last_observe = {}
+    guard_observations = {}
+
+    def collect_guard(frame):
+        local = frame.f_locals
+        claim = local.get("claim") or {}
+        state, active = local.get("state") or {}, local.get("active") or {}
+        pid = claim.get("pid")
+        guard_ns = time.time_ns()
+        proof = {"at_python_guard_exception": True,
+                 "active_is_candidate": active.get("sha") == state.get("candidate_sha"),
+                 "phase_is_rollback_pending_ready": state.get("phase") == "ROLLBACK_PENDING_READY",
+                 "metadata_row_present": (root / "processes" / (str(pid) + ".json")).is_file(),
+                 "cim_input_row_present": pid in last_observe.get("input_pids", ()),
+                 "observe_output_row_present": pid in last_observe.get("output_pids", ()),
+                 "observe_query_target_matches_claim": last_observe.get("target_pid") == pid,
+                 "cim_adapter": last_observe.get("cim", {}),
+                 "observe_output_guard_seconds": round((last_observe["time_ns"] - guard_ns) / 1e9, 6)
+                    if "time_ns" in last_observe else None}
+        process = next((child for child in children if child.pid == pid), None)
+        proof["held_child_found"] = process is not None
+        if process is not None:
+            try:
+                proof.update(_native_guard_process(process,
+                    getattr(process, "host_test_creation_identity", None), pid, guard_ns))
+                if proof["native_alive"]:
+                    security = native_process_security(pid)
+                    proof["native_sid_matches_observer_account"] = security.get("sid") == native_sid
+            except Exception as error:
+                proof["native_error_type"] = type(error).__name__
+            try:
+                proof.update(_fixed_child_log(process))
+            except Exception as error:
+                proof["log_error_type"] = type(error).__name__
+        observation = _observation_path(root, pid)
+        proof["relay_entry_observation_present"] = observation.is_file()
+        if observation.is_file():
+            try:
+                proof["relay_entry"] = json.loads(observation.read_text())
+            except Exception as error:
+                proof["relay_entry_error_type"] = type(error).__name__
+        return proof
+
+    actual_failure_details = updates.launch_failure_details
+    def observed_failure_details(error, *args, **kwargs):
+        # Preserve the failed trial's actual local predicates before rollback
+        # replaces its claim. Never copy locals, identifiers or credentials.
+        if isinstance(error, ValueError) and str(error) == "existing trial process identity or creation time differs":
+            try:
+                import uuid
+                observation = guard_observations.get(id(error))
+                if observation is not None:
+                    _write_observation(root / "trial-process-guards" / (uuid.uuid4().hex + ".json"), observation)
+                trace = error.__traceback__
+                while trace is not None:
+                    frame = trace.tb_frame
+                    if frame.f_code.co_name == "_bootstrap":
+                        local = frame.f_locals
+                        claim, state = local.get("claim") or {}, local.get("state") or {}
+                        row, active = local.get("row"), local.get("active") or {}
+                        policy, role = local.get("policy") or {}, local.get("claimed_role")
+                        proof = {"phase_is_applied_pending_ready": state.get("phase") == "APPLIED_PENDING_READY",
+                            "phase_is_rollback_pending_ready": state.get("phase") == "ROLLBACK_PENDING_READY",
+                            "row_present": row is not None,
+                            "transition_matches": claim.get("transition_id") == state.get("transition_id"),
+                            "nonce_matches": claim.get("nonce") == state.get("nonce"),
+                            "role_valid": role in {"gui", "relay"},
+                            "active_is_candidate": active.get("sha") == state.get("candidate_sha")}
+                        if row is not None and role in {"gui", "relay"}:
+                            proof.update(observable=row.get("observable") is True,
+                                sha_matches=row.get("sha") == active.get("sha"),
+                                sid_matches=row.get("sid") == policy.get("operator_sid"),
+                                role_matches=row.get("role") == role,
+                                row_role_is_writer=row.get("role") == "writer",
+                                row_role_is_gui=row.get("role") == "gui",
+                                row_role_is_relay=row.get("role") == "relay",
+                                pid_valid=type(row.get("pid")) is int and row["pid"] > 0,
+                                pid_matches_claim=row.get("pid") == claim.get("pid"),
+                                ordinary_user=row.get("ordinary_user") is True)
+                            checks = {
+                                "process_matches_trial": lambda: updates.process_matches_trial(row,
+                                    state=state, sha=active.get("sha"), sid=policy.get("operator_sid"), role=role),
+                                "created_after_claim": lambda: updates._utc(row.get("created_at")) > updates._utc(claim.get("claimed_at")),
+                                "created_after_required_boundary": lambda: updates._utc(row.get("created_at")) >= updates._utc(
+                                    state["applied_at"] if role == "gui" and state.get("phase") == "APPLIED_PENDING_READY"
+                                    else state.get("rollback_at", state["applied_at"])),
+                            }
+                            if (role == state.get("trial_role", "gui") and state.get("trial_pid") == row.get("pid")
+                                    and state.get("trial_started_at")):
+                                checks["bound_creation_matches"] = lambda: updates._utc(row.get("created_at")) == updates._utc(state["trial_started_at"])
+                            def matches_native_creation():
+                                from datetime import datetime, timedelta, timezone
+                                identity = updates.native_process_identity(row["pid"])
+                                created = datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(
+                                    microseconds=int(identity["creation_identity"]) // 10)
+                                return updates._utc(row.get("created_at")) == created
+                            checks["row_created_matches_native_identity"] = matches_native_creation
+                            for name, check in checks.items():
+                                try:
+                                    proof[name] = bool(check())
+                                except Exception as check_error:
+                                    proof[name + "_error_type"] = type(check_error).__name__
+                        write(root / "trial-identity-predicates" / (str(os.getpid()) + "-" + str(time.time_ns()) + ".json"), proof)
+                        del local
+                    del frame
+                    trace = trace.tb_next
+            except Exception as observation_error:
+                try:
+                    write(root / "trial-identity-observation-error.json", {"type": type(observation_error).__name__})
+                except OSError:
+                    pass
+        return actual_failure_details(error, *args, **kwargs)
+    updates.launch_failure_details = observed_failure_details
     def stop_snapshot(**_kwargs):
         rows = []
         for path in (root / "processes").glob("*.json"):
@@ -454,6 +838,7 @@ def install_os(config, app):
         return rows
     user_relay._app_stop_process_snapshot = stop_snapshot
     native_sid = updates.current_process_sid()
+    native_process_security = updates.process_security
     native_lock = updates.update_lock
     updates.update_lock = lambda control, _sid, **kw: native_lock(control, native_sid, **kw)
     native_source = updates.unredirected_source
@@ -480,6 +865,29 @@ def install_os(config, app):
                 "elevated": elevated, "integrity_rid": 16384 if elevated else 8192}
 
     updates.process_security = security
+    original_relay_run = user_relay._run_user_relay
+    def observed_relay_run(args, app_root, argv, **kwargs):
+        proof = {"app_root_argument_present": "--app-root" in (argv or []),
+                 "resolved_app_root_is_entry_app": Path(app_root).resolve() == app.resolve(),
+                 "resolved_app_root_is_entry_bundle": Path(app_root).resolve() == app.parent.resolve(),
+                 "relay_module_is_entry_app": Path(user_relay.__file__).resolve().parent == app.resolve(),
+                 "entered_product_relay": True}
+        def save():
+            try:
+                _write_observation(_observation_path(root, os.getpid()), proof)
+            except Exception:
+                pass
+        save()
+        try:
+            result = original_relay_run(args, app_root, argv, **kwargs)
+        except BaseException as error:
+            proof["product_error_type"] = type(error).__name__
+            save()
+            raise
+        proof["product_return_code"] = result if type(result) is int else None
+        save()
+        return result
+    user_relay._run_user_relay = observed_relay_run
     updates.ordinary_user_context = lambda expected=None: not system and expected in (None, SID)
     updates.runtime_matches = lambda *_: True
     registration._current_user_sid = lambda: SID
@@ -600,6 +1008,18 @@ def install_os(config, app):
         if any(str(part).endswith("apply_prepared_update.ps1") for part in command):
             mode = command[command.index("-Mode") + 1]
             if mode == "Observe":
+                import inspect
+                target_pid = None
+                trial_context = None
+                frame = inspect.currentframe()
+                while frame is not None:
+                    if frame.f_code.co_name == "_bootstrap":
+                        target_pid = (frame.f_locals.get("claim") or {}).get("pid")
+                        trial_context = (frame.f_locals.get("state"),
+                                         frame.f_locals.get("active"), frame.f_locals.get("claim"))
+                        break
+                    frame = frame.f_back
+                del frame
                 rows = []
                 for path in (root / "processes").glob("*.json"):
                     row = json.loads(path.read_text())
@@ -607,20 +1027,36 @@ def install_os(config, app):
                         rows.append(row)
                 processes = root / ("query-" + str(os.getpid()) + ".json")
                 write(processes, rows)
-                script = observe_script(current / "tools/apply_prepared_update.ps1", current, processes)
+                diagnostic = root / ("query-source-" + str(os.getpid()) + ".json")
+                script = observe_script(current / "tools/apply_prepared_update.ps1", current, processes,
+                                        diagnostic=diagnostic, target_pid=target_pid)
                 import user_relay
                 status = user_relay.user_relay_status_path(
                     onboarding.resolve_current_user_onboarding_paths(selected).direct_sync_root)
                 slow = app == current / "app" and status.exists() and not (root / "slow-observe-started").exists()
+                update_slow = (_claim_update_observe_delay(root, *trial_context, value["slow_observe"])
+                               if not slow and trial_context is not None else None)
                 if slow:
                     (root / "slow-observe-started").touch()
+                if slow or update_slow:
                     script = "Start-Sleep -Seconds " + str(value["slow_observe"]) + "\n" + script
                 target = root / ("query-" + str(os.getpid()) + ".ps1")
                 target.write_text(script, encoding="utf-8-sig")
                 before = time.monotonic()
                 output = _query(target)
+                try:
+                    observed_rows = json.loads(output)
+                    last_observe.update(input_pids=[row["ProcessId"] for row in rows],
+                        output_pids=[row.get("pid") for row in observed_rows], target_pid=target_pid,
+                        cim=json.loads(diagnostic.read_text()), time_ns=time.time_ns())
+                except Exception as error:
+                    last_observe.update(diagnostic_error_type=type(error).__name__)
                 if slow:
                     write(root / "slow-observe-proof.json", {"elapsed_seconds": time.monotonic() - before,
+                        "real_query_child": True, "real_update_mutex": True})
+                if update_slow:
+                    write(root / "update-slow-observe-proof.json", {
+                        **update_slow, "elapsed_seconds": time.monotonic() - before,
                         "real_query_child": True, "real_update_mutex": True})
             elif mode == "ObserveLifecycle":
                 output = json.dumps({"task_exists": True})
@@ -655,9 +1091,13 @@ def install_os(config, app):
         entries = [(index, item) for index, item in enumerate(command)
                    if str(item).endswith("label_match_relay_entry.py")]
         if entries:
+            import user_relay as child_relay
             index, entry = entries[0]
             process = launch(config, str(entry), command[index + 1:])
-            rc = process.wait(timeout=kwargs.get("timeout"))
+            if child_relay.DIRECT_SYNC_RELAY_MODE in command[index + 1:]:
+                rc = _wait_observed_sync_child(process, config, kwargs.get("timeout"))
+            else:
+                rc = process.wait(timeout=kwargs.get("timeout"))
             raw = process.host_test_output.read_bytes()
             return subprocess.CompletedProcess(command, rc, raw, b"")
         return actual_run(command, *args, **kwargs)
@@ -670,9 +1110,40 @@ def install_os(config, app):
             "entry": Path(command[entry_index]).name, "arguments": command[entry_index + 1:],
             "isolated_product_flags": command[1:entry_index], "os_process_adapter": True})
         process = launch(config, str(command[entry_index]), command[entry_index + 1:], environment=environment)
+        try:
+            process.host_test_creation_identity = _native_process_times(process)["creation_identity"]
+        except Exception as error:
+            process.host_test_creation_error_type = type(error).__name__
         children.append(process)
         return process
     updates.start_ordinary_process = start
+    original_bootstrap = updates._bootstrap
+    def observed_bootstrap(*arguments, **options):
+        prior_trace = sys.gettrace()
+        def guard_trace(frame, event, argument):
+            previous_local = prior_trace(frame, event, argument) if prior_trace is not None else None
+            if frame.f_code is not original_bootstrap.__code__:
+                return previous_local
+            if previous_local is None:
+                frame.f_trace_lines = False
+            def local_trace(frame, event, argument):
+                nonlocal previous_local
+                if previous_local is not None:
+                    previous_local = previous_local(frame, event, argument)
+                if event == "exception":
+                    error = argument[1]
+                    if isinstance(error, ValueError) and str(error) == "existing trial process identity or creation time differs":
+                        try:
+                            guard_observations[id(error)] = collect_guard(frame)
+                        except Exception as observation_error:
+                            guard_observations[id(error)] = {"observation_error_type": type(observation_error).__name__}
+                return local_trace
+            return local_trace
+        return _run_with_trace(original_bootstrap, guard_trace, *arguments, **options)
+    updates._bootstrap = observed_bootstrap
+    if os.environ.get("LABEL_MATCH_HOST_TEST_LOCK_TIMELINE") == "1":
+        from tests._first_setup_lock_observer import install
+        install(root, updates, fence, native_lock, native_sid, app)
     return children
 
 
@@ -695,7 +1166,7 @@ def child_main(config, entry, arguments):
         microseconds=int(identity["creation_identity"]) // 10)
     process_entry = app / "label_match_relay_entry.py" if setup else Path(entry)
     product_arguments = ["--onboard-current-user", "--app-root", str(app.parent)] if setup else arguments
-    write(root / "processes" / (str(os.getpid()) + ".json"), {
+    _write_observation(root / "processes" / (str(os.getpid()) + ".json"), {
         "ProcessId": os.getpid(), "Name": "pythonw.exe",
         "ExecutablePath": str(app.parent / "runtime/pythonw.exe"),
         "CommandLine": subprocess.list2cmdline([str(app.parent / "runtime/pythonw.exe"),

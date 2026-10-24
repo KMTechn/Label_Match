@@ -51,7 +51,8 @@ def test_every_relay_wait_uses_the_one_value():
                    and any(isinstance(target, ast.Name) and target.id == "relay_deadline"
                            for target in node.targets)]
     assert len(assignments) == 1
-    assert assignments[0] in list(ast.walk(bootstrap.body[0]))
+    assert any(assignments[0] in list(ast.walk(statement))
+               for statement in bootstrap.body if isinstance(statement, ast.Try))
     calls = [node for node in ast.walk(bootstrap)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
     current_waits = [call for call in calls
@@ -112,8 +113,16 @@ def test_installer_and_user_relay_use_the_same_value():
     spawn = next(node for node in ast.walk(parent) if isinstance(node, ast.Call)
                  and isinstance(node.func, ast.Name) and node.func.id == "start_ordinary_process")
     assert deadlines[0].lineno < spawn.lineno
-    loop = next(node for node in ast.walk(parent) if isinstance(node, ast.While))
-    assert ast.unparse(loop.test) == "time.monotonic() < parent_deadline"
+    handoff = next(node for node in ast.walk(parent) if isinstance(node, ast.Call)
+                   and isinstance(node.func, ast.Name) and node.func.id == "_read_started_relay")
+    assert any(isinstance(arg, ast.Name) and arg.id == "parent_deadline" for arg in handoff.args)
+    readback = next(node for node in ast.parse(src).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "_read_started_relay")
+    loop = next(node for node in ast.walk(readback) if isinstance(node, ast.While))
+    assert ast.unparse(loop.test) == "time.monotonic() < readback_deadline"
+    bounds = [node.value for node in ast.walk(readback) if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "readback_deadline" for target in node.targets)]
+    assert all("parent_deadline" in ast.unparse(bound) for bound in bounds)
     child_source = (ROOT / "auto_update.py").read_text(encoding="utf-8")
     child = next(node for node in ast.parse(child_source).body
                  if isinstance(node, ast.FunctionDef) and node.name == "_relay_preparation_deadline")

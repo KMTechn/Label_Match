@@ -233,14 +233,24 @@ def test_rollback_exit_retains_old_reason_and_rc(monkeypatch, tmp_path):
     monkeypatch.setattr(updates.time, "monotonic", lambda: 0.0)
     monkeypatch.setattr(updates.time, "sleep", lambda _: None)
     monkeypatch.setattr(updates, "control_root", lambda _: tmp_path)
-    monkeypatch.setattr(updates, "load_policy", lambda _: {"operator_sid": "worker"})
+    monkeypatch.setattr(updates, "load_policy", lambda _: {
+        "operator_sid": "worker", "staging_root": str(tmp_path / "stage")})
     monkeypatch.setattr(updates, "ordinary_user_context", lambda _: True)
     monkeypatch.setattr(updates, "update_lock", lambda *a, **k: nullcontext())
-    states = iter([{"phase": "APPLIED_PENDING_READY"}, {
+    pending_state = {"phase": "APPLIED_PENDING_READY"}
+    settled_state = {
         "phase": "ROLLED_BACK", "trial_role": "relay", "trial_sha": "a" * 40,
         "trial_started_at": "2026-10-23T00:00:00Z", "trial_pid": 42,
-    }])
-    monkeypatch.setattr(updates, "optional_record", lambda _: next(states))
+    }
+    reads = []
+    def record(path):
+        if path.name != "transition.json":
+            return None
+        reads.append(path)
+        return dict(pending_state if len(reads) == 1 else settled_state)
+    monkeypatch.setattr(updates, "optional_record", record)
+    monkeypatch.setattr(updates, "native_process_identity", lambda pid: {
+        "status": "LIVE", "creation_identity": "rollback-fixture-42"})
     claims = iter(["LIVE", "ABSENT"])
     monkeypatch.setattr(updates, "apply_claim_status", lambda _: next(claims))
     monkeypatch.setattr(updates, "relay_stop_requested", lambda _: False)

@@ -53,7 +53,8 @@ def test_recovery_child_without_ready_signal_returns_failure(monkeypatch, tmp_pa
     state = pending()
     state["phase"] = phase
     control = tmp_path / "update-control"
-    policy = {"staging_root": str(tmp_path / "stage"), "operator_sid": "test-worker"}
+    policy = {"staging_root": str(tmp_path / "stage"), "operator_sid": "test-worker",
+              "operator_local_app_data": str(tmp_path / "operator-local")}
     active = {"sha": state["previous_sha"]}
     reports = []
     monkeypatch.setattr(updates, "write_json_durable", lambda path, payload: reports.append(payload))
@@ -62,6 +63,8 @@ def test_recovery_child_without_ready_signal_returns_failure(monkeypatch, tmp_pa
     monkeypatch.setattr(updates, "_launch_bootstrap_version", lambda *args, **kwargs: launches.append(args) or 713)
     monkeypatch.setattr(updates, "read_json", lambda *args: active)
     monkeypatch.setattr(updates, "current_relay_ready", lambda *args, **kwargs: False)
+    monkeypatch.setattr(updates, "native_process_identity", lambda pid: {
+        "status": "LIVE", "creation_identity": "71300"})
     monkeypatch.setattr(updates, "emit_support_record", lambda *args, **kwargs: None)
     clock = [0.0]
     monkeypatch.setattr(updates.time, "monotonic", lambda: clock[0])
@@ -113,6 +116,7 @@ def test_late_native_readback_cannot_finish_relay_wait_after_its_deadline(monkey
     sha = "b" * 40
     monkeypatch.setattr(updates.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(updates, "read_json", lambda _: {"sha": sha})
+    monkeypatch.setattr(updates, "relay_stop_requested", lambda policy: False)
     def delayed_proof(*args, **kwargs):
         clock[0] = 1.0
         return True

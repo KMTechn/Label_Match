@@ -16,7 +16,8 @@ def admitted_launch(monkeypatch, tmp_path):
     def run(mode, starting_point="trial-primary"):
         clock = [1000.0]
         control = tmp_path / "update-control"
-        policy = {"operator_sid": "operator", "staging_root": str(tmp_path / "staging")}
+        policy = {"operator_sid": "operator", "staging_root": str(tmp_path / "staging"),
+                  "operator_local_app_data": str(tmp_path / "operator-local")}
         active = {"sha": "a" * 40}
         state = {"schema": auto_update.SCHEMA, "phase": "APPLIED_PENDING_READY", "nonce": "b" * 32,
                  "transition_id": "c" * 32, "candidate_sha": active["sha"], "trial_pid": None}

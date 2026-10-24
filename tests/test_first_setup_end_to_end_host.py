@@ -59,10 +59,15 @@ def test_relay_auto_update_124_to_125_reaches_running_and_owner_readback(tmp_pat
     if not packet:
         pytest.skip("an authenticated portable packet is required")
     with P256KeyPair.generate() as signer:
-        config = host.prepare(tmp_path, Path(__file__).resolve().parents[1], Path(packet), signer=signer)
+        slow_observe = int(os.environ.get("LABEL_MATCH_HOST_TEST_SLOW_OBSERVE_SECONDS", "15"))
+        assert slow_observe in {15, 30}
+        config = host.prepare(tmp_path, Path(__file__).resolve().parents[1], Path(packet), signer=signer,
+                              slow_observe=slow_observe)
+        prepared_target = host.prepare_update(config, signer)
         try:
             host.ready(config)
-            target = host.offer_update(config, signer)
+            target = host.offer_update(config)
+            assert target == prepared_target
             control = tmp_path / "machine/update-control"
 
             def confirmed():

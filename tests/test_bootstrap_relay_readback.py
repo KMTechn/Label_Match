@@ -61,6 +61,11 @@ def relay_bootstrap(monkeypatch, tmp_path):
         return 77
     monkeypatch.setattr(updates, "launch_version", launch)
     monkeypatch.setattr(updates, "process_snapshot", lambda _: rows)
+    # The synthetic native launch and CIM row share one synthetic lifetime.
+    monkeypatch.setattr(updates, "native_process_identity", lambda pid: {
+        "status": "LIVE" if pid == 77 and rows else "ABSENT",
+        "creation_identity": "relay-fixture-77" if pid == 77 and rows else None,
+    })
     def start(command, **kwargs):
         assert command[3] == str(current / "app/auto_update.py")
         # This is the real bootstrap; it starts a version relay and returns.

@@ -11,13 +11,22 @@ from writer_session_fence import WriterFencedError
 ], ids=["fenced", "os", "value", "type"])
 def test_support_record_failure_keeps_start_current_launching(monkeypatch, tmp_path, arguments, error):
     launched, emitted = [], []
+    deadlines = []
+    def launch(*args, relay_deadline, **kwargs):
+        deadlines.append(relay_deadline)
+        launched.append((args, kwargs))
+        return 713
+    def ready(*args, deadline, **kwargs):
+        assert deadline is deadlines[0]
+        return True
     def fail_write(path, report):
         assert path == tmp_path / "startup-support.json"
         raise error
     monkeypatch.setattr(updates, "write_json_durable", fail_write)
     monkeypatch.setattr(updates, "emit_support_record", lambda report, **kw: emitted.append((report, kw)))
     monkeypatch.setattr(updates, "now_utc", lambda: "2026-10-09T04:00:00+00:00")
-    monkeypatch.setattr(updates, "launch_version", lambda *args, **kw: launched.append((args, kw)))
+    monkeypatch.setattr(updates, "launch_version", launch)
+    monkeypatch.setattr(updates, "wait_current_relay", ready)
     control = tmp_path / "control"
     assert updates.start_current(control, {"staging_root": str(tmp_path)}, None,
                                  {"sha": "1" * 40}, arguments, code="UPDATE_APPLY_NO_PROGRESS") == 0
