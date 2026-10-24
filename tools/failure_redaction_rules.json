@@ -38,6 +38,7 @@
   "head": 8192,
   "field": "[REDACTED:field]",
   "allowed_codes": [
+    "RELAY_OWNER_READBACK_FAILED",
     "RELAY_EXITED_BEFORE_RUNNING",
     "RELAY_UNHANDLED_EXCEPTION",
     "RELAY_STOP_MARKER_PRESENT",

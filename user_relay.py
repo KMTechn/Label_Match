@@ -874,6 +874,9 @@ def start_user_relay_process(
         if error.cause_code:
             _record_relay_reason(error.cause_code, app_root=root, exit_code=error.exit_code)
         raise
+    except Exception as error:
+        _record_relay_reason("RELAY_OWNER_READBACK_FAILED", app_root=root, error=error)
+        raise
 
 
 def _read_started_relay(process, existing_owner, survival, parent_deadline, is_bootstrap, wait):
@@ -882,6 +885,16 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
     startup_wait(min(survival, max(0.0, parent_deadline - time.monotonic())) if is_bootstrap else survival, wait)
     return_code = process.poll()
     if is_bootstrap:
+        def read_owner():
+            try:
+                return existing_owner()
+            except RuntimeError as error:
+                if str(error) != "update mutex ownership is busy" or process.poll() is not None:
+                    raise
+                # Our bootstrap retains ownership while its Observe readback
+                # finishes. Keep every owner proof and the shared deadline.
+                return None
+
         owner = None
         completed = return_code == 0
         readback_deadline = min(parent_deadline, time.monotonic() + 2.0) if completed else parent_deadline
@@ -897,14 +910,14 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
                     exit_code=return_code,
                 )
             startup_stop_checkpoint()
-            owner = existing_owner()
+            owner = read_owner()
             startup_stop_checkpoint()
             return_code = process.poll()
             if return_code == 0 and not completed:
                 completed = True
                 readback_deadline = min(parent_deadline, time.monotonic() + 2.0)
             if return_code == 0 and owner is None and time.monotonic() < readback_deadline:
-                owner = existing_owner()
+                owner = read_owner()
             if return_code not in (None, 0):
                 raise UserRelayError(
                     "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
