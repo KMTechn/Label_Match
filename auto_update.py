@@ -262,13 +262,73 @@ def bind_trial(
     return {**transition, "trial_pid": pid, "trial_sha": sha, "trial_started_at": now, "trial_role": role}
 
 
+def _retained_confirmation_state(state) -> bool:
+    """The late path adds no behavior to other terminal or failed states."""
+    return bool(state and state.get("schema") == SCHEMA
+        and state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True
+        and re.fullmatch(r"[0-9a-f]{40}", str(state.get("candidate_sha", "")))
+        and re.fullmatch(r"[0-9a-f]{32}", str(state.get("transition_id", "")))
+        and re.fullmatch(r"[0-9a-f]{32}", str(state.get("nonce", "")))
+        and state.get("failure_decision", {}).get("code") in {"TRIAL_GENERATION_ADVANCED", "TRIAL_GENERATION_UNKNOWN"}
+        and state.get("failure_decision", {}).get("ready_result") == "FAILED"
+        and state.get("failure_decision", {}).get("selected_sha") == state["candidate_sha"]
+        and state["candidate_sha"] not in (state.get("failed_shas") or [])
+        and not state.get("rollback_at") and not state.get("confirmed_at")
+        and not state.get("confirmation_audit_applied")
+        and state.get("trial_sha", state["candidate_sha"]) == state["candidate_sha"])
+
+
+def _retained_confirmation_allowed(state, active) -> bool:
+    """Only the same unconfirmed, nonfailed retained candidate may settle late."""
+    return bool(_retained_confirmation_state(state) and active
+        and active.get("sha") == state["candidate_sha"]
+        and active.get("transition_id") == state["transition_id"])
+
+
+def _retained_native_created_at(identity):
+    ticks = int(identity["creation_identity"])
+    seconds, remainder = divmod(ticks, 10000000)
+    return datetime.fromtimestamp(seconds - 11644473600, timezone.utc).replace(microsecond=remainder // 10)
+
+
+def _retained_trial_binding(state, active, claim, rows, policy):
+    """Project an existing claim onto its current native lifetime; no journal write."""
+    if not _retained_confirmation_allowed(state, active) or not claim:
+        return None
+    role, pid = claim.get("role", "gui"), claim.get("pid")
+    if (role not in {"gui", "relay"} or type(pid) is not int or pid < 1
+            or role != state.get("trial_role", role)
+            or claim.get("nonce") != state["nonce"]
+            or claim.get("transition_id") != state["transition_id"]):
+        return None
+    matches = [row for row in rows if row.get("pid") == pid]
+    if len(matches) != 1:
+        return None
+    row = matches[0]
+    projected = {**state, "trial_pid": pid, "trial_sha": state["candidate_sha"],
+                 "trial_role": role, "trial_started_at": row.get("created_at")}
+    identity = native_process_identity(pid)
+    try:
+        if (identity.get("status") != "LIVE" or not identity.get("creation_identity")
+                or _utc(row.get("created_at")) != _retained_native_created_at(identity)
+                or _utc(row.get("created_at")) > _utc(claim.get("claimed_at"))
+                or not process_matches_trial(row, state=projected, sha=active["sha"],
+                    sid=policy["operator_sid"], role=role)):
+            return None
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return None
+    return projected, identity
+
+
 def ready_matches(
     transition: Mapping[str, Any], ready: Mapping[str, Any], *,
-    process_matches: bool, relay_matches: bool, now: str,
+    process_matches: bool, relay_matches: bool, now: str, active=None,
 ) -> bool:
     """PID/heartbeat/exit zero alone do not establish application readiness."""
     phase = transition.get("phase")
-    if phase not in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
+    if (phase not in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
+            and (phase != "DEFERRED" or transition.get("retained_candidate") is not True
+                 or not _retained_confirmation_allowed(transition, active))):
         return False
     sha = transition.get("previous_sha" if phase == "ROLLBACK_PENDING_READY" else "candidate_sha")
     role = transition.get("trial_role", "gui")
@@ -292,9 +352,9 @@ def ready_matches(
 
 def confirm_transition(
     transition: Mapping[str, Any], ready: Mapping[str, Any], *,
-    process_matches: bool, relay_matches: bool, now: str,
+    process_matches: bool, relay_matches: bool, now: str, active=None,
 ) -> dict[str, Any]:
-    if not ready_matches(transition, ready, process_matches=process_matches, relay_matches=relay_matches, now=now):
+    if not ready_matches(transition, ready, process_matches=process_matches, relay_matches=relay_matches, now=now, active=active):
         raise ValueError("update application readiness is unproven")
     rollback = transition["phase"] == "ROLLBACK_PENDING_READY"
     return {**transition, "phase": "ROLLED_BACK" if rollback else "CONFIRMED", "confirmed_at": now}
@@ -1486,6 +1546,64 @@ def observe_trial_ready(control, policy, state, rows, claim, receipt, *, deadlin
     return state, False, bool(state.get("trial_pid") and trial is None)
 
 
+class _RetainedAuditPending(Exception):
+    """A durable late confirmation must survive a transient audit-write failure."""
+
+
+def _confirm_retained_ready_once(control, policy, state):
+    """SYSTEM's existing root owner makes one late decision; never waits for READY."""
+    active = read_json(control / "active.json")
+    if not _retained_confirmation_allowed(state, active):
+        return state
+    stage = Path(policy["staging_root"])
+    with update_lock(control, policy["operator_sid"], trial=True):
+        try:
+            claim, receipt = optional_record(stage / "trial.json"), optional_record(stage / "ready.json")
+            failure = optional_record(stage / "trial-failure.json")
+        except (OSError, ValueError, TypeError, KeyError):
+            return state
+        if not receipt:
+            return state
+        if failure and failure.get("nonce") == state["nonce"] and failure.get("transition_id") == state["transition_id"]:
+            return state
+        try:
+            rows = writer_processes(process_snapshot(control), own_pid=os.getpid())
+            binding = _retained_trial_binding(state, active, claim, rows, policy)
+        except (OSError, ValueError, TypeError, KeyError):
+            return state
+        if binding is None:
+            return state
+        projected, identity = binding
+        relays = [row for row in rows if process_matches_trial(row, state=projected,
+            sha=active["sha"], sid=policy["operator_sid"], role="relay")]
+        if not ready_matches(projected, receipt, process_matches=True,
+                relay_matches=len(relays) == 1, now=now_utc(), active=active):
+            return state
+        pair = projected.get("rollback_pair")
+        if pair is not None:
+            try:
+                directional_pin([pair], **pair)
+                if pair["from_commit"] != projected["candidate_sha"] or pair["to_commit"] != projected["previous_sha"]:
+                    return state
+            except (KeyError, TypeError, ValueError):
+                return state
+        current_identity = native_process_identity(claim["pid"])
+        if (optional_record(control / "transition.json") != state
+                or read_json(control / "active.json") != active
+                or optional_record(stage / "trial.json") != claim
+                or optional_record(stage / "ready.json") != receipt
+                or any(current_identity.get(key) != identity.get(key)
+                       for key in ("status", "creation_identity"))):
+            return state
+        confirmed = confirm_transition(projected, receipt, process_matches=True,
+            relay_matches=True, now=now_utc(), active=active)
+        write_json_durable(control / "transition.json", confirmed)
+        try:
+            return record_confirmed_transition(control, confirmed)
+        except OSError as error:
+            raise _RetainedAuditPending() from error
+
+
 def wait_for_rollback_ready(control: Path, policy, *, timeout_seconds=120) -> int:
     """SYSTEM observes the ordinary old-version trial; it never launches it."""
     deadline = time.monotonic() + timeout_seconds
@@ -1626,6 +1744,12 @@ def _apply_prepared_once(control: Path) -> int:
     stage = Path(policy["staging_root"])
     with _initial_ready_lock(control, policy["operator_sid"]) as initial_ready_deadline:
         state = optional_record(control / "transition.json")
+        if (state and state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True
+                and not state.get("recovery_pending")):
+            try:
+                state = _confirm_retained_ready_once(control, policy, state)
+            except _RetainedAuditPending:
+                return 20
         if (state and state.get("phase") == "DEFERRED" and state.get("reason_code") == "UPDATE_PREPARATION_FAILED"
                 and not state.get("recovery_pending") and not prepared_pending(control, policy, state)):
             active_sha = read_json(control / "active.json")["sha"]
@@ -1633,11 +1757,21 @@ def _apply_prepared_once(control: Path) -> int:
                 return 0
         write_json_durable(control / "apply-claim.json", new_apply_claim())
         if state and state["phase"] == "CONFIRMED":
-            state = record_confirmed_transition(control, state)
+            try:
+                state = record_confirmed_transition(control, state)
+            except OSError:
+                if state.get("retained_candidate") is True:
+                    return 20  # Retry the existing audit on the next SYSTEM invocation.
+                raise
         if state and state.get("recovery_pending") is True:
             if writer_processes(process_snapshot(control), own_pid=os.getpid()):
                 return 0  # Pending recovery never admits a new prepared packet.
             state = settle_trial_failure(control, state, policy)
+            if state and state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True:
+                try:
+                    state = _confirm_retained_ready_once(control, policy, state)
+                except _RetainedAuditPending:
+                    return 20
         if state and state["phase"] in {"APPLIED_PENDING_READY", "UNKNOWN", "FAILED"}:
             rows = process_snapshot(control)
             writers = writer_processes(rows, own_pid=os.getpid())
@@ -2339,12 +2473,29 @@ def trial_context(app_root: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]
     if control is None:
         return None
     state = optional_record(control / "transition.json")
-    if not state or state.get("phase") not in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING", "UNKNOWN", "FAILED"}:
+    retained = False
+    if state and state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True and _retained_confirmation_state(state):
+        try:
+            retained = _retained_confirmation_allowed(state, read_json(control / "active.json"))
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+    if not state or (not retained and state.get("phase") not in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING", "UNKNOWN", "FAILED"}):
         return None
     own_sha = version_manifest(app_root.parent)["source_commit"]
     expected = state.get("trial_sha") or (state["previous_sha"] if state["phase"] == "ROLLBACK_PENDING_READY" or state.get("rollback_at") else state["candidate_sha"])
     if own_sha != expected or os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE") != state.get("nonce"):
         return None
+    if retained:
+        # As in a newly launched pending trial, metadata may precede the claim.
+        # Only SYSTEM's fully bound receipt can grant late confirmation.
+        state = {**state, "trial_pid": None}
+        claim = optional_record(Path(read_json(control / "policy.json")["staging_root"]) / "trial.json")
+        if (claim and claim.get("pid") == os.getpid() and claim.get("nonce") == state["nonce"]
+                and claim.get("transition_id") == state["transition_id"]):
+            identity = native_process_identity(os.getpid())
+            if identity.get("status") == "LIVE":
+                state.update(trial_pid=os.getpid(), trial_role=claim.get("role", "gui"),
+                    trial_started_at=_retained_native_created_at(identity).isoformat())
     return control, read_json(control / "policy.json"), state
 
 
@@ -2668,11 +2819,42 @@ def _write_ready_receipt(proof) -> bool:
 
 
 def _publish_trial_ready(app_root: Path, *, role: str, pid: int, context=None) -> bool:
-    return _write_ready_receipt(_trial_ready_receipt(app_root, role=role, pid=pid, context=context))
+    result = _write_ready_receipt(_trial_ready_receipt(app_root, role=role, pid=pid, context=context))
+    if result:
+        _request_retained_confirmation(app_root)
+    return result
 
 
 def publish_gui_ready(app_root: Path) -> bool:
     return _publish_trial_ready(app_root, role="gui", pid=os.getpid())
+
+
+def _request_retained_confirmation(app_root):
+    """A published late witness requests the existing SYSTEM task, best effort."""
+    try:
+        control = control_root(app_root)
+        if control is None:
+            return
+        state = optional_record(control / "transition.json")
+        if not (state and state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True
+                and _retained_confirmation_state(state)):
+            return
+        policy = load_policy(control)
+        with update_lock(control, policy["operator_sid"]):
+            state = optional_record(control / "transition.json")
+            active = read_json(control / "active.json")
+            if not _retained_confirmation_allowed(state, active):
+                return
+            with update_lock(control, policy["operator_sid"], trial=True):
+                claim = optional_record(Path(policy["staging_root"]) / "trial.json")
+                ready = optional_record(Path(policy["staging_root"]) / "ready.json")
+                if not (claim and ready and ready.get("pid") == claim.get("pid")
+                        and ready.get("nonce") == state["nonce"]
+                        and ready.get("transition_id") == state["transition_id"]):
+                    return
+            request_apply_task(control, policy)
+    except Exception:
+        pass  # An optional late decision cannot turn a READY application into a stop.
 
 
 def _relay_ready_receipt(app_root: Path, pid: int) -> tuple[Path, dict[str, Any]] | bool:
@@ -2688,6 +2870,11 @@ def _relay_ready_receipt(app_root: Path, pid: int) -> tuple[Path, dict[str, Any]
         return True
     policy = load_policy(control)
     state = optional_record(control / "transition.json")
+    if state and state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True and _retained_confirmation_state(state):
+        active = read_json(control / "active.json")
+        if (state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True
+                and _retained_confirmation_allowed(state, active)):
+            return _retained_relay_ready_receipt(app_root, pid, control, policy, state, active)
     if not state or state.get("phase") not in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
         return True
     sha = state["previous_sha"] if state["phase"] == "ROLLBACK_PENDING_READY" else state["candidate_sha"]
@@ -2707,6 +2894,22 @@ def _relay_ready_receipt(app_root: Path, pid: int) -> tuple[Path, dict[str, Any]
     return _trial_ready_receipt(app_root, role="relay", pid=pid, context=(control, policy, state))
 
 
+def _retained_relay_ready_receipt(app_root, pid, control, policy, state, active):
+    claim = optional_record(Path(policy["staging_root"]) / "trial.json")
+    if not claim or claim.get("role") != "relay" or claim.get("pid") != pid:
+        return False
+    rows = writer_processes(process_snapshot(control), own_pid=os.getpid())
+    binding = _retained_trial_binding(state, active, claim, rows, policy)
+    if binding is None or version_manifest(app_root.parent)["source_commit"] != active["sha"]:
+        return False
+    projected, _identity = binding
+    relays = [row for row in rows if process_matches_trial(row, state=projected,
+        sha=active["sha"], sid=policy["operator_sid"], role="relay")]
+    if len(relays) != 1 or relays[0]["pid"] != pid:
+        return False
+    return _trial_ready_receipt(app_root, role="relay", pid=pid, context=(control, policy, projected))
+
+
 def publish_relay_ready(app_root: Path, pid: int) -> bool:
     """Publish the unchanged relay receipt after its read-only checks."""
     return _write_ready_receipt(_relay_ready_receipt(app_root, pid))
@@ -2721,9 +2924,15 @@ def _read_bootstrap_trial_observation(control, policy, state, active, claim, *, 
         claimed_role = claim.get("role", "gui")
         row = next((row for row in process_snapshot(control)
                     if row.get("pid") == claim.get("pid")), None)
+        observed_state = state
+        if _retained_confirmation_allowed(state, active):
+            binding = _retained_trial_binding(state, active, claim, [row] if row else [], policy)
+            if binding is None:
+                raise ValueError("existing trial process identity or creation time differs")
+            observed_state = binding[0]
         if (not row or claim.get("transition_id") != state["transition_id"]
                 or claimed_role not in {"gui", "relay"}
-                or not process_matches_trial(row, state=state, sha=active["sha"],
+                or not process_matches_trial(row, state=observed_state, sha=active["sha"],
                     sid=policy["operator_sid"], role=claimed_role)
                 or _utc(row.get("created_at")) > _utc(claim.get("claimed_at"))):
             raise ValueError("existing trial process identity or creation time differs")
@@ -2972,7 +3181,9 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
         active = read_json(control / "active.json")
         release = version_manifest(app_root.parent)
         sha = release["source_commit"]
-        if sha == active["sha"] and state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
+        if (sha == active["sha"] and state and (state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
+                or (state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True
+                    and _retained_confirmation_allowed(state, active)))):
             if os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE") == state["nonce"] and ordinary_user_context():
                 claim = optional_record(Path(policy["staging_root"]) / "trial.json")
                 if claim and claim.get("nonce") == state["nonce"] and claim.get("transition_id") == state["transition_id"] and (role == "relay" or claim.get("pid") == os.getpid()):
@@ -3279,6 +3490,107 @@ def _bootstrap_relay_readback(control, policy, sha, readback, *, ownership=None,
                         for identity in (observed_identity, current_identity)))
 
 
+def _bootstrap_retained_candidate(control, policy, state, active, arguments, *, deadline, ownership):
+    """Reuse the original nonce/claim and normal startup budget, without journal writes."""
+    if (ownership is None or deadline is None
+            or not _retained_confirmation_allowed(state, active)):
+        return None
+    role = "relay" if arguments[:1] and arguments[0] in {
+        "--label-match-user-relay", "--label-match-direct-sync-relay"} else "gui"
+    if role != state.get("trial_role", role):
+        return None
+    stage, started_at = Path(policy["staging_root"]), now_utc()
+    with update_lock(control, policy["operator_sid"], trial=True):
+        claim = optional_record(stage / "trial.json")
+        claimed_identity = native_process_identity(claim["pid"]) if claim and type(claim.get("pid")) is int else {"status": "ABSENT"}
+        if claimed_identity.get("status") == "LIVE":
+            try:
+                same = (claim.get("nonce") == state["nonce"]
+                    and claim.get("transition_id") == state["transition_id"]
+                    and claim.get("role", "gui") == role
+                    and _retained_native_created_at(claimed_identity) <= _utc(claim.get("claimed_at")))
+            except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                same = False
+            if not same:
+                return None
+            # A known live claim needs no repeated absence Observe under root.
+            # Full role/SID/build/receipt readback follows outside both locks.
+            pid = claim["pid"]
+            started_at = _retained_native_created_at(claimed_identity).isoformat()
+        elif claimed_identity.get("status") != "ABSENT":
+            return None
+        else:
+            rows = writer_processes(process_snapshot(control), own_pid=os.getpid())
+            if any(row.get("role") == role for row in rows):
+                return None  # The normal existing-writer path preserves its owner.
+            pid = _launch_bootstrap_version(control, active["sha"], arguments,
+                nonce=state["nonce"], deferred_at=started_at, deadline=deadline)
+            claim = {"pid": pid, "role": role, "nonce": state["nonce"],
+                     "transition_id": state["transition_id"], "claimed_at": now_utc()}
+            write_json_durable(stage / "trial.json", claim)
+            if role == "gui" and not any(row.get("role") == "relay" for row in rows):
+                _launch_bootstrap_version(control, active["sha"], ["--label-match-user-relay"],
+                    nonce=state["nonce"], deferred_at=started_at, deadline=deadline)
+        identity = native_process_identity(pid)
+    # No other named lock is held while the same normal RUNNING proof waits.
+    ownership.close()
+    error = None
+    try:
+        ready = wait_current_relay(control, policy, active["sha"], started_at=started_at,
+            deadline=deadline, pid=pid if role == "relay" else None)
+    except _RelayPreparationUnavailable as caught:
+        ready, error = False, caught
+    finally:
+        ownership.enter_context(update_lock(control, policy["operator_sid"],
+            abandoned_check=lambda: _verify_abandoned_update(control, policy)))
+    current_identity = native_process_identity(pid)
+    if (optional_record(control / "transition.json") != state
+            or read_json(control / "active.json") != active
+            or optional_record(stage / "trial.json") != claim
+            or identity.get("status") != "LIVE" or not identity.get("creation_identity")
+            or any(current_identity.get(key) != identity.get(key)
+                   for key in ("status", "creation_identity"))):
+        emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS"}, stage="update_apply")
+        return 20
+    if error is not None:
+        emit_support_record({"reason_code": error.code}, stage="update_apply")
+        return 20
+    if not ready:
+        return 20
+    from contextlib import ExitStack
+    with ExitStack() as trial_ownership:
+        trial_ownership.enter_context(update_lock(control, policy["operator_sid"], trial=True))
+        expected_ready = optional_record(stage / "ready.json")
+        identity = native_process_identity(pid)
+        trial_ownership.close()
+        ownership.close()
+        try:
+            observation = _read_bootstrap_trial_observation(control, policy, state, active, claim,
+                identity=identity)
+        finally:
+            ownership.enter_context(update_lock(control, policy["operator_sid"],
+                abandoned_check=lambda: _verify_abandoned_update(control, policy)))
+            trial_ownership.enter_context(update_lock(control, policy["operator_sid"], trial=True))
+        if (optional_record(control / "transition.json") != state
+                or read_json(control / "active.json") != active
+                or optional_record(stage / "trial.json") != claim):
+            return 20
+        if observation[2] is not None:
+            return None  # Normal existing-writer handling still decides the ordinary start.
+        try:
+            committed = _commit_bootstrap_trial_observation(control, policy, state, active, claim,
+                observation, expected_ready=expected_ready)
+        except (OSError, ValueError, TypeError, RuntimeError, WriterFenceError):
+            committed = False
+        published = committed and (isinstance(observation[1], tuple) or bool(expected_ready))
+    if published:
+        try:
+            request_apply_task(control, policy)
+        except Exception:
+            pass  # Preserve the normal READY start and the durable retained decision.
+    return 0
+
+
 def start_current(control: Path, policy: Mapping[str, Any], state, active, arguments, *, code: str, report_once: bool = False, deadline: float | None = None, _ownership=None) -> int:
     """Reuse ordinary launch and publish only the E9 allowlisted support fields."""
     if state and state.get("phase") == "ROLLBACK_PENDING":
@@ -3286,6 +3598,11 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
         # request with no progress cannot manufacture an ordinary GUI cohort.
         emit_progress_guidance()
         return 20
+    if state and state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True:
+        late = _bootstrap_retained_candidate(control, policy, state, active, arguments,
+            deadline=deadline, ownership=_ownership)
+        if late is not None:
+            return late
     if _ownership is not None and arguments[:1] == ["--label-match-user-relay"]:
         # Root still protects absence -> launch. A prior bootstrap's Popen is
         # already visible; reuse its ordinary relay without a shared record.
@@ -3558,8 +3875,10 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                 if state and state["phase"] == "DEFERRED" and state.get("retained_candidate") is True:
                     if active["sha"] != recovery_sha(state, pointer_sha=active["sha"]):
                         action = "WAIT_FOR_RECOVERY"
-                    else:
+                    elif not prepared:
                         return start_current(control, policy, state, active, startup_arguments, code="UPDATE_TERMINAL_RECOVERED", deadline=relay_deadline, _ownership=bootstrap_ownership)
+                    # A different, nonfailed prepared version follows the same
+                    # request/stop/progress path as an ordinary next start.
                 if state and state["phase"] in {"CONFIRMED", "ROLLED_BACK"} and saw_trial:
                     if state["phase"] == "ROLLED_BACK":
                         if role == "relay" and state.get("trial_role", "gui") == "relay":

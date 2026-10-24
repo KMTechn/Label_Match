@@ -4,6 +4,7 @@ Product policy, manifests, writer admission, update mutex, onboarding, relay
 cycles, and owner readback are executed from the isolated packet. Only native
 identity, external helpers/tasks, credential protection, and HTTP are virtual.
 """
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -220,7 +221,8 @@ def inventory(root):
         f"{row['sha256']} {row['size']} {row['path']}\n" for row in rows).encode()).hexdigest()
     target = root / "bootstrap-integrity.json"
     write(target, {"schema_version": "label-match-bootstrap-integrity-v1", "status": "PASS",
-                   "code_root": str(root.resolve()), "file_count": len(rows), "files": rows,
+                   "code_root": str(root.resolve()), "installed_at": datetime.now(timezone.utc).isoformat(),
+                   "file_count": len(rows), "files": rows,
                    "aggregate_sha256": aggregate, "identity_profile_created": False,
                    "state_scope": "current_user_first_run"})
     return target
@@ -346,6 +348,21 @@ def refresh_file_pins(bundle, manifest):
         manifest[field] = hashlib.sha256((bundle / name).read_bytes()).hexdigest()
 
 
+def _write_test_update_key_config(bundle, public):
+    from Label_Match import UPDATE_PACKAGED_KEY_CONFIG_SCHEMA
+    settings_path = bundle / "app/config/app_settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    if not isinstance(settings, dict) or not isinstance(settings.get("update_settings"), dict):
+        raise ValueError("test update settings must contain an update_settings object")
+    configured = json.dumps(public)
+    settings["update_settings"]["manifest_public_key"] = configured
+    write(settings_path, settings)
+    write(bundle / "app/update-manifest-key-config.json", {
+        "schema": UPDATE_PACKAGED_KEY_CONFIG_SCHEMA,
+        "manifest_public_key": configured,
+    })
+
+
 def prepare(root, source, packet, *, preserved=False, signer=None, feed_shape="signed", slow_observe=15):
     """Make a test-only installed tree from authenticated, already built stock."""
     current = root / "machine/current"
@@ -389,7 +406,7 @@ def prepare(root, source, packet, *, preserved=False, signer=None, feed_shape="s
         feed["artifact"].update(name="Label_Match-v2.0.66.zip", url=ORIGIN + "/artifacts/old.zip")
     write(root / "feed.json", feed)
     (root / "feed.sig").write_bytes(signature)
-    write(current / "app/update-manifest-key-config.json", {"manifest_public_key": json.dumps(public)})
+    _write_test_update_key_config(current, public)
     refresh_file_pins(current, manifest)
     manifest["writer_sink_inventory_contract_sha256"] = updates.version_writer_inventory_sha256(current)
     write(current / "portable-manifest.json", manifest)
@@ -398,13 +415,17 @@ def prepare(root, source, packet, *, preserved=False, signer=None, feed_shape="s
     selected = root / "machine/versions" / manifest["source_commit"]
     shutil.copytree(current, selected)
     inventory(selected)
-    policy = {**settings, "operator_sid": SID, "operator_local_app_data": str(root / "local"),
-              "settings_sha256": hashlib.sha256(raw).hexdigest(), "staging_root": str(root / "stage")}
+    policy = {**settings, "schema": "label-match-startup-update-policy-v1",
+              "operator_sid": SID, "operator_local_app_data": str(root / "local"),
+              "settings_sha256": hashlib.sha256(raw).hexdigest(), "staging_root": str(root / "stage"),
+              "hiberboot_enabled": None, "hiberboot_read_status": "UNPROVEN"}
     control = root / "machine/update-control"
     write(control / "policy.json", policy)
-    write(control / "active.json", {"schema": updates.SCHEMA, "sha": manifest["source_commit"]})
+    write(control / "active.json", {"schema": updates.SCHEMA, "sha": manifest["source_commit"],
+                                        "transition_id": "CANONICAL_INSTALL"})
     write(control / "transition.json", {"schema": updates.SCHEMA, "phase": "DEFERRED",
-                                        "deferred_at": updates.now_utc()})
+                                        "deferred_at": updates.now_utc(), "reason": "canonical installation",
+                                        "failed_shas": []})
     (root / "local").mkdir()
     (root / "stage").mkdir()
     config = root / "host-config.json"
@@ -440,9 +461,11 @@ def overlay_release(config, source):
     shutil.copytree(current, selected)
     inventory(selected)
     control = Path(value["control"])
-    write(control / "active.json", {"schema": updates.SCHEMA, "sha": test_sha})
+    write(control / "active.json", {"schema": updates.SCHEMA, "sha": test_sha,
+                                        "transition_id": "CANONICAL_INSTALL"})
     write(control / "transition.json", {"schema": updates.SCHEMA, "phase": "DEFERRED",
-                                        "deferred_at": updates.now_utc()})
+                                        "deferred_at": updates.now_utc(), "reason": "canonical installation",
+                                        "failed_shas": []})
     value.update(selected=str(selected), forbid_enroll=True, preserved_release=previous)
     write(config, value)
     # Retain a correctly authenticated no-update feed for the reinstalled code.
@@ -455,7 +478,7 @@ def overlay_release(config, source):
     write(root / "feed.json", feed)
     (root / "feed.sig").write_bytes(signature)
     for bundle in (current, selected):
-        write(bundle / "app/update-manifest-key-config.json", {"manifest_public_key": json.dumps(public)})
+        _write_test_update_key_config(bundle, public)
         declared = json.loads((bundle / "portable-manifest.json").read_bytes())
         declared["update_key_config_sha256"] = hashlib.sha256(
             (bundle / "app/update-manifest-key-config.json").read_bytes()).hexdigest()
@@ -463,27 +486,33 @@ def overlay_release(config, source):
         inventory(bundle)
 
 
-def prepare_update(config, signer):
-    """Prepare the signed 125 fixture before any installed relay is alive."""
+def prepare_update(config, signer, *, candidate_version="v2.0.125", base_bundle=None,
+                   offer_name="offer", include_compatibility=True, compatibility_floor=None):
+    """Prepare a signed fixture before any installed relay is alive."""
     import auto_update as updates
     from tests.test_update_manifest import canonical_manifest
     value = json.loads(config.read_text())
-    root, current = config.parent, Path(value["selected"])
+    root = config.parent
+    current = Path(base_bundle) if base_bundle is not None else Path(value["selected"])
     before = updates.version_manifest(current)
-    assert before["version"] == "v2.0.124"
-    candidate = root / "offer/Label_Match"
+    assert (before["version"], candidate_version) in {
+        ("v2.0.124", "v2.0.125"), ("v2.0.125", "v2.0.126")}
+    assert offer_name in {"offer", "offer126"}
+    offer = root / offer_name
+    candidate = offer / "Label_Match"
     assert not candidate.exists()
     shutil.copytree(current, candidate)
     receipt = (candidate / "bootstrap-integrity.json").resolve()
-    assert receipt.is_relative_to((root / "offer").resolve())
-    receipt.unlink()
+    assert receipt.is_relative_to(offer.resolve())
+    receipt.unlink(missing_ok=base_bundle is not None)
     # The release builder requires a clean committed tree and packages Git
     # blobs (build_portable_release_candidate.py:558-572,650-710). A scratch
     # release commit is outside this test's authority, so use the approved
     # source-copy route with the same existing declaration generators.
     source = Path(value["repo"])
-    source125 = root / "source125"
-    with (root / "source125.private.log").open("xb") as stream:
+    suffix = candidate_version.rsplit(".", 1)[1]
+    source125 = root / ("source" + suffix)
+    with (root / ("source" + suffix + ".private.log")).open("xb") as stream:
         subprocess.run(["git", "-c", "core.autocrlf=false", "clone", "--shared",
                         str(source), str(source125)], check=True, stdout=stream,
                        stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -499,13 +528,13 @@ def prepare_update(config, signer):
         raw = path.read_bytes()
         old = (constant + ' = "v2.0.124"').encode()
         assert raw.count(old) == 1
-        path.write_bytes(raw.replace(old, (constant + ' = "v2.0.125"').encode(), 1))
+        path.write_bytes(raw.replace(old, (constant + ' = "' + candidate_version + '"').encode(), 1))
     declarations = []
     # Historical layouts add long relative paths. Keep their private work root
     # beside the pytest case, below the Windows copytree path limit.
-    declaration_work = root.parent / ("d125-" + hashlib.sha256(str(root).encode()).hexdigest()[:8])
+    declaration_work = root.parent / ("d" + suffix + "-" + hashlib.sha256(str(root).encode()).hexdigest()[:8])
     assert not declaration_work.exists()
-    write(root / "source125-work-root.json", {"path": str(declaration_work)})
+    write(root / ("source" + suffix + "-work-root.json"), {"path": str(declaration_work)})
     tools = [("refresh_admin_worker_declarations.py", []),
              ("refresh_first_update_declarations.py",
               ["--work-root", str(declaration_work)]),
@@ -515,55 +544,91 @@ def prepare_update(config, signer):
             args = [sys.executable, "-s", "-B", str(source125 / "tools" / tool), *extra]
             if mode == "check":
                 args.append("--check")
-            with (root / (tool + "-" + mode + ".private.log")).open("xb") as stream:
+            log_prefix = "" if suffix == "125" else "source" + suffix + "-"
+            with (root / (log_prefix + tool + "-" + mode + ".private.log")).open("xb") as stream:
                 result = subprocess.run(args, cwd=source125, stdout=stream,
                                         stderr=subprocess.STDOUT,
                                         creationflags=subprocess.CREATE_NO_WINDOW)
             declarations.append({"tool": tool, "mode": mode, "returncode": result.returncode})
-            write(root / "source125-declaration-proof.json", declarations)
+            write(root / ("source" + suffix + "-declaration-proof.json"), declarations)
             assert result.returncode == 0, "inspect isolated declaration result"
     copy_release_sources(source125, candidate)
-    hot = hashlib.sha1((before["source_commit"] + ":host125").encode()).hexdigest()
+    hot = hashlib.sha1((before["source_commit"] + ":host" + suffix).encode()).hexdigest()
     manifest = json.loads((candidate / "portable-manifest.json").read_bytes())
-    manifest.update(version="v2.0.125", source_commit=hot)
+    manifest.update(version=candidate_version, source_commit=hot)
+    # Exercise the release builder's signed private-compatibility metadata path.
+    # An unsigned floor alone intentionally cannot authorize the 124 reader.
+    floor = compatibility_floor or before["version"]
+    if include_compatibility:
+        private = canonical_manifest()
+        private.update(signature_version="es256-v1", source_commit=hot, version=candidate_version,
+                       data_compatible_min_version=floor)
+        private_signature = signer.sign_es256(json.dumps(private, sort_keys=True,
+            separators=(",", ":"), ensure_ascii=True).encode())
+        from label_data_generation import verified_private_compatibility
+        compatibility = verified_private_compatibility(private, private_signature, signer.public_jwk,
+            version=candidate_version, build_id=hot)
+        assert compatibility["compatibility_verified"] is True
+        assert compatibility["data_compatible_min_version"] == floor
+        manifest.update(data_compatible_min_version=floor,
+            data_generation_signed_manifest=private, data_generation_signature_hex=private_signature.hex())
+    else:
+        manifest.pop("data_generation_signed_manifest", None)
+        manifest.pop("data_generation_signature_hex", None)
+        manifest["data_compatible_min_version"] = candidate_version
+    write(root / ("source" + suffix + "-compatibility-proof.json"), {
+        "private_signature_verified": include_compatibility,
+        "floor_matches_starting_release": include_compatibility and floor == before["version"],
+        "version": candidate_version, "data_compatible_min_version": floor if include_compatibility else candidate_version,
+        "official_signature_used": False,
+    })
     refresh_file_pins(candidate, manifest)
     manifest["writer_sink_inventory_contract_sha256"] = updates.version_writer_inventory_sha256(candidate)
     write(candidate / "portable-manifest.json", manifest)
-    assert updates.version_manifest(candidate)["version"] == "v2.0.125"
+    assert updates.version_manifest(candidate)["version"] == candidate_version
     after = updates.version_identity(lambda name: (candidate / name).read_bytes())
     forward = {"from_commit": before["source_commit"], "to_commit": hot,
                "from_contract_sha256": before["contract_sha256"], "to_contract_sha256": after["contract_sha256"]}
     reverse = {"from_commit": hot, "to_commit": before["source_commit"],
                "from_contract_sha256": after["contract_sha256"], "to_contract_sha256": before["contract_sha256"]}
     pin = lambda record: hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    packet = root / "offer/Label_Match-v2.0.125.zip"
+    packet = offer / ("Label_Match-" + candidate_version + ".zip")
     with zipfile.ZipFile(packet, "x", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(candidate.rglob("*")):
             if path.is_file():
                 archive.write(path, "Label_Match/" + path.relative_to(candidate).as_posix())
     feed = canonical_manifest()
-    feed.update(signature_version="es256-v1", source_commit=hot, version="v2.0.125",
+    feed.update(signature_version="es256-v1", source_commit=hot, version=candidate_version,
         approved_transitions=[forward, reverse],
         auto_update={"from_commit": before["source_commit"], "to_commit": hot,
                      "forward_contract_sha256": pin(forward), "rollback_contract_sha256": pin(reverse)})
-    url = ORIGIN + "/artifacts/Label_Match-v2.0.125.zip"
+    url = ORIGIN + "/artifacts/Label_Match-" + candidate_version + ".zip"
     with packet.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    feed["artifact"].update(name="Label_Match-v2.0.125.zip", url=url,
+    feed["artifact"].update(name="Label_Match-" + candidate_version + ".zip", url=url,
                             size_bytes=packet.stat().st_size, sha256=digest)
-    write(root / "offer/feed.json", feed)
-    (root / "offer/feed.sig").write_bytes(signer.sign_es256(
+    write(offer / "feed.json", feed)
+    (offer / "feed.sig").write_bytes(signer.sign_es256(
         json.dumps(feed, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()))
-    write(root / "offer-info.json", {"source_commit": hot, "artifact_url": url,
+    write(root / (offer_name + "-info.json"), {"source_commit": hot, "artifact_url": url,
                                      "packet": str(packet), "from_commit": before["source_commit"]})
     return hot
 
 
-def offer_update(config):
+def offer_update(config, offer_name="offer"):
     """Publish only the already validated fixture after 124 reaches READY."""
-    info = json.loads((config.parent / "offer-info.json").read_bytes())
-    (config.parent / "offer-ready").touch()
+    assert offer_name in {"offer", "offer126"}
+    info = json.loads((config.parent / (offer_name + "-info.json")).read_bytes())
+    (config.parent / (offer_name + "-ready")).touch()
     return info["source_commit"]
+
+
+def _setup_app(value):
+    """Keep first setup on current; subsequent starts use the active version."""
+    current = Path(value["current"])
+    active = json.loads((Path(value["control"]) / "active.json").read_bytes())["sha"]
+    initial = json.loads((current / "portable-manifest.json").read_bytes())["source_commit"]
+    return (current if active == initial else current.parent / "versions" / active) / "app"
 
 
 def _register_native_launch(config, entry, arguments, process):
@@ -571,7 +636,7 @@ def _register_native_launch(config, entry, arguments, process):
     config = Path(config)
     value = json.loads(config.read_bytes())
     setup = entry in {"onboard", "seed", "keep-relay", "read-owner", "stop"}
-    app = Path(value["current"]) / "app" if setup else Path(entry).parent
+    app = _setup_app(value) if setup else Path(entry).parent
     identity = _native_process_times(process)
     created = datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(
         microseconds=int(identity["creation_identity"]) // 10)
@@ -965,6 +1030,7 @@ def install_os(config, app):
             self.headers = {}
             self.trust_env = False
             self.offered = (root / "offer-ready").exists()
+            self.offer_name = "offer126" if (root / "offer126-ready").exists() else "offer"
             self.leases = None
         def get(self, url, **_kwargs):
             assert url.startswith(ORIGIN + "/"), "test HTTP origin differs"
@@ -973,11 +1039,11 @@ def install_os(config, app):
                 response = Response(url, root / "feed.json")
                 response.status_code = 404
                 return response
-            feed_root = root / "offer" if self.offered else root
+            feed_root = root / self.offer_name if self.offered else root
             paths = {ORIGIN + "/feed/latest.json": feed_root / "feed.json",
                      ORIGIN + "/feed/latest.json.sig": feed_root / "feed.sig"}
             if self.offered:
-                offered = json.loads((root / "offer-info.json").read_text())
+                offered = json.loads((root / (self.offer_name + "-info.json")).read_text())
                 paths[offered["artifact_url"]] = Path(offered["packet"])
             observe_http("update_read" if url in paths else "unmodelled")
             assert url in paths, "unmodelled test HTTP route"
@@ -1144,6 +1210,8 @@ def install_os(config, app):
     if os.environ.get("LABEL_MATCH_HOST_TEST_LOCK_TIMELINE") == "1":
         from tests._first_setup_lock_observer import install
         install(root, updates, fence, native_lock, native_sid, app)
+        from tests._first_setup_ready_observer import install as install_ready_observer
+        install_ready_observer(root, updates)
     return children
 
 
@@ -1151,7 +1219,7 @@ def child_main(config, entry, arguments):
     config = Path(config)
     value = json.loads(config.read_text())
     setup = entry in {"onboard", "seed", "keep-relay", "read-owner", "stop"}
-    app = Path(value["current"]) / "app" if setup else Path(entry).parent
+    app = _setup_app(value) if setup else Path(entry).parent
     sys.path[:0] = [str(app), str(app / "site-packages"), "E:/KMTech/shared-tools/prodblock"]
     sys.argv = [str(app / "label_match_relay_entry.py") if setup else entry, *arguments]
     # -I product launches are translated solely at the process/token OS boundary.
@@ -1177,7 +1245,7 @@ def child_main(config, entry, arguments):
     })
     if entry == "seed":
         import writer_session_fence as fence
-        paths = onboarding.resolve_current_user_onboarding_paths(Path(value["current"]))
+        paths = onboarding.resolve_current_user_onboarding_paths(app.parent)
         assert onboarding._registration_runner(paths, server_base_url=ORIGIN) == 0
         assert onboarding.inspect_current_user_state(paths)["status"] == "READY"
         with fence.writer_admission("current_user_onboarding"):
@@ -1185,7 +1253,7 @@ def child_main(config, entry, arguments):
             onboarding._create_ledger(paths.ledger_path)
             onboarding._ensure_user_settings(paths)
             (paths.data_root / "operator-kept.txt").write_bytes(b"preserve this user-owned file\n")
-        removal = onboarding.remove_current_user_setup(Path(value["current"]),
+        removal = onboarding.remove_current_user_setup(app.parent,
             autostart_remover=lambda: {"status": "ABSENT"},
             scheduled_task_remover=lambda *_: {"status": "ABSENT"})
         assert removal["status"] == "PASS_DATA_PRESERVED"
@@ -1198,12 +1266,12 @@ def child_main(config, entry, arguments):
                                          "old_version": updates.version_manifest(app.parent)["version"]})
         return 0
     if entry == "read-owner":
-        owner = user_relay.start_user_relay_process(Path(value["current"]), survival_seconds=0)
+        owner = user_relay.start_user_relay_process(app.parent, survival_seconds=0)
         write(root / "update-owner-result.json", owner)
         return 0
     if entry == "stop":
-        paths = onboarding.resolve_current_user_onboarding_paths(Path(value["current"]))
-        report = user_relay.request_app_stop(paths.direct_sync_root, app_root=Path(value["current"]),
+        paths = onboarding.resolve_current_user_onboarding_paths(app.parent)
+        report = user_relay.request_app_stop(paths.direct_sync_root, app_root=app.parent,
                                              webview_root=root / "unused-webview", timeout_seconds=150)
         write(root / "official-stop-result.json", {"status": report["status"],
               "remaining_process_count": report["remaining_process_count"]})
@@ -1213,12 +1281,12 @@ def child_main(config, entry, arguments):
             return updates.main(arguments)
         import label_match_relay_entry
         return label_match_relay_entry.main(arguments)
-    paths = onboarding.resolve_current_user_onboarding_paths(Path(value["current"]))
+    paths = onboarding.resolve_current_user_onboarding_paths(app.parent)
     ready = False
     try:
         import label_match_product_host
         rc = label_match_product_host.dispatch_product_mode([
-            "--onboard-current-user", "--app-root", str(Path(value["current"])), "--server-base-url", ORIGIN])
+            "--onboard-current-user", "--app-root", str(app.parent), "--server-base-url", ORIGIN])
         assert rc == 0, "inspect isolated onboarding report and fixed diagnostics"
         report = json.loads(paths.onboarding_report_path.read_bytes())
         write(root / "result.json", {"status": report["status"], "relay_start": report["relay_start"],

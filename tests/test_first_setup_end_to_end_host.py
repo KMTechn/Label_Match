@@ -84,6 +84,16 @@ def test_relay_auto_update_124_to_125_reaches_running_and_owner_readback(tmp_pat
             state = json.loads((control / "transition.json").read_bytes())
             assert state["phase"] == "DEFERRED"
             host.restart(config, "update-restart")
+            state = json.loads((control / "transition.json").read_bytes())
+            deferred = state.get("phase") == "DEFERRED"
+            if deferred:
+                host.restart(config, "update-deferred-next")
+            state = json.loads((control / "transition.json").read_bytes())
+            host.write(tmp_path / "deferred-next-start-proof.json", {
+                "deferred_after_trial": deferred,
+                "next_start_entered": deferred,
+                "confirmed_after_next_start": deferred and state.get("phase") == "CONFIRMED",
+            })
             host.wait_for(config, confirmed)
             status_path = user_relay.user_relay_status_path(tmp_path / "local/KMTech/DirectSync/label_match")
             status = json.loads(status_path.read_text())

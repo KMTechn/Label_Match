@@ -11,6 +11,360 @@ import user_relay
 BUSY = "update mutex ownership is busy"
 
 
+@pytest.mark.parametrize('role', ['gui', 'relay'])
+@pytest.mark.parametrize('new_prepared', [False, True])
+def test_retained_candidate_uses_the_existing_request_path_for_a_new_packet(role, new_prepared):
+    from pathlib import Path
+    import auto_update as updates
+    from tests.recovery_memory_world import World
+    source = Path(updates.__file__).read_text(encoding='utf-8-sig')
+    world = World('LM-retained-next-' + role + str(new_prepared), source,
+                  phase='DEFERRED', writer=None)
+    world.state.update(retained_candidate=True, recovery_pending=False,
+                       failure_decision={'selected_sha': world.candidate})
+    world.files[str(world.control / 'active.json')] = {'sha': world.candidate}
+    world.prepared = new_prepared
+    calls = []
+
+    class Requested(BaseException):
+        pass
+
+    def request(*arguments):
+        calls.append('request-system')
+        raise Requested()
+
+    def ordinary(*arguments, **options):
+        calls.append('start-current')
+        return 0
+
+    world.ns.update(request_apply_task=request, start_current=ordinary)
+    if new_prepared:
+        with pytest.raises(Requested):
+            world.bootstrap(role)
+        assert calls == ['request-system']
+    else:
+        assert world.bootstrap(role)['rc'] == 0
+        assert calls == ['start-current']
+
+
+def _retained_ready_world(label, role='relay'):
+    import ast
+    import copy
+    import datetime as dt
+    from pathlib import Path
+    import auto_update as updates
+    from tests.recovery_memory_world import World
+    source = Path(updates.__file__).read_text(encoding='utf-8-sig')
+    world = World('LM-late-' + label, source, phase='DEFERRED', writer=None)
+    world.state.pop('rollback_at', None)
+    world.state.update(retained_candidate=True, recovery_pending=False,
+        failure_decision={'selected_sha': world.candidate, 'code': 'TRIAL_GENERATION_ADVANCED', 'ready_result': 'FAILED'},
+        trial_pid=101, trial_sha=world.candidate, trial_role=role, trial_started_at=world.at(-250),
+        failed_shas=[], rollback_pair={'from_commit': world.candidate, 'to_commit': world.previous,
+            'from_contract_sha256': 'e' * 64, 'to_contract_sha256': 'f' * 64})
+    world.files[str(world.control / 'active.json')] = {
+        'sha': world.candidate, 'transition_id': world.state['transition_id']}
+    world.rows = [world.row(role, sha=world.candidate, created=10, pid=202)]
+    if role == 'gui':
+        world.rows.append(world.row('relay', sha=world.candidate, created=10, pid=203))
+    claim = {'pid': 202, 'role': role, 'nonce': world.state['nonce'],
+             'transition_id': world.state['transition_id'], 'claimed_at': world.at(11)}
+    receipt = {**{check: True for check in (updates.RELAY_READY_CHECKS if role == 'relay' else updates.READY_CHECKS)},
+        'pid': 202, 'role': role, 'sha': world.candidate, 'nonce': world.state['nonce'],
+        'transition_id': world.state['transition_id'], 'ready_at': world.at(15)}
+    world.files[str(world.stage / 'trial.json')] = claim
+    world.files[str(world.stage / 'ready.json')] = receipt
+
+    def identity(pid):
+        row = next((row for row in world.rows if row['pid'] == pid), None)
+        if row is None and pid != world.own_pid:
+            return {'status': 'ABSENT'}
+        created = dt.datetime.fromisoformat(row['created_at']) if row else world.epoch
+        ticks = int((created - dt.datetime(1601, 1, 1, tzinfo=dt.timezone.utc)).total_seconds() * 10000000)
+        return {'status': 'LIVE', 'creation_identity': str(ticks)}
+
+    world.ns['native_process_identity'] = identity
+    world.ns['directional_pin'] = updates.directional_pin
+    node = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)
+                and node.name == 'record_confirmed_transition')
+    exec(compile(ast.Module(body=[node], type_ignores=[]), world.label + '/audit', 'exec'), world.ns)
+    world.late_claim, world.late_receipt = copy.deepcopy(claim), copy.deepcopy(receipt)
+    return world
+
+
+@pytest.mark.parametrize('role', ['gui', 'relay'])
+def test_retained_late_ready_is_confirmed_by_the_next_system_invocation(role):
+    world = _retained_ready_world('confirm-' + role, role)
+    outcome = world.call('_apply_prepared_once', world.control)
+    assert outcome['exception'] is None and outcome['rc'] == 0
+    assert world.state['phase'] == 'CONFIRMED'
+    assert world.state['trial_pid'] == 202 and world.state['trial_role'] == role
+    assert world.state['confirmation_audit_applied'] is True
+    assert world.active == world.candidate
+
+
+@pytest.mark.parametrize('failure', [
+    'receipt_false', 'no_receipt', 'claim_nonce', 'other_live_identity', 'reused_pid',
+    'failed_candidate', 'rollback', 'active_candidate', 'transition_id', 'trial_failure',
+])
+def test_retained_late_confirmation_keeps_every_unproved_case_deferred(failure):
+    import copy
+    world = _retained_ready_world('reject-' + failure)
+    claim = world.files[str(world.stage / 'trial.json')]
+    receipt = world.files[str(world.stage / 'ready.json')]
+    if failure == 'receipt_false':
+        receipt[next(key for key, value in receipt.items() if value is True)] = False
+    elif failure == 'no_receipt':
+        world.files.pop(str(world.stage / 'ready.json'))
+    elif failure == 'claim_nonce':
+        claim['nonce'] = '0' * 32
+    elif failure == 'other_live_identity':
+        claim['pid'] = 303
+        original = world.ns['native_process_identity']
+        world.ns['native_process_identity'] = lambda pid: (
+            {'status': 'LIVE', 'creation_identity': '30300'} if pid == 303 else original(pid))
+    elif failure == 'reused_pid':
+        original = world.ns['native_process_identity']
+        world.ns['native_process_identity'] = lambda pid: (
+            {'status': 'LIVE', 'creation_identity': '20200'} if pid == 202 else original(pid))
+    elif failure == 'failed_candidate':
+        world.state['failed_shas'] = [world.candidate]
+    elif failure == 'rollback':
+        world.state['rollback_at'] = world.at(-1)
+    elif failure == 'active_candidate':
+        world.files[str(world.control / 'active.json')]['sha'] = world.previous
+    elif failure == 'transition_id':
+        world.files[str(world.control / 'active.json')]['transition_id'] = '0' * 32
+    elif failure == 'trial_failure':
+        world.files[str(world.stage / 'trial-failure.json')] = {
+            'nonce': world.state['nonce'], 'transition_id': world.state['transition_id'], 'sha': world.candidate}
+    before, before_claim = copy.deepcopy(world.state), copy.deepcopy(claim)
+    outcome = world.call('_apply_prepared_once', world.control)
+    assert outcome['exception'] is None
+    assert world.state['phase'] == 'DEFERRED'
+    assert world.state == before
+    assert world.files[str(world.stage / 'trial.json')] == before_claim
+
+
+def test_repeated_late_ready_writes_confirmation_and_reverse_audit_only_once():
+    import copy
+    world = _retained_ready_world('idempotent')
+    assert world.call('_apply_prepared_once', world.control)['exception'] is None
+    assert world.state['phase'] == 'CONFIRMED' and world.state['confirmation_audit_applied'] is True
+    before = copy.deepcopy(world.state)
+    writes = [event for event in world.events if event == 'write:transition.json:CONFIRMED']
+    assert len(writes) == 2  # durable confirmation, then the existing audit marker
+    assert world.call('_apply_prepared_once', world.control)['exception'] is None
+    assert world.state == before
+    assert [event for event in world.events if event == 'write:transition.json:CONFIRMED'] == writes
+
+
+@pytest.mark.parametrize('cut', ['after_claim', 'before_confirm', 'before_journal', 'after_journal'])
+def test_late_confirmation_interruption_has_only_durable_terminal_outcomes(cut):
+    import copy
+    world = _retained_ready_world('cut-' + cut)
+    original_confirm, original_write = world.ns['confirm_transition'], world.ns['write_json_durable']
+
+    class PowerCut(BaseException):
+        pass
+
+    if cut == 'after_claim':
+        world.files.pop(str(world.stage / 'ready.json'))
+        assert world.call('_apply_prepared_once', world.control)['exception'] is None
+        assert world.state['phase'] == 'DEFERRED'
+        world.files[str(world.stage / 'ready.json')] = copy.deepcopy(world.late_receipt)
+    else:
+        def confirm(*arguments, **options):
+            if cut == 'before_confirm':
+                raise PowerCut()
+            return original_confirm(*arguments, **options)
+
+        def write(path, value):
+            confirming = path == world.control / 'transition.json' and value.get('phase') == 'CONFIRMED'
+            if confirming and cut == 'before_journal':
+                raise PowerCut()
+            original_write(path, value)
+            if confirming and cut == 'after_journal':
+                raise PowerCut()
+
+        world.ns.update(confirm_transition=confirm, write_json_durable=write)
+        with pytest.raises(PowerCut):
+            world.call('_apply_prepared_once', world.control)
+        assert world.state['phase'] in {'DEFERRED', 'CONFIRMED'}
+        world.ns.update(confirm_transition=original_confirm, write_json_durable=original_write)
+    assert world.call('_apply_prepared_once', world.control)['exception'] is None
+    assert world.state['phase'] == 'CONFIRMED' and world.state['confirmation_audit_applied'] is True
+
+
+@pytest.mark.parametrize('ready', [False, True])
+def test_late_confirmation_precedes_new_preparation_without_blocking_unproved_state(ready):
+    world = _retained_ready_world('order-' + str(ready))
+    if not ready:
+        world.files.pop(str(world.stage / 'ready.json'))
+    phases = []
+
+    class PreparedBoundary(BaseException):
+        pass
+
+    def prepared(control, policy, state):
+        phases.append(state['phase'])
+        raise PreparedBoundary()
+
+    world.ns['prepared_pending'] = prepared
+    with pytest.raises(PreparedBoundary):
+        world.call('_apply_prepared_once', world.control)
+    assert phases == ['CONFIRMED' if ready else 'DEFERRED']
+
+
+def _retained_bootstrap_world(label, *, receipt=True):
+    import copy
+    import auto_update as updates
+    world = _retained_ready_world('bootstrap-' + label)
+    world.ns['wait_current_relay'] = lambda *a, **k: True
+
+    def read(control, policy, state, active, claim, *, identity=None):
+        binding = world.ns['_retained_trial_binding'](state, active, claim, world.rows, policy)
+        if binding is None:
+            return identity, False, ValueError('existing trial process identity or creation time differs')
+        payload = {**{check: True for check in updates.RELAY_READY_CHECKS}, 'role': 'relay',
+            'pid': claim['pid'], 'sha': active['sha'], 'nonce': state['nonce'],
+            'transition_id': state['transition_id'], 'ready_at': world.at(world.clock)}
+        return identity, (world.stage / 'ready.json', payload) if receipt else False, None
+
+    world.ns['_read_bootstrap_trial_observation'] = read
+    return world
+
+
+@pytest.mark.parametrize('receipt', [False, True])
+def test_retained_bootstraps_share_one_nonce_bound_relay_and_keep_the_normal_deadline(receipt):
+    world = _retained_bootstrap_world('overlap-' + str(receipt), receipt=receipt)
+    world.rows = []
+    world.files[str(world.stage / 'trial.json')] = {
+        **world.late_claim, 'pid': 101, 'claimed_at': world.at(-250)}
+    world.files.pop(str(world.stage / 'ready.json'))
+    nonce, transition = world.state['nonce'], world.state['transition_id']
+    spawn, nonce_bindings = world.spawn, []
+
+    def launch(arguments, **options):
+        environment = options.get('env', options.get('environment', {}))
+        nonce_bindings.append(environment.get('KMTECH_LM_UPDATE_TRIAL_NONCE') == nonce)
+        return spawn(arguments, **options)
+
+    world.spawn = launch
+    world.ns['subprocess'].Popen = launch
+    world.ns['start_ordinary_process'] = launch
+    assert world.bootstrap('relay')['rc'] == 0
+    assert world.bootstrap('relay')['rc'] == 0
+    assert len(world.launches) == 1 and world.launches[0]['role'] == 'relay'
+    assert nonce_bindings == [True]
+    assert world.files[str(world.stage / 'trial.json')]['pid'] == world.rows[0]['pid']
+    assert world.state['phase'] == 'DEFERRED' and world.state['nonce'] == nonce
+    assert world.state['transition_id'] == transition
+    assert not any(event.startswith('write:transition.json') for event in world.events)
+    assert bool('request-system' in world.events) is receipt
+    assert world.clock == 20  # No new polling or deadline was created.
+
+
+def test_retained_bootstrap_does_not_overwrite_a_different_live_claim():
+    import copy
+    world = _retained_bootstrap_world('foreign')
+    claim = world.files[str(world.stage / 'trial.json')]
+    claim['pid'] = 303
+    original_identity = world.ns['native_process_identity']
+    foreign_identity = original_identity(202)
+    world.ns['native_process_identity'] = lambda pid: foreign_identity if pid == 303 else original_identity(pid)
+    before = copy.deepcopy(claim)
+    outcome = world.bootstrap('relay')
+    assert outcome['exception'] is None and outcome['rc'] == 0
+    assert world.state['phase'] == 'DEFERRED'
+    assert world.files[str(world.stage / 'trial.json')] == before
+    assert world.launches == []
+
+
+@pytest.mark.parametrize('record', ['timeout', 'other_transition', 'other_reason', 'rollback', 'missing'])
+def test_timeout_failed_marker_is_not_released_without_an_unambiguous_record(record):
+    import copy
+    world = _retained_ready_world('timeout-record-' + record)
+    pending = copy.deepcopy(world.state)
+    pending.pop('failure_decision')
+    pending.update(phase='APPLIED_PENDING_READY', retained_candidate=False)
+    world.generation = {**world.generation, 'record': {
+        'version': pending['generation_candidate_release']['version'], 'build_id': world.candidate}}
+    rollback = world.ns['request_rollback'](pending, reason='candidate startup failed or readiness timed out')
+    world.state = world.ns['settle_trial_failure'](world.control, rollback, world.policy)
+    assert world.state['phase'] == 'DEFERRED' and world.candidate in world.state['failed_shas']
+    # The actual LM writer erases the timeout reason and stores no per-SHA
+    # failure transition. ANSWER-5 requires a closed decision for this ambiguity.
+    assert world.state['reason'] == 'TRIAL_GENERATION_ADVANCED'
+    if record == 'other_transition':
+        world.files[str(world.control / ('failure-' + 'f' * 32 + '.json'))] = {
+            'transition_id': '0' * 32, 'candidate_sha': world.candidate, 'failed_shas': [world.candidate]}
+    elif record == 'other_reason':
+        world.state['reason'] = 'candidate normal stop could not be proven'
+    elif record == 'rollback':
+        world.state['rollback_at'] = world.at(-1)
+    elif record == 'missing':
+        world.state['failure_decision'].pop('ready_result')
+    before = copy.deepcopy(world.state)
+    assert world.call('_apply_prepared_once', world.control)['exception'] is None
+    assert world.state == before and world.candidate in world.state['failed_shas']
+
+
+@pytest.mark.parametrize('field', ['code', 'ready_result'])
+def test_retained_confirmation_requires_its_completed_generation_decision(field):
+    import copy
+    world = _retained_ready_world('incomplete-' + field)
+    world.state['failure_decision'].pop(field)
+    before = copy.deepcopy(world.state)
+    assert world.call('_apply_prepared_once', world.control)['exception'] is None
+    assert world.state == before and world.state['phase'] == 'DEFERRED'
+
+
+def test_malformed_late_receipt_does_not_block_new_preparation():
+    world = _retained_ready_world('malformed-stage')
+    original = world.ns['optional_record']
+
+    def read(path):
+        if path == world.stage / 'ready.json':
+            raise ValueError('malformed stage witness')
+        return original(path)
+
+    world.ns['optional_record'] = read
+    seen = []
+
+    class PreparedBoundary(BaseException):
+        pass
+
+    def prepared(control, policy, state):
+        seen.append(state['phase'])
+        raise PreparedBoundary()
+
+    world.ns['prepared_pending'] = prepared
+    with pytest.raises(PreparedBoundary):
+        world.call('_apply_prepared_once', world.control)
+    assert seen == ['DEFERRED']
+
+
+def test_late_confirmation_survives_audit_io_failure_and_finishes_on_reentry():
+    world = _retained_ready_world('audit-io')
+    original = world.ns['write_json_durable']
+
+    def write(path, value):
+        if path == world.control / 'transition.json' and value.get('confirmation_audit_applied'):
+            raise OSError('audit publication busy')
+        return original(path, value)
+
+    world.ns['write_json_durable'] = write
+    outcome = world.call('_apply_prepared_once', world.control)
+    assert outcome['exception'] is None and outcome['rc'] == 20
+    assert world.state['phase'] == 'CONFIRMED' and not world.state.get('confirmation_audit_applied')
+    assert world.call('_apply_prepared_once', world.control)['rc'] == 20
+    assert world.state['phase'] == 'CONFIRMED'
+    world.ns['write_json_durable'] = original
+    assert world.call('_apply_prepared_once', world.control)['rc'] == 0
+    assert world.state['phase'] == 'CONFIRMED' and world.state['confirmation_audit_applied'] is True
+
+
 @pytest.mark.parametrize('nonrelay_writer', [False, True])
 def test_terminal_bootstrap_releases_native_root_while_relay_becomes_ready(tmp_path, monkeypatch, nonrelay_writer):
     """A relay needing root then trial must run during its parent's READY wait."""

@@ -86,7 +86,36 @@ def test_bootstrap_stop_preflight_opens_current_role_without_request(tmp_path, m
     monkeypatch.setattr(current_user_onboarding, "_machine_worker_context", lambda *_: None)
     monkeypatch.setattr(updates, "current_generation_status", lambda *_: "ALLOW")
     launches = []
-    monkeypatch.setattr(updates, "_launch_bootstrap_version", lambda *a, **kw: launches.append((a, kw)) or 12345)
+    resident_status, resident_rows = {}, []
+    if role == "gui":
+        from user_relay import user_relay_status_path
+        direct = tmp_path / "resident"
+        status_path = user_relay_status_path(direct)
+        optional_record = updates.optional_record
+        native_identity = updates.native_process_identity
+        resident_pid = updates.os.getpid() + 100000
+        monkeypatch.setattr(current_user_onboarding, "resolve_current_user_onboarding_paths",
+                            lambda *_: types.SimpleNamespace(direct_sync_root=direct))
+        monkeypatch.setattr(updates, "optional_record", lambda path:
+                            dict(resident_status) if path == status_path else optional_record(path))
+        monkeypatch.setattr(updates, "native_process_identity", lambda pid:
+                            {"status": "LIVE", "creation_identity": "resident-generation"}
+                            if pid == resident_pid else native_identity(pid))
+        monkeypatch.setattr(updates, "process_snapshot", lambda *_: list(resident_rows))
+
+    def launch(*args, **kwargs):
+        launches.append((args, kwargs))
+        if role == "gui":
+            at = updates.now_utc()
+            resident_status.update(status="RUNNING", source_commit=w.previous,
+                                   ordinary_user=True, process_id=resident_pid, updated_at=at,
+                                   code_root=str(updates.version_bundle(control, w.previous) / "app"))
+            resident_rows.append(dict(pid=resident_pid, role="relay", observable=True,
+                                      ordinary_user=True, sha=w.previous,
+                                      sid=policy["operator_sid"], created_at=at))
+        return 12345
+
+    monkeypatch.setattr(updates, "_launch_bootstrap_version", launch)
     monkeypatch.setattr(updates, "wait_current_relay", lambda *a, **kw: True)
     writes = []
     write = updates.write_json_durable

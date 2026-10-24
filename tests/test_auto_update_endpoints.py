@@ -224,6 +224,212 @@ def test_x7_terminal_recovery_reopens_prepared_path(endpoint):
     assert updates.startup_action(updates.read_json(control / "transition.json"), prepared_present=True) == "REQUEST_APPLY"
 
 
+def test_retained_next_start_requests_system_and_applies_the_next_signed_packet(endpoint, monkeypatch):
+    control, _, _, state, marker, _ = endpoint
+    import current_user_onboarding
+    monkeypatch.setattr(current_user_onboarding, '_machine_worker_context', lambda *a: None)
+    # A one-second tick would exhaust atomic publication before its first OS call.
+    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
+    generation.record_generation(marker, 'v2.0.99', app_id='Label_Match', subject_sid=SID, build_id=NEW)
+    updates.write_json_durable(control / 'transition.json', {
+        **state, 'phase': 'DEFERRED', 'retained_candidate': True,
+        'recovery_pending': False, 'deferred_at': updates.now_utc(),
+        'failure_decision': {'selected_sha': NEW},
+    })
+    hot = hotfix_packet(endpoint, monkeypatch, base_sha=NEW)
+    written = updates.write_json_durable
+    requested, ordinary = [], []
+
+    def observe(path, value):
+        written(path, value)
+        if path == control / 'active.json' and value.get('sha') == hot:
+            raise SystemExit(0)
+
+    def request(*arguments):
+        requested.append(True)
+        updates.apply_prepared(control)
+
+    monkeypatch.setattr(updates, 'write_json_durable', observe)
+    monkeypatch.setattr(updates, 'request_apply_task', request)
+    monkeypatch.setattr(updates, 'start_current', lambda *a, **k: ordinary.append(True) or 0)
+    finished_code = None
+    try:
+        updates._bootstrap(updates.version_bundle(control, NEW) / 'app',
+                           ['--label-match-user-relay'], role='relay')
+    except SystemExit as finished:
+        finished_code = finished.code
+    if finished_code is None:
+        observed = updates.read_json(control / 'transition.json')
+        details = observed.get('launch_failure_details') or []
+        (control.parent / 'retained-next-fixed-facts.json').write_text(json.dumps({
+            'requests': len(requested), 'ordinary_starts': len(ordinary), 'phase': observed.get('phase'),
+            'reason_code': observed.get('reason_code'),
+            'exception_types': [row.get('type') or row.get('exception_type') for row in details if isinstance(row, dict)],
+            'active_is_next': updates.read_json(control / 'active.json')['sha'] == hot,
+        }), encoding='utf-8')
+    assert finished_code == 0 and requested == [True] and ordinary == []
+    assert updates.read_json(control / 'active.json')['sha'] == hot
+    after = updates.read_json(control / 'transition.json')
+    assert after['phase'] == 'APPLIED_PENDING_READY'
+    assert after['previous_sha'] == NEW and after['candidate_sha'] == hot
+
+
+@pytest.mark.parametrize('ready_succeeds', [True, False], ids=['B1-confirm', 'B2-rollback'])
+def test_retained_failed_candidate_next_signed_update_finishes(endpoint, monkeypatch, ready_succeeds):
+    """Observe the full next transition, including its failed previous version."""
+    import current_user_onboarding
+    control, stage, _, state, marker, _ = endpoint
+    monkeypatch.setattr(current_user_onboarding, '_machine_worker_context', lambda *a: None)
+    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
+    generation.record_generation(marker, 'v2.0.99', app_id='Label_Match', subject_sid=SID, build_id=NEW)
+    failed = updates.request_rollback(state, reason='candidate startup failed or readiness timed out')
+    updates.write_json_durable(control / 'transition.json', failed)
+    assert updates.apply_prepared(control) == 20
+    retained = updates.read_json(control / 'transition.json')
+    assert retained['phase'] == 'DEFERRED' and retained['retained_candidate'] is True
+    assert retained['failed_shas'] == [NEW]
+    hot = hotfix_packet(endpoint, monkeypatch, base_sha=NEW)
+    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
+    written, requests, rows, gates = updates.write_json_durable, [], [], []
+
+    def observe(path, value):
+        written(path, value)
+        if path != control / 'active.json':
+            return
+        trial = updates.read_json(control / 'transition.json')
+        sha = value['sha']
+        if sha == hot and not ready_succeeds:
+            updates.write_json_durable(stage / 'trial-failure.json', {
+                'nonce': trial['nonce'], 'transition_id': trial['transition_id'], 'sha': hot,
+                'failed_role': 'gui', 'launch_failure_details': [{'type': 'builtins.OSError', 'win32_error': 5}]})
+            return
+        if sha not in {hot, NEW}:
+            return
+        stamp = updates.now_utc()
+        updates.write_json_durable(stage / 'trial.json', {
+            'nonce': trial['nonce'], 'transition_id': trial['transition_id'], 'pid': 456, 'role': 'gui'})
+        with monkeypatch.context() as admission:
+            admission.setenv('KMTECH_LM_UPDATE_TRIAL_NONCE', trial['nonce'])
+            admission.setattr(os, 'getpid', lambda: 456)
+            admission.setattr(updates, 'runtime_matches', lambda *_: True)
+            gates.append(updates.startup_gate(updates.version_bundle(control, sha) / 'app', []))
+        assert gates[-1] is None
+        updates.write_json_durable(stage / 'ready.json', {
+            **{check: True for check in updates.READY_CHECKS}, 'nonce': trial['nonce'],
+            'transition_id': trial['transition_id'], 'sha': sha, 'pid': 456, 'ready_at': stamp})
+        rows[:] = [dict(pid=pid, observable=True, sha=sha, sid=SID, ordinary_user=True,
+                       role=role, created_at=stamp) for pid, role in ((456, 'gui'), (457, 'relay'))]
+
+    def request(*_):
+        requests.append(True)
+        assert updates.apply_prepared(control) == 0
+
+    monkeypatch.setattr(updates, 'write_json_durable', observe)
+    monkeypatch.setattr(updates, 'process_snapshot', lambda *_: rows)
+    monkeypatch.setattr(updates, 'request_apply_task', request)
+    monkeypatch.setattr(updates, 'start_current', lambda *a, **k: 0)
+    assert updates._bootstrap(updates.version_bundle(control, NEW) / 'app', [], role='gui') == 0
+    after = updates.read_json(control / 'transition.json')
+    expected = hot if ready_succeeds else NEW
+    facts = dict(next_requested=requests == [True], active_is_expected=updates.read_json(control / 'active.json')['sha'] == expected,
+        previous_is_retained=after.get('previous_sha') == NEW, candidate_is_next=after.get('candidate_sha') == hot,
+        phase=after.get('phase'), retained_failed_still_present=NEW in after.get('failed_shas', []),
+        next_failed=hot in after.get('failed_shas', []), audit_applied=after.get('confirmation_audit_applied') is True,
+        reverse_targets_retained=(after.get('rollback_pair') or {}).get('to_commit') == NEW,
+        startup_gates_allowed=bool(gates) and all(gate is None for gate in gates))
+    (control.parent / ('B1-fixed-facts.json' if ready_succeeds else 'B2-fixed-facts.json')).write_text(json.dumps(facts))
+    assert facts['next_requested'] and facts['active_is_expected'] and facts['previous_is_retained']
+    assert facts['candidate_is_next'] and facts['retained_failed_still_present'] and facts['reverse_targets_retained']
+    assert facts['phase'] == ('CONFIRMED' if ready_succeeds else 'ROLLED_BACK')
+    assert facts['audit_applied'] is ready_succeeds
+    assert facts['next_failed'] is (not ready_succeeds)
+    assert facts['startup_gates_allowed']
+
+
+def test_missing_packaged_key_schema_exits_then_failed_recovery_can_start_previous(endpoint, monkeypatch):
+    """Keep the observed refusal and recovery boundary as a negative regression."""
+    import current_user_onboarding
+    control, stage, _, state, marker, _ = endpoint
+    monkeypatch.setattr(current_user_onboarding, '_machine_worker_context', lambda *a: None)
+    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
+    generation.record_generation(marker, 'v2.0.99', app_id='Label_Match', subject_sid=SID, build_id=NEW)
+    updates.write_json_durable(control / 'transition.json', {**state, 'phase': 'CONFIRMED'})
+    hot = hotfix_packet(endpoint, monkeypatch, base_sha=NEW)
+    written, exits, phases, offset = updates.write_json_durable, [], [], [0.0]
+    monkeypatch.setattr(time, 'monotonic', lambda: time.perf_counter() + offset[0])
+    monkeypatch.setattr(time, 'sleep', lambda _: offset.__setitem__(0, offset[0] + 121.0))
+    native = getattr(subprocess.Popen, 'native', subprocess.Popen)
+
+    def observe(path, value):
+        written(path, value)
+        if path == control / 'transition.json':
+            phases.append(value['phase'])
+        if path == control / 'active.json' and value.get('sha') == hot:
+            bundle = updates.version_bundle(control, hot)
+            # hotfix_packet intentionally retains the old malformed test config.
+            document = json.loads((bundle / 'app/update-manifest-key-config.json').read_bytes())
+            assert 'schema' not in document
+            code = ('import sys\nsys.path.insert(0,sys.argv[1])\n'
+                    'try:\n import Label_Match as p\n p.__file__=sys.argv[2]\n'
+                    ' p._load_packaged_update_manifest_public_key()\n'
+                    'except BaseException as error:\n'
+                    ' sys.exit(1 if type(error) is ValueError and str(error)=="Packaged update key config fields are invalid" else 2)\n'
+                    'sys.exit(3)\n')
+            child = native([sys.executable, '-B', '-c', code, str(REPO), str(bundle / 'app/Label_Match.py')],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+            exits.append(child.wait(timeout=30))
+            assert exits[-1] == 1
+            trial = updates.read_json(control / 'transition.json')
+            updates.write_json_durable(stage / 'trial-failure.json', {
+                'nonce': trial['nonce'], 'transition_id': trial['transition_id'], 'sha': hot,
+                'failed_role': 'relay', 'launch_failure_details': [{'type': 'builtins.ValueError'}]})
+
+    monkeypatch.setattr(updates, 'write_json_durable', observe)
+    assert updates.apply_prepared(control) == 20
+    after = updates.read_json(control / 'transition.json')
+    assert exits == [1] and after['phase'] == 'FAILED'
+    assert phases.index('ROLLBACK_PENDING_READY') < phases.index('FAILED')
+    assert updates.read_json(control / 'active.json')['sha'] == NEW
+    assert after['failed_shas'] == [hot]
+    assert not (stage / 'ready.json').exists()
+    # End this unit's accelerated observation clock before the fresh user start.
+    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
+    monkeypatch.setattr(time, 'sleep', lambda *_: None)
+    # This fixture's GUI child checks admission and exits. Supply its native
+    # relay OS peer so the unchanged ordinary RUNNING readback can also finish.
+    peers, rows = [], []
+    original_start = updates.start_ordinary_process
+
+    def with_relay_peer(command, **kwargs):
+        child = original_start(command, **kwargs)
+        peer_code = 'import sys;sys.stdin.buffer.read(1)'
+        peer = native([sys.executable, '-B', '-c', peer_code], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+        peers.append(peer)
+        stamp = updates.now_utc()
+        rows[:] = [dict(pid=peer.pid, observable=True, sha=NEW, sid=SID,
+                        ordinary_user=True, role='relay', created_at=stamp)]
+        import user_relay
+        paths = current_user_onboarding.resolve_current_user_onboarding_paths(updates.version_bundle(control, NEW))
+        status = user_relay.user_relay_status_path(paths.direct_sync_root)
+        status.parent.mkdir(parents=True, exist_ok=True)
+        status.write_text(json.dumps(dict(status='RUNNING', source_commit=NEW, ordinary_user=True,
+            process_id=peer.pid, updated_at=stamp, code_root=str(updates.version_bundle(control, NEW) / 'app'))))
+        return child
+
+    monkeypatch.setattr(updates, 'start_ordinary_process', with_relay_peer)
+    monkeypatch.setattr(updates, 'process_snapshot', lambda *_: rows)
+    try:
+        assert_ordinary(endpoint, NEW)
+    finally:
+        for peer in peers:
+            peer.communicate(b'x', timeout=30)
+            assert peer.returncode == 0
+    (control.parent / 'missing-schema-safe-failure.json').write_text(json.dumps({
+        'loader_candidate_exit': exits == [1], 'rollback_then_failed': True,
+        'previous_active': True, 'previous_ordinary_start_allowed': True, 'ready_receipts': 0}))
+
+
 def test_x3_hung_writer_is_preserved_then_recovered_after_logon(endpoint, monkeypatch, bootstrap_variant):
     control, _, _, state, _, _ = endpoint
     updates.write_json_durable(control / "transition.json", {**state, "phase": "UNKNOWN"})

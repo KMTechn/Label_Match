@@ -44,6 +44,10 @@ SELECT.update({'startup_bootstrap_reason', '_startup_trial_lock',
 
 CACHE = {}
 SELECT.add("gui_recovery_state")
+SELECT.update({'_retained_confirmation_state', '_retained_confirmation_allowed',
+               '_retained_native_created_at', '_retained_trial_binding',
+               '_confirm_retained_ready_once', '_bootstrap_retained_candidate',
+               '_commit_bootstrap_trial_observation', '_write_ready_receipt', '_RetainedAuditPending'})
 
 class MemoryPath(PurePosixPath):
     def resolve(self):
@@ -109,8 +113,13 @@ class World:
             for node in tree.body:
                 if isinstance(node, ast.Assign):
                     for target in node.targets:
-                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT', 'RELAY_PREPARE_SECONDS', 'RELAY_PARENT_RESULT_RESERVE_SECONDS'}:
-                            constants[target.id] = ast.literal_eval(node.value)
+                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_CHECKS', 'RELAY_READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT', 'RELAY_PREPARE_SECONDS', 'RELAY_PARENT_RESULT_RESERVE_SECONDS'}:
+                            if target.id == 'RELAY_READY_CHECKS':
+                                constants[target.id] = eval(compile(ast.Expression(node.value),
+                                    label + '/ready-checks', 'eval'),
+                                    {'__builtins__': {}, 'tuple': tuple, **constants})
+                            else:
+                                constants[target.id] = ast.literal_eval(node.value)
             nodes = []
             for node in tree.body:
                 if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in SELECT:
