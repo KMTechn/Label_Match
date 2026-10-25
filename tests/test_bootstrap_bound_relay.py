@@ -70,7 +70,7 @@ def bound_relay(tmp_path, monkeypatch):
         monkeypatch.setattr(updates.time, "monotonic", lambda: clock[0])
         monkeypatch.setattr(updates, "STARTUP_WAIT_SECONDS", 1.0)
         monkeypatch.setattr(updates, "bootstrap_supervision_deadline",
-            lambda state, *, started, now, utc_now: started + updates.STARTUP_WAIT_SECONDS)
+            lambda state, *, started, now, utc_now, **_observation: started + updates.STARTUP_WAIT_SECONDS)
 
         def system_observe(seconds):
             clock[0] += seconds

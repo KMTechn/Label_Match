@@ -85,7 +85,7 @@ def ordinary_endpoint(endpoint, monkeypatch):
     monkeypatch.setattr(time, 'sleep', NATIVE_SLEEP)
     monkeypatch.setattr(time, 'monotonic', NATIVE_CLOCK)
     monkeypatch.setattr(updates, "bootstrap_supervision_deadline",
-        lambda state, *, started, now, utc_now: started + updates.STARTUP_WAIT_SECONDS)
+        lambda state, *, started, now, utc_now, **_observation: started + updates.STARTUP_WAIT_SECONDS)
     monkeypatch.setattr(updates, 'launch_version', lambda *_args, **_kwargs: 99)
     monkeypatch.setattr(updates, 'request_bootstrap', lambda *_args, **_kwargs: pytest.fail('unexpected launcher'))
     return control, updates.version_bundle(control, OLD) / 'app'
