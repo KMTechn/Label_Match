@@ -548,7 +548,7 @@ code, [class*="__code"], [class*="__tail"], [class*="__at"], [data-tag] b { over
   :root:is([data-text-level="2"], [data-text-level="3"]) .lm-step__icon { display: none; }
   :root:is([data-text-level="2"], [data-text-level="3"]) .lm-step { grid-template-columns: minmax(0, 1fr); }
   :root:is([data-text-level="2"], [data-text-level="3"]) .work > .result { flex-direction: column; justify-content: center; gap: 4px; padding: 4px 8px; }
-  :root:is([data-text-level="2"], [data-text-level="3"]):not([data-text-expanded]) :is(.next__label, .next__sub, .result small, .result__sound, .di-today, .lm-nextset, .ca-list__hint, .di-list__hint, .ca-count__meta, .status__update, .top__nav .link:not(.link--admin)) { display: none; }
+  :root:is([data-text-level="2"], [data-text-level="3"]):not([data-text-expanded]) :is(.next__label, .next__sub, .result small, .result__sound, .di-today, .lm-nextset, .ca-list__hint, .di-list__hint, .ca-count__meta, .status__update) { display: none; }
   :root:is([data-text-level="1"], [data-text-level="2"], [data-text-level="3"]) :is(.area-next, .area-count, .area-result) { overflow: auto; min-height: 0; }
   :root:is([data-text-level="1"], [data-text-level="2"], [data-text-level="3"]) .work > .result.area-result { justify-content: safe center; align-items: safe center; }
   :root:is([data-text-level="1"], [data-text-level="2"], [data-text-level="3"]) :is(.ca-start, .di-start, .iw-gate, .lm-start) { overflow: auto; max-height: 100%; min-height: 0; }
