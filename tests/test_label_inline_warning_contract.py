@@ -131,6 +131,87 @@ def test_error_uses_legacy_modal_only_before_workbench_exists():
     assert app._render_calls == []
 
 
+def test_mismatch_notice_restarts_from_the_same_label_after_recording_the_failure():
+    app = _error_app("MASTER-001", "PRODUCT-001")
+
+    Label_Match._handle_mismatch(app, "WRONG-PRODUCT", "MASTER-001")
+
+    notice = app._phs_label_guidance_notice
+    assert notice.title == "제품 불일치"
+    assert notice.message == (
+        "현품표와 제품이 불일치합니다.\n\n"
+        "- 현품표: MASTER-001\n"
+        "- 스캔 제품: WRONG-PRODUCT\n\n"
+        "→ 이 세트는 오류 기록되었습니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요."
+    )
+    assert app.current_set_info["raw"] == []
+    assert app._finalize_calls[0][:2] == (app.Results.FAIL_MISMATCH, "WRONG-PRODUCT")
+    assert app.data_manager.events == [
+        (app.Events.ERROR_MISMATCH, {
+            "raw": "WRONG-PRODUCT", "master": "MASTER-001", "set_id": "set-1", "scan_pos": 3,
+        }),
+    ]
+    assert not app.__dict__.get("_workflow_blocking_notice")
+
+
+def test_legacy_mismatch_display_restarts_from_the_same_label():
+    app = _error_app("MASTER-001", "PRODUCT-001", workbench_ready=False)
+
+    Label_Match._handle_mismatch(app, "WRONG-PRODUCT", "MASTER-001")
+
+    assert app.big_display_label.cget("text") == "제품 불일치 - 같은 현품표부터 다시"
+    assert app.status_label.cget("text") == (
+        "불일치: 같은 현품표부터 다시 시작 | 스캔 제품: WRONG-PRODUCT"
+    )
+    args, kwargs = app._modal_calls[0]
+    title, message, result, details = args
+    assert kwargs == {}
+    assert title == "[제품 불일치]"
+    assert message.endswith(
+        "→ 이 세트는 오류 처리됩니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요."
+    )
+    assert (result, details) == (app.Results.FAIL_MISMATCH, "WRONG-PRODUCT")
+
+
+def test_compact_mismatch_notice_preserves_the_same_label_restart_instruction():
+    app = _error_app("MASTER-001", "PRODUCT-001")
+    Label_Match._handle_mismatch(app, "WRONG-PRODUCT", "MASTER-001")
+
+    compact = app._compact_operator_notice_message(app._phs_label_guidance_notice.message)
+
+    assert compact.splitlines() == [
+        "현품표와 제품이 불일치합니다.",
+        "- 스캔 제품: WRONG-PRODUCT",
+        "→ 이 세트는 오류 기록되었습니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요.",
+    ]
+
+
+def test_screen_bridge_keeps_the_same_label_instruction_in_result_and_alert():
+    from types import SimpleNamespace
+
+    from label_screen_bridge import _alerts, _result
+    from ui.workflow_view_state import WorkflowSnapshot, present_workflow
+
+    app = _error_app("MASTER-001", "PRODUCT-001")
+    Label_Match._handle_mismatch(app, "WRONG-PRODUCT", "MASTER-001")
+    app._deferred_capture_pending_notice = lambda view: None
+    app._deferred_capture_failure_notice = lambda: None
+    processor = SimpleNamespace(
+        app=app, module=label_match_module, _serial=0, _flash=None, _sound=None, _dialogs=[],
+    )
+    view = present_workflow(WorkflowSnapshot())
+    result = _result(processor, view, {"raw": []})
+    alerts = _alerts(processor, view, app._phs_label_guidance_notice)
+    expected_tail = (
+        "→ 이 세트는 오류 기록되었습니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요."
+    )
+
+    assert result["kind"] == "bad" and result["text"] == "제품 불일치"
+    assert result["sub"].endswith(expected_tail)
+    assert alerts[0]["text"].endswith(expected_tail)
+    assert "choices" not in alerts[0]
+
+
 @pytest.mark.parametrize("key", ["Return", "Escape"])
 def test_enter_and_escape_acknowledge_inline_error_before_failed_set_is_reset(key):
     app = _error_app("MASTER-001", "PRODUCT-001", workbench_ready=True)

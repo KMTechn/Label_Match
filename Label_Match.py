@@ -19359,7 +19359,7 @@ class Label_Match(tk.Tk):
             f"현품표와 제품이 불일치합니다.\n\n"
             f"- 현품표: {truncated_master}\n"
             f"- 스캔 제품: {truncated_raw}\n\n"
-            "→ 이 세트는 오류 처리됩니다. 제품을 제거하고 확인 후 새 현품표부터 다시 스캔하세요."
+            "→ 이 세트는 오류 처리됩니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요."
         )
         if (self.__dict__.get("operator_workbench_ready")
                 and not self.is_running_simulation and not self.run_tests and "DEMO" not in raw):
@@ -19368,8 +19368,8 @@ class Label_Match(tk.Tk):
             return self._present_inline_workflow_error(
                 title, error_message, self.Results.FAIL_MISMATCH, raw)
         self._mark_current_set_error()
-        self.update_big_display("제품 불일치 - 새 현품표부터 시작", "red")
-        self.status_label.config(text=f"불일치: 확인 후 새 현품표부터 시작 | 스캔 제품: {truncated_raw}", style="Error.TLabel")
+        self.update_big_display("제품 불일치 - 같은 현품표부터 다시", "red")
+        self.status_label.config(text=f"불일치: 같은 현품표부터 다시 시작 | 스캔 제품: {truncated_raw}", style="Error.TLabel")
 
         if self.is_running_simulation:
             print(f"  - 시뮬레이션 오류 처리: {title}")
