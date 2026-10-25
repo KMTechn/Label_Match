@@ -188,3 +188,18 @@ def test_powershell_atomic_overlap_bound_and_pinned_callers(tmp_path, engine):
     assert result.returncode == 0
     assert result.stdout.strip() == b'PASS'
     assert not result.stderr
+
+
+@pytest.mark.parametrize('engine', ['powershell.exe', 'pwsh.exe'])
+@pytest.mark.parametrize('scenario', ['slow', 'blocked', 'reuse'])
+def test_powershell_type_preparation_preserves_native_deadline(tmp_path, engine, scenario):
+    result = subprocess.run([shutil.which(engine), '-NoLogo', '-NoProfile', '-NonInteractive',
+        '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File',
+        str(ROOT / 'tests/lm_atomic_type_preparation.ps1'), '-HostRoot', str(ROOT),
+        '-FixtureRoot', str(tmp_path), '-Scenario', scenario],
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    (tmp_path / 'preparation.stdout').write_bytes(result.stdout)
+    (tmp_path / 'preparation.stderr').write_bytes(result.stderr)
+    assert result.returncode == 0
+    assert result.stdout.strip() == b'PASS'
+    assert not result.stderr
