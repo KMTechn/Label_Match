@@ -139,9 +139,8 @@ def test_mismatch_notice_restarts_from_the_same_label_after_recording_the_failur
     notice = app._phs_label_guidance_notice
     assert notice.title == "제품 불일치"
     assert notice.message == (
-        "현품표와 제품이 불일치합니다.\n\n"
-        "- 현품표: MASTER-001\n"
-        "- 스캔 제품: WRONG-PRODUCT\n\n"
+        "현품표와 제품이 불일치합니다.\n"
+        "현품표 MASTER-001 · 스캔 제품 WRONG-PRODUCT\n"
         "→ 이 세트는 오류 기록되었습니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요."
     )
     assert app.current_set_info["raw"] == []
@@ -181,7 +180,7 @@ def test_compact_mismatch_notice_preserves_the_same_label_restart_instruction():
 
     assert compact.splitlines() == [
         "현품표와 제품이 불일치합니다.",
-        "- 스캔 제품: WRONG-PRODUCT",
+        "현품표 MASTER-001 · 스캔 제품 WRONG-PRODUCT",
         "→ 이 세트는 오류 기록되었습니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요.",
     ]
 
@@ -207,9 +206,77 @@ def test_screen_bridge_keeps_the_same_label_instruction_in_result_and_alert():
     )
 
     assert result["kind"] == "bad" and result["text"] == "제품 불일치"
+    assert result["sub"].splitlines()[1] == "현품표 MASTER-001 · 스캔 제품 WRONG-PRODUCT"
     assert result["sub"].endswith(expected_tail)
     assert alerts[0]["text"].endswith(expected_tail)
     assert "choices" not in alerts[0]
+
+
+@pytest.mark.parametrize("long_values", [False, True], ids=["short", "long"])
+def test_mismatch_band_matches_tk_and_bridge_and_preserves_number_suffixes(long_values):
+    from types import SimpleNamespace
+
+    from label_screen_bridge import _alerts, _result
+    from ui.workflow_view_state import WorkflowSnapshot, present_workflow
+
+    master = "MASTER-" + ("0123456789" * 10 if long_values else "") + "0000000124"
+    product = "PRODUCT-" + ("9876543210" * 10 if long_values else "") + "0000000580"
+    # The handler already receives the accepted item number, as used by the
+    # item header. The original physical input must not replace that number.
+    app = _error_app("ORIGINAL-PHYSICAL-LABEL", "ACCEPTED-PRODUCT")
+    app.current_set_info["parsed"][0] = master
+    Label_Match._handle_mismatch(app, product, master)
+    notice = app._phs_label_guidance_notice
+    expected = "\n".join((
+        "현품표와 제품이 불일치합니다.",
+        f"현품표 {app._middle_ellipsis(master, 32)} · 스캔 제품 {app._middle_ellipsis(product, 32)}",
+        "→ 이 세트는 오류 기록되었습니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요.",
+    ))
+    app.workflow_notice_frame = FakeLabel()
+    app.workflow_notice_title_label = FakeLabel()
+    app.colors = {}
+    app._set_workflow_notice_ui(notice, "")
+    app._deferred_capture_pending_notice = lambda view: None
+    app._deferred_capture_failure_notice = lambda: None
+    processor = SimpleNamespace(app=app, module=label_match_module, _serial=0,
+                                _flash=None, _sound=None, _dialogs=[])
+    result = _result(processor, present_workflow(WorkflowSnapshot()), {"raw": []})
+    alerts = _alerts(processor, present_workflow(WorkflowSnapshot()), notice)
+
+    assert notice.message == expected
+    assert app.workflow_notice_label.cget("text") == result["sub"] == expected
+    assert alerts[0]["text"] == f"제품 불일치 — {expected}"
+    assert len(expected.splitlines()) == 3
+    assert master[-10:] in expected and product[-10:] in expected
+    assert "ORIGINAL-PHYSICAL-LABEL" not in expected
+    assert app.current_set_info["raw"] == []
+    assert app._finalize_calls[0][:2] == (app.Results.FAIL_MISMATCH, product)
+    assert app._finalize_calls[0][2]["parsed"][0] == master
+    assert app.data_manager.events[0][1]["master"] == master
+
+
+@pytest.mark.parametrize(("message", "expected"), [
+    ("이미 처리된 제품입니다.\n설명\n- 중복 제품: PRODUCT-001\n다른 제품을 스캔하세요.",
+     "이미 처리된 제품입니다.\n- 중복 제품: PRODUCT-001\n다른 제품을 스캔하세요."),
+    ("중복 스캔입니다.\n설명\n- 중복 스캔: PRODUCT-002\n다른 제품을 스캔하세요.",
+     "중복 스캔입니다.\n- 중복 스캔: PRODUCT-002\n다른 제품을 스캔하세요."),
+    ("입력 오류입니다.\n설명\n- 입력: BAD-003\n입력을 확인하세요.",
+     "입력 오류입니다.\n- 입력: BAD-003\n입력을 확인하세요."),
+    ("사유\n값\n\n다음 행동", "사유\n값\n다음 행동"),
+    # A mismatch-shaped body alone is not a mismatch marker.
+    ("현품표와 제품이 불일치합니다.\n- 현품표: MASTER-001\n- 스캔 제품: PRODUCT-999\n다음 행동",
+     "현품표와 제품이 불일치합니다.\n- 스캔 제품: PRODUCT-999\n다음 행동"),
+], ids=["duplicate-product", "duplicate-scan", "input-error", "four-physical-lines", "body-without-marker"])
+def test_other_notice_compaction_bytes_are_unchanged(message, expected):
+    app = _error_app("MASTER-001")
+    assert app._compact_operator_notice_message(message).encode("utf-8") == expected.encode("utf-8")
+
+
+def test_non_mismatch_failure_keeps_its_notice_body_bytes():
+    app = _error_app("MASTER-001")
+    message = "입력 오류입니다.\n\n- 입력: BAD-003\n\n입력을 확인하세요."
+    assert app._present_inline_workflow_error("[입력 오류]", message, app.Results.FAIL_INPUT_ERROR, "BAD-003")
+    assert app._phs_label_guidance_notice.message.encode("utf-8") == message.encode("utf-8")
 
 
 @pytest.mark.parametrize("key", ["Return", "Escape"])

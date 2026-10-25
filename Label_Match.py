@@ -20950,7 +20950,7 @@ class Label_Match(tk.Tk):
         match = re.search(r"(?<!\d)(\d{2}:\d{2}:\d{2})(?!\d)", text)
         return match.group(1) if match else text
 
-    def _compact_operator_notice_message(self, message):
+    def _compact_operator_notice_message(self, message, *, mismatch=False):
         """Keep one fixed notice region to reason, key value, and next action."""
 
         lines = [line.strip() for line in str(message or "").splitlines() if line.strip()]
@@ -20970,6 +20970,14 @@ class Label_Match(tk.Tk):
         if ":" in detail:
             label, value = detail.split(":", 1)
             detail = f"{label}: {self._middle_ellipsis(value.strip(), 32)}"
+        if mismatch:
+            master = next((line.split(":", 1)[1].strip() for line in lines[1:-1]
+                           if line.startswith("- 현품표:")), None)
+            product = next((line.split(":", 1)[1].strip() for line in lines[1:-1]
+                            if line.startswith("- 스캔 제품:")), None)
+            if master is not None and product is not None:
+                detail = (f"현품표 {self._middle_ellipsis(master, 32)} · "
+                          f"스캔 제품 {self._middle_ellipsis(product, 32)}")
         next_action = lines[-1]
         if "오류 처리" in next_action and "새 현품표" in next_action:
             next_action = "→ 제품 제거 후 확인 → 새 현품표 스캔"
@@ -23287,6 +23295,8 @@ class Label_Match(tk.Tk):
                 PackageLogisticsError("failed set decision save failed"))
         if not self._resume_scanner_failure():
             return False
+        if result == self.Results.FAIL_MISMATCH:
+            normalized_message = self._compact_operator_notice_message(normalized_message, mismatch=True)
         self._show_scanner_notice(normalized_title, normalized_message, tone="danger")
         if (not self.__dict__.get("run_tests", False)
                 and not _label_match_automated_test_mode()

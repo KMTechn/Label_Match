@@ -843,3 +843,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - w9firstupdsub513 / relay 감사 고침 완료: 성공 bootstrap의 첫 rc 0 뒤 최대 2.0초·0.1초 간격 owner 재조회(부모 기한 안), 진단 전체 예외 격리, 업데이트 복구·되돌림 기존 코드 유지, RUNNING 뒤 정상 종료 사본 제외, headless RUNNING 전후 표기·정상 정지 정합. ANSWER-1 적용, 판 올림 0.
 
 - 재설치 밤 목록 — P3(레인21:4x 판정): terminal 만료 뒤 옛 판을 계속 실행하는 흐름과 되풀이 횟수 막이 없음은 이번 고침에서 그대로 두고 밤 재설치 목록에 남긴다.
+- w9firstupdsub580 / v2.0.124: 제품 불일치 안내 띠만 사유 · `현품표 <기존 처리층 번호> · 스캔 제품 <값>` · 같은 현품표 재스캔의 3줄로 표시한다. 두 값은 기존 가운데 줄임으로 끝자리를 보존하며 새 화면·Tk에 같은 글을 보낸다. 다른 안내·원문·실패 기록은 유지한다.
