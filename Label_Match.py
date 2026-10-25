@@ -19366,7 +19366,8 @@ class Label_Match(tk.Tk):
             self.current_set_info['error_count'] += 1
             self.current_set_info['has_error_or_reset'] = True
             return self._present_inline_workflow_error(
-                title, error_message, self.Results.FAIL_MISMATCH, raw)
+                title, self._compact_operator_notice_message(
+                    error_message, mismatch=True, values=(master, raw)), self.Results.FAIL_MISMATCH, raw)
         self._mark_current_set_error()
         self.update_big_display("제품 불일치 - 같은 현품표부터 다시", "red")
         self.status_label.config(text=f"불일치: 같은 현품표부터 다시 시작 | 스캔 제품: {truncated_raw}", style="Error.TLabel")
@@ -19380,7 +19381,7 @@ class Label_Match(tk.Tk):
             if self.__dict__.get("operator_workbench_ready"):
                 self._present_inline_workflow_error(
                     title,
-                    error_message,
+                    self._compact_operator_notice_message(error_message, mismatch=True, values=(master, raw)),
                     self.Results.FAIL_MISMATCH,
                     raw,
                 )
@@ -20950,7 +20951,7 @@ class Label_Match(tk.Tk):
         match = re.search(r"(?<!\d)(\d{2}:\d{2}:\d{2})(?!\d)", text)
         return match.group(1) if match else text
 
-    def _compact_operator_notice_message(self, message, *, mismatch=False):
+    def _compact_operator_notice_message(self, message, *, mismatch=False, values=None):
         """Keep one fixed notice region to reason, key value, and next action."""
 
         lines = [line.strip() for line in str(message or "").splitlines() if line.strip()]
@@ -20975,9 +20976,16 @@ class Label_Match(tk.Tk):
                            if line.startswith("- 현품표:")), None)
             product = next((line.split(":", 1)[1].strip() for line in lines[1:-1]
                             if line.startswith("- 스캔 제품:")), None)
+            if values is not None:
+                master, product = values
             if master is not None and product is not None:
-                detail = (f"현품표 {self._middle_ellipsis(master, 32)} · "
-                          f"스캔 제품 {self._middle_ellipsis(product, 32)}")
+                suffix_length = 14
+
+                def display(value):
+                    text = str(value or "")
+                    return "…" + text[-suffix_length:] if len(text) > suffix_length else text
+
+                detail = f"현품표 {display(master)} · 스캔 제품 {display(product)}"
         next_action = lines[-1]
         if "오류 처리" in next_action and "새 현품표" in next_action:
             next_action = "→ 제품 제거 후 확인 → 새 현품표 스캔"

@@ -219,8 +219,8 @@ def test_mismatch_band_matches_tk_and_bridge_and_preserves_number_suffixes(long_
     from label_screen_bridge import _alerts, _result
     from ui.workflow_view_state import WorkflowSnapshot, present_workflow
 
-    master = "MASTER-" + ("0123456789" * 10 if long_values else "") + "0000000124"
-    product = "PRODUCT-" + ("9876543210" * 10 if long_values else "") + "0000000580"
+    master = "MASTER-" + "0123456789" * 10 + "0000000124" if long_values else "MASTER-001"
+    product = "PRODUCT-" + "9876543210" * 10 + "0000000580" if long_values else "WRONG-PRODUCT"
     # The handler already receives the accepted item number, as used by the
     # item header. The original physical input must not replace that number.
     app = _error_app("ORIGINAL-PHYSICAL-LABEL", "ACCEPTED-PRODUCT")
@@ -229,7 +229,8 @@ def test_mismatch_band_matches_tk_and_bridge_and_preserves_number_suffixes(long_
     notice = app._phs_label_guidance_notice
     expected = "\n".join((
         "현품표와 제품이 불일치합니다.",
-        f"현품표 {app._middle_ellipsis(master, 32)} · 스캔 제품 {app._middle_ellipsis(product, 32)}",
+        ("현품표 …67890000000124 · 스캔 제품 …32100000000580" if long_values
+         else "현품표 MASTER-001 · 스캔 제품 WRONG-PRODUCT"),
         "→ 이 세트는 오류 기록되었습니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요.",
     ))
     app.workflow_notice_frame = FakeLabel()
@@ -247,12 +248,21 @@ def test_mismatch_band_matches_tk_and_bridge_and_preserves_number_suffixes(long_
     assert app.workflow_notice_label.cget("text") == result["sub"] == expected
     assert alerts[0]["text"] == f"제품 불일치 — {expected}"
     assert len(expected.splitlines()) == 3
-    assert master[-10:] in expected and product[-10:] in expected
+    assert master[-14:] in expected and product[-14:] in expected
     assert "ORIGINAL-PHYSICAL-LABEL" not in expected
     assert app.current_set_info["raw"] == []
     assert app._finalize_calls[0][:2] == (app.Results.FAIL_MISMATCH, product)
     assert app._finalize_calls[0][2]["parsed"][0] == master
     assert app.data_manager.events[0][1]["master"] == master
+    if not long_values:
+        # The boundary is a value-length rule, independent of the barcode's
+        # hyphens or the renderer's wrapping rules.
+        for value, display in (("12345678901234", "12345678901234"),
+                               ("A12345678901234", "…12345678901234")):
+            boundary = _error_app("ORIGINAL-RAW")
+            Label_Match._handle_mismatch(boundary, value, value)
+            assert boundary._phs_label_guidance_notice.message.splitlines()[1] == (
+                f"현품표 {display} · 스캔 제품 {display}")
 
 
 @pytest.mark.parametrize(("message", "expected"), [
