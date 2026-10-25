@@ -515,7 +515,7 @@ window.AppFrame = (() => {
     }
     const nav = top.querySelector('.top__nav'), host = $('[data-admin]');
     const links = [...nav.querySelectorAll('.link:not(.link--admin)')].filter(node =>
-      desktop && !nav.hidden && !node.hidden && node.textContent.trim() && getComputedStyle(node).display === 'none');
+      !nav.hidden && !node.hidden && node.textContent.trim() && getComputedStyle(node).display === 'none');
     if (links.length) {
       const action = node => node.dataset.open ? `open:${node.dataset.open}` : node.dataset.go;
       const duplicates = [...host.querySelectorAll('button')].filter(node =>
