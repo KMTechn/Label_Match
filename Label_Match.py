@@ -1188,6 +1188,13 @@ LABEL_MATCH_RELAY_SCREEN_TEXT = {
     "retrying": "회사 서버로 다시 보내는 중",
     "stopped": "작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요",
 }
+
+
+def _label_match_scan_file_error_suffix(payload):
+    count = payload.get("scan_file_error_count", 0) if isinstance(payload, dict) else 0
+    return f" · 기록 파일 {count}개 안 올라감" if type(count) is int and count > 0 else ""
+
+
 _LABEL_MATCH_RELAY_NORMAL_STATUSES = frozenset({"idle", "acked"})
 # Written by a save-time enqueue, the install baseline or a scan without a
 # relay cycle: they say nothing about the server, so the relay database does.
@@ -7114,6 +7121,11 @@ class Label_Match(tk.Tk):
             long_text, short_text = words["normal"]
             long_text += suffix
             short_text += words["short_count"].format(count=count) if count is not None else ""
+        file_error_suffix = _label_match_scan_file_error_suffix(
+            self.__dict__.get("_relay_screen_status_payload")
+        )
+        long_text += file_error_suffix
+        short_text += file_error_suffix
         font = (self.__dict__.get("default_font_name", "Malgun Gothic"),
                 self.__dict__.get("_logistics_footer_font_size", 13), weight)
         width = 1366
@@ -7144,7 +7156,9 @@ class Label_Match(tk.Tk):
         if label is None:
             return None
         label.configure(
-            text=LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, ""),
+            text=LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, "") + _label_match_scan_file_error_suffix(
+                self.__dict__.get("_relay_screen_status_payload")
+            ),
             style="Error.TLabel" if state == "stopped" else "Status.TLabel",
         )
         return None
