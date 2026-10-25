@@ -49,6 +49,10 @@
     [
       "tests/test_w9lmfix4_recovery_paths.py",
       "test_f5_hardlink_is_held_without_reading_outside_and_next_journal_runs"
+    ],
+    [
+      "tests/_first_setup_host.py",
+      "_write_observation"
     ]
   ]
 }
