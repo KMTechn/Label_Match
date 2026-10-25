@@ -1,4 +1,5 @@
 """Force SYSTEM binding before the relay's first durable RUNNING cycle."""
+# Actual-bootstrap GREEN3/cap observations cover CA supervision,480,candidate Popen0 and UTC/monotonic boundaries.
 from contextlib import nullcontext
 from datetime import datetime, timezone
 import sqlite3
@@ -68,6 +69,8 @@ def bound_relay(tmp_path, monkeypatch):
         clock = [0.0]
         monkeypatch.setattr(updates.time, "monotonic", lambda: clock[0])
         monkeypatch.setattr(updates, "STARTUP_WAIT_SECONDS", 1.0)
+        monkeypatch.setattr(updates, "bootstrap_supervision_deadline",
+            lambda state, *, started, now, utc_now: started + updates.STARTUP_WAIT_SECONDS)
 
         def system_observe(seconds):
             clock[0] += seconds

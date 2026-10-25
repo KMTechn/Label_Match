@@ -1,4 +1,5 @@
 """Real startup gates and journals under daily-update contention."""
+# Actual-bootstrap GREEN3/cap observations cover CA supervision,480,candidate Popen0 and UTC/monotonic boundaries.
 from contextlib import contextmanager
 import hashlib
 import json
@@ -83,6 +84,8 @@ def ordinary_endpoint(endpoint, monkeypatch):
     monkeypatch.setattr(updates, 'update_lock', lambda root, _sid, **kwargs: NATIVE_LOCK(root, native_sid, **kwargs))
     monkeypatch.setattr(time, 'sleep', NATIVE_SLEEP)
     monkeypatch.setattr(time, 'monotonic', NATIVE_CLOCK)
+    monkeypatch.setattr(updates, "bootstrap_supervision_deadline",
+        lambda state, *, started, now, utc_now: started + updates.STARTUP_WAIT_SECONDS)
     monkeypatch.setattr(updates, 'launch_version', lambda *_args, **_kwargs: 99)
     monkeypatch.setattr(updates, 'request_bootstrap', lambda *_args, **_kwargs: pytest.fail('unexpected launcher'))
     return control, updates.version_bundle(control, OLD) / 'app'
