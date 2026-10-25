@@ -3868,8 +3868,6 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
             if _bootstrap_awaiting_apply_decision(observed_state, "LIVE"):
                 if apply_claim_status(control) != "LIVE":
                     break
-            else:
-                waiting_for_decision = False
         if time.monotonic() >= deadline:
             state = optional_record(control / "transition.json")
             claim_status = apply_claim_status(control)
@@ -3895,7 +3893,11 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                     now=time.monotonic(), utc_now=now_utc())
                 if waiting_for_decision:
                     if not _bootstrap_awaiting_apply_decision(state, "LIVE"):
-                        waiting_for_decision = False
+                        # Terminal publication precedes claim settlement. Keep
+                        # the original extension until its owner is finished.
+                        stage_deadline = deadline
+                        if claim_status not in {"LIVE", "UNKNOWN"}:
+                            waiting_for_decision = False
                     elif claim_status != "LIVE":
                         break
                     elif time.monotonic() >= stage_deadline:
@@ -3904,7 +3906,8 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                         bootstrap_ownership.close()
                         time.sleep(0.1)
                         continue
-                    waiting_for_decision = False
+                    else:
+                        waiting_for_decision = False
                 deadline = stage_deadline
                 apply_started = apply_started or claim_status in {"LIVE", "UNKNOWN"} or bool(state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"})
                 if role == "relay" and relay_stop_requested(policy):

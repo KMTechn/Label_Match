@@ -163,7 +163,7 @@ def test_refresh_uses_provisioned_logistics_profile_headers(
     assert calls == [
         (
             catalog_url,
-            2.0,
+            10.0,
             {
                 "User-Agent": "KMTech-LabelMatch/1.0",
                 "Authorization": f"Bearer {SECRET_MARKER}",
@@ -248,7 +248,7 @@ def test_runtime_profile_origin_drives_default_catalog_route(monkeypatch, tmp_pa
     assert calls == [
         (
             profile_origin + sync.CATALOG_PATH,
-            2.0,
+            10.0,
             False,
             {
                 "User-Agent": "KMTech-LabelMatch/1.0",
@@ -313,7 +313,7 @@ def test_production_profile_origin_still_allows_exact_catalog_route(
         (
             (PRODUCTION_CATALOG_URL,),
             {
-                "timeout": 2.0,
+                "timeout": 10.0,
                 "allow_redirects": False,
                 "headers": {
                     "User-Agent": "KMTech-LabelMatch/1.0",
@@ -496,7 +496,7 @@ def test_authenticated_request_failure_does_not_log_exception_message(
     assert calls == [
         (
             PRODUCTION_CATALOG_URL,
-            2.0,
+            10.0,
             {
                 "User-Agent": "KMTech-LabelMatch/1.0",
                 "Authorization": f"Bearer {SECRET_MARKER}",

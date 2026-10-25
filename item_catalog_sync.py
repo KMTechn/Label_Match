@@ -9,7 +9,9 @@ import datetime as dt
 import json
 import logging
 import os
+import ssl
 import tempfile
+import time
 from http.client import responses as HTTP_STATUS_REASONS
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -31,6 +33,11 @@ logger = logging.getLogger(__name__)
 CATALOG_PATH = "/inbound/api/item-catalog.csv"
 DEFAULT_SERVER_BASE_URL = "https://worker.kmtecherp.com"
 REQUIRED_HEADER = ("Item Code", "Item Name", "Spec", "Tray Image")
+FIRST_CATALOG_TIMEOUT_SECONDS = 10.0
+FIRST_CATALOG_TRANSPORT_RETRIES = 2
+FIRST_CATALOG_RETRY_DELAY_SECONDS = 0.25
+FIRST_CATALOG_TOTAL_BUDGET_SECONDS = 40.0
+
 ACTIVE_PATH_ENV = "KMTECH_ITEM_CATALOG_ACTIVE_PATH"
 URL_ENV = "KMTECH_ITEM_CATALOG_URL"
 AUTHENTICATED_CATALOG_HOST = "worker.kmtecherp.com"
@@ -1057,9 +1064,26 @@ def refresh_item_catalog(
             "central item catalog URL is not trusted",
             cause_code=URL_NOT_TRUSTED,
         )
+    effective_timeout = timeout_seconds
+    transport_retries = 0
+    if central_enrolled:
+        cache_identity = {
+            "url": effective_url,
+            "source_host_id": str(profile.source_host_id),
+            "device_id": str(profile.device_id),
+            "bearer_token": str(profile.bearer_token).strip(),
+        }
+        usable_cache = (
+            _read_authenticated_cache_payload(cache, **cache_identity) is not None
+            or _read_authenticated_recovery_payload(cache, **cache_identity) is not None
+        )
+        if not usable_cache:
+            if timeout_seconds == 2.0:
+                effective_timeout = FIRST_CATALOG_TIMEOUT_SECONDS
+            transport_retries = FIRST_CATALOG_TRANSPORT_RETRIES
     try:
         request_kwargs: dict[str, object] = {
-            "timeout": timeout_seconds,
+            "timeout": effective_timeout,
             "allow_redirects": False,
             "headers": {"User-Agent": "KMTech-LabelMatch/1.0"},
         }
@@ -1081,7 +1105,21 @@ def refresh_item_catalog(
                 request_kwargs["verify"] = tls_ca_bundle_path
         transport = get or (_hardened_get if central_enrolled else requests.get)
         _update_catalog_attempt_context(request_sent=True)
-        response = transport(effective_url, **request_kwargs)
+        first_attempt_started = time.monotonic() if transport_retries else None
+        for attempt in range(transport_retries + 1):
+            try:
+                response = transport(effective_url, **request_kwargs)
+                break
+            except (requests.ConnectionError, requests.Timeout,
+                    ConnectionError, TimeoutError, ssl.SSLError) as transport_error:
+                if (attempt >= transport_retries
+                        or getattr(transport_error, "response", None) is not None):
+                    raise
+                remaining = (FIRST_CATALOG_TOTAL_BUDGET_SECONDS
+                             - (time.monotonic() - first_attempt_started))
+                if remaining < 2 * FIRST_CATALOG_TIMEOUT_SECONDS:
+                    raise
+                time.sleep(FIRST_CATALOG_RETRY_DELAY_SECONDS)
         status_code = getattr(response, "status_code", None)
         try:
             observed_status_code = (

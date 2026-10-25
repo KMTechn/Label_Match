@@ -14,7 +14,7 @@ class _DecisionWorldWaitLimit(RuntimeError):
 
 
 def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE", boundary_at=255,
-                    existing_relay=False, native_busy=False):
+                    existing_relay=False, native_busy=False, terminal_claim=None):
     source = (Path(__file__).resolve().parents[1] / "auto_update.py").read_text(encoding="utf-8-sig")
     world = World("LM-A30-decision", source, phase="PREPARED", writer=None, claim="LIVE")
     world.clock = 0.0
@@ -35,6 +35,8 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
     world.guard = "UNKNOWN"
     pending, decided, boundary = [], [], []
     calls, busy, trial_attempts = [], [], []
+    root_depth, release_after_read = [0], []
+    terminal_claim_reads, claim_settled = [], []
 
     def advance(seconds):
         target = round(world.clock + seconds, 9)
@@ -44,6 +46,9 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
             boundary_at if not boundary else None, decision_at if not decided else None, 480)
             if value is not None and world.clock < value <= target]
         world.clock = min(events) if events else target
+        if release_after_read and not claim_settled:
+            world.set_claim("NONE")
+            claim_settled.append(world.clock)
         if world.clock >= 240 and not pending:
             state = world.ns["request_rollback"](world.state, reason="candidate readiness timed out")
             world.ns["write_json_durable"](world.control / "transition.json", state)
@@ -60,7 +65,9 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
             state = world.ns["decide_trial_failure"](world.state, world.policy)
             world.ns["write_json_durable"](world.control / "transition.json", state)
             world.ns["persist_switch"](world.control, state, world.candidate)
-            world.set_claim("NONE")
+            world.set_claim("NONE" if terminal_claim is None else "LIVE")
+            if terminal_claim == "UNKNOWN":
+                world.owner_status = "UNKNOWN"
             world.guard = "ALLOW"
             if existing_relay:
                 world.rows = [world.row("relay", sha=world.candidate, created=world.clock, pid=7001)]
@@ -76,8 +83,10 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
             advance(0.1)
             raise RuntimeError("update mutex ownership is busy")
         try:
+            root_depth[0] += 1
             yield True
         finally:
+            root_depth[0] -= 1
             advance(0.25)
 
     spawn = world.ns["start_ordinary_process"]
@@ -94,6 +103,15 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
     world.ns["subprocess"].Popen = observed_spawn
     world.spawn = observed_spawn
     world.time.sleep = advance
+    claim_status = world.ns["apply_claim_status"]
+    def observed_claim_status(*args, **kwargs):
+        status = claim_status(*args, **kwargs)
+        if terminal_claim is not None and decided and root_depth[0]:
+            terminal_claim_reads.append(dict(at=world.clock, status=status))
+            if status in {"LIVE", "UNKNOWN"} and not release_after_read:
+                release_after_read.append(world.clock)
+        return status
+    world.ns["apply_claim_status"] = observed_claim_status
     native_waits = []
     native_patch = None
     if native_busy:
@@ -177,7 +195,8 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
         trial_attempts_after_normal_deadline=sum(t >= 255 for t in trial_attempts),
         boundary_claim=boundary_claim, normal_supervision_end=255.0, maximum_supervision_end=480.0,
         support_reason=report.get("reason_code"), starts=starts, retained=retained, recovery=recovery,
-        error_type=error_type, remaining_pids=[row["pid"] for row in world.rows], native_waits=native_waits)
+        error_type=error_type, remaining_pids=[row["pid"] for row in world.rows], native_waits=native_waits,
+        terminal_claim_reads=terminal_claim_reads, claim_settled=claim_settled)
 
 
 @pytest.mark.parametrize("root_busy", [True, False], ids=["busy", "available"])
