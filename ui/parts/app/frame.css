@@ -203,6 +203,7 @@ body > .band { margin: 12px 24px 0; }
 .band--quiet { background: var(--tint-2); color: var(--ink-2); }
 .band__text { min-width: 0; flex: 1 1 600px; }
 .band__code { display: block; font-size: var(--s1); overflow-wrap: anywhere; }
+.band__summary, .band__detail { white-space: pre-line; }
 .band__choices { display: flex; gap: 8px; margin-left: auto; }
 .band__choices button {
   height: var(--ctl-h-lg);
@@ -540,6 +541,7 @@ body > .sheet-scan-blocked {
   .top { flex-wrap: wrap; gap: 4px 12px; padding: 10px 16px; }
   .top__tag { order: 3; flex-basis: 100%; font-size: var(--s3); }
   .top__nav .link:not(.link--admin) { display: none; }
+  .admin button { height: auto; min-height: 40px; padding-block: 6px; }
   .bands, body > .band { margin: 10px 16px 0; }
   .work, .work--side-list {
     grid-template-columns: minmax(0, 1fr);

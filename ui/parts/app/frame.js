@@ -315,7 +315,8 @@ window.AppFrame = (() => {
     node.setAttribute('role', kind === 'bad' || kind === 'strong' ? 'alert' : 'status');
     const message = el('span', 'band__text');
     const detail = alert.text.indexOf('\n코드: ');
-    if (detail < 0) keepTogether(alert.text).split(/( — |\n)/).forEach((text, i) => message.append(el('span', i % 2 ? 'band__sep' : 'band__chunk', text)));
+    if (alert.detail) message.append(el('span', 'band__summary', keepTogether(alert.text)), el('small', 'band__code band__detail', alert.detail));
+    else if (detail < 0) keepTogether(alert.text).split(/( — |\n)/).forEach((text, i) => message.append(el('span', i % 2 ? 'band__sep' : 'band__chunk', text)));
     else message.append(keepTogether(alert.text.slice(0, detail)), el('small', 'band__code', alert.text.slice(detail + 1)));
     node.append(icon(BAND_ICON[kind] || 'alert', 20), message);
     if (alert.choices) {
