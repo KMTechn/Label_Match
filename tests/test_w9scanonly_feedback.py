@@ -136,6 +136,29 @@ def test_connection_footer_uses_field_guidance_without_inventing_success(connect
     assert "없음" not in options["text"]
 
 
+@pytest.mark.parametrize("width", [1024, 1366])
+def test_existing_relay_lines_show_file_failures_and_clear_only_the_suffix(width):
+    app = object.__new__(lm.Label_Match)
+    app.winfo_width = lambda: width
+    relay, footer = {}, {}
+    app.relay_screen_status_label = SimpleNamespace(configure=lambda **kw: relay.update(kw))
+    app.logistics_connection_label = SimpleNamespace(configure=lambda **kw: footer.update(kw))
+    app._relay_screen_status_payload = {"scan_file_error_count": 2}
+    app._render_relay_screen_status("normal")
+    app._render_logistics_connection("normal", 0, None,
+        progress_observation=(datetime.now(timezone.utc), True))
+    suffix = " · 기록 파일 2개 안 올라감"
+    assert relay["text"] == lm.LABEL_MATCH_RELAY_SCREEN_TEXT["normal"] + suffix
+    assert footer["text"].endswith(suffix)
+    assert "\n" not in footer["text"] and footer["wraplength"] == 0
+    before = footer["text"]
+    app._relay_screen_status_payload = {"scan_file_error_count": 0}
+    app._render_relay_screen_status("normal")
+    app._render_logistics_connection_footer()
+    assert relay["text"] == lm.LABEL_MATCH_RELAY_SCREEN_TEXT["normal"]
+    assert footer["text"] == before.removesuffix(suffix)
+
+
 @pytest.mark.parametrize("connected,count,review,age,width,expected", [
     (True, 3, 2, 601, 1366, "관리자 확인 필요 2건 · 보낼 것 3건"),
     (False, 3, 2, 0, 1366, "관리자 확인 필요 2건 · 보낼 것 3건"),

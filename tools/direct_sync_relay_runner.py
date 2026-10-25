@@ -16,7 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once, utc_now_text, prepare_credentials_from_json  # noqa: E402
+from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once, utc_now_text, prepare_credentials_from_json, source_scan_failure_status  # noqa: E402
+from direct_sync_push import SOURCE_FILE_ERROR_CODES, SourceFileInputError, source_file_operation  # noqa: E402
 from writer_session_fence import writer_sink  # noqa: E402
 
 
@@ -98,6 +99,11 @@ def _scan_state_connect(db_path: str | Path) -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS direct_sync_source_scan_failures ("
+        "source_file_path TEXT PRIMARY KEY, source_name TEXT NOT NULL, "
+        "first_failed_at TEXT NOT NULL, error_code TEXT NOT NULL)"
+    )
     columns = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(direct_sync_source_scan_state)").fetchall()
@@ -106,6 +112,30 @@ def _scan_state_connect(db_path: str | Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE direct_sync_source_scan_state ADD COLUMN sent_prefix_sha256 TEXT NOT NULL DEFAULT ''")
     conn.commit()
     return conn
+
+
+def _record_source_file_failure(config: DirectSyncRuntimeConfig, source_file: Path, error_code: str) -> None:
+    conn = _scan_state_connect(config.db_path)
+    try:
+        conn.execute(
+            "INSERT INTO direct_sync_source_scan_failures "
+            "(source_file_path, source_name, first_failed_at, error_code) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(source_file_path) DO UPDATE SET error_code=excluded.error_code",
+            (_source_state_key(source_file), source_file.name, utc_now_text(), error_code),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _clear_source_file_failure(config: DirectSyncRuntimeConfig, source_file: Path) -> None:
+    conn = _scan_state_connect(config.db_path)
+    try:
+        conn.execute("DELETE FROM direct_sync_source_scan_failures WHERE source_file_path=?",
+                     (_source_state_key(source_file),))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _read_source_scan_state(db_path: str | Path, source_file: Path) -> tuple[int, str]:
@@ -309,18 +339,20 @@ def _complete_line_prefix(data: bytes) -> bytes:
 
 
 def _build_delta_source_file(config: DirectSyncRuntimeConfig, source_file: Path) -> tuple[Path, str, int] | None:
-    source_size = source_file.stat().st_size
+    with source_file_operation():
+        source_size = source_file.stat().st_size
     sent_byte_count, sent_prefix_sha256 = _read_source_scan_state(config.db_path, source_file)
     if sent_byte_count > 0:
         replaced_or_truncated = not sent_prefix_sha256 or source_size < sent_byte_count
         if not replaced_or_truncated:
-            replaced_or_truncated = _file_prefix_sha256(source_file, sent_byte_count) != sent_prefix_sha256
+            with source_file_operation():
+                replaced_or_truncated = _file_prefix_sha256(source_file, sent_byte_count) != sent_prefix_sha256
         if replaced_or_truncated:
             sent_byte_count = 0
     if source_size <= sent_byte_count:
         return None
 
-    with source_file.open("rb") as handle:
+    with source_file_operation(), source_file.open("rb") as handle:
         header = handle.readline()
         if not header:
             return None
@@ -344,8 +376,17 @@ def _build_delta_source_file(config: DirectSyncRuntimeConfig, source_file: Path)
         / _source_delta_key(source_file)
         / f"bytes-{start_byte}-{end_byte}-sha256-{delta_hash[:16]}.csv"
     )
-    delta_source.parent.mkdir(parents=True, exist_ok=True)
-    delta_source.write_bytes(delta_content)
+    # A shared spool/root failure is global; only the source-specific child
+    # directory and delta write may be isolated as a file failure.
+    delta_source.parent.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with source_file_operation(writing_delta=True):
+            delta_source.parent.mkdir(exist_ok=True)
+            delta_source.write_bytes(delta_content)
+    except SourceFileInputError as exc:
+        if not delta_source.parent.parent.is_dir():
+            raise exc.__cause__  # A disappeared shared root affects every source.
+        raise
     return delta_source, _delta_relative_path(source_file, start_byte, end_byte, delta_hash), end_byte
 
 
@@ -439,6 +480,10 @@ def _write_scan_runtime_error(config: DirectSyncRuntimeConfig, exc: Exception) -
         "error_message": str(exc),
         "scan_error": True,
     }
+    try:
+        status.update(source_scan_failure_status(config.db_path))
+    except (OSError, sqlite3.DatabaseError):
+        pass  # The global error does not claim an empty failure list.
     for path_value, payload in [
         (config.runtime_status_path, status),
         (
@@ -466,6 +511,7 @@ def _write_scan_runtime_error(config: DirectSyncRuntimeConfig, exc: Exception) -
 
 
 def _persist_scan_runtime_status(config: DirectSyncRuntimeConfig, status: dict) -> None:
+    status.update(source_scan_failure_status(config.db_path))
     status_path = Path(config.runtime_status_path)
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(
@@ -600,6 +646,10 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                     attempted_count += 1
                     terminal_blocked_sources.append(str(source_file))
                     continue
+                except SourceFileInputError as exc:
+                    attempted_count += 1
+                    _record_source_file_failure(config, source_file, exc.error_code)
+                    continue
                 if delta is None:
                     no_new_count += 1
                     continue
@@ -613,9 +663,13 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                 if current["status"] in {"paused_by_operator", "blocked_queue_backpressure", "blocked_disk_pressure"}:
                     preflight_status = current
                     break
-                statuses.append(current)
                 attempted_count += 1
+                if current["status"] == "enqueue_error" and current.get("error_code") in SOURCE_FILE_ERROR_CODES:
+                    _record_source_file_failure(config, source_file, current["error_code"])
+                    continue
+                statuses.append(current)
                 if current["status"] == "enqueued":
+                    _clear_source_file_failure(config, source_file)
                     enqueued_count += 1
                     last_result = current.get("last_result") if isinstance(current.get("last_result"), dict) else {}
                     relay_id = str(last_result.get("relay_id") or "")
@@ -662,6 +716,10 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                 if terminal_blocked_sources
                 else status["status"]
             )
+            if (source_scan_failure_status(config.db_path)["scan_file_error_count"]
+                    and not terminal_blocked_sources and preflight_status is None
+                    and status["status"] not in {"enqueue_error", "runtime_error", "DEFERRED"}):
+                status["scan_status"] = "scan_file_errors"
             if terminal_blocked_sources:
                 status["scan_failed_source_file"] = (
                     terminal_blocked_sources[0]

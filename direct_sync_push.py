@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 
 import csv
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -19,6 +20,7 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, field, replace
 from collections import Counter
+from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -119,6 +121,38 @@ from label_atomic_replace import atomic_replace
 
 class DirectSyncPushError(Exception):
     pass
+
+
+SOURCE_FILE_ERROR_CODES = frozenset({
+    "source_csv_utf8_invalid", "source_file_read_failed", "source_delta_write_failed",
+})
+
+
+class SourceFileInputError(DirectSyncPushError):
+    """A proven source-local failure, without the original message or path."""
+
+    def __init__(self, error_code: str):
+        self.error_code = error_code
+        super().__init__(error_code)
+
+
+@contextmanager
+def source_file_operation(*, writing_delta: bool = False):
+    try:
+        yield
+    except UnicodeError as exc:
+        raise SourceFileInputError("source_csv_utf8_invalid") from exc
+    except OSError as exc:
+        # Disk, quota, device and unclassified errors remain global. Only use
+        # this scope around source I/O or a source's own delta directory.
+        local_errnos = {errno.EACCES, errno.EPERM, errno.ENOENT, errno.ENOTDIR,
+                        errno.EISDIR, errno.EBUSY, errno.ETXTBSY, errno.ELOOP}
+        if exc.errno not in local_errnos and not isinstance(
+            exc, (PermissionError, FileNotFoundError, NotADirectoryError, IsADirectoryError)
+        ):
+            raise
+        code = "source_delta_write_failed" if writing_delta else "source_file_read_failed"
+        raise SourceFileInputError(code) from exc
 
 
 class RelayLeaseLostBeforeSourcePost(DirectSyncPushError):
@@ -336,8 +370,9 @@ def build_source_file_plan(
     idempotency_key: str = "",
 ) -> SourceFilePlan:
     file_path = Path(source_file_path)
-    if not file_path.is_file():
-        raise DirectSyncPushError(f"source file does not exist: {file_path}")
+    with source_file_operation():
+        if not file_path.is_file():
+            raise SourceFileInputError("source_file_read_failed")
     manifest = _load_manifest(producer_manifest_path)
     identity = manifest.get("pc_identity") or {}
     producer_install_id = str(identity.get("producer_install_id") or "").strip()
@@ -350,10 +385,12 @@ def build_source_file_plan(
     safe_relative_path = _safe_relative_path(relative_path or f"legacy_csv/{file_path.name}")
     if safe_relative_path.split("/", 1)[0] == DEFAULT_STREAM_NAME:
         raise DirectSyncPushError("relative_path must not include stream_name")
-    content_sha256, byte_length = _read_file_digest(file_path)
+    with source_file_operation():
+        content_sha256, byte_length = _read_file_digest(file_path)
     source_file_id = f"{source_host_id}/{DEFAULT_PRODUCER_ROLE}/{DEFAULT_STREAM_NAME}/{safe_relative_path}"
     stable_key = _stable_source_file_key(source_file_id, content_sha256)
-    row_count = count_csv_data_rows(file_path)
+    with source_file_operation():
+        row_count = count_csv_data_rows(file_path)
     metadata = {
         "contract_version": CONTRACT_VERSION,
         "producer_install_id": producer_install_id,
@@ -1875,6 +1912,9 @@ def _copy_spool_file_atomic(source: Path, destination: Path) -> None:
     try:
         _copy_file_atomic(source, destination)
     except OSError as exc:
+        if exc.filename and Path(exc.filename).resolve() == source.resolve():
+            with source_file_operation():
+                raise
         raise RelaySpoolFileError(f"relay spool file cannot be written: {exc.__class__.__name__}") from exc
 
 
@@ -1987,8 +2027,9 @@ def enqueue_source_file_for_relay(
     init_relay_queue_schema(db_path)
     source_path = Path(source_file_path).resolve()
     manifest_path = Path(producer_manifest_path).resolve()
-    if not source_path.is_file():
-        raise DirectSyncPushError(f"source file does not exist: {source_path}")
+    with source_file_operation():
+        if not source_path.is_file():
+            raise SourceFileInputError("source_file_read_failed")
     relay_id = f"relay-{uuid.uuid4().hex}"
     plan = build_source_file_plan(
         source_file_path=source_path,

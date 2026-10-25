@@ -691,8 +691,8 @@ def test_runtime_invalid_utf8_source_file_writes_enqueue_error_status(tmp_path):
     status = enqueue_completed_source_file(config, source_file_path=source_file)
 
     assert status["status"] == "enqueue_error"
-    assert status["error_code"] == "direct_sync_source_file_error"
-    assert "UnicodeDecodeError" in status["error_message"]
+    assert status["error_code"] == "source_csv_utf8_invalid"
+    assert status["error_message"] == ""
     assert status["queue"]["counts"] == {}
     assert Path(config.runtime_status_path).is_file()
     assert Path(config.log_path).is_file()

@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -24,6 +25,7 @@ from direct_sync_push import (
     DEFAULT_STREAM_NAME,
     DEFAULT_TIMEOUT_SECONDS,
     DirectSyncPushError,
+    SourceFileInputError,
     ProducerCredentials,
     RELAY_STATUS_LEASED,
     RELAY_STATUS_PENDING,
@@ -642,6 +644,26 @@ def _result_summary(result: UploadResult | None) -> dict[str, Any]:
     }
 
 
+def source_scan_failure_status(db_path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Read the durable failure list without creating or changing the queue."""
+    path = Path(db_path)
+    try:
+        path.stat()
+    except FileNotFoundError:
+        errors = []
+    else:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)) as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='direct_sync_source_scan_failures'"
+            ).fetchone()
+            errors = [dict(zip(("source_name", "first_failed_at", "error_code"), row)) for row in
+                      connection.execute(
+                          "SELECT source_name, first_failed_at, error_code FROM direct_sync_source_scan_failures "
+                          "ORDER BY first_failed_at, source_file_path"
+                      )] if exists else []
+    return {"scan_file_error_count": len(errors), "scan_file_errors": errors}
+
+
 def _write_runtime_status(
     config: DirectSyncRuntimeConfig,
     *,
@@ -677,6 +699,13 @@ def _write_runtime_status(
         "runtime_lease": dict(runtime_lease or {}),
         "updated_at": utc_now_text(),
     }
+    try:
+        payload.update(source_scan_failure_status(config.db_path))
+    except (OSError, sqlite3.DatabaseError):
+        if status != "runtime_error":
+            raise
+        # A queue failure cannot establish an empty list. Publish the existing
+        # global error without a fabricated count.
     _write_json_atomic(config.runtime_status_path, payload)
     return payload
 
@@ -870,6 +899,11 @@ def enqueue_completed_source_file(
             status_name = "runtime_error"
             error_code, error_message = _runtime_error_details(exc)
             event_name = "enqueue_runtime_error"
+        elif isinstance(exc, SourceFileInputError):
+            status_name = "enqueue_error"
+            error_code = exc.error_code
+            error_message = ""
+            event_name = "enqueue_error"
         elif isinstance(exc, DirectSyncPushError):
             status_name = "enqueue_error"
             error_code = "direct_sync_enqueue_error"
