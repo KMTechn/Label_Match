@@ -160,6 +160,17 @@ def install(root, updates, fence, native_lock, native_sid, app):
             began = time.monotonic()
             timeline.bind_logs()
             timeline.event('product_call', frames=call_frames)
+            if label['function'] == 'observe_trial_ready':
+                # Observe the actual SYSTEM deadline without rereading its journal.
+                try:
+                    phase = args[2].get('phase')
+                    timeline.event('ready_window',
+                        configured_seconds=updates.READY_WINDOW_SECONDS,
+                        remaining_seconds=kwargs['deadline']-time.monotonic(),
+                        phase=phase if phase in {'APPLIED_PENDING_READY', 'ROLLBACK_PENDING_READY'} else 'OTHER',
+                        frames=call_frames)
+                except Exception as error:
+                    timeline.event('ready_window_observation_error', error_type=type(error).__name__)
             result = None
             error_type = None
             try:
@@ -175,7 +186,7 @@ def install(root, updates, fence, native_lock, native_sid, app):
                     return_type=type(result).__name__, error_type=error_type)
         return observed
     for name in ('_launch_bootstrap_version', 'start_current',
-                 'recovery_writer_result', 'wait_current_relay'):
+                 'recovery_writer_result', 'wait_current_relay', 'observe_trial_ready'):
         original = getattr(updates, name, None)
         if original is None:
             continue
