@@ -3863,9 +3863,13 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
     started = time.monotonic()
     deadline = started + STARTUP_WAIT_SECONDS
     while True:
-        if waiting_for_decision and not _bootstrap_awaiting_apply_decision(
-                optional_record(control / "transition.json"), apply_claim_status(control)):
-            break
+        if waiting_for_decision:
+            observed_state = optional_record(control / "transition.json")
+            if _bootstrap_awaiting_apply_decision(observed_state, "LIVE"):
+                if apply_claim_status(control) != "LIVE":
+                    break
+            else:
+                waiting_for_decision = False
         if time.monotonic() >= deadline:
             state = optional_record(control / "transition.json")
             claim_status = apply_claim_status(control)
@@ -3890,9 +3894,11 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                 stage_deadline = bootstrap_supervision_deadline(state, started=started,
                     now=time.monotonic(), utc_now=now_utc())
                 if waiting_for_decision:
-                    if not _bootstrap_awaiting_apply_decision(state, claim_status):
+                    if not _bootstrap_awaiting_apply_decision(state, "LIVE"):
+                        waiting_for_decision = False
+                    elif claim_status != "LIVE":
                         break
-                    if time.monotonic() >= stage_deadline:
+                    elif time.monotonic() >= stage_deadline:
                         # SYSTEM can still hold the root during its final Observe.
                         # Leave it ownership and never start another trial here.
                         bootstrap_ownership.close()
