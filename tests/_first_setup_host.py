@@ -695,8 +695,11 @@ def install_os(config, app):
         result = actual_write(path, payload)
         if payload.get("report_version") == "label-match-user-relay-v1":
             cycle = payload.get("last_cycle") or {}
-            event = {"at": time.monotonic(), "pid": os.getpid(),
+            event = {"at": time.monotonic(), "time_ns": time.time_ns(), "pid": os.getpid(),
                      "status": payload.get("status"), "cycle": payload.get("cycle_count"),
+                     "reported_process_id": payload.get("process_id"),
+                     "source_commit": payload.get("source_commit"),
+                     "update_nonce_present": bool(payload.get("update_nonce")),
                      "process_status": cycle.get("process_status"),
                      "process_returncode": cycle.get("process_returncode"),
                      "relay_status": cycle.get("relay_status")}
@@ -1426,6 +1429,66 @@ def session_end(config, name="restart"):
           "job_contained": True, "owned_tree_ended": True, "stop_marker_present": False})
 
 
+def _autorun_trial_record(config):
+    path = Path(config).parent / "machine/update-control/transition.json"
+    try:
+        assert path.stat().st_size < 65536
+        value = json.loads(path.read_bytes())
+    except FileNotFoundError:
+        return None
+    assert isinstance(value, dict), "bootstrap trial journal is malformed"
+    return value
+
+
+def _wait_for_autorun_trial(config, process, returncode):
+    """Keep the candidate alive while the existing SYSTEM trial settles."""
+    from datetime import datetime
+    from auto_update import READY_WINDOW_SECONDS
+
+    root = Path(config).parent
+    state = _autorun_trial_record(config)
+    assert state, "nonzero bootstrap has no SYSTEM trial"
+    def stamp(value):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        assert parsed.tzinfo is not None, "trial clock must include its timezone"
+        return parsed.timestamp()
+    applied = stamp(state["applied_at"])
+    binding = tuple(state.get(k) for k in ("transition_id", "candidate_sha", "applied_at"))
+    assert all(binding), "nonzero bootstrap lacks its original trial binding"
+    deadline = time.monotonic() + max(0.0, applied + READY_WINDOW_SECONDS + 60 - time.time())
+    began = time.monotonic()
+    terminal = {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}
+    timed_out = False
+    while state.get("phase") not in terminal:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        time.sleep(min(30, remaining))
+        state = _autorun_trial_record(config)
+        same = bool(state) and tuple(state.get(k) for k in ("transition_id", "candidate_sha", "applied_at")) == binding
+        assert same, "SYSTEM trial changed while observing bootstrap outcome"
+    log = Path(process.host_test_output)
+    assert log.stat().st_size < 1024 ** 2
+    text = log.read_text(encoding="utf-8", errors="replace")
+    known_tail = (returncode == 1 and "in _bootstrap" in text
+                  and "in assert_ordinary_recovery" in text
+                  and "ValueError: an earlier or unrelated writer prevents ordinary recovery" in text)
+    confirmed_seconds = None
+    if state.get("confirmed_at"):
+        confirmed_seconds = stamp(state["confirmed_at"]) - applied
+    proof = dict(bootstrap_return_code=returncode, known_p3_tail=known_tail,
+                 phase=state.get("phase"), wait_seconds=time.monotonic()-began,
+                 observation_upper_seconds=READY_WINDOW_SECONDS+60,
+                 confirmed_after_applied_seconds=confirmed_seconds, timed_out=timed_out,
+                 candidate_stopped_by_observer=False)
+    write(root / "bootstrap-outcome-proof.json", proof)
+    assert not timed_out, "SYSTEM trial did not settle by its original applied deadline plus60"
+    assert known_tail, "bootstrap failed outside the allowed secondary P3 tail"
+    assert state.get("phase") == "CONFIRMED", "SYSTEM did not confirm this trial"
+    assert confirmed_seconds is not None and 0 <= confirmed_seconds <= READY_WINDOW_SECONDS, "SYSTEM confirmation missed the original READY window"
+
+
 def autorun(config):
     """Parse and execute the exact value the real installer put in virtual HKCU."""
     import ctypes
@@ -1449,7 +1512,9 @@ def autorun(config):
     write(config.parent / "autorun-proof.json", {"registered_command_exact": True,
           "isolated_python_flags": parts[1:3], "entry": Path(parts[3]).name})
     process = launch(config, parts[3], parts[4:])
-    assert process.wait() == 0, "actual registered autostart did not complete its bootstrap"
+    returncode = process.wait()
+    if returncode != 0:
+        _wait_for_autorun_trial(config, process, returncode)
 
 
 def restart(config, name="restart"):
