@@ -2,15 +2,15 @@
  "schema": "ui-parts/1",
  "source": "WorkerAnalysisGUI-web",
  "commit": "6ced39fb4056488575e04e17059c0e3e90bd83f2",
- "dirty": false,
+ "dirty": true,
  "app": "lm",
  "parts_fingerprint": "c83ed483720e2b61",
  "files": [
   {
    "path": "app/frame.css",
-   "sha256": "13c5709371c87c995105f529001b3754227a71ebc44b0afe6d602a0c87440194",
-   "bytes": 33720,
-   "gzip": 8225
+   "sha256": "d1fc6efa36f9e8708c815e9a9d101a9de76ce7f70680ac4bcb3535acd9514057",
+   "bytes": 34461,
+   "gzip": 8440
   },
   {
    "path": "app/frame.js",
@@ -20,9 +20,9 @@
   },
   {
    "path": "app/lm/contract.json",
-   "sha256": "1616dfe54fa178f251afa25bde5cc3d1088cd235bc9e2b9eb27ad24ad31ded27",
-   "bytes": 39039,
-   "gzip": 9781
+   "sha256": "09f29f34cef6f9cce795c42dd6104ba8a9ec9b1d2fafc22d37dc506657bbba87",
+   "bytes": 39101,
+   "gzip": 9804
   },
   {
    "path": "app/lm/fixtures/about.json",
@@ -410,9 +410,9 @@
   },
   {
    "path": "app/lm/lm.js",
-   "sha256": "115c50bb421056edd8582f33eb725ab55c1c1c34a69db954c1d6512993338342",
-   "bytes": 26277,
-   "gzip": 8415
+   "sha256": "18cddf0f3e708af428f7be39a8d33a370c8854add5a43ec23a3f2c65aa1f86b0",
+   "bytes": 26280,
+   "gzip": 8424
   },
   {
    "path": "app/scan.js",
@@ -422,9 +422,9 @@
   },
   {
    "path": "app/sheet.js",
-   "sha256": "0db6633d274b6fce3e6e34f6604a14815ecce7c134b34bfeb8d8b150d8c3734f",
-   "bytes": 9263,
-   "gzip": 2998
+   "sha256": "2e818fbb6ac862771972b42783872e6d2ae82ce30de0cd86a5bb2d02f85c0e75",
+   "bytes": 9826,
+   "gzip": 3150
   },
   {
    "path": "app/transport.js",
