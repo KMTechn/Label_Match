@@ -39,13 +39,15 @@ class _Raw:
 
 
 class _Adapter(requests.adapters.HTTPAdapter):
-    def __init__(self, clock, *, failure_times=(), status=200, body_timeout=False, slow=False):
+    def __init__(self, clock, *, failure_times=(), status=200, body_timeout=False, slow=False,
+                 close_error=False):
         super().__init__()
         self.clock = clock
         self.failure_times = failure_times
         self.status = status
         self.body_timeout = body_timeout
         self.slow = slow
+        self.close_error = close_error
         self.timeouts = []
         self.raws = []
         self.closed = False
@@ -66,6 +68,8 @@ class _Adapter(requests.adapters.HTTPAdapter):
     def close(self):
         self.closed = True
         super().close()
+        if self.close_error:
+            raise requests.ConnectionError("simulated failure after adapter cleanup")
 
 
 def _real_startup(monkeypatch, tmp_path, *, cache_kind="absent", **adapter_options):
@@ -160,3 +164,12 @@ def test_explicit_timeout_keeps_original_one_send(monkeypatch, tmp_path):
     facts = run(explicit_timeout=0.5)
     assert not facts["started"] and facts["sends"] == 1
     assert facts["timeouts"] == [0.5] and facts["sleeps"] == []
+
+
+@pytest.mark.parametrize("status,body_timeout", [(200, False), (503, False), (200, True)])
+def test_session_close_failure_after_response_never_retries(monkeypatch, tmp_path, status, body_timeout):
+    run, _clock = _real_startup(monkeypatch, tmp_path, status=status,
+                               body_timeout=body_timeout, close_error=True)
+    facts = run()
+    assert not facts["started"] and facts["sends"] == 1 and facts["sleeps"] == []
+    assert facts["session_adapter_closed"] and facts["response_streams_closed"] == [True]

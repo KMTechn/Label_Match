@@ -1002,45 +1002,52 @@ def _hardened_get(
 ) -> object:
     """Send credentials without inheriting process proxy or CA overrides."""
 
-    with requests.Session() as session:
-        session.trust_env = False
-        if _catalog_deadline is None:
-            return session.get(url, **kwargs)
-        kwargs["stream"] = True
-        response = session.get(url, **kwargs)
-        try:
-            with closing(response):
-                _record_catalog_response(response)
-                payload = bytearray()
-                # One byte exposes buffered progress without waiting to fill a
-                # larger body chunk. A read already in flight remains governed
-                # by requests' unchanged read timeout; this is cooperative.
-                chunks = response.iter_content(chunk_size=1)
-                while True:
+    response = None
+    try:
+        with requests.Session() as session:
+            session.trust_env = False
+            if _catalog_deadline is None:
+                return session.get(url, **kwargs)
+            kwargs["stream"] = True
+            response = session.get(url, **kwargs)
+            try:
+                with closing(response):
+                    _record_catalog_response(response)
+                    payload = bytearray()
+                    # One byte exposes buffered progress without waiting to fill a
+                    # larger body chunk. A read already in flight remains governed
+                    # by requests' unchanged read timeout; this is cooperative.
+                    chunks = response.iter_content(chunk_size=1)
+                    while True:
+                        if time.monotonic() > _catalog_deadline:
+                            raise requests.ReadTimeout(
+                                "first item catalog response exceeded its budget", response=response,
+                            )
+                        try:
+                            chunk = next(chunks)
+                        except StopIteration:
+                            break
+                        if time.monotonic() > _catalog_deadline:
+                            raise requests.ReadTimeout(
+                                "first item catalog response exceeded its budget", response=response,
+                            )
+                        payload.extend(chunk)
                     if time.monotonic() > _catalog_deadline:
                         raise requests.ReadTimeout(
                             "first item catalog response exceeded its budget", response=response,
                         )
-                    try:
-                        chunk = next(chunks)
-                    except StopIteration:
-                        break
-                    if time.monotonic() > _catalog_deadline:
-                        raise requests.ReadTimeout(
-                            "first item catalog response exceeded its budget", response=response,
-                        )
-                    payload.extend(chunk)
-                if time.monotonic() > _catalog_deadline:
-                    raise requests.ReadTimeout(
-                        "first item catalog response exceeded its budget", response=response,
-                    )
-                response._content = bytes(payload)
-                response._content_consumed = True
-                return response
-        except (requests.ConnectionError, requests.Timeout,
-                ConnectionError, TimeoutError, ssl.SSLError) as error:
+                    response._content = bytes(payload)
+                    response._content_consumed = True
+                    return response
+            except (requests.ConnectionError, requests.Timeout,
+                    ConnectionError, TimeoutError, ssl.SSLError) as error:
+                error._catalog_response_received = True
+                raise
+    except (requests.ConnectionError, requests.Timeout,
+            ConnectionError, TimeoutError, ssl.SSLError) as error:
+        if response is not None:
             error._catalog_response_received = True
-            raise
+        raise
 
 
 def refresh_item_catalog(
