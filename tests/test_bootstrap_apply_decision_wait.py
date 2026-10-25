@@ -9,7 +9,7 @@ import pytest
 from tests.recovery_memory_world import MemoryPath, World
 
 
-def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE"):
+def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE", boundary_at=255):
     source = (Path(__file__).resolve().parents[1] / "auto_update.py").read_text(encoding="utf-8-sig")
     world = World("LM-A30-decision", source, phase="PREPARED", writer=None, claim="LIVE")
     world.clock = 0.0
@@ -34,14 +34,14 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE")
     def advance(seconds):
         target = round(world.clock + seconds, 9)
         events = [value for value in (240 if not pending else None,
-            255 if not boundary else None, decision_at if not decided else None, 480)
+            boundary_at if not boundary else None, decision_at if not decided else None, 480)
             if value is not None and world.clock < value <= target]
         world.clock = min(events) if events else target
         if world.clock >= 240 and not pending:
             state = world.ns["request_rollback"](world.state, reason="candidate readiness timed out")
             world.ns["write_json_durable"](world.control / "transition.json", state)
             pending.append(world.clock)
-        if world.clock >= 255 and not boundary:
+        if world.clock >= boundary_at and not boundary:
             boundary.append(world.clock)
             if boundary_claim == "ABSENT":
                 world.set_claim("ABSENT")

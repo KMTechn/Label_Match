@@ -1,4 +1,4 @@
-# Label_Match 운영·복구·검증
+﻿# Label_Match 운영·복구·검증
 
 ## 관리자 제거의 작업자 증명과 재시도
 
@@ -89,7 +89,7 @@ ANSWER-15: root 안 부재 증명→Popen→native PID/birth 보관(필요한 cl
 
 bootstrap 감독 기한은 보호 journal의 적용 시각(applied_at)과 되돌림 시각(rollback_at)에 다시 맞춘다. 초기 감독 예산은 진입 후240초이고, 적용/되돌림 READY 단계의 기존 종료 시각에15초를 더해 관측하되 진입 후480초를 상한으로 삼는다. READY240초 자체는 해당 applied_at/rollback_at 닻을 유지한다. GUI 바로 가기의 사용자 시작 bootstrap도 같은 식을 사용하므로 사용자가 보는 시작 중 감독 예산은 기존 최대240초에서 최대480초까지 늘 수 있다(진행 중 OS I/O의 실제 wall 지연은 별도).
 
-단계 감독 기한 뒤에도 SYSTEM apply claim이 LIVE이고 전환이 APPLIED_PENDING_READY·ROLLBACK_PENDING·ROLLBACK_PENDING_READY이면 같은 bootstrap이 진입 후480초까지 결정 기록을 기다린다. SYSTEM이 마지막 Observe 동안 root 잠금을 쥐어도 대기를 계속하며, 대기 중 새 trial을 시작하지 않는다. 결정을 읽으면 기존 실행·복구 분기로 이어지고, LIVE가 아니거나480초에 닿으면 기존 마지막 읽기·종료 처리를 따른다. UNKNOWN·ABSENT claim의 대기 창과 relay 시도는 늘리지 않는다. GUI 준비 안내의 감독 예산도 최악480초이며 READY240·정상 종료60·단계끝+15와 최대480의 기존 값은 그대로다.
+단계 감독 기한 뒤에도 SYSTEM apply claim이 LIVE이고 전환이 PREPARED·APPLIED_PENDING_READY·ROLLBACK_PENDING·ROLLBACK_PENDING_READY이거나 transition 기록이 없으면 같은 bootstrap이 진입 후480초까지 기다린다. 연장 중에는 root 잠금이 busy인 반복에서도 매 poll마다 claim·phase를 잠금 밖에서 다시 읽고 자격이 없어지면 기존 마지막 읽기 길로 간다. 잠금 획득 뒤 원래 journal과 권한을 재확인하며, PREPARED/기록 없음 뒤 적용이 끝나면 기존 적용/READY 시계 안에서 원래 trial·확인 흐름으로 이어진다. READY 종료 뒤 결정을 기다리는 동안에는 새 trial을 시작하지 않는다. UNKNOWN·ABSENT claim의 대기 창과 relay 시도는 늘리지 않는다. GUI 준비 안내 감독 예산 최악480초이며 READY240·정상 종료60·단계끝+15와 최대480의 기존 값은 그대로다.
 
 
 v2.0.123 첫 설정 relay는 첫 관문의 바쁨 갈래에서만 bootstrap이 확인해 전달한 부모 PID·생성 신원을 현재 native 신원과 대조하고, 같은 판·계정·일반 권한인 부모 행 하나만 일반 복구 검사에서 건너뛴다. 첫 관문 통과 직후 부모 결속 환경 값을 지워 자손에게 상속하지 않으며, 뒤 단계의 복구 증명은 값이 있어도 부모 행을 건너뛰지 않는다. trial/nonce 시작에는 이 값을 전달하지 않는다. 부모 결속이 없거나 잘못됐거나 신원이 다르면 기존 거절을 유지하며 다른 writer와 ROLLBACK_PENDING의 relay 한 개 조건은 그대로다.

@@ -3810,8 +3810,8 @@ def _relay_startup_stop_checkpoint(policy):
 
 
 def _bootstrap_awaiting_apply_decision(state, claim_status) -> bool:
-    return claim_status == "LIVE" and (state or {}).get("phase") in {
-        "APPLIED_PENDING_READY", "ROLLBACK_PENDING", "ROLLBACK_PENDING_READY"}
+    return claim_status == "LIVE" and (state is None or state.get("phase") in {
+        "PREPARED", "APPLIED_PENDING_READY", "ROLLBACK_PENDING", "ROLLBACK_PENDING_READY"})
 
 
 def bootstrap_supervision_deadline(state, *, started: float, now: float, utc_now: str,
@@ -3863,6 +3863,9 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
     started = time.monotonic()
     deadline = started + STARTUP_WAIT_SECONDS
     while True:
+        if waiting_for_decision and not _bootstrap_awaiting_apply_decision(
+                optional_record(control / "transition.json"), apply_claim_status(control)):
+            break
         if time.monotonic() >= deadline:
             state = optional_record(control / "transition.json")
             claim_status = apply_claim_status(control)
@@ -3884,19 +3887,19 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                     abandoned_check=lambda: _verify_abandoned_update(control, policy)))
                 state = optional_record(control / "transition.json")
                 claim_status = apply_claim_status(control)
+                stage_deadline = bootstrap_supervision_deadline(state, started=started,
+                    now=time.monotonic(), utc_now=now_utc())
                 if waiting_for_decision:
-                    if (state or {}).get("phase") in {
-                            "APPLIED_PENDING_READY", "ROLLBACK_PENDING", "ROLLBACK_PENDING_READY"}:
-                        if claim_status != "LIVE":
-                            break
+                    if not _bootstrap_awaiting_apply_decision(state, claim_status):
+                        break
+                    if time.monotonic() >= stage_deadline:
                         # SYSTEM can still hold the root during its final Observe.
                         # Leave it ownership and never start another trial here.
                         bootstrap_ownership.close()
                         time.sleep(0.1)
                         continue
                     waiting_for_decision = False
-                deadline = bootstrap_supervision_deadline(state, started=started,
-                    now=time.monotonic(), utc_now=now_utc())
+                deadline = stage_deadline
                 apply_started = apply_started or claim_status in {"LIVE", "UNKNOWN"} or bool(state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"})
                 if role == "relay" and relay_stop_requested(policy):
                     if claim_status in {"LIVE", "UNKNOWN"}:
