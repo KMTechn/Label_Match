@@ -119,7 +119,7 @@
     if (slot.state === 'current') return '지금 스캔할 칸';
     if (slot.state === 'swap') return '교환 중';
     if (!slot.filled) return slot.state === 'error' ? '틀림' : '—';
-    if (slot.role === 'master_label') return slot.value || (w.tag ? w.tag.code : '확인됨');
+    if (slot.role === 'master_label') return (w.tag && w.tag.code) || slot.value || '확인됨';
     return slot.value;
   }
 

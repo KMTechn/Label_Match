@@ -115,7 +115,7 @@
                 "index": {"type": "integer", "minimum": 1},
                 "key": {"type": "string"},
                 "label": {"type": "string"},
-                "value": {"type": "string", "description": "찍은 원문(빈 글 = 아직) — 화면은 끝 몇 자리만"},
+                "value": {"type": "string", "description": "찍은 원문(빈 글 = 아직) — 현품표 칸 표시는 work.tag.code 우선, 제품은 원문을 공간에 맞춰 표시"},
                 "filled": {"type": "boolean"},
                 "state": {"enum": ["complete", "current", "pending", "error", "readonly", "swap"], "description": "swap = 교환 중인 칸(이음: exchange.target 과 같은 칸)"},
                 "role": {"enum": ["master_label", "product", "last_product"], "description": "현품표 → 제품1…제품{N-1} → 제품N(마지막 제품 확인 칸)"}
