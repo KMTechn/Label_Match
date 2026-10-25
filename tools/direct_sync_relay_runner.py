@@ -189,7 +189,9 @@ def _delta_content_sha256_for_range(source_file: Path, start_byte: int, end_byte
     return hashlib.sha256(delta_content).hexdigest()
 
 
-def _read_queued_delta_progress(conn: sqlite3.Connection, source_file: Path) -> tuple[int, str]:
+def _read_queued_delta_progress(
+    conn: sqlite3.Connection, source_file: Path, *, acked_only: bool = False
+) -> tuple[int, str]:
     has_relay_table = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'direct_sync_relay_batches'"
     ).fetchone()
@@ -206,10 +208,11 @@ def _read_queued_delta_progress(conn: sqlite3.Connection, source_file: Path) -> 
     ).fetchall()
     matching_ranges: dict[int, int] = {}
     blocked_ranges: dict[int, int] = {}
+    progress_statuses = {"acked"} if acked_only else DELTA_PROGRESS_STATUSES
     for row in rows:
         status = str(row["status"] or "")
         if (
-            status not in DELTA_PROGRESS_STATUSES
+            status not in progress_statuses
             and status not in TERMINAL_DELTA_BLOCK_STATUSES
         ):
             continue
@@ -220,10 +223,11 @@ def _read_queued_delta_progress(conn: sqlite3.Connection, source_file: Path) -> 
         if parsed_range is None:
             continue
         start_byte, end_byte = parsed_range
-        delta_hash = _delta_content_sha256_for_range(source_file, start_byte, end_byte)
+        with source_file_operation():
+            delta_hash = _delta_content_sha256_for_range(source_file, start_byte, end_byte)
         if delta_hash and delta_hash == str(row["content_sha256"] or ""):
             if (
-                status in DELTA_PROGRESS_STATUSES
+                status in progress_statuses
                 and _delta_relay_row_has_usable_spool(row)
             ):
                 matching_ranges[start_byte] = max(
@@ -243,7 +247,24 @@ def _read_queued_delta_progress(conn: sqlite3.Connection, source_file: Path) -> 
         best_end_byte = next_end_byte
     if best_end_byte <= 0:
         return 0, ""
-    return best_end_byte, _file_prefix_sha256(source_file, best_end_byte)
+    with source_file_operation():
+        return best_end_byte, _file_prefix_sha256(source_file, best_end_byte)
+
+
+def _failed_source_is_already_acked(config: DirectSyncRuntimeConfig, source_file: Path) -> bool:
+    conn = _scan_state_connect(config.db_path)
+    try:
+        if not conn.execute("SELECT 1 FROM direct_sync_source_scan_failures WHERE source_file_path=?",
+                            (_source_state_key(source_file),)).fetchone():
+            return False
+        with source_file_operation():
+            size = source_file.stat().st_size
+        if size <= 0:
+            return False
+        acked_end, _ = _read_queued_delta_progress(conn, source_file, acked_only=True)
+        return acked_end >= size
+    finally:
+        conn.close()
 
 
 def _delta_relay_row_has_usable_spool(row: sqlite3.Row) -> bool:
@@ -642,6 +663,8 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                     continue
                 try:
                     delta = _build_delta_source_file(config, source_file)
+                    if delta is None and _failed_source_is_already_acked(config, source_file):
+                        _clear_source_file_failure(config, source_file)
                 except ExistingTerminalDeltaBlocked:
                     attempted_count += 1
                     terminal_blocked_sources.append(str(source_file))

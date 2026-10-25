@@ -2,6 +2,8 @@
 
 relay 파일 오류 격리(w9firstupdsub591): 큐 SQLite의 추가 표 `direct_sync_source_scan_failures`가 원본별 최초 실패 시각을 유지하며 기존 scan state/큐 표와 분리되어 옛 판의 읽기를 바꾸지 않는다. 기존 relay 상태 JSON은 `scan_file_error_count`와 `scan_file_errors:[{source_name, first_failed_at, error_code}]`를 게시한다(이름만·원문/경로 없음). 파일 오류만 남으면 `scan_status=scan_file_errors`로 다음 파일·drain을 계속하고 최종 status/rc는 drain 결과다. 성공 enqueue/dedupe(기존 ACK 행 포함) 때만 목록에서 빼며 미발견·미완결 원본은 유지한다. 기존 relay label과 공통 바닥 줄은 n>0일 때만 ` · 기록 파일 n개 안 올라감`을 붙인다. 고정 코드는 `source_csv_utf8_invalid`·`source_file_read_failed`·`source_delta_write_failed`이고, 큐/목록 판독·공용 spool/status/log·설정·디스크 용량/장치·미분류 오류 및 기존 terminal·역압·운영자 중지의 전역 처리/우선순위를 유지한다.
 
+적재 결과 게시 전에 중단되어 남은 파일 오류는 같은 원본의 완전한 바이트 범위·내용 해시와 기존 큐의 ACK를 다시 확인하면 해제한다. 설치 baseline도 사용하는 scan watermark만으로는 ACK를 단정하지 않는다. 기존 큐 범위를 대조하다 원본 읽기가 거부된 경우도 그 원본만 보류하고 뒤 파일을 계속한다.
+
 ## 관리자 제거의 작업자 증명과 재시도
 
 작업자는 먼저 공개 `--remove-current-user-setup`을 실행한다. 제거가 이미 끝난
