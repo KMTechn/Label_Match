@@ -1214,7 +1214,8 @@ def install_os(config, app):
         from tests._first_setup_lock_observer import install
         install(root, updates, fence, native_lock, native_sid, app)
         from tests._first_setup_ready_observer import install as install_ready_observer
-        install_ready_observer(root, updates)
+        if hasattr(updates, "_relay_ready_receipt"):
+            install_ready_observer(root, updates)
     return children
 
 
