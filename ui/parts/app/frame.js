@@ -1,4 +1,4 @@
-// Shared app frame.
+
 'use strict';
 window.AppFrame = (() => {
   const SVG = 'http://www.w3.org/2000/svg';
@@ -23,8 +23,19 @@ window.AppFrame = (() => {
     }
     return svg;
   }
+
   function keepTogether(text) {
     return String(text);
+  }
+  function workerLabel(worker) {
+    return String(worker?.label || '').replace(/^(작업자\s+(\d+))\s+#\2$/, '$1');
+  }
+  function textParts(parts, className = '', wholeFirst = false) {
+    const values = parts.filter(value => value != null).map(value => String(value).trim()).filter(Boolean);
+    return values.flatMap((value, i) => {
+      const text = value + (i < values.length - 1 ? '\u00a0·' : '');
+      return [i || wholeFirst ? el('span', className, text) : text, ...(i < values.length - 1 ? [' '] : [])];
+    });
   }
   function joinText() {
     for (const span of document.querySelectorAll('.text-join')) {
@@ -304,7 +315,7 @@ window.AppFrame = (() => {
     node.setAttribute('role', kind === 'bad' || kind === 'strong' ? 'alert' : 'status');
     const message = el('span', 'band__text');
     const detail = alert.text.indexOf('\n코드: ');
-    if (detail < 0) message.textContent = keepTogether(alert.text);
+    if (detail < 0) keepTogether(alert.text).split(/( — |\n)/).forEach((text, i) => message.append(el('span', i % 2 ? 'band__sep' : 'band__chunk', text)));
     else message.append(keepTogether(alert.text.slice(0, detail)), el('small', 'band__code', alert.text.slice(detail + 1)));
     node.append(icon(BAND_ICON[kind] || 'alert', 20), message);
     if (alert.choices) {
@@ -322,11 +333,25 @@ window.AppFrame = (() => {
   }
 
   const RESULT_ICON = { ok: 'check', bad: 'alert', warn: 'alert', saved: 'now', idle: 'idle' };
+  const DUPLICATE_SCAN = '중복 스캔 — 이미 스캔한 제품입니다';
+  const DUPLICATE_RESULTS = {
+    ca: [DUPLICATE_SCAN], defect_inspection: [DUPLICATE_SCAN], inspection: [DUPLICATE_SCAN],
+    rework_worker: ['이미 스캔한 제품 · 확인 중'],
+  };
   function drawResult(node, result, codeSub = false) {
     node.classList.remove('result--ok', 'result--bad', 'result--warn', 'result--saved', 'result--idle');
     node.classList.add('result', `result--${result.kind}`);
+    node.classList.toggle('result--duplicate', !!DUPLICATE_RESULTS[current?.app]?.includes(result.text));
+    const headline = result.text.split(' — ')[0];
+    const mismatch = ['inspection', 'defect_inspection'].includes(current?.app) && headline === '다른 품목입니다'
+      || current?.app === 'label_match' && result.text === '이 현품표에 없는 제품입니다';
+    node.classList.toggle('result--mismatch', mismatch);
     const body = el('div');
-    body.append(result.text);
+    if (mismatch) {
+      body.append(el('strong', 'result__headline', headline), el('span', 'result__next', '이 제품은 따로 두고 다음 제품을 스캔하세요'));
+      const context = result.text.slice(headline.length).trimStart();
+      if (context) body.append(el('small', 'result__context', context));
+    } else body.append(result.text);
     if (result.sub) {
       const sub = el('small');
       const isTime = text => /^\d{2}:\d{2}:\d{2}$/.test(text);
@@ -351,7 +376,7 @@ window.AppFrame = (() => {
             parts[i + 1] = ''; parts[i + 2] = null;
           }
           else if (/^\s*·/.test(parts[i + 1] || '')) {
-            group.append(el('span', 'result__code-separator', '\u00a0·'));
+            group.append('\u00a0·');
             parts[i + 1] = parts[i + 1].replace(/^\s*·/, '');
           }
           sub.append(group);
@@ -371,19 +396,44 @@ window.AppFrame = (() => {
   function drawFrame(s, ui) {
     const starting = s.view === 'start' || !!s.start;
     $('.top').classList.toggle('top--starting', starting && !!document.querySelector('.ca-start, .lm-start, .iw-gate'));
-    $('[data-worker]').textContent = starting ? '' : s.worker ? s.worker.label : s.app ? '작업자를 선택하세요' : '';
+    $('[data-worker]').textContent = starting ? '' : s.worker ? workerLabel(s.worker) : s.app ? '작업자를 선택하세요' : '';
+    $('[data-worker]').title = starting ? '' : s.worker?.label || '';
     const admin = $('[data-admin]');
     if (admin) {
       admin.hidden = !ui.admin_open;
       $('[data-admin-btn]').setAttribute('aria-expanded', String(!!ui.admin_open));
     }
     const focusLost = ui.focus === 'off';
-    const alerts = (focusLost ? [{ kind: 'strong', text: '창을 한 번 누르세요 — 지금은 스캔이 들어오지 않습니다' }] : [])
-      .concat(ui.stopped ? [{ kind: 'bad', text: ui.stopped }] : [], (ui.notices || []).map((text, i) => ({ kind: 'warn', text, choices: [{ text: '확인', go: `dismiss:${i}` }] })), s.alerts || []);
-    $('[data-bands]').replaceChildren(...alerts.map(band));
-
     const conn = s.conn || {};
     const queue = s.queue || { pending: 0, failed: 0 };
+    const alerts = (focusLost ? [{ kind: 'strong', text: '창을 한 번 누르세요 — 지금은 스캔이 들어오지 않습니다' }] : [])
+      .concat(ui.stopped ? [{ kind: 'bad', text: ui.stopped }] : [], (ui.notices || []).map((text, i) => ({ kind: 'warn', text, choices: [{ text: '확인', go: `dismiss:${i}` }] })), s.alerts || []);
+    const bands = alerts.map(band);
+    if (conn.state === 'offline') {
+      const offline = band({ text: `오프라인 저장 — 이 PC에 저장했습니다\n연결되면 자동 전송합니다\n전송 대기 ${queue.pending}건` });
+      offline.classList.add('band--offline');
+      offline.dataset.offlineBand = '';
+      if (queue.failed > 0) {
+        const review = el('span', 'band__review', `관리자 확인 ${queue.failed}건`);
+        review.dataset.offlineReview = '';
+        offline.append(review);
+      }
+      bands.unshift(offline);
+    }
+    if (ui.recovery) {
+      const recovery = band({ text: '지난번 작업을 이어서 엽니다 — 스캔 기록은 그대로 있습니다\n마지막으로 스캔한 제품을 확인하고 계속 스캔하세요' });
+      recovery.dataset.recoveryBand = '';
+      recovery.querySelector('.band__text').style.whiteSpace = 'pre-line';
+      bands.splice(conn.state === 'offline' ? 1 : 0, 0, recovery);
+    }
+    if (s.practice === true) {
+      const practice = band({ text: '연습용 PC — 실제 기록이 아닙니다' });
+      practice.dataset.practiceBand = '';
+      practice.classList.add('band--practice');
+      bands.unshift(practice);
+    }
+    $('[data-bands]').replaceChildren(...bands);
+
     const SERVER = {
       review: ['dot dot--amber', `관리자 확인 ${queue.failed}건`],
       offline: ['dot dot--amber', `회사 서버 연결 안 됨 · 오프라인 저장 · 전송 대기 ${queue.pending}건`],
@@ -404,15 +454,17 @@ window.AppFrame = (() => {
     $('[data-clock]').textContent = ui.clock || '';
   }
 
-  const formEdits = new WeakMap();
   const ui = { focus: 'on', admin_open: false, sheet: null, stopped: '', clock: '', notices: [] };
+  const formEdits = new WeakMap();
   const LOCAL_PUSH = { pedal: 1, focus_state: 1 };
   const FN_KEY = /^(F([1-9]|1[01])|Escape|Delete|Ctrl\+[A-Z])$/;
   let app = null, current = null, shown = -Infinity, asked = 0, scanning = false, hostActive = true, readySent = false;
 
+  let restored = false, recoveryDismissed = false;
   let textKey = '', textLevel = 0;
   const textScales = [1, 1.15, 1.3, 1.5], textNames = ['보통', '크게', '더 크게', '아주 크게'];
-  function textSize(s) {
+  function textSize(s, migrate) {
+    let readFailed = false;
     const w = s.worker;
     let who = 'pc';
     if (w && w.id != null && w.id !== '') who = `id:${w.id}`;
@@ -426,21 +478,121 @@ window.AppFrame = (() => {
       textKey = key;
       document.documentElement.removeAttribute('data-text-expanded');
       $('[data-text-extra]').setAttribute('aria-expanded', 'false');
-      try { textLevel = Math.max(0, textNames.indexOf(localStorage.getItem(key))); } catch { textLevel = 0; }
+      try { textLevel = Math.max(0, textNames.indexOf(localStorage.getItem(key))); } catch { textLevel = 0; readFailed = true; }
+    }
+    if (migrate && !readFailed && s.text_size_hint === 'large') {
+      try {
+        if (!textNames.includes(localStorage.getItem(key))) {
+          localStorage.setItem(key, textNames[1]);
+          textLevel = 1;
+        }
+      } catch {}
     }
     document.documentElement.style.setProperty('--app-font-scale', textScales[textLevel]);
     document.documentElement.dataset.textLevel = textLevel;
     $('[data-text-size]').textContent = `글자: ${textNames[textLevel]}`;
   }
-  function paint() {
-    textSize(current || {});
+  let headerMoves = [], headerWorkHeading = null;
+  function restoreHeaderLinks() {
+    for (const { node, marker, hidden } of headerMoves) {
+      marker.replaceWith(node);
+      if (typeof hidden === 'boolean') node.hidden = hidden;
+    }
+    headerMoves = [];
+    if (headerWorkHeading) { headerWorkHeading.remove(); headerWorkHeading = null; }
+  }
+  function fitHeader(focusedHeader = null) {
+    const active = document.activeElement;
+    let focused = focusedHeader || (headerMoves.some(({ node }) => node === active) ||
+      active?.matches('.top__nav .link:not(.link--admin)') ? active : null);
+    // Measure the original navigation, even when its buttons are currently in the menu.
+    restoreHeaderLinks();
+    const top = $('.top'), tag = $('[data-tag]'), desktop = window.matchMedia('(min-width: 601px)').matches;
+    top.classList.remove('top--compact');
+    if (desktop &&
+        (top.scrollWidth > top.clientWidth || tag.scrollWidth > tag.clientWidth)) {
+      top.classList.add('top--compact');
+    }
+    const nav = top.querySelector('.top__nav'), host = $('[data-admin]');
+    const links = [...nav.querySelectorAll('.link:not(.link--admin)')].filter(node =>
+      desktop && !nav.hidden && !node.hidden && node.textContent.trim() && getComputedStyle(node).display === 'none');
+    if (links.length) {
+      const action = node => node.dataset.open ? `open:${node.dataset.open}` : node.dataset.go;
+      const duplicates = [...host.querySelectorAll('button')].filter(node =>
+        links.some(link => action(link) && action(link) === action(node)));
+      if (duplicates.includes(active)) focused = links.find(link => action(link) === action(active));
+      const work = [...host.children].find(node => node.classList.contains('admin__group') && node.textContent === '작업');
+      const workers = [];
+      if (work) {
+        for (let node = work.nextElementSibling; node && !node.classList.contains('admin__group'); node = node.nextElementSibling) {
+          if (node.tagName === 'BUTTON' && !duplicates.includes(node)) workers.push(node);
+        }
+      } else headerWorkHeading = el('p', 'admin__group', '작업');
+      if (workers.includes(active)) focused = active;
+      // Move the original nodes: app state, listeners and routes keep one owner.
+      for (const node of [...(work ? [work] : []), ...links, ...workers, ...duplicates]) {
+        const marker = document.createComment('header navigation');
+        node.before(marker); headerMoves.push({ node, marker, hidden: node === work ? node.hidden : undefined });
+      }
+      if (work) work.hidden = false;
+      for (const node of duplicates) node.remove();
+      host.prepend(work || headerWorkHeading, ...links, ...workers);
+    }
+    if (focused && (document.activeElement === document.body || document.activeElement === focused)) {
+      const target = focused.checkVisibility() ? focused : $('[data-admin-btn]');
+      if (document.activeElement !== target) target.focus({ preventScroll: true });
+    }
+  }
+  function paint(migrate = false) {
+    const focusedHeader = headerMoves.some(({ node }) => node === document.activeElement) ? document.activeElement : null;
+    // App renderers still update the links through their original header selectors.
+    restoreHeaderLinks();
+    resetNotices();
+    textSize(current || {}, migrate);
     drawFrame(current || {}, ui);
+    if (window.AppNotice) window.AppNotice.render(current || {}, { send: (name, args) => bridge('command', name, args), take, refresh, current: () => current });
     if (current) app.render(current, ui);
+    const tag = $('[data-tag]');
+    if (tag) tag.title = tag.textContent;
     if (window.AppSheet) window.AppSheet.render(partial() ? null : shownSheet());
     if (current && app.afterPaint) app.afterPaint(current, ui);
+    layoutNotices();
     drawPartial();
     joinText();
     queueCodes();
+    fitHeader(focusedHeader);
+  }
+  let rail;
+  function resetNotices() {
+    if (!rail) return;
+    const bands = $('[data-bands]'), notice = $('[data-notice-bar]');
+    const practice = rail.querySelector('[data-practice-band]');
+    if (practice) bands.append(practice);
+    document.body.insertBefore(notice, $('main'));
+    document.body.insertBefore(bands, $('main'));
+    document.body.removeAttribute('data-notice-rail');
+    document.body.removeAttribute('data-notice-wide');
+    rail.hidden = true;
+  }
+  function layoutNotices() {
+    resetNotices();
+    const bands = $('[data-bands]'), notice = $('[data-notice-bar]');
+    const work = [...document.querySelectorAll('main.work')].find(n => n.checkVisibility()), count = work?.querySelector('[data-count]');
+    if (!notice || innerWidth <= 600 || !count || bands.children.length + (notice.hidden ? 0 : 1) < 3) return;
+    const font = () => parseFloat(getComputedStyle(count).fontSize);
+    const stacked = font(), wasHidden = notice.hidden;
+    bands.hidden = true; notice.hidden = true;
+    const full = font();
+    bands.hidden = false; notice.hidden = wasHidden;
+    const card = count.closest('[data-count-card]');
+    const overflow = card.scrollHeight > card.clientHeight + 1;
+    if (stacked + .01 >= full && !overflow) return;
+    if (!rail) { rail = el('aside', 'notice-rail'); document.body.insertBefore(rail, work); }
+    rail.hidden = false;
+    const practice = bands.querySelector('[data-practice-band]');
+    rail.replaceChildren(bands, notice, ...(practice ? [practice] : []));
+    document.body.dataset.noticeRail = '';
+    document.body.toggleAttribute('data-notice-wide', card.matches('.ca-count') && count.scrollWidth > card.clientWidth);
   }
   const partial = () => current && current.confirm && current.confirm.kind === 'partial_submit' ? current.confirm : null;
   function drawPartial() {
@@ -471,6 +623,7 @@ window.AppFrame = (() => {
     layer.hidden = !confirm;
     if (confirm) {
       $('#partial-body').textContent = `${confirm.total}개 중 ${confirm.done}개(${confirm.short}개 부족)`;
+
       if (opening && document.activeElement !== document.body) document.activeElement.blur();
     }
   }
@@ -492,13 +645,17 @@ window.AppFrame = (() => {
       if (seq < shown) return;
       shown = seq;
     }
+    if (s.recovery_notice?.restored !== true) recoveryDismissed = false;
+    else if (!restored) recoveryDismissed = false;
+    restored = s.recovery_notice?.restored === true;
+    ui.recovery = restored && !recoveryDismissed;
     current = s;
     if (ui.sheet && ui.sheet.pending && s.sheet && !s.sheet.modal) ui.sheet = null;
     if (!scanning && window.AppScan) {
       scanning = true;
       window.AppScan.start(s.profile || s.app, typeof seq === 'number' ? seq : 0, { recovery: s.recovery });
     }
-    paint();
+    paint(true);
     if (!readySent) {
       readySent = true;
       KMShell.call('ready', [{ readyAt: performance.timeOrigin + performance.now(), transport: KMShell.status().mode, app: s.app }]).catch(() => {});
@@ -708,7 +865,7 @@ window.AppFrame = (() => {
       if (window.AppScan) window.AppScan.focusEvent(hostActive ? 'focus' : 'blur');
       focusChanged();
     },
-    transportStopped(message) { ui.stopped = String(message || '프로그램과 화면 연결이 끊겼습니다'); paint(); },
+    transportStopped(message) { ui.stopped = String(message || '프로그램과 화면 연결이 끊겼습니다\n현장 관리자에게 알리세요'); paint(); },
     control(op) {
       if (op === 'get_state') return { active: hostActive && document.hasFocus() && document.visibilityState === 'visible' };
       throw new Error('unknown control operation');
@@ -717,23 +874,34 @@ window.AppFrame = (() => {
 
   function start(definition) {
     app = definition;
-    document.fonts.ready.then(queueCodes);
+    document.fonts.ready.then(() => { queueCodes(); fitHeader(); });
     const size = el('button', 'link', '글자: 보통');
     size.type = 'button'; size.dataset.textSize = '';
     $('[data-worker]').after(size);
     const extra = el('button', 'link text-extra', '보조 칸');
     extra.type = 'button'; extra.dataset.textExtra = ''; extra.setAttribute('aria-expanded', 'false');
     size.after(extra);
-    new ResizeObserver(() => document.documentElement.style.setProperty('--hdr-h', `${Math.ceil($('.top').getBoundingClientRect().height)}px`)).observe($('.top'));
+    new ResizeObserver(() => {
+      fitHeader();
+      document.documentElement.style.setProperty('--hdr-h', `${Math.ceil($('.top').getBoundingClientRect().height)}px`);
+    }).observe($('.top'));
     window.addEventListener('shellpush', (event) => window.KMHost.push(event.detail));
     window.addEventListener('kmshellerror', (event) => { ui.stopped = event.detail.message; paint(); });
     window.addEventListener('focus', focusChanged);
     window.addEventListener('blur', focusChanged);
+    window.addEventListener('resize', layoutNotices);
     document.addEventListener('visibilitychange', focusChanged);
     for (const type of ['scanbuffer', 'scanpending', 'scanresult', 'scanevidence']) {
       document.addEventListener(type, (event) => {
         if (app.onScan) app.onScan(type, event.detail, ui);
-        if (type === 'scanresult') answer(event.detail);
+        if (type === 'scanresult') {
+          const reply = event.detail;
+          const quiet = reply?.accepted === true && reply.sound === null && reply.result === null && reply.message === '';
+          if (reply?.accepted === true && ['ok', 'saved'].includes(reply.result?.kind)) {
+            recoveryDismissed = true; ui.recovery = false;
+          }
+          if (!quiet) answer(reply);
+        }
       });
     }
     document.addEventListener('click', (event) => {
@@ -753,6 +921,7 @@ window.AppFrame = (() => {
       }
       else if (target.matches('[data-text-extra]')) {
         extra.setAttribute('aria-expanded', document.documentElement.toggleAttribute('data-text-expanded'));
+        fitHeader();
         target.blur();
       }
       else if (target.matches('[data-admin-btn]')) open(ui.admin_open ? null : 'admin');
@@ -761,6 +930,7 @@ window.AppFrame = (() => {
       else if (target.dataset.open) open(target.dataset.open);
       else if (target.dataset.go) go(target.dataset.go);
     });
+
     window.addEventListener('keydown', (event) => {
       if (partial() && !event.repeat && !event.isComposing && window.AppScan && !window.AppScan.editable(document.activeElement)) {
         const sink = window.AppScan.state();
@@ -838,5 +1008,5 @@ window.AppFrame = (() => {
     connect();
   }
 
-  return { keepTogether, icon, el, $, code, exchange, workers, startup, today, menu, band, drawResult, drawFrame, start, open, refresh, current: () => current, ui };
+  return { keepTogether, workerLabel, textParts, icon, el, $, code, exchange, workers, startup, today, menu, band, drawResult, drawFrame, start, open, refresh, current: () => current, ui };
 })();

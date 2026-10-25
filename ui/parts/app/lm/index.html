@@ -15,6 +15,7 @@
 <script src="../frame.js" defer></script>
 <script src="../sheet.js" defer></script>
 <script src="../scan.js" defer></script>
+<script src="notice.js" defer></script>
 <script src="lm.js" defer></script>
 </head>
 <body>
@@ -42,6 +43,17 @@
   </div>
 </header>
 
+<div class="notice-bar" data-notice-bar role="region" aria-label="공지" hidden>
+  <div class="notice-bar__headline">
+    <span class="notice-bar__weight" data-notice-weight></span>
+    <span class="notice-bar__title" data-notice-title></span>
+  </div>
+  <div class="notice-bar__actions">
+    <span class="notice-bar__more" data-notice-more></span>
+    <button class="link notice-bar__open" type="button" data-notice-open>전문 보기</button>
+  </div>
+</div>
+
 <div class="bands" data-bands></div>
 
 <main class="work" data-work>
@@ -63,7 +75,7 @@
   <ol class="lm-steps area-list" data-steps aria-label="이 트레이 스캔"></ol>
 
   <div class="lm-actions area-actions" aria-label="작업 단추">
-    <button type="button" class="act" data-act="undo" data-go="command:undo">방금 스캔 되돌리기</button>
+    <button type="button" class="act" data-act="undo" data-go="command:undo">직전 스캔 취소</button>
     <button type="button" class="act" data-act="exchange" data-go="command:exchange">제품 교환</button>
     <button type="button" class="act act--danger" data-act="f1" data-go="command:cancel_current">현재 트레이 취소 (F1)</button>
     <button type="button" class="act act--danger" data-act="f2" data-open="cancel_completed">완료 트레이 취소 (F2)</button>

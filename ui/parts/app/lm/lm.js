@@ -16,7 +16,7 @@
   const CANCEL_ERROR = {
     SCAN_CANCEL_BAD_INPUT: '기록이 바뀌었습니다\n목록을 다시 보고 선택하세요',
     SCAN_CANCEL_TARGET_CHANGED: '기록이 바뀌었습니다\n목록을 다시 보고 선택하세요',
-    SCAN_CANCEL_IN_PROGRESS: '진행 중인 묶음은 「방금 스캔 되돌리기」 로 고치세요',
+    SCAN_CANCEL_IN_PROGRESS: '진행 중인 묶음은 「직전 스캔 취소」 로 고치세요',
     SCAN_CANCEL_BUSY: '지금은 처리 중입니다\n잠시 후 다시 누르세요',
     SCAN_CANCEL_READ_ONLY: '지난 기록은 여기서 취소할 수 없습니다\n현장 관리자에게 알리세요',
     SCAN_CANCEL_CONFIRMATION_PENDING: '열린 확인을 먼저 끝내세요',
@@ -31,8 +31,8 @@
   const sheets = {
     history: { kind: 'list', title: '오늘 기록', rows: [] },
     progress: { kind: 'list', title: '진행 현황', load: 'refresh_progress', rows: [] },
-    settings: { kind: 'list', title: '작업자 선택', rows: [], actions: [{ text: '새 이름 등록', go: 'open:register' }] },
-    register: { kind: 'form', title: '새 이름 등록', lead: '명단에 없는 이름을 이 PC 에 등록합니다', fields: [{ name: 'name', label: '이름', placeholder: '이름을 넣으세요' }], go: '등록', command: 'register_worker' },
+    settings: { kind: 'list', title: '작업자 선택', rows: [], actions: [{ text: '새 작업자 등록', go: 'open:register' }] },
+    register: { kind: 'form', title: '새 작업자 등록', lead: '명단에 없는 이름을 이 PC 에 등록합니다', fields: [{ name: 'name', label: '이름', placeholder: '이름을 넣으세요' }], go: '등록', command: 'register_worker' },
     cancel_completed: { kind: 'form', title: '완료 트레이 취소', lead: '취소할 트레이의 현품표를 스캔하거나 입력하세요', fields: [{ name: 'label', label: '현품표', placeholder: '현품표를 스캔하세요', scanInto: true }], go: '찾기', command: 'cancel_completed' },
     recovery: { kind: 'list', tag: '관리자', title: '멈춘 작업 확인', load: 'recovery_list', rows: [] },
     pending: { kind: 'list', tag: '관리자', title: '대기 현황', load: 'pending_status', rows: [] },
@@ -126,8 +126,8 @@
   function drawTop(s, w) {
     const tag = $('[data-tag]');
     if (w.tag) {
-      const parts = [w.tag.item, w.tag.spec, w.tag.phase, w.quantity].filter(Boolean);
-      tag.replaceChildren(el('b', '', w.tag.code), ` ${parts.join(' · ')}`);
+      tag.replaceChildren(el('b', '', w.tag.code), ' ',
+        ...AppFrame.textParts([w.tag.item, w.tag.spec, w.tag.phase, w.quantity]));
     } else tag.textContent = '현품표를 스캔하면 품목이 여기 나옵니다';
     const legacy = $('[data-legacy]');
     legacy.hidden = !w.legacy.enabled;
@@ -150,7 +150,7 @@
     $('[data-count-left]').textContent = w.completion ? ENDED[w.completion] : w.scan_left ? `남은 스캔 ${w.scan_left}번` : ENDED.full;
     const nextSet = $('[data-next-set]');
     nextSet.hidden = w.next_set_top_scan_count == null;
-    nextSet.textContent = nextSet.hidden ? '' : `다음 세트부터 상단 ${w.next_set_top_scan_count}개`;
+    nextSet.textContent = nextSet.hidden ? '' : `다음 트레이부터 상단 ${w.next_set_top_scan_count}개`;
 
     AppFrame.exchange($('[data-next]').parentElement, w.exchange && 'remove' in w.exchange && 'insert' in w.exchange ? { phase: ({ target: 'remove', replacement: 'insert' })[w.exchange.phase] || w.exchange.phase, remove: w.exchange.remove.code, insert: w.exchange.insert.code, error: w.result.kind === 'bad' } : null);
     drawResult($('[data-result]'), { ...w.result, sound: w.result.sound ? SOUND[w.result.sound] : null }, true);

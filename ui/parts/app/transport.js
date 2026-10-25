@@ -13,7 +13,7 @@ window.KMShell = (() => {
     try {
       if (mode === 'pywebview') {
         const api = window.pywebview?.api;
-        if (!api || typeof api[item.name] !== 'function') throw new Error(`화면을 열지 못했습니다\n코드: ${item.name}`);
+        if (!api || typeof api[item.name] !== 'function') throw new Error(`화면을 열지 못했습니다\n현장 관리자에게 알리세요\n코드: ${item.name}`);
         item.resolve(api[item.name](...item.args));
       } else {
         const id = ++serial;
@@ -44,7 +44,7 @@ window.KMShell = (() => {
   }
   if (mode === 'pywebview') window.addEventListener('pywebviewready',markReady);
   timer = setTimeout(() => {
-    failure = new Error('화면 연결 준비가 15초를 넘었습니다');
+    failure = new Error('화면 연결을 준비하지 못했습니다\n현장 관리자에게 알리세요');
     const detail = {ev:'transport_timeout',mode,t:performance.timeOrigin + performance.now(),wait_ms:15000,message:failure.message};
     events.push(detail);
     for (const item of queued.splice(0)) item.reject(failure);

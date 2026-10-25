@@ -1,3 +1,4 @@
+// 현장 앱 판 그리기 — 계약과 구조 설명: docs/ui-app-sheet-notes.md.
 'use strict';
 window.AppSheet = (() => {
   const { el, $, drawResult } = window.AppFrame;
@@ -20,7 +21,10 @@ window.AppSheet = (() => {
       return r.width && r.height && r.left < band.right && r.right > band.left && r.top < band.bottom && r.bottom > band.top;
     });
     blockedBand.dataset.scanPosition = coversButton ? 'title' : 'body';
-    if (coversButton) blockedBand.style.top = `${$('.sheet__head').getBoundingClientRect().top + sheet.scrollTop}px`;
+    if (coversButton) {
+      const head = $('.sheet__head').getBoundingClientRect();
+      Object.assign(blockedBand.style, {top:`${head.top + sheet.scrollTop}px`, height:`${Math.max(band.height, head.height)}px`});
+    }
     const base = blockedBand.getBoundingClientRect();
     const across = r => r.left < base.right && r.right > base.left;
     let bottom = base.bottom, stop = bodyBottom;
@@ -106,7 +110,7 @@ window.AppSheet = (() => {
     footer.hidden = !footer.childElementCount;
     box.replaceChildren(...body.filter(node => !node.classList.contains('sheet__btns')));
     const inputs = [...box.querySelectorAll('input:not(:disabled)')];
-    (inputs.find((input) => !input.value) || inputs[0] || box.querySelector('button:not(:disabled)') || footer.querySelector('button:not(:disabled)') || $('[data-sheet] .link')).focus();
+    (inputs.find((input) => !input.value) || inputs[0] || box.querySelector('button:not(:disabled)') || footer.querySelector('button:not(:disabled)') || $('[data-sheet] .link')).focus(); // 빈 첫 칸 → 첫 칸(처음 값을 고칠 때) → 첫 단추
   }
   function resultNode(result) {
     const node = el('div', 'result');

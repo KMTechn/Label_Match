@@ -178,7 +178,7 @@ window.AppScan = (() => {
         const band = document.querySelector('[data-scan-blocked]');
         if (band) {
           if (!band.classList.contains('sheet-scan-blocked')) band.style.display = 'block';
-          band.replaceChildren(window.AppFrame.el('div','','방금 읽힘이 끊겼습니다'),window.AppFrame.el('div','','현품표를 다시 찍으세요'));
+          band.replaceChildren(window.AppFrame.el('div','','방금 읽힘이 끊겼습니다'),window.AppFrame.el('div','','현품표를 다시 스캔하세요'));
           window.AppSheet.blocked();
         }
       }

@@ -100,3 +100,20 @@
   .sheet:has(.worker-picker) { height: calc(100vh - var(--hdr-h) - var(--status-h) - 24px); grid-template-rows: auto minmax(0, 1fr); }
   .sheet:has(.worker-picker) .sheet__body { min-height: 0; align-content: start; }
 }
+
+@media (min-width: 601px) {
+  :root:is([data-text-level="1"], [data-text-level="2"], [data-text-level="3"]) body:has([data-offline-band], [data-practice-band], [data-recovery-band]) .work {
+    padding-inline: 8px; gap: 2px 8px;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.25fr) minmax(0, .6fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas: "count next result" "count list list" "actions actions actions";
+  }
+  :root:is([data-text-level="1"], [data-text-level="2"], [data-text-level="3"]) body:has([data-offline-band], [data-practice-band], [data-recovery-band]) .next { grid-template-columns: minmax(0, 1fr); grid-template-areas: "label" "text" "sub"; }
+  :root:is([data-text-level="1"], [data-text-level="2"], [data-text-level="3"]) body:has([data-offline-band], [data-practice-band], [data-recovery-band]) .lm-steps { container-type: normal; grid-template-columns: repeat(auto-fit, minmax(calc(var(--s5) * 3.4), 1fr)); align-content: start; gap: 2px; }
+  :root:is([data-text-level="1"], [data-text-level="2"], [data-text-level="3"]) body:has([data-offline-band], [data-practice-band], [data-recovery-band]) .lm-step { min-height: 0; padding: 0 2px; gap: 0; }
+  :root:is([data-text-level="1"], [data-text-level="2"], [data-text-level="3"]) body:has([data-offline-band], [data-practice-band], [data-recovery-band]) :is(.lm-step__name, .lm-step__val) { line-height: 1.2; }
+}
+
+@media (min-width: 601px) {
+  :root[data-text-level] body:has([data-offline-band], [data-practice-band], [data-recovery-band]) .work > .result { container-type: normal; }
+}
