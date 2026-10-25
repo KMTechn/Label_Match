@@ -357,7 +357,7 @@ def test_missing_packaged_key_schema_exits_then_failed_recovery_can_start_previo
     hot = hotfix_packet(endpoint, monkeypatch, base_sha=NEW)
     written, exits, phases, offset = updates.write_json_durable, [], [], [0.0]
     monkeypatch.setattr(time, 'monotonic', lambda: time.perf_counter() + offset[0])
-    monkeypatch.setattr(time, 'sleep', lambda _: offset.__setitem__(0, offset[0] + 121.0))
+    monkeypatch.setattr(time, 'sleep', lambda _: offset.__setitem__(0, offset[0] + updates.READY_WINDOW_SECONDS + 1.0))
     native = getattr(subprocess.Popen, 'native', subprocess.Popen)
 
     def observe(path, value):
@@ -1010,7 +1010,7 @@ def test_inherited_expiry_preserves_other_system_phase_change(endpoint, monkeypa
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
     def other_system(_):
         updates.write_json_durable(control / "transition.json", {**state, "phase": changed_phase})
-        clock[0] = 120
+        clock[0] = updates.READY_WINDOW_SECONDS
     monkeypatch.setattr(time, "sleep", other_system)
     written, phases = updates.write_json_durable, []
     def observe(path, value):

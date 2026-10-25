@@ -113,7 +113,7 @@ class World:
             for node in tree.body:
                 if isinstance(node, ast.Assign):
                     for target in node.targets:
-                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_CHECKS', 'RELAY_READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT', 'RELAY_PREPARE_SECONDS', 'RELAY_PARENT_RESULT_RESERVE_SECONDS'}:
+                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_WINDOW_SECONDS', 'READY_CHECKS', 'RELAY_READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT', 'RELAY_PREPARE_SECONDS', 'RELAY_PARENT_RESULT_RESERVE_SECONDS'}:
                             if target.id == 'RELAY_READY_CHECKS':
                                 constants[target.id] = eval(compile(ast.Expression(node.value),
                                     label + '/ready-checks', 'eval'),

@@ -37,6 +37,7 @@ RELAY_READY_CHECKS = ("relay_initialized", *READY_CHECKS[1:])
 
 APPLY_PROGRESS_TIMEOUT = 60
 STARTUP_WAIT_SECONDS = 240
+READY_WINDOW_SECONDS = 240
 # Maximum shared by the parent, independent bootstrap and installer relay waits.
 # A parented bootstrap reserves result time inside its inherited absolute deadline.
 RELAY_PREPARE_SECONDS = 600
@@ -1604,7 +1605,7 @@ def _confirm_retained_ready_once(control, policy, state):
             raise _RetainedAuditPending() from error
 
 
-def wait_for_rollback_ready(control: Path, policy, *, timeout_seconds=120) -> int:
+def wait_for_rollback_ready(control: Path, policy, *, timeout_seconds=READY_WINDOW_SECONDS) -> int:
     """SYSTEM observes the ordinary old-version trial; it never launches it."""
     deadline = time.monotonic() + timeout_seconds
     stage = Path(policy["staging_root"])
@@ -1657,7 +1658,7 @@ def _apply_prepared(control: Path) -> int:
     except _RollbackReadyPending as pending:
         if pending.args and pending.args[0] is not None:
             return wait_for_rollback_ready(control, load_policy(control),
-                timeout_seconds=max(0.0, min(120.0, pending.args[0] - time.monotonic())))
+                timeout_seconds=max(0.0, min(READY_WINDOW_SECONDS, pending.args[0] - time.monotonic())))
         return wait_for_rollback_ready(control, load_policy(control))
 
 
@@ -1718,8 +1719,8 @@ def _initial_ready_lock(control: Path, operator_sid: str):
                             raise error
                         anchor = budget["rollback_at" if phase == "ROLLBACK_PENDING_READY" else "applied_at"]
                         sampled_at = time.monotonic()
-                        remaining = 120.0 - (_utc(now_utc()) - _utc(anchor)).total_seconds()
-                        deadline = sampled_at + max(0.0, min(120.0, remaining))
+                        remaining = READY_WINDOW_SECONDS - (_utc(now_utc()) - _utc(anchor)).total_seconds()
+                        deadline = sampled_at + max(0.0, min(READY_WINDOW_SECONDS, remaining))
                     except Exception:
                         raise error
                 if time.monotonic() >= deadline:
@@ -1897,7 +1898,7 @@ def _apply_prepared_once(control: Path) -> int:
                 acquired = True
             yield acquired
 
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + READY_WINDOW_SECONDS
     if not opened_here and initial_ready_deadline is not None:
         deadline = min(deadline, initial_ready_deadline)
     while time.monotonic() < deadline:
@@ -3105,7 +3106,7 @@ def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> 
 
 @contextmanager
 def _startup_trial_lock(control, policy, *, role):
-    """Wait only for this nonce trial's remaining durable 120-second window."""
+    """Wait only for this nonce trial's remaining durable READY window."""
     from contextlib import ExitStack
     deadline = None
     binding = None
@@ -3135,12 +3136,12 @@ def _startup_trial_lock(control, policy, *, role):
                 if binding is not None and current_binding != binding:
                     raise ValueError("trial retry context changed")
                 anchor = state["rollback_at"] if state["phase"] == "ROLLBACK_PENDING_READY" else state["applied_at"]
-                remaining = 120 - (_utc(now_utc()) - _utc(anchor)).total_seconds()
+                remaining = READY_WINDOW_SECONDS - (_utc(now_utc()) - _utc(anchor)).total_seconds()
                 if remaining <= 0:
                     raise ValueError("trial retry window expired")
             except (OSError, ValueError, TypeError, KeyError, OverflowError, AttributeError):
                 raise busy from None
-            bounded = sampled_at + min(120, remaining)
+            bounded = sampled_at + min(READY_WINDOW_SECONDS, remaining)
             deadline = bounded if deadline is None else min(deadline, bounded)
             binding = current_binding
             last_busy = busy
