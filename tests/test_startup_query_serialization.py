@@ -137,7 +137,7 @@ def test_absent_claim_relay_bootstrap_uses_real_observe_rows(recovery, monkeypat
 
     def launch(*args, relay_deadline, **kwargs):
         assert relay_deadline > auto_update.time.monotonic()
-        return launch_boundary(*args, **kwargs)
+        return launch_boundary(*args, relay_deadline=relay_deadline, **kwargs)
 
     # The older shared fixture predates propagation of the relay deadline to
     # the external launch boundary; retain that production argument here.
