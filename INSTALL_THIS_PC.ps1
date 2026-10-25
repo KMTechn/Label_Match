@@ -1082,7 +1082,6 @@ function Get-LabelStartupUpdateTaskPreimage([string]$Root) {
 function Invoke-LabelAtomicReplace {
     param([string]$Source,[string]$Destination,[AllowNull()]$Backup = $null,
           [ValidateSet('Move','Replace','WriteThrough')][string]$Mode = 'Move')
-    $timer = [Diagnostics.Stopwatch]::StartNew()
     if ($Mode -ceq 'WriteThrough' -and -not ('KMTechStartupUpdateAtomicFile' -as [type])) {
         Add-Type -TypeDefinition @'
 using System.Runtime.InteropServices;
@@ -1092,6 +1091,7 @@ public static class KMTechStartupUpdateAtomicFile {
 }
 '@
     }
+    $timer = [Diagnostics.Stopwatch]::StartNew()
     if ($timer.Elapsed.TotalMilliseconds -ge 1000) { throw [TimeoutException]::new('Atomic publication preparation exceeded its deadline.') }
     $firstError = $null
     while ($true) {

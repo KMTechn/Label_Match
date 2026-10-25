@@ -1708,6 +1708,8 @@ App-owned Python publishers call label_atomic_replace.atomic_replace. Only nativ
 
 PowerShell uses the canonical Invoke-LabelAtomicReplace in INSTALL_THIS_PC.ps1. tools/refresh_atomic_replace_declarations.py generates exact function-byte copies and their hash in the fence, shortcut and public installer callers so attested in-memory installation also works. The builder checks all three copies before building; no caller resolves an ambient installer path. Move, Replace and write-through behavior retain their original API semantics.
 
+w9firstupdsub594: PowerShell's one-second atomic publication deadline starts after one-time Add-Type preparation and covers only native file replacement attempts and retries; persistent native refusal still preserves the first error.
+
 Range B excludes the ten name/SHA-pinned files in tests/fixtures/lm_atomic_exclusions.json (the kmtech_shared copy and shell/shell_fileio.py). Shared generation/raster/diagnostic publication remains upstream-owned. Version-directory rename is a separate, unchanged UNPROVEN case.
 
 ## Worker first setup and headless relay
