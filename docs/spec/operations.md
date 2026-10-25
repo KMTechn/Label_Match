@@ -77,15 +77,17 @@ writer 선언은 `python -B tools/refresh_admin_worker_declarations.py`, 확인�
 
 v2.0.124 첫 설정 부모는 자기 bootstrap 자식이 살아 있는 동안에만 소유자 조회의 update mutex busy를 아직 증명되지 않은 상태로 보고 기존 공유 준비 마감까지 다시 확인한다. 자식이 끝난 뒤의 busy, abandoned와 다른 RuntimeError는 원래 예외를 유지한다. 자식 종료·마감·소유자 신원 검사는 그대로이며 UserRelayError 외의 조회 예외는 RELAY_OWNER_READBACK_FAILED 고정 지원 코드와 예외 형식/제품 위치로 기록한다.
 
-같은 판의 SYSTEM 업데이트 확인창도 기존120초 안에서 lock 획득 단계의 exact busy만 pending으로 재시도한다. native5초 대기와 receipt/trial/process 증명, Observe, ledger/pointer 조건은 그대로다. abandoned·다른 오류·획득 뒤 본문 오류·마감 뒤 busy는 원래 fail-closed/UNKNOWN 처리를 유지하며 새 마감을 만들지 않는다.
+같은 판의 SYSTEM 업데이트 확인창도 기존240초 안에서 lock 획득 단계의 exact busy만 pending으로 재시도한다. native5초 대기와 receipt/trial/process 증명, Observe, ledger/pointer 조건은 그대로다. abandoned·다른 오류·획득 뒤 본문 오류·마감 뒤 busy는 원래 fail-closed/UNKNOWN 처리를 유지하며 새 마감을 만들지 않는다.
 
-이전 판의 READY를 기다리는 SYSTEM rollback 확인창도 기존 timeout_seconds(기본120초) while 안의 획득 exact busy만 pending으로 재시도한다.
+이전 판의 READY를 기다리는 SYSTEM rollback 확인창도 기존 timeout_seconds(기본240초) while 안의 획득 exact busy만 pending으로 재시도한다.
 
-bootstrap 후속 고침(ANSWER-11·12)은 기존 claim이 있는 폴링의 Observe·READY 읽기 검사를 root/trial 잠금 밖에서 수행하고, root→trial 순서로 다시 잡은 뒤 transition/nonce/phase·active·claim·ready 및 native PID/birth를 재확인한다. 달라진 관측은 쓰지 않고 다음 반복에서 다시 읽는다. READY 기록 포맷과 외부 publisher의 반환은 유지하고, claim/ready 기록은 잠금 안에서 수행한다. 부재 증명 Observe→launch 및 최초 claim 생성은 중복 launch를 막도록 같은 잠금 안에 둔다. 22:0x 고침에서 terminal/recovery의 이미 띄운 relay 준비 대기는 root를 놓고 수행하며, 같은 root 재획득 뒤 transition/nonce/phase·active·claim/ready와 동일 native PID/birth를 대조한다. GUI 요청에서 발견한 relay도 원래 시작 시각의 RUNNING 증명과 동일 native 세대를 결속한다. 바뀌거나 불완전한 증명은 성공으로 쓰지 않고 기존 실패 처리를 유지한다. nonce trial relay startup_gate의 획득 exact busy는 nonce/transition_id가 맞는 journal의 applied_at/rollback_at 원120초 잔여 시간 안에서만 재시도하며, 판독/형식/시각 오류·만료·nonce 불일치는 기존 busy 처리를 유지한다. 외부 전달 인터페이스나 마감은 만들지 않는다. 짧은 보유(≤1초, Observe 제외) 단위는 기존 claim 폴링에 적용하며, 자연15초/느린30초의 새 소스에서 전체 CONFIRMED/125 RUNNING/owner ALIVE와 잠금 시간표를 확인해야 공식 빌드로 진행한다.
+bootstrap 후속 고침(ANSWER-11·12)은 기존 claim이 있는 폴링의 Observe·READY 읽기 검사를 root/trial 잠금 밖에서 수행하고, root→trial 순서로 다시 잡은 뒤 transition/nonce/phase·active·claim·ready 및 native PID/birth를 재확인한다. 달라진 관측은 쓰지 않고 다음 반복에서 다시 읽는다. READY 기록 포맷과 외부 publisher의 반환은 유지하고, claim/ready 기록은 잠금 안에서 수행한다. 부재 증명 Observe→launch 및 최초 claim 생성은 중복 launch를 막도록 같은 잠금 안에 둔다. 22:0x 고침에서 terminal/recovery의 이미 띄운 relay 준비 대기는 root를 놓고 수행하며, 같은 root 재획득 뒤 transition/nonce/phase·active·claim/ready와 동일 native PID/birth를 대조한다. GUI 요청에서 발견한 relay도 원래 시작 시각의 RUNNING 증명과 동일 native 세대를 결속한다. 바뀌거나 불완전한 증명은 성공으로 쓰지 않고 기존 실패 처리를 유지한다. nonce trial relay startup_gate의 획득 exact busy는 nonce/transition_id가 맞는 journal의 applied_at/rollback_at 원240초 잔여 시간 안에서만 재시도하며, 판독/형식/시각 오류·만료·nonce 불일치는 기존 busy 처리를 유지한다. 외부 전달 인터페이스나 마감은 만들지 않는다. 짧은 보유(≤1초, Observe 제외) 단위는 기존 claim 폴링에 적용하며, 자연15초/느린30초의 새 소스에서 전체 CONFIRMED/125 RUNNING/owner ALIVE와 잠금 시간표를 확인해야 공식 빌드로 진행한다.
 ANSWER-15: root 안 부재 증명→Popen→native PID/birth 보관(필요한 claim 기록)은 원자적으로 유지한다. 둘째 bootstrap은 이미 보이는 같은 ordinary relay를 기존 복구 판정으로 재사용하고, 준비 전이면 둘 다 root 밖에서 각 요청의 원 마감으로 기다린다. 성공·준비 전 종료·마감 뒤에는 같은 root를 재획득해 상태/active/nonce/claim/ready/native 세대를 확인한다. 달라진 증명은 기존 실패 길로 닫고, 같으면 기존 종료 코드를 유지한다. 새 공유 기록·마감·재시작 규칙은 없다.
 
 
-재개한 APPLIED_PENDING_READY/ROLLBACK_PENDING_READY에서 확인창 고리 전에 들어가는 최초 SYSTEM lock 획득도 journal의 applied_at/rollback_at에서 시작한 원120초 안에서만 exact busy를 재시도한다. 잠금 전 journal 판독은 대기 상한에만 쓰며 판독 실패·마감 경과는 즉시 fail-closed다. 획득 뒤 journal 재판독과 원래 증명은 그대로 실행하고, 최초 대기에 쓴 시간을 확인창이나 rollback 확인창에서 새로 더하지 않는다. 같은 마감과 native5초 대기·READY/writer/generation/pointer 조건을 유지한다. abandoned·다른 오류·본문 오류·마감 뒤 busy와 while 뒤 최종 lock은 원래 처리 그대로다.
+재개한 APPLIED_PENDING_READY/ROLLBACK_PENDING_READY에서 확인창 고리 전에 들어가는 최초 SYSTEM lock 획득도 journal의 applied_at/rollback_at에서 시작한 원240초 안에서만 exact busy를 재시도한다. 잠금 전 journal 판독은 대기 상한에만 쓰며 판독 실패·마감 경과는 즉시 fail-closed다. 획득 뒤 journal 재판독과 원래 증명은 그대로 실행하고, 최초 대기에 쓴 시간을 확인창이나 rollback 확인창에서 새로 더하지 않는다. 같은 마감과 native5초 대기·READY/writer/generation/pointer 조건을 유지한다. abandoned·다른 오류·본문 오류·마감 뒤 busy와 while 뒤 최종 lock은 원래 처리 그대로다.
+
+bootstrap 감독 기한은 보호 journal의 적용 시각(applied_at)과 되돌림 시각(rollback_at)에 다시 맞춘다. 초기 감독 예산은 진입 후240초이고, 적용/되돌림 READY 단계의 기존 종료 시각에15초를 더해 관측하되 진입 후480초를 상한으로 삼는다. READY240초 자체는 해당 applied_at/rollback_at 닻을 유지한다. GUI 바로 가기의 사용자 시작 bootstrap도 같은 식을 사용하므로 사용자가 보는 시작 중 감독 예산은 기존 최대240초에서 최대480초까지 늘 수 있다(진행 중 OS I/O의 실제 wall 지연은 별도).
 
 
 v2.0.123 첫 설정 relay는 첫 관문의 바쁨 갈래에서만 bootstrap이 확인해 전달한 부모 PID·생성 신원을 현재 native 신원과 대조하고, 같은 판·계정·일반 권한인 부모 행 하나만 일반 복구 검사에서 건너뛴다. 첫 관문 통과 직후 부모 결속 환경 값을 지워 자손에게 상속하지 않으며, 뒤 단계의 복구 증명은 값이 있어도 부모 행을 건너뛰지 않는다. trial/nonce 시작에는 이 값을 전달하지 않는다. 부모 결속이 없거나 잘못됐거나 신원이 다르면 기존 거절을 유지하며 다른 writer와 ROLLBACK_PENDING의 relay 한 개 조건은 그대로다.
@@ -1731,7 +1733,7 @@ v2.0.99/100 → 107 제자리 교체는 미지원이다(app/site-packages/qrcode
 
 G45: relay만 살아 있어 GUI가 안 열리던 복구는 [검증된 일반 GUI cohort](contracts.md#ordinary-recovery-gui-cohort) 범위에서 relay 생성 경계를 이어 GUI 하나를 연다. GUI와 relay가 있는 동안 SYSTEM의 기존 writer 보호를 유지하고, 모두 닫힌 뒤 기존 자료 세대 결정으로 정착한다(UNCHANGED는 이전 판 복구, ADVANCED는 후보 유지). 일반 GUI는 trial nonce가 없어 READY 영수증을 게시하지 않는다. ROLLBACK_PENDING도 claim NONE/ABSENT·앞 판 active·일반 relay 하나·정착 phase와 같은 세대 ALLOW 증명이 모두 맞으면 일반 화면과 업무 쓰기를 허용한다. 상태·포인터·claim·READY는 이 길에서 쓰지 않으며, 뒤 SYSTEM 정착은 그사이 쓴 자료와 원장을 그대로 보존한다. 조건이 하나라도 어긋나면 기존 진행 안내로 막는다. 실제 로그온·창·현장 수용은 별도 회차다.
 
-DEFERRED+recovery_pending 정착 증명은 FAILED·DEFERRED·APPLIED_PENDING_READY에서 시작하는 사슬이다. ROLLBACK_PENDING_READY는 기존 120초 READY 감독을 보존하고, 영수증이 없으면 FAILED로 남는다. 새 일반 GUI는 이 상태에서도 trial 영수증을 내지 않는다.
+DEFERRED+recovery_pending 정착 증명은 FAILED·DEFERRED·APPLIED_PENDING_READY에서 시작하는 사슬이다. ROLLBACK_PENDING_READY는 기존 240초 READY 감독을 보존하고, 영수증이 없으면 FAILED로 남는다. 새 일반 GUI는 이 상태에서도 trial 영수증을 내지 않는다.
 
 정식 멈춤을 한 PC는 업데이트 날 전에 기존 --onboard-current-user로 되살린다. relay stop 표지가 남아 있으면 적용은 DEFERRED·UPDATE_RELAY_STOP_REQUESTED(recovery_pending 키 없음)로 보류되고 앞 판과 표지는 유지된다. 사용자 bootstrap은 SYSTEM 적용 요청 없이 지원 기록을 한 번 남기고 지금 판을 요청한 GUI/relay 역할로 연다. 실패 trial·rollback의 기존 복구 요청은 유지한다. 업데이트 경로에서 표지를 직접 지우지 않는다.
 

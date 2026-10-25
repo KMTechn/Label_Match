@@ -3809,6 +3809,20 @@ def _relay_startup_stop_checkpoint(policy):
         raise StartupStopRequested()
 
 
+def bootstrap_supervision_deadline(state, *, started: float, now: float, utc_now: str) -> float:
+    """Observe durable stage clocks without reopening any of their windows."""
+    phase = (state or {}).get("phase")
+    timestamp, window = None, 0
+    if phase == "APPLIED_PENDING_READY":
+        timestamp, window = state.get("applied_at"), READY_WINDOW_SECONDS
+    elif phase == "ROLLBACK_PENDING_READY":
+        timestamp, window = state.get("rollback_at", state.get("applied_at")), READY_WINDOW_SECONDS
+    elif phase in {"ROLLBACK_PENDING", "UNKNOWN"}:
+        timestamp, window = state.get("normal_stop_started_at"), 60
+    stage_end = now + (window - (_utc(utc_now) - _utc(timestamp)).total_seconds()) if timestamp else started
+    return min(started + 480, max(started + STARTUP_WAIT_SECONDS, stage_end + 15))
+
+
 def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                parent_deadline=None, parent_pid=None) -> int:
     from contextlib import ExitStack
@@ -3837,7 +3851,8 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
     progress_deadline = None
     saw_trial = False
     apply_started = False
-    deadline = time.monotonic() + STARTUP_WAIT_SECONDS
+    started = time.monotonic()
+    deadline = started + STARTUP_WAIT_SECONDS
     while time.monotonic() < deadline:
         trial_observation_changed = False
         failure = _relay_prepare_failure(relay_deadline)
@@ -3849,6 +3864,8 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                 bootstrap_ownership.enter_context(update_lock(control, policy["operator_sid"],
                     abandoned_check=lambda: _verify_abandoned_update(control, policy)))
                 state = optional_record(control / "transition.json")
+                deadline = bootstrap_supervision_deadline(state, started=started,
+                    now=time.monotonic(), utc_now=now_utc())
                 claim_status = apply_claim_status(control)
                 apply_started = apply_started or claim_status in {"LIVE", "UNKNOWN"} or bool(state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"})
                 if role == "relay" and relay_stop_requested(policy):
