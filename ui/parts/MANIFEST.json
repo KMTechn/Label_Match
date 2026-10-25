@@ -8,9 +8,9 @@
   "files": [
     {
       "path": "app/frame.css",
-      "sha256": "282f842693e2fc197a1aaff3c4bd174ec93381f3249f3f4d216d8c945e3e978e",
-      "bytes": 33698,
-      "gzip": 8226
+      "sha256": "a09256964182a2c3fc8e176e491363b14550ea770ca34c1596c5c66a9cbc0faa",
+      "bytes": 33663,
+      "gzip": 8212
     },
     {
       "path": "app/frame.js",
