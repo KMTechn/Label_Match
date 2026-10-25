@@ -3809,8 +3809,16 @@ def _relay_startup_stop_checkpoint(policy):
         raise StartupStopRequested()
 
 
-def bootstrap_supervision_deadline(state, *, started: float, now: float, utc_now: str) -> float:
+def _bootstrap_awaiting_apply_decision(state, claim_status) -> bool:
+    return claim_status == "LIVE" and (state or {}).get("phase") in {
+        "APPLIED_PENDING_READY", "ROLLBACK_PENDING", "ROLLBACK_PENDING_READY"}
+
+
+def bootstrap_supervision_deadline(state, *, started: float, now: float, utc_now: str,
+                                   claim_status=None) -> float:
     """Observe durable stage clocks without reopening any of their windows."""
+    if _bootstrap_awaiting_apply_decision(state, claim_status):
+        return started + 480
     phase = (state or {}).get("phase")
     timestamp, window = None, 0
     if phase == "APPLIED_PENDING_READY":
@@ -3851,9 +3859,20 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
     progress_deadline = None
     saw_trial = False
     apply_started = False
+    waiting_for_decision = False
     started = time.monotonic()
     deadline = started + STARTUP_WAIT_SECONDS
-    while time.monotonic() < deadline:
+    while True:
+        if time.monotonic() >= deadline:
+            state = optional_record(control / "transition.json")
+            claim_status = apply_claim_status(control)
+            if not _bootstrap_awaiting_apply_decision(state, claim_status):
+                break
+            deadline = bootstrap_supervision_deadline(state, started=started,
+                now=time.monotonic(), utc_now=now_utc(), claim_status=claim_status)
+            if time.monotonic() >= deadline:
+                break
+            waiting_for_decision = True
         trial_observation_changed = False
         failure = _relay_prepare_failure(relay_deadline)
         if failure:
@@ -3864,9 +3883,20 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                 bootstrap_ownership.enter_context(update_lock(control, policy["operator_sid"],
                     abandoned_check=lambda: _verify_abandoned_update(control, policy)))
                 state = optional_record(control / "transition.json")
+                claim_status = apply_claim_status(control)
+                if waiting_for_decision:
+                    if (state or {}).get("phase") in {
+                            "APPLIED_PENDING_READY", "ROLLBACK_PENDING", "ROLLBACK_PENDING_READY"}:
+                        if claim_status != "LIVE":
+                            break
+                        # SYSTEM can still hold the root during its final Observe.
+                        # Leave it ownership and never start another trial here.
+                        bootstrap_ownership.close()
+                        time.sleep(0.1)
+                        continue
+                    waiting_for_decision = False
                 deadline = bootstrap_supervision_deadline(state, started=started,
                     now=time.monotonic(), utc_now=now_utc())
-                claim_status = apply_claim_status(control)
                 apply_started = apply_started or claim_status in {"LIVE", "UNKNOWN"} or bool(state and state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"})
                 if role == "relay" and relay_stop_requested(policy):
                     if claim_status in {"LIVE", "UNKNOWN"}:
@@ -4038,6 +4068,10 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
             if str(error) == "update mutex ownership was abandoned":
                 raise
         time.sleep(0.1)
+    if waiting_for_decision and _bootstrap_awaiting_apply_decision(
+            optional_record(control / "transition.json"), apply_claim_status(control)):
+        emit_progress_guidance()
+        return 20
     if apply_claim_status(control) == "UNKNOWN":
         try:
             with ExitStack() as bootstrap_ownership:

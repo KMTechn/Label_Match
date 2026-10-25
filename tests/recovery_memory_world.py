@@ -45,6 +45,7 @@ SELECT.update({'startup_bootstrap_reason', '_startup_trial_lock',
 CACHE = {}
 SELECT.add("gui_recovery_state")
 SELECT.add("bootstrap_supervision_deadline")
+SELECT.add("_bootstrap_awaiting_apply_decision")
 SELECT.update({'_retained_confirmation_state', '_retained_confirmation_allowed',
                '_retained_native_created_at', '_retained_trial_binding',
                '_confirm_retained_ready_once', '_bootstrap_retained_candidate',
