@@ -1,28 +1,28 @@
 {
  "schema": "ui-parts/1",
  "source": "WorkerAnalysisGUI-web",
- "commit": "6ced39fb4056488575e04e17059c0e3e90bd83f2",
+ "commit": "95abf3045beaed6360b872a1ec054ec0ab39704f",
  "dirty": true,
  "app": "lm",
- "parts_fingerprint": "c83ed483720e2b61",
+ "parts_fingerprint": "99e752b54ddc4e2e",
  "files": [
   {
    "path": "app/frame.css",
-   "sha256": "43f15c464feed26999bd008af17899ce01521289ec1f07a3c91ae7d61c906fe2",
-   "bytes": 34426,
-   "gzip": 8426
+   "sha256": "5ed1cd975a667790e5b7899d76f9758d52cf93356eaf4050ccf17b7adda23057",
+   "bytes": 47511,
+   "gzip": 8206
   },
   {
    "path": "app/frame.js",
-   "sha256": "51e30472048a92d3339df37abfdcbef55e68991201f4c16405446b5671f3620e",
-   "bytes": 44641,
-   "gzip": 13535
+   "sha256": "58d8084dce0c2c4fa997dd51c01dd9a97d1c62a566a4c298bf39d23ec70b51f9",
+   "bytes": 53912,
+   "gzip": 16177
   },
   {
    "path": "app/lm/contract.json",
-   "sha256": "09f29f34cef6f9cce795c42dd6104ba8a9ec9b1d2fafc22d37dc506657bbba87",
-   "bytes": 39101,
-   "gzip": 9804
+   "sha256": "94ed4f2034524f859529225e468f7fc1b15258bf1539b658182f15c074a1365f",
+   "bytes": 42961,
+   "gzip": 10477
   },
   {
    "path": "app/lm/fixtures/about.json",
@@ -169,6 +169,66 @@
    "gzip": 1347
   },
   {
+   "path": "app/lm/fixtures/notice-acknowledged.json",
+   "sha256": "6eb25f23cde4389a7c98ca4087d157797b0bd7ea1ea41c7f74871e56414ade0d",
+   "bytes": 4473,
+   "gzip": 1588
+  },
+  {
+   "path": "app/lm/fixtures/notice-detail.json",
+   "sha256": "af72f6e22e513109ee0603411593e81527f3041bb5ae0a2afba734f85c7d4805",
+   "bytes": 4632,
+   "gzip": 1488
+  },
+  {
+   "path": "app/lm/fixtures/notice-expired.json",
+   "sha256": "aa0438ed8b65814f8ff6973e88fc836375af8bdc3f1bfe2ccc2268f11715f2f7",
+   "bytes": 3614,
+   "gzip": 1363
+  },
+  {
+   "path": "app/lm/fixtures/notice-many.json",
+   "sha256": "8ea43991965533477b68f42f418cb3adf38c5e616b9ada3cc7118e550c5a6281",
+   "bytes": 4448,
+   "gzip": 1569
+  },
+  {
+   "path": "app/lm/fixtures/notice-none.json",
+   "sha256": "825a5981fd0a9341f3729805b3e7ab45fbbb424259e4d29efd9592c1f9bee663",
+   "bytes": 3556,
+   "gzip": 1347
+  },
+  {
+   "path": "app/lm/fixtures/notice-normal.json",
+   "sha256": "8b1fa4a1e68c895511d4b6f49f901ecad48c6e82e6c9c8fc27ba7ef4693ab37d",
+   "bytes": 3838,
+   "gzip": 1439
+  },
+  {
+   "path": "app/lm/fixtures/notice-pending.json",
+   "sha256": "88789dc8504fa6bd876f6242f743a03af959a6776920ee29ff08365fc1feb6d7",
+   "bytes": 4494,
+   "gzip": 1588
+  },
+  {
+   "path": "app/lm/fixtures/notice-scan.json",
+   "sha256": "c681bacd1d4ebadeeba4ea393ab0e92a4a2ffa0b8480716d1a889a01166417c9",
+   "bytes": 4566,
+   "gzip": 1613
+  },
+  {
+   "path": "app/lm/fixtures/notice-withdrawn.json",
+   "sha256": "3e600c0f8c8379884e8acf6e21548208bf0cfe887a441c26194c8df6baba6d17",
+   "bytes": 3619,
+   "gzip": 1364
+  },
+  {
+   "path": "app/lm/fixtures/offline-review.json",
+   "sha256": "31b93912516a12613bb79a509271696adec2d1bccec8e30d49195327db80ff76",
+   "bytes": 4227,
+   "gzip": 1395
+  },
+  {
    "path": "app/lm/fixtures/offline.json",
    "sha256": "f8b47a51040a9315abc14f5f090ef33413909b0eb7ec2729101e8c196cb69e43",
    "bytes": 4271,
@@ -193,6 +253,12 @@
    "gzip": 1390
   },
   {
+   "path": "app/lm/fixtures/practice.json",
+   "sha256": "6aa5e100d927124551e960a6e7a4e13e42ae3c683f290dd9fb37fef6cb1931bd",
+   "bytes": 4200,
+   "gzip": 1362
+  },
+  {
    "path": "app/lm/fixtures/progress.json",
    "sha256": "0194f851d5f6eb40531c5cd1cc6f0bffa6726a2259612f8fcbad578a9d7643f5",
    "bytes": 4658,
@@ -203,6 +269,12 @@
    "sha256": "4d29cb48800f262f8e5bdddf3f7917babba66001ff0e18f14ece47148a880352",
    "bytes": 4259,
    "gzip": 1399
+  },
+  {
+   "path": "app/lm/fixtures/recovery-restored.json",
+   "sha256": "4a353041d9ac2d28befbb3a8fca712dc82d506a92486ddd78372b82938b84ef5",
+   "bytes": 4220,
+   "gzip": 1356
   },
   {
    "path": "app/lm/fixtures/recovery.json",
@@ -332,9 +404,9 @@
   },
   {
    "path": "app/lm/fixtures/short_undo.json",
-   "sha256": "c1b6c17b13ecd7a458e89a3427e1791750bffc13c045c2450647acbcf3262781",
-   "bytes": 4279,
-   "gzip": 1392
+   "sha256": "4187be3cd50725f5cd69b449d29424976ec9cf8748c222562e9822e75eea4a30",
+   "bytes": 4273,
+   "gzip": 1398
   },
   {
    "path": "app/lm/fixtures/start.json",
@@ -347,6 +419,12 @@
    "sha256": "8471570420a404b3f94bb90e707d4f5295d90c7f88a41aff87c5f3270ac63c1d",
    "bytes": 4253,
    "gzip": 1305
+  },
+  {
+   "path": "app/lm/fixtures/text-size-hint-large.json",
+   "sha256": "a17326594078500454d3ef247a253a1771e0aaf3c18f9c350323325e4963f6dd",
+   "bytes": 4196,
+   "gzip": 1353
   },
   {
    "path": "app/lm/fixtures/today-products.json",
@@ -398,39 +476,51 @@
   },
   {
    "path": "app/lm/index.html",
-   "sha256": "b9c076e39635e77fe38ae08e9edce445f2d56225e71cecb69fe3ee66daaddd78",
-   "bytes": 5696,
-   "gzip": 2026
+   "sha256": "75c2d12c80ec3acab176fb0aaa8038dda8f283edfe776c0f794cb637b7cd10f3",
+   "bytes": 6193,
+   "gzip": 2123
   },
   {
    "path": "app/lm/lm.css",
-   "sha256": "e1b697b10412b78051b0ecefc47c9b4b5e7985d1f4eb5a1e514bb10b88c3a3b2",
-   "bytes": 6666,
-   "gzip": 2262
+   "sha256": "9ec90f326f02ddb8d1f62126659ed54cc8cf4ff42d7db7b728a9edb60dffc8a7",
+   "bytes": 8260,
+   "gzip": 2490
   },
   {
    "path": "app/lm/lm.js",
-   "sha256": "18cddf0f3e708af428f7be39a8d33a370c8854add5a43ec23a3f2c65aa1f86b0",
-   "bytes": 26280,
-   "gzip": 8424
+   "sha256": "d27ea34c629caf708955af3dfac6b15052ce0b1bc973f54ef9f6606a85832014",
+   "bytes": 26257,
+   "gzip": 8406
+  },
+  {
+   "path": "app/lm/notice.js",
+   "sha256": "86cc5353f1b26c173aea9cca911a72597eeb387a0e66a407785dd3c008d35834",
+   "bytes": 6103,
+   "gzip": 2112
+  },
+  {
+   "path": "app/notice.js",
+   "sha256": "86cc5353f1b26c173aea9cca911a72597eeb387a0e66a407785dd3c008d35834",
+   "bytes": 6103,
+   "gzip": 2112
   },
   {
    "path": "app/scan.js",
-   "sha256": "91fef13f08910bfbc1ae4044ce4add122213c1de86dbb03650663bc47c646e55",
-   "bytes": 19360,
-   "gzip": 5937
+   "sha256": "aedc1197d01dd555c8fb59e680a03a787630c5eac0b2eb4c7f80f6d6efeba47c",
+   "bytes": 19363,
+   "gzip": 5941
   },
   {
    "path": "app/sheet.js",
-   "sha256": "2e818fbb6ac862771972b42783872e6d2ae82ce30de0cd86a5bb2d02f85c0e75",
-   "bytes": 9826,
-   "gzip": 3150
+   "sha256": "11b778710e5514737701cfec298823b8f16c18b3b1d102490c5106c1926532d1",
+   "bytes": 10084,
+   "gzip": 3294
   },
   {
    "path": "app/transport.js",
-   "sha256": "c5bea678399af969567f5544445dd2ba1d6690456989d9044bbc4a8df0d16cd1",
-   "bytes": 3541,
-   "gzip": 1543
+   "sha256": "812d102f7cf253cc5906a809fb78092e7a26dfafa97130850b8f4efbd4488031",
+   "bytes": 3612,
+   "gzip": 1568
   },
   {
    "path": "core/fonts/Pretendard-Bold.subset.woff2",
