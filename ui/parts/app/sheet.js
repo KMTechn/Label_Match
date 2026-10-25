@@ -14,8 +14,8 @@ window.AppSheet = (() => {
     const sheet = $('[data-sheet]'), body = $('[data-sheet-body]');
     const rect = sheet.getBoundingClientRect(), padding = body.offsetLeft;
     Object.assign(blockedBand.style, {height:'', left:`${rect.left + padding}px`, width:`${sheet.clientWidth - 2 * padding}px`, top:`${rect.top + body.offsetTop}px`});
-    const band = blockedBand.getBoundingClientRect();
-    const coversButton = [...body.querySelectorAll('button')].some(node => {
+    const band = blockedBand.getBoundingClientRect(), bodyBottom = body.getBoundingClientRect().bottom;
+    const coversButton = band.bottom > bodyBottom || [...sheet.querySelectorAll('button')].some(node => {
       const r = node.getBoundingClientRect();
       return r.width && r.height && r.left < band.right && r.right > band.left && r.top < band.bottom && r.bottom > band.top;
     });
@@ -23,8 +23,8 @@ window.AppSheet = (() => {
     if (coversButton) blockedBand.style.top = `${$('.sheet__head').getBoundingClientRect().top + sheet.scrollTop}px`;
     const base = blockedBand.getBoundingClientRect();
     const across = r => r.left < base.right && r.right > base.left;
-    let bottom = base.bottom, stop = Infinity;
-    for (const node of body.querySelectorAll('input, button, .sheet__facts')) {
+    let bottom = base.bottom, stop = bodyBottom;
+    for (const node of body.querySelectorAll('label, input, button, .sheet__facts')) {
       const r = node.getBoundingClientRect();
       if (r.width && r.height && across(r) && r.top >= base.bottom) stop = Math.min(stop, r.top);
     }
@@ -77,12 +77,10 @@ window.AppSheet = (() => {
     $('[data-sheet-tag]').textContent = sheet.tag || '';
     $('[data-sheet-title]').textContent = sheet.title || '';
     const body = [];
-    if (sheet.lead) {
-      const lead = el('p', 'sheet__lead');
-      if (Array.isArray(sheet.lead)) lead.append(sheet.lead[0], el('b', '', sheet.lead[1]));
-      else lead.textContent = sheet.lead;
-      body.push(lead);
-    }
+    const lead = el('p', 'sheet__lead');
+    if (Array.isArray(sheet.lead)) lead.append(sheet.lead[0], el('b', '', sheet.lead[1]));
+    else lead.textContent = sheet.lead || '';
+    body.push(lead);
     if (sheet.kind === 'result' && sheet.result) body.push(resultNode(sheet.result));
     if (sheet.facts) body.push(factList(sheet.facts));
     if (sheet.kind === 'pin') body.push(...pinBody(sheet));
@@ -102,9 +100,13 @@ window.AppSheet = (() => {
     }
     if (sheet.actions) body.push(buttons(sheet.actions));
     const box = $('[data-sheet-body]');
-    box.replaceChildren(...body);
+    let footer = box.parentNode.querySelector('.sheet__footer');
+    if (!footer) { footer = el('div', 'sheet__footer'); box.after(footer); }
+    footer.replaceChildren(...body.filter(node => node.classList.contains('sheet__btns')));
+    footer.hidden = !footer.childElementCount;
+    box.replaceChildren(...body.filter(node => !node.classList.contains('sheet__btns')));
     const inputs = [...box.querySelectorAll('input:not(:disabled)')];
-    (inputs.find((input) => !input.value) || inputs[0] || box.querySelector('button:not(:disabled)') || $('[data-sheet] .link')).focus();
+    (inputs.find((input) => !input.value) || inputs[0] || box.querySelector('button:not(:disabled)') || footer.querySelector('button:not(:disabled)') || $('[data-sheet] .link')).focus();
   }
   function resultNode(result) {
     const node = el('div', 'result');
@@ -113,7 +115,11 @@ window.AppSheet = (() => {
   }
   function factList(rows) {
     const dl = el('dl', 'sheet__facts');
-    for (const [k, v] of rows) dl.append(el('dt', '', k), el('dd', '', v));
+    for (const [k, v] of rows) {
+      const pair = el('div');
+      pair.append(el('dt', '', k), el('dd', '', v));
+      dl.append(pair);
+    }
     return dl;
   }
   function buttons(list) {
@@ -173,11 +179,13 @@ window.AppSheet = (() => {
     ok.disabled = busy;
     ok.dataset.pinOk = '';
     row.append(input({ type: 'password', inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: busy ? '●●●●●●' : '······', disabled: busy },
-      { pin: '' }, 'pinform__pin'), ok);
+      { pin: '' }, 'pinform__pin'));
     form.append(label('PIN 6자리', row));
     if (busy) form.append(el('p', 'pinform__wait', '회사 서버에서 PIN 을 확인하는 중 — 창이 닫혀도 적용은 끝까지 진행됩니다'));
     form.append(el('p', 'pinform__note', PIN_NOTE));
-    return [form, buttons([{ text: '그만두기', go: 'close', quiet: true }])];
+    const actions = buttons([{ text: '그만두기', go: 'close', quiet: true }]);
+    actions.prepend(ok);
+    return [form, actions];
   }
   document.addEventListener('mousedown', (event) => {
     const box = $('[data-sheet]');

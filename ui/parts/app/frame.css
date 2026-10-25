@@ -304,21 +304,24 @@ body > .band { margin: 12px 24px 0; }
   left: 50%;
   transform: translateX(-50%);
   width: min(600px, calc(100vw - 48px));
-  max-height: calc(100vh - var(--hdr-h) - 96px);
-  overflow: auto;
+  max-height: calc(100vh - var(--hdr-h) - var(--status-h) - 56px);
+  overflow: hidden;
   padding: 20px 24px 22px;
   border-radius: var(--r-sheet);
   background: var(--surface);
   box-shadow: var(--elev-2);
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
   gap: 14px;
 }
-.sheet__head { display: flex; align-items: center; gap: 10px; }
+.sheet__head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
 .sheet__tag { padding: 2px 8px; border-radius: 4px; background: var(--tint-2); color: var(--ink-2); font-size: var(--s2); font-weight: 600; }
 .sheet__tag:empty { display: none; }
-.sheet__title { margin: 0; font-size: var(--s5); font-weight: 700; }
+.sheet__title { margin: 0; min-width: 0; flex: 1; font-size: var(--s5); font-weight: 700; }
 .sheet__head .link { margin-left: auto; }
-.sheet__body { display: grid; gap: 14px; }
+.sheet__body { display: grid; gap: 14px; min-width: 0; min-height: 0; overflow: auto; align-content: start; }
+.sheet__footer { display: grid; gap: 10px; min-width: 0; }
 body > .sheet-scan-blocked {
   position: fixed;
   z-index: 5;
@@ -334,15 +337,19 @@ body > .sheet-scan-blocked {
   white-space: nowrap;
   pointer-events: none;
 }
-.sheet__lead { font-size: var(--s4); line-height: 1.5; color: var(--ink-2); }
+/* The float reserves room for a scan notice while the lead keeps its content-based minimum,
+   so a tall sheet body scrolls instead of squeezing the lead text over the next field. */
+.sheet__lead { display: flow-root; font-size: var(--s4); line-height: 1.5; color: var(--ink-2); }
+.sheet__lead::before { content: ''; float: left; height: calc(var(--s4) * 2.4 + 18px); }
 .sheet__lead b { color: var(--red-text); }
-.sheet__facts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; padding: 12px 14px; border-radius: var(--r-card); background: var(--sunk); font-size: var(--s3); }
-.sheet__facts dt { color: var(--ink-2); }
-.sheet__facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
-.sheet__btns { display: flex; justify-content: flex-end; gap: 10px; }
-.sheet .act { height: 44px; }
+.sheet__facts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin: 0; padding: 12px 14px; border-radius: var(--r-card); background: var(--sunk); font-size: var(--s3); }
+.sheet__facts > div { display: flex; flex-wrap: wrap; gap: 4px 18px; min-width: 0; }
+.sheet__facts dt { color: var(--ink-2); max-width: 100%; }
+.sheet__facts dd { margin: 0; min-width: 0; flex: 1 1 auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sheet__btns { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.sheet .act { height: auto; min-height: var(--tap-min); max-width: 100%; white-space: normal; }
 .sheet__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.sheet__list:has(> li:nth-child(4)) { grid-template-columns: 1fr 1fr; } /* 네 줄 넘는 목록은 두 칸으로 — 판이 넘치지 않게 */
+.sheet__list:has(> li:nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); } /* 네 줄 넘는 목록은 두 칸으로 — 판이 넘치지 않게 */
 .sheet__list li { display: grid; gap: 6px; padding: 12px 14px; border-radius: var(--r-card); background: var(--sunk); }
 .sheet__list b { font-size: var(--s4); }
 .sheet__list p { font-size: var(--s3); color: var(--ink-2); line-height: 1.45; }
@@ -425,9 +432,9 @@ body > .sheet-scan-blocked {
 }
 
 /* PIN 칸 — 웹 새 화면 PIN 상자(한 칸 · 가운데 · 넓은 자간 + 확인 단추) 꼴에 관리자 ID 한 칸. 값은 처리 층이 받고 화면은 남기지 않는다 */
-.pinform { display: grid; gap: 10px; }
-.pinform label { display: grid; gap: 6px; font-size: var(--s3); font-weight: 600; color: var(--ink-2); }
-.pinform input { height: var(--tap-min); padding: 0 14px; border: 1px solid var(--line-2); border-radius: var(--r-ctl); background: var(--surface); color: var(--ink); font: inherit; font-size: var(--s4); }
+.pinform { display: grid; gap: 10px; min-width: 0; }
+.pinform label { display: grid; gap: 6px; min-width: 0; font-size: var(--s3); font-weight: 600; color: var(--ink-2); }
+.pinform input { height: var(--tap-min); min-width: 0; width: 100%; padding: 0 14px; border: 1px solid var(--line-2); border-radius: var(--r-ctl); background: var(--surface); color: var(--ink); font: inherit; font-size: var(--s4); }
 .pinform input:disabled { background: var(--sunk); color: var(--ink-3); }
 .pinform input.pinform__pin { flex: 1; min-width: 0; font-size: var(--s5); letter-spacing: .4em; text-align: center; }
 .pinform input::-ms-reveal { display: none; } /* Edge 「암호 보기」 눈 단추 — 같이 쓰는 현장 PC 에서 PIN 이 보이지 않게 */
@@ -524,7 +531,6 @@ code, [class*="__code"], [class*="__tail"], [class*="__at"], [data-tag] b { over
   .sheet__list:has(> li:nth-child(4)) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .sheet__list li { min-width: 0; padding: 8px 10px; gap: 4px; }
   .sheet__list b { font-size: var(--s5); }
-  .sheet__facts { grid-template-columns: max-content minmax(0, 1fr); }
   .sheet__btns { flex-wrap: wrap; }
   .sheet .act { height: auto; }
   .confirm { width: min(560px, calc(100vw - 48px)); }

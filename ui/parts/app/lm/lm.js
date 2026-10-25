@@ -287,7 +287,7 @@
       timeline.addEventListener('toggle', () => { ui.historyExpanded = timeline.open; });
     }
     timeline.open = ui.sheet.target != null || !!ui.historyExpanded;
-    const cancel = box.querySelector(':scope > .sheet__btns button');
+    const cancel = box.parentNode.querySelector('.act--danger-solid');
     if (cancel) { cancel.dataset.historyCancel = ''; cancel.disabled = cancelBusy; }
     let notice = box.querySelector('[data-history-result]');
     if (cancelNotice?.text) {
