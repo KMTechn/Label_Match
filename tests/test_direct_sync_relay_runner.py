@@ -764,6 +764,74 @@ def test_scan_failure_list_read_error_is_global_without_a_false_zero(tmp_path, c
     assert drain_calls == []
 
 
+def test_runner_source_read_failure_with_an_existing_queued_range_does_not_starve_later_file(
+    tmp_path, capsys, monkeypatch
+):
+    drain_calls = disable_scan_drain(monkeypatch, status="acked")
+    first = write_label_csv(tmp_path / "sync", name="포장실작업이벤트로그_first.csv")
+    os.utime(first, (100, 100))
+    args = runner_args(tmp_path, scan_dir=first.parent)
+    main(args)
+    capsys.readouterr()
+    assert len(relay_rows(tmp_path / "relay.sqlite3")) == 1
+    later = write_label_csv(first.parent, name="포장실작업이벤트로그_later.csv")
+    os.utime(later, (200, 200))
+    original_open = Path.open
+
+    def denied(path, *args, **kwargs):
+        if path == first:
+            raise PermissionError(errno.EACCES, "source read denied", str(path))
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+    assert main(args) == 0
+    capsys.readouterr()
+    assert len(relay_rows(tmp_path / "relay.sqlite3")) == 2
+    assert len(drain_calls) == 2
+    status = json.loads((tmp_path / "runtime" / "status.json").read_text(encoding="utf-8"))
+    assert status["scan_file_errors"][0]["error_code"] == "source_file_read_failed"
+    assert first.exists() and later.exists()
+
+
+def test_runner_already_acked_source_clears_failure_left_before_enqueue_result_was_published(
+    tmp_path, capsys, monkeypatch
+):
+    disable_scan_drain(monkeypatch)
+    source = write_label_csv(tmp_path / "sync")
+    args = runner_args(tmp_path, scan_dir=source.parent)
+    config = runner._build_config(runner.build_parser().parse_args(args))
+    runner._record_source_file_failure(config, source, "source_file_read_failed")
+    original_clear = runner._clear_source_file_failure
+
+    def interrupted(*_args):
+        raise OSError("simulated stop after durable enqueue before failure-list removal")
+
+    monkeypatch.setattr(runner, "_clear_source_file_failure", interrupted)
+    assert main(args) == 1
+    capsys.readouterr()
+    assert len(relay_rows(config.db_path)) == 1
+    monkeypatch.setattr(runner, "_clear_source_file_failure", original_clear)
+    # Pending evidence alone must not fabricate an ACK or clear a failure.
+    assert main(args) == 0
+    capsys.readouterr()
+    status_path = tmp_path / "runtime" / "status.json"
+    assert json.loads(status_path.read_text(encoding="utf-8"))["scan_file_error_count"] == 1
+    # Installation baselines share the watermark table; that table alone is
+    # not evidence of server acceptance.
+    runner._record_source_sent_byte_count(config.db_path, source, source.stat().st_size)
+    assert main(args) == 0
+    capsys.readouterr()
+    assert json.loads(status_path.read_text(encoding="utf-8"))["scan_file_error_count"] == 1
+    # This is the durable queue boundary the existing progress reader trusts.
+    with sqlite3.connect(config.db_path) as connection:
+        connection.execute("UPDATE direct_sync_relay_batches SET status='acked'")
+    assert main(args) == 0
+    capsys.readouterr()
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["scan_file_error_count"] == 0 and status["scan_file_errors"] == []
+    assert len(relay_rows(config.db_path)) == 1
+
+
 def test_runner_scan_source_watermark_does_not_advance_before_ack(tmp_path, capsys, monkeypatch):
     disable_scan_drain(monkeypatch)
     sync_dir = tmp_path / "sync"
