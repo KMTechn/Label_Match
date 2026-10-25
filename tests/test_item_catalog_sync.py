@@ -1169,7 +1169,11 @@ def test_authenticated_default_transport_ignores_process_proxy_environment(
 
         def get(self, _url, **_kwargs):
             observations.append(self.trust_env)
-            return FakeResponse(CATALOG)
+            response = sync.requests.Response()
+            response.status_code = 200
+            response._content = CATALOG
+            response._content_consumed = True
+            return response
 
     monkeypatch.setattr(sync.requests, "Session", FakeSession)
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8080")

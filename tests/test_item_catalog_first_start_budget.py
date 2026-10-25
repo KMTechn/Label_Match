@@ -137,15 +137,15 @@ def test_usable_verified_cache_keeps_original_time_and_one_attempt(monkeypatch, 
     assert facts["sleeps"] == []
 
 
-def test_remaining_window_stops_after_two_slow_combined_timeouts(monkeypatch, tmp_path):
+def test_remaining_window_stops_before_retry_without_twenty_seconds(monkeypatch, tmp_path):
     run, clock = _case(monkeypatch, tmp_path)
     def unavailable(_attempt, timeout):
         clock.elapsed += 2 * timeout
         raise requests.ReadTimeout()
     facts = run(unavailable)
-    assert not facts["started"] and facts["attempts"] == 2
-    assert facts["timeouts"] == [10.0] * 2 and facts["sleeps"] == [0.25]
-    assert facts["synthetic_elapsed_seconds"] == 40.25
+    assert not facts["started"] and facts["attempts"] == 1
+    assert facts["timeouts"] == [10.0] and facts["sleeps"] == [0.25]
+    assert facts["synthetic_elapsed_seconds"] == 20.25
 
 
 def test_immediate_transport_failure_uses_exactly_three_attempts(monkeypatch, tmp_path):

@@ -12,6 +12,7 @@ import os
 import ssl
 import tempfile
 import time
+from contextlib import closing
 from http.client import responses as HTTP_STATUS_REASONS
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -982,12 +983,64 @@ def _cache_authority_hmac(
     )
 
 
-def _hardened_get(url: str, **kwargs: object) -> object:
+def _record_catalog_response(response: object) -> None:
+    status_code = getattr(response, "status_code", None)
+    try:
+        observed_status_code = int(status_code) if status_code is not None else None
+    except (TypeError, ValueError):
+        observed_status_code = None
+    _update_catalog_attempt_context(
+        http_status_code=observed_status_code,
+        http_reason_phrase=_bounded_http_reason_phrase(
+            observed_status_code, getattr(response, "reason", ""),
+        ),
+    )
+
+
+def _hardened_get(
+    url: str, *, _catalog_deadline: float | None = None, **kwargs: object,
+) -> object:
     """Send credentials without inheriting process proxy or CA overrides."""
 
     with requests.Session() as session:
         session.trust_env = False
-        return session.get(url, **kwargs)
+        if _catalog_deadline is None:
+            return session.get(url, **kwargs)
+        kwargs["stream"] = True
+        response = session.get(url, **kwargs)
+        try:
+            with closing(response):
+                _record_catalog_response(response)
+                payload = bytearray()
+                # One byte exposes buffered progress without waiting to fill a
+                # larger body chunk. A read already in flight remains governed
+                # by requests' unchanged read timeout; this is cooperative.
+                chunks = response.iter_content(chunk_size=1)
+                while True:
+                    if time.monotonic() > _catalog_deadline:
+                        raise requests.ReadTimeout(
+                            "first item catalog response exceeded its budget", response=response,
+                        )
+                    try:
+                        chunk = next(chunks)
+                    except StopIteration:
+                        break
+                    if time.monotonic() > _catalog_deadline:
+                        raise requests.ReadTimeout(
+                            "first item catalog response exceeded its budget", response=response,
+                        )
+                    payload.extend(chunk)
+                if time.monotonic() > _catalog_deadline:
+                    raise requests.ReadTimeout(
+                        "first item catalog response exceeded its budget", response=response,
+                    )
+                response._content = bytes(payload)
+                response._content_consumed = True
+                return response
+        except (requests.ConnectionError, requests.Timeout,
+                ConnectionError, TimeoutError, ssl.SSLError) as error:
+            error._catalog_response_received = True
+            raise
 
 
 def refresh_item_catalog(
@@ -1066,7 +1119,7 @@ def refresh_item_catalog(
         )
     effective_timeout = timeout_seconds
     transport_retries = 0
-    if central_enrolled:
+    if central_enrolled and timeout_seconds == 2.0:
         cache_identity = {
             "url": effective_url,
             "source_host_id": str(profile.source_host_id),
@@ -1078,8 +1131,7 @@ def refresh_item_catalog(
             or _read_authenticated_recovery_payload(cache, **cache_identity) is not None
         )
         if not usable_cache:
-            if timeout_seconds == 2.0:
-                effective_timeout = FIRST_CATALOG_TIMEOUT_SECONDS
+            effective_timeout = FIRST_CATALOG_TIMEOUT_SECONDS
             transport_retries = FIRST_CATALOG_TRANSPORT_RETRIES
     try:
         request_kwargs: dict[str, object] = {
@@ -1106,6 +1158,10 @@ def refresh_item_catalog(
         transport = get or (_hardened_get if central_enrolled else requests.get)
         _update_catalog_attempt_context(request_sent=True)
         first_attempt_started = time.monotonic() if transport_retries else None
+        catalog_deadline = (first_attempt_started + FIRST_CATALOG_TOTAL_BUDGET_SECONDS
+                            if first_attempt_started is not None else None)
+        if catalog_deadline is not None and transport is _hardened_get:
+            request_kwargs["_catalog_deadline"] = catalog_deadline
         for attempt in range(transport_retries + 1):
             try:
                 response = transport(effective_url, **request_kwargs)
@@ -1113,31 +1169,28 @@ def refresh_item_catalog(
             except (requests.ConnectionError, requests.Timeout,
                     ConnectionError, TimeoutError, ssl.SSLError) as transport_error:
                 if (attempt >= transport_retries
-                        or getattr(transport_error, "response", None) is not None):
+                        or getattr(transport_error, "response", None) is not None
+                        or getattr(transport_error, "_catalog_response_received", False)):
                     raise
                 remaining = (FIRST_CATALOG_TOTAL_BUDGET_SECONDS
                              - (time.monotonic() - first_attempt_started))
                 if remaining < 2 * FIRST_CATALOG_TIMEOUT_SECONDS:
                     raise
                 time.sleep(FIRST_CATALOG_RETRY_DELAY_SECONDS)
+                remaining = (FIRST_CATALOG_TOTAL_BUDGET_SECONDS
+                             - (time.monotonic() - first_attempt_started))
+                if remaining < 2 * FIRST_CATALOG_TIMEOUT_SECONDS:
+                    raise
         status_code = getattr(response, "status_code", None)
-        try:
-            observed_status_code = (
-                int(status_code) if status_code is not None else None
-            )
-        except (TypeError, ValueError):
-            observed_status_code = None
-        _update_catalog_attempt_context(
-            http_status_code=observed_status_code,
-            http_reason_phrase=_bounded_http_reason_phrase(
-                observed_status_code,
-                getattr(response, "reason", ""),
-            ),
-        )
+        _record_catalog_response(response)
         if status_code is not None and 300 <= int(status_code) < 400:
             raise ValueError("item catalog redirects are not allowed")
         response.raise_for_status()
         payload = bytes(response.content)
+        if catalog_deadline is not None and time.monotonic() > catalog_deadline:
+            raise requests.ReadTimeout(
+                "first item catalog response exceeded its budget", response=response,
+            )
         validate_catalog_bytes(payload)
         if profile is not None:
             _write_authenticated_cache(
