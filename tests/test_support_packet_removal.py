@@ -273,8 +273,6 @@ def test_canonical_removal_passes_installed_logical_root(tmp_path, shell, instal
     end = text.index("    $unquiesced = @(UnquiescedProductWriters)", anchor)
     block = text[start:end]
     report = tmp_path / "removal.json"
-    report.write_text(json.dumps({"status": "PASS_DATA_PRESERVED",
-                                  "relay_process": {"status": "ABSENT"}}), encoding="utf-8")
     script = tmp_path / "removal-branch.ps1"
     script.write_text("""
 $ErrorActionPreference='Stop'
@@ -287,6 +285,7 @@ $removalPath='REPORT'
 function Product([string]$Root,[string]$Mode,[string[]]$ExtraArguments=@(),[string]$LogicalAppRoot='') {
     if (-not $LogicalAppRoot) {$LogicalAppRoot=$Root}
     $script:called=@{execution=$Root;logical=$LogicalAppRoot;mode=$Mode}
+    [IO.File]::WriteAllText($removalPath, '{"status":"PASS_DATA_PRESERVED","relay_process":{"status":"ABSENT"}}')
 }
 function Snapshot {return @{exists=$false}}
 function Get-LabelCurrentUserScheduledTasks {return @()}
@@ -300,6 +299,8 @@ $script:called | ConvertTo-Json -Compress
     completed = subprocess.run([shell, "-NoLogo", "-NoProfile", "-NonInteractive",
         "-ExecutionPolicy", "Bypass", "-File", str(script)], capture_output=True,
         creationflags=subprocess.CREATE_NO_WINDOW)
+    (tmp_path / "removal-branch.stdout").write_bytes(completed.stdout)
+    (tmp_path / "removal-branch.stderr").write_bytes(completed.stderr)
     assert completed.returncode == 0, "definition-only removal branch failed"
     result = json.loads(completed.stdout.decode("utf-8-sig"))
     assert result == {"execution": "installed" if installed_verified else "support",
