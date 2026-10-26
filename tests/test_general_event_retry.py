@@ -151,18 +151,43 @@ def test_failure_after_append_keeps_original_in_memory_without_appending_again(t
             pass
 
 
-def test_requeued_general_event_notice_uses_existing_relay_label_without_blocking():
+@pytest.mark.parametrize('state', ['normal', 'retrying', 'stopped'])
+def test_requeued_general_event_notice_uses_existing_relay_label_without_blocking(state):
     import Label_Match as module
     options = {}
     manager = SimpleNamespace(has_pending_log_retries=True)
     app = SimpleNamespace(data_manager=manager,
         relay_screen_status_label=SimpleNamespace(configure=lambda **values: options.update(values)))
-    module.Label_Match._render_relay_screen_status(app, 'running')
-    assert '작업 기록 저장을 다시 시도' in options['text']
+    module.Label_Match._render_relay_screen_status(app, state)
+    notice = '작업 기록을 다시 저장하는 중입니다 — 작업은 그대로 계속하세요'
+    assert options['text'].splitlines()[-1] == notice
+    assert options['text'].splitlines()[0] == module.LABEL_MATCH_RELAY_SCREEN_TEXT[state]
+    assert options['style'] == ('Error.TLabel' if state == 'stopped' else 'Status.TLabel')
     assert not hasattr(app, '_workflow_blocking_notice')
     manager.has_pending_log_retries = False
-    module.Label_Match._render_relay_screen_status(app, 'running')
-    assert options['text'] == module.LABEL_MATCH_RELAY_SCREEN_TEXT.get('running', '')
+    module.Label_Match._render_relay_screen_status(app, state)
+    assert options['text'] == module.LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, '')
+    assert options['style'] == ('Error.TLabel' if state == 'stopped' else 'Status.TLabel')
+
+
+@pytest.mark.parametrize('state', ['normal', 'stopped'])
+def test_web_general_retry_notice_is_quiet_nonblocking_and_disappears(state):
+    import Label_Match as module
+    from label_screen_bridge import _alerts
+    manager = SimpleNamespace(has_pending_log_retries=True)
+    app = SimpleNamespace(data_manager=manager, _logistics_relay_state=state)
+    processor = SimpleNamespace(app=app, module=module, _dialogs=[])
+    before = _alerts(processor, None, None)
+    notice = {'kind': 'quiet', 'code': None,
+              'text': '작업 기록을 다시 저장하는 중입니다 — 작업은 그대로 계속하세요'}
+    assert before[-1] == notice
+    assert not hasattr(app, '_workflow_blocking_notice')
+    manager.has_pending_log_retries = False
+    after = _alerts(processor, None, None)
+    assert after == before[:-1]
+    if state == 'stopped':
+        assert after == [{'kind': 'warn', 'code': None,
+                          'text': module.LABEL_MATCH_RELAY_SCREEN_TEXT['stopped']}]
 
 
 def test_general_retry_does_not_block_five_scan_completion_or_next_package(packaging, monkeypatch):

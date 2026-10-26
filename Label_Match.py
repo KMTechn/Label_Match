@@ -1188,6 +1188,7 @@ LABEL_MATCH_RELAY_SCREEN_TEXT = {
     "retrying": "회사 서버로 다시 보내는 중",
     "stopped": "작업 계속 가능 · 서버 반영 멈춤 · 관리자에게 알려 주세요",
 }
+LABEL_MATCH_LOG_RETRY_NOTICE = "작업 기록을 다시 저장하는 중입니다 — 작업은 그대로 계속하세요"
 _LABEL_MATCH_RELAY_NORMAL_STATUSES = frozenset({"idle", "acked"})
 # Written by a save-time enqueue, the install baseline or a scan without a
 # relay cycle: they say nothing about the server, so the relay database does.
@@ -7146,11 +7147,10 @@ class Label_Match(tk.Tk):
         retry_pending = bool(getattr(self.__dict__.get("data_manager"), "has_pending_log_retries", False))
         text = LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, "")
         if retry_pending:
-            notice = "작업 기록 저장을 다시 시도하고 있습니다 · 작업은 계속할 수 있습니다"
-            text = '\n'.join(part for part in (text, notice) if part)
+            text = '\n'.join(part for part in (text, LABEL_MATCH_LOG_RETRY_NOTICE) if part)
         label.configure(
             text=text,
-            style="Error.TLabel" if state == "stopped" or retry_pending else "Status.TLabel",
+            style="Error.TLabel" if state == "stopped" else "Status.TLabel",
         )
         return None
 
