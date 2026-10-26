@@ -311,6 +311,41 @@ def test_clock_band_is_yellow_has_no_action_and_has_send_priority(monkeypatch, k
     assert app.relay_screen_status_label.options['style'] == 'Warning.TLabel'
 
 
+@pytest.mark.parametrize('mode', ['observe', 'enforce'])
+@pytest.mark.parametrize('status', [400, 401, 403, 404, 408, 429, 500, 523, 599])
+def test_non_json_error_response_is_retryable(queued, monkeypatch, mode, status):
+    database, _, credentials = queued
+    monkeypatch.setattr(push, 'client_runtime_lease_mode', lambda _credentials: mode)
+
+    class ProxyResponse:
+        status_code = status
+        headers = {}
+
+        def json(self):
+            raise ValueError('proxy response is not JSON')
+
+    result = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials,
+        session=SequenceFakeSession([ProxyResponse()]),
+    )
+    assert result.retryable is True
+    assert queue_row(database)['status'] == 'retry_wait'
+
+
+@pytest.mark.parametrize('mode', ['observe', 'enforce'])
+@pytest.mark.parametrize('status', [400, 403, 404, 422])
+def test_json_error_without_committed_is_retryable(queued, monkeypatch, mode, status):
+    database, _, credentials = queued
+    monkeypatch.setattr(push, 'client_runtime_lease_mode', lambda _credentials: mode)
+    response = FakeResponse(status, {'retryable': False, 'error': {'code': 'proxy_error'}})
+    result = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials,
+        session=SequenceFakeSession([response]),
+    )
+    assert result.retryable is True
+    assert queue_row(database)['status'] == 'retry_wait'
+
+
 @pytest.mark.parametrize('phase', ['upload', 'lease'])
 @pytest.mark.parametrize('mode', ['observe', 'enforce'])
 @pytest.mark.parametrize('status', [408, 429, 500, 501, 505, 599])
