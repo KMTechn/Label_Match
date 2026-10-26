@@ -311,31 +311,40 @@ def test_clock_band_is_yellow_has_no_action_and_has_send_priority(monkeypatch, k
     assert app.relay_screen_status_label.options['style'] == 'Warning.TLabel'
 
 
-def test_scan_non_source_error_still_drains(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('failed_count', [1, 2])
+def test_scan_non_source_error_still_drains(tmp_path, monkeypatch, capsys, failed_count):
     calls = disable_scan_drain(monkeypatch, status='acked')
     sync_dir = tmp_path / 'sync'
     broken = write_label_csv(sync_dir, name='포장실작업이벤트로그_a.csv')
-    healthy = write_label_csv(sync_dir, name='포장실작업이벤트로그_b.csv')
+    middle = write_label_csv(sync_dir, name='포장실작업이벤트로그_b.csv')
+    healthy = write_label_csv(sync_dir, name='포장실작업이벤트로그_c.csv')
+    sources = [broken, middle, healthy]
     original = runner.enqueue_completed_source_file
     attempts = []
 
     def enqueue(config, **kwargs):
         source = kwargs['relative_path']
         attempts.append(source)
-        if source == broken.name:
+        if len(attempts) <= failed_count:
             return {'status': 'enqueue_error', 'error_code': 'direct_sync_source_file_error'}
         return original(config, **kwargs)
 
     monkeypatch.setattr(runner, 'enqueue_completed_source_file', enqueue)
     assert runner.main(runner_args(tmp_path, scan_dir=sync_dir)) == 2
     capsys.readouterr()
-    assert attempts == [broken.name, healthy.name]
-    assert len(calls) == 1
+    assert len(attempts) == 3
+    assert all(value.startswith(runner._delta_relative_prefix(source))
+               for value, source in zip(attempts, sources))
+    assert len(calls) == 3 - failed_count
     status = json.loads((tmp_path / 'runtime/status.json').read_text(encoding='utf-8'))
     assert status['scan_status'] == 'enqueue_error'
     assert status['scan_failed_source_file'] == str(broken)
-    assert status['scan_enqueue_errors'] == [
-        {'source_file': str(broken), 'error_code': 'direct_sync_source_file_error'}]
+    expected_errors = [{'source_file': str(source), 'error_code': 'direct_sync_source_file_error'}
+                       for source in sources[:failed_count]]
+    assert status['scan_enqueue_errors'] == expected_errors
+    events = [json.loads(line) for line in (tmp_path / 'logs/relay.jsonl').read_text(encoding='utf-8').splitlines()]
+    logged = [error for event in events for error in event.get('scan_enqueue_errors', [])]
+    assert logged == expected_errors
 
 
 @pytest.mark.parametrize('mode', ['observe', 'enforce'])
