@@ -1803,3 +1803,29 @@ def test_runner_failure_entry_of_an_existing_original_deferred_this_round_stays(
     count, errors = _scan_error_count(tmp_path)
     assert count == 1 and errors[0]["source_name"] == source.name
     assert source.read_bytes() == before
+
+
+@pytest.mark.parametrize("where", ["header", "data"])
+def test_runner_oversized_csv_cell_is_not_a_csv_error_here_and_does_not_stop_the_scan(
+    tmp_path, capsys, monkeypatch, where
+):
+    # Packing reads the source by lines and bytes, never with csv.reader, so a
+    # cell above csv.field_size_limit cannot raise csv.Error in the scan path.
+    drain_calls = disable_scan_drain(monkeypatch)
+    scan_dir = tmp_path / "sync"
+    big = write_label_csv(scan_dir, name="포장실작업이벤트로그_big.csv")
+    text = big.read_text(encoding="utf-8")
+    header, data = text.split("\n", 1)
+    if where == "header":
+        header = header + "," + "h" * 200000
+    else:
+        data = data.replace("worker", "w" * 200000, 1)
+    big.write_text(header + "\n" + data, encoding="utf-8")
+    os.utime(big, (100, 100))
+    healthy = write_label_csv(scan_dir, name="포장실작업이벤트로그_ok.csv")
+    os.utime(healthy, (200, 200))
+    assert main(runner_args(tmp_path, scan_dir=scan_dir)) == 0
+    capsys.readouterr()
+    status = json.loads((tmp_path / "runtime" / "status.json").read_text(encoding="utf-8"))
+    assert status["scan_file_error_count"] == 0
+    assert len(relay_rows(tmp_path / "relay.sqlite3")) == 2 and len(drain_calls) == 1
