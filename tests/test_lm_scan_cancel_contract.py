@@ -57,7 +57,7 @@ def command(screen, name, args):
 
 
 def test_exact_e89e2066_schema_preserves_c6d5f907_and_shell_completed_rows(cancel_screen):
-    assert hashlib.sha256(CURRENT_CONTRACT_BYTES).hexdigest() == '400d185b27e0c366d3587d184dc29920189ad36206441aeaf76c5828da72f7da'
+    assert hashlib.sha256(CURRENT_CONTRACT_BYTES).hexdigest() == 'f6a25fc95b5bc63b3fe901615c746cc7a0ed0376c7d9f318b8418fbfe95ea7e1'
     assert json.loads(CURRENT_CONTRACT_BYTES)["state"]["properties"]["alerts"]["maxItems"] == 5
     assert hashlib.sha256(CONTRACT_BYTES).hexdigest() == '86aa690d83ecd8a67f37e43780d00f02e657fb34450efd7f7a071887cdbc200a'
     assert hashlib.sha256(PREVIOUS_CONTRACT_BYTES).hexdigest() == 'fa255a368d378b43fe13fd670cd88eedb7a4fb9e0752c74093aab683db3cd862'

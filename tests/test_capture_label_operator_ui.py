@@ -3214,7 +3214,7 @@ def _valid_capture_record(state_id: str = "qa_progress"):
                 "현품표와 제품이 불일치합니다.\n\n"
                 f"- 현품표: {baseline.qa_scans[0]}\n"
                 f"- 스캔 제품: {baseline.qa_scans[-1]}\n\n"
-                "→ 이 세트는 오류 처리됩니다. 제품을 제거하고 확인 후 새 현품표부터 다시 스캔하세요."
+                "→ 이 세트는 오류 처리됩니다. 그 제품을 빼고, 같은 현품표부터 다시 스캔하세요."
             ),
             last_normal_scan=baseline.last_normal_scan,
         )

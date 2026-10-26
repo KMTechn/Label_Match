@@ -10,6 +10,14 @@
    정본: specs/DESIGN-DIRECTION-1009.md · DESIGN-NATURAL-OPUS55.md · work/program/w9webux1008/FLOWVIZ-LINK.md §6
    · VISUAL-V3.md §9 · 웹 시안 HH4b(10/09 마지막 판)의 :root. 이번 판은 밝은 테마만(w9mgrui M2). */
 :root {
+  --notice-bg: #f5f0e7;
+  --notice-important-bg: #fff2d5;
+  --notice-border: #8c7863;
+  --notice-text: #675744;
+  --notice-important-border: #99610d;
+  --notice-important-text: #80500a;
+  --chart-transfer: #667140;
+  --chart-packing: #647364;
   color-scheme: light;
 
   /* 면 */
@@ -124,6 +132,7 @@
   --dur-pulse: 700ms;
   --dur-grow: 1100ms;
   --dur-stain: 1600ms;
+  --dur-start-line: 1600ms;
   --dur-breath: 2800ms;
   --stagger-step: 35ms;
   --stagger-max: 500ms;

@@ -33,6 +33,70 @@
     "additionalProperties": false,
     "required": ["contract", "app", "version", "last_request_seq", "recovery", "worker", "start", "work", "approval", "conn", "queue", "update", "alerts", "today", "progress", "settings", "admin", "about"],
     "properties": {
+      "recovery_notice": {"type": "object", "additionalProperties": false, "required": ["restored"], "properties": {"restored": {"type": "boolean"}}, "description": "선택 칸 — 닫지 못한 지난 작업 세션을 이번 실행에서 되살렸는지. pending 칸 없음"},
+      "text_size_hint": {"type": ["string", "null"], "enum": ["large", null], "description": "선택 칸 — 옛 LARGE_FONT_MODE 이관 힌트. 저장된 글자 값이 없거나 단계 밖일 때만 large를 크게로 저장; 유효한 기존 선택은 보존"},
+      "practice": {"type": "boolean", "description": "선택 칸 — true일 때만 연습용 PC 띠. 키트의 PRACTICE-PC.json 표시를 앱이 읽어 채움"},
+      "notices": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "pending_ack"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "title",
+                "body",
+                "weight",
+                "sent_at",
+                "end_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 30
+                },
+                "body": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 300
+                },
+                "weight": {
+                  "enum": [
+                    "normal",
+                    "important"
+                  ]
+                },
+                "sent_at": {
+                  "type": "string",
+               "description": "ISO-8601 날짜시각, 시간대 있음·없음 모두 허용"
+                },
+                "end_at": {
+                  "type": "string",
+               "description": "ISO-8601 날짜시각, 시간대 있음·없음 모두 허용"
+                }
+              }
+            }
+          },
+          "pending_ack": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "contract": {"const": "lm-state/1", "description": "state 꼴 판 — 바뀌면 화면 · 이음 같이 바꿈"},
       "app": {"const": "label_match"},
       "version": {"type": "string", "description": "앱 판 — 정보 판"},
@@ -115,7 +179,7 @@
                 "index": {"type": "integer", "minimum": 1},
                 "key": {"type": "string"},
                 "label": {"type": "string"},
-                "value": {"type": "string", "description": "찍은 원문(빈 글 = 아직) — 화면은 끝 몇 자리만"},
+                "value": {"type": "string", "description": "찍은 원문(빈 글 = 아직) — 현품표 칸 표시는 work.tag.code 우선, 제품은 원문을 공간에 맞춰 표시"},
                 "filled": {"type": "boolean"},
                 "state": {"enum": ["complete", "current", "pending", "error", "readonly", "swap"], "description": "swap = 교환 중인 칸(이음: exchange.target 과 같은 칸)"},
                 "role": {"enum": ["master_label", "product", "last_product"], "description": "현품표 → 제품1…제품{N-1} → 제품N(마지막 제품 확인 칸)"}
@@ -448,32 +512,32 @@
     }
   },
   "calls": {
- "scan_blocked": {
-  "args": [
-   {
-    "type": "object",
-    "required": [
-     "reason",
-     "n_keys"
-    ],
-    "properties": {
-     "reason": {
-      "enum": [
-       "sheet",
-       "field"
-      ]
-     },
-     "n_keys": {
-      "type": "integer",
-      "minimum": 0
-     }
-    },
-    "additionalProperties": false
-   }
-  ],
-  "reply": "{ok:boolean}",
-  "does": "입력 칸에서 막은 스캔의 오류음만 셸에 한 번 요청; reason=sheet|field, 글자·칸 값 0, 처리기 호출 0, 응답을 기다리지 않고 실패·모르는 명령은 안내·재시도 없이 무시 (셸 v3.16.3.1·v3.16.6 부터)"
- },
+      "scan_blocked": {
+        "args": [
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "n_keys"
+            ],
+            "properties": {
+              "reason": {
+                "enum": [
+                  "sheet",
+                  "field"
+                ]
+              },
+              "n_keys": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        ],
+        "reply": "{ok:boolean}",
+        "does": "입력 칸에서 막은 스캔의 오류음만 셸에 한 번 요청; reason=sheet|field, 글자·칸 값 0, 처리기 호출 0, 응답을 기다리지 않고 실패·모르는 명령은 안내·재시도 없이 무시 (셸 v3.16.6)"
+      },
     "state": {"args": [], "source": "present_lm(app) = present_workflow(_workflow_view_source()) + 스냅숏 밖 값 — 부작용 0 · Tk 0", "reply": "state"},
     "scan": {
       "args": ["text", "meta"],
@@ -491,7 +555,55 @@
       }
     },
     "command": {
-      "undo": {"args": {}, "source": "_scanner_command('KMCMD:UNDO') → _undo_scanner_input :16104", "keys": ["단추 「방금 스캔 되돌리기」", "명령 카드 KMCMD:UNDO"], "approval": null},
+      "ack_notice": {
+        "args": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          }
+        },
+        "result_schema": {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "queued": {
+              "type": "boolean",
+              "description": "true이면 응답은 접수이고 완료는 state.notices.pending_ack에서 해당 id가 빠진 상태로 알림"
+            },
+            "state": {
+              "type": "object"
+            }
+          }
+        },
+        "does": "중요 공지 확인 — 내구 저장·보내기는 처리 층이 맡음"
+      },
+      "open_notice": {
+        "args": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          }
+        },
+        "does": "전문 보기 누름 알림 — 화면은 가진 공지로 바로 열고 응답을 기다리지 않음"
+      },
+      "undo": {"args": {}, "source": "_scanner_command('KMCMD:UNDO') → _undo_scanner_input :16104", "keys": ["단추 「직전 스캔 취소」", "명령 카드 KMCMD:UNDO"], "approval": null},
       "exchange": {"args": {}, "source": "_handle_f4_action :17685 → _scanner_command('KMCMD:EXCHANGE') :15848", "keys": ["F4", "단추 「제품 교환」", "명령 카드 KMCMD:EXCHANGE"], "approval": null},
       "cancel_current": {"args": {}, "source": "_reset_current_set(full_reset=True) :22370", "keys": ["F1", "단추 「현재 트레이 취소 (F1)」"], "approval": null},
       "cancel_completed": {"args": {"label": "string"}, "source": "askstring :19252 → _cancel_completed_tray_by_label :19267 → 마우스 승인 :19338", "keys": ["F2", "단추 「완료 트레이 취소 (F2)」 → 판 cancel_completed"], "approval": "pointer"},
