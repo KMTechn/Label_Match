@@ -226,3 +226,42 @@ def test_ro_check_reads_inside_one_transaction(wal_store, monkeypatch):
         PackageOutbox(path)
     assert log[0].upper().startswith("BEGIN")
     assert any(item.startswith("SELECT * FROM package_recovery_evidence") for item in log)
+
+
+@pytest.mark.parametrize("store", [PackageOutbox, PackageCancellationOutbox])
+def test_metadata_refusal_without_other_connections_keeps_db_and_wal(
+    wal_store, tmp_path, monkeypatch, store
+):
+    import shutil
+
+    _outbox, source, _keeper = wal_store
+    path = str(tmp_path / "closed-wal-copy.sqlite3")
+    # The copy has no keeper or shared-memory file of its own.
+    shutil.copyfile(source, path)
+    shutil.copyfile(source + "-wal", path + "-wal")
+    before = _files(path)
+    connect = sqlite3.connect
+    reached = []
+
+    class MetadataFailure(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql.startswith("SELECT name FROM sqlite_master WHERE type="):
+                reached.append(True)
+                raise sqlite3.OperationalError("injected metadata read failure")
+            return super().execute(sql, *args, **kwargs)
+
+    def failing_connect(*args, **kwargs):
+        if kwargs.get("uri"):
+            kwargs["factory"] = MetadataFailure
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", failing_connect)
+    with pytest.raises(PackageRecoveryEvidenceError) as failure:
+        store(path)
+    assert failure.value.code == PackageRecoveryEvidenceError().code
+    assert reached
+    after = _files(path)
+    # A read-only reader may create auxiliary SHM; existing DB/WAL stay exact.
+    assert {key: after[key] for key in ("", "-wal")} == {
+        key: before[key] for key in ("", "-wal")
+    }
