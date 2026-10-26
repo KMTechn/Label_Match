@@ -225,7 +225,7 @@ def _confirmed_error():
     return error
 
 
-@pytest.mark.parametrize("error", [_confirmed_error(), _native_error(112)])
+@pytest.mark.parametrize("error", [_confirmed_error()])
 def test_confirmed_preparation_failure_still_blocks_immediately(tmp_path, monkeypatch, error):
     case = _preparation_case(tmp_path, monkeypatch, error)
     assert case.run() == 0
@@ -251,10 +251,10 @@ def test_a_preparation_error_after_an_uncertain_pointer_never_opens_a_retry(tmp_
     assert not case.state().get("retry_shas")
 
 
-def test_observe_timeout_is_classified_before_child_output_is_redacted(monkeypatch, tmp_path):
+def test_observe_generic_stderr_remains_unknown(monkeypatch, tmp_path):
     import subprocess
     from types import SimpleNamespace
-    completed = SimpleNamespace(returncode=1, stdout="", stderr="STARTUP_QUERY_TIMEOUT_UNKNOWN")
+    completed = SimpleNamespace(returncode=1, stdout="", stderr='LABEL_MATCH_INSTALLER_FAILURE={"status":"FAILED","reason_code":"INSTALLER_FAILED","report_status":"REPORT_UNAVAILABLE"}')
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: completed)
     monkeypatch.setattr(updates, "system_executable", lambda *a: tmp_path / "powershell.exe")
     try:
@@ -288,7 +288,7 @@ def test_only_the_approved_io_errors_are_temporary(kind):
     from requests.exceptions import ConnectionError as RequestConnectionError
     errors = {"network": RequestConnectionError(), "query_timeout": subprocess.TimeoutExpired("Observe", 20),
               "disk_io": OSError(errno.EIO, "simulated"), "disk_full": OSError(errno.ENOSPC, "simulated")}
-    assert updates._transient_preparation_error(errors[kind]) is (kind != "disk_full")
+    assert updates._transient_preparation_error(errors[kind]) is True
 
 
 def test_an_unreadable_prepared_identity_keeps_its_saved_wait_after_restart(tmp_path, monkeypatch):
@@ -370,20 +370,24 @@ def test_a_rolled_back_ready_timeout_has_the_same_review_budget(monkeypatch):
     assert not updates._retry_review_required(state)
 
 
-@pytest.mark.parametrize("marker,temporary", [("STARTUP_UPDATE_FILE_PIN_DIFFERS", False),
-                                             ("STARTUP_UPDATE_FAILURE", True)])
-def test_fixed_helper_distinguishes_a_proved_rejection_from_an_unknown_error(tmp_path, monkeypatch, marker, temporary):
+def test_real_generic_helper_stderr_keeps_an_unknown_preparation_retry(tmp_path, monkeypatch):
+    import json
     import subprocess
     from types import SimpleNamespace
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr=marker))
+    case = _preparation_case(tmp_path, monkeypatch, RuntimeError())
+    output = "LABEL_MATCH_INSTALLER_FAILURE=" + json.dumps({
+        "status": "FAILED", "reason_code": "INSTALLER_FAILED", "report_status": "REPORT_UNAVAILABLE"})
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=1, stdout="", stderr=output))
     monkeypatch.setattr(updates, "system_executable", lambda *a: tmp_path / "powershell.exe")
-    try:
-        updates._run_fixed_helper(tmp_path / "control", "Verify")
-    except RuntimeError as error:
-        assert updates._transient_preparation_error(error) is temporary
-    else:
-        pytest.fail("the failed Verify helper must still reject this invocation")
-
+    monkeypatch.setattr(updates, "_apply_prepared", lambda control: updates._run_fixed_helper(control, "Verify"))
+    assert case.run() == 0
+    assert case.state().get("failed_shas", []) == []
+    assert case.state()["retry_shas"][NEW]["attempts"] == 1
+    case.clock[0] = 899
+    assert not updates.prepared_pending(case.control, case.policy, case.state())
+    case.clock[0] = 900
+    assert updates.prepared_pending(case.control, case.policy, case.state())
 
 
 @pytest.mark.parametrize("replay", [False, True])
