@@ -871,3 +871,5 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - w9firstupdsub712 / calm-uninst-lm P2-1~3: 옛 작업 Enabled 보상과 무변경 relay 판정을 고치고, 기존 XML 등록·정의 비교로 삭제 작업을 복원한다. 외부 부모 메타 보존·고정 링크 소유 검증·빈 관리 폴더 복원·미변경 잠금 파일·임시 사본 정리를 함께 보완한다. 작업자 바로가기 기록 restored 플래그 보상은 레인 ANSWER-2에 따라 크기·근거를 결과에 남긴다.
 - w9firstupdsub633 / relay 자식 대기 45 → 120 초: LM1 밤 창 실측으로 확인 예정(RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS · 포장 user_relay.run_session_direct_sync_once 기본값 · 이적 _runtime_cycle 호출).
 - w9firstupdsub652 / 포장 126: 공용 `data_generation` 표지 바꿔치기가 잠김(오류 5·32)이면 1초(50ms 간격) 다시 시도하도록 Python·PowerShell 모두 고쳤다(이적과 바이트 같음). 공용 판 표지 `0.3.8+w9.1`.
+- w9firstupdsub661 / GS·RS·납품처 P1: sub-649의 제어 바이트/글자 꼴 6D 판독과 628 납품처 무시를 통합했다. 구성원 정확 일치를 머리 판정보다 우선하고 교환 입력에도 같은 무시 규칙을 적용한다. 두 앱의 scan.js는 핀 블롭 d390424b이며 정본 셈법으로 MANIFEST를 갱신한다. 구분이 사라진 꼴의 날짜 추측은 레인 답대로 구현하지 않는다. 실제 창·스캐너·배포본 기동은 이번 headless 좁은 회귀 범위에 포함되지 않는다.
+- 납품처 라벨 무시: RS 필수 조건을 제거하여 실제 GS 구분·RS 없는 `[)>06`과 글자 `<RS>`도 판정한다. 감사 `ERROR_INPUT`·duplicate.wav의 기존 계약을 유지한다. sub-646의 제품 오인·교환 우회 두 P1 재현과 저장 통합 재현은 sub-661 계약 시험으로 확인한다.

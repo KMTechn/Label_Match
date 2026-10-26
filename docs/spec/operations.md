@@ -724,6 +724,10 @@ cancel07은 Main의 F1 source audit `msg_8450ebdcf336`와 lifecycle 구분 `msg_
 
 로컬 5단계 세트의 제품·최종 포장 라벨 자리에서는 새 체계 현품표(`SRC=KMTECH_INPUT_TAG`, `ITG`, `TRF`)를 `[바코드 종류 오류]`로 거절한다. 현재 스캔 목록·중복 목록·포장 전송함을 그대로 두고, 제품 자리에서는 현재 세트의 제품 바코드, 마지막 자리에서는 포장 라벨을 스캔한다. 이 안내는 F1을 요구하지 않는다.
 
+새 현품표(PHS2) 세트에서는 납품처 라벨(`[)>` 뒤 RS·글자 `<RS>`·두 자리 형식 번호)을 찍지 않는다. 제품 구성원과 정확히 맞는 입력은 기존 제품 검증을 계속하고, 나머지 납품처 입력은 일반 제품 자리·교환 대상/대체품 자리 모두 세트·제품 수·교환 상태·저장 checkpoint를 보존하며 노란 알림 `납품처 라벨입니다`와 `duplicate.wav` 한 번만 낸다(감사 `ERROR_INPUT`만 남음). 옛 방식 세트의 마지막 포장 라벨 자리는 그대로 받는다.
+
+교육 안내서 몫: 「새 현품표 세트에서는 납품처 라벨을 찍지 않습니다. 찍어도 세지 않고 노란 알림만 뜨니, 그대로 제품을 찍으세요.」
+
 D-day 전까지 등록 PC(중앙 client가 있거나 필수 모드)에서 현장의 옛 5단계 포장과 새 현품표를 모두 받고, 완료마다 종류를 붙여 따로 기록하는 관리자 스위치다. Machine 환경 값이 `1`일 때만 켜지고 그 밖(없음 포함)은 끔이다. 앱은 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`에서 직접 읽으므로 사용자·process 환경 값으로는 켜지지 않는다. 앱 시작 때 한 번 읽고 자동 만료는 없다. 미등록 PC·시험·시뮬레이션은 켜져 있어도 기존 동작이다.
 
 관리자 PowerShell에서 바꾼 뒤 Label_Match를 정상 종료하고 다시 연다.
@@ -1839,3 +1843,7 @@ python -B tools/make_canonical_update_packet.py --stock <stock.zip> --output <ca
 디렉터리·특수 파일·심볼릭 링크, 빈 ZIP·암호화 ZIP·이미 `Label_Match/`로 접두된 입력을 거절한다. 이름의 절대경로·백슬래시·빈/`.`/`..` 조각·콜론·제어문자·Windows 예약 이름·끝 공백/점·대소문자 중복·파일/하위 경로 충돌도 거절한다. 새 크기·시간 상한이나 최상위 이름 allowlist는 추가하지 않는다.
 
 앱의 `_validate_update_archive_contract` 검사에는 manifest의 `archive` 칸을 함께 제공한다. canonical 정책은 `format=zip`, `layout=canonical_portable`, `top_level=Label_Match`, `entrypoint=Label_Match/app/main.py`와 필수 `Label_Match/portable-manifest.json`, `runtime/python.exe`, `runtime/pythonw.exe`, `app/main.py`, `INSTALL_CANONICAL_PORTABLE.ps1`, `tools/apply_prepared_update.ps1`, `app/update-manifest-key-config.json`(모두 `Label_Match/` 아래)을 요구한다. 원 stock은 이 정책으로 거절되어야 한다. 이 archive 검사와 SHA 영수증은 서명·실제 업데이트 적용 수용을 대신하지 않는다.
+
+### 스캔 값 칸 구분 (GS·RS)
+
+옛 +1 포장 라벨의 생산일(6D) 읽기는 GS(0x1D)·RS(0x1E) 제어 바이트와 글자 `<GS>`·`<RS>`를 모두 칸 구분으로 받는다. 웹 셸의 스캔 받이는 고정 블롭 `d390424bbfa0255f7c271aec7491e6f4690cd6dd`로 Ctrl+]→GS, Ctrl+^→RS 및 직접 온 제어 바이트를 원문 위치 그대로 처리층에 보낸다. 일반 폼 입력의 동작은 기존과 같다. 구분이 모두 사라진 값은 앱이 추측해 자르지 않으며 생산일을 거절한다. 실자료 검증은 외부 자료를 오프라인 순수 판독에만 흘리고 원문 대신 꼴별 건수만 보존한다.

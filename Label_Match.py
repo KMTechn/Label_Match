@@ -558,6 +558,17 @@ class _WindowsWaveSound:
         self._winsound.PlaySound(None, 0)
 
 
+LABEL_MATCH_DUPLICATE_SOUND_KEY = "duplicate"
+_LABEL_MATCH_DUPLICATE_SOUND_FILE = "duplicate.wav"
+
+
+def _label_match_sound_files(configured):
+    """Saved settings from before the duplicate cue still get its file."""
+    files = dict(configured) if isinstance(configured, dict) else {}
+    files.setdefault(LABEL_MATCH_DUPLICATE_SOUND_KEY, _LABEL_MATCH_DUPLICATE_SOUND_FILE)
+    return files
+
+
 def _label_match_automated_test_mode():
     value = os.environ.get(LABEL_MATCH_AUTOMATED_TEST_ENV, "").strip().lower()
     if value in {"1", "true", "yes", "on", "enabled"}:
@@ -1997,6 +2008,9 @@ PHS_REPLACEMENT_REQUIRED_NOTICE = (
     "현재 현품표를 교체 대기로 분리해 주세요."
 )
 LEGACY_LABEL_TRANSITION_BANNER = "과도기 모드 — 옛 방식 포장 받음"
+# 잠정 글(w9mgrui 확정, 2026-10-26): 납품처 라벨은 새 방식 세트에서 찍지 않는다.
+DELIVERY_LABEL_IGNORE_TITLE = "납품처 라벨입니다"
+DELIVERY_LABEL_IGNORE_MESSAGE = "찍지 않아도 됩니다 — 제품을 찍으세요"
 LABEL_MATCH_SHORTAGE_NOTICE = (
     '수량이 부족합니다\n검사실에서 양품을 가져와 스캔하세요'
 )
@@ -2295,7 +2309,7 @@ def _label_match_operator_scan_identifier(
             return label, _label_match_compact_display_token(value)
 
     date_match = re.search(
-        r"(?:^|[|\x1d]|<GS>)6D=?([0-9]{6,8})(?=$|[|\x1d]|<GS>)",
+        r"(?:^|[|\x1d\x1e]|<GS>|<RS>)6D=?([0-9]{6,8})(?=$|[|\x1d\x1e]|<GS>|<RS>)",
         decoded,
         flags=re.IGNORECASE,
     )
@@ -2388,6 +2402,22 @@ def _label_match_parse_sealed_transfer_qr(raw_value):
     if has_any_seal_evidence:
         parsed["SREV"] = seal_revision
     return parsed
+
+
+_LABEL_MATCH_DELIVERY_LABEL_HEADER = re.compile(r"\[\)>(?:\x1e|<RS>|[0-9]{2})", re.IGNORECASE)
+
+
+def _label_match_is_delivery_label_scan(raw_value):
+    """ISO/IEC 15434 delivery label: "[)>" then RS, or the text <RS>, or the two-digit format number.
+
+    Field scans keep GS but drop RS ("[)>" then "06" then GS), so a missing RS is accepted when the
+    two digits follow the header. Callers give exact known product members
+    precedence over this header-only classification.
+    Input is stripped upstream (the strip may also eat a leading GS/RS), so
+    whitespace before the header is tolerated; the header itself is kept.
+    """
+
+    return _LABEL_MATCH_DELIVERY_LABEL_HEADER.match(str(raw_value or "").lstrip()) is not None
 
 
 def _label_match_has_central_source_identity(raw_value):
@@ -5232,7 +5262,7 @@ class Label_Match(tk.Tk):
             "heading_background": "#FFFFFF"
         }
         self.colors = {**default_colors, **self.app_settings.get("colors", {})}
-        self.sounds = self.app_settings.get("sound_files", {})
+        self.sounds = _label_match_sound_files(self.app_settings.get("sound_files", {}))
         self.sound_objects = {}
         self.items_data = {}
         self.unique_id = _label_match_local_log_id()
@@ -16379,6 +16409,10 @@ class Label_Match(tk.Tk):
                 pass
 
         if scan_pos == 1:
+            if _label_match_is_delivery_label_scan(raw_input):
+                consume_input()
+                self._ignore_delivery_label_scan(raw_input)
+                return
             held_keys = self._storage_held_duplicate_keys()
             if (_label_match_unique_master_index_keys(raw_input)
                     | _label_match_unique_master_index_keys(processed_input)) & held_keys:
@@ -16665,6 +16699,15 @@ class Label_Match(tk.Tk):
             master_code = self.current_set_info['parsed'][0]
             final_label_position = self._workflow_final_label_position()
             new_label = _label_match_has_central_source_identity(self.current_set_info['raw'][0])
+            known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"),
+                                               self.current_set_info.get("scanner_exchanges", []))
+            if (new_label and _label_match_is_delivery_label_scan(raw_input)
+                    and (known is None or self._sample_barcode(raw_input) not in known)):
+                # New-method set: the +1 slot is a product. A delivery label is
+                # not one; keep the set and count nothing. Old-method sets keep
+                # taking it as the +1 packaging label below.
+                self._ignore_delivery_label_scan(raw_input)
+                return
             decoded_label = carrier_identity.decode_carrier_scan(raw_input)
             label_pairs, _ = label_transition.transition_label_pairs(decoded_label)
             if len(decoded_label) == 13 or carrier_identity.parse_legacy_fields(decoded_label) or any(
@@ -16698,8 +16741,6 @@ class Label_Match(tk.Tk):
                     or self._sample_barcode(raw_input) in self._storage_held_duplicate_keys()):
                 self._ignore_product_scan(raw_input, "이미 다른 세트에서 처리된 제품입니다. 새 제품을 스캔하세요.")
                 return
-            known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"),
-                                               self.current_set_info.get("scanner_exchanges", []))
             if known is not None and self._sample_barcode(raw_input) not in known:
                 self._ignore_product_scan(raw_input, "이 현품표의 구성원이 아닙니다. 현재 트레이의 제품을 스캔하세요.")
                 return
@@ -16757,11 +16798,27 @@ class Label_Match(tk.Tk):
         self._play_sound("fail")
         self.update_big_display(message, "red")
 
-    def _show_scanner_notice(self, title, message, *, tone="warning"):
+    def _ignore_delivery_label_scan(self, raw_input):
+        """Yellow notice, duplicate cue once, no siren, set untouched."""
+        self.data_manager.log_event(self.Events.ERROR_INPUT, {
+            "set_id": self.current_set_info.get("id"),
+            "raw_input": raw_input,
+            "reason": DELIVERY_LABEL_IGNORE_TITLE,
+        })
+        self._notice_sound = LABEL_MATCH_DUPLICATE_SOUND_KEY
+        try:
+            self._show_scanner_notice(
+                DELIVERY_LABEL_IGNORE_TITLE, DELIVERY_LABEL_IGNORE_MESSAGE,
+                tone="warning", display_color="warning")
+            self._delivery_label_notice = self._phs_label_guidance_notice
+        finally:
+            self.__dict__.pop("_notice_sound", None)
+
+    def _show_scanner_notice(self, title, message, *, tone="warning", display_color="red"):
         self._phs_label_guidance_notice = WorkflowNotice(
             title=title, message=message, kind="scanner_notice", tone=tone)
-        self._play_sound("fail")
-        self.update_big_display(message, "red")
+        self._play_sound(self.__dict__.get("_notice_sound") or "fail")
+        self.update_big_display(message, display_color)
         self._render_operator_workbench()
 
     def _clear_scanner_notice(self):
@@ -16841,6 +16898,10 @@ class Label_Match(tk.Tk):
         samples = {self._sample_barcode(barcode) for barcode in current["raw"][1:]}
         known = self._known_sample_members(current.get("package_source_snapshot"),
                                            current.get("scanner_exchanges", []))
+        if (_label_match_has_central_source_identity(current["raw"][0])
+                and _label_match_is_delivery_label_scan(value)
+                and (known is None or normalized not in known)):
+            return self._ignore_delivery_label_scan(value)
         source_members = self._known_sample_members(current.get("package_source_snapshot"))
         if current["scanner_exchange_phase"] == "target":
             if normalized not in samples and (known is None or normalized not in known):
@@ -24171,6 +24232,7 @@ class Label_Match(tk.Tk):
     def update_big_display(self, text, color=""):
         fg_color = self.colors.get("text_strong", "#000000")
         if color == "red": fg_color = self.colors.get("danger", "#E57370")
+        elif color == "warning": fg_color = self.colors.get("warning", "#B45309")
         elif color == "green": fg_color = self.colors.get("success", "#00875A")
         elif color == "primary": fg_color = self.colors.get("primary", "#3B82F6")
         self.big_display_label.config(text=text or "", foreground=fg_color)

@@ -25,7 +25,7 @@ from label_admin_pin import WORKER_RECOVERY_ACTIONS
 
 STATE_CONTRACT = "lm-state/1"
 PARTS_DIR = Path(__file__).resolve().parent / "ui" / "parts"
-SOUNDS = frozenset({"scan_master", "scan_1", "pass", "fail", "error"})
+SOUNDS = frozenset({"scan_master", "scan_1", "pass", "fail", "error", "duplicate"})
 BAND = {"danger": "bad", "warning": "warn", "info": "quiet", "muted": "quiet", "success": "quiet", "primary": "quiet"}
 FLASH = {"red": "bad", "green": "ok", "primary": "idle"}
 HIDDEN_BADGES = frozenset({"중앙 멤버십", "PHS2 서버 멤버십"})
@@ -690,6 +690,8 @@ def _result(processor, view, source):
         return {"kind": "bad", "text": _text(flash[1]), "sub": _text(notice.message) if rejected and notice else None, "sound": sound, "code": None}
     if rejected:
         title = _text(notice.title) if notice is not None else "틀림"
+        if notice is not None and notice is app.__dict__.get("_delivery_label_notice"):
+            return {"kind": "warn", "text": title, "sub": _text(notice.message), "sound": sound, "code": None}
         return {"kind": "bad", "text": title, "sub": _text(app._compact_operator_notice_message(notice.message)) if notice is not None else None,
                 "sound": sound, "code": None}
     last = next((str(value) for value in reversed(source.get("raw") or ()) if value), None)

@@ -190,6 +190,26 @@ def test_extract_production_date_accepts_real_dates_only():
     assert extract(None, "FINAL_LABEL_WITHOUT_DATE") is None
 
 
+def test_extract_production_date_accepts_record_separator_forms():
+    module = load_label_match_module()
+    extract = module.Label_Match._extract_production_date
+
+    assert extract(None, "FINAL_LABEL"+chr(30)+"6D20260228") == "2026-02-28"
+    assert extract(None, "FINAL_LABEL<RS>6D20260228") == "2026-02-28"
+    assert extract(None, "FINAL_LABEL<rs>6D20260228") == "2026-02-28"
+    assert extract(None, "FINAL_LABEL<GS>QTY60"+chr(30)+"6D20260228") == "2026-02-28"
+    # A label whose separators were all dropped is not cut: 6D may belong to another field.
+    assert extract(None, "FINAL_LABEL_X6D20260228") is None
+
+
+def test_operator_scan_summary_reads_6d_between_record_separators():
+    module = load_label_match_module()
+    item_code = "AAA2270730200"
+    for separator in (chr(30), "<RS>"):
+        raw = f"FINAL_LABEL_{item_code}{separator}6D20260717{separator}QTY60"
+        assert module._label_match_operator_scan_summary(raw, item_code, 5) == f"{item_code} · 6D 20260717"
+
+
 def test_success_scan_sound_mapping_keeps_product_one_as_scan_one():
     module = load_label_match_module()
     sound_key = module.Label_Match._sound_key_for_success_scan

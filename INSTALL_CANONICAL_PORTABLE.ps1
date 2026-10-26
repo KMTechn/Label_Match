@@ -716,7 +716,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
                         '91adc41d3bba455bf3d5891777416e35feaf225187356668ed06ddaae4ee8ed7'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
-                                  '2e8ede03b918d577aa04441b81fffa58df7619971e36a8a4db3dbe6d46f4a71f'),
+                                  '92dbbad1aebf53c85ef05f61b9ed8fcd425014d6909d9f6f5932b36517f7f1a2'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
                                     'd52cff6948b65d012f196c9ee5b573ce522b342712a9325f6d5983daf86aee12'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
@@ -784,7 +784,7 @@ scan_input_pairs = {('27c03a98ca225d82f85e95bc546e0b57c984d390db73532f46191727e9
   '91adc41d3bba455bf3d5891777416e35feaf225187356668ed06ddaae4ee8ed7')}
 scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '1fe94fcc6eb8a8458e2a19bd344d71361bacac77566fdeed45789e74f3e95583'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
-                                  '2e8ede03b918d577aa04441b81fffa58df7619971e36a8a4db3dbe6d46f4a71f'),
+                                  '92dbbad1aebf53c85ef05f61b9ed8fcd425014d6909d9f6f5932b36517f7f1a2'),
  'app/deferred_intent_capture.py': ('e129488f303e001293431e8b45a0edc10bab22a7e9cb7e96782aa6d3df260561',
                                     '373c97692eed71f8e105fa294c978376297bbedd8cb6d9dc985b6f357821d890'),
  'app/label_completion.py': ('aaac26de64e050b07b2225723898c8c32e52f6526039202ffd8d2daa12f162b8',
@@ -829,7 +829,7 @@ nextfix_label_pair = ('caac070ce1bfa2218c5780fbab575d7c77f62381701f35d0b21b3f959
  '91adc41d3bba455bf3d5891777416e35feaf225187356668ed06ddaae4ee8ed7')
 nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '1fe94fcc6eb8a8458e2a19bd344d71361bacac77566fdeed45789e74f3e95583'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
-                                  '2e8ede03b918d577aa04441b81fffa58df7619971e36a8a4db3dbe6d46f4a71f'),
+                                  '92dbbad1aebf53c85ef05f61b9ed8fcd425014d6909d9f6f5932b36517f7f1a2'),
  'app/label_completion.py': ('d0fb68fe1d531d6ac7436c8a778c7c93d6d1dbd4da0918614d95414ee5861492',
                              '7fc26ac5c6a6311a1f68e81fb1e74a9d6d7a9e433ac6be156bed8af5947037d7'),
  'app/label_recovery_schema.py': ('e783a8c7ecac94dd415810f2891161967ec8f13a802d74d7da466e646986d462',
