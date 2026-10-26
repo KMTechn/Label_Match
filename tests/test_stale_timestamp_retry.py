@@ -606,3 +606,61 @@ def test_enforce_other_401_keeps_legacy_review(queued, monkeypatch):
     )
     assert result.retryable is False
     assert queue_row(database)['status'] == 'operator_review'
+
+
+@pytest.mark.parametrize('targeted', [False, True])
+@pytest.mark.parametrize('known_date', [False, True])
+def test_clock_rollback_reclaims_stale_wait_on_next_cycle(queued, monkeypatch, targeted, known_date):
+    database, row, credentials = queued
+    instant = [PC_TIME]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant[0].astimezone(tz)
+
+    monkeypatch.setattr(push, 'datetime', Clock)
+    monkeypatch.setattr(leases, 'datetime', Clock)
+    session = SequenceFakeSession([refusal(date=SERVER_DATE if known_date else None), accepted(row)])
+    arguments = {'db_path': database, 'credentials': credentials, 'session': session,
+                 'target_relay_id': row.relay_id if targeted else ''}
+    assert push.drain_one_relay_batch(**arguments).retryable is True
+    assert push.drain_one_relay_batch(**arguments) is None  # ordinary backoff stays in place
+    instant[0] = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)
+    recovered = push.drain_one_relay_batch(**arguments)
+    assert recovered is not None and recovered.success is True
+    assert queue_row(database)['status'] == 'acked'
+
+
+def test_clock_rollback_does_not_shorten_other_retry_wait(queued, monkeypatch):
+    database, _, credentials = queued
+    instant = [PC_TIME]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant[0].astimezone(tz)
+
+    monkeypatch.setattr(push, 'datetime', Clock)
+    session = SequenceFakeSession([refusal('temporary_unavailable', 503)])
+    assert push.drain_one_relay_batch(db_path=database, credentials=credentials, session=session).retryable
+    instant[0] = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)
+    assert push.drain_one_relay_batch(db_path=database, credentials=credentials, session=session) is None
+
+
+def test_retry_dead_resets_age_and_attempts(queued):
+    from direct_sync_operator import retry_dead_relay_batch
+
+    database, row, _ = queued
+    with sqlite3.connect(database) as conn:
+        conn.execute("UPDATE direct_sync_relay_batches SET status='failed_permanent', created_at='2000-01-01T00:00:00Z', attempt_count=8")
+    retry_dead_relay_batch(
+        db_path=database, relay_id=row.relay_id, operator_id='isolated-operator', reason='isolated retry qualification',
+    )
+    retried = queue_row(database)
+    assert retried['status'] == 'pending'
+    assert retried['attempt_count'] == 0
+    assert retried['created_at'] == retried['updated_at']
+    assert retried['created_at'] != '2000-01-01T00:00:00Z'
+    assert retried['content_sha256'] == row.content_sha256
+    assert json.loads(retried['metadata_json'])['idempotency_key'] == row.metadata['idempotency_key']
