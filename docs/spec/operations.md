@@ -1774,7 +1774,7 @@ sub-184 Q2: relay만 남은 상태의 동시 GUI 요청 둘은 실제 bootstrap/
 python -B tools/make_canonical_update_packet.py --stock <stock.zip> --output <canonical.zip> --receipt <canonical.receipt.json>
 ```
 
-세 경로는 서로 달라야 하며 출력 ZIP 또는 영수증이 이미 있으면 거절한다. 모든 입력 원소의 이름·CRC를 먼저 검증하고 ZIP을 exclusive-create한다. 출력 ZIP을 다시 읽어 원소 수·순서·메타데이터·SHA256을 대조한 뒤 영수증을 exclusive-create한다. 동시 생성 경쟁도 기존 파일을 덮어쓰지 않는다. 실패·중단으로 이미 만들어진 산출물은 자동 삭제하지 않으며 다음 실행도 거절한다. 담당자가 남은 파일을 확인해 정리하고 새 경로로 실행한다. 성공은 exit 0/stdout `CANONICAL_PACKET_OK`, 실패는 exit 2/stderr `CANONICAL_PACKET_ERROR`다.
+세 경로는 서로 달라야 하며 출력 ZIP 또는 영수증이 이미 있으면 거절한다(대상이 끊어진 심볼릭 링크·디렉터리 링크·정션도 포함하며 원래 링크와 대상을 보존한다). 모든 입력 원소의 이름·CRC를 먼저 검증하고 ZIP을 exclusive-create한다. 출력 ZIP을 다시 읽어 원소 수·순서·메타데이터·SHA256을 대조한 뒤 영수증을 exclusive-create한다. 동시 생성 경쟁도 기존 파일을 덮어쓰지 않는다. 실패·중단으로 이미 만들어진 산출물은 자동 삭제하지 않으며 다음 실행도 거절한다. 담당자가 남은 파일을 확인해 정리하고 새 경로로 실행한다. 성공은 exit 0/stdout `CANONICAL_PACKET_OK`, 실패는 exit 2/stderr `CANONICAL_PACKET_ERROR`다.
 
 영수증은 UTF-8 JSON이며 `schema_version=1`, `stock`·`canonical`의 `{name,size_bytes,sha256}`, `entry_count`, 입력 순서의 `entries`를 기록한다. 각 행은 `{stock_name,canonical_name,stock_sha256,canonical_sha256}`이며 두 원소 SHA가 같아야 한다. 현재 시각과 절대 경로는 넣지 않는다.
 

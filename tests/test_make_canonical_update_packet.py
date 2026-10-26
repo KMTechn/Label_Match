@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import stat
 import zipfile
@@ -123,6 +124,53 @@ def test_existing_destination_is_preserved(tmp_path, existing):
         load_tool().make_packet(stock, output, receipt)
     assert (tmp_path / existing).read_bytes() == b'preserve'
     assert not (receipt if existing == 'output.zip' else output).exists()
+
+
+@pytest.mark.parametrize('destination', ['output.zip', 'receipt.json'])
+@pytest.mark.parametrize('link_kind', [
+    'file-symlink', 'directory-symlink',
+    pytest.param('junction', marks=pytest.mark.skipif(os.name != 'nt', reason='Windows junction')),
+])
+@pytest.mark.parametrize('dangling', [True, False], ids=['dangling', 'live'])
+def test_existing_destination_link_is_refused_before_outputs(
+        tmp_path, capsys, destination, link_kind, dangling):
+    stock, output, receipt = tmp_path / 'stock.zip', tmp_path / 'output.zip', tmp_path / 'receipt.json'
+    stock_zip(stock)
+    stock_before = stock.read_bytes()
+    link, target = tmp_path / destination, tmp_path / 'link-target'
+    if link_kind == 'file-symlink':
+        if not dangling:
+            target.write_bytes(b'preserve')
+        link.symlink_to(target)
+    else:
+        target.mkdir()
+        if link_kind == 'junction':
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+        if dangling:
+            target.rmdir()
+        else:
+            (target / 'sentinel').write_bytes(b'preserve')
+    before_link = os.readlink(link)
+    before_paths = set(tmp_path.iterdir())
+    assert os.path.lexists(link)
+    assert target.exists() is not dangling
+
+    assert load_tool().main([
+        '--stock', str(stock), '--output', str(output), '--receipt', str(receipt),
+    ]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == '' and captured.err == 'CANONICAL_PACKET_ERROR\n'
+    assert os.path.lexists(link) and os.readlink(link) == before_link
+    assert set(tmp_path.iterdir()) == before_paths
+    assert stock.read_bytes() == stock_before
+    assert target.exists() is not dangling
+    if not dangling:
+        preserved = target if link_kind == 'file-symlink' else target / 'sentinel'
+        assert preserved.read_bytes() == b'preserve'
 
 
 @pytest.mark.parametrize('same', ['stock-output', 'stock-receipt', 'output-receipt'])

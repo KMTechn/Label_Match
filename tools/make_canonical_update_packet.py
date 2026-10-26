@@ -60,9 +60,11 @@ def _validate_members(members: list[zipfile.ZipInfo]) -> None:
 
 def make_packet(stock: Path, output: Path, receipt: Path) -> dict:
     """Create a canonical ZIP and its ordered, independently reread SHA receipt."""
-    stock, output, receipt = (Path(path).resolve() for path in (stock, output, receipt))
-    if len({stock, output, receipt}) != 3:
+    stock = Path(stock).resolve()
+    output, receipt = (Path(path).absolute() for path in (output, receipt))
+    if len({path.resolve() for path in (stock, output, receipt)}) != 3:
         raise ValueError('paths must be distinct')
+    # Check and exclusively create the caller's paths, including dangling links.
     if any(os.path.lexists(path) for path in (output, receipt)):
         raise FileExistsError('destination already exists')
 
