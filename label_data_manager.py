@@ -35,6 +35,7 @@ from writer_session_fence import writer_sink
 RECOVERY_MAX_BYTES = 8 * 1024 * 1024
 AUDIT_SEGMENT_BYTES = 1024 * 1024
 STATE_SAVE_LOCK_TIMEOUT_SECONDS = 10.0
+GENERAL_LOG_RETRY_BACKOFF_SECONDS = 1.0
 
 
 def read_recovery_file(path, *, journal_schema=None, current_state=False, expected_bytes=None):
@@ -146,6 +147,10 @@ class DataManager:
         self._writer_errors = []
         self._writer_error_keys = {}
         self._recovered_audit_errors = set()
+        self._log_retry_lock = threading.Lock()
+        self._log_retry_items = {}
+        self._log_retry_errors = {}
+        self._unresolved_log_items = {}
         self._state_lock = threading.RLock()
         self._checkpoint_generation = 0
         self._force_exit_prepared_checkpoint = None
@@ -192,10 +197,16 @@ class DataManager:
             log_item = None
             got_item = False
             failed_write = False
+            append_started = False
+            retry_write = False
             try:
                 log_item = self.log_queue.get()
                 got_item = True
-                if log_item is None: break
+                if log_item is None:
+                    if self.has_pending_log_retries:
+                        self.log_queue.put(None)
+                        continue
+                    break
                 filepath = self._get_log_filepath_for_item(log_item)
                 file_exists = os.path.exists(filepath)
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -208,7 +219,11 @@ class DataManager:
                         context = audit_context
                         audit_context = None
                         audit_stream = None
+                        # A previous audit handle's close is not a retryable
+                        # failure of this ordinary row's open/stat.
+                        append_started = True
                         context.__exit__(None, None, None)
+                        append_started = False
                     if audit_key:
                         if audit_stream is None:
                             context = self._open_file(filepath, 'a+', newline='', encoding='utf-8-sig')
@@ -235,7 +250,9 @@ class DataManager:
                     empty = not file_exists or os.stat(filepath).st_size == 0
                     header = ["timestamp", "worker_name", "event", "details"]
                     if empty:
+                        append_started = True
                         writer.writerow(header)
+                    append_started = True
                     writer.writerow(log_item)
                     if audit_key or str(log_item[2] or "") in self._durable_event_types():
                         f.flush()
@@ -251,12 +268,17 @@ class DataManager:
                         index['keys'][audit_key] = list(log_item)
                         index['signature'] = self._csv_signature(f)
                         self._audit_csv_prefixes[index['relative']] = self._csv_prefix(index)
+                self._complete_general_log_retry(log_item)
             except queue.Empty:
                 continue
             except Exception as e:
                 failed_write = True
-                self._writer_errors.append(e)
-                self._writer_error_keys[id(e)] = self._audit_key(log_item)
+                retry_write = (isinstance(e, OSError) and not append_started
+                               and self._is_general_log_item(log_item))
+                self._remember_log_write_failure(log_item, e, retry=retry_write)
+                if retry_write:
+                    # Reuse the exact timestamp, worker, event and details.
+                    self.log_queue.put(log_item)
                 print(f"로그 쓰기 스레드 오류: {e}")
             finally:
                 if audit_stream is not None and (failed_write or log_item is None or self.log_queue.empty()):
@@ -271,6 +293,38 @@ class DataManager:
                         print(f"로그 쓰기 스레드 오류: {error}")
                 if got_item:
                     self.log_queue.task_done()
+                if retry_write:
+                    time.sleep(GENERAL_LOG_RETRY_BACKOFF_SECONDS)
+    @property
+    def has_pending_log_retries(self):
+        with self._log_retry_lock:
+            return bool(self._log_retry_items)
+    def _is_general_log_item(self, log_item):
+        return (log_item is not None and not self._audit_key(log_item)
+                and str(log_item[2] or '') not in self._durable_event_types())
+    def _remember_log_write_failure(self, log_item, error, *, retry):
+        with self._log_retry_lock:
+            item_id = id(log_item)
+            if self._is_general_log_item(log_item):
+                self._unresolved_log_items[item_id] = log_item
+            if retry and item_id in self._log_retry_items:
+                return  # Retain the first failure without an unbounded error list.
+            if not retry:
+                self._log_retry_items.pop(item_id, None)
+                self._log_retry_errors.pop(item_id, None)
+            self._writer_errors.append(error)
+            self._writer_error_keys[id(error)] = self._audit_key(log_item)
+            if retry:
+                self._log_retry_items[item_id] = log_item
+                self._log_retry_errors[item_id] = id(error)
+    def _complete_general_log_retry(self, log_item):
+        with self._log_retry_lock:
+            item_id = id(log_item)
+            self._unresolved_log_items.pop(item_id, None)
+            self._log_retry_items.pop(item_id, None)
+            recovered = self._log_retry_errors.pop(item_id, None)
+            if recovered is not None:
+                self._recovered_audit_errors.add(recovered)
     @staticmethod
     def _csv_signature(stream):
         stat = os.fstat(stream.fileno())
@@ -544,10 +598,16 @@ class DataManager:
     def flush(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
         while self.log_queue.unfinished_tasks:
+            with self._log_retry_lock:
+                if self.log_queue.unfinished_tasks <= len(self._log_retry_items):
+                    break  # Ordinary retry rows must not block saved work.
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("Log writer did not flush before timeout")
             time.sleep(0.01)
-        if any(id(error) not in self._recovered_audit_errors for error in self._writer_errors):
+        with self._log_retry_lock:
+            retry_errors = set(self._log_retry_errors.values())
+        if any(id(error) not in self._recovered_audit_errors and id(error) not in retry_errors
+               for error in self._writer_errors):
             raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
         return True
     @contextmanager

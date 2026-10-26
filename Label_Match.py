@@ -7143,9 +7143,14 @@ class Label_Match(tk.Tk):
         label = self.__dict__.get("relay_screen_status_label")
         if label is None:
             return None
+        retry_pending = bool(getattr(self.__dict__.get("data_manager"), "has_pending_log_retries", False))
+        text = LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, "")
+        if retry_pending:
+            notice = "작업 기록 저장을 다시 시도하고 있습니다 · 작업은 계속할 수 있습니다"
+            text = '\n'.join(part for part in (text, notice) if part)
         label.configure(
-            text=LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, ""),
-            style="Error.TLabel" if state == "stopped" else "Status.TLabel",
+            text=text,
+            style="Error.TLabel" if state == "stopped" or retry_pending else "Status.TLabel",
         )
         return None
 
