@@ -30,7 +30,8 @@
         "scan_2": "three.wav",
         "scan_3": "four.wav",
         "pass": "pass.wav",
-        "fail": "fail.wav"
+        "fail": "fail.wav",
+        "duplicate": "duplicate.wav"
     },
     "ui_persistence": {
         "scale_factor": 1.6,

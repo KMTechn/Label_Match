@@ -7,7 +7,7 @@
 'use strict';
 (() => {
   const { el, $, icon, code, drawResult } = window.AppFrame;
-  const SOUND = { scan_master: '성공음', scan_1: '성공음', pass: '완료음', fail: '오류음', error: '오류음' };
+  const SOUND = { scan_master: '성공음', scan_1: '성공음', pass: '완료음', fail: '오류음', error: '오류음', duplicate: '이미 찍음' };
   const SOURCE = { server: '웹에서 바꿈', last_saved: '마지막 받은 값 · 웹에서 바꿈', default: '기본값 · 웹에서 바꿈' };
   const ENDED = { full: '완료했습니다', partial: '부분 제출 완료', failed: '처리하지 못했습니다\n잠시 후 다시 시도하세요' };
   const MARK = { complete: 'check', current: 'now', swap: 'swap', error: 'alert' };
