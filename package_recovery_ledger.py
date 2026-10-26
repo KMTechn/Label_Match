@@ -40,12 +40,13 @@ def validate_stored_recovery_storage(conn):
         raise PackageRecoveryEvidenceError() from None
 
 
-def admit_recovery_storage_readonly(db_path):
+def admit_recovery_storage_readonly(db_path, *, schema_gate=None):
     """Refuse broken stored evidence from a read-only view, before any writer opens.
 
     A refusal must not checkpoint or otherwise rewrite the store files. A store
     that does not exist yet, or lacks the evidence tables, is left to the
-    writing initializer.
+    writing initializer. The schema gate runs before evidence validation so a
+    newer store keeps the writing initializer's existing refusal and error code.
     """
     path = Path(db_path)
     if not path.is_file():
@@ -57,6 +58,14 @@ def admit_recovery_storage_readonly(db_path):
     try:
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute('BEGIN')
+            if schema_gate is not None:
+                try:
+                    schema_gate(conn)
+                except PackageLogisticsError as error:
+                    if getattr(error, 'code', None) == 'PACKAGE_OUTBOX_SCHEMA_TOO_NEW':
+                        return
+                    raise
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         except sqlite3.Error:
             return  # unreadable header etc.: the writing initializer reports it as before

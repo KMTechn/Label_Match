@@ -58,6 +58,8 @@ from package_outbox import (
 from package_errors import (
     MAX_RETRY_AFTER_SECONDS,
     PackageLogisticsError,
+    PackageRecoveryEvidenceError,
+    PackageRecoveryStorageError,
     PackageTransportError,
     PackageApiError,
     _bounded_retry_after_seconds,
@@ -658,7 +660,7 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
 
 def _admit_recovery_storage_readonly(db_path) -> None:
     from package_recovery_ledger import admit_recovery_storage_readonly
-    admit_recovery_storage_readonly(db_path)
+    admit_recovery_storage_readonly(db_path, schema_gate=_require_supported_outbox_schema)
 
 
 class PackageOutbox(_PackageOutbox):
@@ -696,11 +698,19 @@ class PackageCancellationOutbox:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=10000")
+        refused = False
         try:
             with conn:
                 yield conn
+        except (PackageRecoveryEvidenceError, PackageRecoveryStorageError):
+            refused = True
+            raise
         finally:
-            close_sqlite_connection(conn)
+            # Refusal must not move committed WAL content into the database.
+            if refused:
+                conn.close()
+            else:
+                close_sqlite_connection(conn)
 
     def initialize(self) -> None:
         with self._connect() as conn:
