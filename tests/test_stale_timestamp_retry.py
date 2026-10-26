@@ -352,6 +352,102 @@ def test_non_json_error_response_is_retryable(queued, monkeypatch, mode, status)
     )
     assert result.retryable is True
     assert queue_row(database)['status'] == 'retry_wait'
+    assert result.receipt['_local_response_parse_failed'] is True
+    assert runtime._result_summary(result)['response_parse_failed'] is True
+
+
+@pytest.mark.parametrize('status', [400, 401, 403, 404, 523, 599])
+def test_non_json_lease_error_is_retryable(queued, monkeypatch, status):
+    database, _, credentials = queued
+
+    class ProxyResponse:
+        status_code = status
+        headers = {}
+
+        def json(self):
+            raise ValueError('proxy response is not JSON')
+
+    class Session:
+        def post(self, *_args, **_kwargs):
+            return ProxyResponse()
+
+    monkeypatch.setattr(push, 'prepare_runtime_metadata', lambda **_kwargs:
+        leases._post_lease_request(request_value={}, credentials=credentials,
+                                   session=Session(), timeout=1)[1])
+    result = push.drain_one_relay_batch(db_path=database, credentials=credentials)
+    assert result.retryable is True
+    assert queue_row(database)['status'] == 'retry_wait'
+    assert result.receipt['_local_response_parse_failed'] is True
+
+
+@pytest.mark.parametrize('status', [200, 302, 401, 403])
+def test_json_nonobject_keeps_existing_protection(queued, status):
+    database, _, credentials = queued
+    result = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials,
+        session=SequenceFakeSession([FakeResponse(status, [])]),
+    )
+    assert '_local_response_parse_failed' not in result.receipt
+    assert result.retryable is False
+
+
+@pytest.mark.parametrize('outcome', ['explicit', 'local', 'unknown', 'nonjson', 'missing_committed'])
+def test_retry_releases_only_confirmed_unconsumed_assignment(tmp_path, monkeypatch, outcome):
+    from tests.test_producer_runtime_client import _LeaseSession, _credentials, _make_pending_relay
+    database = tmp_path / 'authority.sqlite3'
+    credentials = _credentials()
+    for relay_id in ('relay-a', 'relay-b'):
+        _make_pending_relay(database, tmp_path, relay_id)
+
+    class Session(_LeaseSession):
+        def post(self, url, **kwargs):
+            if url.endswith(leases.ENDPOINT_PATH):
+                return super().post(url, **kwargs)
+            if outcome == 'unknown':
+                raise TimeoutError('reply lost')
+            if outcome == 'nonjson':
+                class ProxyResponse:
+                    status_code = 403
+                    headers = {}
+                    def json(self):
+                        raise ValueError('proxy reply')
+                return ProxyResponse()
+            if outcome == 'missing_committed':
+                return FakeResponse(403, {'error': {'code': 'proxy_error'}})
+            return refusal('temporary_unavailable', 503)
+
+    session = Session()
+    if outcome == 'local':
+        def fail_headers(*_args, **_kwargs):
+            raise PermissionError('local busy file')
+        monkeypatch.setattr(push, 'signed_headers', fail_headers)
+    result = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials, session=session,
+        target_relay_id='relay-a',
+    )
+    assert result.retryable is True
+    with sqlite3.connect(database) as conn:
+        conn.row_factory = sqlite3.Row
+        authority = conn.execute('SELECT * FROM direct_sync_runtime_authority').fetchone()
+        row = conn.execute("SELECT * FROM direct_sync_relay_batches WHERE relay_id='relay-a'").fetchone()
+    metadata = json.loads(row['metadata_json'])
+    released = outcome in {'explicit', 'local'}
+    assert row['status'] == 'retry_wait'
+    assert authority['status'] == 'ACTIVE'
+    assert (authority['assigned_relay_id'] is None) is released
+    assert sum(field in metadata for field in leases.METADATA_FIELDS) == (0 if released else 5)
+    assert metadata['client_batch_id'] == 'relay-a'
+    other = push.claim_next_relay_batch(db_path=database, worker_id='next-worker', target_relay_id='relay-b')
+    preparation = leases.prepare_runtime_metadata(
+        db_path=database, relay_id=other.relay_id, metadata=other.metadata,
+        credentials=credentials, expected_lease_owner=other.lease_owner,
+        expected_attempt_count=other.attempt_count, session=session,
+    )
+    if released:
+        assert preparation.metadata is not None
+    else:
+        assert preparation.retryable is True
+        assert preparation.error_code == 'runtime_request_in_flight'
 
 
 @pytest.mark.parametrize('mode', ['observe', 'enforce'])
