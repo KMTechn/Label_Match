@@ -486,7 +486,12 @@ def overlay_release(config, source):
         inventory(bundle)
 
 
-def prepare_update(config, signer, *, candidate_version="v2.0.125", base_bundle=None,
+def next_version(version):
+    head, tail = version.rsplit(".", 1)
+    return head + "." + str(int(tail) + 1)
+
+
+def prepare_update(config, signer, *, candidate_version=None, base_bundle=None,
                    offer_name="offer", include_compatibility=True, compatibility_floor=None):
     """Prepare a signed fixture before any installed relay is alive."""
     import auto_update as updates
@@ -495,8 +500,8 @@ def prepare_update(config, signer, *, candidate_version="v2.0.125", base_bundle=
     root = config.parent
     current = Path(base_bundle) if base_bundle is not None else Path(value["selected"])
     before = updates.version_manifest(current)
-    assert (before["version"], candidate_version) in {
-        ("v2.0.124", "v2.0.125"), ("v2.0.125", "v2.0.126")}
+    candidate_version = candidate_version or next_version(before["version"])
+    assert candidate_version == next_version(before["version"])
     assert offer_name in {"offer", "offer126"}
     offer = root / offer_name
     candidate = offer / "Label_Match"
@@ -526,7 +531,7 @@ def prepare_update(config, signer, *, candidate_version="v2.0.125", base_bundle=
                            ("label_data_generation.py", "CURRENT_VERSION")):
         path = source125 / name
         raw = path.read_bytes()
-        old = (constant + ' = "v2.0.124"').encode()
+        old = (constant + ' = "' + before["version"] + '"').encode()
         assert raw.count(old) == 1
         path.write_bytes(raw.replace(old, (constant + ' = "' + candidate_version + '"').encode(), 1))
     declarations = []

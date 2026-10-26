@@ -106,7 +106,7 @@ def test_relay_auto_update_124_to_125_reaches_running_and_owner_readback(tmp_pat
             host.prove_next_cycle(config, name="updated", process_id=status["process_id"],
                                   accept_initial_pass=True)
             declared = json.loads((tmp_path / "machine/versions" / target / "portable-manifest.json").read_bytes())
-            assert declared["version"] == "v2.0.125"
+            assert declared["version"] == host.next_version(__import__("label_data_generation").CURRENT_VERSION)
         finally:
             host.stop_owned_relays(config)
 

@@ -19,9 +19,9 @@ def test_actual_timeout_retained_candidate_accepts_next_signed_update(tmp_path):
     with P256KeyPair.generate() as signer:
         config = host.prepare(tmp_path, Path(__file__).resolve().parents[1], Path(packet), signer=signer)
         candidate = host.prepare_update(config, signer, include_compatibility=False)
-        following = host.prepare_update(config, signer, candidate_version='v2.0.126',
+        following = host.prepare_update(config, signer,
             base_bundle=tmp_path / 'offer/Label_Match', offer_name='offer126',
-            compatibility_floor='v2.0.124')
+            compatibility_floor=__import__('label_data_generation').CURRENT_VERSION)
         control = tmp_path / 'machine/update-control'
         host.write(tmp_path / diagnostic.CONTROL, dict(candidate=candidate, following=following))
         import writer_session_fence as fence
