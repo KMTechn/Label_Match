@@ -669,6 +669,7 @@ def test_enforce_other_401_keeps_legacy_review(queued, monkeypatch):
 @pytest.mark.parametrize('known_date', [False, True])
 def test_clock_rollback_reclaims_stale_wait_on_next_cycle(queued, monkeypatch, targeted, known_date):
     database, row, credentials = queued
+    due(database)
     instant = [PC_TIME]
 
     class Clock(datetime):
@@ -691,6 +692,7 @@ def test_clock_rollback_reclaims_stale_wait_on_next_cycle(queued, monkeypatch, t
 
 def test_clock_rollback_does_not_shorten_other_retry_wait(queued, monkeypatch):
     database, _, credentials = queued
+    due(database)
     instant = [PC_TIME]
 
     class Clock(datetime):
