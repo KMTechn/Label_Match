@@ -5,6 +5,7 @@ event projection and file names; this module does not import the Tk application.
 """
 
 import csv
+from collections import deque
 from contextlib import contextmanager, nullcontext
 import hashlib
 import io
@@ -16,6 +17,11 @@ import time
 import uuid
 import label_worker_roster
 from pathlib import Path
+
+
+class _LogCloseRequest:
+    """Identify one close attempt so a cancelled sentinel cannot stop a later one."""
+
 
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
 from protected_admin import (
@@ -144,6 +150,8 @@ class DataManager:
         self.log_queue = queue.Queue()
         self._close_lock = threading.Lock()
         self._close_requested = False
+        self._close_request = None
+        self._writer_stopping = False
         self._writer_errors = []
         self._writer_error_keys = {}
         self._recovered_audit_errors = set()
@@ -193,6 +201,9 @@ class DataManager:
         audit_context = None
         audit_path = None
         last_audit_key = ''
+        pending_general = deque()
+        retry_blocked = False
+        round_remaining = 0
         while True:
             log_item = None
             got_item = False
@@ -200,13 +211,32 @@ class DataManager:
             append_started = False
             retry_write = False
             try:
-                log_item = self.log_queue.get()
+                if retry_blocked:
+                    log_item = self.log_queue.get_nowait()
+                    round_remaining -= 1
+                elif pending_general:
+                    log_item = pending_general.popleft()
+                else:
+                    log_item = self.log_queue.get()
                 got_item = True
-                if log_item is None:
-                    if self.has_pending_log_retries:
-                        self.log_queue.put(None)
-                        continue
+                if isinstance(log_item, _LogCloseRequest):
+                    with self._close_lock:
+                        if log_item is not self._close_request:
+                            continue
+                        if self.has_pending_log_retries:
+                            self.log_queue.put(log_item)
+                            continue
+                        self._writer_stopping = True
                     break
+                if retry_blocked and self._is_general_log_item(log_item):
+                    # Hold later ordinary rows behind the oldest retry, while
+                    # still allowing durable/scanner work through this round.
+                    pending_general.append(log_item)
+                    with self._log_retry_lock:
+                        self._log_retry_items[id(log_item)] = log_item
+                        self._unresolved_log_items[id(log_item)] = log_item
+                    got_item = False  # This buffered row still owns its queue task.
+                    continue
                 filepath = self._get_log_filepath_for_item(log_item)
                 file_exists = os.path.exists(filepath)
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -270,6 +300,7 @@ class DataManager:
                         self._audit_csv_prefixes[index['relative']] = self._csv_prefix(index)
                 self._complete_general_log_retry(log_item)
             except queue.Empty:
+                round_remaining = 0
                 continue
             except Exception as e:
                 failed_write = True
@@ -278,10 +309,14 @@ class DataManager:
                 self._remember_log_write_failure(log_item, e, retry=retry_write)
                 if retry_write:
                     # Reuse the exact timestamp, worker, event and details.
-                    self.log_queue.put(log_item)
+                    pending_general.appendleft(log_item)
+                    got_item = False
+                    retry_blocked = True
+                    round_remaining = self.log_queue.qsize()
                 print(f"로그 쓰기 스레드 오류: {e}")
             finally:
-                if audit_stream is not None and (failed_write or log_item is None or self.log_queue.empty()):
+                if audit_stream is not None and (failed_write or isinstance(log_item, _LogCloseRequest)
+                                                 or self.log_queue.empty()):
                     context = audit_context
                     audit_context = None
                     audit_stream = None
@@ -293,8 +328,9 @@ class DataManager:
                         print(f"로그 쓰기 스레드 오류: {error}")
                 if got_item:
                     self.log_queue.task_done()
-                if retry_write:
+                if retry_blocked and round_remaining <= 0:
                     time.sleep(GENERAL_LOG_RETRY_BACKOFF_SECONDS)
+                    retry_blocked = False
     @property
     def has_pending_log_retries(self):
         with self._log_retry_lock:
@@ -307,7 +343,7 @@ class DataManager:
             item_id = id(log_item)
             if self._is_general_log_item(log_item):
                 self._unresolved_log_items[item_id] = log_item
-            if retry and item_id in self._log_retry_items:
+            if retry and item_id in self._log_retry_errors:
                 return  # Retain the first failure without an unbounded error list.
             if not retry:
                 self._log_retry_items.pop(item_id, None)
@@ -588,13 +624,22 @@ class DataManager:
             if not self._close_requested:
                 self._close_requested = True
                 if self.log_thread.is_alive():
-                    self.log_queue.put(None)
+                    self._close_request = _LogCloseRequest()
+                    self.log_queue.put(self._close_request)
         self.log_thread.join(timeout)
         if self.log_thread.is_alive():
             raise TimeoutError("Log writer did not stop before timeout")
         if any(id(error) not in self._recovered_audit_errors for error in self._writer_errors):
             raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
         return True
+    def _cancel_close_request(self):
+        with self._close_lock:
+            if (not self._close_requested or self._writer_stopping
+                    or not self.log_thread.is_alive()):
+                return False
+            self._close_requested = False
+            self._close_request = None
+            return True
     def flush(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
         while self.log_queue.unfinished_tasks:

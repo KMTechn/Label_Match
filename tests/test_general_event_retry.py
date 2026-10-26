@@ -94,6 +94,169 @@ def test_close_waits_for_requeued_row_instead_of_passing_its_sentinel(tmp_path):
             pass
 
 
+def test_settings_timeout_reopens_same_writer_and_next_event_is_saved(tmp_path, monkeypatch):
+    import Label_Match as module
+    from tests.test_label_match_core import _FakeWindow
+
+    blocked = threading.Event()
+    blocked.set()
+    failed = threading.Event()
+
+    def open_csv(path, mode, *args, **kwargs):
+        if blocked.is_set():
+            failed.set()
+            raise PermissionError('synthetic settings CSV lock lasting over ten seconds')
+        return open(path, mode, *args, **kwargs)
+
+    manager = manager_for(tmp_path, open_csv)
+    app = object.__new__(module.Label_Match)
+    app.current_set_info = {'id': None}
+    app.is_running_simulation = app.is_generating_test_logs = False
+    app.run_tests = False
+    app.worker_name = 'old-worker'
+    app.save_directory = str(tmp_path)
+    app.data_manager = manager
+    app._save_app_settings = lambda: pytest.fail('failed settings must not be saved')
+    app._update_save_directory = lambda: pytest.fail('failed settings must not change paths')
+    window = _FakeWindow()
+    errors = []
+    monkeypatch.setattr(module.messagebox, 'showerror', lambda *args, **kwargs: errors.append(args))
+    try:
+        manager.log_event('ERROR_INPUT', {'raw_input': 'before-settings'})
+        assert failed.wait(5)
+        assert manager.flush(timeout=5)
+        started = time.monotonic()
+        app._save_settings_and_close(window, 'next-worker')
+        assert time.monotonic() - started >= module.LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS
+        assert errors and not window.destroyed
+        assert app.worker_name == 'old-worker'
+        assert app.data_manager is manager
+        assert manager.log_thread.is_alive()
+        assert not manager._close_requested
+        manager.log_event('ERROR_INPUT', {'raw_input': 'after-settings'})
+        blocked.clear()
+        assert manager.close(timeout=5)
+        with Path(manager._get_log_filepath()).open(encoding='utf-8-sig', newline='') as stream:
+            rows = list(csv.DictReader(stream))
+        assert [json.loads(row['details'])['raw_input'] for row in rows] == [
+            'before-settings', 'after-settings']
+    finally:
+        blocked.clear()
+        try:
+            manager.close(timeout=5)
+        except RuntimeError:
+            pass
+
+
+def test_retry_preserves_general_fifo_while_protected_rows_can_pass(tmp_path, monkeypatch):
+    import label_data_manager as persistence
+
+    first_attempt = threading.Event()
+    start = threading.Event()
+    blocked = [True]
+    sleeps = []
+    original_sleep = time.sleep
+
+    def sleep(seconds):
+        if seconds == persistence.GENERAL_LOG_RETRY_BACKOFF_SECONDS:
+            sleeps.append(seconds)
+            blocked[0] = False
+        else:
+            original_sleep(seconds)
+
+    monkeypatch.setattr(persistence, 'time', SimpleNamespace(sleep=sleep, monotonic=time.monotonic))
+    manager = manager_for(tmp_path, durable_events={'TRAY_COMPLETE'})
+    filepath = manager._get_log_filepath_for_item
+
+    def resolve(item):
+        if item[2] == 'ERROR_INPUT' and blocked[0]:
+            first_attempt.set()
+            assert start.wait(5)
+            raise PermissionError('synthetic FIFO path lock')
+        return filepath(item)
+
+    monkeypatch.setattr(manager, '_get_log_filepath_for_item', resolve)
+    try:
+        manager.log_event('ERROR_INPUT', {'raw_input': 'A'})
+        assert first_attempt.wait(5)
+        for marker in ('B', 'C'):
+            manager.log_event('ERROR_INPUT', {'raw_input': marker})
+        manager.log_event('TRAY_COMPLETE', {'raw_input': 'durable'})
+        start.set()
+        assert manager.close(timeout=5)
+        with Path(manager._get_log_filepath()).open(encoding='utf-8-sig', newline='') as stream:
+            rows = list(csv.DictReader(stream))
+        assert [json.loads(row['details'])['raw_input'] for row in rows
+                if row['event'] == 'ERROR_INPUT'] == ['A', 'B', 'C']
+        assert [row['event'] for row in rows].count('TRAY_COMPLETE') == 1
+        assert len(rows) == 4
+        assert sleeps == [persistence.GENERAL_LOG_RETRY_BACKOFF_SECONDS]
+        assert manager.log_queue.unfinished_tasks == 0
+    finally:
+        blocked[0] = False
+        start.set()
+        manager.close(timeout=5)
+
+
+def test_many_locked_general_rows_back_off_once_before_durable_and_audit(tmp_path, monkeypatch):
+    import label_data_manager as persistence
+
+    first_attempt = threading.Event()
+    start = threading.Event()
+    protected = threading.Event()
+    blocked = [True]
+    sleeps = []
+    protected_delays = []
+    original_sleep = time.sleep
+
+    def sleep(seconds):
+        if seconds == persistence.GENERAL_LOG_RETRY_BACKOFF_SECONDS:
+            sleeps.append(seconds)
+            original_sleep(.01)
+        else:
+            original_sleep(seconds)
+
+    monkeypatch.setattr(persistence, 'time', SimpleNamespace(sleep=sleep, monotonic=time.monotonic))
+    manager = manager_for(tmp_path, durable_events={'TRAY_COMPLETE'})
+    filepath = manager._get_log_filepath_for_item
+
+    def resolve(item):
+        if item[2] == 'ERROR_INPUT' and blocked[0]:
+            first_attempt.set()
+            assert start.wait(5)
+            raise PermissionError('synthetic permanently locked ordinary path')
+        if item[2] != 'ERROR_INPUT':
+            protected_delays.append(len(sleeps))
+            if len(protected_delays) == 2:
+                protected.set()
+        return filepath(item)
+
+    monkeypatch.setattr(manager, '_get_log_filepath_for_item', resolve)
+    try:
+        manager.log_event('ERROR_INPUT', {'raw_input': 'A'})
+        assert first_attempt.wait(5)
+        for marker in ('B', 'C', 'D'):
+            manager.log_event('ERROR_INPUT', {'raw_input': marker})
+        manager.log_event('TRAY_COMPLETE', {})
+        manager.log_event('scanner-audit', {'scanner_audit': {'key': 'round-audit',
+            'occurred_at': datetime.now().isoformat(), 'operator': 'fixture-worker'}})
+        start.set()
+        assert protected.wait(5)
+        assert protected_delays == [0, 0] or max(protected_delays) <= 1
+        assert manager.flush(timeout=5)
+        assert manager.has_pending_log_retries
+        blocked[0] = False
+        assert manager.close(timeout=5)
+        with Path(manager._get_log_filepath()).open(encoding='utf-8-sig', newline='') as stream:
+            rows = list(csv.DictReader(stream))
+        assert len(rows) == 6
+        assert manager.log_queue.unfinished_tasks == 0
+    finally:
+        blocked[0] = False
+        start.set()
+        manager.close(timeout=5)
+
+
 @pytest.mark.parametrize('event', ['TRAY_COMPLETE', 'scanner-audit'])
 def test_durable_and_scanner_failures_keep_the_existing_sticky_flush_contract(tmp_path, event):
     attempts = []
@@ -156,14 +319,15 @@ def test_requeued_general_event_notice_uses_existing_relay_label_without_blockin
     import Label_Match as module
     options = {}
     manager = SimpleNamespace(has_pending_log_retries=True)
-    app = SimpleNamespace(data_manager=manager,
-        relay_screen_status_label=SimpleNamespace(configure=lambda **values: options.update(values)))
+    app = object.__new__(module.Label_Match)
+    app.data_manager = manager
+    app.relay_screen_status_label = SimpleNamespace(configure=lambda **values: options.update(values))
     module.Label_Match._render_relay_screen_status(app, state)
     notice = '작업 기록을 다시 저장하는 중입니다 — 작업은 그대로 계속하세요'
     assert options['text'].splitlines()[-1] == notice
     assert options['text'].splitlines()[0] == module.LABEL_MATCH_RELAY_SCREEN_TEXT[state]
     assert options['style'] == ('Error.TLabel' if state == 'stopped' else 'Status.TLabel')
-    assert not hasattr(app, '_workflow_blocking_notice')
+    assert '_workflow_blocking_notice' not in app.__dict__
     manager.has_pending_log_retries = False
     module.Label_Match._render_relay_screen_status(app, state)
     assert options['text'] == module.LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, '')
@@ -188,6 +352,20 @@ def test_web_general_retry_notice_is_quiet_nonblocking_and_disappears(state):
     if state == 'stopped':
         assert after == [{'kind': 'warn', 'code': None,
                           'text': module.LABEL_MATCH_RELAY_SCREEN_TEXT['stopped']}]
+
+
+def test_web_retry_notice_does_not_displace_either_pending_dialog():
+    import Label_Match as module
+    from label_screen_bridge import _alerts
+
+    dialogs = [{'kind': 'warn', 'code': None, 'text': text} for text in ('dialog-one', 'dialog-two')]
+    app = SimpleNamespace(data_manager=SimpleNamespace(has_pending_log_retries=True),
+        _logistics_relay_state='stopped', _compact_operator_notice_message=lambda text: text)
+    notice = SimpleNamespace(kind='scanner_notice', title='existing-band', message='details', tone='danger')
+    processor = SimpleNamespace(app=app, module=module, _dialogs=dialogs)
+    alerts = _alerts(processor, None, notice)
+    assert len(alerts) == 4
+    assert alerts[-2:] == dialogs
 
 
 def test_general_retry_does_not_block_five_scan_completion_or_next_package(packaging, monkeypatch):

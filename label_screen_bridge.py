@@ -821,9 +821,9 @@ def _alerts(processor, view, notice):
         alerts.append(band)
     if app.__dict__.get("_logistics_relay_state") == "stopped":
         alerts.append({"kind": "warn", "code": None, "text": module.LABEL_MATCH_RELAY_SCREEN_TEXT["stopped"]})
+    alerts.extend(processor._dialogs)
     if getattr(app.__dict__.get("data_manager"), "has_pending_log_retries", False):
         alerts.append({"kind": "quiet", "code": None, "text": module.LABEL_MATCH_LOG_RETRY_NOTICE})
-    alerts.extend(processor._dialogs)
     return alerts[:4]
 
 

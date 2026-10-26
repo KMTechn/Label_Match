@@ -7141,6 +7141,7 @@ class Label_Match(tk.Tk):
         return _schedule_reused_relay_verification(self, report)
 
     def _render_relay_screen_status(self, state):
+        self._render_save_status()
         label = self.__dict__.get("relay_screen_status_label")
         if label is None:
             return None
@@ -7153,6 +7154,19 @@ class Label_Match(tk.Tk):
             style="Error.TLabel" if state == "stopped" else "Status.TLabel",
         )
         return None
+
+    def _render_save_status(self, text=None):
+        label = self.__dict__.get("save_status_label")
+        if label is None:
+            return
+        retry_pending = bool(getattr(self.__dict__.get("data_manager"), "has_pending_log_retries", False))
+        if retry_pending:
+            text = LABEL_MATCH_LOG_RETRY_NOTICE
+        elif text is None:
+            if label.cget("text") != LABEL_MATCH_LOG_RETRY_NOTICE:
+                return
+            text = ""
+        label.config(text=text, style="Status.TLabel" if retry_pending else "Save.Success.TLabel")
 
     def show_loading_overlay(self):
         self.loading_overlay.grid(row=0, column=0, rowspan=3, sticky='nsew')
@@ -9310,7 +9324,8 @@ class Label_Match(tk.Tk):
             return False
         log_thread = getattr(failed_manager, 'log_thread', None)
         if log_thread is not None and log_thread.is_alive():
-            return False
+            cancel_close = getattr(failed_manager, '_cancel_close_request', None)
+            return bool(callable(cancel_close) and cancel_close())
         try:
             self.data_manager = DataManager(
                 failed_manager.save_directory,
@@ -19260,8 +19275,8 @@ class Label_Match(tk.Tk):
         local_notice = _label_match_local_completion_notice(details)
         if local_notice:
             saved_text = f"{saved_text} · {local_notice}"
-        self.save_status_label.config(text=f"✓ {saved_text} ({datetime.now().strftime('%H:%M:%S')})")
-        self.after(3000, lambda: self.save_status_label.config(text=""))
+        self._render_save_status(f"✓ {saved_text} ({datetime.now().strftime('%H:%M:%S')})")
+        self.after(3000, lambda: self._render_save_status(""))
         self._update_summary_tree()
         returned = self._return_to_idle_after_finalized_set()
         if returned and _durable_completion is not None:
@@ -20734,8 +20749,8 @@ class Label_Match(tk.Tk):
         text = self._barcode_detail_text(details)
         self.clipboard_clear()
         self.clipboard_append(text)
-        self.save_status_label.config(text=f"✓ 바코드 원문 복사됨 ({datetime.now().strftime('%H:%M:%S')})")
-        self.after(2500, lambda: self.save_status_label.config(text=""))
+        self._render_save_status(f"✓ 바코드 원문 복사됨 ({datetime.now().strftime('%H:%M:%S')})")
+        self.after(2500, lambda: self._render_save_status(""))
 
     def _show_selected_history_detail_window(self, event=None):
         iid = self._selected_history_iid()

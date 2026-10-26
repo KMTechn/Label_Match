@@ -2705,7 +2705,7 @@ def test_data_manager_close_timeout_raises_when_writer_does_not_stop():
     with pytest.raises(TimeoutError):
         module.DataManager.close(manager, timeout=0.01)
 
-    assert manager.log_queue.get_nowait() is None
+    assert manager.log_queue.get_nowait() is manager._close_request
     assert manager.log_thread.join_timeout == 0.01
 
 
@@ -2717,7 +2717,7 @@ def test_data_manager_close_raises_writer_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module, "open", failing_open, raising=False)
     manager = module.DataManager(str(tmp_path), "포장실", "worker-a", "PC01")
-    manager.log_event("TEST_EVENT", {"value": 1})
+    manager.log_event("APP_CLOSE", {"value": 1})
 
     with pytest.raises(RuntimeError, match="forced write failure"):
         manager.close(timeout=5.0)
@@ -2731,7 +2731,7 @@ def test_data_manager_flush_raises_writer_error_before_close(tmp_path, monkeypat
 
     monkeypatch.setattr(module, "open", failing_open, raising=False)
     manager = module.DataManager(str(tmp_path), "포장실", "worker-a", "PC01")
-    manager.log_event("TEST_EVENT", {"value": 1})
+    manager.log_event("APP_CLOSE", {"value": 1})
 
     with pytest.raises(RuntimeError, match="forced write failure"):
         manager.flush(timeout=5.0)
