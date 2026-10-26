@@ -1,3 +1,4 @@
+- 10/27 sub-710: 기동 실패·조기 종료를 UNKNOWN 다시 기회 예산으로 처리하고, 초기 잠금 비경합의 상속 READY 창도 원 applied_at·rollback_at 마감을 유지한다. sub-708 P2-1·P2-2 재현과 정본 선언 write→check 근거: work/program/w9firstupd/sub-710/RESULT.md.
 - 10/27 sub-695: READY900 검토 P1-1 두 앱 도우미의 죽은 분류 제거·선언 갱신, P2-2 서명된 SHA만 영구 거절·공간 부족/설치판 오류 다시 기회; P2-1 CA 전용 failed-support PS 함수는 포장에 없음. RED→GREEN·선언·호출자 근거는 work/program/w9firstupd/sub-695/RESULT.md. P3 메모는 11/15 후속으로 보존한다.
 - 10/26 sub-659 (P1·123/126): 후보·되돌림 READY 900초 / bootstrap 상한 1140초, 준비 중 일시 실패는 마지막 시도+900초 / 24시간 내 3회 예산을 같은 retry_shas로 보존한다. 소진/모르는 예외로 SHA를 영구 거절하지 않으며 관리자 안내 뒤 24시간 경계에서 자동 재시도한다. 확정 거절·UNKNOWN 복구 경계는 유지한다. 포장 실패 JSON은 최근 20개만 남긴다. 새 계약 시험·직접 호출자 바탕 대조·선언 write→check 근거: work/program/w9firstupd/sub-659/RESULT.md. 실제 설치·현장 확인은 별도 회차다.
 

@@ -1840,6 +1840,17 @@ def defer_stopped_relay(control: Path, policy: Mapping[str, Any], state) -> bool
 def _initial_ready_lock(control: Path, operator_sid: str):
     """An unlocked journal supplies only the existing pending window's bound."""
     from contextlib import ExitStack
+
+    def pending_deadline():
+        budget = optional_record(control / "transition.json")
+        phase = (budget or {}).get("phase")
+        if phase not in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
+            return None
+        anchor = budget["rollback_at" if phase == "ROLLBACK_PENDING_READY" else "applied_at"]
+        sampled_at = time.monotonic()
+        remaining = READY_WINDOW_SECONDS - (_utc(now_utc()) - _utc(anchor)).total_seconds()
+        return sampled_at + max(0.0, min(READY_WINDOW_SECONDS, remaining))
+
     deadline = None
     last_busy = None
     while True:
@@ -1854,19 +1865,16 @@ def _initial_ready_lock(control: Path, operator_sid: str):
                 last_busy = error
                 if deadline is None:
                     try:
-                        budget = optional_record(control / "transition.json")
-                        phase = (budget or {}).get("phase")
-                        if phase not in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
+                        deadline = pending_deadline()
+                        if deadline is None:
                             raise error
-                        anchor = budget["rollback_at" if phase == "ROLLBACK_PENDING_READY" else "applied_at"]
-                        sampled_at = time.monotonic()
-                        remaining = READY_WINDOW_SECONDS - (_utc(now_utc()) - _utc(anchor)).total_seconds()
-                        deadline = sampled_at + max(0.0, min(READY_WINDOW_SECONDS, remaining))
                     except Exception:
                         raise error
                 if time.monotonic() >= deadline:
                     raise
             else:
+                if deadline is None:
+                    deadline = pending_deadline()
                 yield deadline
                 return
         time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
@@ -2059,7 +2067,6 @@ def _apply_prepared_once(control: Path) -> int:
     deadline = time.monotonic() + READY_WINDOW_SECONDS
     if not opened_here and initial_ready_deadline is not None:
         deadline = min(deadline, initial_ready_deadline)
-    candidate_ended_early = False
     while time.monotonic() < deadline:
         with confirmation_lock(deadline) as acquired:
             if not acquired:
@@ -2084,13 +2091,11 @@ def _apply_prepared_once(control: Path) -> int:
             if (launch_failure and launch_failure.get("nonce") == state["nonce"]
                     and launch_failure.get("transition_id") == state["transition_id"]
                     and launch_failure.get("sha") == sha):
-                candidate_ended_early = True
                 break  # The ordinary bootstrap stays alive to launch verified recovery.
             state, confirmed, exited = observe_trial_ready(control, policy, state, rows, claim, receipt, deadline=deadline)
             if confirmed:
                 return 0
             if exited:
-                candidate_ended_early = True
                 break
         time.sleep(0.25)
     with update_lock(control, policy["operator_sid"]):
@@ -2099,19 +2104,18 @@ def _apply_prepared_once(control: Path) -> int:
             write_json_durable(control / "transition.json", {**state, "phase": "FAILED", "reason": "previous version readiness failed"})
             return 20
         if opened_here:
-            # A timeout alone may be a slow or busy PC: the candidate gets another
-            # chance (bounded). A candidate that already failed to launch or exited stays final.
+            # Readiness failure, including a failed launch or early exit, is unknown
+            # without verification evidence and consumes only a bounded retry chance.
             state = request_rollback(state, reason="candidate startup failed or readiness timed out",
-                                     transient=not candidate_ended_early, now=now_utc())
+                                     transient=True, now=now_utc())
         else:
             if state["phase"] != "APPLIED_PENDING_READY":
                 raise ValueError("rollback requires a pending trial")
-            # Keep inherited uncertainty for the generation decision. An elapsed
-            # READY window still consumes the same bounded retry chance.
+            # Keep inherited uncertainty for the generation decision. Every failed
+            # READY attempt consumes the same bounded retry chance exactly once.
             state = {**state, "phase": "UNKNOWN"}
-            if not candidate_ended_early:
-                state["retry_shas"], _ = record_retry_chance(
-                    state, state["candidate_sha"], now=now_utc())
+            state["retry_shas"], _ = record_retry_chance(
+                state, state["candidate_sha"], now=now_utc())
         write_json_durable(control / "transition.json", state)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:

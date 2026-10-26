@@ -836,7 +836,8 @@ def _system_confirmation_case(tmp_path, monkeypatch, failures, *, busy_seconds=0
 
     clock, attempts, observations, released = [0.0], [], [], []
     state = {"schema": updates.SCHEMA, "phase": "APPLIED_PENDING_READY", "previous_sha": "a" * 40,
-             "candidate_sha": "b" * 40, "nonce": "unit-nonce", "transition_id": "unit-transition"}
+             "candidate_sha": "b" * 40, "nonce": "unit-nonce", "transition_id": "unit-transition",
+             "applied_at": "2026-10-01T00:00:00+00:00"}
     control, stage = tmp_path / "control", tmp_path / "stage"
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "operator"))
     monkeypatch.setattr(updates, "fixed_helper", lambda *_a, **_kw: None)
@@ -851,6 +852,7 @@ def _system_confirmation_case(tmp_path, monkeypatch, failures, *, busy_seconds=0
     monkeypatch.setattr(updates, "new_apply_claim", lambda: {})
     monkeypatch.setattr(updates, "process_snapshot", lambda *_: [])
     monkeypatch.setattr(updates.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(updates, "now_utc", lambda: "2026-10-01T00:00:00+00:00")
     monkeypatch.setattr(updates.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
 
     @contextmanager

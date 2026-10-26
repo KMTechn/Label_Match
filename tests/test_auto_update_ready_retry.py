@@ -37,7 +37,8 @@ def test_ready_window_is_fifteen_minutes_and_the_bootstrap_cap_outlasts_it():
 
 
 def test_a_confirmed_rejection_stays_permanent_at_once():
-    state = updates.request_rollback(trial_state(), reason="candidate startup failed or readiness timed out")
+    # Only confirmed verification rejection is permanent; an early exit is unknown.
+    state = updates.request_rollback(trial_state(), reason="candidate signature verification failed")
     assert state["failed_shas"] == [NEW] and "retry_shas" not in state
 
 
@@ -114,6 +115,29 @@ def test_ready_timeout_exhaustion_never_blacklists_the_candidate(tmp_path, monke
     assert state["retry_shas"][NEW]["attempts"] == attempts + 1
     assert state["failed_shas"] == []
     assert updates._retry_review_required(state) is permanent
+
+
+@pytest.mark.parametrize("failure", ["launch", "exit"])
+@pytest.mark.parametrize("attempts", [0, 2])
+@pytest.mark.parametrize("inherited", [False, True])
+def test_early_candidate_failure_uses_the_unknown_retry_budget(
+        tmp_path, monkeypatch, failure, attempts, inherited):
+    retry = {NEW: {"attempts": attempts, "first_at": at(0), "last_at": at(0)}} if attempts else None
+    case, state = _prepared_case(tmp_path, monkeypatch, retry=retry, ready_at=None)
+    if inherited:
+        state.update(phase="APPLIED_PENDING_READY", applied_at=at(0))
+    if failure == "launch":
+        monkeypatch.setattr(updates, "optional_record", lambda path:
+            dict(state) if path.name == "transition.json" else
+            {"nonce": state["nonce"], "transition_id": state["transition_id"], "sha": NEW}
+            if path.name == "trial-failure.json" else None)
+    else:
+        monkeypatch.setattr(updates, "observe_trial_ready", lambda *_a, **_kw: (dict(state), False, True))
+    assert case.run() == 20
+    assert state["phase"] == ("UNKNOWN" if inherited else "ROLLBACK_PENDING")
+    assert state["failed_shas"] == []
+    assert state["retry_shas"][NEW]["attempts"] == attempts + 1
+    assert updates._retry_review_required(state) is (attempts == 2)
 
 
 def _failure_files(logs, count):
@@ -443,8 +467,10 @@ def test_a_new_day_budget_takes_precedence_over_a_recent_attempt_interval(tmp_pa
 
 
 
-@pytest.mark.parametrize("ready_at", [750, None], ids=["relay-running-in-window", "ready-timeout"])
-def test_system_decides_the_same_pending_window_after_bootstrap_preparation_expires(ready_at):
+@pytest.mark.parametrize("ready_at", [750, None, 1000],
+                         ids=["relay-running-in-window", "ready-timeout", "late-ready"])
+@pytest.mark.parametrize("resume_at", [600, 950])
+def test_system_decides_the_same_pending_window_after_bootstrap_preparation_expires(ready_at, resume_at):
     from contextlib import contextmanager
     from pathlib import Path
     from tests.recovery_memory_world import MemoryPath, World
@@ -474,6 +500,7 @@ def test_system_decides_the_same_pending_window_after_bootstrap_preparation_expi
     assert w.state["phase"] == "APPLIED_PENDING_READY"
 
     # Resume the actual SYSTEM implementation with the same durable journal.
+    w.clock = float(resume_at)
     w.ns["update_lock"] = w.lock
     w.rows = [w.row("gui", sha=w.candidate, pid=101), w.row("relay", sha=w.candidate, pid=102)]
     w.files[str(w.stage / "trial.json")] = {"pid": 101, "role": "gui", "nonce": w.state["nonce"],
@@ -490,7 +517,7 @@ def test_system_decides_the_same_pending_window_after_bootstrap_preparation_expi
     w.time.sleep = system_advance
     assert w.ns["_apply_prepared"](w.control) == 0
     w.ns["complete_apply_claim"](w.control)
-    if ready_at is not None:
+    if ready_at is not None and resume_at < ready_at < 900:
         assert w.state["phase"] == "CONFIRMED" and w.active == w.candidate
         assert 750 <= w.clock < 900
         assert w.optional(MemoryPath("/memory/relay-status.json"))["status"] == "RUNNING"
@@ -501,3 +528,4 @@ def test_system_decides_the_same_pending_window_after_bootstrap_preparation_expi
         assert w.state["retry_shas"][w.candidate]["attempts"] == 1
         assert w.candidate not in w.state["failed_shas"]
         assert "write:transition.json:ROLLED_BACK" in w.events
+        assert max(resume_at, 900) <= w.clock < max(resume_at, 900) + 1
