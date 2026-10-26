@@ -647,7 +647,7 @@ data_generation_reverse = signed_generation_reverse_allowed and all(
 
 # Exact e89/a56 -> merged audit-index bytes, forward only. This does not
 # change G's original ten-file declaration or its signed reverse decision.
-data_generation_forward_companions = {'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '1fe94fcc6eb8a8458e2a19bd344d71361bacac77566fdeed45789e74f3e95583'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', 'f906570761dd95684c2fee37871f99a6bbb1b1b0e8cd75e8278acf8801f24fab')}
+data_generation_forward_companions = {'app/label_data_manager.py': ('4443b2e817e54e1ba1bbd9065f49123ef1d55b40a7e00f485bc2cda6d5d3d912', '40c8c4476453a7a4e59a68b07e1c584e1fa5ed1a48fa19062b33004f53942147'), 'app/label_recovery_schema.py': ('5ddc38a222acaa6a2ca4b3bf23fc09f173b1e2646a599a667062df245cbf5349', 'f906570761dd95684c2fee37871f99a6bbb1b1b0e8cd75e8278acf8801f24fab')}
 data_generation_companion_transition = all(
     (installed / relative).is_file() and (source / relative).is_file()
     and release_digest(installed / relative) == before
@@ -702,7 +702,7 @@ shared_transition = all(
 # module and changes these modules. Writer membership, runtime, contracts and
 # every other file stay checked. Persisted state gains only optional keys the
 # preimage ignores, so no data migration; downgrade is not admitted.
-legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '1fe94fcc6eb8a8458e2a19bd344d71361bacac77566fdeed45789e74f3e95583'),
+legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1df14fc099f4b16998629d4639e4f5749ecc757', '40c8c4476453a7a4e59a68b07e1c584e1fa5ed1a48fa19062b33004f53942147'),
  'app/Label_Match.py': ('0481e687828da9e99aebad238307586c73f9cd0db8ea53e39603029fbcad921b',
                         '91adc41d3bba455bf3d5891777416e35feaf225187356668ed06ddaae4ee8ed7'),
  'app/carrier_identity_port.py': ('08e470a49aef5213f458f352df2118cf79e01160ba2b0544091161358717584d',
@@ -949,7 +949,7 @@ roster_baseline_replacements = {'app/Label_Match.py': ('6a516d5aa46847547f0355f3
 roster_baseline_companions = {'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55',
                              '7fc26ac5c6a6311a1f68e81fb1e74a9d6d7a9e433ac6be156bed8af5947037d7'),
  'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec',
-                               '1fe94fcc6eb8a8458e2a19bd344d71361bacac77566fdeed45789e74f3e95583'),
+                               '40c8c4476453a7a4e59a68b07e1c584e1fa5ed1a48fa19062b33004f53942147'),
  'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7',
                                   'f906570761dd95684c2fee37871f99a6bbb1b1b0e8cd75e8278acf8801f24fab'),
  'app/package_command_draft.py': ('4936fdccd3af20e7f48c0fc0bdb3eb41e6baee073bf8dea90252adb487c60563',
@@ -1244,7 +1244,7 @@ worker_record_replacements = {'app/Label_Match.py': ('5f16f57e6eaf9e73fc54c3b2f5
  'app/label_completion.py': ('7650944f6d9f7431d8089b373a32aa649c324ecacfb8c24b40f13ccc2f2fdb55',
                              '7fc26ac5c6a6311a1f68e81fb1e74a9d6d7a9e433ac6be156bed8af5947037d7'),
  'app/label_data_manager.py': ('eb4f4bef03152c05c6ef160abb7738dfa8416c971bb79baac4092d52905c14ec',
-                               '1fe94fcc6eb8a8458e2a19bd344d71361bacac77566fdeed45789e74f3e95583'),
+                               '40c8c4476453a7a4e59a68b07e1c584e1fa5ed1a48fa19062b33004f53942147'),
  'app/label_recovery_schema.py': ('01fdfd2616bdc6a2a713ed89f32f23b73db9fe2d2e86d90482023e9950a178f7',
                                   'f906570761dd95684c2fee37871f99a6bbb1b1b0e8cd75e8278acf8801f24fab'),
  'app/label_worker_roster.py': ('17b35efc3fb9f9a4589590d1cc8b0accaf2eba1cb9a482ffeaf669e12dc6ce32',

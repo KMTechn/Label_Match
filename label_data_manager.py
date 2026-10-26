@@ -5,6 +5,7 @@ event projection and file names; this module does not import the Tk application.
 """
 
 import csv
+from collections import deque
 from contextlib import contextmanager, nullcontext
 import hashlib
 import io
@@ -16,6 +17,15 @@ import time
 import uuid
 import label_worker_roster
 from pathlib import Path
+
+
+class _LogCloseRequest:
+    """Identify one close attempt so a cancelled sentinel cannot stop a later one."""
+
+
+class _DurableLogRetryPending(RuntimeError):
+    """A durable non-audit row is retained for a safe preappend retry."""
+
 
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
 from protected_admin import (
@@ -35,6 +45,7 @@ from writer_session_fence import writer_sink
 RECOVERY_MAX_BYTES = 8 * 1024 * 1024
 AUDIT_SEGMENT_BYTES = 1024 * 1024
 STATE_SAVE_LOCK_TIMEOUT_SECONDS = 10.0
+GENERAL_LOG_RETRY_BACKOFF_SECONDS = 1.0
 
 
 def read_recovery_file(path, *, journal_schema=None, current_state=False, expected_bytes=None):
@@ -143,9 +154,15 @@ class DataManager:
         self.log_queue = queue.Queue()
         self._close_lock = threading.Lock()
         self._close_requested = False
+        self._close_request = None
+        self._writer_stopping = False
         self._writer_errors = []
         self._writer_error_keys = {}
         self._recovered_audit_errors = set()
+        self._log_retry_lock = threading.Lock()
+        self._log_retry_items = {}
+        self._log_retry_errors = {}
+        self._unresolved_log_items = {}
         self._state_lock = threading.RLock()
         self._checkpoint_generation = 0
         self._force_exit_prepared_checkpoint = None
@@ -188,15 +205,55 @@ class DataManager:
         audit_context = None
         audit_path = None
         last_audit_key = ''
+        pending_general = {}
+        blocked_paths = set()
+        no_pending_path = object()
+        retry_blocked = False
+        round_remaining = 0
         while True:
             log_item = None
             got_item = False
             failed_write = False
+            append_started = False
+            retry_write = False
+            filepath = None
             try:
-                log_item = self.log_queue.get()
+                pending_path = next((path for path in pending_general if path not in blocked_paths),
+                                    no_pending_path)
+                if pending_path is not no_pending_path:
+                    pending = pending_general[pending_path]
+                    log_item = pending.popleft()
+                    if not pending:
+                        del pending_general[pending_path]
+                elif retry_blocked:
+                    if round_remaining <= 0:
+                        raise queue.Empty
+                    log_item = self.log_queue.get_nowait()
+                    round_remaining -= 1
+                else:
+                    log_item = self.log_queue.get()
                 got_item = True
-                if log_item is None: break
-                filepath = self._get_log_filepath_for_item(log_item)
+                if isinstance(log_item, _LogCloseRequest):
+                    with self._close_lock:
+                        if log_item is not self._close_request:
+                            continue
+                        if self.has_pending_log_retries or self._has_pending_durable_log_retries:
+                            self.log_queue.put(log_item)
+                            continue
+                        self._writer_stopping = True
+                    break
+                general_item = self._is_general_log_item(log_item)
+                # An unresolved route keeps the old conservative ordering until
+                # it can be identified; known independent CSVs keep progressing.
+                if not (retry_blocked and general_item and None in blocked_paths):
+                    filepath = self._get_log_filepath_for_item(log_item)
+                if retry_blocked and general_item and (None in blocked_paths or filepath in blocked_paths):
+                    pending_general.setdefault(filepath, deque()).append(log_item)
+                    with self._log_retry_lock:
+                        self._log_retry_items[id(log_item)] = log_item
+                        self._unresolved_log_items[id(log_item)] = log_item
+                    got_item = False  # This buffered row still owns its queue task.
+                    continue
                 file_exists = os.path.exists(filepath)
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
                 audit_key = self._audit_key(log_item)
@@ -208,7 +265,11 @@ class DataManager:
                         context = audit_context
                         audit_context = None
                         audit_stream = None
+                        # A previous audit handle's close is not a retryable
+                        # failure of this ordinary row's open/stat.
+                        append_started = True
                         context.__exit__(None, None, None)
+                        append_started = False
                     if audit_key:
                         if audit_stream is None:
                             context = self._open_file(filepath, 'a+', newline='', encoding='utf-8-sig')
@@ -220,6 +281,7 @@ class DataManager:
                     else:
                         file_context = self._open_file(filepath, 'a', newline='', encoding='utf-8-sig')
                 with self._audit_csv_lock, file_context as f:
+                    self._repair_csv_tail_unlocked(f, filepath)
                     index = None
                     if audit_key:
                         index = self._audit_csv_index(f, filepath)
@@ -235,7 +297,9 @@ class DataManager:
                     empty = not file_exists or os.stat(filepath).st_size == 0
                     header = ["timestamp", "worker_name", "event", "details"]
                     if empty:
+                        append_started = True
                         writer.writerow(header)
+                    append_started = True
                     writer.writerow(log_item)
                     if audit_key or str(log_item[2] or "") in self._durable_event_types():
                         f.flush()
@@ -251,15 +315,27 @@ class DataManager:
                         index['keys'][audit_key] = list(log_item)
                         index['signature'] = self._csv_signature(f)
                         self._audit_csv_prefixes[index['relative']] = self._csv_prefix(index)
+                self._complete_general_log_retry(log_item)
             except queue.Empty:
+                round_remaining = 0
                 continue
             except Exception as e:
                 failed_write = True
-                self._writer_errors.append(e)
-                self._writer_error_keys[id(e)] = self._audit_key(log_item)
+                retry_write = (isinstance(e, OSError) and not append_started
+                               and self._is_non_audit_log_item(log_item))
+                self._remember_log_write_failure(log_item, e, retry=retry_write)
+                if retry_write:
+                    # Reuse the exact timestamp, worker, event and details.
+                    pending_general.setdefault(filepath, deque()).appendleft(log_item)
+                    got_item = False
+                    if not retry_blocked:
+                        round_remaining = self.log_queue.qsize()
+                    blocked_paths.add(filepath)
+                    retry_blocked = True
                 print(f"로그 쓰기 스레드 오류: {e}")
             finally:
-                if audit_stream is not None and (failed_write or log_item is None or self.log_queue.empty()):
+                if audit_stream is not None and (failed_write or isinstance(log_item, _LogCloseRequest)
+                                                 or self.log_queue.empty()):
                     context = audit_context
                     audit_context = None
                     audit_stream = None
@@ -271,6 +347,47 @@ class DataManager:
                         print(f"로그 쓰기 스레드 오류: {error}")
                 if got_item:
                     self.log_queue.task_done()
+                if (retry_blocked and round_remaining <= 0
+                        and not any(path not in blocked_paths for path in pending_general)):
+                    time.sleep(GENERAL_LOG_RETRY_BACKOFF_SECONDS)
+                    retry_blocked = False
+                    blocked_paths.clear()
+    @property
+    def has_pending_log_retries(self):
+        with self._log_retry_lock:
+            return any(self._is_general_log_item(item) for item in self._log_retry_items.values())
+    @property
+    def _has_pending_durable_log_retries(self):
+        with self._log_retry_lock:
+            return any(not self._is_general_log_item(item) for item in self._log_retry_items.values())
+    def _is_non_audit_log_item(self, log_item):
+        return log_item is not None and not self._audit_key(log_item)
+    def _is_general_log_item(self, log_item):
+        return (self._is_non_audit_log_item(log_item)
+                and str(log_item[2] or '') not in self._durable_event_types())
+    def _remember_log_write_failure(self, log_item, error, *, retry):
+        with self._log_retry_lock:
+            item_id = id(log_item)
+            if self._is_non_audit_log_item(log_item):
+                self._unresolved_log_items[item_id] = log_item
+            if retry and item_id in self._log_retry_errors:
+                return  # Retain the first failure without an unbounded error list.
+            if not retry:
+                self._log_retry_items.pop(item_id, None)
+                self._log_retry_errors.pop(item_id, None)
+            self._writer_errors.append(error)
+            self._writer_error_keys[id(error)] = self._audit_key(log_item)
+            if retry:
+                self._log_retry_items[item_id] = log_item
+                self._log_retry_errors[item_id] = id(error)
+    def _complete_general_log_retry(self, log_item):
+        with self._log_retry_lock:
+            item_id = id(log_item)
+            self._unresolved_log_items.pop(item_id, None)
+            self._log_retry_items.pop(item_id, None)
+            recovered = self._log_retry_errors.pop(item_id, None)
+            if recovered is not None:
+                self._recovered_audit_errors.add(recovered)
     @staticmethod
     def _csv_signature(stream):
         stat = os.fstat(stream.fileno())
@@ -298,6 +415,68 @@ class DataManager:
             return proof['rows'] == max(0, len(rows)-1) and proof['last_row_sha256'] == last_hash
         except (KeyError, TypeError, ValueError, csv.Error):
             return False
+    def _repair_csv_tail_unlocked(self, stream, filepath):
+        """Preserve a torn suffix before trimming it under the CSV writer lock."""
+        stream.flush()
+        with self._open_file(filepath, 'r+b') as raw:
+            size = raw.seek(0, os.SEEK_END)
+            if not size:
+                return
+            raw.seek(size - 1)
+            last_byte = raw.read(1)
+            terminated = last_byte in (b'\n', b'\r')
+            line_end, cursor = size, size - int(terminated)
+            if last_byte == b'\n' and cursor:
+                raw.seek(cursor - 1)
+                cursor -= int(raw.read(1) == b'\r')
+            line_nul = False
+            keep = 0
+            while cursor:
+                start = max(0, cursor - 4096)
+                raw.seek(start)
+                chunk = raw.read(cursor - start)
+                newline = max(chunk.rfind(b'\n'), chunk.rfind(b'\r'))
+                line_nul |= b'\0' in chunk[newline + 1:]
+                if newline < 0:
+                    cursor = start
+                    continue
+                if terminated and not line_nul:
+                    keep = line_end
+                    break
+                line_end = start + newline + 1
+                cursor = line_end - 1
+                if chunk[newline:newline + 1] == b'\n' and cursor:
+                    raw.seek(cursor - 1)
+                    cursor -= int(raw.read(1) == b'\r')
+                terminated, line_nul = True, False
+            else:
+                if terminated and not line_nul:
+                    keep = line_end
+            if keep == size:
+                return
+            root = Path(self.save_directory).absolute()
+            relative = Path(filepath).absolute().relative_to(root).as_posix()
+            previous = self._audit_csv_indexes.get(filepath)
+            proofs = [self._audit_csv_prefixes.get(relative)]
+            if previous is not None:
+                proofs.append(self._csv_prefix(previous))
+            for proof in proofs:
+                if isinstance(proof, dict) and type(proof.get('size')) is int and proof['size'] > keep:
+                    raise ValueError('감사 CSV 증명 앞부분과 잘린 끝이 겹칩니다: ' + relative)
+            raw.seek(keep)
+            fragment = raw.read()
+            archive = Path(filepath).with_name(
+                Path(filepath).name + '.held-' + hashlib.sha256(fragment).hexdigest())
+            if not os.path.lexists(archive):
+                write_checked_bytes(archive, fragment, allowed_root=root, replace=False)
+            if read_checked_bytes(archive, allowed_root=root) != fragment:
+                raise ValueError('CSV tail evidence differs: ' + relative)
+            raw.truncate(keep)
+            raw.flush()
+            os.fsync(raw.fileno())
+            self._audit_csv_indexes.pop(filepath, None)
+            stream.seek(0, os.SEEK_END)
+            print(f'CSV 잘린 끝 보존: {relative}: {size - keep} bytes: {archive.name}')
     def _audit_csv_index(self, stream, filepath):
         """Validate a prefix once, then index only this writer's durable appends."""
         signature = self._csv_signature(stream)
@@ -345,6 +524,7 @@ class DataManager:
                     # the same full-row verdict, retaining only affected keys.
                     self._audit_csv_indexes.pop(filepath)
                     with self._open_file(filepath, 'a+', newline='', encoding='utf-8-sig') as stream:
+                        self._repair_csv_tail_unlocked(stream, filepath)
                         index = self._audit_csv_index(stream, filepath)
                         for key, row in expected.items():
                             previous = index['keys'].get(key)
@@ -534,21 +714,41 @@ class DataManager:
             if not self._close_requested:
                 self._close_requested = True
                 if self.log_thread.is_alive():
-                    self.log_queue.put(None)
+                    self._close_request = _LogCloseRequest()
+                    self.log_queue.put(self._close_request)
         self.log_thread.join(timeout)
         if self.log_thread.is_alive():
             raise TimeoutError("Log writer did not stop before timeout")
         if any(id(error) not in self._recovered_audit_errors for error in self._writer_errors):
             raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
         return True
+    def _cancel_close_request(self):
+        with self._close_lock:
+            if (not self._close_requested or self._writer_stopping
+                    or not self.log_thread.is_alive()):
+                return False
+            self._close_requested = False
+            self._close_request = None
+            return True
     def flush(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
         while self.log_queue.unfinished_tasks:
+            with self._log_retry_lock:
+                if self.log_queue.unfinished_tasks <= len(self._log_retry_items):
+                    break  # Surface durable retries below; ordinary rows do not block work.
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("Log writer did not flush before timeout")
             time.sleep(0.01)
-        if any(id(error) not in self._recovered_audit_errors for error in self._writer_errors):
-            raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
+        with self._log_retry_lock:
+            retry_errors = {error_id for item_id, error_id in self._log_retry_errors.items()
+                            if self._is_general_log_item(self._log_retry_items[item_id])}
+            durable_retry_errors = set(self._log_retry_errors.values()) - retry_errors
+            unresolved = [error for error in self._writer_errors
+                          if id(error) not in self._recovered_audit_errors and id(error) not in retry_errors]
+        if unresolved:
+            error_type = (_DurableLogRetryPending
+                          if all(id(error) in durable_retry_errors for error in unresolved) else RuntimeError)
+            raise error_type(f"Log writer failed: {unresolved[-1]}")
         return True
     @contextmanager
     def _bounded_save_lock(self, lock, *, timeout_seconds=STATE_SAVE_LOCK_TIMEOUT_SECONDS):

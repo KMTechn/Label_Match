@@ -92,7 +92,7 @@ from label_match_product_host import (
     _default_product_root, dispatch_product_mode, requires_bootstrap_integrity,
 )
 from writer_session_fence import WriterFenceError, writer_admission, writer_sink
-from label_data_manager import DataManager as _DataManager, read_recovery_file
+from label_data_manager import DataManager as _DataManager, read_recovery_file, _DurableLogRetryPending
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 from label_admin_pin import (
     AdminPinClient, AdminPinError, AdminPinIntentStore,
@@ -1195,6 +1195,7 @@ def _label_match_scan_file_error_suffix(payload):
     return f" · 기록 파일 {count}개 안 올라감" if type(count) is int and count > 0 else ""
 
 
+LABEL_MATCH_LOG_RETRY_NOTICE = "작업 기록을 다시 저장하는 중입니다 — 작업은 그대로 계속하세요"
 _LABEL_MATCH_RELAY_NORMAL_STATUSES = frozenset({"idle", "acked"})
 # Written by a save-time enqueue, the install baseline or a scan without a
 # relay cycle: they say nothing about the server, so the relay database does.
@@ -6996,6 +6997,7 @@ class Label_Match(tk.Tk):
             return None
         if self._process_app_stop_request():
             return None
+        self._resume_durable_log_retry()
         context = self.__dict__.get("direct_sync_bootstrap_context") or {}
         path = str(context.get("runtime_status_path") or "")
         try:
@@ -7209,17 +7211,34 @@ class Label_Match(tk.Tk):
         return _schedule_reused_relay_verification(self, report)
 
     def _render_relay_screen_status(self, state):
+        self._render_save_status()
         label = self.__dict__.get("relay_screen_status_label")
         if label is None:
             return None
         warning = _label_match_send_warning(self, self.__dict__.get('_relay_screen_status_payload'))
+        retry_pending = bool(getattr(self.__dict__.get("data_manager"), "has_pending_log_retries", False))
+        text = (warning or LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, "")) + _label_match_scan_file_error_suffix(
+            self.__dict__.get("_relay_screen_status_payload")
+        )
+        if retry_pending:
+            text = '\n'.join(part for part in (text, LABEL_MATCH_LOG_RETRY_NOTICE) if part)
         label.configure(
-            text=(warning or LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, "")) + _label_match_scan_file_error_suffix(
-                self.__dict__.get("_relay_screen_status_payload")
-            ),
+            text=text,
             style='Warning.TLabel' if warning or state == 'stopped' else 'Status.TLabel',
         )
         return None
+
+    def _render_save_status(self, text=None):
+        label = self.__dict__.get("save_status_label")
+        if label is None:
+            return
+        retry_pending = bool(getattr(self.__dict__.get("data_manager"), "has_pending_log_retries", False))
+        if text is not None:
+            self._save_status_toast = text
+        text = self.__dict__.get("_save_status_toast", "")
+        if retry_pending:
+            text = '\n'.join(part for part in (text, LABEL_MATCH_LOG_RETRY_NOTICE) if part)
+        label.config(text=text, style="Status.TLabel" if retry_pending else "Save.Success.TLabel")
 
     def show_loading_overlay(self):
         self.loading_overlay.grid(row=0, column=0, rowspan=3, sticky='nsew')
@@ -19327,8 +19346,8 @@ class Label_Match(tk.Tk):
         local_notice = _label_match_local_completion_notice(details)
         if local_notice:
             saved_text = f"{saved_text} · {local_notice}"
-        self.save_status_label.config(text=f"✓ {saved_text} ({datetime.now().strftime('%H:%M:%S')})")
-        self.after(3000, lambda: self.save_status_label.config(text=""))
+        self._render_save_status(f"✓ {saved_text} ({datetime.now().strftime('%H:%M:%S')})")
+        self.after(3000, lambda: self._render_save_status(""))
         self._update_summary_tree()
         returned = self._return_to_idle_after_finalized_set()
         if returned and _durable_completion is not None:
@@ -20573,6 +20592,13 @@ class Label_Match(tk.Tk):
             self.data_manager.close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
         except Exception as e:
             print(f"설정 변경 저장 기술 진단: {e}")
+            failed_manager = self.data_manager
+            log_thread = getattr(failed_manager, 'log_thread', None)
+            if (getattr(failed_manager, '_close_requested', False)
+                    and log_thread is not None and log_thread.is_alive()):
+                cancel_close = getattr(failed_manager, '_cancel_close_request', None)
+                if callable(cancel_close) and not cancel_close():
+                    log_thread.join(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
             self._replace_closed_data_manager_after_close_failure(self.data_manager)
             if worker_name_var is not None:
                 worker_name_var.set(display_operator_name(self.worker_name))
@@ -20802,8 +20828,8 @@ class Label_Match(tk.Tk):
         text = self._barcode_detail_text(details)
         self.clipboard_clear()
         self.clipboard_append(text)
-        self.save_status_label.config(text=f"✓ 바코드 원문 복사됨 ({datetime.now().strftime('%H:%M:%S')})")
-        self.after(2500, lambda: self.save_status_label.config(text=""))
+        self._render_save_status(f"✓ 바코드 원문 복사됨 ({datetime.now().strftime('%H:%M:%S')})")
+        self.after(2500, lambda: self._render_save_status(""))
 
     def _show_selected_history_detail_window(self, event=None):
         iid = self._selected_history_iid()
@@ -23442,6 +23468,20 @@ class Label_Match(tk.Tk):
             self._storage_root_failure = True
             return False
 
+    def _resume_durable_log_retry(self):
+        pending = self.__dict__.get('_durable_log_retry_notice')
+        if pending is None:
+            return
+        notice, manager, action = pending
+        if (self.__dict__.get('_workflow_blocking_notice') is not notice
+                or self.__dict__.get('data_manager') is not manager):
+            self.__dict__.pop('_durable_log_retry_notice', None)
+            return
+        if manager._has_pending_durable_log_retries:
+            return
+        self.__dict__.pop('_durable_log_retry_notice', None)
+        action()
+
     def _publish_durable_commit_block(self, error, *, retry_action=None):
         """Hard-block the worker surface without exposing storage internals."""
 
@@ -23517,6 +23557,10 @@ class Label_Match(tk.Tk):
             if callable(retry_action)
             else self._retry_blocked_submission
         )
+        if (isinstance(error, _DurableLogRetryPending)
+                or isinstance(error, Failure) and error.cause_type == '_DurableLogRetryPending'):
+            self._durable_log_retry_notice = (
+                notice, self.__dict__.get('data_manager'), self._workflow_notice_action)
         self._workflow_notice_action_text = (
             "다시 확인" if policy_notice and not lease_failure else "저장 재시도"
         )
