@@ -1,6 +1,7 @@
 """Append-only cancellation recovery evidence and once-only review closure."""
 import json
 import sqlite3
+from pathlib import Path
 
 from package_command_draft import canonical_json
 from package_errors import PackageLogisticsError, PackageRecoveryEvidenceError, PackageRecoveryStorageError
@@ -26,6 +27,10 @@ def initialize_recovery_schema(conn, *, validate=True):
         operator_id TEXT NOT NULL, operator_name TEXT NOT NULL)''')
     if not validate:
         return
+    validate_stored_recovery_storage(conn)
+
+
+def validate_stored_recovery_storage(conn):
     try:
         _validate_stored_recovery_evidence(conn)
     except sqlite3.Error:
@@ -33,6 +38,43 @@ def initialize_recovery_schema(conn, *, validate=True):
     except (PackageLogisticsError, ValueError, TypeError, KeyError, AttributeError,
             OverflowError):
         raise PackageRecoveryEvidenceError() from None
+
+
+def admit_recovery_storage_readonly(db_path, *, schema_gate=None):
+    """Refuse broken stored evidence from a read-only view, before any writer opens.
+
+    A refusal must not checkpoint or otherwise rewrite the store files. A store
+    that does not exist yet, or lacks the evidence tables, is left to the
+    writing initializer. The schema gate runs before evidence validation so a
+    newer store keeps the writing initializer's existing refusal and error code.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=10.0)
+    except sqlite3.Error:
+        return
+    try:
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute('BEGIN')
+            if schema_gate is not None:
+                try:
+                    schema_gate(conn)
+                except PackageLogisticsError as error:
+                    if getattr(error, 'code', None) == 'PACKAGE_OUTBOX_SCHEMA_TOO_NEW':
+                        return
+                    raise
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        except sqlite3.Error:
+            return  # unreadable header etc.: the writing initializer reports it as before
+        if not {'package_recovery_evidence', 'package_recovery_review_closures',
+                'package_command_outbox', 'package_cancellation_outbox'} <= tables:
+            return
+        validate_stored_recovery_storage(conn)
+    finally:
+        conn.close()
 
 
 def _stored_identity(value):

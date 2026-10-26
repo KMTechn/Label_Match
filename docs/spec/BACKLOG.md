@@ -837,7 +837,7 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 
 - P2(코디 msg_c06cdb448ab5·msg_3efe0acd3297 범위 제외): 예약 작업 퇴역 native helper의 ABSENT 길을 소유 합성 작업 이름 둘로 대응해 측정하니 PowerShell 시작 포함 writer admission 8.890초(5초 초과)였다. 호스트 scheduler 변경 0; 기존 제품 작업 존재 시 거절 길 2.047초. 실제 제품 이름 ABSENT 길은 NOT VERIFIED(랩 첫 GUI 재실행). 다음 수정에서 helper/퇴역 대기를 admission 밖으로 나누고 쓰기 직전 재확인한다.
 
-- 첫 업데이트: 거절 뒤 `wal_checkpoint(TRUNCATE)`가 commit 된 WAL을 주 DB로 옮김 — 바이트 불변은 읽기 전용 admission으로 구조 나눔(sub-90 P2-2). 107은 거절 길의 논리 내용 보존까지다.
+- 닫음(sub-598·sub-662): 포장 `PackageOutbox`·`PackageCancellationOutbox` 시작 때 저장된 복구 증거 검증을 `mode=ro` 읽기 연결의 한 transaction에서 먼저 한다. 새 판 저장소는 증거 검증보다 기존 `PACKAGE_OUTBOX_SCHEMA_TOO_NEW` 안내가 먼저다. 증거나 읽기 오류로 거절하면 쓰기 연결의 재검증에서 거절한 경우까지 `wal_checkpoint(TRUNCATE)` 없이 연결을 닫아 DB·기존 WAL 바이트·mtime과 자료 내용을 보존한다. 빈 `-wal`·`-shm` 보조 파일은 생길 수 있고 `-shm`의 read-mark는 바뀔 수 있다. 통과하면 기존 쓰기 연결·checkpoint가 그대로 이어진다. 107의 논리 내용 보존은 유지.
 # G33 · isolated portable entry imports / gate 7
 
 Move startup_timing after auto_update's isolated-entry path setup. Complete-app regression and built ZIP runtime checks cover task JSON, relay argument refusal and prepared-update root refusal; apply the same gate 7 to both apps. No version, installed layout or business-data contract changes.

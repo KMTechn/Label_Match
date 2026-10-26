@@ -15,7 +15,12 @@ from typing import Any, Callable, Iterator, Mapping
 
 from deferred_intent_capture import supersede_for_legacy_outbox
 from package_command_draft import PackageCommandDraft, canonical_barcodes, canonical_json, stable_id
-from package_errors import PackageLogisticsError, _bounded_retry_after_seconds
+from package_errors import (
+    PackageLogisticsError,
+    PackageRecoveryEvidenceError,
+    PackageRecoveryStorageError,
+    _bounded_retry_after_seconds,
+)
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 from label_admin_pin import active_pin_operation, active_worker_operation
 from writer_session_fence import writer_sink
@@ -267,11 +272,20 @@ class PackageOutbox:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=10000")
+        refused = False
         try:
             with conn:
                 yield conn
+        except (PackageRecoveryEvidenceError, PackageRecoveryStorageError):
+            refused = True
+            raise
         finally:
-            close_sqlite_connection(conn)
+            # Refusal must not move committed WAL content into the database.
+            if refused:
+                conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+                conn.close()
+            else:
+                close_sqlite_connection(conn)
 
     def initialize(self) -> None:
         with self._connect() as conn:
