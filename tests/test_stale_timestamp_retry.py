@@ -486,16 +486,122 @@ def test_retry_releases_only_confirmed_unconsumed_assignment(tmp_path, monkeypat
 
 @pytest.mark.parametrize('mode', ['observe', 'enforce'])
 @pytest.mark.parametrize('status', [400, 403, 404, 422])
-def test_json_error_without_committed_is_retryable(queued, monkeypatch, mode, status):
-    database, _, credentials = queued
-    monkeypatch.setattr(push, 'client_runtime_lease_mode', lambda _credentials: mode)
-    response = FakeResponse(status, {'retryable': False, 'error': {'code': 'proxy_error'}})
+@pytest.mark.parametrize('code', ['proxy_error', 'STALE_RUNTIME_FENCE', 'STALE_RUNTIME_REQUEST_TOKEN'])
+def test_json_error_without_committed_is_retryable(tmp_path, mode, status, code):
+    from tests.test_producer_runtime_client import (
+        _LeaseSession, _authority_row, _credentials, _make_pending_relay,
+    )
+    database = tmp_path / 'authority.sqlite3'
+    credentials = _credentials(runtime_lease_mode=mode)
+    for relay_id in ('relay-a', 'relay-b'):
+        _make_pending_relay(database, tmp_path, relay_id)
+
+    class Session(_LeaseSession):
+        source_calls = 0
+
+        def post(self, url, **kwargs):
+            if url.endswith(leases.ENDPOINT_PATH):
+                return super().post(url, **kwargs)
+            self.source_calls += 1
+            return FakeResponse(status, {'retryable': False, 'error': {'code': code}})
+
+    session = Session()
     result = push.drain_one_relay_batch(
         db_path=database, credentials=credentials,
-        session=SequenceFakeSession([response]),
+        session=session, target_relay_id='relay-a',
     )
     assert result.retryable is True
     assert queue_row(database)['status'] == 'retry_wait'
+    authority = _authority_row(database)
+    assert authority['status'] == 'ACTIVE'
+    assert authority['assigned_relay_id'] == 'relay-a'
+    metadata = json.loads(queue_row(database)['metadata_json'])
+    assert all(field in metadata for field in leases.METADATA_FIELDS)
+
+    following = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials,
+        session=session, target_relay_id='relay-b',
+    )
+    assert following.retryable is True
+    assert following.error_code == 'runtime_request_in_flight'
+    assert _authority_row(database)['status'] == 'ACTIVE'
+    assert dict(_authority_row(database)) == dict(authority)
+    assert json.loads(queue_row(database)['metadata_json']) == metadata
+    assert session.source_calls == 1
+
+
+@pytest.mark.parametrize('mode', ['observe', 'enforce'])
+@pytest.mark.parametrize('failure_point', ['spool_read', 'client_setup', 'source_open'])
+def test_local_failure_after_lost_ack_preserves_assignment(tmp_path, monkeypatch, mode, failure_point):
+    from tests.test_producer_runtime_client import (
+        _DataPathServer, _authority_row, _credentials, _data_path_cycle, _make_pending_relay,
+    )
+    database = tmp_path / 'authority.sqlite3'
+    server = _DataPathServer()
+    credentials = _credentials(runtime_lease_mode=mode)
+    push.init_relay_queue_schema(database)
+    _data_path_cycle(database, server, 0, tmp_path, mode=mode)
+    _make_pending_relay(database, tmp_path, 'relay-a')
+    server.lose_source_ack = True
+    _, first = _data_path_cycle(database, server, 10, tmp_path, mode=mode)
+    server.lose_source_ack = False
+    assert first.retryable is True
+    assert 'relay-a' in server.stored
+    authority_before = dict(_authority_row(database))
+    metadata_before = json.loads(queue_row(database)['metadata_json'])
+    spool = Path(queue_row(database)['spooled_file_path'])
+    spool_before = spool.read_bytes()
+
+    def locked(*_args, **_kwargs):
+        raise PermissionError('synthetic local sharing failure after lost ACK')
+
+    original_open = Path.open
+    reads = 0
+
+    def open_spool(path, mode='r', *args, **kwargs):
+        nonlocal reads
+        if path == spool and mode == 'rb':
+            reads += 1
+            if reads == 2:  # Digest succeeds; opening the upload body fails.
+                locked()
+        return original_open(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        if failure_point == 'spool_read':
+            patch.setattr(push, '_read_file_digest', locked)
+        elif failure_point == 'client_setup':
+            patch.setattr(push, 'signed_headers', locked)
+        else:
+            patch.setattr(Path, 'open', open_spool)
+        _, failed = _data_path_cycle(database, server, 20, tmp_path, mode=mode)
+    assert failed.retryable is True
+    assert queue_row(database)['status'] == 'retry_wait'
+    assert dict(_authority_row(database)) == authority_before
+    assert json.loads(queue_row(database)['metadata_json']) == metadata_before
+    assert all(field in metadata_before for field in leases.METADATA_FIELDS)
+    assert spool.read_bytes() == spool_before
+
+    _make_pending_relay(database, tmp_path, 'relay-b')
+    following = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials,
+        session=server, target_relay_id='relay-b',
+    )
+    assert following.retryable is True
+    assert following.error_code == 'runtime_request_in_flight'
+    assert dict(_authority_row(database)) == authority_before
+    assert len(server.source_calls) == 1
+
+    _, replayed = _data_path_cycle(database, server, 40, tmp_path, mode=mode)
+    assert replayed.success is True
+    assert server.source_calls[0] == server.source_calls[1]
+    _, next_result = _data_path_cycle(database, server, 50, tmp_path, mode=mode)
+    assert next_result.success is True
+    assert _authority_row(database)['status'] == 'ACTIVE'
+    assert _authority_row(database)['assigned_relay_id'] is None
+    with sqlite3.connect(database) as conn:
+        statuses = dict(conn.execute('SELECT relay_id,status FROM direct_sync_relay_batches'))
+    assert statuses == {'relay-a': 'acked', 'relay-b': 'acked'}
+    assert server.audit == []
 
 
 @pytest.mark.parametrize('phase', ['upload', 'lease'])

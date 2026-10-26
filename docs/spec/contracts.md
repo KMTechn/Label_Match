@@ -5,6 +5,7 @@
 업로드의 비JSON HTTP 400–599(401 포함)는 재시도한다. `response.json()` 예외일 때만 내부 receipt에 `_local_response_parse_failed=true`, 업로드/실행 상태와 last_result에 `response_parse_failed=true`를 둔다. 정상 파싱한 배열·문자열은 기존 객체 검증을 따른다. JSON 업로드 4xx 중 401을 제외하고 `committed` 칸 자체가 없으면 재시도한다. 서버 정본 `producer_ingest.py@9d16cd59:error_payload:3574–3589`는 오류에도 `committed`를 항상 포함한다. JSON 401은 stale만, JSON 5xx도 committed/receipt 보호가 우선이다. 2xx 불명·3xx 보호는 유지한다. lease API에는 비JSON 복구·파싱 표지만 적용하며 JSON `committed` 누락 규칙을 적용하지 않는다.
 
 재시도 때 서버 `committed:false` 명시 거절이나 요청 전 로컬 실패가 확정된 경우만 실제 행 배정을 같은 트랜잭션에서 풀고 runtime 다섯 필드를 제거한다. 메타데이터가 없거나 실제 배정이 없으면 release를 부르지 않는다. 응답 유실·파싱 불능 등 전송/응답이 모호하면 같은 행의 재시도 권한을 보존한다. 해제된 권한은 유효 기간 안에서 다른 행에 재배정하고 만료 뒤에는 기존 새 발급 경로를 따른다.
+일시 응답의 분류는 상태 저장까지 유지하며 오류 코드만으로 권한 전체 검토를 다시 추론하지 않는다. 앞선 요청의 결과가 불명인 행은 다음 회차의 spool 읽기·요청 준비 실패에도 배정과 runtime 다섯 필드를 보존하고 같은 행을 재시도한다(w9firstupdsub674).
 
 스캔의 일반 `enqueue_error`는 해당 파일을 `scan_enqueue_errors=[{source_file,error_code}]`에 기록하고 다음 파일과 안전한 drain을 계속한다. `scan_failed_source_file`은 첫 실패를 유지한다. 한 파일이라도 실패하면 `scan_status=enqueue_error`, CLI 종료 코드는 2다. pause·디스크·runtime 실패의 기존 정지와 같은 원본 terminal 앞 구간 보호는 유지한다.
 

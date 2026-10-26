@@ -2338,7 +2338,7 @@ def _set_relay_status(
             "runtime_lease_receipt"
         )
         authority_action = str(runtime_authority_action or "").strip().lower()
-        if authority_action not in {"", "dead_fence", "legacy_accepted", "operator_review", "release"}:
+        if authority_action not in {"", "dead_fence", "legacy_accepted", "operator_review", "preserve", "release"}:
             raise DirectSyncPushError("runtime authority action is invalid")
         if not authority_action and runtime_review:
             authority_action = "operator_review"
@@ -2632,6 +2632,9 @@ def drain_one_relay_batch(
     )
     if row is None:
         return None
+    # A retained assignment predates this attempt. A previous POST may have
+    # committed, including when its process stopped before saving a response.
+    prior_runtime_assignment = any(field in row.metadata for field in RUNTIME_METADATA_FIELDS)
     try:
         spooled_hash, spooled_bytes = _read_file_digest(Path(row.spooled_file_path))
     except OSError as exc:
@@ -2655,7 +2658,7 @@ def drain_one_relay_batch(
             error_code=result.error_code,
             error_message=result.error_message,
             runtime_credentials=credentials,
-            runtime_authority_action="release",
+            runtime_authority_action="preserve" if prior_runtime_assignment else "release",
         )
         return result
     if spooled_hash != row.content_sha256 or spooled_bytes != row.byte_length:
@@ -2771,7 +2774,7 @@ def drain_one_relay_batch(
             error_message=result.error_message,
             runtime_credentials=credentials,
             runtime_authority_action=(
-                "" if runtime_preparation.retryable else "operator_review"
+                "preserve" if runtime_preparation.retryable else "operator_review"
             ),
         )
         return result
@@ -2822,6 +2825,9 @@ def drain_one_relay_batch(
             runtime_authority_action="operator_review",
         )
         return result
+    if prior_runtime_assignment and result.status_code == 0 and result._runtime_token_unconsumed:
+        # No POST in this attempt does not resolve an earlier missing ACK.
+        result = replace(result, _runtime_token_unconsumed=False)
     if result._runtime_disposition == "dead_fence":
         try:
             _set_claimed_relay_status(
@@ -2934,7 +2940,7 @@ def drain_one_relay_batch(
             error_code=result.error_code,
             error_message=result.error_message,
             runtime_credentials=credentials,
-            runtime_authority_action="release" if result._runtime_token_unconsumed else "",
+            runtime_authority_action="release" if result._runtime_token_unconsumed else "preserve",
         )
     else:
         _set_claimed_relay_status(

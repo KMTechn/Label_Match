@@ -1,4 +1,5 @@
 - 화 밤 v2.0.126 재서명(w9firstupdsub636): stale 401·미커밋 일시 HTTP/네트워크·서버 전 로컬 OSError를 재시도하며 Date/시계 rollback 회복, 한 칸 보내기 경고, CSV 레코드 N/K와 공통 upload_block_status 상태를 추가한다. committed/receipt·내용 불일치·같은 원본 앞 구간의 보호를 유지한다. 옛 terminal 자동 복구 0; 본사 원격 CLI와 다음 회차 되읽기로 풀며 실제 창/설치/현장 수용은 레인 회차다.
+- 화 밤 v2.0.126 재서명(w9firstupdsub674): 불완전 일시 응답의 runtime 검토 코드가 권한 전체를 막지 않게 하고, ACK 유실 뒤 로컬 실패에도 원 행의 배정·runtime 다섯 필드를 보존한다. 첫 요청 전 로컬 실패·명시 미커밋 거절의 해제와 committed/receipt 검토 보호는 유지한다.
 - 11/15 후보: 앞 구간이 막힌 원본을 스스로 새 파일로 갈아타는 방안은 순서·중복·원장 의미를 설계한 뒤 검토한다. 11/1 판에는 넣지 않는다.
 
 - v2.0.124: 첫 설정 bootstrap 생존 중 소유자 mutex 바쁨을 기존 마감까지 다시 확인하고 일반 조회 예외에 고정 지원 코드를 남김. SYSTEM 업데이트 확인창 획득 busy도 기존120초 안에서만 pending으로 재시도함. rollback READY 확인창도 기존 timeout_seconds(기본120초) while 안의 획득 busy만 재시도함. 재개한 APPLIED_PENDING_READY/ROLLBACK_PENDING_READY의 최초 SYSTEM 획득도 journal의 원120초 안에서만 exact busy를 재시도하며, 잠금 전 판독은 시간 상한에만 쓰고 획득 뒤 재판독·증명을 유지함. abandoned·다른/본문 오류·마감 뒤 busy와 기존 증명·fail-closed/UNKNOWN 처리는 유지함.
