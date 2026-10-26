@@ -311,6 +311,28 @@ def test_clock_band_is_yellow_has_no_action_and_has_send_priority(monkeypatch, k
     assert app.relay_screen_status_label.options['style'] == 'Warning.TLabel'
 
 
+def test_scan_non_source_error_still_drains(tmp_path, monkeypatch, capsys):
+    calls = disable_scan_drain(monkeypatch, status='acked')
+    sync_dir = tmp_path / 'sync'
+    broken = write_label_csv(sync_dir, name='포장실작업이벤트로그_a.csv')
+    healthy = write_label_csv(sync_dir, name='포장실작업이벤트로그_b.csv')
+    original = runner.enqueue_completed_source_file
+    attempts = []
+
+    def enqueue(config, **kwargs):
+        source = kwargs['relative_path']
+        attempts.append(source)
+        if source == broken.name:
+            return {'status': 'enqueue_error', 'error_code': 'direct_sync_source_file_error'}
+        return original(config, **kwargs)
+
+    monkeypatch.setattr(runner, 'enqueue_completed_source_file', enqueue)
+    runner.main(runner_args(tmp_path, scan_dir=sync_dir))
+    capsys.readouterr()
+    assert attempts == [broken.name, healthy.name]
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize('mode', ['observe', 'enforce'])
 @pytest.mark.parametrize('status', [400, 401, 403, 404, 408, 429, 500, 523, 599])
 def test_non_json_error_response_is_retryable(queued, monkeypatch, mode, status):
