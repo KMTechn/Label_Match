@@ -1770,7 +1770,7 @@ def test_runner_failure_entry_of_a_deleted_original_is_cleared_without_touching_
     capsys.readouterr()
     assert _scan_error_count(tmp_path) == (0, [])
     assert other.read_bytes() == other_bytes
-    assert sorted(path.name for path in gone.parent.iterdir()) == [other.name]
+    assert other.exists() and not gone.exists()
 
 
 def test_runner_failure_entry_of_a_renamed_original_is_cleared_but_the_file_stays(
