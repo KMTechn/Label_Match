@@ -35,7 +35,8 @@ READY_CHECKS = (
 RELAY_READY_CHECKS = ("relay_initialized", *READY_CHECKS[1:])
 
 
-APPLY_PROGRESS_TIMEOUT = 60
+APPLY_PROGRESS_TIMEOUT = 120
+APPLY_REQUEST_PROGRESS_TIMEOUT = 60
 STARTUP_WAIT_SECONDS = 240
 READY_WINDOW_SECONDS = 900
 # The bootstrap decision wait must outlast one whole READY window plus the
@@ -1301,7 +1302,7 @@ def prepared_marker_sha256(policy: Mapping[str, Any] | None) -> str | None:
 
 
 @contextmanager
-def update_lock(control: Path, operator_sid: str, *, trial: bool = False, abandoned_check=None):
+def update_lock(control: Path, operator_sid: str, *, trial: bool = False, abandoned_check=None, timeout_ms: int = 5000):
     """One cross-session mutex shared by SYSTEM and the installed operator SID."""
     import ctypes
     from ctypes import wintypes
@@ -1336,7 +1337,7 @@ def update_lock(control: Path, operator_sid: str, *, trial: bool = False, abando
         raise OSError(ctypes.get_last_error(), "update mutex cannot be opened")
     acquired = False
     try:
-        result = kernel.WaitForSingleObject(handle, 5000)
+        result = kernel.WaitForSingleObject(handle, timeout_ms)
         acquired = result in {0, 0x80}
         if result == 0x80:
             if abandoned_check is None or trial:
@@ -3280,6 +3281,40 @@ def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> 
 
 
 @contextmanager
+def startup_update_lock(control: Path, policy: Mapping[str, Any]):
+    """Bound ordinary startup contention without changing trial ownership."""
+    from contextlib import ExitStack
+    started = time.monotonic()
+    limit = started + APPLY_PROGRESS_TIMEOUT
+    acquired = False
+    with ExitStack() as stack:
+        while True:
+            if apply_claim_status(control) in {"LIVE", "UNKNOWN"}:
+                limit = started + 240
+            remaining = limit - time.monotonic()
+            try:
+                stack.enter_context(update_lock(control, policy["operator_sid"],
+                    timeout_ms=max(0, min(5000, int(remaining * 1000))),
+                    abandoned_check=lambda: _verify_abandoned_update(control, policy)))
+                acquired = True
+                break
+            except RuntimeError as error:
+                if str(error) != "update mutex ownership is busy":
+                    raise
+                if time.monotonic() >= limit:
+                    break
+                time.sleep(min(0.1, max(0, limit - time.monotonic())))
+        try:
+            if sys.stderr is not None and "--apply-prepared" not in sys.argv:
+                print(json.dumps({"stage": "update_lock_wait",
+                    "elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
+                    "acquired": acquired}), file=sys.stderr)
+        except Exception:
+            pass
+        yield acquired
+
+
+@contextmanager
 def _startup_trial_lock(control, policy, *, role):
     """Wait only for this nonce trial's remaining durable READY window."""
     from contextlib import ExitStack
@@ -3352,11 +3387,22 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
             except Exception:
                 pass
         return 20
-    with _startup_trial_lock(control, policy, role=role):
+    trial_relay = role == "relay" and bool(os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE"))
+    ownership = (_startup_trial_lock(control, policy, role=role) if trial_relay
+                 else startup_update_lock(control, policy))
+    with ownership as acquired:
         state = optional_record(control / "transition.json")
         active = read_json(control / "active.json")
         release = version_manifest(app_root.parent)
         sha = release["source_commit"]
+        if not trial_relay and not acquired:
+            if (sha == active["sha"] and startup_action(state, prepared_present=False) == "START_CURRENT"
+                    and (not (state or {}).get("retained_candidate") or sha == recovery_sha(state, pointer_sha=sha))
+                    and current_generation_status(control, policy, sha) == "ALLOW"):
+                emit_support_record({"reason_code": "UPDATE_LOCK_WAIT_EXPIRED", "exit_code": 0}, stage="update_apply", policy=policy)
+                return None
+            emit_progress_guidance()
+            return 20
         if (sha == active["sha"] and state and (state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
                 or (state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True
                     and _retained_confirmation_allowed(state, active)))):
@@ -4176,7 +4222,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                         return start_current(control, policy, state, active, arguments,
                                              code=UPDATE_RELAY_STOP_REQUESTED, deadline=relay_deadline, _ownership=bootstrap_ownership)
                     requested_at = now_utc()
-                    progress_deadline = time.monotonic() + APPLY_PROGRESS_TIMEOUT
+                    progress_deadline = time.monotonic() + APPLY_REQUEST_PROGRESS_TIMEOUT
                     try:
                         request_apply_task(control, policy)
                     except Exception:

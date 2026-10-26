@@ -1,3 +1,5 @@
+일반 GUI/relay 시작은 업데이트 잠금을 120초(LIVE/UNKNOWN 적용 claim은 240초)까지 재대기하며, 기한 뒤 활성·START_CURRENT·자료 허용을 확인한 판만 UPDATE_LOCK_WAIT_EXPIRED 기록 후 시작한다. 그 밖은 진행 안내와 rc20이며 기존 relay trial의 원 READY 창·bootstrap 적용 미시작 60초는 보존한다(sub-727).
+
 영구 거절은 서명·해시·검사 실패 증거가 있는 서명된 대상 SHA에만 귀속한다. 기동 실패·조기 종료는 제한된 다시 기회를 쓰며, 잠금 경합 없는 상속 READY 창도 원 applied_at·rollback_at 마감을 따른다(sub-710; [운영](operations.md)).
 
 후보·되돌림 READY 확인 창은 15분(900초), bootstrap 감독 상한은 1140초다. 준비 중 일시 실패의 같은 SHA는 마지막 시도 900초 뒤 다시 기회를 얻으며, 24시간 안 세 번째 실패 뒤 그 예산이 끝날 때까지 보류하며 하루 뒤 자동 재시도한다([운영](operations.md)).
