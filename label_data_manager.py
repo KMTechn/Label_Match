@@ -205,7 +205,9 @@ class DataManager:
         audit_context = None
         audit_path = None
         last_audit_key = ''
-        pending_general = deque()
+        pending_general = {}
+        blocked_paths = set()
+        no_pending_path = object()
         retry_blocked = False
         round_remaining = 0
         while True:
@@ -214,12 +216,20 @@ class DataManager:
             failed_write = False
             append_started = False
             retry_write = False
+            filepath = None
             try:
-                if retry_blocked:
+                pending_path = next((path for path in pending_general if path not in blocked_paths),
+                                    no_pending_path)
+                if pending_path is not no_pending_path:
+                    pending = pending_general[pending_path]
+                    log_item = pending.popleft()
+                    if not pending:
+                        del pending_general[pending_path]
+                elif retry_blocked:
+                    if round_remaining <= 0:
+                        raise queue.Empty
                     log_item = self.log_queue.get_nowait()
                     round_remaining -= 1
-                elif pending_general:
-                    log_item = pending_general.popleft()
                 else:
                     log_item = self.log_queue.get()
                 got_item = True
@@ -232,16 +242,18 @@ class DataManager:
                             continue
                         self._writer_stopping = True
                     break
-                if retry_blocked and self._is_general_log_item(log_item):
-                    # Hold later ordinary rows behind the oldest retry, while
-                    # still allowing durable/scanner work through this round.
-                    pending_general.append(log_item)
+                general_item = self._is_general_log_item(log_item)
+                # An unresolved route keeps the old conservative ordering until
+                # it can be identified; known independent CSVs keep progressing.
+                if not (retry_blocked and general_item and None in blocked_paths):
+                    filepath = self._get_log_filepath_for_item(log_item)
+                if retry_blocked and general_item and (None in blocked_paths or filepath in blocked_paths):
+                    pending_general.setdefault(filepath, deque()).append(log_item)
                     with self._log_retry_lock:
                         self._log_retry_items[id(log_item)] = log_item
                         self._unresolved_log_items[id(log_item)] = log_item
                     got_item = False  # This buffered row still owns its queue task.
                     continue
-                filepath = self._get_log_filepath_for_item(log_item)
                 file_exists = os.path.exists(filepath)
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
                 audit_key = self._audit_key(log_item)
@@ -313,10 +325,12 @@ class DataManager:
                 self._remember_log_write_failure(log_item, e, retry=retry_write)
                 if retry_write:
                     # Reuse the exact timestamp, worker, event and details.
-                    pending_general.appendleft(log_item)
+                    pending_general.setdefault(filepath, deque()).appendleft(log_item)
                     got_item = False
+                    if not retry_blocked:
+                        round_remaining = self.log_queue.qsize()
+                    blocked_paths.add(filepath)
                     retry_blocked = True
-                    round_remaining = self.log_queue.qsize()
                 print(f"로그 쓰기 스레드 오류: {e}")
             finally:
                 if audit_stream is not None and (failed_write or isinstance(log_item, _LogCloseRequest)
@@ -332,9 +346,11 @@ class DataManager:
                         print(f"로그 쓰기 스레드 오류: {error}")
                 if got_item:
                     self.log_queue.task_done()
-                if retry_blocked and round_remaining <= 0:
+                if (retry_blocked and round_remaining <= 0
+                        and not any(path not in blocked_paths for path in pending_general)):
                     time.sleep(GENERAL_LOG_RETRY_BACKOFF_SECONDS)
                     retry_blocked = False
+                    blocked_paths.clear()
     @property
     def has_pending_log_retries(self):
         with self._log_retry_lock:

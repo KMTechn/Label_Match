@@ -7161,12 +7161,11 @@ class Label_Match(tk.Tk):
         if label is None:
             return
         retry_pending = bool(getattr(self.__dict__.get("data_manager"), "has_pending_log_retries", False))
+        if text is not None:
+            self._save_status_toast = text
+        text = self.__dict__.get("_save_status_toast", "")
         if retry_pending:
-            text = LABEL_MATCH_LOG_RETRY_NOTICE
-        elif text is None:
-            if label.cget("text") != LABEL_MATCH_LOG_RETRY_NOTICE:
-                return
-            text = ""
+            text = '\n'.join(part for part in (text, LABEL_MATCH_LOG_RETRY_NOTICE) if part)
         label.config(text=text, style="Status.TLabel" if retry_pending else "Save.Success.TLabel")
 
     def show_loading_overlay(self):
@@ -9325,8 +9324,7 @@ class Label_Match(tk.Tk):
             return False
         log_thread = getattr(failed_manager, 'log_thread', None)
         if log_thread is not None and log_thread.is_alive():
-            cancel_close = getattr(failed_manager, '_cancel_close_request', None)
-            return bool(callable(cancel_close) and cancel_close())
+            return False
         try:
             self.data_manager = DataManager(
                 failed_manager.save_directory,
@@ -20522,6 +20520,13 @@ class Label_Match(tk.Tk):
             self.data_manager.close(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
         except Exception as e:
             print(f"설정 변경 저장 기술 진단: {e}")
+            failed_manager = self.data_manager
+            log_thread = getattr(failed_manager, 'log_thread', None)
+            if (getattr(failed_manager, '_close_requested', False)
+                    and log_thread is not None and log_thread.is_alive()):
+                cancel_close = getattr(failed_manager, '_cancel_close_request', None)
+                if callable(cancel_close) and not cancel_close():
+                    log_thread.join(timeout=LABEL_MATCH_APP_CLOSE_LOG_TIMEOUT_SECONDS)
             self._replace_closed_data_manager_after_close_failure(self.data_manager)
             if worker_name_var is not None:
                 worker_name_var.set(display_operator_name(self.worker_name))

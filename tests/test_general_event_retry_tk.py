@@ -24,6 +24,10 @@ def test_retry_notice_uses_real_workbench_renderer_and_clears_after_save(operato
     assert not app.relay_screen_status_label.winfo_ismapped()
     # Run the actual renderer used by save/copy toast timers while pending.
     app._render_save_status('saved-toast')
+    assert 'saved-toast' in label.cget('text')
+    assert module.LABEL_MATCH_LOG_RETRY_NOTICE in label.cget('text')
+    app._render_relay_screen_status(relay_state)
+    assert 'saved-toast' in label.cget('text')
     app._render_save_status('')
     assert label.cget('text') == module.LABEL_MATCH_LOG_RETRY_NOTICE
     app.data_manager.has_pending_log_retries = False
@@ -44,7 +48,15 @@ def test_copy_toast_and_its_actual_timer_keep_pending_retry_notice(operator_work
     app.clipboard_clear = lambda: None
     app.clipboard_append = lambda text: None
     app._copy_selected_history_barcodes()
-    assert app.save_status_label.cget('text') == module.LABEL_MATCH_LOG_RETRY_NOTICE
+    assert '바코드 원문 복사됨' in app.save_status_label.cget('text')
+    assert module.LABEL_MATCH_LOG_RETRY_NOTICE in app.save_status_label.cget('text')
+    app._render_relay_screen_status('normal')
+    assert '바코드 원문 복사됨' in app.save_status_label.cget('text')
+    app.data_manager.has_pending_log_retries = False
+    app._render_relay_screen_status('normal')
+    assert '바코드 원문 복사됨' in app.save_status_label.cget('text')
+    assert module.LABEL_MATCH_LOG_RETRY_NOTICE not in app.save_status_label.cget('text')
+    app.data_manager.has_pending_log_retries = True
     assert timers[0][0] == 2500
     timers[0][1]()
     assert app.save_status_label.cget('text') == module.LABEL_MATCH_LOG_RETRY_NOTICE
