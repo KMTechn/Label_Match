@@ -875,3 +875,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - 납품처 라벨 무시: RS 필수 조건을 제거하여 실제 GS 구분·RS 없는 `[)>06`과 글자 `<RS>`도 판정한다. 감사 `ERROR_INPUT`·duplicate.wav의 기존 계약을 유지한다. sub-646의 제품 오인·교환 우회 두 P1 재현과 저장 통합 재현은 sub-661 계약 시험으로 확인한다.
 - w9firstupdsub580 / v2.0.124: 제품 불일치 안내 띠만 사유 · `현품표 <기존 처리층 번호> · 스캔 제품 <값>` · 같은 현품표 재스캔의 3줄로 표시한다. 두 값이 길면 `…`와 끝 14자를 표시하고 짧은 값은 유지하며 새 화면·Tk에 같은 글을 보낸다. 다른 안내·모달 원문·실패 기록은 유지한다.
 화면 셸 기준판: frame.css 만 웹 00e66d79(menu label one flow · sha256 97c47d9b…) 바이트 · 나머지 셸 파일은 d8f82fa4 · ui manifest commit 은 셸 기준판 d8f82fa4 를 뜻함.
+- v2.0.126: 승인 재료 12개·ui1028 조립. 데이터 하한 v2.0.126을 명시적으로 유지하며 기존 서명 호환 증명 모델을 보존한다.
