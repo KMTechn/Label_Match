@@ -610,7 +610,7 @@ shared_replacements = {
         '3977f00f39540acbe501ac2628398d2dcdb6b13b323abd3f1582771c291b895a'),
     'INSTALL_THIS_PC.ps1': (
         '7b9e32726e81185df274433d80177f3b59bf3b87291c641cebc51e4a6863250b',
-        '84b3018b9c137a7c9fcc7bdb947ed97a8e1acd4d252e38662ec913f50d4b35dc'),
+        '154c072f1256f4d36f562ba153f75c27a51b94212103c5a903eb02bf4df58268'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
         '0c9d219a2cfdca1619280e6fe060d4c5dac2ede719cf934d3b9a40a48e5b386f'),
@@ -1366,7 +1366,7 @@ def data_generation_before_allowed(relative):
 
 # ADMIN-WORKER-DECLARATIONS-BEGIN
 admin_worker_replacements = {'INSTALL_THIS_PC.ps1': ('bdc42c26a8b5464d8a65e880ba5474ef01a28c820997adcb5ddefa8daa9b022b',
-                         '84b3018b9c137a7c9fcc7bdb947ed97a8e1acd4d252e38662ec913f50d4b35dc'),
+                         '154c072f1256f4d36f562ba153f75c27a51b94212103c5a903eb02bf4df58268'),
  'app/Label_Match.py': ('43c93e151623c6098ab6dc0b200d5d44c415cdbe12f2e3be97c3172c41d270e9',
                         'd7ace815004662c1f2cf03e199b6f5f574350fb53f3be5ba16e19777df40deba'),
  'app/current_user_onboarding.py': ('93a4d7b67b9d740ddbf8bfa9546f01fc0c927ee0de985f4be4e0d83adf435ebd',
@@ -1378,7 +1378,7 @@ admin_worker_replacements = {'INSTALL_THIS_PC.ps1': ('bdc42c26a8b5464d8a65e880ba
  'app/writer_session_fence.py': ('a43bf51c06caf667a0a0e98849553ca667aa8cd2640b546d357d918d95ec13bb',
                                  '2086c08e16b19a269d30b86ce1c34873e7ab726bdbae395e7856855790cc588c'),
  'tools/apply_prepared_update.ps1': ('dc7e30404d7bd4277692f875120aff4f7afd5c01b84301ed9e95a2c03e844c83',
-                                     '9954aaf375985125cea02b92bbe57e923c9d00a669a8e2d320a59e56337e7744'),
+                                     'dcdbd7ec80d1b9be45709574f6fbb032cbbf1054c109b376ac7bf1fc87f757bb'),
  'tools/bootstrap_integrity.ps1': ('96101ce38befdf9dcca09ec42abd571aa441ad312f35bf3d14fd7effc97db963',
                                    '0c9d219a2cfdca1619280e6fe060d4c5dac2ede719cf934d3b9a40a48e5b386f'),
  'tools/failure_redaction.ps1': ('c81ce889aef0d216985a9dbaf439c2bfa11640d929e836d2bc7b68966d6d073f',
