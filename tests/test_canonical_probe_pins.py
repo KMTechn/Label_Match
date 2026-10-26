@@ -27,7 +27,16 @@ def test_all_embedded_probe_pins_match_runtime_normalization(tmp_path, engine, m
     result = run_functions(tmp_path, source, ['Invoke-LabelPinnedProbe'], r'''
 $calls=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and
  $n.GetCommandName() -ceq 'Invoke-LabelPinnedProbe'},$true))
-if($calls.Count -ne 3){throw 'Embedded probe call inventory differs.'}
+if($calls.Count -ne 4){throw 'Embedded probe call inventory differs.'}
+$owners=@($calls | ForEach-Object {
+ $owner=$_.Parent
+ while($owner -and $owner -isnot [Management.Automation.Language.FunctionDefinitionAst]){$owner=$owner.Parent}
+ if(-not $owner){throw 'Probe owner is missing.'}
+ $owner.Name
+} | Sort-Object)
+$expectedOwners=@('Assert-WriterTransition','HealthyLifecycle',
+ 'Stop-LabelInstallerRelayPreimage','Stop-LabelRollbackCandidateRelay') | Sort-Object
+if(($owners -join '|') -cne ($expectedOwners -join '|')){throw 'Embedded probe owners differ.'}
 foreach($call in $calls){
  $owner=$call.Parent
  while($owner -and $owner -isnot [Management.Automation.Language.FunctionDefinitionAst]){$owner=$owner.Parent}
@@ -54,7 +63,7 @@ foreach($call in $calls){
         assert 'PIN_MISMATCH' in result.stderr
     else:
         assert result.returncode == 0, result.stderr
-        assert result.stdout.count('PIN_MATCH') == 3
+        assert result.stdout.count('PIN_MATCH') == 4
 
 
 @pytest.mark.parametrize('engine', ['powershell.exe', 'pwsh'])
