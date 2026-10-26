@@ -1773,3 +1773,4 @@ relay가 direct-sync 자식을 기다리는 한도(RELAY_DIRECT_SYNC_PROCESS_TIM
 
 10/27 sub-690: 사용자 제거·교체 봉쇄·후보 정상 종료는 relay 자식 한도+30초(현재150초)를 공유하고, 후보 종료의 원 normal_stop_started_at과 감독 창도 같은 한도에 묶는다. 승인된 설치 대기는120초(relay 정지·봉쇄150초), 초과 시 기존 실패/UNKNOWN과 강제 종료0을 유지한다. 각 기다림의 종료 로그는 stderr의 event/elapsed_ms/status 한 줄이며 기존 stdout 증명과 실패 판정은 유지한다.
 bootstrap 정상 종료 뒤 relay 소유 재조회도 원 부모 마감 안의120초이며 생존 표본2초는 그대로다.
+WriteThrough 원자 교체의 냉간 타입 준비는 기존1000ms 교체 기한을 시작하기 전에 끝내며, 준비 오류는 그대로 전파한다.

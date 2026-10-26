@@ -5,8 +5,9 @@ using System;
 using System.IO;
 public class AtomicDeadlineTestClock {
  public static double Now;
- public TimeSpan Elapsed { get { return TimeSpan.FromMilliseconds(Now); } }
- public static AtomicDeadlineTestClock StartNew() { return new AtomicDeadlineTestClock(); }
+ private double Started;
+ public TimeSpan Elapsed { get { return TimeSpan.FromMilliseconds(Now - Started); } }
+ public static AtomicDeadlineTestClock StartNew() { return new AtomicDeadlineTestClock { Started = Now }; }
 }
 public class OtherAccessRefusal : UnauthorizedAccessException {
  public OtherAccessRefusal() : base("test refusal") { HResult = unchecked((int)0x80070057); }
@@ -59,7 +60,7 @@ foreach($mode in @('Move','Replace')){
   }
  }
 }
-# A cold Add-Type consumes the same timer and cannot start publication late.
+# Cold type preparation completes before the atomic publication timer starts.
 $script:declarations=0
 function Add-Type {param([string]$TypeDefinition)
  $script:declarations++;[AtomicDeadlineTestClock]::Now=1100
@@ -68,5 +69,5 @@ $source=$source.Replace("'KMTechStartupUpdateAtomicFile' -as [type]","'MissingAt
 . ([scriptblock]::Create($source))
 [AtomicDeadlineTestClock]::Now=0;[AtomicDeadlineTestFile]::Calls=0;$failure=$null
 try{Invoke-LabelAtomicReplace 'source' 'target' -Mode WriteThrough}catch{$failure=$_.Exception.GetBaseException()}
-if($failure -isnot [TimeoutException] -or $script:declarations -ne 1 -or [AtomicDeadlineTestFile]::Calls -ne 0){throw 'COLD_DECLARATION_OUTSIDE_DEADLINE'}
+if($null -ne $failure -or $script:declarations -ne 1 -or [AtomicDeadlineTestFile]::Calls -ne 1){throw 'COLD_DECLARATION_INSIDE_DEADLINE'}
 'PASS'

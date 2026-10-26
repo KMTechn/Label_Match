@@ -6,7 +6,7 @@ $Script:LabelWriterFenceTupleVersion = 'label-match-deployment-session-authority
 $Script:LabelWriterFenceSessionMutexPrefix = 'Local\KMTech.LabelMatch.DeploymentSession.'
 $Script:LabelWriterFenceAdmissionMutexName = 'Local\KMTech.LabelMatch.WriterAdmission.v1'
 $Script:LabelWriterFenceAdmissionProductionRoot = ''
-$Script:LabelWriterFenceInventorySha256 = 'd128520be7cf904796cae856c814084a1b9bbc85bd1480d606d96f02f4d50961'
+$Script:LabelWriterFenceInventorySha256 = '8aea68d003ca7516af8fffc78c0123ac483c59b19374454eb84ebfbc1a6941a3'
 $Script:LabelWriterFenceInstalledIdentity = $null
 $Script:LabelWriterFenceMaximumBytes = 262144
 $Script:LabelWriterFenceActiveFields = @(
@@ -22,12 +22,11 @@ function Invoke-LabelPinnedAtomicReplace {
           [ValidateSet('Move','Replace','WriteThrough')][string]$Mode = 'Move')
     # The supported generator binds this copy to the one canonical function.
     # Inline bytes also work in the attested in-memory installer scope.
-    $expectedAtomicBodySha256 = 'c13d9869332a9f14b763f1ffa8345453ab64bdc75d1c7605627194346a77791a'
+    $expectedAtomicBodySha256 = '18e20812b7e0b5966c19eebeee87ef1b9d149f1d796c242cb45b871c07071495'
 # LABEL_ATOMIC_INLINE_START
 $text = 'function Invoke-LabelAtomicReplace {
     param([string]$Source,[string]$Destination,[AllowNull()]$Backup = $null,
           [ValidateSet(''Move'',''Replace'',''WriteThrough'')][string]$Mode = ''Move'')
-    $timer = [Diagnostics.Stopwatch]::StartNew()
     if ($Mode -ceq ''WriteThrough'' -and -not (''KMTechStartupUpdateAtomicFile'' -as [type])) {
         Add-Type -TypeDefinition @''
 using System.Runtime.InteropServices;
@@ -37,6 +36,7 @@ public static class KMTechStartupUpdateAtomicFile {
 }
 ''@
     }
+    $timer = [Diagnostics.Stopwatch]::StartNew()
     if ($timer.Elapsed.TotalMilliseconds -ge 1000) { throw [TimeoutException]::new(''Atomic publication preparation exceeded its deadline.'') }
     $firstError = $null
     while ($true) {
