@@ -14,6 +14,9 @@
 - 10/27 sub-690: 사용자 제거·교체 봉쇄·후보 정상 종료는 relay 자식 한도+30초(현재150초)를 공유하고, 후보 종료의 원 normal_stop_started_at과 감독 창도 같은 한도에 묶는다. 승인된 설치 대기는120초(relay 정지·봉쇄150초), 초과 시 기존 실패/UNKNOWN과 강제 종료0을 유지한다. 각 기다림의 종료 로그는 stderr의 event/elapsed_ms/status 한 줄이며 기존 stdout 증명과 실패 판정은 유지한다. WriteThrough 냉간 타입 준비는 기존1000ms 교체 기한 밖으로 옮긴다. RED/GREEN·정본 선언 확인은 sub-690/RESULT.md에 기록하며 독립 검토는 레인이 붙인다.
 
 - 10/26 sub-641: 설치기의 사용자 relay 정상 정지 기다림을 15초에서 `RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS + 30`초(현재 150초)로 맞췄다. 포장의 되돌림 후보 relay 정지에도 같은 한도를 쓴다. 고정 대기 안내를 표시하고, 부재 미증명 때 기존 실패와 강제 종료 0을 유지한다. 선언 재생성·RED/GREEN·직접 호출자 바탕 대조는 `work/program/w9firstupd/sub-641/RESULT.md`에 기록한다. 독립 검토는 레인이 붙이며 실제 배포본의 같은 장면도 확인한다.
+### 원본 검증 일시 오류의 자동 복구 (sub-665)
+
+P1-3: 본문 retryable 없는 408·429·전체 5xx(비JSON 520 포함)는 RETRY_WAIT_VALIDATION에 남겨 같은 접수로 정상 검증까지 회복한다. 확정 잔량표 거절·409/412·committed 불명 변경 요청의 결과확인중 분류는 유지한다. RED→GREEN·좁은 직접 호출자 바탕 대조·선언 근거: work/program/w9firstupd/sub-665/RESULT.md. 독립 검토·126 통합은 레인 몫이다.
 
 - v2.0.124: 첫 설정 bootstrap 생존 중 소유자 mutex 바쁨을 기존 마감까지 다시 확인하고 일반 조회 예외에 고정 지원 코드를 남김. SYSTEM 업데이트 확인창 획득 busy도 기존120초 안에서만 pending으로 재시도함. rollback READY 확인창도 기존 timeout_seconds(기본120초) while 안의 획득 busy만 재시도함. 재개한 APPLIED_PENDING_READY/ROLLBACK_PENDING_READY의 최초 SYSTEM 획득도 journal의 원120초 안에서만 exact busy를 재시도하며, 잠금 전 판독은 시간 상한에만 쓰고 획득 뒤 재판독·증명을 유지함. abandoned·다른/본문 오류·마감 뒤 busy와 기존 증명·fail-closed/UNKNOWN 처리는 유지함.
 현재 포장124 제품fa05a706과 별도 관측호환하네스bd471ed6의 ZIP13fcc9f3c7ef에서 공식19·자연17′을 확인하고 기존 사슬을 진행 중이다. 578 P2는 독립검토581에서 닫혔으며, 첫 품목표581 P2 두 건(응답 뒤 본문 오류 재시도와 sleep/본문 예산)을 별도 작은 제품 커밋으로 보완한다. ANSWER38대로 첫 기본·검증cache없음 길만 stream/응답표지·잠 앞뒤 남은20초·전체40초를 돌려받은 조각 경계에서만 확인하는 협조중단(아주 느린 연속 입력은 더 늦어질 수 있음·조용히 멈춘 읽기는10초)을 쓰며 명시timeout·인증cache·미등록 길은 기존값/한번이다. 새 보완 커밋 뒤 ZIP/사슬 증거 처리는 레인 판정 전이며, 현재 소스의 통과를 새 소스 수용으로 세지 않는다. UI9·scrollTop0은 UI blob 동일 증거로 유지하고 최종 문서 수용은 모든 실제 회차 뒤로 둔다.

@@ -409,6 +409,8 @@ resident10 c6e72592의 [실제 설치 및 기본 GUI09 시작](operations.md#res
 
 접수 저장소는 `CAPTURED_UNVERIFIED → VALIDATING` 이후 `VALIDATED/READY_TO_SUBMIT`, `SUBMITTING`, `ACKED/LOCAL_EFFECT_PENDING`, `COMPLETED`를 구분한다. `RETRY_WAIT_VALIDATION`, `WAITING_DEPENDENCY`, `RECONCILE_PENDING_VALIDATION`, `RETRY_WAIT_SUBMIT`, `RECONCILE_PENDING_SUBMIT`, `BLOCKED_INVALID`, `OPERATOR_REVIEW`가 예외를 보존한다. `CANCELLED/SUPERSEDED`는 종결-미완료다. 모든 입력이 이 상태들을 반드시 한 번씩 순서대로 통과한다는 뜻은 아니다. 상태·전이의 상세 원본은 [deferred_intent_capture](../../deferred_intent_capture.py)와 [fixture 계약](../../tests/fixtures/deferred_intent_contract/CONTRACT.md)이다. 이 fixture는 2026-09-06 재구성본이며 과거 이름의 MEASURED 시나리오를 현재 native 측정으로 승격하지 않는다.
 
+사전 원본 검증의 일시 HTTP 오류(sub-665)는 본문의 `retryable`이 없어도 408·429와 전체 5xx(500–599, 비JSON 520 포함)를 `RETRY_WAIT_VALIDATION`으로 남긴다. 기존 전송/비JSON 응답 오류의 재시도와 425 처리는 유지한다. 같은 접수·원본으로 회복하며 잔량표 확정 거절·409/412 및 기록된 임대 변경 요청의 committed 불명/확정 결과 분류는 기존 우선순위다.
+
 <a id="f1-capture-cancellation"></a>
 ### F1 현재 접수 취소 · cancel07 소스 계약
 
