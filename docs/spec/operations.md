@@ -297,7 +297,7 @@ portable/frozen builder는 Python 준비 뒤 로컬 checker를 실행하고 실�
 
 공용 UNKNOWN 안내는 「이 PC의 자료 판을 확인하지 못해 프로그램을 열 수 없습니다.\n현장 관리자에게 알리세요.」, REFUSAL 안내는 「이 PC의 자료는 더 새 판에서 이미 열려 이 판으로는 열 수 없습니다.\n현장 관리자에게 알리세요.」다. 두 문장 사이 `\n`은 실제 줄바꿈 하나이며 판정·message_key·스키마는 바꾸지 않는다.
 
-자료 세대 표지 게시(공용 `0.3.8+w9.1`, 10/26 w9firstupdsub652): `kmtech_shared/data_generation.py`와 `powershell/data_generation.ps1`의 표지 바꿔치기가 Windows 오류 5·32(백신·색인기 등 잠금)이면 단조 시계 1.0초 안에서 50ms 간격으로 같은 임시 파일·대상을 다시 시도한다. 다른 오류는 바로 실패하고, 계속 잠기면 마지막 원 오류를 올리며 옛 표지는 그대로다. 검사 앱·리워크의 같은 꼴과 맞췄고 이적 앱과 바이트가 같다. 공용 판 표지·manifest·lock·설치기 핀은 `0.3.8+w9.1`로 옮겼다.
+자료 세대 표지 게시(공용 `0.3.8+w9.1`, 10/26 w9firstupdsub652): `kmtech_shared/data_generation.py`와 `powershell/data_generation.ps1`의 표지 바꿔치기가 Windows 오류 5·32(백신·색인기 등 잠금)이면 단조 시계 1.0초 안에서 50ms 간격으로 같은 임시 파일·대상을 다시 시도한다. 다른 오류는 바로 실패하고, 계속 잠기면 마지막 원 오류를 올리며 옛 표지는 그대로다. 검사 앱·리워크의 같은 꼴과 맞췄고 이적 앱과 바이트가 같다. 공용 판 표지·manifest·lock·설치기 핀은 `0.3.8+w9.1`로 옮겼다. raster 바이트는 바꾸지 않으므로 `kmtech_zero_pe.vendor.json`의 raster 출처 판은 `0.3.8`을 보존하며, shared 앱 패치 판과 구분하여 대조한다.
 
 `python -B qualification/check_kmtech_shared.py --check`는 앱의 별도 lock에 고정된 hash/version으로 manifest와 정확한 package 9파일을 읽기 전용 검사한다. `--root <앱>`으로 설치본/portable 복사본도 검사하며 형제 저장소가 필요 없다. 검사 함수 4개는 정본 `dd34e4d`의 `manifest/sync_shared.py`와 동일하다. QA 도구이며 제품 배포 입력에는 추가하지 않는다. `tests/test_kmtech_shared.py`는 누락·추가·내용/manifest 변조, 잘못된 lock 거부·형제 없는 복사본의 실제 시험·portable import identity를 확인한다. 기존 zero-PE native 의존성 검사는 shared package까지 포함하며 provenance의 facade hash를 대조한다. 0.3.8 채택에서는 기존 생성기로 writer inventory·설치기 pin·업그레이드 선언을 재생성하고 `--check`로 확인했다.
 
