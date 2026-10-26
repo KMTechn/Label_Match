@@ -2229,7 +2229,7 @@ def _label_match_operator_scan_identifier(
             return label, _label_match_compact_display_token(value)
 
     date_match = re.search(
-        r"(?:^|[|\x1d]|<GS>)6D=?([0-9]{6,8})(?=$|[|\x1d]|<GS>)",
+        r"(?:^|[|\x1d\x1e]|<GS>|<RS>)6D=?([0-9]{6,8})(?=$|[|\x1d\x1e]|<GS>|<RS>)",
         decoded,
         flags=re.IGNORECASE,
     )

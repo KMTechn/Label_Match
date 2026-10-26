@@ -844,3 +844,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - w9firstupdsub513 / relay 감사 고침 완료: 성공 bootstrap의 첫 rc 0 뒤 최대 2.0초·0.1초 간격 owner 재조회(부모 기한 안), 진단 전체 예외 격리, 업데이트 복구·되돌림 기존 코드 유지, RUNNING 뒤 정상 종료 사본 제외, headless RUNNING 전후 표기·정상 정지 정합. ANSWER-1 적용, 판 올림 0.
 
 - 재설치 밤 목록 — P3(레인21:4x 판정): terminal 만료 뒤 옛 판을 계속 실행하는 흐름과 되풀이 횟수 막이 없음은 이번 고침에서 그대로 두고 밤 재설치 목록에 남긴다.
+- w9firstupdsub649 / GS·RS 세 꼴: 6D 읽기는 제어 바이트·글자 꼴 둘을 받음. 구분이 사라진 꼴은 잘못 자를 위험으로 구현하지 않고 QUESTION 으로 둠(웹 셸 scan.js 의 Ctrl+]·Ctrl+^·Alt+029/030 정본 바이트 대기). 납품처 라벨 판정은 postcut/deliverylabel-lm-124 가 바탕에 들어온 뒤 같은 세 꼴로 넓힘(이적은 GS·RS 요구 자리 0).

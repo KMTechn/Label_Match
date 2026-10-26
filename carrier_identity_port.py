@@ -196,8 +196,8 @@ def parse_raw_compact_carrier(raw_value: Any, *, error_type) -> dict[str, str]:
 
 def parse_legacy_production_date(raw_input):
     """Extract 6D date text; the caller owns the existing diagnostic/None fallback."""
-    normalized_input = re.sub(r"<gs>", "\x1D", str(raw_input or ""), flags=re.IGNORECASE)
-    fields = normalized_input.split('\x1D')
+    normalized_input = re.sub(r"<(?:gs|rs)>", "\x1D", str(raw_input or ""), flags=re.IGNORECASE)
+    fields = re.split("[\x1D\x1E]", normalized_input)
     for field in fields:
         if field.startswith('6D'):
             date_str = field[2:]
