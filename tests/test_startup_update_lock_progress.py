@@ -78,7 +78,8 @@ def test_real_six_second_mutex_owner_does_not_abort_startup(waiting_startup, mon
     monkeypatch.setattr(time, 'sleep', NATIVE_SLEEP)
     if hasattr(updates, 'bootstrap'):
         def still_busy(*_args, **_kwargs):
-            raise RuntimeError('update mutex ownership is busy')
+            with NATIVE_LOCK(control, policy['operator_sid']):
+                return None
         monkeypatch.setattr(updates, 'bootstrap', still_busy)
     ready = threading.Event()
     errors = []
@@ -87,7 +88,7 @@ def test_real_six_second_mutex_owner_does_not_abort_startup(waiting_startup, mon
         try:
             with NATIVE_LOCK(control, policy['operator_sid']):
                 ready.set()
-                NATIVE_SLEEP(6.2)
+                NATIVE_SLEEP(12.2)
         except BaseException as error:
             errors.append(error)
 
@@ -98,7 +99,7 @@ def test_real_six_second_mutex_owner_does_not_abort_startup(waiting_startup, mon
         started = NATIVE_CLOCK()
         assert updates.startup_gate(app, []) is None
         elapsed = NATIVE_CLOCK() - started
-        assert 5.7 <= elapsed < 11.2
+        assert 11.7 <= elapsed < 17.2
     finally:
         owner.join(15)
     assert not owner.is_alive() and not errors
