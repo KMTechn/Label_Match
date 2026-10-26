@@ -10,6 +10,9 @@ import pytest
 import direct_sync_push as push
 import direct_sync_runtime as runtime
 import producer_runtime_client as leases
+import Label_Match as label
+import label_screen_bridge as bridge
+from types import SimpleNamespace
 from tests.test_direct_sync_push import (
     FakeResponse, SequenceFakeSession, make_credentials, make_manifest, write_csv,
 )
@@ -200,3 +203,60 @@ def test_committed_clock_label_does_not_override_receipt_safety(queued, tmp_path
     )
     assert result.retryable is False
     assert queue_row(database)['status'] == 'operator_review'
+
+
+def test_clock_warning_survives_save_and_restart_until_successful_upload(tmp_path):
+    config = make_config(tmp_path)
+    refused = {'status': 'retry_wait', 'status_code': 401,
+               'error_code': 'stale_timestamp', 'clock_skew': CLOCK}
+    first = runtime._write_runtime_status(
+        config, status='retry_wait', queue={}, disk={}, last_result=refused,
+    )
+    assert first['clock_error']['clock_skew'] == CLOCK
+    saved = runtime._write_runtime_status(config, status='enqueued', queue={}, disk={})
+    assert saved['clock_error'] == first['clock_error']
+    assert label._label_match_clock_warning(saved).startswith('이 PC 시계가 회사 서버와 5분 넘게 달라')
+    # A later retry/idle/lease success alone does not prove delivery recovered.
+    idle = runtime._write_runtime_status(config, status='idle', queue={}, disk={})
+    assert idle['clock_error'] == first['clock_error']
+    recovered = runtime._write_runtime_status(
+        config, status='acked', queue={}, disk={}, last_result={'status': 'acked', 'success': True},
+    )
+    assert 'clock_error' not in recovered
+    assert label._label_match_clock_warning(recovered) == ''
+
+
+@pytest.mark.parametrize('known_date', [False, True])
+def test_clock_band_is_yellow_has_no_action_and_keeps_other_terminal_warning(monkeypatch, known_date):
+    diagnostic = {'status_code': 401, 'error_code': 'stale_timestamp'}
+    if known_date:
+        diagnostic['clock_skew'] = CLOCK
+    text = label._label_match_clock_warning({'clock_error': diagnostic})
+    assert text.splitlines()[0] == (
+        '이 PC 시계가 회사 서버와 5분 넘게 달라 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요'
+    )
+    assert text.splitlines()[1].startswith('찍은 기록은 이 PC에 그대로 있고, 시계를 맞추면 저절로 보내집니다')
+    if known_date:
+        for field, words in [('pc_utc', '이 PC'), ('server_utc', '회사 서버')]:
+            stamp = datetime.fromisoformat(CLOCK[field].replace('Z', '+00:00')).astimezone().strftime('%H:%M')
+            assert words + ' ' + stamp in text
+    else:
+        assert ' · 이 PC ' not in text
+    app = SimpleNamespace(_logistics_relay_state='stopped', _logistics_clock_warning=text)
+    processor = SimpleNamespace(app=app, module=label, _dialogs=[])
+    monkeypatch.setattr(bridge, '_pointer_pending', lambda _app: None)
+    alerts = bridge._alerts(processor, None, None)
+    assert alerts == [
+        {'kind': 'warn', 'code': None, 'text': text},
+        {'kind': 'warn', 'code': None, 'text': label.LABEL_MATCH_RELAY_SCREEN_TEXT['stopped']},
+    ]
+
+    class Label:
+        def configure(self, **options):
+            self.options = options
+
+    app.relay_screen_status_label = Label()
+    label.Label_Match._render_relay_screen_status(app, 'stopped')
+    assert text in app.relay_screen_status_label.options['text']
+    assert label.LABEL_MATCH_RELAY_SCREEN_TEXT['stopped'] in app.relay_screen_status_label.options['text']
+    assert app.relay_screen_status_label.options['style'] == 'Warning.TLabel'
