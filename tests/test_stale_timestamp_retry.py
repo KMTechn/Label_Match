@@ -4,6 +4,10 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+import csv
+import io
+import socket
+import requests
 
 import pytest
 
@@ -263,7 +267,7 @@ def test_screen_poll_connects_clock_warning_and_automatic_clear(tmp_path):
 
 
 @pytest.mark.parametrize('known_date', [False, True])
-def test_clock_band_is_yellow_has_no_action_and_keeps_other_terminal_warning(monkeypatch, known_date):
+def test_clock_band_is_yellow_has_no_action_and_has_send_priority(monkeypatch, known_date):
     diagnostic = {'status_code': 401, 'error_code': 'stale_timestamp'}
     if known_date:
         diagnostic['clock_skew'] = CLOCK
@@ -278,14 +282,18 @@ def test_clock_band_is_yellow_has_no_action_and_keeps_other_terminal_warning(mon
             assert words + ' ' + stamp in text
     else:
         assert ' · 이 PC ' not in text
-    app = SimpleNamespace(_logistics_relay_state='stopped', _logistics_clock_warning=text)
+    payload = {'clock_error': diagnostic, 'scan_terminal_blocked_count': 2,
+               'scan_terminal_blocked_record_count': 7}
+    app = SimpleNamespace(_logistics_relay_state='stopped', _logistics_clock_warning=text,
+                          _relay_screen_status_payload=payload)
     processor = SimpleNamespace(app=app, module=label, _dialogs=[])
     monkeypatch.setattr(bridge, '_pointer_pending', lambda _app: None)
     alerts = bridge._alerts(processor, None, None)
-    assert alerts == [
-        {'kind': 'warn', 'code': None, 'text': text},
-        {'kind': 'warn', 'code': None, 'text': label.LABEL_MATCH_RELAY_SCREEN_TEXT['stopped']},
-    ]
+    assert len(alerts) == 1
+    assert alerts[0]['kind'] == 'warn'
+    assert 'choices' not in alerts[0]
+    assert text in alerts[0]['text']
+    assert '7건' in alerts[0]['text'] and '파일 2개' in alerts[0]['text']
 
     class Label:
         def configure(self, **options):
@@ -294,5 +302,102 @@ def test_clock_band_is_yellow_has_no_action_and_keeps_other_terminal_warning(mon
     app.relay_screen_status_label = Label()
     label.Label_Match._render_relay_screen_status(app, 'stopped')
     assert text in app.relay_screen_status_label.options['text']
-    assert label.LABEL_MATCH_RELAY_SCREEN_TEXT['stopped'] in app.relay_screen_status_label.options['text']
+    assert label.LABEL_MATCH_RELAY_SCREEN_TEXT['stopped'] not in app.relay_screen_status_label.options['text']
     assert app.relay_screen_status_label.options['style'] == 'Warning.TLabel'
+
+
+@pytest.mark.parametrize('phase', ['upload', 'lease'])
+@pytest.mark.parametrize('status', [408, 429, 500, 501, 505, 599])
+def test_uncommitted_transient_http_is_not_terminal(queued, monkeypatch, phase, status):
+    database, _, credentials = queued
+
+    class Session:
+        def post(self, *_args, **_kwargs):
+            return refusal('temporary_unavailable', status)
+
+    if phase == 'lease':
+        def prepare(**_kwargs):
+            return leases._post_lease_request(
+                request_value={}, credentials=credentials, session=Session(), timeout=1,
+            )[1]
+        monkeypatch.setattr(push, 'prepare_runtime_metadata', prepare)
+    result = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials,
+        session=SequenceFakeSession([refusal('temporary_unavailable', status)]),
+    )
+    assert result.retryable is True
+    assert queue_row(database)['status'] == 'retry_wait'
+    assert queue_row(database)['next_attempt_at']
+
+
+@pytest.mark.parametrize('phase', ['upload', 'lease'])
+@pytest.mark.parametrize('error_type', [
+    ConnectionRefusedError, socket.gaierror, TimeoutError,
+    requests.exceptions.ConnectionError, requests.exceptions.SSLError,
+    requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout,
+])
+def test_network_failure_is_not_terminal(queued, monkeypatch, phase, error_type):
+    database, _, credentials = queued
+
+    class Session:
+        def post(self, *_args, **_kwargs):
+            raise error_type('synthetic transport failure')
+
+    if phase == 'lease':
+        def prepare(**_kwargs):
+            return leases._post_lease_request(
+                request_value={}, credentials=credentials, session=Session(), timeout=1,
+            )[1]
+        monkeypatch.setattr(push, 'prepare_runtime_metadata', prepare)
+    result = push.drain_one_relay_batch(db_path=database, credentials=credentials, session=Session())
+    assert result.retryable is True
+    assert queue_row(database)['status'] == 'retry_wait'
+
+
+def test_blocked_count_uses_csv_records_including_terminal_interval(tmp_path):
+    content = 'event,value\nfirst,1\nsecond,"two\nlines"\nthird,3\n'.encode('utf-8-sig')
+    source = tmp_path / 'events.csv'
+    source.write_bytes(content)
+    assert runner._count_blocked_source_records(source, 0) == 3
+    start = content.index(b'second,')
+    assert runner._count_blocked_source_records(source, start) == 2
+    source.write_bytes(b'event,value\nsecond,"unfinished')
+    assert runner._count_blocked_source_records(source, 0) is None
+    assert runner._count_blocked_source_records(tmp_path / 'absent.csv', 0) is None
+
+
+def test_last_scan_counts_survive_enqueue_and_clear_only_on_next_scan(tmp_path):
+    config = make_config(tmp_path)
+    runner._persist_scan_runtime_status(config, {
+        'status': 'existing_terminal_blocked',
+        'scan_terminal_blocked_count': 2, 'scan_terminal_blocked_record_count': 7,
+    })
+    saved = runtime._write_runtime_status(config, status='enqueued', queue={}, disk={})
+    assert saved['scan_terminal_blocked_count'] == 2
+    assert saved['scan_terminal_blocked_record_count'] == 7
+    runner._persist_scan_runtime_status(config, {
+        'status': 'existing_terminal_blocked', 'scan_terminal_blocked_count': 1,
+    })
+    unknown = json.loads(Path(config.runtime_status_path).read_text(encoding='utf-8'))
+    assert 'scan_terminal_blocked_record_count' not in unknown
+    runner._persist_scan_runtime_status(config, {'status': 'scan_no_files', 'scan_terminal_blocked_count': 0})
+    cleared = runtime._write_runtime_status(config, status='idle', queue={}, disk={})
+    assert cleared['scan_terminal_blocked_count'] == 0
+
+
+def test_send_band_priority_and_unknown_record_count():
+    app = SimpleNamespace(_logistics_pending_transmissions=20, _logistics_oldest_pending_age=601)
+    blocked = {'scan_terminal_blocked_count': 2, 'scan_terminal_blocked_record_count': 7}
+    text = label._label_match_send_warning(app, blocked)
+    assert '그 뒤 기록 7건' in text
+    assert '막힌 기록 파일 2개' in text
+    assert '20' not in text  # queue batch counts are not record counts
+    unknown = label._label_match_send_warning(app, {'scan_terminal_blocked_count': 2})
+    assert '그 뒤 기록을' in unknown and '7건' not in unknown
+    generic = label._label_match_send_warning(app, {'scan_terminal_blocked_count': 0})
+    assert generic == (
+        '회사 서버로 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요\n'
+        '찍은 기록은 이 PC에 그대로 있고, 연결이 돌아오면 저절로 보내집니다'
+    )
+    app._logistics_oldest_pending_age = 600
+    assert label._label_match_send_warning(app, {}) == ''
