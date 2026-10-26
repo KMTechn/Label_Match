@@ -423,15 +423,19 @@ class DataManager:
             if not size:
                 return
             raw.seek(size - 1)
-            terminated = raw.read(1) == b'\n'
+            last_byte = raw.read(1)
+            terminated = last_byte in (b'\n', b'\r')
             line_end, cursor = size, size - int(terminated)
+            if last_byte == b'\n' and cursor:
+                raw.seek(cursor - 1)
+                cursor -= int(raw.read(1) == b'\r')
             line_nul = False
             keep = 0
             while cursor:
                 start = max(0, cursor - 4096)
                 raw.seek(start)
                 chunk = raw.read(cursor - start)
-                newline = chunk.rfind(b'\n')
+                newline = max(chunk.rfind(b'\n'), chunk.rfind(b'\r'))
                 line_nul |= b'\0' in chunk[newline + 1:]
                 if newline < 0:
                     cursor = start
@@ -441,6 +445,9 @@ class DataManager:
                     break
                 line_end = start + newline + 1
                 cursor = line_end - 1
+                if chunk[newline:newline + 1] == b'\n' and cursor:
+                    raw.seek(cursor - 1)
+                    cursor -= int(raw.read(1) == b'\r')
                 terminated, line_nul = True, False
             else:
                 if terminated and not line_nul:

@@ -44,6 +44,30 @@ def evidence(path, suffix):
     return path.with_name(path.name + '.held-' + hashlib.sha256(suffix).hexdigest())
 
 
+@pytest.mark.parametrize('endings', [('\r\n', '\r'), ('\r', '\r', '\r'),
+    ('\n', '\r\n', '\r'), ('\r', '\n', '\r\n')],
+    ids=['crlf-cr', 'cr-only', 'lf-crlf-cr', 'cr-lf-crlf'])
+@pytest.mark.parametrize('suffix', [b'partial,row', b'partial\0\r\nmore\0\r'],
+    ids=['partial', 'nul-lines'])
+def test_append_preserves_cr_lf_complete_rows(data, endings, suffix):
+    path = Path(data._get_log_filepath())
+    rows = [HEADER] + [OLD] * (len(endings) - 1)
+    prefix = b'\xef\xbb\xbf' + b''.join(
+        encoded(row)[:-2] + ending.encode('ascii')
+        for row, ending in zip(rows, endings))
+    path.write_bytes(prefix + suffix)
+    data.log_event('ERROR_INPUT', {'new': True})
+    assert data.flush(timeout=5)
+    assert data.close(timeout=5)
+    raw = path.read_bytes()
+    assert raw.startswith(prefix)
+    actual = list(csv.reader(io.StringIO(raw.decode('utf-8-sig'), newline=''), strict=True))
+    assert actual[:-1] == rows
+    assert len(actual[-1]) == 4 and json.loads(actual[-1][3]) == {'new': True}
+    assert evidence(path, suffix).read_bytes() == suffix
+    assert len(list(path.parent.glob(path.name + '.held-*'))) == 1
+
+
 @pytest.mark.parametrize('suffix', [b'partial,row', b'partial,\xed\x95',
     b'\0' * 8193, b'partial\0\r\n', b'partial\0\r\nmore\0\r\n'],
     ids=['partial-row', 'split-utf8', 'nul-blocks', 'nul-line', 'nul-lines'])
