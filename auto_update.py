@@ -1360,12 +1360,13 @@ def _run_fixed_helper(control: Path, mode: str, *, code_root: Path | None = None
     completed = subprocess.run(arguments, capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if completed.returncode:
         error = RuntimeError("fixed update helper failed: " + mode + "; " + safe_update_text(completed.stderr))
-        error._preparation_timeout = mode == "Observe" and "STARTUP_QUERY_TIMEOUT_UNKNOWN" in (completed.stderr or "")
+        stderr_text = completed.stderr.decode("utf-8", errors="replace") if isinstance(completed.stderr, bytes) else (completed.stderr or "")
+        error._preparation_timeout = mode == "Observe" and "STARTUP_QUERY_TIMEOUT_UNKNOWN" in stderr_text
         error._preparation_rejection = bool(re.search(
             r"\bSTARTUP_UPDATE_(?:FILE_PIN_DIFFERS|PORTABLE_MANIFEST_DIFFERS|WRITER_INVENTORY_DIFFERS|"
             r"PACKET_HAS_INSTALL_RECORD|VERSION_DIRECTORY_DIFFERS|VERSION_OUTSIDE_PROTECTED_ROOT|"
             r"FIXED_BOOTSTRAP_REQUIRED|OPERATOR_DIFFERS|POLICY_OVERSIZED|SYSTEM_REQUIRED|"
-            r"PREVIOUS_RECORD_MISSING|APPLY_HAS_NO_USER_CODE_ARGUMENT)\b", completed.stderr or ""))
+            r"PREVIOUS_RECORD_MISSING|APPLY_HAS_NO_USER_CODE_ARGUMENT)\b", stderr_text))
         error.child_output = child_failure_output(completed)
         from failure_redaction import try_write_failure_evidence
         error.cause_code = "INSTALLER_FAILED"
@@ -1578,7 +1579,7 @@ def apply_prepared(control: Path) -> int:
             if not_applied:
                 try:
                     failed_sha = _sha(read_json(Path(policy["staging_root"]) / "prepared.json").get("source_commit"))
-                except (OSError, ValueError, TypeError):
+                except (OSError, ValueError, KeyError, TypeError):
                     failed_sha = ""
                 if _transient_preparation_error(error):
                     failure.pop("failed_prepared_sha256", None)
@@ -1641,7 +1642,11 @@ def authorize_prepared_replay(control: Path, policy: Mapping[str, Any], state: M
         raise
     if packet["sha256"] != state["packet_sha256"]:
         raise _preparation_rejection("prepared replay packet differs")
-    pins = authorize_feed_transition(manifest, current=current, candidate=candidate)
+    try:
+        pins = authorize_feed_transition(manifest, current=current, candidate=candidate)
+    except ValueError as error:
+        error._preparation_rejection = True
+        raise
     if pins[:2] != (state["forward_pin"], state["rollback_pin"]):
         raise _preparation_rejection("prepared replay direction differs")
     if candidate["source_commit"] in state.get("failed_shas", []):
@@ -1977,7 +1982,11 @@ def _apply_prepared_once(control: Path) -> int:
                 raise _preparation_rejection("signed target SHA differs from the packet")
             if file_sha256(target / "app/update-manifest-key-config.json") != file_sha256(control.parent / "current/app/update-manifest-key-config.json"):
                 raise _preparation_rejection("candidate signing key differs from the installed key")
-            forward, rollback, rollback_pair, pin_authority, data_api_evidence = authorize_feed_transition(manifest, current=current, candidate=candidate_manifest)
+            try:
+                forward, rollback, rollback_pair, pin_authority, data_api_evidence = authorize_feed_transition(manifest, current=current, candidate=candidate_manifest)
+            except ValueError as error:
+                error._preparation_rejection = True
+                raise
             # The fixed helper validates the portable tree and writes its own
             # integrity record. It never imports or executes candidate code.
             fixed_helper(control, "Verify", code_root=target)
@@ -2089,8 +2098,12 @@ def _apply_prepared_once(control: Path) -> int:
         else:
             if state["phase"] != "APPLIED_PENDING_READY":
                 raise ValueError("rollback requires a pending trial")
-            # An inherited window supplies no supervised failure evidence.
+            # Keep inherited uncertainty for the generation decision. An elapsed
+            # READY window still consumes the same bounded retry chance.
             state = {**state, "phase": "UNKNOWN"}
+            if not candidate_ended_early:
+                state["retry_shas"], _ = record_retry_chance(
+                    state, state["candidate_sha"], now=now_utc())
         write_json_durable(control / "transition.json", state)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:

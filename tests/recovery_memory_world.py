@@ -33,7 +33,7 @@ SELECT = {'_sha', '_utc', 'startup_action', 'writer_processes', 'assert_ordinary
           'process_matches_trial', 'ready_matches', 'confirm_transition', 'recovery_sha',
           'prepare_transition', 'apply_transition', 'request_rollback', '_RollbackReadyPending'}
 
-SELECT.update({'current_relay_ready', 'wait_current_relay',
+SELECT.update({'_retry_review_required', 'record_retry_chance', 'current_relay_ready', 'wait_current_relay',
                '_bootstrap_relay_readback', '_bootstrap_relay_snapshot'})
 SELECT.update({'_initial_ready_lock', '_RelayPreparationUnavailable',
                '_RelayPreparationDeadline', '_relay_preparation_deadline',
@@ -115,8 +115,8 @@ class World:
             for node in tree.body:
                 if isinstance(node, ast.Assign):
                     for target in node.targets:
-                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_WINDOW_SECONDS', 'READY_CHECKS', 'RELAY_READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT', 'RELAY_PREPARE_SECONDS', 'RELAY_PARENT_RESULT_RESERVE_SECONDS'}:
-                            if target.id == 'RELAY_READY_CHECKS':
+                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_WINDOW_SECONDS', 'BOOTSTRAP_OBSERVATION_CAP_SECONDS', 'RETRY_WINDOW_SECONDS', 'RETRY_ATTEMPT_LIMIT', 'UPDATE_RETRY_REVIEW_REQUIRED', 'RETRY_REVIEW_MESSAGE', 'READY_CHECKS', 'RELAY_READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT', 'RELAY_PREPARE_SECONDS', 'RELAY_PARENT_RESULT_RESERVE_SECONDS'}:
+                            if target.id in {'RELAY_READY_CHECKS', 'BOOTSTRAP_OBSERVATION_CAP_SECONDS', 'RETRY_WINDOW_SECONDS'}:
                                 constants[target.id] = eval(compile(ast.Expression(node.value),
                                     label + '/ready-checks', 'eval'),
                                     {'__builtins__': {}, 'tuple': tuple, **constants})

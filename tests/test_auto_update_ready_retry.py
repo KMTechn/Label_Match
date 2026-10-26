@@ -41,7 +41,7 @@ def test_a_confirmed_rejection_stays_permanent_at_once():
     assert state["failed_shas"] == [NEW] and "retry_shas" not in state
 
 
-def test_a_transient_failure_is_not_blacklisted_until_the_third_chance_inside_a_day():
+def test_transient_failures_never_blacklist_even_after_three_chances():
     state = trial_state()
     first = updates.request_rollback(state, reason="timeout", transient=True, now=at(0))
     assert first["failed_shas"] == []
@@ -106,7 +106,7 @@ def test_candidate_ready_at_300_seconds_confirms_instead_of_rolling_back(tmp_pat
 
 
 @pytest.mark.parametrize("attempts,permanent", [(0, False), (1, False), (2, True)])
-def test_a_ready_timeout_blacklists_only_after_the_chances_are_used(tmp_path, monkeypatch, attempts, permanent):
+def test_ready_timeout_exhaustion_never_blacklists_the_candidate(tmp_path, monkeypatch, attempts, permanent):
     retry = {NEW: {"attempts": attempts, "first_at": at(0), "last_at": at(0)}} if attempts else None
     case, state = _prepared_case(tmp_path, monkeypatch, retry=retry, ready_at=None)
     assert case.run() == 20
@@ -226,7 +226,7 @@ def _confirmed_error():
 
 
 @pytest.mark.parametrize("error", [_confirmed_error(), _native_error(112)])
-def test_confirmed_or_unknown_preparation_failure_still_blocks_immediately(tmp_path, monkeypatch, error):
+def test_confirmed_preparation_failure_still_blocks_immediately(tmp_path, monkeypatch, error):
     case = _preparation_case(tmp_path, monkeypatch, error)
     assert case.run() == 0
     assert not case.state().get("retry_shas")
@@ -383,3 +383,117 @@ def test_fixed_helper_distinguishes_a_proved_rejection_from_an_unknown_error(tmp
         assert updates._transient_preparation_error(error) is temporary
     else:
         pytest.fail("the failed Verify helper must still reject this invocation")
+
+
+
+@pytest.mark.parametrize("replay", [False, True])
+def test_an_authenticated_manifest_pair_rejection_is_permanent_in_both_preparation_paths(tmp_path, monkeypatch, replay):
+    from contextlib import nullcontext
+    from pathlib import Path
+    import Label_Match
+    case = _preparation_case(tmp_path, monkeypatch, RuntimeError())
+    case.policy.update(channel="stable", operator_local_app_data=str(tmp_path / "profile"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
+    current = {"source_commit": OLD, "version": "v2.0.124"}
+    candidate = {"source_commit": NEW, "version": "v2.0.125"}
+    manifest = {**candidate, "auto_update": {}}
+    case.files[case.control.parent / "current/app/update-manifest-key-config.json"] = {"manifest_public_key": None}
+    if replay:
+        case.files[case.control / "transition.json"] = {
+            "schema": updates.SCHEMA, "phase": "PREPARED", "previous_sha": OLD, "candidate_sha": NEW,
+            "prepared_packet_root": str(case.control / ("packet-" + "1" * 32)), "packet_sha256": "c" * 64}
+    monkeypatch.setattr(updates, "_apply_prepared", updates._apply_prepared_once)
+    monkeypatch.setattr(updates, "_initial_ready_lock", lambda *a, **k: nullcontext())
+    monkeypatch.setattr(updates, "new_apply_claim", lambda: {})
+    monkeypatch.setattr(updates, "defer_stopped_relay", lambda *a: False)
+    monkeypatch.setattr(updates, "process_snapshot", lambda *a: [])
+    monkeypatch.setattr(updates, "version_bundle", lambda control, sha: control / "versions" / sha)
+    monkeypatch.setattr(updates, "version_manifest", lambda path: dict(current if path.name == OLD else candidate))
+    monkeypatch.setattr(updates, "create_protected_stage", lambda *a: None)
+    monkeypatch.setattr(updates, "copy_prepared_file", lambda *a, **k: None)
+    monkeypatch.setattr(updates, "verify_prepared_packet", lambda *a, **k: (manifest, {"sha256": "c" * 64, "archive": {}}))
+    monkeypatch.setattr(updates, "extract_prepared_code", lambda *a: None)
+    monkeypatch.setattr(Label_Match, "_sha256_file", lambda *a: "f" * 64)
+    assert case.run() == 0
+    assert case.state()["phase"] == "DEFERRED"
+    assert case.files[case.control / "active.json"] == {"sha": OLD}
+    assert case.state().get("failed_shas") == [NEW]
+    assert not case.state().get("retry_shas")
+    assert case.state()["failed_prepared_sha256"] == "c" * 64
+
+
+
+def test_a_new_day_budget_takes_precedence_over_a_recent_attempt_interval(tmp_path, monkeypatch):
+    case = _preparation_case(tmp_path, monkeypatch, TimeoutError())
+    last = at(24 - 1 / 60)
+    state = {"schema": updates.SCHEMA, "phase": "DEFERRED", "reason_code": "UPDATE_PREPARATION_FAILED",
+             "deferred_at": last, "retry_shas": {NEW: {"attempts": 3, "first_at": at(0), "last_at": last}}}
+    case.files[case.control / "transition.json"] = state
+    case.clock[0] = 24 * 3600 - 1
+    assert not updates.prepared_pending(case.control, case.policy, state)
+    case.clock[0] = 24 * 3600
+    assert updates.prepared_pending(case.control, case.policy, state)
+    assert case.run() == 0
+    assert case.state().get("failed_shas", []) == []
+    assert case.state()["retry_shas"][NEW] == {"attempts": 1, "first_at": at(24), "last_at": at(24)}
+
+
+
+@pytest.mark.parametrize("ready_at", [750, None], ids=["relay-running-in-window", "ready-timeout"])
+def test_system_decides_the_same_pending_window_after_bootstrap_preparation_expires(ready_at):
+    from contextlib import contextmanager
+    from pathlib import Path
+    from tests.recovery_memory_world import MemoryPath, World
+    source = Path(updates.__file__).read_text(encoding="utf-8-sig")
+    w = World("LM-next-decider-" + str(ready_at), source,
+              phase="APPLIED_PENDING_READY", writer=None, claim="LIVE")
+    w.clock = 0.0
+    w.state.update(applied_at=w.at(0), failed_shas=[])
+    w.write(w.control / "active.json", {"sha": w.candidate})
+    w.policy.update(schema="label-match-startup-update-policy-v1", settings_sha256="f" * 64,
+                    feed_url="https://setup.test.invalid/feed", channel="stable", profile_auth=True,
+                    apply_during_work=False, hiberboot_enabled=None, hiberboot_read_status="UNPROVEN")
+    w.guard = "UNKNOWN"
+
+    @contextmanager
+    def busy(*args, **kwargs):
+        raise RuntimeError("update mutex ownership is busy")
+        yield
+
+    def advance(seconds):
+        w.clock = round(w.clock + seconds, 9)
+        assert w.clock < 2000, "bounded memory-world clock exceeded"
+    w.ns["update_lock"] = busy
+    w.time.sleep = advance
+    assert w.ns["_bootstrap"](MemoryPath("/memory/current/app"), [], role="gui") == 20
+    assert 600 <= w.clock < 601 and not w.launches
+    assert w.state["phase"] == "APPLIED_PENDING_READY"
+
+    # Resume the actual SYSTEM implementation with the same durable journal.
+    w.ns["update_lock"] = w.lock
+    w.rows = [w.row("gui", sha=w.candidate, pid=101), w.row("relay", sha=w.candidate, pid=102)]
+    w.files[str(w.stage / "trial.json")] = {"pid": 101, "role": "gui", "nonce": w.state["nonce"],
+        "transition_id": w.state["transition_id"]}
+    w.auto_ready = True
+    def system_advance(seconds):
+        advance(seconds)
+        if ready_at is not None and w.clock >= ready_at and w.state["phase"] == "APPLIED_PENDING_READY":
+            w.files[str(w.stage / "ready.json")] = {"pid": 101, "role": "gui", "sha": w.candidate,
+                "nonce": w.state["nonce"], "transition_id": w.state["transition_id"],
+                "ready_at": w.at(w.clock), **{flag: True for flag in w.ns["READY_CHECKS"]}}
+        if w.state["phase"] in {"UNKNOWN", "ROLLBACK_PENDING"}:
+            w.rows = []  # The ordinary cohort acknowledges the existing normal stop.
+    w.time.sleep = system_advance
+    assert w.ns["_apply_prepared"](w.control) == 0
+    w.ns["complete_apply_claim"](w.control)
+    if ready_at is not None:
+        assert w.state["phase"] == "CONFIRMED" and w.active == w.candidate
+        assert 750 <= w.clock < 900
+        assert w.optional(MemoryPath("/memory/relay-status.json"))["status"] == "RUNNING"
+        assert "write:transition.json:CONFIRMED" in w.events
+    else:
+        assert w.state["phase"] == "ROLLED_BACK" and w.active == w.previous
+        assert w.state["failure_decision"]
+        assert w.state["retry_shas"][w.candidate]["attempts"] == 1
+        assert w.candidate not in w.state["failed_shas"]
+        assert "write:transition.json:ROLLED_BACK" in w.events
