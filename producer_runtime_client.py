@@ -319,7 +319,13 @@ def _post_lease_request(
             ),
         )
     status_code = int(getattr(response, "status_code", 0) or 0)
-    payload = _response_payload(response)
+    parse_failed = False
+    try:
+        value = response.json()
+    except Exception:
+        value = None
+        parse_failed = True
+    payload = dict(value) if isinstance(value, Mapping) else {}
     sensitive_values = (
         request_value.get("runtime_request_token"),
         credentials.secret,
@@ -328,6 +334,8 @@ def _post_lease_request(
         SIGNATURE_VERSION,
     )
     safe_payload = _redact_known_values(redact_runtime_secrets(payload), sensitive_values)
+    if parse_failed:
+        safe_payload['_local_response_parse_failed'] = True
     response_headers = getattr(response, "headers", {}) or {}
     retry_after = _retry_after(response_headers.get("Retry-After") if hasattr(response_headers, "get") else "")
     if 200 <= status_code < 300:
@@ -337,6 +345,7 @@ def _post_lease_request(
                 operator_review=True,
                 error_code="runtime_lease_response_invalid",
                 error_message="runtime lease response is not valid JSON",
+                receipt=safe_payload,
             )
         return payload, None
     error = payload.get("error") if isinstance(payload.get("error"), Mapping) else {}
@@ -344,12 +353,13 @@ def _post_lease_request(
     message = str(error.get("message") or f"runtime lease request failed with HTTP {status_code}")
     message = str(_redact_known_values(message, sensitive_values))[:500]
     clock_rejected = is_clock_rejection(status_code, code)
-    retryable = clock_rejected or payload.get("retryable") is True or is_retryable_http_status(status_code)
+    transient_rejection = (parse_failed and 400 <= status_code < 600) or is_retryable_http_status(status_code)
+    retryable = clock_rejected or transient_rejection or payload.get("retryable") is True
     if clock_rejected:
         clock = response_clock_skew(response)
         if clock:
             safe_payload['_local_clock_skew'] = clock
-    operator_review = not (clock_rejected or is_retryable_http_status(status_code)) and (code in OPERATOR_REVIEW_CODES or bool(payload.get("operator_review")))
+    operator_review = not (clock_rejected or transient_rejection) and (code in OPERATOR_REVIEW_CODES or bool(payload.get("operator_review")))
     return None, RuntimePreparation(
         status_code=status_code,
         retryable=retryable and not operator_review,

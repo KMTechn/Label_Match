@@ -168,6 +168,7 @@ class UploadResult:
     _runtime_lease: Dict[str, Any] | None = field(default=None, repr=False, compare=False)
     _runtime_disposition: str = field(default="", repr=False, compare=False)
     _runtime_token_unconsumed: bool = field(default=False, repr=False, compare=False)
+    _transient_rejection: bool = field(default=False, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -903,7 +904,7 @@ def _redact_remote_error_payload(
     return redact_runtime_secrets(redact_value(dict(payload)))
 
 
-def _transport_error_result(exc: Exception) -> UploadResult:
+def _transport_error_result(exc: Exception, *, request_not_started: bool = False) -> UploadResult:
     return UploadResult(
         success=False,
         status_code=0,
@@ -912,6 +913,8 @@ def _transport_error_result(exc: Exception) -> UploadResult:
         receipt={},
         error_code="transport_error",
         error_message=f"producer ingest transport error: {type(exc).__name__}",
+        _runtime_token_unconsumed=request_not_started,
+        _transient_rejection=request_not_started,
     )
 
 
@@ -1162,7 +1165,13 @@ def _upload_response_result(
     credentials: ProducerCredentials,
     headers: Mapping[str, str],
 ) -> UploadResult:
-    payload = _response_json(response)
+    parse_failed = False
+    try:
+        value = response.json()
+    except Exception:
+        value = None
+        parse_failed = True
+    payload = value if isinstance(value, dict) else {}
     safe_payload = _redact_remote_error_payload(
         payload,
         credentials=credentials,
@@ -1171,7 +1180,15 @@ def _upload_response_result(
     )
     status_code = int(getattr(response, "status_code", 0) or 0)
     retry_after_seconds = _retry_after_header_seconds(_response_header(response, "Retry-After"))
+    if parse_failed:
+        safe_payload['_local_response_parse_failed'] = True
     committed_value = payload.get("committed")
+    transient_rejection = (
+        (parse_failed and 400 <= status_code < 600)
+        or (isinstance(value, dict) and 400 <= status_code < 500
+            and status_code != 401 and 'committed' not in value)
+        or is_retryable_http_status(status_code)
+    )
     if 300 <= status_code < 400:
         return UploadResult(
             success=False,
@@ -1265,7 +1282,7 @@ def _upload_response_result(
     )
     error = safe_payload.get("error") if isinstance(safe_payload.get("error"), dict) else {}
     clock_rejected = is_clock_rejection(status_code, str(error.get('code') or ''))
-    retryable = False if receipt_error_code else clock_rejected or payload.get("retryable") is True or is_retryable_http_status(status_code)
+    retryable = False if receipt_error_code else clock_rejected or transient_rejection or payload.get("retryable") is True
     if clock_rejected:
         clock = response_clock_skew(response)
         if clock:
@@ -1284,6 +1301,7 @@ def _upload_response_result(
         )),
         _runtime_lease=runtime_lease,
         _runtime_disposition=runtime_disposition,
+        _transient_rejection=clock_rejected or transient_rejection,
         _runtime_token_unconsumed=(
             not committed and committed_value is False and status_code >= 400
         ),
@@ -1320,6 +1338,8 @@ def _with_upload_status_artifact(
                 "generated_at": utc_now_text(),
                 **({'clock_skew': receipt['_local_clock_skew']}
                    if '_local_clock_skew' in receipt else {}),
+                **({'response_parse_failed': True}
+                   if receipt.get('_local_response_parse_failed') is True else {}),
             },
         )
     except OSError as exc:
@@ -1344,6 +1364,7 @@ def _with_upload_status_artifact(
         _runtime_lease=result._runtime_lease,
         _runtime_disposition=result._runtime_disposition,
         _runtime_token_unconsumed=result._runtime_token_unconsumed,
+        _transient_rejection=result._transient_rejection,
     )
 
 
@@ -1372,11 +1393,12 @@ def upload_source_file(
         raise
     except OSError as exc:
         # No request has started in this preparation block.
-        result = _transport_error_result(exc)
+        result = _transport_error_result(exc, request_not_started=True)
         try:
             return _with_upload_status_artifact(plan, result, status_dir)
         except OSError:
             return result
+    request_started = False
     try:
         with Path(plan.source_file_path).open("rb") as handle:
             if before_post is not None:
@@ -1398,13 +1420,14 @@ def upload_source_file(
             if selected_ca:
                 request_kwargs["verify"] = selected_ca
             with remote_request():
+                request_started = True
                 response = session.post(credentials.endpoint_url, **request_kwargs)
     except WriterFenceError:
         raise
     except RelayLeaseLostBeforeSourcePost:
         raise
     except Exception as exc:
-        result = _transport_error_result(exc)
+        result = _transport_error_result(exc, request_not_started=not request_started)
     else:
         result = _upload_response_result(plan, response, credentials=credentials, headers=headers)
     return _with_upload_status_artifact(plan, result, status_dir)
@@ -2347,7 +2370,7 @@ def _set_relay_status(
                 try:
                     runtime_metadata = _json_object_from_text(raw_runtime_metadata)
                 except (DirectSyncPushError, json.JSONDecodeError, TypeError, ValueError):
-                    if runtime_lease is not None or authority_action == "release":
+                    if runtime_lease is not None or (authority_action == "release" and status != RELAY_STATUS_RETRY_WAIT):
                         raise
                     runtime_metadata = {}
             if runtime_lease is not None:
@@ -2364,13 +2387,33 @@ def _set_relay_status(
                 )
             elif authority_action == "release":
                 assert runtime_metadata is not None
-                release_runtime_request_in_transaction(
-                    conn,
-                    relay_id=relay_id,
-                    metadata=runtime_metadata,
-                    credentials=runtime_credentials,
-                    now=now,
-                )
+                assigned = conn.execute(
+                    "SELECT authority_scope FROM direct_sync_runtime_authority WHERE assigned_relay_id=?",
+                    (relay_id,),
+                ).fetchone()
+                retry_release = status == RELAY_STATUS_RETRY_WAIT
+                if not retry_release or (assigned is not None and all(
+                    field in runtime_metadata for field in RUNTIME_METADATA_FIELDS
+                )):
+                    release_runtime_request_in_transaction(
+                        conn,
+                        relay_id=relay_id,
+                        metadata=runtime_metadata,
+                        credentials=runtime_credentials,
+                        now=now,
+                    )
+                    if retry_release:
+                        released = conn.execute(
+                            "SELECT status,assigned_relay_id FROM direct_sync_runtime_authority WHERE authority_scope=?",
+                            (assigned['authority_scope'],),
+                        ).fetchone()
+                        if released is not None and released['status'] == 'ACTIVE' and released['assigned_relay_id'] is None:
+                            retry_metadata = {key: value for key, value in runtime_metadata.items()
+                                              if key not in RUNTIME_METADATA_FIELDS}
+                            conn.execute(
+                                "UPDATE direct_sync_relay_batches SET metadata_json=? WHERE relay_id=?",
+                                (canonical_json(retry_metadata), relay_id),
+                            )
             elif authority_action == "dead_fence":
                 if not expire_dead_fence_authority_in_transaction(
                     conn,
@@ -2611,6 +2654,8 @@ def drain_one_relay_batch(
             next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=retry_after)).isoformat().replace('+00:00', 'Z'),
             error_code=result.error_code,
             error_message=result.error_message,
+            runtime_credentials=credentials,
+            runtime_authority_action="release",
         )
         return result
     if spooled_hash != row.content_sha256 or spooled_bytes != row.byte_length:
@@ -2841,8 +2886,7 @@ def drain_one_relay_batch(
         row.runtime_fencing_policy == RUNTIME_FENCING_POLICY_LEGACY_EXACT_REPLAY
         and result._runtime_token_unconsumed
         and client_runtime_lease_mode(credentials) == "enforce"
-        and not is_clock_rejection(result.status_code, result.error_code)
-        and not is_retryable_http_status(result.status_code)
+        and not result._transient_rejection
     ):
         _set_claimed_relay_status(
             row,
@@ -2855,7 +2899,7 @@ def drain_one_relay_batch(
             runtime_credentials=credentials,
             runtime_authority_action="operator_review",
         )
-    elif result.error_code in RUNTIME_OPERATOR_REVIEW_CODES:
+    elif result.error_code in RUNTIME_OPERATOR_REVIEW_CODES and not result._transient_rejection:
         _set_claimed_relay_status(
             row,
             db_path=db_path,
@@ -2889,6 +2933,8 @@ def drain_one_relay_batch(
             next_attempt_at=next_attempt_at,
             error_code=result.error_code,
             error_message=result.error_message,
+            runtime_credentials=credentials,
+            runtime_authority_action="release" if result._runtime_token_unconsumed else "",
         )
     else:
         _set_claimed_relay_status(

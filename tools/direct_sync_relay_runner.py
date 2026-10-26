@@ -611,6 +611,7 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
             no_new_count = 0
             preflight_status = None
             terminal_blocked_sources: list[str] = []
+            scan_enqueue_errors: list[dict[str, str]] = []
             terminal_blocked_record_count: int | None = 0
             pending_delta_progress: dict[str, tuple[Path, int]] = {}
             source_files, deferred_count = _scan_source_files(
@@ -663,6 +664,17 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                         pending_delta_progress[relay_id] = (source_file, sent_byte_count)
                 else:
                     current["scan_failed_source_file"] = str(source_file)
+                    if current['status'] == 'enqueue_error':
+                        failure = {'source_file': str(source_file),
+                                   'error_code': str(current.get('error_code') or '')}
+                        scan_enqueue_errors.append(failure)
+                        from direct_sync_runtime import _append_runtime_event
+                        _append_runtime_event(config, 'scan_enqueue_error', {
+                            'scan_status': 'enqueue_error',
+                            'scan_failed_source_file': str(source_file),
+                            'scan_enqueue_errors': [failure],
+                        })
+                        continue
                     break
             status = preflight_status or (
                 statuses[-1]
@@ -701,6 +713,7 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                     terminal_blocked_sources
                 )
             status["scan_status"] = (
+                "enqueue_error" if scan_enqueue_errors else
                 "existing_terminal_blocked"
                 if terminal_blocked_sources
                 else status["status"]
@@ -709,6 +722,9 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                 status["scan_failed_source_file"] = (
                     terminal_blocked_sources[0]
                 )
+            if scan_enqueue_errors:
+                status['scan_enqueue_errors'] = scan_enqueue_errors
+                status['scan_failed_source_file'] = scan_enqueue_errors[0]['source_file']
             recovery = (
                 status.get("queue_backpressure", {}).get("recovery", {})
                 if isinstance(status.get("queue_backpressure"), dict)
@@ -722,7 +738,6 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                 "paused_by_operator",
                 "blocked_disk_pressure",
                 "existing_terminal_blocked",
-                "enqueue_error",
                 "runtime_error",
             }:
                 targeted_drain_results = []
@@ -766,6 +781,9 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                     relay_status["scan_failed_source_file"] = (
                         terminal_blocked_sources[0]
                     )
+                if scan_enqueue_errors:
+                    relay_status['scan_enqueue_errors'] = scan_enqueue_errors
+                    relay_status['scan_failed_source_file'] = scan_enqueue_errors[0]['source_file']
                 if targeted_drain_results:
                     relay_status["targeted_drain_results"] = targeted_drain_results
                 status = relay_status
@@ -807,6 +825,8 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
         print(f"direct_sync_targeted_ack_count={targeted_ack_count}")
         print(f"direct_sync_targeted_attempt_count={len(targeted_drain_results)}")
         targeted_ack_incomplete = targeted_ack_count != len(targeted_drain_results)
+    if status.get('scan_status') == 'enqueue_error':
+        return 2
     if status["status"] in {"blocked_disk_pressure", "blocked_queue_backpressure", "existing_terminal_blocked"} or status.get("scan_status") in {
         "blocked_disk_pressure",
         "blocked_queue_backpressure",

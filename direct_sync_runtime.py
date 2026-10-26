@@ -642,6 +642,8 @@ def _result_summary(result: UploadResult | None) -> dict[str, Any]:
         "receipt_totals": receipt_totals,
         **({'clock_skew': result.receipt['_local_clock_skew']}
            if '_local_clock_skew' in result.receipt else {}),
+        **({'response_parse_failed': True}
+           if result.receipt.get('_local_response_parse_failed') is True else {}),
     }
 
 
@@ -766,6 +768,9 @@ def _write_runtime_status(
         "runtime_lease": dict(runtime_lease or {}),
         "updated_at": utc_now_text(),
     }
+    if ((payload.get('last_result') or {}).get('response_parse_failed') is True
+            or (payload.get('runtime_lease') or {}).get('_local_response_parse_failed') is True):
+        payload['response_parse_failed'] = True
     _carry_clock_error(config, payload)
     _publish_upload_block_status(config, payload)
     _write_json_atomic(config.runtime_status_path, payload)
