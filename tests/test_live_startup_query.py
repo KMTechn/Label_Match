@@ -16,7 +16,9 @@ def _source():
 
 def _supervisor(source):
     start = source.find("function Invoke-LabelStartupReadOnlyQuery {")
-    return "" if start < 0 else source[start:source.index("if ($SupportedLifecycle -and", start)]
+    initializer = source.find("function Initialize-LabelStartupUpdateProcessToken {")
+    prefix = source[initializer:start] if 0 <= initializer < start else ""
+    return "" if start < 0 else prefix + source[start:source.index("if ($SupportedLifecycle -and", start)]
 
 
 def _powershell(script):
@@ -46,10 +48,10 @@ try { $ignored = & { BODY } } catch { $status='UNKNOWN' }
     (tmp_path / "wall-evidence.json").write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
     assert result["status"] == "UNKNOWN"
     # Real wall observation, separate from the model's ten-second wait argument.
-    assert 10 <= result["seconds"] < 12
+    assert result["seconds"] >= 10
 
 
-@pytest.mark.parametrize("case", ["complete", "timeout", "empty", "failed", "wrong-pid", "other-generation"])
+@pytest.mark.parametrize("case", ["complete", "timeout", "empty", "failed", "failed-before-ready", "wrong-marker", "wrong-pid", "other-generation"])
 def test_query_supervisor_never_accepts_incomplete_or_unowned_results(case):
     source = _source()
     script = _supervisor(source) + r'''
@@ -59,12 +61,13 @@ $case='CASE'
 $p=[pscustomobject]@{
  StartInfo=[Diagnostics.ProcessStartInfo]::new();Handle=[IntPtr]42;Id=42;
  StartTime=[datetime]'2026-10-22T00:00:00Z';HasExited=$false;ExitCode=0;
- StandardOutput=[IO.StringReader]::new('[]');StandardError=[IO.StringReader]::new('');
+ StandardOutput=[IO.StringReader]::new("KMTECH_STARTUP_QUERY_READY`n[]");StandardError=[IO.StringReader]::new('');
  Killed=$false;Disposed=$false;Waits=@()
 }
 if($case -eq 'wrong-pid'){$p.Id=0}
-if($case -eq 'empty'){$p.StandardOutput=[IO.StringReader]::new('')}
-if($case -eq 'failed'){$p.ExitCode=1}
+if($case -in @('empty','failed-before-ready')){$p.StandardOutput=[IO.StringReader]::new('')}
+if($case -in @('failed','failed-before-ready')){$p.ExitCode=1}
+if($case -eq 'wrong-marker'){$p.StandardOutput=[IO.StringReader]::new("WRONG_READY`n[]")}
 $p | Add-Member ScriptMethod Start { return $true }
 $p | Add-Member ScriptMethod WaitForExit {
  param($milliseconds)
@@ -76,15 +79,23 @@ $p | Add-Member ScriptMethod WaitForExit {
 }
 $p | Add-Member ScriptMethod Kill { $this.Killed=$true;$this.HasExited=$true }
 $p | Add-Member ScriptMethod Dispose { $this.Disposed=$true }
-$status='RETURNED'
+$status='RETURNED';$code=''
 try{$ignored=Invoke-LabelStartupReadOnlyQuery -QueryMode Observe -Root 'X:\isolated' -NewProcess {$p}}
-catch{$status='UNKNOWN'}
-@{status=$status;killed=$p.Killed;waits=$p.Waits} | ConvertTo-Json -Compress
+catch{
+ $status='UNKNOWN'
+ $code=if($_.Exception.Message -cin @('STARTUP_QUERY_TIMEOUT_UNKNOWN','STARTUP_QUERY_FAILED_UNKNOWN','STARTUP_QUERY_INCOMPLETE_UNKNOWN','STARTUP_QUERY_OWNERSHIP_UNKNOWN')){$_.Exception.Message}else{'UNEXPECTED'}
+}
+@{status=$status;code=$code;killed=$p.Killed;waits=$p.Waits} | ConvertTo-Json -Compress
 '''.replace("CASE", case)
     result = _powershell(script)
     assert result["status"] == ("RETURNED" if case == "complete" else "UNKNOWN")
-    assert result["killed"] is (case == "timeout")
-    if case != "wrong-pid":
+    expected = {'complete': '', 'timeout': 'STARTUP_QUERY_TIMEOUT_UNKNOWN',
+                'empty': 'STARTUP_QUERY_INCOMPLETE_UNKNOWN', 'wrong-marker': 'STARTUP_QUERY_INCOMPLETE_UNKNOWN',
+                'failed': 'STARTUP_QUERY_FAILED_UNKNOWN', 'failed-before-ready': 'STARTUP_QUERY_FAILED_UNKNOWN',
+                'wrong-pid': 'STARTUP_QUERY_OWNERSHIP_UNKNOWN', 'other-generation': 'STARTUP_QUERY_OWNERSHIP_UNKNOWN'}
+    assert result['code'] == expected[case]
+    assert result["killed"] is (case in {"timeout", "wrong-marker"})
+    if case not in {"wrong-pid", "empty", "failed-before-ready", "wrong-marker"}:
         assert result["waits"][0] == 10000
 
 

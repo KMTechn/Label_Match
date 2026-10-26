@@ -40,7 +40,8 @@ def _observe_script(root, processes):
 '''.replace("PROCESSES", literal)
     assert query.count("    # Query only app-related rows;") == 1
     query = query.replace("    # Query only app-related rows;", adapters + "\n    # Query only app-related rows;", 1)
-    return (supervisor + "\nfunction Assert-LabelStartupNoReparsePoint {}\n" + query
+    # Token I/O is already replaced by the adapter in the copied query body.
+    return (supervisor + "\nfunction Initialize-LabelStartupUpdateProcessToken {}\nfunction Assert-LabelStartupNoReparsePoint {}\n" + query
             + "\nInvoke-LabelStartupReadOnlyQuery -QueryMode Observe -Root '"
             + str(root).replace("'", "''") + "' -OperatorSid 'S-1-5-21-543'\n")
 

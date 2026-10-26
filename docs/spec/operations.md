@@ -1710,6 +1710,8 @@ PowerShell uses the canonical Invoke-LabelAtomicReplace in INSTALL_THIS_PC.ps1. 
 
 w9firstupdsub594: PowerShell's one-second atomic publication deadline starts after one-time Add-Type preparation and covers only native file replacement attempts and retries; persistent native refusal still preserves the first error.
 
+w9firstupdsub594 Observe: the owned query child has a bounded 20-second preparation window, then emits KMTECH_STARTUP_QUERY_READY before a fresh 10-second query/output window (about 30 seconds combined within startup's existing 240-second window). The parent removes the marker from JSON output; native elevation/integrity and CIM SID checks, UNKNOWN codes and owned-child cleanup remain in place.
+
 Range B excludes the ten name/SHA-pinned files in tests/fixtures/lm_atomic_exclusions.json (the kmtech_shared copy and shell/shell_fileio.py). Shared generation/raster/diagnostic publication remains upstream-owned. Version-directory rename is a separate, unchanged UNPROVEN case.
 
 ## Worker first setup and headless relay

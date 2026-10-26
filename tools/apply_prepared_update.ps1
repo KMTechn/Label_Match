@@ -110,6 +110,40 @@ function Get-LabelSupportedStartupTasks([string]$Root) {
     }
     return $owned
 }
+function Initialize-LabelStartupUpdateProcessToken {
+    if (-not ('KMTechStartupUpdateToken' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class KMTechStartupUpdateToken {
+ [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint rights, bool inherit, uint pid);
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+ [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint rights, out IntPtr token);
+ [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr data, int size, out int needed);
+ [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+ [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, uint index);
+ public static bool Ordinary(uint pid) {
+  IntPtr process=OpenProcess(0x1000,false,pid), token=IntPtr.Zero, data=IntPtr.Zero;
+  if(process==IntPtr.Zero) throw new Exception("process token cannot be observed");
+  try {
+   if(!OpenProcessToken(process,8,out token)) throw new Exception("process token cannot be observed");
+   int needed; data=Marshal.AllocHGlobal(4);
+   if(!GetTokenInformation(token,20,data,4,out needed)) throw new Exception("process elevation cannot be observed");
+   if(Marshal.ReadInt32(data)!=0) return false;
+   Marshal.FreeHGlobal(data); data=IntPtr.Zero;
+   GetTokenInformation(token,25,IntPtr.Zero,0,out needed); data=Marshal.AllocHGlobal(needed);
+   if(!GetTokenInformation(token,25,data,needed,out needed)) throw new Exception("process integrity cannot be observed");
+   IntPtr sid=Marshal.ReadIntPtr(data); byte count=Marshal.ReadByte(GetSidSubAuthorityCount(sid));
+   if(count==0) throw new Exception("process integrity is malformed");
+   int rid=Marshal.ReadInt32(GetSidSubAuthority(sid,(uint)(count-1)));
+   return rid>=0x2000 && rid<0x3000;
+  } finally { if(data!=IntPtr.Zero) Marshal.FreeHGlobal(data); if(token!=IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
+ }
+}
+'@
+    }
+}
+
 function Invoke-LabelStartupReadOnlyQuery {
     param(
         [ValidateSet('Observe','ObserveLifecycle')][string]$QueryMode,
@@ -120,7 +154,7 @@ function Invoke-LabelStartupReadOnlyQuery {
     # Only these already loaded query functions enter the disposable child.
     # Authority/inventory validation, Verify and its audit writes remain here.
     $names = if ($QueryMode -ceq 'Observe') {
-        @('Assert-LabelStartupNoReparsePoint','Get-StartupUpdateProcesses')
+        @('Assert-LabelStartupNoReparsePoint','Initialize-LabelStartupUpdateProcessToken','Get-StartupUpdateProcesses')
     } else { @('ConvertTo-LabelTaskSid','Get-LabelSupportedStartupTasks') }
     $query = "`$ErrorActionPreference='Stop';`n"
     foreach ($name in $names) {
@@ -129,6 +163,8 @@ function Invoke-LabelStartupReadOnlyQuery {
     }
     $rootLiteral = "'" + $Root.Replace("'", "''") + "'"
     $sidLiteral = "'" + $OperatorSid.Replace("'", "''") + "'"
+    if ($QueryMode -ceq 'Observe') { $query += "Initialize-LabelStartupUpdateProcessToken`n" }
+    $query += "[Console]::Out.WriteLine('KMTECH_STARTUP_QUERY_READY');[Console]::Out.Flush();`n"
     if ($QueryMode -ceq 'Observe') {
         $query += 'ConvertTo-Json -InputObject (Get-StartupUpdateProcesses ' + $rootLiteral + ' ' + $sidLiteral + ') -Depth 8 -Compress'
     } else {
@@ -155,8 +191,22 @@ function Invoke-LabelStartupReadOnlyQuery {
         $created = $process.StartTime.ToUniversalTime().Ticks
         if ($processId -le 0 -or $handle -eq [IntPtr]::Zero -or $created -le 0) { throw 'STARTUP_QUERY_OWNERSHIP_UNKNOWN' }
         $owned = $true
-        $output = $process.StandardOutput.ReadToEndAsync()
         $errors = $process.StandardError.ReadToEndAsync()
+        # Bound cold compilation separately; retain the native ordinary-user
+        # checks and the existing ten-second query/output budget after readiness.
+        $preparationClock = [Diagnostics.Stopwatch]::StartNew()
+        $ready = $process.StandardOutput.ReadLineAsync()
+        if (-not $ready.Wait(10000 + 10000)) { throw 'STARTUP_QUERY_TIMEOUT_UNKNOWN' }
+        $marker = $ready.GetAwaiter().GetResult()
+        if ($marker -cne 'KMTECH_STARTUP_QUERY_READY') {
+            if ($null -eq $marker) {
+                $remaining = [Math]::Max(0, 10000 + 10000 - [int]$preparationClock.ElapsedMilliseconds)
+                $null = $process.WaitForExit($remaining)
+                if ($process.HasExited -and $process.ExitCode -ne 0) { throw 'STARTUP_QUERY_FAILED_UNKNOWN' }
+            }
+            throw 'STARTUP_QUERY_INCOMPLETE_UNKNOWN'
+        }
+        $output = $process.StandardOutput.ReadToEndAsync()
         # Reuse the official app-stop snapshot's maximum ten-second query wait.
         $clock = [Diagnostics.Stopwatch]::StartNew()
         if (-not $process.WaitForExit(10000)) {
@@ -348,37 +398,7 @@ function Enter-LabelStartupUpdateAuthority {
 
 function Get-StartupUpdateProcesses([string]$Root, [string]$OperatorSid = '') {
     # Query only app-related rows; do not log other applications' command lines.
-    if (-not ('KMTechStartupUpdateToken' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class KMTechStartupUpdateToken {
- [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint rights, bool inherit, uint pid);
- [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
- [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint rights, out IntPtr token);
- [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr data, int size, out int needed);
- [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
- [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, uint index);
- public static bool Ordinary(uint pid) {
-  IntPtr process=OpenProcess(0x1000,false,pid), token=IntPtr.Zero, data=IntPtr.Zero;
-  if(process==IntPtr.Zero) throw new Exception("process token cannot be observed");
-  try {
-   if(!OpenProcessToken(process,8,out token)) throw new Exception("process token cannot be observed");
-   int needed; data=Marshal.AllocHGlobal(4);
-   if(!GetTokenInformation(token,20,data,4,out needed)) throw new Exception("process elevation cannot be observed");
-   if(Marshal.ReadInt32(data)!=0) return false;
-   Marshal.FreeHGlobal(data); data=IntPtr.Zero;
-   GetTokenInformation(token,25,IntPtr.Zero,0,out needed); data=Marshal.AllocHGlobal(needed);
-   if(!GetTokenInformation(token,25,data,needed,out needed)) throw new Exception("process integrity cannot be observed");
-   IntPtr sid=Marshal.ReadIntPtr(data); byte count=Marshal.ReadByte(GetSidSubAuthorityCount(sid));
-   if(count==0) throw new Exception("process integrity is malformed");
-   int rid=Marshal.ReadInt32(GetSidSubAuthority(sid,(uint)(count-1)));
-   return rid>=0x2000 && rid<0x3000;
-  } finally { if(data!=IntPtr.Zero) Marshal.FreeHGlobal(data); if(token!=IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
- }
-}
-'@
-    }
+    Initialize-LabelStartupUpdateProcessToken
     $managed = Split-Path -Parent $Root
     $rows = @()
     foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {

@@ -51,7 +51,7 @@ function Invoke-CimMethod {
 $tokens=$null; $errors=$null
 $tree=[Management.Automation.Language.Parser]::ParseFile($Helper,[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'helper parse failed' }
-foreach ($name in @('Assert-LabelStartupNoReparsePoint','Get-StartupUpdateProcesses')) {
+foreach ($name in @('Assert-LabelStartupNoReparsePoint','Initialize-LabelStartupUpdateProcessToken','Get-StartupUpdateProcesses')) {
  $function=$tree.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
  if ($null -eq $function) { throw 'Observe function missing' }
  Invoke-Expression $function.Extent.Text

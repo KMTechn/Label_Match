@@ -87,6 +87,8 @@ $text=$definition.Extent.Text
 $offset=$definition.Body.Extent.StartOffset-$definition.Extent.StartOffset+1
 Invoke-Expression ($text.Substring(0,$offset)+BOUNDARY+$text.Substring($offset))
 SUPERVISOR
+# The query boundary above supplies the existing synthetic token implementation.
+function Initialize-LabelStartupUpdateProcessToken {}
 Invoke-LabelStartupReadOnlyQuery -QueryMode Observe -Root ROOT -OperatorSid OPERATOR_SID
 '''.replace("SOURCE_FILE", _literal(source_file)).replace("BOUNDARY", _literal(boundary)).replace(
         "SUPERVISOR", supervisor).replace("ROOT", _literal(root)).replace("OPERATOR_SID", _literal(identity["sid"]))

@@ -191,6 +191,7 @@ def test_observe_rechecks_missing_image_and_skips_only_proven_foreign(tmp_path):
     """Run only the observer function, with synthetic CIM rows and no native queries."""
     import subprocess
     source = (Path(__file__).parents[1] / 'tools' / 'apply_prepared_update.ps1').read_text(encoding='utf-8-sig')
+    initializer = source[source.index('function Initialize-LabelStartupUpdateProcessToken {'):source.index('function Invoke-LabelStartupReadOnlyQuery {')]
     function = source[source.index('function Get-StartupUpdateProcesses('):source.index('function Assert-StartupUpdateVersion(')]
     script = tmp_path / 'observe.ps1'
     prelude = """
@@ -205,7 +206,7 @@ function Get-CimInstance {
  return @()
 }
 """
-    script.write_text(prelude + function + "\n$r=Get-StartupUpdateProcesses 'E:\\synthetic\\current' 'owner'; if($r.Count -ne 0 -or $script:reads -lt 2){exit 1}\n"
+    script.write_text(prelude + initializer + function + "\n$r=Get-StartupUpdateProcesses 'E:\\synthetic\\current' 'owner'; if($r.Count -ne 0 -or $script:reads -lt 2){exit 1}\n"
                       + "$script:reads=0\nfunction Get-CimInstance { param($ClassName,$Filter,$ErrorAction) $script:reads++; return [pscustomobject]@{Name='pythonw.exe';ExecutablePath='';ProcessId=10;CreationDate=[datetime]'2026-01-01';SessionId=2} }\n"
                       + "$r=Get-StartupUpdateProcesses 'E:\\synthetic\\current' 'owner'; if($r.Count -ne 0){exit 2}\n"
                       + "$r=Get-StartupUpdateProcesses 'E:\\synthetic\\current' 'foreign'; if($r.Count -ne 1 -or $r[0].observable){exit 3}\n",
