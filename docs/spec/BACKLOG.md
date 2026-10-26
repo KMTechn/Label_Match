@@ -845,3 +845,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 
 - 재설치 밤 목록 — P3(레인21:4x 판정): terminal 만료 뒤 옛 판을 계속 실행하는 흐름과 되풀이 횟수 막이 없음은 이번 고침에서 그대로 두고 밤 재설치 목록에 남긴다.
 - w9firstupdsub649 / GS·RS 세 꼴: 6D 읽기는 제어 바이트·글자 꼴 둘을 받음. 구분이 사라진 꼴은 잘못 자를 위험으로 구현하지 않고 QUESTION 으로 둠(웹 셸 scan.js 의 Ctrl+]·Ctrl+^·Alt+029/030 정본 바이트 대기). 납품처 라벨 판정은 postcut/deliverylabel-lm-124 가 바탕에 들어온 뒤 같은 세 꼴로 넓힘(이적은 GS·RS 요구 자리 0).
+- 납품처 라벨 무시(새 방식 세트 제품 자리·첫 스캔, 10/26 코디 판정): 글은 잠정(w9mgrui 확정 반영, 상수 둘). 감사용 `ERROR_INPUT` 한 줄을 남기는 것·웹 셸 타자 입력이 RS(0x1E)를 버리면 머리 `[)>`+RS 가 안 맞아 못 잡는 것(붙여넣기·Tk 입력은 통과)은 현장 스캐너 확인 뒤 정한다. duplicate.wav 는 sub-610lm 과 같은 바이트·같은 설정 키로 합친다.
