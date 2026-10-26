@@ -136,6 +136,32 @@ function Get-KmtechDataDowngradeDecision(
     }
 }
 
+function Publish-KmtechDataGenerationDocument([string]$Temporary, [string]$Target) {
+    $retrySeconds = 1.0
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $replaceExisting = [IO.File]::Exists($Target)
+    while ($true) {
+        try {
+            if ($replaceExisting) {
+                [IO.File]::Replace($Temporary,$Target,[NullString]::Value)
+            }
+            else {
+                [IO.File]::Move($Temporary,$Target)
+            }
+            return
+        }
+        catch {
+            $cause = $_.Exception
+            while ($null -ne $cause.InnerException) { $cause = $cause.InnerException }
+            if ($cause.HResult -notin @(-2147024891, -2147024864)) { throw } # WinError 5/32 only.
+            $remaining = $retrySeconds - $clock.Elapsed.TotalSeconds
+            if ($remaining -le 0) { throw }
+            [Threading.Thread]::Sleep([TimeSpan]::FromMilliseconds([Math]::Min(50,$remaining * 1000)))
+            if ($clock.Elapsed.TotalSeconds -ge $retrySeconds) { throw }
+        }
+    }
+}
+
 function Write-KmtechDataGeneration(
     [string]$MarkerPath, [string]$Version, [string]$AppId, [string]$SubjectSid,
     [string]$DataCompatibleMinVersion = '', [bool]$CompatibilityVerified = $false, [string]$BuildId
@@ -177,8 +203,7 @@ function Write-KmtechDataGeneration(
         $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
         [void](Get-KmtechDataLiteralPath $full)
-        if ([IO.File]::Exists($full)) { [IO.File]::Replace($temporary,$full,[NullString]::Value) }
-        else { [IO.File]::Move($temporary,$full) }
+        Publish-KmtechDataGenerationDocument $temporary $full
         $readback = Read-KmtechDataGeneration $full $AppId $SubjectSid
         foreach ($field in $record.Keys) {
             if ($null -eq $readback -or $readback.$field -cne $record[$field]) {

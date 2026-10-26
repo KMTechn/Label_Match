@@ -11,11 +11,13 @@ import os
 from pathlib import Path
 import re
 import stat
+import time
 import uuid
 from typing import Iterable
 
 SCHEMA = "kmtech-data-generation-v2"
 MAX_BYTES = 4096
+ATOMIC_REPLACE_RETRY_SECONDS = 1.0
 REFUSAL_MESSAGE = "이 PC의 자료는 더 새 판에서 이미 열려 이 판으로는 열 수 없습니다.\n현장 관리자에게 알리세요."
 UNKNOWN_MESSAGE = "이 PC의 자료 판을 확인하지 못해 프로그램을 열 수 없습니다.\n현장 관리자에게 알리세요."
 _VERSION = re.compile(r"v?(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})")
@@ -212,7 +214,24 @@ Probe all slots before opening data; recording alone does not authorize admissio
             handle.flush()
             os.fsync(handle.fileno())
         _literal_path(path)
-        os.replace(temporary, path)
+        if os.name != "nt":
+            os.replace(temporary, path)
+        else:
+            # Windows lock errors 5/32 (scanner, indexer) are retried for one second.
+            deadline = time.monotonic() + ATOMIC_REPLACE_RETRY_SECONDS
+            while True:
+                try:
+                    os.replace(temporary, path)
+                    break
+                except OSError as error:
+                    if getattr(error, "winerror", None) not in {5, 32}:
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise
+                    time.sleep(min(0.05, remaining))
+                    if time.monotonic() >= deadline:
+                        raise
         if _read(path, app_id, subject_sid) != record:
             raise DataGenerationError("data generation durable readback differs")
     finally:
