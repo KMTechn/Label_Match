@@ -1092,7 +1092,10 @@ def install_os(config, app):
                 rows = []
                 for path in (root / "processes").glob("*.json"):
                     row = json.loads(path.read_text())
-                    if updates.native_process_identity(row["ProcessId"]).get("status") == "LIVE":
+                    native = updates.native_process_identity(row["ProcessId"])
+                    row["NativeBirthMatchesRecorded"] = (native.get("status") == "LIVE"
+                        and str(native.get("creation_identity")) == str(row.get("CreationIdentity")))
+                    if native.get("status") == "LIVE":
                         rows.append(row)
                 processes = root / ("query-" + str(os.getpid()) + ".json")
                 write(processes, rows)
@@ -1216,6 +1219,8 @@ def install_os(config, app):
         from tests._first_setup_ready_observer import install as install_ready_observer
         if hasattr(updates, "_relay_ready_receipt"):
             install_ready_observer(root, updates)
+    from tests._retained_diagnostic_observer import install as install_retained_diagnostics
+    install_retained_diagnostics(root, updates, fence, original_bootstrap.__code__)
     return children
 
 
