@@ -3755,7 +3755,7 @@ def _bootstrap_retained_candidate(control, policy, state, active, arguments, *, 
     return 0
 
 
-def start_current(control: Path, policy: Mapping[str, Any], state, active, arguments, *, code: str, report_once: bool = False, deadline: float | None = None, _ownership=None) -> int:
+def start_current(control: Path, policy: Mapping[str, Any], state, active, arguments, *, code: str, report_once: bool = False, deadline: float | None = None, _ownership=None, _recovery_started_at: str | None = None) -> int:
     """Reuse ordinary launch and publish only the E9 allowlisted support fields."""
     if state and state.get("phase") == "ROLLBACK_PENDING":
         # Only recovery_writer_result carries the proved relay boundary. A task
@@ -3800,9 +3800,13 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
     except (OSError, ValueError, TypeError, WriterFenceError):
         # A support sink failure cannot turn a safe ordinary launch into a stop.
         emit_support_record({"reason_code": "REPORT_UNAVAILABLE"}, stage="update_apply")
-    started_at = now_utc()
+    started_at = _recovery_started_at if _recovery_started_at is not None else now_utc()
     if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
-        assert_ordinary_recovery(control, policy, active["sha"], started_at)
+        try:
+            assert_ordinary_recovery(control, policy, active["sha"], started_at)
+        except (OSError, ValueError, TypeError, KeyError):
+            emit_progress_guidance()
+            return 20
     if deadline is None:
         deadline = time.monotonic() + RELAY_PREPARE_SECONDS
     pid = None
@@ -4292,9 +4296,29 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                     role=role, deadline=relay_deadline, state=state, claim_status=claim_status, _ownership=bootstrap_ownership)
                 if writer_result is not None:
                     return writer_result
-    assert_ordinary_recovery(control, policy, active["sha"], now_utc())
-    result = start_current(control, policy, optional_record(control / "transition.json"), active,
-                           arguments, code="UPDATE_APPLY_NO_PROGRESS", deadline=relay_deadline)
+    with ExitStack() as bootstrap_ownership:
+        bootstrap_ownership.enter_context(update_lock(control, policy["operator_sid"],
+            abandoned_check=lambda: _verify_abandoned_update(control, policy)))
+        active = read_json(control / "active.json")
+        state = optional_record(control / "transition.json")
+        try:
+            rows = writer_processes(process_snapshot(control), own_pid=os.getpid())
+            boundary = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
+            if boundary:
+                if _utc(boundary) >= _utc(now_utc()):
+                    raise ValueError("ordinary recovery boundary is not in the past")
+            else:
+                # Match ordinary relay reuse: an existing cohort predates this
+                # request. Re-prove every writer; this grants no parent exception.
+                boundary = (min(rows, key=lambda row: _utc(row.get("created_at")))["created_at"]
+                            if rows else now_utc())
+            assert_ordinary_recovery(control, policy, active["sha"], boundary)
+        except (OSError, ValueError, TypeError, KeyError):
+            emit_progress_guidance()
+            return 20
+        result = start_current(control, policy, state, active, arguments,
+            code="UPDATE_APPLY_NO_PROGRESS", deadline=relay_deadline,
+            _ownership=bootstrap_ownership, _recovery_started_at=boundary)
     emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS", "exit_code": result}, stage="update_apply", policy=policy)
     return result
 
