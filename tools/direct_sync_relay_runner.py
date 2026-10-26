@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once, utc_now_text, prepare_credentials_from_json, source_scan_failure_status  # noqa: E402
+from direct_sync_runtime import DirectSyncRuntimeConfig, _append_runtime_event, enqueue_completed_source_file, run_relay_once, utc_now_text, prepare_credentials_from_json, source_scan_failure_status  # noqa: E402
 from direct_sync_push import SOURCE_FILE_ERROR_CODES, SourceFileInputError, source_file_operation  # noqa: E402
 from writer_session_fence import writer_sink  # noqa: E402
 
@@ -142,30 +142,37 @@ def _clear_source_file_failure(config: DirectSyncRuntimeConfig, source_file: Pat
 def _clear_vanished_source_failures(config: DirectSyncRuntimeConfig, scanned_files: list[Path]) -> None:
     """Drop failure entries whose original is neither scanned now nor on disk.
 
-    A file that still exists (deferred this round, renamed to another pattern,
-    unreadable parent) keeps its entry; nothing here deletes or moves a file.
+    A file that is still on disk keeps its entry (deferred this round, excluded
+    by the scan filter, or its existence cannot be read); a renamed original
+    that is gone from its recorded path is cleared. Nothing here deletes or
+    moves a file. One relay log line per cleared entry carries only the public
+    support fields (status, reason_code, error_code).
     """
     scanned = {_source_state_key(path) for path in scanned_files}
     conn = _scan_state_connect(config.db_path)
     try:
-        keys = [row["source_file_path"] for row in conn.execute(
-            "SELECT source_file_path FROM direct_sync_source_scan_failures").fetchall()]
+        entries = [(row["source_file_path"], row["error_code"]) for row in conn.execute(
+            "SELECT source_file_path, error_code FROM direct_sync_source_scan_failures").fetchall()]
         vanished = []
-        for key in keys:
+        for key, error_code in entries:
             if key in scanned:
                 continue
             try:
                 os.lstat(key)
             except (FileNotFoundError, NotADirectoryError):
-                vanished.append(key)
+                vanished.append((key, error_code))
             except OSError:
                 continue
-        for key in vanished:
+        for key, _error_code in vanished:
             conn.execute("DELETE FROM direct_sync_source_scan_failures WHERE source_file_path=?", (key,))
         if vanished:
             conn.commit()
     finally:
         conn.close()
+    for _key, error_code in vanished:
+        _append_runtime_event(config, "relay_source_failure_cleared", {
+            "status": "relay_source_failure_cleared", "reason_code": "vanished", "error_code": error_code,
+        })
 
 
 def _read_source_scan_state(db_path: str | Path, source_file: Path) -> tuple[int, str]:
