@@ -592,7 +592,7 @@ function Stop-LabelWriterFence {
         [string]$SessionId,
         [string]$AttemptId,
         [string]$ReplacementTransactionId,
-        [int]$TimeoutMilliseconds = 90000
+        [int]$TimeoutMilliseconds = 120000
     )
     $lease = Enter-LabelWriterAdmission $ControlRoot $TimeoutMilliseconds
     try {

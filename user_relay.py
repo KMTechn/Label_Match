@@ -33,6 +33,9 @@ USER_RELAY_RUN_VALUE = "KMTech.LabelMatch.Relay"
 USER_RELAY_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 DEFAULT_RETRY_INTERVAL_SECONDS = 30
 MAX_RETRY_INTERVAL_SECONDS = 60
+RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS = 120
+RELAY_NORMAL_STOP_TIMEOUT_SECONDS = RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS + 30
+RELAY_OWNER_READBACK_TIMEOUT_SECONDS = 120
 USER_RELAY_STATUS_NAME = "label_match_user_relay.json"
 USER_RELAY_STOP_NAME = "label_match_user_relay.stop.json"
 APP_STOP_NAME = "label_match_app.stop.json"
@@ -547,7 +550,7 @@ def run_session_direct_sync_once(
     direct_sync_root: str | os.PathLike[str],
     scan_source_dir: str | os.PathLike[str],
     reason: str,
-    timeout_seconds: int = 45,
+    timeout_seconds: int = RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS,
     tls_ca_bundle_path: str | os.PathLike[str] = "",
     runtime_status_path: str | os.PathLike[str] = "",
     log_path: str | os.PathLike[str] = "",
@@ -914,55 +917,61 @@ def _read_started_relay(process, existing_owner, survival, parent_deadline, is_b
                 # finishes. Keep every owner proof and the shared deadline.
                 return None
 
-        owner = None
-        completed = return_code == 0
-        readback_deadline = min(parent_deadline, time.monotonic() + 2.0) if completed else parent_deadline
-        startup_progress("full_relay_bootstrap_wait")
-        while time.monotonic() < readback_deadline:
-            return_code = process.poll()
-            if return_code == 0 and not completed:
-                completed = True
-                readback_deadline = min(parent_deadline, time.monotonic() + 2.0)
-            if return_code not in (None, 0):
-                raise UserRelayError(
-                    "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
-                    exit_code=return_code,
-                )
-            startup_stop_checkpoint()
-            owner = read_owner()
-            startup_stop_checkpoint()
-            return_code = process.poll()
-            if return_code == 0 and not completed:
-                completed = True
-                readback_deadline = min(parent_deadline, time.monotonic() + 2.0)
-            if return_code == 0 and owner is None and time.monotonic() < readback_deadline:
+        elapsed_started = time.monotonic()
+        elapsed_status = 'UNKNOWN'
+        try:
+            owner = None
+            completed = return_code == 0
+            readback_deadline = min(parent_deadline, time.monotonic() + RELAY_OWNER_READBACK_TIMEOUT_SECONDS) if completed else parent_deadline
+            startup_progress("full_relay_bootstrap_wait")
+            while time.monotonic() < readback_deadline:
+                return_code = process.poll()
+                if return_code == 0 and not completed:
+                    completed = True
+                    readback_deadline = min(parent_deadline, time.monotonic() + RELAY_OWNER_READBACK_TIMEOUT_SECONDS)
+                if return_code not in (None, 0):
+                    raise UserRelayError(
+                        "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
+                        exit_code=return_code,
+                    )
+                startup_stop_checkpoint()
                 owner = read_owner()
-            if return_code not in (None, 0):
-                raise UserRelayError(
-                    "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
-                    exit_code=return_code,
-                )
-            if owner is not None:
-                # The grace limits when a query may start. A query already in
-                # flight may prove ownership until the shared parent deadline.
-                if time.monotonic() >= parent_deadline:
-                    owner = None
-                break
-            startup_wait(min(0.1, max(0.0, readback_deadline - time.monotonic())), wait)
-        if owner is None:
-            if completed:
-                raise UserRelayError(
-                    "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
-                    exit_code=0,
-                )
-            raise UserRelayError("bootstrap did not prove the protected active-version relay")
-        if process.poll() not in (None, 0):
-            raise UserRelayError("bootstrap exited unsuccessfully before relay ownership readback")
-        if time.monotonic() >= parent_deadline:
-            raise UserRelayError("bootstrap did not prove the protected active-version relay")
-        return {"status": "ALIVE", "process_id": owner["process_id"],
-                "bootstrap_process_id": process.pid, "survival_seconds": survival,
-                "owner_status_updated_at": owner["updated_at"]}
+                startup_stop_checkpoint()
+                return_code = process.poll()
+                if return_code == 0 and not completed:
+                    completed = True
+                    readback_deadline = min(parent_deadline, time.monotonic() + RELAY_OWNER_READBACK_TIMEOUT_SECONDS)
+                if return_code == 0 and owner is None and time.monotonic() < readback_deadline:
+                    owner = read_owner()
+                if return_code not in (None, 0):
+                    raise UserRelayError(
+                        "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
+                        exit_code=return_code,
+                    )
+                if owner is not None:
+                    # The grace limits when a query may start. A query already in
+                    # flight may prove ownership until the shared parent deadline.
+                    if time.monotonic() >= parent_deadline:
+                        owner = None
+                    break
+                startup_wait(min(0.1, max(0.0, readback_deadline - time.monotonic())), wait)
+            if owner is None:
+                if completed:
+                    raise UserRelayError(
+                        "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
+                        exit_code=0,
+                    )
+                raise UserRelayError("bootstrap did not prove the protected active-version relay")
+            if process.poll() not in (None, 0):
+                raise UserRelayError("bootstrap exited unsuccessfully before relay ownership readback")
+            if time.monotonic() >= parent_deadline:
+                raise UserRelayError("bootstrap did not prove the protected active-version relay")
+            elapsed_status = 'ALIVE'
+            return {"status": "ALIVE", "process_id": owner["process_id"],
+                    "bootstrap_process_id": process.pid, "survival_seconds": survival,
+                    "owner_status_updated_at": owner["updated_at"]}
+        finally:
+            _log_wait_elapsed('full_relay_owner_readback', elapsed_started, elapsed_status)
     if return_code is not None:
         raise UserRelayError(
             "RELAY_EXITED_BEFORE_RUNNING", cause_code="RELAY_EXITED_BEFORE_RUNNING",
@@ -1260,11 +1269,25 @@ def _fresh_persistent_owner(
     return {"process_id": process_id, "updated_at": updated.isoformat()}
 
 
-@writer_sink("user_relay_stop_request")
+def _log_wait_elapsed(event: str, started: float, status: str) -> None:
+    """Emit only fixed diagnostic fields; diagnostics cannot change the result."""
+    try:
+        stream = sys.stderr
+        if stream is None:
+            return
+        print(json.dumps({
+            'event': event,
+            'elapsed_ms': max(0, int((time.monotonic() - started) * 1000)),
+            'status': status,
+        }, separators=(',', ':')), file=stream)
+    except Exception:
+        pass
+
+
 def request_user_relay_stop(
     direct_sync_root: str | os.PathLike[str],
     *,
-    timeout_seconds: float = 10.0,
+    timeout_seconds: float = RELAY_NORMAL_STOP_TIMEOUT_SECONDS,
     deadline: float | None = None,
     wait: Callable[[float], None] = time.sleep,
     lease_factory: Callable[[str | os.PathLike[str]], Any] = _acquire_relay_lease,
@@ -1272,73 +1295,83 @@ def request_user_relay_stop(
         [str | os.PathLike[str]], Any
     ] = _acquire_relay_lease,
 ) -> dict[str, Any]:
-    timeout_seconds = max(0.0, float(timeout_seconds))
-    wait_deadline = time.monotonic() + timeout_seconds
-    if deadline is None:
-        deadline = wait_deadline if timeout_seconds > 0 else time.monotonic() + 1.5
-    wait_deadline = min(wait_deadline, deadline)
-    root = Path(direct_sync_root).expanduser().resolve()
-    stop_path = user_relay_stop_path(root)
-    request_id = uuid.uuid4().hex
-    requested_at = _now()
-    marker_lease = marker_lease_factory(root / "user-relay-stop-marker")
-    if marker_lease is None:
-        raise UserRelayError("relay stop marker is being changed by another process")
+    elapsed_started = time.monotonic()
+    elapsed_status = 'ERROR'
     try:
-        if stop_path.exists():
-            marker_payload = build_successor_marker(
-                stop_path,
-                request_id=request_id,
-                requested_at=requested_at,
-            )
-        else:
-            marker_payload = {
-                "schema_version": STOP_MARKER_V1,
-                "request_id": request_id,
-                "requested_at": requested_at,
-            }
-        _write_machine_json_atomic(stop_path, marker_payload, deadline=deadline)
-        marker_value, _marker_raw, marker_hash = read_stop_marker(stop_path)
-        if marker_value != marker_payload:
-            raise UserRelayError("relay stop marker readback differs")
-    except StopMarkerLineageError as exc:
-        raise UserRelayError(f"relay stop marker lineage is invalid: {exc}") from exc
+        with writer_admission("user_relay_stop_request"):
+            timeout_seconds = max(0.0, float(timeout_seconds))
+            wait_deadline = time.monotonic() + timeout_seconds
+            if deadline is None:
+                deadline = wait_deadline if timeout_seconds > 0 else time.monotonic() + 1.5
+            wait_deadline = min(wait_deadline, deadline)
+            root = Path(direct_sync_root).expanduser().resolve()
+            stop_path = user_relay_stop_path(root)
+            request_id = uuid.uuid4().hex
+            requested_at = _now()
+            marker_lease = marker_lease_factory(root / "user-relay-stop-marker")
+            if marker_lease is None:
+                raise UserRelayError("relay stop marker is being changed by another process")
+            try:
+                if stop_path.exists():
+                    marker_payload = build_successor_marker(
+                        stop_path,
+                        request_id=request_id,
+                        requested_at=requested_at,
+                    )
+                else:
+                    marker_payload = {
+                        "schema_version": STOP_MARKER_V1,
+                        "request_id": request_id,
+                        "requested_at": requested_at,
+                    }
+                _write_machine_json_atomic(stop_path, marker_payload, deadline=deadline)
+                marker_value, _marker_raw, marker_hash = read_stop_marker(stop_path)
+                if marker_value != marker_payload:
+                    raise UserRelayError("relay stop marker readback differs")
+            except StopMarkerLineageError as exc:
+                raise UserRelayError(f"relay stop marker lineage is invalid: {exc}") from exc
+            finally:
+                close = getattr(marker_lease, "close", None) or getattr(
+                    marker_lease, "release", None
+                )
+                if callable(close):
+                    close()
+        # The relay needs admission for its final STOPPED write before releasing
+        # this instance lease. Waiting here must leave that admission available.
+        lease_key = root / "user-relay-instance"
+        while True:
+            lease = lease_factory(lease_key)
+            if lease is not None:
+                close = getattr(lease, "close", None) or getattr(lease, "release", None)
+                if callable(close):
+                    close()
+                elapsed_status = 'ABSENT'
+                return {
+                    "status": "ABSENT",
+                    "request_id": request_id,
+                    "stop_request_path": str(stop_path),
+                    "stop_request_sha256": marker_hash,
+                    "stop_marker_schema": marker_payload["schema_version"],
+                    "stop_marker_lineage_depth": int(
+                        marker_payload.get("lineage_depth") or 0
+                    ),
+                }
+            if time.monotonic() >= wait_deadline:
+                elapsed_status = 'UNKNOWN'
+                return {
+                    "status": "UNKNOWN",
+                    "request_id": request_id,
+                    "stop_request_path": str(stop_path),
+                    "stop_request_sha256": marker_hash,
+                    "stop_marker_schema": marker_payload["schema_version"],
+                    "stop_marker_lineage_depth": int(
+                        marker_payload.get("lineage_depth") or 0
+                    ),
+                    "reason": "relay process absence was not proven before timeout",
+                }
+            wait(min(0.25, max(0.0, wait_deadline - time.monotonic())))
     finally:
-        close = getattr(marker_lease, "close", None) or getattr(
-            marker_lease, "release", None
-        )
-        if callable(close):
-            close()
-    lease_key = root / "user-relay-instance"
-    while True:
-        lease = lease_factory(lease_key)
-        if lease is not None:
-            close = getattr(lease, "close", None) or getattr(lease, "release", None)
-            if callable(close):
-                close()
-            return {
-                "status": "ABSENT",
-                "request_id": request_id,
-                "stop_request_path": str(stop_path),
-                "stop_request_sha256": marker_hash,
-                "stop_marker_schema": marker_payload["schema_version"],
-                "stop_marker_lineage_depth": int(
-                    marker_payload.get("lineage_depth") or 0
-                ),
-            }
-        if time.monotonic() >= wait_deadline:
-            return {
-                "status": "UNKNOWN",
-                "request_id": request_id,
-                "stop_request_path": str(stop_path),
-                "stop_request_sha256": marker_hash,
-                "stop_marker_schema": marker_payload["schema_version"],
-                "stop_marker_lineage_depth": int(
-                    marker_payload.get("lineage_depth") or 0
-                ),
-                "reason": "relay process absence was not proven before timeout",
-            }
-        wait(min(0.25, max(0.0, wait_deadline - time.monotonic())))
+        _log_wait_elapsed('relay_normal_stop', elapsed_started, elapsed_status)
 
 
 @writer_sink("user_relay_stop_release")

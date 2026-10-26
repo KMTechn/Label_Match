@@ -12,6 +12,16 @@ param(
     [switch]$AllowNoncanonicalLayoutForTest,
     [switch]$SkipSignatureValidationForTest
 )
+$Script:LabelRelayNormalStopTimeoutSeconds = 150
+function Write-LabelWaitElapsed([string]$Event,[long]$ElapsedMilliseconds,[string]$Status) {
+    try { [Console]::Error.WriteLine((([ordered]@{event=$Event;elapsed_ms=$ElapsedMilliseconds;status=$Status})|ConvertTo-Json -Compress)) } catch {}
+}
+function Invoke-LabelTimedWait([string]$Event,[scriptblock]$Action) {
+    $watch=[Diagnostics.Stopwatch]::StartNew();$status='ERROR'
+    try {$result=& $Action;$status=if($result -is [bool] -and -not $result){'UNKNOWN'}else{'COMPLETE'};return $result}
+    finally {$watch.Stop();Write-LabelWaitElapsed $Event $watch.ElapsedMilliseconds $status}
+}
+
 Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 
@@ -2142,7 +2152,7 @@ $probeRoot = $utf8.GetString([Convert]::FromBase64String('@@root-base64@@'))
 
 function Invoke-LabelDelegatedPlacementHelper($Frozen, [hashtable]$HelperParameters, $AuthorityLease, [switch]$RefreshDelegation) {
     $control = [string]$HelperParameters.WriterFenceControlRoot
-    $admission = Enter-LabelWriterAdmission -ControlRoot $control -TimeoutMilliseconds 90000
+    $admission = Invoke-LabelTimedWait 'placement_admission' { Enter-LabelWriterAdmission -ControlRoot $control -TimeoutMilliseconds 120000 }
     try {
         $active = Read-LabelWriterFence $control
         # As in Container_Audit, verify this thread's actual session lease;
@@ -2450,10 +2460,10 @@ try {
             if($null -ne $TransportForTest){$process=& $TransportForTest $launch}else{$process=Start-Process @launch}
         } finally {$env:PSModulePath=$savedModulePath}
         $connected=$pipe.BeginWaitForConnection($null,$null)
-        if(-not $connected.AsyncWaitHandle.WaitOne(60000)){throw 'PLACEMENT_GUARDIAN_CONNECT_TIMEOUT'}
+        if(-not (Invoke-LabelTimedWait 'placement_guardian_connect' { $connected.AsyncWaitHandle.WaitOne(120000) })){throw 'PLACEMENT_GUARDIAN_CONNECT_TIMEOUT'}
         $pipe.EndWaitForConnection($connected)
         if($process.HasExited -or [LabelPlacementChannel]::Peer($pipe.SafePipeHandle,$true) -ne $process.Id){throw 'PLACEMENT_GUARDIAN_IDENTITY'}
-        $ready=[LabelPlacementChannel]::Read($pipe,60000,$null)|ConvertFrom-Json
+        $ready=(Invoke-LabelTimedWait 'placement_guardian_ready' { [LabelPlacementChannel]::Read($pipe,120000,$null) })|ConvertFrom-Json
         if([string]$ready.status -cne 'READY'){throw 'PLACEMENT_GUARDIAN_NOT_READY'}
         return [pscustomobject]@{pipe=$pipe;process=$process;transaction_id=$TransactionId;sequence=0;guardian_path=$guardianPath;result_base=$resultBase;closed=$false;rollback=$false;child_exit_unproven=$false}
     } catch {
@@ -2520,9 +2530,9 @@ function Close-LabelPlacementSession($Session, [ValidateSet('CONFIRMED','REVERTE
         if($Session.process.HasExited){throw 'PLACEMENT_GUARDIAN_EXITED'}
         $Session.sequence++
         [LabelPlacementChannel]::Write($Session.pipe,(@{operation=$Outcome;transaction_id=$Session.transaction_id;sequence=$Session.sequence}|ConvertTo-Json -Compress))
-        $receipt=[LabelPlacementChannel]::Read($Session.pipe,60000,$null)|ConvertFrom-Json
+        $receipt=(Invoke-LabelTimedWait 'placement_guardian_receipt' { [LabelPlacementChannel]::Read($Session.pipe,120000,$null) })|ConvertFrom-Json
         if([string]$receipt.transaction_id -cne [string]$Session.transaction_id -or $receipt.sequence -ne $Session.sequence){throw 'PLACEMENT_JOURNAL_RECEIPT_DIFFERS'}
-        if(-not $Session.process.WaitForExit(60000)){throw 'PLACEMENT_GUARDIAN_CLOSE_TIMEOUT'}
+        if(-not (Invoke-LabelTimedWait 'placement_guardian_exit' { $Session.process.WaitForExit(120000) })){throw 'PLACEMENT_GUARDIAN_CLOSE_TIMEOUT'}
         if($Session.process.ExitCode -ne 0){throw 'PLACEMENT_GUARDIAN_CLOSE_FAILED'}
         $seal=Read-LabelPlacementSessionRecord ($Session.result_base+'.seal.json') ([string]$receipt.sha256) $Session.transaction_id $Session.sequence -Seal
         $journalPath=$Session.result_base+'.journal.jsonl'
@@ -2712,8 +2722,8 @@ function Confirm-LabelCanonicalPlacement($Onboarding, [string]$ExpectedRun, [str
         Close-LabelPlacementSession $Script:LabelPlacementSession 'CONFIRMED'
     }
     $Script:LabelCanonicalConfirmation='UNCERTAIN'
-    [void](Stop-LabelWriterFence -ControlRoot $ControlRoot -SessionId $SessionId -AttemptId $AttemptId `
-        -ReplacementTransactionId $TransactionId -TimeoutMilliseconds 90000)
+    [void](Invoke-LabelTimedWait 'placement_admission' { Stop-LabelWriterFence -ControlRoot $ControlRoot -SessionId $SessionId -AttemptId $AttemptId `
+        -ReplacementTransactionId $TransactionId -TimeoutMilliseconds 120000 })
     $Script:LabelCanonicalConfirmation='CONFIRMED'
 }
 
@@ -4073,7 +4083,10 @@ function Get-LabelLaunchFailure($Failure, [string]$Phase) {
 }
 
 function Wait-LabelRelayPreimageExit([object[]]$Expected) {
-    $deadline=(Get-Date).AddSeconds(15)
+    $elapsedWatch=[Diagnostics.Stopwatch]::StartNew();$elapsedStatus='ERROR'
+    try {
+
+    $deadline=(Get-Date).AddSeconds($Script:LabelRelayNormalStopTimeoutSeconds)
     do {
         $remaining=@(UnquiescedProductWriters)
         foreach ($row in $remaining) {
@@ -4084,10 +4097,16 @@ function Wait-LabelRelayPreimageExit([object[]]$Expected) {
             })
             if ($matches.Count -ne 1) { throw 'Unexpected writer remains after normal removal.' }
         }
-        if ($remaining.Count -eq 0) { return }
+        if ($remaining.Count -eq 0) { $elapsedStatus='COMPLETE'; return }
         Start-Sleep -Milliseconds 100
     } while ((Get-Date) -lt $deadline)
     throw 'Normal relay process exit remains unproven.'
+
+        $elapsedStatus='COMPLETE'
+    } finally {
+        $elapsedWatch.Stop()
+        try { Write-LabelWaitElapsed 'relay_process_exit' $elapsedWatch.ElapsedMilliseconds $elapsedStatus } catch {}
+    }
 }
 
 function HealthyLifecycle([string]$Root, [string]$Installed, [string]$Mode = 'inspect', [string]$ExpectedStateSha256 = '') {
@@ -4863,8 +4882,8 @@ function Invoke-LabelGenerationRefusalRecovery {
                 [void](HealthyLifecycle $source $install 'release_recovery' ([string]$stopProof.stop_request_sha256))
             }
             if ($writerFenceStarted) {
-                [void](Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot -SessionId $writerSessionId `
-                    -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId -TimeoutMilliseconds 90000)
+                [void](Invoke-LabelTimedWait 'placement_admission' { Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot -SessionId $writerSessionId `
+                    -AttemptId $writerAttemptId -ReplacementTransactionId $writerTransactionId -TimeoutMilliseconds 120000 })
                 $writerFenceStarted = $false
                 $audit.writer_fence.status = 'RELEASED_FOR_RETAINED_CANDIDATE'
             }
@@ -5592,6 +5611,39 @@ function Assert-LabelInstallerRelayPreimageSession([object[]]$Expected,[string]$
     return @($live)
 }
 
+function Test-LabelInstallerRelayChild($Writer,[object[]]$Expected,[string]$CodeRoot,[string]$SubjectSid) {
+    # A command-line match alone cannot authorize an unrelated writer.
+    try {
+        if($Expected.Count -ne 1){return $false}
+        $parent=@(Assert-LabelInstallerRelayPreimageSession $Expected $SubjectSid)
+        if($parent.Count -ne 1 -or [int]$Writer.ProcessId -le 0 -or
+            [int]$Writer.ProcessId -eq [int]$parent[0].ProcessId -or
+            [int]$Writer.ParentProcessId -ne [int]$parent[0].ProcessId -or
+            $null -eq $Writer.CreationDate -or
+            ([DateTime]$Writer.CreationDate).ToUniversalTime() -le ([DateTime]$parent[0].CreationDate).ToUniversalTime()){
+            return $false
+        }
+        $python=Join-Path $CodeRoot 'runtime/python.exe'
+        $pythonw=Join-Path $CodeRoot 'runtime/pythonw.exe'
+        $frozen=Join-Path $CodeRoot 'Label_Match.exe'
+        $executable=[string]$Writer.ExecutablePath
+        if((Same ([string]$parent[0].ExecutablePath) $pythonw) -and (Same $executable $python)){
+            $prefix='{0} -I -B {1} --label-match-direct-sync-relay ' -f
+                (Arg $python),(Arg (Join-Path $CodeRoot 'app/label_match_relay_entry.py'))
+        }elseif((Same ([string]$parent[0].ExecutablePath) $frozen) -and (Same $executable $frozen)){
+            $prefix='{0} --label-match-direct-sync-relay ' -f (Arg $frozen)
+        }else{return $false}
+        $command=Normalize-RelayExecutableQuoting ([string]$Writer.CommandLine) $executable
+        if(-not $command.StartsWith($prefix,[StringComparison]::Ordinal)){return $false}
+        $security=Get-CanonicalRelaySecurity ([int]$Writer.ProcessId)
+        $caller=Get-CanonicalRelaySecurity $PID
+        if([string]$security.sid -cne $SubjectSid -or [bool]$security.elevated -or
+            [int]$security.integrity_rid -ne 8192 -or [int]$security.session_id -le 0 -or
+            [int]$security.session_id -ne [int]$caller.session_id){return $false}
+        return $true
+    }catch{return $false}
+}
+
 function Stop-LabelInstallerRelayPreimage([object[]]$Expected,[string]$StateRoot,[string]$CodeRoot,[string]$SubjectSid) {
     [void](Assert-LabelInstallerRelayPreimageSession $Expected $SubjectSid)
     if($Expected.Count -eq 0){return}
@@ -5599,15 +5651,16 @@ function Stop-LabelInstallerRelayPreimage([object[]]$Expected,[string]$StateRoot
 import json, pathlib, sys
 root, state = map(pathlib.Path, sys.argv[1:3])
 sys.path[:0] = [str(root / 'app'), str(root / 'app/site-packages')]
-from user_relay import request_user_relay_stop
-proof = request_user_relay_stop(state, timeout_seconds=15.0)
+from user_relay import RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS, request_user_relay_stop
+proof = request_user_relay_stop(state, timeout_seconds=RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS + 30)
 if proof['status'] != 'ABSENT':
     raise RuntimeError('candidate relay did not stop normally')
 print(json.dumps(proof, sort_keys=True))
 '@
     $bytes=[Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n","`n"))
+    Write-Host '작업 앱이 서버 보내기를 마치기를 기다리는 중'
     $output=Invoke-LabelPinnedProbe -Python (Join-Path $CodeRoot 'runtime/python.exe') -ProbeBytes $bytes `
-        -ExpectedSha256 'b0944e7a09135c3079da4c115fea3609434841a94739fa5615ab88e6254d4529' `
+        -ExpectedSha256 '027301c5dfff852ac414805a9eb67fc361d0b8a0960ebb8e5aa613759b9110f8' `
         -ProbeArguments @($CodeRoot,$StateRoot) -FailureMessage 'Installer normal relay stop failed: '
     $proof=($output -join "`n")|ConvertFrom-Json
     if([string]$proof.status -cne 'ABSENT'){throw 'Installer normal relay stop is unproven.'}
@@ -5624,15 +5677,16 @@ function Stop-LabelRollbackCandidateRelay {
 import json, pathlib, sys
 root, state = map(pathlib.Path, sys.argv[1:3])
 sys.path[:0] = [str(root / 'app'), str(root / 'app/site-packages')]
-from user_relay import request_user_relay_stop
-proof = request_user_relay_stop(state, timeout_seconds=15.0)
+from user_relay import RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS, request_user_relay_stop
+proof = request_user_relay_stop(state, timeout_seconds=RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS + 30)
 if proof['status'] != 'ABSENT':
     raise RuntimeError('candidate relay did not stop normally')
 print(json.dumps(proof, sort_keys=True))
 '@
     $bytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n","`n"))
+    Write-Host '작업 앱이 서버 보내기를 마치기를 기다리는 중'
     $output = Invoke-LabelPinnedProbe -Python (Join-Path $source 'runtime/python.exe') -ProbeBytes $bytes `
-        -ExpectedSha256 'b0944e7a09135c3079da4c115fea3609434841a94739fa5615ab88e6254d4529' -ProbeArguments @($source,$defaultDirectSyncRoot) -FailureMessage 'Candidate relay protection failed: '
+        -ExpectedSha256 '027301c5dfff852ac414805a9eb67fc361d0b8a0960ebb8e5aa613759b9110f8' -ProbeArguments @($source,$defaultDirectSyncRoot) -FailureMessage 'Candidate relay protection failed: '
     $audit.rollback.new_relay_stop = $output | ConvertFrom-Json
     if (@(Relays).Count -ne 0) { throw 'Candidate relay process absence is unproven.' }
 }
@@ -5768,7 +5822,7 @@ function Invoke-LabelCanonicalRollback {
                 # own active fence until the guarded placement helper completes.
                 $firstRegistrationAttempt.status = 'FAILED_ROLLBACK_INCOMPLETE'
                 Save-FirstRegistrationAttempt $firstRegistrationAttempt $firstRegistrationAttemptPath
-                $stateMutationLease = Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
+                $stateMutationLease = Invoke-LabelTimedWait 'placement_admission' { Enter-LabelWriterAdmission -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 120000 }
                 try {
                     $authPaths = @($firstRegistrationStatePaths | Where-Object { -not (Same $_ $defaultDirectSyncRoot) })
                     if (-not $firstRegistrationStateVerified -and
@@ -5877,9 +5931,9 @@ function Invoke-LabelCanonicalRollback {
         $ownerMutationLease = $null
         try {
             if ($writerFenceStarted) {
-                $ownerMutationLease = Enter-LabelWriterAdmission `
+                $ownerMutationLease = Invoke-LabelTimedWait 'placement_admission' { Enter-LabelWriterAdmission `
                     -ControlRoot $writerFenceControlRoot `
-                    -TimeoutMilliseconds 90000
+                    -TimeoutMilliseconds 120000 }
             }
             . Invoke-LabelRollbackStep 'run_restore' { Restore $before }
             . Invoke-LabelRollbackStep 'task_restore' { RestoreScheduledTask $taskBefore }
@@ -6013,16 +6067,16 @@ function Invoke-LabelCanonicalRollback {
             if ($legacyFirstRegistration) {
                 # Keep ordinary writers excluded while releasing the fence and
                 # moving its own root. Session authority alone is a different mutex.
-                $firstRegistrationRollbackLease = Enter-LabelWriterAdmission `
-                    -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 90000
+                $firstRegistrationRollbackLease = Invoke-LabelTimedWait 'placement_admission' { Enter-LabelWriterAdmission `
+                    -ControlRoot $writerFenceControlRoot -TimeoutMilliseconds 120000 }
             }
             if ($writerFenceStarted) {
-                $releasedFence = Stop-LabelWriterFence `
+                $releasedFence = Invoke-LabelTimedWait 'placement_admission' { Stop-LabelWriterFence `
                     -ControlRoot $writerFenceControlRoot `
                     -SessionId $writerSessionId `
                     -AttemptId $writerAttemptId `
                     -ReplacementTransactionId $writerTransactionId `
-                    -TimeoutMilliseconds 90000
+                    -TimeoutMilliseconds 120000 }
                 $writerFenceStarted = $false
                 $audit.writer_fence.status = 'RELEASED_AFTER_ROLLBACK'
                 $audit.writer_fence.writer_inventory_sha256 = [string]$releasedFence.writer_inventory_sha256
@@ -7046,7 +7100,8 @@ try {
 $old = @(Relays)
 $Script:LabelInstallerHadRelayPreimage=($old.Count -gt 0)
 foreach($writer in @(UnquiescedProductWriters)){
-    if(@($old | Where-Object {$_.ProcessId -eq $writer.ProcessId -and $_.CreationDate -eq $writer.CreationDate}).Count -ne 1){
+    if(@($old | Where-Object {$_.ProcessId -eq $writer.ProcessId -and $_.CreationDate -eq $writer.CreationDate}).Count -ne 1 -and
+        -not (Test-LabelInstallerRelayChild $writer $old $lifecycleInstalled $generationSubjectSid)){
         throw 'An unrelated product writer prevents installation.'
     }
 }
@@ -7499,9 +7554,9 @@ try {
         $null -ne (Read-LabelWriterFence $writerFenceControlRoot -AllowAbsent)) {
         # Session authority excludes a still-running original installer. Retire
         # only its exact orphan fence. An absent fence uses normal Start below.
-        [void](Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot `
+        [void](Invoke-LabelTimedWait 'placement_admission' { Stop-LabelWriterFence -ControlRoot $writerFenceControlRoot `
             -SessionId $writerSessionId -AttemptId $writerAttemptId `
-            -ReplacementTransactionId $writerTransactionId -TimeoutMilliseconds 90000)
+            -ReplacementTransactionId $writerTransactionId -TimeoutMilliseconds 120000 })
     }
     if ($legacyFirstRegistration) {
         $mutated = $true

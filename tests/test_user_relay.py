@@ -513,3 +513,186 @@ def test_gui_writer_is_admitted_while_relay_cycle_waits_on_direct_sync_child(
         assert result["last_cycle"]["process_status"] == "PASS"
     else:
         assert gui_result == {"status": "WRITER_GATE_TIMEOUT"}
+
+
+def _fake_slow_child_run(child_seconds, calls):
+    import subprocess
+
+    def fake_run(command, *, timeout=None, **_kwargs):
+        calls.append(timeout)
+        if timeout is not None and timeout < child_seconds:
+            raise subprocess.TimeoutExpired(command, timeout)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    return fake_run
+
+
+def test_relay_waits_for_a_slow_wireless_direct_sync_child(tmp_path, monkeypatch):
+    """A 60 s child (slow wireless notebook) is a PASS cycle, not UNKNOWN."""
+    calls = []
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_TEST_MODE", "1")
+    monkeypatch.setenv("KMTECH_LABEL_WRITER_CONTROL_ROOT", str(tmp_path / "writer-control"))
+    monkeypatch.setattr(user_relay, "build_session_direct_sync_command", lambda **_: ["child"])
+    monkeypatch.setattr(user_relay.subprocess, "run", _fake_slow_child_run(60, calls))
+
+    result = user_relay.run_session_direct_sync_once(
+        app_root=tmp_path,
+        direct_sync_root=tmp_path / "direct_sync",
+        scan_source_dir=tmp_path / "scan",
+        reason="PERSISTENT_USER_RELAY",
+    )
+
+    assert result["status"] == "PASS"
+    assert calls == [120]
+
+
+def test_relay_child_budget_is_one_shared_constant():
+    import inspect
+
+    assert user_relay.RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS == 120
+    default = inspect.signature(user_relay.run_session_direct_sync_once).parameters["timeout_seconds"].default
+    assert default == user_relay.RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process handle probe")
+def test_child_overrunning_the_budget_is_unknown_and_not_left_running(tmp_path):
+    import ctypes
+    import time
+
+    pid_file = tmp_path / "child.pid"
+    started = time.monotonic()
+    result = user_relay._run_command(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import os, time; open(r'%s', 'w').write(str(os.getpid())); time.sleep(120)" % pid_file,
+        ],
+        timeout_seconds=10,
+    )
+
+    assert time.monotonic() - started < 40
+    assert result["status"] == "UNKNOWN"
+    assert result["error_type"] == "TimeoutExpired"
+    pid = int(pid_file.read_text())
+    handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)
+    if handle:
+        try:
+            assert ctypes.windll.kernel32.WaitForSingleObject(handle, 5000) == 0
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def test_stop_marker_admission_ends_before_instance_wait(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+    import writer_session_fence as fence
+    import user_relay
+
+    depth = 0
+    events = []
+    marker = {}
+    acquisitions = 0
+
+    @contextmanager
+    def admission(_source):
+        nonlocal depth
+        depth += 1
+        try:
+            yield
+        finally:
+            depth -= 1
+
+    class Lease:
+        def close(self):
+            events.append(('marker_close', depth))
+
+    class InstanceLease:
+        def close(self):
+            pass
+
+    def instance(_path):
+        nonlocal acquisitions
+        acquisitions += 1
+        return None if acquisitions == 1 else InstanceLease()
+
+    def write(_path, payload, **_kwargs):
+        events.append(('publish', depth))
+        marker.update(payload)
+
+    def read(_path):
+        events.append(('readback', depth))
+        return dict(marker), b'{}', '0' * 64
+
+    monkeypatch.setattr(fence, 'writer_admission', admission)
+    monkeypatch.setattr(user_relay, 'writer_admission', admission)
+    monkeypatch.setattr(user_relay, '_write_machine_json_atomic', write)
+    monkeypatch.setattr(user_relay, 'read_stop_marker', read)
+    proof = user_relay.request_user_relay_stop(
+        tmp_path / 'relay', timeout_seconds=1,
+        wait=lambda _seconds: events.append(('wait', depth)), lease_factory=instance,
+        marker_lease_factory=lambda _path: Lease(),
+    )
+    assert proof['status'] == 'ABSENT'
+    assert events == [('publish', 1), ('readback', 1), ('marker_close', 1), ('wait', 0)]
+
+
+def test_stop_wait_allows_real_relay_final_status_under_native_admission(monkeypatch, tmp_path):
+    import json
+    import threading
+    import time
+    import writer_session_fence as fence
+    import user_relay
+
+    monkeypatch.setenv('KMTECH_LABEL_WRITER_TEST_MODE', '1')
+    monkeypatch.setenv('KMTECH_LABEL_WRITER_CONTROL_ROOT', str(tmp_path / 'writer-control'))
+    # Only the deployment-policy read is a double. Admission exclusion uses the
+    # real isolated Win32 mutex and the relay's real final-status implementation.
+    monkeypatch.setattr(fence, '_admitted_writer_sources', lambda *_args, **_kwargs:
+                        frozenset(('user_relay_stop_request', 'persistent_relay_status')))
+    monkeypatch.setattr(user_relay, '_record_relay_reason', lambda *_args, **_kwargs: None)
+    published = threading.Event()
+    finished = threading.Event()
+    errors = []
+    status_path = tmp_path / 'relay/status/final.json'
+    original_write = user_relay._write_machine_json_atomic
+
+    def write(path, payload, **kwargs):
+        original_write(path, payload, **kwargs)
+        published.set()
+
+    class Lease:
+        def close(self):
+            pass
+
+    def relay():
+        try:
+            if not published.wait(3):
+                raise AssertionError('stop marker was not published')
+            user_relay.run_persistent_relay_loop(
+                lambda: {'status': 'PASS'}, status_path=status_path, stop_requested=lambda: True,
+            )
+        except BaseException as error:
+            errors.append(type(error).__name__)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(user_relay, '_write_machine_json_atomic', write)
+    thread = threading.Thread(target=relay, name='installer-stop-relay-final-status')
+    thread.start()
+    started = time.monotonic()
+    try:
+        proof = user_relay.request_user_relay_stop(
+            tmp_path / 'relay', timeout_seconds=1,
+            lease_factory=lambda _path: Lease() if finished.is_set() else None,
+            marker_lease_factory=lambda _path: Lease(),
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        published.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert errors == []
+    assert json.loads(status_path.read_text(encoding='utf-8'))['status'] == 'STOPPED'
+    assert proof['status'] == 'ABSENT'
+    assert elapsed < 1

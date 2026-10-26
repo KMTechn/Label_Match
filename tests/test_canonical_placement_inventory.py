@@ -28,7 +28,7 @@ def test_duplicate_source_is_still_rejected_at_another_caller(tmp_path):
 
 
 @pytest.mark.parametrize('engine', ('powershell.exe', 'pwsh.exe'))
-@pytest.mark.parametrize('timeout', (5000, 15000))
+@pytest.mark.parametrize('timeout', (5000, 120000))
 def test_actual_shared_admission_preserves_exact_delegation(tmp_path, engine, timeout):
     result = run_functions(tmp_path, ROOT / 'INSTALL_THIS_PC.ps1', ['Enter-LabelCanonicalPlacement'], r'''
 $WriterFenceControlRoot='control';$WriterFenceSessionId='session';$WriterFenceAttemptId='attempt'
@@ -44,7 +44,7 @@ function Enter-LabelWriterDelegatedOperation {
 if([int]$env:LM_PLACEMENT_TIMEOUT -eq 5000){$lease=Enter-LabelCanonicalPlacement}
 else{
  $assignments=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and
-  $n.Left.Extent.Text -ceq '$writerFenceLease' -and $n.Right.Extent.Text -match '^Enter-LabelCanonicalPlacement'},$true))
+  $n.Left.Extent.Text -ceq '$writerFenceLease' -and $n.Right.Extent.Text -match 'Enter-LabelCanonicalPlacement -TimeoutMilliseconds'},$true))
  if($assignments.Count -ne 1){throw 'Actual placement admission call missing'}
  . ([scriptblock]::Create($assignments[0].Extent.Text));$lease=$writerFenceLease
 }

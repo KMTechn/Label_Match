@@ -300,6 +300,15 @@ function Assert-PlacementDataDowngrade([string]$Root) {
     if ($decision.allowed -ne $true) { throw ([string]$decision.message) }
 }
 
+function Write-LabelWaitElapsed([string]$Event,[long]$ElapsedMilliseconds,[string]$Status) {
+    try { [Console]::Error.WriteLine((([ordered]@{event=$Event;elapsed_ms=$ElapsedMilliseconds;status=$Status})|ConvertTo-Json -Compress)) } catch {}
+}
+function Invoke-LabelTimedWait([string]$Event,[scriptblock]$Action) {
+    $watch=[Diagnostics.Stopwatch]::StartNew();$status='ERROR'
+    try {$result=& $Action;$status=if($result -is [bool] -and -not $result){'UNKNOWN'}else{'COMPLETE'};return $result}
+    finally {$watch.Stop();Write-LabelWaitElapsed $Event $watch.ElapsedMilliseconds $status}
+}
+
 function Enter-LabelCanonicalPlacement([int]$TimeoutMilliseconds = 5000) {
     # Placement and supported removal share the same exact admission source.
     return Enter-LabelWriterDelegatedOperation -ControlRoot $WriterFenceControlRoot `
@@ -434,8 +443,8 @@ function Invoke-LabelPlacementLifecycleChild([scriptblock]$Action, [switch]$Acti
     finally {
         try {
             if ($released) {
-                $Lease.Value = Enter-LabelWriterAdmission -ControlRoot $WriterFenceControlRoot `
-                    -TimeoutMilliseconds 15000
+                $Lease.Value = Invoke-LabelTimedWait 'placement_admission' { Enter-LabelWriterAdmission -ControlRoot $WriterFenceControlRoot `
+                    -TimeoutMilliseconds 120000 }
             }
             if ($null -ne $scoped) {
                 $active = Assert-LabelWriterFenceOwner -ControlRoot $WriterFenceControlRoot `
@@ -894,7 +903,7 @@ function Write-LabelInstallerOwnerRecord([string]$InstallRoot, $Tuple = $null) {
             [string]$Tuple.replacement_transaction_id -cne $WriterFenceReplacementTransactionId) {
             throw 'INSTALLER_OWNER_TUPLE_DIFFERS'
         }
-    } else { $lease = Enter-LabelCanonicalPlacement -TimeoutMilliseconds 15000 }
+    } else { $lease = Invoke-LabelTimedWait 'placement_admission' { Enter-LabelCanonicalPlacement -TimeoutMilliseconds 120000 } }
     try {
         if ($null -ne $Tuple) { $active = $Tuple } else { $active = Read-LabelWriterFence $WriterFenceControlRoot }
         if ([string]$active.session_id -cne $WriterFenceSessionId -or
@@ -2841,7 +2850,7 @@ if (-not $testOverride) {
     if (-not $WriterFenceFunctionsPreloaded.IsPresent) {
         throw "Production placement requires the preloaded writer fence helper."
     }
-    $writerFenceLease = Enter-LabelCanonicalPlacement -TimeoutMilliseconds 15000
+    $writerFenceLease = Invoke-LabelTimedWait 'placement_admission' { Enter-LabelCanonicalPlacement -TimeoutMilliseconds 120000 }
 }
 
 $stagingRoot = ''
