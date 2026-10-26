@@ -1,6 +1,7 @@
 - 첫 업데이트 relay 파일 오류 격리(w9firstupdsub591): 원본 읽기·UTF-8·소스 전용 delta 쓰기 오류는 원본을 보존하고 다음 파일과 drain을 계속한다. 큐 DB·공용 저장소·디스크·역압·운영자 중지·설정·미분류 오류는 기존 전역 처리를 유지한다. 최초 실패 시각·이름·고정 코드를 영속 보관하고 기존 상태 줄과 새 웹 화면 서버 줄에 `기록 파일 n개 안 올라감`을 표시하며 성공 enqueue/dedupe 뒤, 또는 원본이 스캔 대상·디스크에서 사라졌을 때 해제한다(파일은 지우거나 옮기지 않음). 헤더 검사·서버 key·완결 줄/ACK 오프셋 규칙은 그대로다.
 - w9firstupdsub594: 설치기 원자 게시의 1초 기한에서 최초 Add-Type 준비를 제외하고 실제 파일 교체·재시도의 기한과 원래 실패를 보존한다(PS5.1·PS7 RED→GREEN).
 - w9firstupdsub594 Observe: 레인 ANSWER-5·6대로 형식 준비 20초와 준비 표지 뒤 질의·출력 10초를 나누며 기존 native ordinary/SID 판정·UNKNOWN·자식 회수를 유지한다.
+- w9firstupdsub673: stock ZIP의 파일 바이트·순서·시각·압축·외부 속성을 보존하는 저장소 빌드 단계 canonical 변환 도구와 1:1 SHA256 영수증을 추가했다. 125 stock은 재빌드하지 않고 변환하며, 126부터 공식 빌드 뒤 이 도구로 업데이트 꾸러미를 만든다. 도구 자체는 stock에 넣지 않는다([운영 절차](operations.md#canonical-update-packet)).
 - v2.0.125: 재서명 판 번호 올림 — 코디 판정 10/26 13:12 · 바이트가 다르면 번호도 다르게.
 - 10/27 sub-710: 기동 실패·조기 종료를 UNKNOWN 다시 기회 예산으로 처리하고, 초기 잠금 비경합의 상속 READY 창도 원 applied_at·rollback_at 마감을 유지한다. sub-708 P2-1·P2-2 재현과 정본 선언 write→check 근거: work/program/w9firstupd/sub-710/RESULT.md.
 - 10/27 sub-695: READY900 검토 P1-1 두 앱 도우미의 죽은 분류 제거·선언 갱신, P2-2 서명된 SHA만 영구 거절·공간 부족/설치판 오류 다시 기회; P2-1 CA 전용 failed-support PS 함수는 포장에 없음. RED→GREEN·선언·호출자 근거는 work/program/w9firstupd/sub-695/RESULT.md. P3 메모는 11/15 후속으로 보존한다.

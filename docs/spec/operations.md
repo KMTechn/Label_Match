@@ -1820,3 +1820,20 @@ relay가 direct-sync 자식을 기다리는 한도(RELAY_DIRECT_SYNC_PROCESS_TIM
 10/27 sub-690: 사용자 제거·교체 봉쇄·후보 정상 종료는 relay 자식 한도+30초(현재150초)를 공유하고, 후보 종료의 원 normal_stop_started_at과 감독 창도 같은 한도에 묶는다. 승인된 설치 대기는120초(relay 정지·봉쇄150초), 초과 시 기존 실패/UNKNOWN과 강제 종료0을 유지한다. 각 기다림의 종료 로그는 stderr의 event/elapsed_ms/status 한 줄이며 기존 stdout 증명과 실패 판정은 유지한다.
 bootstrap 정상 종료 뒤 relay 소유 재조회도 원 부모 마감 안의120초이며 생존 표본2초는 그대로다.
 WriteThrough 원자 교체의 냉간 타입 준비는 기존1000ms 교체 기한을 시작하기 전에 끝내며, 준비 오류는 그대로 전파한다.
+
+<a id="canonical-update-packet"></a>
+### stock ZIP에서 canonical 업데이트 꾸러미 만들기
+
+`tools/make_canonical_update_packet.py`는 저장소 `tools/`의 호스트 빌드 단계 도구이며 현장 PC로 가는 stock 꾸러미에는 넣지 않는다. 기존 stock ZIP을 재빌드하지 않고 각 파일 이름 앞에 `Label_Match/`를 붙인다. 입력 순서·파일 바이트·ZIP 날짜시각·압축 방식·외부 속성을 보존하고 같은 입력은 같은 ZIP 바이트를 만든다. 125 stock의 변환에도 이 도구를 쓰며, 126부터 공식 빌드 뒤 이 도구로 canonical 업데이트 꾸러미를 만든다. 서명·게시·설치·manifest 생성은 이 도구의 일이 아니다.
+
+```text
+python -B tools/make_canonical_update_packet.py --stock <stock.zip> --output <canonical.zip> --receipt <canonical.receipt.json>
+```
+
+세 경로는 서로 달라야 하며 출력 ZIP 또는 영수증이 이미 있으면 거절한다(대상이 끊어진 심볼릭 링크·디렉터리 링크·정션도 포함하며 원래 링크와 대상을 보존한다). 모든 입력 원소의 이름·CRC를 먼저 검증하고 ZIP을 exclusive-create한다. 출력 ZIP을 다시 읽어 원소 수·순서·메타데이터·SHA256을 대조한 뒤 영수증을 exclusive-create한다. 동시 생성 경쟁도 기존 파일을 덮어쓰지 않는다. 실패·중단으로 이미 만들어진 산출물은 자동 삭제하지 않으며 다음 실행도 거절한다. 담당자가 남은 파일을 확인해 정리하고 새 경로로 실행한다. 성공은 exit 0/stdout `CANONICAL_PACKET_OK`, 실패는 exit 2/stderr `CANONICAL_PACKET_ERROR`다.
+
+영수증은 UTF-8 JSON이며 `schema_version=1`, `stock`·`canonical`의 `{name,size_bytes,sha256}`, `entry_count`, 입력 순서의 `entries`를 기록한다. 각 행은 `{stock_name,canonical_name,stock_sha256,canonical_sha256}`이며 두 원소 SHA가 같아야 한다. 현재 시각과 절대 경로는 넣지 않는다.
+
+디렉터리·특수 파일·심볼릭 링크, 빈 ZIP·암호화 ZIP·이미 `Label_Match/`로 접두된 입력을 거절한다. 이름의 절대경로·백슬래시·빈/`.`/`..` 조각·콜론·제어문자·Windows 예약 이름·끝 공백/점·대소문자 중복·파일/하위 경로 충돌도 거절한다. 새 크기·시간 상한이나 최상위 이름 allowlist는 추가하지 않는다.
+
+앱의 `_validate_update_archive_contract` 검사에는 manifest의 `archive` 칸을 함께 제공한다. canonical 정책은 `format=zip`, `layout=canonical_portable`, `top_level=Label_Match`, `entrypoint=Label_Match/app/main.py`와 필수 `Label_Match/portable-manifest.json`, `runtime/python.exe`, `runtime/pythonw.exe`, `app/main.py`, `INSTALL_CANONICAL_PORTABLE.ps1`, `tools/apply_prepared_update.ps1`, `app/update-manifest-key-config.json`(모두 `Label_Match/` 아래)을 요구한다. 원 stock은 이 정책으로 거절되어야 한다. 이 archive 검사와 SHA 영수증은 서명·실제 업데이트 적용 수용을 대신하지 않는다.
