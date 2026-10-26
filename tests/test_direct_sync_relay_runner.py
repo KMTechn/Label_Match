@@ -1829,3 +1829,87 @@ def test_runner_oversized_csv_cell_is_not_a_csv_error_here_and_does_not_stop_the
     status = json.loads((tmp_path / "runtime" / "status.json").read_text(encoding="utf-8"))
     assert status["scan_file_error_count"] == 0
     assert len(relay_rows(tmp_path / "relay.sqlite3")) == 2 and len(drain_calls) == 2
+
+
+def _real_failure_round(tmp_path, capsys, monkeypatch, name):
+    """A real failing round: invalid UTF-8 in one original, a healthy one beside it."""
+    disable_scan_drain(monkeypatch, status="acked")
+    scan_dir = tmp_path / "sync"
+    healthy = write_label_csv(scan_dir, name="포장실작업이벤트로그_healthy.csv")
+    os.utime(healthy, (200, 200))
+    source = scan_dir / name
+    source.write_bytes(b"timestamp,worker_name,event,details\ninvalid,\xff,row,details\n")
+    os.utime(source, (100, 100))
+    args = runner_args(tmp_path, scan_dir=scan_dir)
+    main(args)
+    capsys.readouterr()
+    count, errors = _scan_error_count(tmp_path)
+    assert count == 1 and errors[0]["error_code"] == "source_csv_utf8_invalid"
+    return source, args, errors[0]
+
+
+def _clear_log_events(tmp_path):
+    log = tmp_path / "logs" / "relay.jsonl"
+    if not log.exists():
+        return []
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [row for row in rows if row.get("status") == "relay_source_failure_cleared"]
+
+
+def test_runner_logs_one_line_when_a_vanished_original_failure_entry_is_cleared(tmp_path, capsys, monkeypatch):
+    source, args, _failure = _real_failure_round(tmp_path, capsys, monkeypatch, "포장실작업이벤트로그_logv.csv")
+    assert _clear_log_events(tmp_path) == []
+    source.unlink()
+    main(args)
+    capsys.readouterr()
+    assert _scan_error_count(tmp_path) == (0, [])
+    events = _clear_log_events(tmp_path)
+    assert len(events) == 1
+    assert events[0]["event"] == "relay_source_failure_cleared"
+    assert events[0]["reason_code"] == "vanished" and events[0]["error_code"] == "source_csv_utf8_invalid"
+    text = json.dumps(events[0], ensure_ascii=False)
+    assert str(source.parent) not in text and source.name not in text
+    main(args)
+    capsys.readouterr()
+    assert len(_clear_log_events(tmp_path)) == 1
+
+
+def test_runner_failure_entry_stays_when_the_vanished_check_is_not_a_plain_missing_error(
+    tmp_path, capsys, monkeypatch
+):
+    source, args, failure = _real_failure_round(tmp_path, capsys, monkeypatch, "포장실작업이벤트로그_perm.csv")
+    source.rename(source.with_name("rotated.txt"))
+    real_lstat = os.lstat
+
+    def lstat(path, *a, **k):
+        if os.fspath(path) == str(source.resolve()):
+            raise PermissionError(errno.EACCES, "test lstat denied")
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr(runner.os, "lstat", lstat)
+    main(args)
+    capsys.readouterr()
+    count, errors = _scan_error_count(tmp_path)
+    assert count == 1 and errors[0]["first_failed_at"] == failure["first_failed_at"]
+    assert _clear_log_events(tmp_path) == []
+
+
+def test_runner_clearing_a_failure_entry_leaves_offsets_and_queue_rows_unchanged(tmp_path, capsys, monkeypatch):
+    source, args, _failure = _real_failure_round(tmp_path, capsys, monkeypatch, "포장실작업이벤트로그_ledger.csv")
+
+    def snapshot():
+        with sqlite3.connect(tmp_path / "relay.sqlite3") as conn:
+            return (
+                conn.execute("SELECT source_file_path, sent_byte_count, sent_prefix_sha256 "
+                             "FROM direct_sync_source_scan_state ORDER BY 1").fetchall(),
+                conn.execute("SELECT relay_id, status, source_file_path FROM direct_sync_relay_batches "
+                             "ORDER BY 1").fetchall(),
+            )
+
+    before = snapshot()
+    assert before[1]
+    source.unlink()
+    main(args)
+    capsys.readouterr()
+    assert _scan_error_count(tmp_path) == (0, [])
+    assert snapshot() == before
