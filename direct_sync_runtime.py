@@ -378,7 +378,8 @@ class CredentialInput:
 
 
 def prepare_credentials_from_json(path, *, app_root: Path, environ=None, reader=None,
-                                  installer_admission=False, source_inventory_sha256=None) -> CredentialInput:
+                                  installer_admission=False, source_inventory_sha256=None,
+                                  read_retry=None) -> CredentialInput:
     """Admit the locator, read it once, then admit its protected-file owner.
 
     Credential validation errors remain with the existing consumer/report path.
@@ -392,8 +393,10 @@ def prepare_credentials_from_json(path, *, app_root: Path, environ=None, reader=
     selected = resolve_data_path(path)
     check_user_data_open(app_root, (selected.parent,), environ=environ)
     try:
-        payload = (reader(selected) if reader is not None else
-                   _load_json_no_duplicate_keys(selected.read_text(encoding="utf-8-sig")))
+        def read_locator():
+            return (reader(selected) if reader is not None else
+                    _load_json_no_duplicate_keys(selected.read_text(encoding="utf-8-sig")))
+        payload = read_locator() if read_retry is None else read_retry(read_locator)
         if not isinstance(payload, dict):
             raise DirectSyncPushError("credential file must be a JSON object")
     except PermissionError as exc:

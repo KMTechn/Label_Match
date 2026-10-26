@@ -48,14 +48,15 @@ STATE_SAVE_LOCK_TIMEOUT_SECONDS = 10.0
 GENERAL_LOG_RETRY_BACKOFF_SECONDS = 1.0
 
 
-def read_recovery_file(path, *, journal_schema=None, current_state=False, expected_bytes=None):
+def read_recovery_file(path, *, journal_schema=None, current_state=False, expected_bytes=None, read_retry=None):
     """Return raw bytes, digest, and a validated value without modifying evidence."""
     result = {"verified": False, "raw": None, "sha256": "", "value": None,
               "reason": "missing", "entry": None}
     try:
         path = Path(path)
         try:
-            raw = read_checked_bytes(path)
+            raw = (read_checked_bytes(path) if read_retry is None
+                   else read_retry(lambda: read_checked_bytes(path)))
         except FileNotFoundError:
             return result
         result["raw"] = raw
@@ -87,7 +88,9 @@ def read_recovery_file(path, *, journal_schema=None, current_state=False, expect
             pending = list(decoded.get('scanner_audit_outbox', []))
             unresolved = []
             for digest in decoded.get('scanner_audit_segments', []):
-                segment = read_recovery_file(path.parent / '_scanner_audit_outbox' / (digest + '.json'))
+                segment = read_recovery_file(
+                    path.parent / '_scanner_audit_outbox' / (digest + '.json'),
+                    **({} if read_retry is None else {'read_retry': read_retry}))
                 try:
                     if not segment['verified'] or segment['sha256'] != digest:
                         raise ValueError('audit segment bytes are unverified')
@@ -129,6 +132,7 @@ class DataManager:
         current_state_filename,
         durable_event_types,
         csv_safe_cell,
+        read_retry=None,
     ):
         self._open_file = open_file
         self._clock = clock
@@ -172,7 +176,8 @@ class DataManager:
         self._last_state_write_failure = None
         self._state_write_failure_attempts = {}
         evidence = read_recovery_file(
-            os.path.join(save_dir, self._current_state_filename()), current_state=True)
+            os.path.join(save_dir, self._current_state_filename()), current_state=True,
+            **({} if read_retry is None else {'read_retry': read_retry}))
         self._audit_outbox = list((evidence['value'] or {}).get('scanner_audit_outbox', [])) if evidence['verified'] else []
         self._unverified_audit_segments = evidence.get('unverified_audit_segments', [])
         prefixes = (evidence['value'] or {}).get('scanner_audit_csv_prefixes', {}) if evidence['verified'] else {}
