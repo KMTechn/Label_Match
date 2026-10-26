@@ -320,7 +320,7 @@ def observe_script(helper, current, processes, *, diagnostic=None, target_pid=No
         "DIAGNOSTICPATH", str(diagnostic or processes.with_suffix(".diagnostic.json")).replace("'", "''"))
     query = query.replace("    # Query only app-related rows;",
                           adapters + "\n    # Query only app-related rows;", 1)
-    return (supervisor + "\nfunction Assert-LabelStartupNoReparsePoint {}\n" + query
+    return (supervisor + "\nfunction Initialize-LabelStartupUpdateProcessToken {}\nfunction Assert-LabelStartupNoReparsePoint {}\n" + query
             + "\nInvoke-LabelStartupReadOnlyQuery -QueryMode Observe -Root '"
             + str(current).replace("'", "''") + "' -OperatorSid '" + SID + "'\n")
 
