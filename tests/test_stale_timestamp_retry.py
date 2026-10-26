@@ -22,6 +22,9 @@ from tests.test_direct_sync_push import (
 )
 from tests.test_direct_sync_runtime import make_config
 from tools import direct_sync_relay_runner as runner
+from tests.test_direct_sync_relay_runner import (
+    isolated_data_generation_release, write_label_csv, runner_args, disable_scan_drain,
+)
 
 
 SERVER_DATE = 'Mon, 26 Oct 2026 05:00:00 GMT'
@@ -401,3 +404,36 @@ def test_send_band_priority_and_unknown_record_count():
     )
     app._logistics_oldest_pending_age = 600
     assert label._label_match_send_warning(app, {}) == ''
+
+
+def test_scan_publishes_record_count_from_terminal_interval(tmp_path, monkeypatch, capsys):
+    disable_scan_drain(monkeypatch)
+    source = write_label_csv(tmp_path / 'sync')
+    args = runner_args(tmp_path, scan_dir=source.parent)
+    assert runner.main(args) == 1
+    capsys.readouterr()
+    with sqlite3.connect(tmp_path / 'relay.sqlite3') as conn:
+        conn.execute("UPDATE direct_sync_relay_batches SET status='failed_permanent', last_error_code='invalid_signature'")
+    rows = list(csv.reader(io.StringIO(source.read_text(encoding='utf-8-sig'))))
+    with source.open('a', encoding='utf-8', newline='') as stream:
+        csv.writer(stream).writerow(rows[-1])
+    assert runner.main(args) != 0
+    capsys.readouterr()
+    payload = json.loads((tmp_path / 'runtime' / 'status.json').read_text(encoding='utf-8'))
+    assert payload['scan_terminal_blocked_count'] == 1
+    assert payload['scan_terminal_blocked_record_count'] == len(rows)
+
+
+def test_four_existing_warnings_and_one_send_band_fit_the_contract(monkeypatch):
+    payload = {'clock_error': {'status_code': 401, 'error_code': 'stale_timestamp'}}
+    app = SimpleNamespace(_relay_screen_status_payload=payload)
+    existing = [{'kind': 'warn', 'code': None, 'text': '기존 안내 ' + str(i)} for i in range(4)]
+    processor = SimpleNamespace(app=app, module=label, _dialogs=existing)
+    monkeypatch.setattr(bridge, '_pointer_pending', lambda _app: None)
+    alerts = bridge._alerts(processor, None, None)
+    assert len(alerts) == 5
+    assert all(item in alerts for item in existing)
+    contract = Path(__file__).resolve().parents[1] / 'ui' / 'parts' / 'app' / 'lm' / 'contract.json'
+    assert contract.stat().st_size < 1024 * 1024
+    schema = json.loads(contract.read_text(encoding='utf-8'))
+    assert schema['state']['properties']['alerts']['maxItems'] == 5
