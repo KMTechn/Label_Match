@@ -327,10 +327,15 @@ def test_scan_non_source_error_still_drains(tmp_path, monkeypatch, capsys):
         return original(config, **kwargs)
 
     monkeypatch.setattr(runner, 'enqueue_completed_source_file', enqueue)
-    runner.main(runner_args(tmp_path, scan_dir=sync_dir))
+    assert runner.main(runner_args(tmp_path, scan_dir=sync_dir)) == 2
     capsys.readouterr()
     assert attempts == [broken.name, healthy.name]
     assert len(calls) == 1
+    status = json.loads((tmp_path / 'runtime/status.json').read_text(encoding='utf-8'))
+    assert status['scan_status'] == 'enqueue_error'
+    assert status['scan_failed_source_file'] == str(broken)
+    assert status['scan_enqueue_errors'] == [
+        {'source_file': str(broken), 'error_code': 'direct_sync_source_file_error'}]
 
 
 @pytest.mark.parametrize('mode', ['observe', 'enforce'])
