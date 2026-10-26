@@ -257,8 +257,8 @@ def test_many_locked_general_rows_back_off_once_before_durable_and_audit(tmp_pat
         manager.close(timeout=5)
 
 
-@pytest.mark.parametrize('event', ['TRAY_COMPLETE', 'scanner-audit'])
-def test_durable_and_scanner_failures_keep_the_existing_sticky_flush_contract(tmp_path, event):
+@pytest.mark.parametrize('event', ['scanner-audit'])
+def test_scanner_failures_keep_the_existing_sticky_flush_contract(tmp_path, event):
     attempts = []
 
     def open_csv(*args, **kwargs):

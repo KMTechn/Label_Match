@@ -2713,7 +2713,8 @@ def test_data_manager_close_raises_writer_error(tmp_path, monkeypatch):
     module = load_label_match_module()
 
     def failing_open(*args, **kwargs):
-        raise OSError("forced write failure")
+        # Preappend OSError now retries; other writer failures remain sticky.
+        raise ValueError("forced write failure")
 
     monkeypatch.setattr(module, "open", failing_open, raising=False)
     manager = module.DataManager(str(tmp_path), "포장실", "worker-a", "PC01")
@@ -2727,7 +2728,8 @@ def test_data_manager_flush_raises_writer_error_before_close(tmp_path, monkeypat
     module = load_label_match_module()
 
     def failing_open(*args, **kwargs):
-        raise OSError("forced write failure")
+        # Preappend OSError now retries; other writer failures remain sticky.
+        raise ValueError("forced write failure")
 
     monkeypatch.setattr(module, "open", failing_open, raising=False)
     manager = module.DataManager(str(tmp_path), "포장실", "worker-a", "PC01")

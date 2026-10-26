@@ -23,6 +23,10 @@ class _LogCloseRequest:
     """Identify one close attempt so a cancelled sentinel cannot stop a later one."""
 
 
+class _DurableLogRetryPending(RuntimeError):
+    """A durable non-audit row is retained for a safe preappend retry."""
+
+
 from event_stream_policy import LOCAL_ONLY_EVENT_TYPES, local_only_event_log_path
 from protected_admin import (
     PROTECTED_ADMIN_OPERATOR_ID,
@@ -223,7 +227,7 @@ class DataManager:
                     with self._close_lock:
                         if log_item is not self._close_request:
                             continue
-                        if self.has_pending_log_retries:
+                        if self.has_pending_log_retries or self._has_pending_durable_log_retries:
                             self.log_queue.put(log_item)
                             continue
                         self._writer_stopping = True
@@ -305,7 +309,7 @@ class DataManager:
             except Exception as e:
                 failed_write = True
                 retry_write = (isinstance(e, OSError) and not append_started
-                               and self._is_general_log_item(log_item))
+                               and self._is_non_audit_log_item(log_item))
                 self._remember_log_write_failure(log_item, e, retry=retry_write)
                 if retry_write:
                     # Reuse the exact timestamp, worker, event and details.
@@ -334,14 +338,20 @@ class DataManager:
     @property
     def has_pending_log_retries(self):
         with self._log_retry_lock:
-            return bool(self._log_retry_items)
+            return any(self._is_general_log_item(item) for item in self._log_retry_items.values())
+    @property
+    def _has_pending_durable_log_retries(self):
+        with self._log_retry_lock:
+            return any(not self._is_general_log_item(item) for item in self._log_retry_items.values())
+    def _is_non_audit_log_item(self, log_item):
+        return log_item is not None and not self._audit_key(log_item)
     def _is_general_log_item(self, log_item):
-        return (log_item is not None and not self._audit_key(log_item)
+        return (self._is_non_audit_log_item(log_item)
                 and str(log_item[2] or '') not in self._durable_event_types())
     def _remember_log_write_failure(self, log_item, error, *, retry):
         with self._log_retry_lock:
             item_id = id(log_item)
-            if self._is_general_log_item(log_item):
+            if self._is_non_audit_log_item(log_item):
                 self._unresolved_log_items[item_id] = log_item
             if retry and item_id in self._log_retry_errors:
                 return  # Retain the first failure without an unbounded error list.
@@ -645,15 +655,20 @@ class DataManager:
         while self.log_queue.unfinished_tasks:
             with self._log_retry_lock:
                 if self.log_queue.unfinished_tasks <= len(self._log_retry_items):
-                    break  # Ordinary retry rows must not block saved work.
+                    break  # Surface durable retries below; ordinary rows do not block work.
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("Log writer did not flush before timeout")
             time.sleep(0.01)
         with self._log_retry_lock:
-            retry_errors = set(self._log_retry_errors.values())
-        if any(id(error) not in self._recovered_audit_errors and id(error) not in retry_errors
-               for error in self._writer_errors):
-            raise RuntimeError(f"Log writer failed: {self._writer_errors[-1]}")
+            retry_errors = {error_id for item_id, error_id in self._log_retry_errors.items()
+                            if self._is_general_log_item(self._log_retry_items[item_id])}
+            durable_retry_errors = set(self._log_retry_errors.values()) - retry_errors
+            unresolved = [error for error in self._writer_errors
+                          if id(error) not in self._recovered_audit_errors and id(error) not in retry_errors]
+        if unresolved:
+            error_type = (_DurableLogRetryPending
+                          if all(id(error) in durable_retry_errors for error in unresolved) else RuntimeError)
+            raise error_type(f"Log writer failed: {unresolved[-1]}")
         return True
     @contextmanager
     def _bounded_save_lock(self, lock, *, timeout_seconds=STATE_SAVE_LOCK_TIMEOUT_SECONDS):

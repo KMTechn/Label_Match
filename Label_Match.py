@@ -92,7 +92,7 @@ from label_match_product_host import (
     _default_product_root, dispatch_product_mode, requires_bootstrap_integrity,
 )
 from writer_session_fence import WriterFenceError, writer_admission, writer_sink
-from label_data_manager import DataManager as _DataManager, read_recovery_file
+from label_data_manager import DataManager as _DataManager, read_recovery_file, _DurableLogRetryPending
 from label_recovery_schema import require_recovery_record, valid_recovery_archive_path
 from label_admin_pin import (
     AdminPinClient, AdminPinError, AdminPinIntentStore,
@@ -6936,6 +6936,7 @@ class Label_Match(tk.Tk):
             return None
         if self._process_app_stop_request():
             return None
+        self._resume_durable_log_retry()
         context = self.__dict__.get("direct_sync_bootstrap_context") or {}
         path = str(context.get("runtime_status_path") or "")
         try:
@@ -23389,6 +23390,20 @@ class Label_Match(tk.Tk):
             self._storage_root_failure = True
             return False
 
+    def _resume_durable_log_retry(self):
+        pending = self.__dict__.get('_durable_log_retry_notice')
+        if pending is None:
+            return
+        notice, manager, action = pending
+        if (self.__dict__.get('_workflow_blocking_notice') is not notice
+                or self.__dict__.get('data_manager') is not manager):
+            self.__dict__.pop('_durable_log_retry_notice', None)
+            return
+        if manager._has_pending_durable_log_retries:
+            return
+        self.__dict__.pop('_durable_log_retry_notice', None)
+        action()
+
     def _publish_durable_commit_block(self, error, *, retry_action=None):
         """Hard-block the worker surface without exposing storage internals."""
 
@@ -23464,6 +23479,10 @@ class Label_Match(tk.Tk):
             if callable(retry_action)
             else self._retry_blocked_submission
         )
+        if (isinstance(error, _DurableLogRetryPending)
+                or isinstance(error, Failure) and error.cause_type == '_DurableLogRetryPending'):
+            self._durable_log_retry_notice = (
+                notice, self.__dict__.get('data_manager'), self._workflow_notice_action)
         self._workflow_notice_action_text = (
             "다시 확인" if policy_notice and not lease_failure else "저장 재시도"
         )
