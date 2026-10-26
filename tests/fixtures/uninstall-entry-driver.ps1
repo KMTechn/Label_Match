@@ -26,6 +26,7 @@ function Fixture-Elevated { }
 function Fixture-RunKey { return $null }
 function Fixture-NoTasks { return @() }
 function Fixture-NoRetirement { return $null }
+function Fixture-WorkerProfile {param([string]$Sid) return @{exists=$true;root=(Join-Path $global:RemovalTestRoot 'worker-profile')} }
 # Alias precedence replaces only native/ACL/registry seams. Product definitions,
 # hashes, redaction, task identity, transition and removal execute from the file.
 foreach($name in @('Set-HardenedCodeAcl','Assert-HardenedCodeAcl','Assert-ProtectedCodeAncestors')) {
@@ -35,6 +36,13 @@ Set-Alias -Name Assert-AlreadyElevated -Value Fixture-Elevated -Scope Global
 Set-Alias -Name Open-LabelRunKey -Value Fixture-RunKey -Scope Global
 Set-Alias -Name Get-LabelSupportedStartupTasks -Value Fixture-NoTasks -Scope Global
 Set-Alias -Name Get-OwnedLegacyTaskRetirementSnapshot -Value Fixture-NoRetirement -Scope Global
+Set-Alias -Name Get-LabelRemovalWorkerProfile -Value Fixture-WorkerProfile -Scope Global
+# Supply a real current-user receipt; only native profile discovery is isolated.
+$workerStatus=Join-Path $Root 'worker-profile/AppData/Local/KMTech/DirectSync/label_match/status'
+[void][IO.Directory]::CreateDirectory($workerStatus)
+[IO.File]::WriteAllText((Join-Path $workerStatus 'current_user_removal.json'),
+    (@{operator_sid='S-1-5-21-111-222-333-1001';status='PASS_DATA_PRESERVED';
+        machine_code_root=(Join-Path $Root 'current')} | ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
 function Get-ScheduledTask {param($TaskName,$TaskPath,$ErrorAction)
     $global:RemovalTestEvents.Add('query')
     if($global:RemovalTestScenario -in @('query','query-sidecar-failure')) {throw [IO.IOException]::new('SYNTHETIC_NATIVE_CAUSE_409')}
@@ -52,11 +60,19 @@ function Disable-ScheduledTask {param($TaskName,$TaskPath,$ErrorAction)
         $task.Xml=[regex]::Replace($task.Xml,'(<(?:\w+:)?Enabled>)true(</(?:\w+:)?Enabled>)','$1false$2')
     }
 }
+function Enable-ScheduledTask {param($TaskName,$TaskPath,$ErrorAction)
+    $global:RemovalTestEvents.Add('enable')
+    foreach($task in $global:RemovalTestTasks) {
+        $task.Settings.Enabled=$true
+        $task.Xml=[regex]::Replace($task.Xml,'(<(?:\w+:)?Enabled>)false(</(?:\w+:)?Enabled>)','$1true$2')
+    }
+}
 function Register-ScheduledTask {throw 'Fixture refuses task registration.'}
 function Unregister-ScheduledTask {throw 'Fixture refuses task deletion.'}
 function Stop-ScheduledTask {throw 'Fixture refuses task stopping.'}
 function Start-Process {throw 'Fixture refuses process launch.'}
-function Get-CimInstance { [pscustomobject]@{ProcessId=$PID;ExecutablePath='fixture';CommandLine='fixture'} }
+function Get-CimInstance { [pscustomobject]@{ProcessId=$PID;ParentProcessId=0;
+    CreationDate=[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime();ExecutablePath='fixture';CommandLine='fixture'} }
 function Get-ItemProperty { [pscustomobject]@{MachineGuid='R4_SYNTHETIC_MACHINE'} }
 function Set-Acl {param($LiteralPath,$AclObject,$ErrorAction) Assert-FixtureBoundary $LiteralPath}
 function New-Object {
@@ -85,6 +101,17 @@ function Fixture-SidecarFailure {param($Text) throw [IO.IOException]::new('Synth
 if($Scenario -eq 'query-sidecar-failure') {
     Set-Alias -Name Write-KmtechProtectedFailureSidecar -Value Fixture-SidecarFailure -Scope Global
 }
+# Entry loading is verified with the production native operation and deadline.
+# Cold compiler timing is retained separately (lane ANSWER-5 / sub-690).
+if(-not ('KMTechStartupUpdateAtomicFile' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class KMTechStartupUpdateAtomicFile {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ public static extern bool MoveFileExW(string source, string target, uint flags);
+}
+'@
+}
 $entry=Join-Path $Repo 'INSTALL_THIS_PC.ps1'
 $lines=[IO.File]::ReadAllLines($entry)
 $line=0
@@ -97,7 +124,7 @@ if(-not $line) {throw 'Fixture entry seam is unavailable.'}
 $breakpoint=Set-PSBreakpoint -Script $entry -Line $line -Action {
     Set-Variable -Name ExpectedInstallRoot -Value (Join-Path $global:RemovalTestRoot 'current') -Scope 1
 }
-$arguments=@{Uninstall=$true;InstallRoot=(Join-Path $Root 'current');OperatorLocalAppDataRoot=$Root}
+$arguments=@{Uninstall=$true;InstallRoot=(Join-Path $Root 'current');OperatorLocalAppDataRoot=$Root;WorkerAccount='S-1-5-21-111-222-333-1001'}
 if($Scenario -eq 'elevation-log') {$arguments.ElevationLogPath=Join-Path $Root 'elevation.jsonl'}
 try { & $entry @arguments; $entryExit=$LASTEXITCODE }
 finally {

@@ -15,7 +15,7 @@ from tests.test_supported_removal_convergence import _r5_junction
 @pytest.fixture
 def tmp_path(tmp_path_factory):
     # Keep routine NTFS probes below MAX_PATH; long-path coverage is separate.
-    root = tmp_path_factory.getbasetemp().parents[1] / "p" / uuid.uuid4().hex[:6]
+    root = tmp_path_factory.getbasetemp().parent / "p" / uuid.uuid4().hex[:6]
     root.mkdir(parents=True)
     return root
 
@@ -220,9 +220,9 @@ def test_metadata_changed_after_planning_stays_in_single_removal(tmp_path, monke
     inventory = artifact / 'bootstrap-integrity.json'
     expected = inventory.read_bytes() + b' '
     script = helper.REMOVAL_SCRIPT.replace(
-        '    Microsoft.PowerShell.Management\\Move-Item @PSBoundParameters',
-        '''    Microsoft.PowerShell.Management\\Move-Item @PSBoundParameters
-    if ((Split-Path -Leaf $LiteralPath) -ceq 'main.py') {
+        '    & $actualAtomicReplace @PSBoundParameters',
+        '''    & $actualAtomicReplace @PSBoundParameters
+    if ((Split-Path -Leaf $Source) -ceq 'main.py') {
         [IO.File]::AppendAllText((Join-Path $Root 'current/bootstrap-integrity.json'),' ')
     }''')
     # This case measures the before-move recheck in one real invocation.
@@ -287,19 +287,24 @@ def test_hash_becomes_unreadable_after_planning_keeps_retry_inventory(tmp_path, 
     inventory = artifact / ('manifest.json' if slot == 'incoming' else 'bootstrap-integrity.json')
     locked = inventory
     raw = inventory.read_bytes()
+    target = '    & $actualAtomicReplace @PSBoundParameters'
+    assert helper.REMOVAL_SCRIPT.count(target) == 1
     script = helper.REMOVAL_SCRIPT.replace(
-        '    Microsoft.PowerShell.Management\\Move-Item @PSBoundParameters',
-        '''    Microsoft.PowerShell.Management\\Move-Item @PSBoundParameters
-    if ($null -eq $script:lateStream -and (Split-Path -Leaf $LiteralPath) -cin @('main.py','pythonw.exe','packet.zip')) {
+        target,
+        '''    & $actualAtomicReplace @PSBoundParameters
+    if ($null -eq $script:lateStream -and (Split-Path -Leaf $Source) -cin @('main.py','pythonw.exe','packet.zip')) {
         $script:lateStream=[IO.File]::Open((Join-Path $Root '__LOCKED__'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
     }''')
     script = script[:script.index('$current=Join-Path $Root')] + r'''
-$script:lateStream=$null;$firstError=''
-try { [void](& $invokeRemoval) } catch { $firstError=$_.Exception.Message }
+$script:lateStream=$null;$firstError='';$firstCauses=@()
+try { [void](& $invokeRemoval) } catch {
+    $firstError=$_.Exception.Message
+    for($cause=$_.Exception;$null -ne $cause;$cause=$cause.InnerException){$firstCauses+=$cause.Message}
+}
 $firstMarker=Test-Path -LiteralPath (Join-Path $Root 'removed.json')
 $firstInventory=Test-Path -LiteralPath (Join-Path $Root '__INVENTORY__')
 if ($null -ne $script:lateStream) { $script:lateStream.Dispose() }
-@{status='PASS';first_error=$firstError;first_marker=$firstMarker;first_inventory=$firstInventory} | ConvertTo-Json -Compress
+@{status='PASS';first_error=$firstError;first_causes=$firstCauses;first_marker=$firstMarker;first_inventory=$firstInventory} | ConvertTo-Json -Compress
 '''
     script = script.replace('__LOCKED__', locked.relative_to(root).as_posix())
     script = script.replace('__INVENTORY__', inventory.relative_to(root).as_posix())

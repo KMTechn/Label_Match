@@ -21,14 +21,17 @@ def tmp_path(tmp_path_factory):
 REMOVAL_SCRIPT = r"""
 param([string]$Repo,[string]$Root,[string]$Cut='', [string]$Install='True')
 $ErrorActionPreference='Stop'
+. (Join-Path $Repo 'tools/bootstrap_integrity.ps1')
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 $tokens=$null;$errors=$null
-$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $Repo 'INSTALL_THIS_PC.ps1'),[ref]$tokens,[ref]$errors)
+$removalSource=if($env:LM_CONVERGENT_SOURCE){$env:LM_CONVERGENT_SOURCE}else{Join-Path $Repo 'INSTALL_THIS_PC.ps1'}
+$ast=[Management.Automation.Language.Parser]::ParseFile($removalSource,[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'source parse failed' }
 $names=@('Get-LabelVerifiedRemovalProcessChain','Test-LabelRemovalProcessReferencesRoot','Test-LabelRemovalCanonicalOwner','Get-LabelRemovalNativeProcessStartTime','Get-StrictFullPath','Test-SamePath','Get-LabelRemovalIoPath','Assert-LabelRemovalBoundary',
     'Assert-LabelRemovalQuiescent','Remove-LabelScheduledTasks', 'Get-LabelSupportedStartupTasks',
     'Test-LabelRemovalFile','Get-LabelArtifactFilePlan',
-    'Get-LabelRemovalArtifacts','Remove-LabelEmptiedParents','Invoke-LabelConvergentRemoval')
+    'Get-LabelRemovalArtifacts','Remove-LabelEmptiedParents','Invoke-LabelConvergentRemoval',
+    'Get-LabelOfficialLegacyTaskSnapshot','Get-LabelOfficialLegacyTaskExpectation','Invoke-LabelAtomicReplace')
 $functions=$ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in $names},$true)
 if ($functions.Count -ne $names.Count) { throw 'missing removal functions' }
 foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }
@@ -38,7 +41,9 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public class RemovalTask {
     public string Xml="<Task><Fixture/></Task>";
+    public bool Enabled=true;
     public string GetSecurityDescriptor(int flags) { return "fixture-sddl"; }
+    public void SetSecurityDescriptor(string sddl,int flags) { }
     public void Stop(int flags) { }
 }
 public class RemovalFolder {
@@ -74,7 +79,18 @@ $testOverride=$true
 function Get-LabelSupportedStartupTasks { param($Root)
     foreach ($name in @($folder.Tasks)) { [pscustomobject]@{TaskName=$name} }
 }
+function Get-ScheduledTask { return @() }
 function Get-OwnedLegacyTaskRetirementSnapshot { return $null }
+function Register-ScheduledTask {
+    param($TaskName,$Xml,[switch]$Force,$ErrorAction)
+    [void]$folder.RegisterTask($TaskName,$Xml,6,$null,$null,0,'fixture-sddl')
+}
+function Enable-ScheduledTask { throw 'Unexpected task enable in the startup-only fixture' }
+function Disable-ScheduledTask { throw 'Unexpected task disable in the startup-only fixture' }
+function Assert-LabelStartupUpdateTaskDefinition {
+    param([xml]$Actual,[xml]$Expected)
+    if($Actual.OuterXml -cne $Expected.OuterXml){throw 'Fixture task definition differs'}
+}
 function Get-CimInstance {
     if ($script:processScenario -eq 'process-unknown') { return @() }
     if ($script:processScenario -eq 'process-live') { return [pscustomobject]@{ProcessId=124;ParentProcessId=0;CreationDate=[datetime]::UtcNow;ExecutablePath=(Join-Path $Root 'versions\fixture\runtime\python.exe');CommandLine='fixture'} }
@@ -93,6 +109,14 @@ function Move-Item {
     Microsoft.PowerShell.Management\Move-Item @PSBoundParameters
     if ((Split-Path -Leaf $LiteralPath) -ceq $script:cut -or
         (Split-Path -Leaf (Split-Path -Parent $LiteralPath)) -ceq $script:cut) { throw 'injected after rename' }
+}
+# Inject after the real atomic rename, rather than substituting file I/O.
+$actualAtomicReplace=(Get-Command Invoke-LabelAtomicReplace -CommandType Function).ScriptBlock
+function Invoke-LabelAtomicReplace {
+    param([string]$Source,[string]$Destination,[AllowNull()]$Backup=$null,[string]$Mode='Move')
+    if($script:cut -ceq 'metadata-before' -and (Split-Path -Leaf $Source) -ceq 'bootstrap-integrity.json'){throw 'injected before metadata'}
+    & $actualAtomicReplace @PSBoundParameters
+    if((Split-Path -Leaf $Source) -ceq $script:cut -or (Split-Path -Leaf (Split-Path -Parent $Source)) -ceq $script:cut){throw 'injected after rename'}
 }
 $current=Join-Path $Root 'current'
 $interrupted=$false

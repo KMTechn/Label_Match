@@ -35,6 +35,8 @@ function Invoke-LabelWorkerShortcutOperation {
     if($NextFailure -ceq 'worker'){throw $script:second}
 }
 function Invoke-LabelConvergentRemoval {
+    param($InstallRoot,$TaskFolder,$WorkerPartProof,$AdditionalPreimageFiles,$BeforeRemoval,$AfterRemoval)
+    if($null -ne $BeforeRemoval){& $BeforeRemoval}
     $script:events.Add('core')
     if($NextFailure -ceq 'core'){throw $script:second}
     return @{evidence_root=$FixtureRoot;retained_paths=@()}
@@ -46,16 +48,8 @@ if($null -eq $entry){throw 'Production uninstall branch absent'}
 $failure=$null;$output=@()
 try{$output=@(Invoke-Expression $entry.Extent.Text)}catch{$failure=$_}
 if($null -eq $failure){throw 'Emergency cause was not preserved'}
-if($NextFailure -ceq 'none'){
-    if($failure.Exception -ne $script:original){throw 'Emergency cause was not preserved'}
-}else{
-    $aggregate=$failure.Exception.GetBaseException()
-    if($aggregate -isnot [AggregateException] -or
-       -not $aggregate.InnerExceptions.Contains($script:original) -or
-       -not $aggregate.InnerExceptions.Contains($script:second)){throw 'Combined causes were not preserved'}
-}
-$wanted=if($NextFailure -ceq 'worker'){'emergency,worker'}else{'emergency,worker,core'}
-if(($script:events -join ',') -cne $wanted){throw 'Later uninstall stages did not run'}
+if($failure.Exception -ne $script:original){throw 'Emergency cause was not preserved'}
+if(($script:events -join ',') -cne 'emergency'){throw 'A later removal stage ran after emergency failure'}
 if(@($output|Where-Object {$_ -like '*PASS*'}).Count){throw 'False uninstall success'}
 if(-not[IO.File]::Exists($linkPath)){throw 'Injected refusal did not retain actual shortcut'}
 'PASS'
