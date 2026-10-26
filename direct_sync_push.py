@@ -2199,10 +2199,13 @@ def claim_next_relay_batch(
                 FROM direct_sync_relay_batches
                 WHERE relay_id = ?
                   AND status IN (?, ?)
-                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?
+                       OR (status = ? AND last_error_code = 'stale_timestamp'
+                           AND julianday(updated_at) > julianday(?)))
                 LIMIT 1
                 """,
-                (target_relay_id, RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, now),
+                (target_relay_id, RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, now,
+                 RELAY_STATUS_RETRY_WAIT, now),
             ).fetchone()
         else:
             row = conn.execute(
@@ -2210,11 +2213,14 @@ def claim_next_relay_batch(
                 SELECT *
                 FROM direct_sync_relay_batches
                 WHERE status IN (?, ?)
-                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?
+                       OR (status = ? AND last_error_code = 'stale_timestamp'
+                           AND julianday(updated_at) > julianday(?)))
                 ORDER BY created_at, relay_id
                 LIMIT 1
                 """,
-                (RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, now),
+                (RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, now,
+                 RELAY_STATUS_RETRY_WAIT, now),
             ).fetchone()
         if row is None:
             conn.rollback()
