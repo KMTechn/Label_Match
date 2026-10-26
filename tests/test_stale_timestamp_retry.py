@@ -343,8 +343,10 @@ def test_scan_non_source_error_still_drains(tmp_path, monkeypatch, capsys, faile
                        for source in sources[:failed_count]]
     assert status['scan_enqueue_errors'] == expected_errors
     events = [json.loads(line) for line in (tmp_path / 'logs/relay.jsonl').read_text(encoding='utf-8').splitlines()]
-    logged = [error for event in events for error in event.get('scan_enqueue_errors', [])]
+    logged = [error for event in events if event.get('event') == 'scan_enqueue_error'
+              for error in event.get('scan_enqueue_errors', [])]
     assert logged == expected_errors
+    assert events[-1]['scan_enqueue_errors'] == expected_errors
 
 
 @pytest.mark.parametrize('mode', ['observe', 'enforce'])
