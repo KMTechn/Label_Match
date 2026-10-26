@@ -32,6 +32,7 @@ USER_RELAY_RUN_VALUE = "KMTech.LabelMatch.Relay"
 USER_RELAY_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 DEFAULT_RETRY_INTERVAL_SECONDS = 30
 MAX_RETRY_INTERVAL_SECONDS = 60
+RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS = 120
 USER_RELAY_STATUS_NAME = "label_match_user_relay.json"
 USER_RELAY_STOP_NAME = "label_match_user_relay.stop.json"
 APP_STOP_NAME = "label_match_app.stop.json"
@@ -528,7 +529,7 @@ def run_session_direct_sync_once(
     direct_sync_root: str | os.PathLike[str],
     scan_source_dir: str | os.PathLike[str],
     reason: str,
-    timeout_seconds: int = 45,
+    timeout_seconds: int = RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS,
     tls_ca_bundle_path: str | os.PathLike[str] = "",
     runtime_status_path: str | os.PathLike[str] = "",
     log_path: str | os.PathLike[str] = "",
