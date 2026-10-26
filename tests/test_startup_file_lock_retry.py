@@ -8,6 +8,12 @@ import pytest
 import Label_Match as app_module
 
 
+@pytest.fixture(autouse=True)
+def fresh_startup_process_budget(monkeypatch):
+    import logistics_runtime_profile as profiles
+    monkeypatch.setattr(profiles, '_startup_read_retry', profiles.StartupReadRetry(), raising=False)
+
+
 def locked(kind):
     if kind == 'permission':
         return PermissionError('locked')
@@ -184,8 +190,9 @@ def test_scan_reload_locked_reads_wait_for_the_next_scan_without_sleep(monkeypat
     assert app._retry_locked_item_catalog() is False
 
 
+@pytest.mark.parametrize('preconstructor', [False, True])
 @pytest.mark.parametrize('release', [True, False])
-def test_constructor_template_read_shares_the_profile_startup_budget(monkeypatch, tmp_path, release):
+def test_constructor_template_read_shares_the_profile_startup_budget(monkeypatch, tmp_path, release, preconstructor):
     import json
     from pathlib import Path
     import logistics_runtime_profile as profiles
@@ -200,7 +207,7 @@ def test_constructor_template_read_shares_the_profile_startup_budget(monkeypatch
     settings_path = tmp_path / 'config' / 'settings.json'
     original_bytes = Path.read_bytes
     original_open = open
-    profile_reads = Mock(side_effect=[locked(32), locked(32), b'{}'])
+    profile_reads = Mock(side_effect=[locked(32), locked(32), b'{}', b'{}'])
     template_reads = Mock(side_effect=([locked(32), None] if release else locked(32)))
     sleeps = Mock()
     writes = []
@@ -245,11 +252,13 @@ def test_constructor_template_read_shares_the_profile_startup_budget(monkeypatch
     monkeypatch.setattr(app_module.Label_Match, '_update_save_directory', lambda self: setattr(self, 'save_directory', self.custom_save_path))
     monkeypatch.setattr(app_module, '_label_match_local_log_id', lambda: 'test-worker')
     monkeypatch.setattr(app_module, '_open_label_data_manager', data_manager)
+    if preconstructor:
+        assert profiles._read_profile(profile_path) == {}
     app = app_module.Label_Match.__new__(app_module.Label_Match)
     with pytest.raises(StartupReachedDataManager if release else OSError):
         app_module.Label_Match.__init__(app)
     assert sleeps.call_args_list == [((1,),)] * 3
-    assert profile_reads.call_count == 3
+    assert profile_reads.call_count == (4 if preconstructor else 3)
     assert template_reads.call_count == 2
     assert len(writes) == int(release)
     assert settings_path.exists() is release

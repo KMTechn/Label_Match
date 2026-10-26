@@ -313,6 +313,8 @@ from phs_label_workflow import (
 )
 from logistics_runtime_profile import (
     StartupReadRetry,
+    startup_read_retry,
+    finish_startup_read_retry,
     legacy_label_transition_enabled,
     logistics_runtime_required,
 )
@@ -5069,7 +5071,7 @@ class Label_Match(tk.Tk):
         # Resolve/decrypt the protected machine profile before Tcl, but let the
         # durable outbox own network retries so recovery stays available while
         # the server is unreachable.
-        self.__dict__['_startup_read_retry'] = StartupReadRetry()
+        self.__dict__['_startup_read_retry'] = startup_read_retry()
         startup_package_logistics_client = label_match_startup_package_client(
             read_retry=self.__dict__['_startup_read_retry'])
         startup_logistics_required = logistics_runtime_required()
@@ -5408,6 +5410,7 @@ class Label_Match(tk.Tk):
                 on_admitted=self._on_deferred_validation_lane_admitted,
                 submit_task=self._submit_deferred_validation_lane_task,
             )
+            finish_startup_read_retry()
             _label_match_startup_trace("app_init_complete")
         except BaseException as error:
             try:
@@ -25031,6 +25034,7 @@ def _run_label_match_application(*, relay_reuse_report=None, verified_hold=None)
     except Exception:
         pass
     app = Label_Match(startup_report=relay_reuse_report) if window_first else Label_Match()
+    finish_startup_read_retry()
     screen_cleanup = False
     try:
         if relay_reuse_report is not None:

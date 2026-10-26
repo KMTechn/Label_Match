@@ -57,6 +57,7 @@ def test_startup_profile_lock_preserves_configuration_error(monkeypatch, kind, r
 def test_runtime_profile_reader_has_no_implicit_wait(monkeypatch):
     sleeps = Mock()
     monkeypatch.setattr(profiles.time, 'sleep', sleeps)
+    profiles.finish_startup_read_retry()
     path = Mock(read_bytes=Mock(side_effect=PermissionError('locked')))
     with pytest.raises(profiles.LogisticsRuntimeConfigurationError):
         profiles._read_profile(path)
