@@ -312,9 +312,11 @@ def test_clock_band_is_yellow_has_no_action_and_has_send_priority(monkeypatch, k
 
 
 @pytest.mark.parametrize('phase', ['upload', 'lease'])
+@pytest.mark.parametrize('mode', ['observe', 'enforce'])
 @pytest.mark.parametrize('status', [408, 429, 500, 501, 505, 599])
-def test_uncommitted_transient_http_is_not_terminal(queued, monkeypatch, phase, status):
+def test_uncommitted_transient_http_is_not_terminal(queued, monkeypatch, phase, mode, status):
     database, _, credentials = queued
+    monkeypatch.setattr(push, 'client_runtime_lease_mode', lambda _credentials: mode)
 
     class Session:
         def post(self, *_args, **_kwargs):
@@ -541,3 +543,66 @@ def test_public_write_failure_keeps_runtime_status_and_since(tmp_path, monkeypat
     later = runtime._write_runtime_status(config, status='idle', disk={}, queue={})
     assert later['upload_block_since'] == status['upload_block_since']
     assert caplog.text.count('upload_block_status_write_failed') == 2
+
+
+@pytest.mark.parametrize('failure_point', ['client_setup', 'spool_read'])
+def test_local_oserror_before_post_retries_the_same_batch(queued, tmp_path, monkeypatch, failure_point):
+    database, row, credentials = queued
+    spool_before = Path(row.spooled_file_path).read_bytes()
+    session = SequenceFakeSession([accepted(row)])
+
+    def refused(*_args, **_kwargs):
+        error = PermissionError('synthetic local sharing failure')
+        error.winerror = 32
+        raise error
+
+    with monkeypatch.context() as patch:
+        if failure_point == 'client_setup':
+            patch.setattr(requests, 'Session', refused)
+        else:
+            patch.setattr(push, '_read_file_digest', refused)
+        first = push.drain_one_relay_batch(
+            db_path=database, credentials=credentials,
+            session=None if failure_point == 'client_setup' else session,
+            status_dir=tmp_path / 'status',
+        )
+    assert first.retryable is True
+    assert queue_row(database)['status'] == 'retry_wait'
+    assert queue_row(database)['next_attempt_at']
+    assert len(session.calls) == 0
+    due(database)
+    second = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials, session=session,
+    )
+    assert second.success is True
+    assert queue_row(database)['relay_id'] == row.relay_id
+    assert queue_row(database)['attempt_count'] == 2
+    assert Path(row.spooled_file_path).read_bytes() == spool_before
+
+
+def test_oserror_after_response_retains_operator_review(queued, tmp_path, monkeypatch):
+    database, row, credentials = queued
+    session = SequenceFakeSession([accepted(row)])
+
+    def failed_artifact(*_args, **_kwargs):
+        raise PermissionError('synthetic failure after the response')
+
+    monkeypatch.setattr(push, '_with_upload_status_artifact', failed_artifact)
+    result = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials, session=session,
+        status_dir=tmp_path / 'status',
+    )
+    assert len(session.calls) == 1
+    assert result.retryable is False
+    assert queue_row(database)['status'] == 'operator_review'
+
+
+def test_enforce_other_401_keeps_legacy_review(queued, monkeypatch):
+    database, _, credentials = queued
+    monkeypatch.setattr(push, 'client_runtime_lease_mode', lambda _credentials: 'enforce')
+    result = push.drain_one_relay_batch(
+        db_path=database, credentials=credentials,
+        session=SequenceFakeSession([refusal('invalid_signature')]),
+    )
+    assert result.retryable is False
+    assert queue_row(database)['status'] == 'operator_review'
