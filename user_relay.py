@@ -1252,11 +1252,14 @@ def _fresh_persistent_owner(
 def _log_wait_elapsed(event: str, started: float, status: str) -> None:
     """Emit only fixed diagnostic fields; diagnostics cannot change the result."""
     try:
+        stream = sys.stderr
+        if stream is None:
+            return
         print(json.dumps({
             'event': event,
             'elapsed_ms': max(0, int((time.monotonic() - started) * 1000)),
             'status': status,
-        }, separators=(',', ':')), file=sys.stderr)
+        }, separators=(',', ':')), file=stream)
     except Exception:
         pass
 

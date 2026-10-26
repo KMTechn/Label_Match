@@ -104,6 +104,15 @@ def test_explicit_request_only_does_not_wait(tmp_path):
     assert clock.now == 0
 
 
+def test_missing_stderr_never_redirects_diagnostics_to_stdout(monkeypatch, capsys):
+    helper = stop_namespace(Clock()).get('_log_wait_elapsed')
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'stderr', None)
+        if helper is not None:
+            helper('diagnostic_stream_test', 0, 'ABSENT')
+    assert capsys.readouterr().out == ''
+
+
 def test_callers_keep_the_shared_default_for_removal_and_containment():
     tree = ast.parse((ROOT / 'current_user_onboarding.py').read_text(encoding='utf-8-sig'))
     names = {'remove_current_user_setup', 'restore_current_user_lifecycle_after_replacement'}
