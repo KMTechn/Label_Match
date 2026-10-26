@@ -437,3 +437,98 @@ def test_four_existing_warnings_and_one_send_band_fit_the_contract(monkeypatch):
     assert contract.stat().st_size < 1024 * 1024
     schema = json.loads(contract.read_text(encoding='utf-8'))
     assert schema['state']['properties']['alerts']['maxItems'] == 5
+
+
+def test_record_count_is_unknown_when_source_changes_during_read(tmp_path, monkeypatch):
+    source = tmp_path / 'events.csv'
+    source.write_text('event,value\nfirst,1\nsecond,2\n', encoding='utf-8')
+    original_reader = runner.csv.reader
+
+    def changing_reader(*args, **kwargs):
+        for index, row in enumerate(original_reader(*args, **kwargs)):
+            if index == 1:
+                with source.open('a', encoding='utf-8') as stream:
+                    stream.write('third,3\n')
+            yield row
+
+    monkeypatch.setattr(runner.csv, 'reader', changing_reader)
+    assert runner._count_blocked_source_records(source, 0) is None
+
+
+def public_status(tmp_path):
+    return tmp_path / 'local' / 'KMTech' / 'Label_Match' / 'upload_block_status.json'
+
+
+def test_public_block_status_schema_since_restart_and_clear(tmp_path, monkeypatch):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    clock = ['2026-10-26T06:00:00Z']
+    monkeypatch.setattr(runtime, 'utc_now_text', lambda: clock[0])
+    config = make_config(tmp_path)
+    path = public_status(tmp_path)
+    runtime._publish_upload_block_status(config, {'scan_terminal_blocked_count': 0})
+    clear = json.loads(path.read_text(encoding='utf-8'))
+    assert set(clear) == {'schema', 'app', 'blocked_files', 'blocked_records', 'install_review', 'since', 'updated'}
+    assert clear == {'schema': 1, 'app': 'LM', 'blocked_files': 0, 'blocked_records': 0,
+                     'install_review': False, 'since': None, 'updated': clock[0]}
+    assert not path.read_bytes().startswith(b'\xef\xbb\xbf')
+    clock[0] = '2026-10-26T06:01:00Z'
+    blocked = {'scan_terminal_blocked_count': 1, 'scan_terminal_blocked_record_count': 3,
+               'scan_terminal_blocked_source_files': ['private']}
+    runtime._publish_upload_block_status(config, blocked)
+    first = json.loads(path.read_text(encoding='utf-8'))
+    assert first['blocked_files'] == 1 and first['blocked_records'] == 3
+    assert first['since'] == blocked['upload_block_since'] == clock[0]
+    assert 'private' not in path.read_text(encoding='utf-8')
+    clock[0] = '2026-10-26T06:02:00Z'
+    # A fresh config/runtime record after restart preserves the public file's interval.
+    runtime._publish_upload_block_status(make_config(tmp_path), {})
+    retained = json.loads(path.read_text(encoding='utf-8'))
+    assert retained['since'] == first['since']
+    assert retained['updated'] == clock[0]
+    runtime._publish_upload_block_status(config, {'scan_terminal_blocked_count': 1})
+    assert json.loads(path.read_text(encoding='utf-8'))['blocked_records'] is None
+    runtime._publish_upload_block_status(config, {'scan_terminal_blocked_count': 0})
+    resolved = json.loads(path.read_text(encoding='utf-8'))
+    assert resolved['blocked_files'] == resolved['blocked_records'] == 0
+    assert resolved['since'] is None and resolved['install_review'] is False
+    assert path.exists()
+
+
+def test_public_install_review_requires_preflight_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    config = make_config(tmp_path)
+    path = public_status(tmp_path)
+    runtime._publish_upload_block_status(config, {
+        'last_result': {'status': 'operator_review'},
+        'runtime_lease': {'status_code': 401, 'error_code': 'stale_timestamp'},
+    })
+    assert json.loads(path.read_text(encoding='utf-8'))['install_review'] is False
+    runtime._publish_upload_block_status(config, {'runtime_lease': {'status': 'operator_review'}})
+    reviewed = json.loads(path.read_text(encoding='utf-8'))
+    assert reviewed['install_review'] is True and reviewed['since'].endswith('Z')
+    runtime._publish_upload_block_status(config, {'runtime_lease': {'status': 'ACTIVE'}})
+    assert json.loads(path.read_text(encoding='utf-8'))['install_review'] is True
+    runtime._publish_upload_block_status(config, {
+        'runtime_lease': {'status': 'ACTIVE', 'server_grant_accepted': True},
+    })
+    resolved = json.loads(path.read_text(encoding='utf-8'))
+    assert resolved['install_review'] is False and resolved['since'] is None
+
+
+def test_public_write_failure_keeps_runtime_status_and_since(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    config = make_config(tmp_path)
+    atomic = runtime._write_json_atomic
+
+    def fail_public_only(path, value):
+        if Path(path).name == 'upload_block_status.json':
+            raise PermissionError('synthetic diagnostic write refusal')
+        return atomic(path, value)
+
+    monkeypatch.setattr(runtime, '_write_json_atomic', fail_public_only)
+    status = runtime._write_runtime_status(
+        config, status='existing_terminal_blocked', disk={}, queue={},
+    )
+    assert status['status'] == 'existing_terminal_blocked'
+    assert Path(config.runtime_status_path).is_file()
+    assert caplog.text.count('upload_block_status_write_failed') == 1
