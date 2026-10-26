@@ -1,10 +1,10 @@
 {
   "files": {
-    "kmtech_shared/__init__.py": "8296c0c5fe0da9973b02550b32f0489d3a4ebcb66db177b8c76bb4574bf45c31",
+    "kmtech_shared/__init__.py": "af057d2e0928dd7b8171af70426f20ca522dd101f343d47f51a8a24592d16499",
     "kmtech_shared/catalog.py": "0575ac3a0a46012af75600a9c5d61dc432c71b69ec0008e123badee775619896",
-    "kmtech_shared/data_generation.py": "f1bcdb6c4738a1ff90af8f52d64259cd38f88a119fbafd232dbe0dfdf065783b",
+    "kmtech_shared/data_generation.py": "b54cb2b7303c5376cf646a8ae8226a3069abeab7f729f598b49c769a61ae5a94",
     "kmtech_shared/diagnostic_log.py": "085c47ad7cf42130de74240a6e3dccefc2502d844591f775d46fedaabc6ad36b",
-    "kmtech_shared/powershell/data_generation.ps1": "3452a5a0bef3f3e4ebd6e28056febeea157c932b4346133b91d67fc497124056",
+    "kmtech_shared/powershell/data_generation.ps1": "9e31c5aca69a410546b42d269e464b5848ef0e95f8d243010332f0458103ebf8",
     "kmtech_shared/powershell/portable.ps1": "eba0b2d69b831d386d2668e5605e63807d27612b877115a53a038a8b283dbb70",
     "kmtech_shared/powershell/ps51_module_prologue.ps1": "9c5e083b8e332573f3368be3e9592a2e2409aa89891e15942026361be17d0b71",
     "kmtech_shared/raster.py": "17c3d10498f9f5b845858861e671fff4715820b0e48719864d8dec4b9743f244",
@@ -12,5 +12,5 @@
   },
   "schema": "kmtech.shared.source.v1",
   "source_commit": "807564228bdefae668d338bd7e5d54f9c90f5486",
-  "version": "0.3.8"
+  "version": "0.3.8+w9.1"
 }

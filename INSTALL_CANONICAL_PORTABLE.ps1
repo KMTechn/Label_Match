@@ -153,7 +153,7 @@ function Get-LabelSharedPortableLeafPath([string]$CodeRoot, [ValidateSet('portab
             throw "Shared PowerShell path contains a reparse point: $path"
         }
     }
-    $expectedManifestSha = '3ff5ea08f684f0c35e008ab1b3d816b03d69e3b6d4b72e34b70ba0db11e765a7'
+    $expectedManifestSha = '9bd1396925a03f77e95d29c5cc6143c3b020622d580399f14178c34a2cefe60b'
     $lockPath = Join-Path $appRoot 'kmtech_shared.lock.json'
     if ((Get-Item -LiteralPath $lockPath).Length -gt 65536) { throw 'Shared consumer lock is oversized.' }
     $lock = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -608,13 +608,13 @@ def syntax(path, relative):
 shared_replacements = {
     'app/kmtech_shared/__init__.py': (
         'b1b16c26ef8cd85be89e13b24afda1ec7be1d4ce8d7632ab032981601f223455',
-        '8296c0c5fe0da9973b02550b32f0489d3a4ebcb66db177b8c76bb4574bf45c31'),
+        'af057d2e0928dd7b8171af70426f20ca522dd101f343d47f51a8a24592d16499'),
     'app/kmtech_shared.manifest.json': (
         '465eea8ad20f010e29be5bb98cbc32fdcd1d163d5ba7b76d9eac3b33c14874ee',
-        '3ff5ea08f684f0c35e008ab1b3d816b03d69e3b6d4b72e34b70ba0db11e765a7'),
+        '9bd1396925a03f77e95d29c5cc6143c3b020622d580399f14178c34a2cefe60b'),
     'app/kmtech_shared.lock.json': (
         '6807ed97f7d734c5d8bdb0e23c141916cc5f013bd2392a46b98849d285d54fcd',
-        '5aac9f5b52b111dc6deafb030a892eb6fd096cc16f078222914c4e3d75cf6ec5'),
+        '3d6ff399294b68f56ffedaa94e44984fad42abac1b99c0f3174910ded81bec54'),
     'app/kmtech_zero_pe.vendor.json': (
         'e7dac78746db6efbccedcba5c3b44b58b77bc44e8d25a2dbaea6dc1ac01e307c',
         '3977f00f39540acbe501ac2628398d2dcdb6b13b323abd3f1582771c291b895a'),
@@ -623,7 +623,7 @@ shared_replacements = {
         '154c072f1256f4d36f562ba153f75c27a51b94212103c5a903eb02bf4df58268'),
     'tools/bootstrap_integrity.ps1': (
         '7094e69137179c2fe66119a19358db66b375a4db45a8abdf55965bc75f7a37e2',
-        '0c9d219a2cfdca1619280e6fe060d4c5dac2ede719cf934d3b9a40a48e5b386f'),
+        '02128d05f95610e263177662467e147b5a5a418a01b46bb86cd36eb7c3016cac'),
 }
 shared_additions = {
     'app/kmtech_shared/powershell/portable.ps1':
@@ -1390,7 +1390,7 @@ admin_worker_replacements = {'INSTALL_THIS_PC.ps1': ('bdc42c26a8b5464d8a65e880ba
  'tools/apply_prepared_update.ps1': ('dc7e30404d7bd4277692f875120aff4f7afd5c01b84301ed9e95a2c03e844c83',
                                      'dcdbd7ec80d1b9be45709574f6fbb032cbbf1054c109b376ac7bf1fc87f757bb'),
  'tools/bootstrap_integrity.ps1': ('96101ce38befdf9dcca09ec42abd571aa441ad312f35bf3d14fd7effc97db963',
-                                   '0c9d219a2cfdca1619280e6fe060d4c5dac2ede719cf934d3b9a40a48e5b386f'),
+                                   '02128d05f95610e263177662467e147b5a5a418a01b46bb86cd36eb7c3016cac'),
  'tools/failure_redaction.ps1': ('c81ce889aef0d216985a9dbaf439c2bfa11640d929e836d2bc7b68966d6d073f',
                                  'e19c9ab4a756c39623022653285ed7b20a6bb56b8d8e79ff38050bb99010481e'),
  'tools/label_writer_fence.ps1': ('1e30ba5b6098368319ea4175ce932cf7f9efd216ffeb76f464630abfc0f8319d',

@@ -870,3 +870,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - 제거가 뒤 단계에서 실패하면 제거 전 내용 소유 코드·control·바로가기를 원위치로 복원하고 실패를 반환한다. 복원도 실패하면 removal-evidence/<attempt>/rollback.json에 설치 손상을 남기고 승인 새 판 재설치를 안내한다. 자료·기존 evidence는 보존하며, 옛 제거 잔재에 대한 설치·U/stop/소스 증명 거절은 유지한다. current 없음+policy 잔재의 새 복구는 이번 범위 밖이며 PC를 멈추고 자료·증거를 보존해 별도 지원 절차를 따른다(sub-681, 레인 ANSWER-3).
 - w9firstupdsub712 / calm-uninst-lm P2-1~3: 옛 작업 Enabled 보상과 무변경 relay 판정을 고치고, 기존 XML 등록·정의 비교로 삭제 작업을 복원한다. 외부 부모 메타 보존·고정 링크 소유 검증·빈 관리 폴더 복원·미변경 잠금 파일·임시 사본 정리를 함께 보완한다. 작업자 바로가기 기록 restored 플래그 보상은 레인 ANSWER-2에 따라 크기·근거를 결과에 남긴다.
 - w9firstupdsub633 / relay 자식 대기 45 → 120 초: LM1 밤 창 실측으로 확인 예정(RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS · 포장 user_relay.run_session_direct_sync_once 기본값 · 이적 _runtime_cycle 호출).
+- w9firstupdsub652 / 포장 126: 공용 `data_generation` 표지 바꿔치기가 잠김(오류 5·32)이면 1초(50ms 간격) 다시 시도하도록 Python·PowerShell 모두 고쳤다(이적과 바이트 같음). 공용 판 표지 `0.3.8+w9.1`.

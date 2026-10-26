@@ -1,3 +1,3 @@
 """Pinned shared primitives; importing the package never imports an application."""
 
-__version__ = "0.3.8"
+__version__ = "0.3.8+w9.1"

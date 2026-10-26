@@ -43,8 +43,9 @@ def test_pinned_shared_source_and_packaging_inputs():
     assert '--expected-file kmtech_shared/powershell/ps51_module_prologue.ps1 `' in frozen
     provenance = json.loads((ROOT / "kmtech_zero_pe.vendor.json").read_bytes())
     manifest = json.loads((ROOT / "kmtech_shared.manifest.json").read_bytes())
+    # The local marker-publication patch leaves raster provenance unchanged.
     assert (provenance["raster_core"]["version"], provenance["raster_core"]["source_commit"]) == (
-        manifest["version"], manifest["source_commit"])
+        "0.3.8", manifest["source_commit"])
     for name, digest in provenance["files"].items():
         assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == digest
 
