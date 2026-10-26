@@ -844,3 +844,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 
 - 재설치 밤 목록 — P3(레인21:4x 판정): terminal 만료 뒤 옛 판을 계속 실행하는 흐름과 되풀이 횟수 막이 없음은 이번 고침에서 그대로 두고 밤 재설치 목록에 남긴다.
 - w9firstupdsub580 / v2.0.124: 제품 불일치 안내 띠만 사유 · `현품표 <기존 처리층 번호> · 스캔 제품 <값>` · 같은 현품표 재스캔의 3줄로 표시한다. 두 값이 길면 `…`와 끝 14자를 표시하고 짧은 값은 유지하며 새 화면·Tk에 같은 글을 보낸다. 다른 안내·모달 원문·실패 기록은 유지한다.
+화면 셸 기준판: frame.css 만 웹 00e66d79(menu label one flow · sha256 97c47d9b…) 바이트 · 나머지 셸 파일은 d8f82fa4 · ui manifest commit 은 셸 기준판 d8f82fa4 를 뜻함.
