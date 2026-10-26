@@ -112,6 +112,7 @@ LM_NAMES = {'_handle_scan_enter','intake_scan','process_input','_consume_scan_en
 LM = methods('Label_Match.py', LM_NAMES, dict(
     label_match_test_tools_enabled=lambda **kw: False,
     _label_match_has_central_source_identity=lambda value: False,
+    _label_match_is_delivery_label_scan=lambda value: False,
     carrier_identity=LM_CARRIER,
     label_transition=LM_TRANSITION,
     PHSLabelWorkflowError=type('PHSLabelWorkflowError', (Exception,), {}),
@@ -350,6 +351,7 @@ def test_lm_first_label_refusal_then_next_scan_isolated(monkeypatch, transport, 
         '_label_match_display_fields': lambda value: {'SRC':'KMTECH_INPUT_TAG','ITG':'synthetic'},
         '_label_match_parse_compact_phs2': lambda value: {'CLC':ITEM,'ITG':'synthetic'},
         '_label_match_has_central_source_identity': lambda value: True,
+        '_label_match_is_delivery_label_scan': lambda value: False,
         '_label_match_reusable_input_master_label': lambda value: False,
     }.items(): monkeypatch.setitem(namespace,name,value)
     if case == 'label_hold_lookup_exception':
