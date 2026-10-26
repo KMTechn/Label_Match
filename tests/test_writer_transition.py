@@ -66,7 +66,8 @@ def _environment(root: Path) -> dict[str, str]:
 
 def _ps(root: Path, code: str, env: dict[str, str], *, timeout: int = 120, engine: str = "powershell.exe"):
     script = root / ("probe-" + str(time.time_ns()) + ".ps1")
-    script.write_text(code, encoding="utf-8-sig")
+    # Preserve the LF bytes of the hash-pinned inline atomic helper.
+    script.write_text(code, encoding="utf-8-sig", newline="\n")
     stdout = script.with_suffix(".stdout.log")
     stderr = script.with_suffix(".stderr.log")
     # A persistent restored relay can inherit duplicate pipe handles from
@@ -230,7 +231,9 @@ def shared_upgrade_pair(tmp_path_factory):
 def _upgrade_preflight(candidate: Path, installed: Path) -> str:
     source = INSTALLER.read_text(encoding="utf-8")
     start = source.index("$placement = 'INSTALL_REQUIRED'")
-    end = source.index("if (-not $conflictReceiptSupplied -and -not $pristineInstall)", start)
+    # Extract the completed writer-transition preflight, before source-data
+    # admission and its separate outer preparation transaction begin.
+    end = source.index("\nInvoke-LabelSourceDataAdmission ", start)
     return f"""
 $source = {_quote(candidate)}
 $install = {_quote(installed)}
