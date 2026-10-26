@@ -351,7 +351,7 @@ def test_scan_non_source_error_still_drains(tmp_path, monkeypatch, capsys, faile
 
 @pytest.mark.parametrize('mode', ['observe', 'enforce'])
 @pytest.mark.parametrize('status', [400, 401, 403, 404, 408, 429, 500, 523, 599])
-def test_non_json_error_response_is_retryable(queued, monkeypatch, mode, status):
+def test_non_json_error_response_is_retryable(queued, tmp_path, monkeypatch, mode, status):
     database, _, credentials = queued
     monkeypatch.setattr(push, 'client_runtime_lease_mode', lambda _credentials: mode)
 
@@ -365,11 +365,13 @@ def test_non_json_error_response_is_retryable(queued, monkeypatch, mode, status)
     result = push.drain_one_relay_batch(
         db_path=database, credentials=credentials,
         session=SequenceFakeSession([ProxyResponse()]),
+        status_dir=tmp_path / 'upload-status',
     )
     assert result.retryable is True
     assert queue_row(database)['status'] == 'retry_wait'
     assert result.receipt['_local_response_parse_failed'] is True
     assert runtime._result_summary(result)['response_parse_failed'] is True
+    assert json.loads(Path(result.status_path).read_text(encoding='utf-8'))['response_parse_failed'] is True
 
 
 @pytest.mark.parametrize('status', [400, 401, 403, 404, 523, 599])
@@ -407,7 +409,7 @@ def test_json_nonobject_keeps_existing_protection(queued, status):
     assert result.retryable is False
 
 
-@pytest.mark.parametrize('outcome', ['explicit', 'local', 'unknown', 'nonjson', 'missing_committed'])
+@pytest.mark.parametrize('outcome', ['explicit', 'local', 'unknown', 'nonjson', 'missing_committed', 'expired', 'lease_lost'])
 def test_retry_releases_only_confirmed_unconsumed_assignment(tmp_path, monkeypatch, outcome):
     from tests.test_producer_runtime_client import _LeaseSession, _credentials, _make_pending_relay
     database = tmp_path / 'authority.sqlite3'
@@ -430,6 +432,9 @@ def test_retry_releases_only_confirmed_unconsumed_assignment(tmp_path, monkeypat
                 return ProxyResponse()
             if outcome == 'missing_committed':
                 return FakeResponse(403, {'error': {'code': 'proxy_error'}})
+            if outcome == 'lease_lost':
+                with sqlite3.connect(database) as conn:
+                    conn.execute("UPDATE direct_sync_relay_batches SET lease_owner='another-worker' WHERE relay_id='relay-a'")
             return refusal('temporary_unavailable', 503)
 
     session = Session()
@@ -437,22 +442,34 @@ def test_retry_releases_only_confirmed_unconsumed_assignment(tmp_path, monkeypat
         def fail_headers(*_args, **_kwargs):
             raise PermissionError('local busy file')
         monkeypatch.setattr(push, 'signed_headers', fail_headers)
-    result = push.drain_one_relay_batch(
-        db_path=database, credentials=credentials, session=session,
-        target_relay_id='relay-a',
-    )
-    assert result.retryable is True
+    def drain():
+        return push.drain_one_relay_batch(
+            db_path=database, credentials=credentials, session=session,
+            target_relay_id='relay-a',
+        )
+    if outcome == 'lease_lost':
+        with pytest.raises(push.DirectSyncPushError):
+            drain()
+    else:
+        assert drain().retryable is True
     with sqlite3.connect(database) as conn:
         conn.row_factory = sqlite3.Row
         authority = conn.execute('SELECT * FROM direct_sync_runtime_authority').fetchone()
         row = conn.execute("SELECT * FROM direct_sync_relay_batches WHERE relay_id='relay-a'").fetchone()
     metadata = json.loads(row['metadata_json'])
-    released = outcome in {'explicit', 'local'}
-    assert row['status'] == 'retry_wait'
+    released = outcome in {'explicit', 'local', 'expired'}
+    assert row['status'] == ('leased' if outcome == 'lease_lost' else 'retry_wait')
     assert authority['status'] == 'ACTIVE'
     assert (authority['assigned_relay_id'] is None) is released
     assert sum(field in metadata for field in leases.METADATA_FIELDS) == (0 if released else 5)
     assert metadata['client_batch_id'] == 'relay-a'
+    if outcome == 'lease_lost':
+        assert row['lease_owner'] == 'another-worker'
+        return
+    if outcome == 'expired':
+        with sqlite3.connect(database) as conn:
+            conn.execute("UPDATE direct_sync_runtime_authority SET expires_at='2000-01-01T00:00:00Z'")
+    lease_calls_before = len(session.calls)
     other = push.claim_next_relay_batch(db_path=database, worker_id='next-worker', target_relay_id='relay-b')
     preparation = leases.prepare_runtime_metadata(
         db_path=database, relay_id=other.relay_id, metadata=other.metadata,
@@ -461,6 +478,7 @@ def test_retry_releases_only_confirmed_unconsumed_assignment(tmp_path, monkeypat
     )
     if released:
         assert preparation.metadata is not None
+        assert len(session.calls) == lease_calls_before + (1 if outcome == 'expired' else 0)
     else:
         assert preparation.retryable is True
         assert preparation.error_code == 'runtime_request_in_flight'
