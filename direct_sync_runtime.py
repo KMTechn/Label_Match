@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -38,7 +39,7 @@ from direct_sync_push import (
     validate_endpoint_url,
 )
 from direct_sync_operator import read_operator_pause
-from producer_runtime_client import ensure_runtime_authority
+from producer_runtime_client import ensure_runtime_authority, is_clock_rejection
 from writer_session_fence import writer_sink, WriterFencedError
 from startup_send_gate import startup_send_deferred, StartupGatedSession
 
@@ -639,7 +640,95 @@ def _result_summary(result: UploadResult | None) -> dict[str, Any]:
         "relay_id": relay_id,
         "upload_status_path": result.status_path,
         "receipt_totals": receipt_totals,
+        **({'clock_skew': result.receipt['_local_clock_skew']}
+           if '_local_clock_skew' in result.receipt else {}),
     }
+
+
+def _carry_clock_error(config: DirectSyncRuntimeConfig, payload: dict[str, Any]) -> None:
+    """Keep the last clock rejection through saves/scans until delivery succeeds."""
+    try:
+        previous = json.loads(Path(config.runtime_status_path).read_text(encoding='utf-8'))
+        if not isinstance(previous, dict):
+            previous = {}
+    except (OSError, ValueError):
+        previous = {}
+    if 'scan_terminal_blocked_count' not in payload:
+        for field in ('scan_terminal_blocked_count', 'scan_terminal_blocked_record_count'):
+            if field in previous:
+                payload[field] = previous[field]
+    if 'upload_block_since' not in payload and 'upload_block_since' in previous:
+        payload['upload_block_since'] = previous['upload_block_since']
+    last = payload.get('last_result') or {}
+    if last.get('success') is True and last.get('status') == 'acked':
+        payload.pop('clock_error', None)
+        return
+    for source in (last, payload.get('runtime_lease') or {}):
+        if is_clock_rejection(source.get('status_code'), source.get('error_code')):
+            clock_error = {'status_code': 401, 'error_code': 'stale_timestamp'}
+            clock = source.get('clock_skew') or source.get('_local_clock_skew')
+            if clock:
+                clock_error['clock_skew'] = dict(clock)
+            payload['clock_error'] = clock_error
+            return
+    try:
+        clock_error = previous.get('clock_error')
+        if isinstance(clock_error, dict) and is_clock_rejection(
+            clock_error.get('status_code'), clock_error.get('error_code')
+        ):
+            payload['clock_error'] = clock_error
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+@writer_sink('direct_sync_upload_block_status')
+def _write_upload_block_status(path: Path, record: Mapping[str, Any]) -> None:
+    _write_json_atomic(path, record)
+
+
+def _publish_upload_block_status(config: DirectSyncRuntimeConfig, payload: dict[str, Any]) -> None:
+    """Publish only the seven agreed fields; diagnostic failure cannot block delivery."""
+    local = str(os.environ.get('LOCALAPPDATA') or '').strip()
+    path = Path(local) / 'KMTech' / 'Label_Match' / 'upload_block_status.json' if local else None
+    try:
+        previous = json.loads(path.read_text(encoding='utf-8')) if path is not None else {}
+        if not isinstance(previous, dict):
+            previous = {}
+    except (OSError, ValueError):
+        previous = {}
+    if 'scan_terminal_blocked_count' in payload:
+        files = payload['scan_terminal_blocked_count']
+        records = payload.get('scan_terminal_blocked_record_count')
+    else:
+        files = previous.get('blocked_files', 0)
+        records = previous.get('blocked_records', 0)
+    files = files if type(files) is int and files >= 0 else 0
+    records = records if type(records) is int and records >= 0 else None
+    if not files:
+        records = 0
+    review = previous.get('install_review') is True
+    lease = payload.get('runtime_lease')
+    if isinstance(lease, dict):
+        if lease.get('status') == 'operator_review':
+            review = True
+        elif lease.get('status') == 'ACTIVE' and lease.get('server_grant_accepted') is True:
+            review = False
+    now = utc_now_text()
+    since = payload.get('upload_block_since') if 'upload_block_since' in payload else previous.get('since')
+    if files or review:
+        if not isinstance(since, str) or not since.endswith('Z') or _parse_utc_text(since) is None:
+            since = now
+    else:
+        since = None
+    payload['upload_block_since'] = since
+    record = {'schema': 1, 'app': 'LM', 'blocked_files': files, 'blocked_records': records,
+              'install_review': review, 'since': since, 'updated': now}
+    try:
+        if path is None:
+            raise OSError('LocalAppData unavailable')
+        _write_upload_block_status(path, record)
+    except Exception as exc:
+        logging.getLogger(__name__).warning('upload_block_status_write_failed:%s', type(exc).__name__)
 
 
 def _write_runtime_status(
@@ -677,6 +766,8 @@ def _write_runtime_status(
         "runtime_lease": dict(runtime_lease or {}),
         "updated_at": utc_now_text(),
     }
+    _carry_clock_error(config, payload)
+    _publish_upload_block_status(config, payload)
     _write_json_atomic(config.runtime_status_path, payload)
     return payload
 
@@ -986,6 +1077,9 @@ def run_relay_once(
             tls_ca_bundle_path=str(config.tls_ca_bundle_path or ""),
         )
         runtime_lease = dict(runtime_preparation.receipt or {})
+        if is_clock_rejection(runtime_preparation.status_code, runtime_preparation.error_code):
+            runtime_lease['status_code'] = runtime_preparation.status_code
+            runtime_lease['error_code'] = runtime_preparation.error_code
         deferred = startup_send_deferred(Path(config.credential_path).parent)
         if deferred:
             return deferred

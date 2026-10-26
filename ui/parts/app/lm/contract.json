@@ -232,7 +232,7 @@
       },
       "alerts": {
         "type": "array",
-        "maxItems": 4,
+        "maxItems": 5,
         "description": "띠(틀 band 꼴) — 우선순위 고르기(:22067)는 처리 층, 제목은 이음이 글 앞에 붙임. 확인이 있는 알림(옛 대기 오류 · 시스템 오류)은 choices [{text:'확인 (Esc)', go:'command:ack', default:true}]",
         "items": {
           "type": "object",

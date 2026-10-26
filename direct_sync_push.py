@@ -35,9 +35,12 @@ from producer_runtime_client import (
     disable_runtime_authority_in_transaction,
     expire_dead_fence_authority_in_transaction,
     init_runtime_schema,
+    is_clock_rejection,
+    is_retryable_http_status,
     mark_runtime_operator_review_in_transaction,
     prepare_runtime_metadata,
     redact_runtime_secrets,
+    response_clock_skew,
     release_runtime_request_in_transaction,
     RUNTIME_FENCING_POLICY_LEGACY_EXACT_REPLAY,
     RUNTIME_FENCING_POLICY_RUNTIME_REQUIRED,
@@ -1261,7 +1264,12 @@ def _upload_response_result(
         and totals["quarantined"] == 0
     )
     error = safe_payload.get("error") if isinstance(safe_payload.get("error"), dict) else {}
-    retryable = False if receipt_error_code else payload.get("retryable") is True or status_code in {408, 429, 500, 502, 503, 504}
+    clock_rejected = is_clock_rejection(status_code, str(error.get('code') or ''))
+    retryable = False if receipt_error_code else clock_rejected or payload.get("retryable") is True or is_retryable_http_status(status_code)
+    if clock_rejected:
+        clock = response_clock_skew(response)
+        if clock:
+            safe_payload['_local_clock_skew'] = clock
     return UploadResult(
         success=success,
         status_code=status_code,
@@ -1310,6 +1318,8 @@ def _with_upload_status_artifact(
                 "metadata": _upload_status_runtime_safe_metadata(plan.metadata),
                 "source_file_path": plan.source_file_path,
                 "generated_at": utc_now_text(),
+                **({'clock_skew': receipt['_local_clock_skew']}
+                   if '_local_clock_skew' in receipt else {}),
             },
         )
     except OSError as exc:
@@ -1348,15 +1358,25 @@ def upload_source_file(
     before_post: Callable[[], None] | None = None,
     tls_ca_bundle_path: str = "",
 ) -> UploadResult:
-    if tls_ca_bundle_path:
-        from label_data_generation import check_user_data_open, resolve_data_path
-        tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
-        check_user_data_open(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
-    if session is None:
-        import requests
+    try:
+        if tls_ca_bundle_path:
+            from label_data_generation import check_user_data_open, resolve_data_path
+            tls_ca_bundle_path = str(resolve_data_path(tls_ca_bundle_path))
+            check_user_data_open(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent, (Path(tls_ca_bundle_path).parent,))
+        if session is None:
+            import requests
 
-        session = requests.Session()
-    headers = signed_headers(credentials, plan.metadata)
+            session = requests.Session()
+        headers = signed_headers(credentials, plan.metadata)
+    except WriterFenceError:
+        raise
+    except OSError as exc:
+        # No request has started in this preparation block.
+        result = _transport_error_result(exc)
+        try:
+            return _with_upload_status_artifact(plan, result, status_dir)
+        except OSError:
+            return result
     try:
         with Path(plan.source_file_path).open("rb") as handle:
             if before_post is not None:
@@ -2567,11 +2587,12 @@ def drain_one_relay_batch(
         spooled_hash, spooled_bytes = _read_file_digest(Path(row.spooled_file_path))
     except OSError as exc:
         error_code = "spooled_file_missing" if isinstance(exc, FileNotFoundError) else "spooled_file_unreadable"
+        retry_after = _retry_after_seconds(row.attempt_count, retry_base_seconds, row.relay_id)
         result = UploadResult(
             success=False,
             status_code=0,
             committed=False,
-            retryable=False,
+            retryable=True,
             receipt={"client_batch_id": row.relay_id},
             error_code=error_code,
             error_message=f"spooled file cannot be read: {exc}",
@@ -2579,8 +2600,9 @@ def drain_one_relay_batch(
         _set_claimed_relay_status(
             row,
             db_path=db_path,
-            status=RELAY_STATUS_FAILED_PERMANENT,
+            status=RELAY_STATUS_RETRY_WAIT,
             receipt=result.receipt,
+            next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=retry_after)).isoformat().replace('+00:00', 'Z'),
             error_code=result.error_code,
             error_message=result.error_message,
         )
@@ -2813,6 +2835,8 @@ def drain_one_relay_batch(
         row.runtime_fencing_policy == RUNTIME_FENCING_POLICY_LEGACY_EXACT_REPLAY
         and result._runtime_token_unconsumed
         and client_runtime_lease_mode(credentials) == "enforce"
+        and not is_clock_rejection(result.status_code, result.error_code)
+        and not is_retryable_http_status(result.status_code)
     ):
         _set_claimed_relay_status(
             row,

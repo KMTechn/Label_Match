@@ -819,10 +819,13 @@ def _alerts(processor, view, notice):
             action_text = _text(app.__dict__.get("_workflow_notice_action_text") or "확인")
             band["choices"] = [{"text": f"{action_text} (Esc)", "go": "command:ack", "default": True}]
         alerts.append(band)
-    if app.__dict__.get("_logistics_relay_state") == "stopped":
+    send_warning = module._label_match_send_warning(app, app.__dict__.get('_relay_screen_status_payload'))
+    if send_warning:
+        alerts.append({'kind': 'warn', 'code': None, 'text': send_warning})
+    elif app.__dict__.get("_logistics_relay_state") == "stopped":
         alerts.append({"kind": "warn", "code": None, "text": module.LABEL_MATCH_RELAY_SCREEN_TEXT["stopped"]})
     alerts.extend(processor._dialogs)
-    return alerts[:4]
+    return alerts[:5]
 
 
 def _history_cancel_fields(app, iid):

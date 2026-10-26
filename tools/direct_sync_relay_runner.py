@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import hashlib
 import json
 import sqlite3
@@ -28,7 +30,35 @@ SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 class ExistingTerminalDeltaBlocked(Exception):
-    pass
+    def __init__(self, source_file: str, start_byte: int = 0, source_stamp=None):
+        super().__init__(source_file)
+        self.start_byte = start_byte
+        self.source_stamp = source_stamp
+
+
+def _source_stamp(source_file: Path) -> tuple[int, int, int, int]:
+    state = source_file.stat()
+    return state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns
+
+
+def _count_blocked_source_records(source_file: Path, start_byte: int, expected_stamp=None) -> int | None:
+    """Count CSV records from the first blocking interval, not queue batches."""
+    try:
+        before = _source_stamp(source_file)
+        if expected_stamp is not None and before != expected_stamp:
+            return None
+        if not 0 <= start_byte <= before[2]:
+            return None
+        with source_file.open('rb') as raw:
+            raw.seek(start_byte)
+            with io.TextIOWrapper(raw, encoding='utf-8-sig', newline='') as stream:
+                records = csv.reader(stream, strict=True)
+                if start_byte == 0:
+                    next(records, None)
+                count = sum(1 for row in records if row)
+        return count if _source_stamp(source_file) == before else None
+    except (OSError, UnicodeError, csv.Error):
+        return None
 
 
 def _validate_source_glob(pattern: str) -> str:
@@ -176,6 +206,7 @@ def _read_queued_delta_progress(conn: sqlite3.Connection, source_file: Path) -> 
     ).fetchall()
     matching_ranges: dict[int, int] = {}
     blocked_ranges: dict[int, int] = {}
+    source_stamp = _source_stamp(source_file)
     for row in rows:
         status = str(row["status"] or "")
         if (
@@ -206,7 +237,7 @@ def _read_queued_delta_progress(conn: sqlite3.Connection, source_file: Path) -> 
     best_end_byte = 0
     while True:
         if best_end_byte in blocked_ranges:
-            raise ExistingTerminalDeltaBlocked(str(source_file))
+            raise ExistingTerminalDeltaBlocked(str(source_file), best_end_byte, source_stamp)
         next_end_byte = matching_ranges.get(best_end_byte)
         if next_end_byte is None or next_end_byte <= best_end_byte:
             break
@@ -466,6 +497,9 @@ def _write_scan_runtime_error(config: DirectSyncRuntimeConfig, exc: Exception) -
 
 
 def _persist_scan_runtime_status(config: DirectSyncRuntimeConfig, status: dict) -> None:
+    from direct_sync_runtime import _carry_clock_error, _publish_upload_block_status
+    _carry_clock_error(config, status)
+    _publish_upload_block_status(config, status)
     status_path = Path(config.runtime_status_path)
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(
@@ -577,6 +611,7 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
             no_new_count = 0
             preflight_status = None
             terminal_blocked_sources: list[str] = []
+            terminal_blocked_record_count: int | None = 0
             pending_delta_progress: dict[str, tuple[Path, int]] = {}
             source_files, deferred_count = _scan_source_files(
                 args.scan_source_dir,
@@ -596,9 +631,14 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                     continue
                 try:
                     delta = _build_delta_source_file(config, source_file)
-                except ExistingTerminalDeltaBlocked:
+                except ExistingTerminalDeltaBlocked as exc:
                     attempted_count += 1
                     terminal_blocked_sources.append(str(source_file))
+                    count = _count_blocked_source_records(source_file, exc.start_byte, exc.source_stamp)
+                    if count is None:
+                        terminal_blocked_record_count = None
+                    elif terminal_blocked_record_count is not None:
+                        terminal_blocked_record_count += count
                     continue
                 if delta is None:
                     no_new_count += 1
@@ -653,6 +693,9 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
             status["scan_terminal_blocked_count"] = len(
                 terminal_blocked_sources
             )
+            status.pop('scan_terminal_blocked_record_count', None)
+            if terminal_blocked_record_count is not None:
+                status['scan_terminal_blocked_record_count'] = terminal_blocked_record_count
             if terminal_blocked_sources:
                 status["scan_terminal_blocked_source_files"] = (
                     terminal_blocked_sources
@@ -713,6 +756,9 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                 relay_status["scan_terminal_blocked_count"] = len(
                     terminal_blocked_sources
                 )
+                relay_status.pop('scan_terminal_blocked_record_count', None)
+                if terminal_blocked_record_count is not None:
+                    relay_status['scan_terminal_blocked_record_count'] = terminal_blocked_record_count
                 if terminal_blocked_sources:
                     relay_status["scan_terminal_blocked_source_files"] = (
                         terminal_blocked_sources

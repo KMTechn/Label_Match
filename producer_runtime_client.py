@@ -23,6 +23,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Mapping
 from urllib.parse import urlparse, urlunparse
@@ -83,6 +84,35 @@ class RuntimePreparation:
     error_code: str = ""
     error_message: str = ""
     receipt: Dict[str, Any] = field(default_factory=dict)
+
+
+def is_clock_rejection(status_code: int, error_code: str) -> bool:
+    return status_code == 401 and error_code == 'stale_timestamp'
+
+
+def is_retryable_http_status(status_code: int) -> bool:
+    return status_code in {408, 429} or 500 <= status_code < 600
+
+
+def response_clock_skew(response: Any) -> Dict[str, Any]:
+    """Observe HTTP Date; never adjust the clock or the signed request time."""
+    headers = getattr(response, 'headers', None)
+    if not hasattr(headers, 'get'):
+        return {}
+    value = headers.get('Date') or headers.get('date')
+    try:
+        server = parsedate_to_datetime(str(value or ''))
+        if server.tzinfo is None:
+            return {}
+        server = server.astimezone(timezone.utc)
+        pc = datetime.now(timezone.utc)
+        return {
+            'pc_utc': pc.isoformat().replace('+00:00', 'Z'),
+            'server_utc': server.isoformat().replace('+00:00', 'Z'),
+            'seconds': (pc - server).total_seconds(),
+        }
+    except (TypeError, ValueError, OverflowError):
+        return {}
 
 
 def client_runtime_lease_mode(credentials: Any) -> str:
@@ -313,8 +343,13 @@ def _post_lease_request(
     code = str(error.get("code") or "runtime_lease_request_failed")
     message = str(error.get("message") or f"runtime lease request failed with HTTP {status_code}")
     message = str(_redact_known_values(message, sensitive_values))[:500]
-    retryable = payload.get("retryable") is True or status_code in {408, 429, 500, 502, 503, 504}
-    operator_review = code in OPERATOR_REVIEW_CODES or bool(payload.get("operator_review"))
+    clock_rejected = is_clock_rejection(status_code, code)
+    retryable = clock_rejected or payload.get("retryable") is True or is_retryable_http_status(status_code)
+    if clock_rejected:
+        clock = response_clock_skew(response)
+        if clock:
+            safe_payload['_local_clock_skew'] = clock
+    operator_review = not (clock_rejected or is_retryable_http_status(status_code)) and (code in OPERATOR_REVIEW_CODES or bool(payload.get("operator_review")))
     return None, RuntimePreparation(
         status_code=status_code,
         retryable=retryable and not operator_review,
