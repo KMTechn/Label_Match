@@ -1,5 +1,34 @@
 # Label_Match 데이터·통합 계약
 
+## 업로드 시계·일시 오류와 막힘 상태 (w9firstupdsub636)
+
+spool/본문 읽기에서 FileNotFoundError와 잠금 외 OSError는 기존 failed_permanent로 해당 행만 닫고 K/N·보내기 띠에 반영한다. PermissionError 또는 winerror 5/32/33만 retry_wait이며, 앞선 POST 가능 행의 terminal 전환은 기존 배정과 runtime 다섯 칸을 보존한다. 같은 원본 terminal 앞 구간을 건너뛰지 않으며 포장의 24 h 나이 gate는 소실 행 때문에 다른 새 enqueue를 막지 않는다(w9firstupdsub693, ANSWER-1).
+
+업로드의 비JSON HTTP 400–599(401 포함)는 재시도한다. `response.json()` 예외일 때만 내부 receipt에 `_local_response_parse_failed=true`, 업로드/실행 상태와 last_result에 `response_parse_failed=true`를 둔다. 정상 파싱한 배열·문자열은 기존 객체 검증을 따른다. JSON 업로드 4xx 중 401을 제외하고 `committed` 칸 자체가 없으면 재시도한다. 서버 정본 `producer_ingest.py@9d16cd59:error_payload:3574–3589`는 오류에도 `committed`를 항상 포함한다. JSON 401은 stale만, JSON 5xx도 committed/receipt 보호가 우선이다. 2xx 불명·3xx 보호는 유지한다. lease API에는 비JSON 복구·파싱 표지만 적용하며 JSON `committed` 누락 규칙을 적용하지 않는다.
+
+재시도 때 서버 `committed:false` 명시 거절이나 요청 전 로컬 실패가 확정된 경우만 실제 행 배정을 같은 트랜잭션에서 풀고 runtime 다섯 필드를 제거한다. 메타데이터가 없거나 실제 배정이 없으면 release를 부르지 않는다. 응답 유실·파싱 불능 등 전송/응답이 모호하면 같은 행의 재시도 권한을 보존한다. 해제된 권한은 유효 기간 안에서 다른 행에 재배정하고 만료 뒤에는 기존 새 발급 경로를 따른다.
+일시 응답의 분류는 상태 저장까지 유지하며 오류 코드만으로 권한 전체 검토를 다시 추론하지 않는다. 앞선 요청의 결과가 불명인 행은 다음 회차의 spool 읽기·요청 준비 실패에도 배정과 runtime 다섯 필드를 보존하고 같은 행을 재시도한다(w9firstupdsub674).
+
+스캔의 일반 `enqueue_error`는 해당 파일을 `scan_enqueue_errors=[{source_file,error_code}]`에 기록하고 다음 파일과 안전한 drain을 계속한다. `scan_failed_source_file`은 첫 실패를 유지한다. 한 파일이라도 실패하면 `scan_status=enqueue_error`, CLI 종료 코드는 2다. pause·디스크·runtime 실패의 기존 정지와 같은 원본 terminal 앞 구간 보호는 유지한다.
+
+업로드와 행별 runtime lease 준비의 HTTP 401 중 오류 코드가 정확히 `stale_timestamp`인 응답은 기존 `retry_wait`로 남긴다. 다른 JSON 자격 401과 committed/receipt 불일치 검토는 기존 보호를 유지한다. 연결 거절·DNS·TLS·소켓/읽기/연결 시간 초과, 미커밋 408·429·5xx, 서명·TLS 준비의 로컬 OSError와 spool/본문의 일시 잠금도 기존 간격·다음 시도·횟수 정책으로 다시 시도한다. spool hash/길이 불일치는 내용 문제이므로 기존 terminal을 유지한다. 서버 응답 뒤 생긴 모호한 예외를 단순 로컬 실패로 바꾸지 않는다.
+
+시계 거절 뒤 PC UTC가 행의 마지막 실패/갱신 시각보다 뒤로 갔으면 해당 stale retry_wait만 다음 claim에서 다시 고른다. 정상 시간 진행의 backoff와 다른 오류의 due는 그대로다. 서명은 매 요청 현재 PC UTC로 새로 만들며 저장된 HTTP 서명이나 서버 Date로 서명 시각을 바꾸지 않는다. 옛 terminal 행의 자동 복구는 하지 않는다.
+
+정상 HTTP Date를 읽었으면 receipt의 `_local_clock_skew`, 업로드 상태/last_result의 `clock_skew`에 `pc_utc`, `server_utc`, `seconds`(PC−서버 초)를 남긴다. Date가 없거나 해석할 수 없으면 이 칸은 없다. runtime 상태의 `clock_error`는 저장·스캔 재기록과 재시작에도 보존하고 다음 성공 업로드에서 해제한다.
+
+보내기 경고 영역은 한 칸이며 ① PC 시계 ② 원본 앞 구간 때문에 막힌 기록 ③ 기존 10분 초과 전송 대기 순서로 표시한다. 노랑이며 확인 단추·경고음·스캔 막이가 없다. 자동 끄기 마감 입력이 없으면 진한 노랑 전환은 하지 않는다. 다른 화면 경고는 그대로이고, 기존 네 경고와 보내기 경고를 함께 담도록 alerts 상한만 4→5로 늘린다. 새 보내기 경고가 없으면 기존 stopped 안내를 노랑으로 유지한다.
+
+- 시계: 「이 PC 시계가 회사 서버와 5분 넘게 달라 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요」 / 「찍은 기록은 이 PC에 그대로 있고, 시계를 맞추면 저절로 보내집니다」. Date가 있으면 같은 PC 지역 시각으로 「 · 이 PC HH:MM · 회사 서버 HH:MM」를 더하고, 알려진 막힘 N/K도 둘째 줄에 더한다.
+- 기록 막힘: 「회사 서버가 받지 않은 기록이 있어 그 뒤 기록 N건을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요」 / 「찍은 기록은 이 PC에 그대로 있습니다 · 막힌 기록 파일 K개」. N을 모르면 큰 줄의 숫자만 뺀다. N은 각 막힌 원본의 첫 terminal 구간 시작부터 EOF까지 CSV 데이터 레코드 수 합(header 제외·막힌 구간 포함)이다. 배치 수와 섞지 않는다. 스캔 회차에서만 새로 세고 다음 스캔까지 재시작에도 보존한다. 파일이 읽는 중 바뀌거나 CSV 해석/읽기에 실패하면 N은 미확인이다.
+- 일반 전송 대기: 「회사 서버로 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요」 / 「찍은 기록은 이 PC에 그대로 있고, 연결이 돌아오면 저절로 보내집니다」.
+
+`%LOCALAPPDATA%\KMTech\Label_Match\upload_block_status.json`은 호스트 중계용 공통 상태 파일이다. 일곱 칸(`schema=1`, `app=LM`, `blocked_files`, `blocked_records`, `install_review`, `since`, `updated`)만 쓴다. N 미확인은 null이며 파일 이름·작업자 이름·서버 주소·기록 내용·자격 자료는 넣지 않는다. 선행 lease `operator_review`에서만 install_review=true, `ACTIVE`와 `server_grant_accepted=true`를 확인하면 false, 그 밖 회차는 직전 값을 유지한다. 개별 행의 검토나 stale 401로 설치 전체 검토를 만들지 않는다.
+
+첫 K>0 또는 설치 검토를 관측한 PC UTC를 since에 두고 같은 막힘 동안 유지한다. 둘 다 풀리면 0/false/null을 기록하며 파일은 남긴다. since/updated는 UTC Z 형식이다. runtime 상태에는 `upload_block_since`로 같은 시작을 보존한다. 같은 폴더의 임시 파일에 BOM 없는 UTF-8로 쓴 뒤 원자 교체하며, 진단 파일 쓰기 실패는 예외형 한 줄만 기록하고 업로드·화면을 계속한다. 앱의 runtime lease를 끄는 새 갈래는 없다.
+
+UI 수령본은 웹 6ced39fb의 76파일을 바탕으로 승인된 local overlay를 적용했다. `app/lm/contract.json`의 alerts maxItems 한 글자만 4→5이며 다른 계약 바이트는 같다. MANIFEST의 해당 entry와 parts fingerprint만 정본 exporter 계산으로 갱신하고 원출처 commit/dirty는 수령 당시 값을 보존한다. 새 parts fingerprint는 `3583f1d222177e16`이다.
+
 ## 관리자 코드 제거 사전 증명 (G28·G53)
 
 공개 관리자 `INSTALL_THIS_PC.ps1 -Uninstall`은 코드·작업·바로 가기를 바꾸기 전에
@@ -726,3 +755,5 @@ S-a 기록은 current_user_setup_started가 참이거나 writer_fence 필드가 
 공개 실패 줄(stderr 한 줄) = `<앱 접두>=` + JSON 객체 하나(-Compress) + CRLF 이다. CRLF 앞의 모든 바이트는 0x20–0x7F(ASCII, DEL 포함) 이다. 앱이 JSON을 만든 뒤, U+007F보다 큰 모든 UTF-16 코드 단위를 `\u` + 소문자 16진 네 자리로 쓴다(서로게이트 짝은 단위마다 따로). 필드 이름·차례와 그 밖의 이스케이프는 앱 생산자가 만든 그대로이다. 포장 접두는 LABEL_MATCH_INSTALLER_FAILURE이며 ICP·ITP·업데이트 도우미·direct-sync 설치 도우미의 기존 출력 채널을 유지한다.
 
 sub-184 Q2: relay만 남은 상태의 동시 GUI 요청 둘은 실제 bootstrap/update_lock 경계에서 GUI 하나와 둘째 요청의 재사용 rc 0을 유지한다. 모든 관측의 relay는 하나이고 GUI writer는 하나를 넘지 않으며 기존 기록 바이트를 보존한다. 프로세스 관측/실행 경계만 대역으로 둔 전용 지킴 회귀 8개는 지정 바탕과 고침 모두 GREEN이다(레인 ANSWER-2354).
+
+w9firstupdsub700: 배정을 쥔 spool 소실 terminal은 원본의 같은 바이트 범위·hash를 검증한 기존 delta 길로만 다시 만들고 원래 idempotency_key·runtime 다섯 칸으로 replay한다. ACK 때만 원 배정을 정리하며 409·408·429·5xx·비JSON·끊김은 기존 backoff로 보존한다. 원본 소실·불일치는 배정·다섯 칸을 남긴 전용 OPERATOR_REVIEW이며 자동 scan은 풀지 않는다. 본사 관리자의 기존 --enqueue-source-file 모드가 같은 원본·범위·hash·배정·오류를 확인할 때만 ACTIVE로 복귀한다. 같은 권한 때문에 기다리는 전체 원본 기록 K/파일 N을 중복 구간 없이 기존 일곱 칸과 띠에 표시하고, 불확실한 K는 null이다. 이 보존 배정의 뒤 행 나이가 24 h gate를 넘더라도 새 로컬 enqueue는 계속한다. 본문을 연 뒤·before_post의 로컬 OSError 재시도 계약은 유지한다. producer 영수증 조회 endpoint는 이번에 만들지 않으며 11/15 서버 후속 항목이다.

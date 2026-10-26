@@ -484,6 +484,8 @@ def retry_dead_relay_batch(
             """
             UPDATE direct_sync_relay_batches
             SET status = ?,
+                attempt_count = 0,
+                created_at = ?,
                 lease_owner = NULL,
                 lease_expires_at = NULL,
                 next_attempt_at = NULL,
@@ -498,6 +500,7 @@ def retry_dead_relay_batch(
             """,
             (
                 RELAY_STATUS_PENDING,
+                now,
                 retry_metadata_json,
                 now,
                 relay,

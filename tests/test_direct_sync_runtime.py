@@ -667,6 +667,27 @@ def test_runtime_operator_resume_allows_enqueue_and_drain(tmp_path):
     assert relay_queue_status(config.db_path)["counts"][RELAY_STATUS_ACKED] == 1
 
 
+@pytest.mark.parametrize('error_number', [28, 5, 13])
+def test_runtime_shared_enqueue_io_uses_global_error_code(tmp_path, monkeypatch, error_number):
+    import direct_sync_runtime as runtime
+
+    config = make_config(tmp_path)
+    source_file = write_csv(tmp_path)
+    original = source_file.read_bytes()
+
+    def denied(*args, **kwargs):
+        raise OSError(error_number, 'synthetic shared enqueue failure')
+
+    monkeypatch.setattr(runtime, 'enqueue_source_file_for_relay', denied)
+    status = enqueue_completed_source_file(config, source_file_path=source_file)
+
+    assert status['status'] == 'enqueue_error'
+    assert status['error_code'] == 'direct_sync_enqueue_error'
+    assert source_file.read_bytes() == original
+    assert not status['queue']['counts']
+    assert_runtime_artifacts_are_redacted(config)
+
+
 def test_runtime_enqueue_writes_status_and_redacted_log(tmp_path):
     config = make_config(tmp_path)
     source_file = write_csv(tmp_path)

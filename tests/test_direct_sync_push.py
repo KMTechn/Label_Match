@@ -2017,7 +2017,7 @@ def test_drain_rejects_changed_producer_credentials_without_upload(tmp_path):
     assert json.loads(current["receipt_json"]) == {"client_batch_id": row.relay_id}
 
 
-def test_drain_marks_missing_spooled_file_failed_permanent(tmp_path):
+def test_drain_closes_missing_spooled_file(tmp_path):
     _manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)
     credentials = make_credentials()

@@ -25,6 +25,19 @@ bootstrap 실제 대기는 min(공유 준비 600초, 감독 1140초)이며, 받�
 relay 파일 오류 격리(w9firstupdsub591): 큐 SQLite의 추가 표 `direct_sync_source_scan_failures`가 원본별 최초 실패 시각을 유지하며 기존 scan state/큐 표와 분리되어 옛 판의 읽기를 바꾸지 않는다. 기존 relay 상태 JSON은 `scan_file_error_count`와 `scan_file_errors:[{source_name, first_failed_at, error_code}]`를 게시한다(이름만·원문/경로 없음). 파일 오류만 남으면 `scan_status=scan_file_errors`로 다음 파일·drain을 계속하고 최종 status/rc는 drain 결과다. 성공 enqueue/dedupe(기존 ACK 행 포함) 때, 또는 원본이 스캔 대상에도 디스크에도 없어졌을 때(삭제·이름 바뀜; 파일을 지우거나 옮기지 않고 목록 항목만 정리) 목록에서 빼며, 디스크에 있는 원본은 이번 바퀴 유예·미완결이어도 유지한다. 기존 relay label과 공통 바닥 줄, 새 웹 화면 서버 줄(`label_screen_bridge._conn`의 `label`; state·JS/CSS/contract 불변)은 n>0일 때만 ` · 기록 파일 n개 안 올라감`을 붙인다. 고정 코드는 `source_csv_utf8_invalid`·`source_file_read_failed`·`source_delta_write_failed`이고, 큐/목록 판독·공용 spool/status/log·설정·디스크 용량/장치·미분류 오류 및 기존 terminal·역압·운영자 중지의 전역 처리/우선순위를 유지한다.
 
 적재 결과 게시 전에 중단되어 남은 파일 오류는 같은 원본의 완전한 바이트 범위·내용 해시와 기존 큐의 ACK를 다시 확인하면 해제한다. 설치 baseline도 사용하는 scan watermark만으로는 ACK를 단정하지 않는다. 기존 큐 범위를 대조하다 원본 읽기가 거부된 경우도 그 원본만 보류하고 뒤 파일을 계속한다.
+## PC 시계·기록 파일 전송 막힘
+
+프록시/WAF의 비JSON 4xx·5xx 응답은 기존 간격으로 다시 시도하고 `response_parse_failed`로 구분한다. 전송 결과가 모호하면 같은 행의 권한을 보존하며 임의로 다른 기록에 넘기지 않는다. 원본 하나의 일반 enqueue 실패는 파일별 목록에 남기고 나머지 원본·안전한 전송을 계속한다. 이 회차는 `scan_status=enqueue_error`와 종료 코드 2이므로 본사는 `scan_enqueue_errors`와 첫 실패 파일을 확인한다.
+
+시계 노랑 띠가 나오면 현장 관리자에게 알린다. 찍은 기록은 이 PC에 남으며 스캔·포장을 계속할 수 있다. 관리자가 PC 날짜·시각·시간대를 회사 서버와 맞추면 기존 전송 프로그램이 다시 보낸다. PC가 앞서 있다가 뒤로 맞춰진 경우에도 stale 대기 행은 다음 회차에 다시 고른다. 서버 Date를 알 때만 이 PC/회사 서버 HH:MM를 같은 지역 시각으로 보이며, 다음 업로드 성공에서 시계 띠가 사라진다. 앱이 시계나 서명 시각을 임의 보정하지는 않는다.
+
+「회사 서버가 받지 않은 기록이 있어 그 뒤 기록 N건을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요」가 나오면 같은 원본 앞 구간이 막힌 것이다. 작은 줄은 「찍은 기록은 이 PC에 그대로 있습니다 · 막힌 기록 파일 K개」다. N이 없으면 건수를 정확히 셀 수 없었던 것이고 0건이라는 뜻은 아니다. 같은 원본의 앞 구간을 건너뛰거나 새 파일/새 전송 identity로 자동 갈아타지 않는다. 재로그인만으로 풀린다고 안내하지 않는다.
+
+11/1 막힘 풀기는 본사 원격 CLI의 기존 상태·spool·영수증/권한 확인 절차를 쓴다. `tools/direct_sync_relay_operator.py`의 `retry-dead`는 failed_permanent만 다시 넣고 created_at·시도 수를 새로 시작한다. committed 검토는 확인된 서버 영수증과 기존 근거 인수로 `ack-reviewed`를 사용하며, 미확인 commit을 임의 ACK하지 않는다. 작업 뒤 다음 relay/scan과 공통 상태 파일의 0/false/null을 되읽는다. 이 변경이 옛 terminal 행을 자동 복구하거나 운영 도구를 현장에서 실행한 것은 아니다.
+
+중계는 작업자 프로필의 `%LOCALAPPDATA%\KMTech\Label_Match\upload_block_status.json`을 읽는다. K/N과 설치 전체 검토·시작/갱신 시각만 담고 기록 내용/사용자/서버/자격 자료는 담지 않는다. N 미확인은 null이다. 쓰기 실패는 업로드를 멈추지 않는다. 이 파일을 읽어 현장 관리자에게 알리는 호스트 중계·서버는 별도 담당이며, 앱에 새 Telegram 송신 경로나 서버 health 인수는 추가하지 않는다.
+
+화 밤 포장 v2.0.126 재서명 반영 대상이다. 실제 창·설치·현장 수용은 레인 회차에서 확인하며, headless 계약 시험의 통과를 그 수용으로 세지 않는다.
 
 ## 관리자 제거의 작업자 증명과 재시도
 

@@ -1311,6 +1311,60 @@ def _label_match_relay_screen_state(payload, durable=None):
     return _label_match_relay_worst_state(relay, "retrying" if durable is None else durable)
 
 
+def _label_match_clock_warning(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    error = payload.get('clock_error')
+    if not isinstance(error, dict) or error.get('status_code') != 401 or error.get('error_code') != 'stale_timestamp':
+        return ''
+    text = (
+        '이 PC 시계가 회사 서버와 5분 넘게 달라 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요\n'
+        '찍은 기록은 이 PC에 그대로 있고, 시계를 맞추면 저절로 보내집니다'
+    )
+    clock = error.get('clock_skew')
+    if isinstance(clock, dict):
+        try:
+            pc = datetime.fromisoformat(clock['pc_utc'].replace('Z', '+00:00'))
+            server = datetime.fromisoformat(clock['server_utc'].replace('Z', '+00:00'))
+            if pc.tzinfo is not None and server.tzinfo is not None:
+                text += f' · 이 PC {pc.astimezone():%H:%M} · 회사 서버 {server.astimezone():%H:%M}'
+        except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
+            pass
+    return text
+
+
+def _label_match_send_warning(app, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    files = payload.get('scan_terminal_blocked_count')
+    files = files if type(files) is int and files > 0 else 0
+    records = payload.get('scan_terminal_blocked_record_count')
+    records = records if type(records) is int and records >= 0 else None
+    clock = _label_match_clock_warning(payload)
+    if clock:
+        if files:
+            if records is not None:
+                clock += f' · 막힌 기록 {records}건'
+            clock += f' · 막힌 기록 파일 {files}개'
+        return clock
+    if files:
+        amount = f' {records}건을' if records is not None else '을'
+        return (
+            f'회사 서버가 받지 않은 기록이 있어 기록{amount} 보내지 못하고 있습니다 — 현장 관리자에게 알리세요\n'
+            f'찍은 기록은 이 PC에 그대로 있습니다 · 막힌 기록 파일 {files}개'
+        )
+    oldest = app.__dict__.get('_logistics_oldest_pending_at')
+    try:
+        age = max(0, int((datetime.now(timezone.utc) - oldest).total_seconds())) if oldest else 0
+        age = max(age, int(app.__dict__.get('_logistics_oldest_pending_age') or 0))
+    except (TypeError, ValueError):
+        age = 0
+    if app.__dict__.get('_logistics_pending_transmissions') and age > 600:
+        return (
+            '회사 서버로 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요\n'
+            '찍은 기록은 이 PC에 그대로 있고, 연결이 돌아오면 저절로 보내집니다'
+        )
+    return ''
+
+
 def _label_match_existing_direct_sync_task_name(context):
     # Retained as a compatibility seam for older tests/callers.  Scheduled
     # task authority is unsupported and is never queried or started.
@@ -6965,6 +7019,9 @@ class Label_Match(tk.Tk):
             _label_match_relay_durable_state(db_path),
         )
         self._logistics_relay_state = state
+        self._logistics_clock_warning = _label_match_clock_warning(
+            self.__dict__.get('_relay_screen_status_payload')
+        )
         self._render_relay_screen_status(state)
         pending, last_success = self._read_logistics_transmission_summary(db_path)
         self._render_logistics_connection(state, pending, last_success)
@@ -7155,11 +7212,12 @@ class Label_Match(tk.Tk):
         label = self.__dict__.get("relay_screen_status_label")
         if label is None:
             return None
+        warning = _label_match_send_warning(self, self.__dict__.get('_relay_screen_status_payload'))
         label.configure(
-            text=LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, "") + _label_match_scan_file_error_suffix(
+            text=(warning or LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, "")) + _label_match_scan_file_error_suffix(
                 self.__dict__.get("_relay_screen_status_payload")
             ),
-            style="Error.TLabel" if state == "stopped" else "Status.TLabel",
+            style='Warning.TLabel' if warning or state == 'stopped' else 'Status.TLabel',
         )
         return None
 
@@ -20630,6 +20688,7 @@ class Label_Match(tk.Tk):
                        foreground=[('disabled', self.colors["text_subtle"]), ('active', 'white'), ('!disabled', 'white')],
                        background=[('disabled', '#E5E7EB'), ('active', '#991B1B'), ('!disabled', self.colors["danger"])])
         self.style.configure("Status.TLabel", background=self.colors["card_background"], foreground=self.colors["text_subtle"], font=(self.default_font_name, 14))
+        self.style.configure('Warning.TLabel', background='#FEF3C7', foreground='#92400E', font=(self.default_font_name, 14))
         self.style.configure(
             "Deferred.Treeview",
             background=self.colors["card_background"],
