@@ -2338,14 +2338,20 @@ def _label_match_parse_sealed_transfer_qr(raw_value):
     return parsed
 
 
-def _label_match_is_delivery_label_scan(raw_value):
-    """ISO/IEC 15434 delivery label: starts with "[)>" then RS (0x1E).
+_LABEL_MATCH_DELIVERY_LABEL_HEADER = re.compile(r"\[\)>(?:\x1e|<RS>|[0-9]{2})", re.IGNORECASE)
 
+
+def _label_match_is_delivery_label_scan(raw_value):
+    """ISO/IEC 15434 delivery label: "[)>" then RS, or the text <RS>, or the two-digit format number.
+
+    Field scans keep GS but drop RS ("[)>" then "06" then GS), so a missing RS is accepted when the
+    two digits follow the header. Callers give exact known product members
+    precedence over this header-only classification.
     Input is stripped upstream (the strip may also eat a leading GS/RS), so
     whitespace before the header is tolerated; the header itself is kept.
     """
 
-    return str(raw_value or "").lstrip().startswith("[)>")
+    return _LABEL_MATCH_DELIVERY_LABEL_HEADER.match(str(raw_value or "").lstrip()) is not None
 
 
 def _label_match_has_central_source_identity(raw_value):
@@ -16525,7 +16531,10 @@ class Label_Match(tk.Tk):
             master_code = self.current_set_info['parsed'][0]
             final_label_position = self._workflow_final_label_position()
             new_label = _label_match_has_central_source_identity(self.current_set_info['raw'][0])
-            if new_label and _label_match_is_delivery_label_scan(raw_input):
+            known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"),
+                                               self.current_set_info.get("scanner_exchanges", []))
+            if (new_label and _label_match_is_delivery_label_scan(raw_input)
+                    and (known is None or self._sample_barcode(raw_input) not in known)):
                 # New-method set: the +1 slot is a product. A delivery label is
                 # not one; keep the set and count nothing. Old-method sets keep
                 # taking it as the +1 packaging label below.
@@ -16564,8 +16573,6 @@ class Label_Match(tk.Tk):
                     or self._sample_barcode(raw_input) in self._storage_held_duplicate_keys()):
                 self._ignore_product_scan(raw_input, "이미 다른 세트에서 처리된 제품입니다. 새 제품을 스캔하세요.")
                 return
-            known = self._known_sample_members(self.current_set_info.get("package_source_snapshot"),
-                                               self.current_set_info.get("scanner_exchanges", []))
             if known is not None and self._sample_barcode(raw_input) not in known:
                 self._ignore_product_scan(raw_input, "이 현품표의 구성원이 아닙니다. 현재 트레이의 제품을 스캔하세요.")
                 return
@@ -16723,6 +16730,10 @@ class Label_Match(tk.Tk):
         samples = {self._sample_barcode(barcode) for barcode in current["raw"][1:]}
         known = self._known_sample_members(current.get("package_source_snapshot"),
                                            current.get("scanner_exchanges", []))
+        if (_label_match_has_central_source_identity(current["raw"][0])
+                and _label_match_is_delivery_label_scan(value)
+                and (known is None or normalized not in known)):
+            return self._ignore_delivery_label_scan(value)
         source_members = self._known_sample_members(current.get("package_source_snapshot"))
         if current["scanner_exchange_phase"] == "target":
             if normalized not in samples and (known is None or normalized not in known):

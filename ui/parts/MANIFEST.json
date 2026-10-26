@@ -4,7 +4,7 @@
   "commit": "6ced39fb4056488575e04e17059c0e3e90bd83f2",
   "dirty": true,
   "app": "lm",
-  "parts_fingerprint": "c83ed483720e2b61",
+  "parts_fingerprint": "dbd446eef98de76a",
   "files": [
     {
       "path": "app/frame.css",
@@ -410,15 +410,15 @@
     },
     {
       "path": "app/lm/lm.js",
-      "sha256": "115c50bb421056edd8582f33eb725ab55c1c1c34a69db954c1d6512993338342",
-      "bytes": 26277,
-      "gzip": 8415
+      "sha256": "a3cd7db409ab7bde6358bba0da245f6c5e89046a52f9c88df2c61b8703b7f36c",
+      "bytes": 26305,
+      "gzip": 8434
     },
     {
       "path": "app/scan.js",
-      "sha256": "91fef13f08910bfbc1ae4044ce4add122213c1de86dbb03650663bc47c646e55",
-      "bytes": 19360,
-      "gzip": 5937
+      "sha256": "41734a74abb448f3dc7411245b3c141c8cf1fc0d79a043d525c387becb5a42c6",
+      "bytes": 20306,
+      "gzip": 6115
     },
     {
       "path": "app/sheet.js",

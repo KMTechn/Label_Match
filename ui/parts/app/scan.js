@@ -102,6 +102,17 @@ window.AppScan = (() => {
     if (into) node.scanFromScanner = false;
     editingRun.count++; editingRun.last = at;
   }
+  // ISO 15434 controls belong only to the scan sink, never editable fields.
+  function scanControl(event) {
+    if (event.metaKey) return null;
+    if (/^[\x04\x1c-\x1f]$/.test(event.key)) return event.key;
+    if (!event.ctrlKey || event.altKey) return null;
+    if (event.code === 'BracketRight' || event.key === ']') return '\x1d';
+    if (event.key === '^' || event.code === 'Digit6' && event.shiftKey) return '\x1e';
+    if (event.code === 'Backslash' || event.key === '\\') return '\x1c';
+    if (event.key === '_' || event.code === 'Minus' && event.shiftKey) return '\x1f';
+    return null;
+  }
   function physical(event) {
     const {code, shiftKey} = event;
     if (/^Key[A-Z]$/.test(code)) return shiftKey !== mod(event, 'CapsLock') ? code.slice(3) : code.slice(3).toLowerCase();
@@ -247,10 +258,13 @@ window.AppScan = (() => {
       event.preventDefault(); pedalDown(stamp(event)); eventLog('f12',{type:event.type,repeat:event.repeat}); return;
     }
     if (event.editing) return;
+    const control = scanControl(event);
+    if (control !== null) { event.preventDefault(); nKeys++; append(control,'key',event); return; }
     if (event.ctrlKey || event.metaKey) {
       if (event.code !== 'KeyV') event.preventDefault(); return;
     }
     if (event.altKey && /^Numpad[0-9]$/.test(event.code)) { eventLog('alt_numpad'); return; }
+    if (event.altKey) { event.preventDefault(); return; }
     if (owns(event)) return;
     const tab = event.code === 'Tab' || event.key === 'Tab';
     if (event.code === 'Enter' || event.code === 'NumpadEnter' || event.key === 'Enter' || tab && buffer) {
@@ -272,6 +286,8 @@ window.AppScan = (() => {
   }
   function press(event) {
     if (event.editing || owns(event)) return;
+    const control = scanControl(event);
+    if (control !== null) { event.preventDefault(); nKeys++; append(control,'keypress',event); return; }
     if (event.ctrlKey || event.metaKey || event.altKey || event.key.length !== 1 || event.key.charCodeAt(0) < 0x20) { event.preventDefault(); return; }
     event.preventDefault(); nKeys++; append(event.key,'keypress',event); eventLog('keypress_path');
   }

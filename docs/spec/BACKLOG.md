@@ -844,5 +844,5 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - w9firstupdsub513 / relay 감사 고침 완료: 성공 bootstrap의 첫 rc 0 뒤 최대 2.0초·0.1초 간격 owner 재조회(부모 기한 안), 진단 전체 예외 격리, 업데이트 복구·되돌림 기존 코드 유지, RUNNING 뒤 정상 종료 사본 제외, headless RUNNING 전후 표기·정상 정지 정합. ANSWER-1 적용, 판 올림 0.
 
 - 재설치 밤 목록 — P3(레인21:4x 판정): terminal 만료 뒤 옛 판을 계속 실행하는 흐름과 되풀이 횟수 막이 없음은 이번 고침에서 그대로 두고 밤 재설치 목록에 남긴다.
-- w9firstupdsub649 / GS·RS 세 꼴: 6D 읽기는 제어 바이트·글자 꼴 둘을 받음. 구분이 사라진 꼴은 잘못 자를 위험으로 구현하지 않고 QUESTION 으로 둠(웹 셸 scan.js 의 Ctrl+]·Ctrl+^·Alt+029/030 정본 바이트 대기). 납품처 라벨 판정은 postcut/deliverylabel-lm-124 가 바탕에 들어온 뒤 같은 세 꼴로 넓힘(이적은 GS·RS 요구 자리 0).
-- 납품처 라벨 무시(새 방식 세트 제품 자리·첫 스캔, 10/26 코디 판정): 글은 잠정(w9mgrui 확정 반영, 상수 둘). 감사용 `ERROR_INPUT` 한 줄을 남기는 것·웹 셸 타자 입력이 RS(0x1E)를 버리면 머리 `[)>`+RS 가 안 맞아 못 잡는 것(붙여넣기·Tk 입력은 통과)은 현장 스캐너 확인 뒤 정한다. duplicate.wav 는 sub-610lm 과 같은 바이트·같은 설정 키로 합친다.
+- w9firstupdsub661 / GS·RS·납품처 P1: sub-649의 제어 바이트/글자 꼴 6D 판독과 628 납품처 무시를 통합했다. 구성원 정확 일치를 머리 판정보다 우선하고 교환 입력에도 같은 무시 규칙을 적용한다. 두 앱의 scan.js는 핀 블롭 d390424b이며 정본 셈법으로 MANIFEST를 갱신한다. 구분이 사라진 꼴의 날짜 추측은 레인 답대로 구현하지 않는다. 실제 창·스캐너·배포본 기동은 이번 headless 좁은 회귀 범위에 포함되지 않는다.
+- 납품처 라벨 무시: RS 필수 조건을 제거하여 실제 GS 구분·RS 없는 `[)>06`과 글자 `<RS>`도 판정한다. 감사 `ERROR_INPUT`·duplicate.wav의 기존 계약을 유지한다. sub-646의 제품 오인·교환 우회 두 P1 재현과 저장 통합 재현은 sub-661 계약 시험으로 확인한다.
