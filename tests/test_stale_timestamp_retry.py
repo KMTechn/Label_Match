@@ -226,6 +226,42 @@ def test_clock_warning_survives_save_and_restart_until_successful_upload(tmp_pat
     assert label._label_match_clock_warning(recovered) == ''
 
 
+def test_preflight_clock_warning_survives_scan_status_rewrite(tmp_path):
+    config = make_config(tmp_path)
+    initial = runtime._write_runtime_status(
+        config, status='runtime_error', queue={}, disk={},
+        runtime_lease={'status_code': 401, 'error_code': 'stale_timestamp', '_local_clock_skew': CLOCK},
+    )
+    assert initial['clock_error']['clock_skew'] == CLOCK
+    scan = {'status': 'scan_no_new_rows'}
+    runner._persist_scan_runtime_status(config, scan)
+    persisted = json.loads(Path(config.runtime_status_path).read_text(encoding='utf-8'))
+    assert persisted['clock_error'] == initial['clock_error']
+
+
+def test_screen_poll_connects_clock_warning_and_automatic_clear(tmp_path):
+    status_path = tmp_path / 'status.json'
+    app = SimpleNamespace(
+        direct_sync_bootstrap_context={'runtime_status_path': str(status_path)},
+        _process_app_stop_request=lambda: False,
+        _read_logistics_transmission_summary=lambda _path: (0, None),
+        _render_relay_screen_status=lambda _state: None,
+        _render_logistics_connection=lambda *_args: None,
+        _render_logistics_progress=lambda: None,
+        after=lambda *_args: 'next-poll',
+    )
+    status_path.write_text(json.dumps({
+        'status': 'retry_wait',
+        'clock_error': {'status_code': 401, 'error_code': 'stale_timestamp'},
+    }), encoding='utf-8')
+    label.Label_Match._refresh_relay_screen_status(app)
+    assert app._logistics_clock_warning
+    status_path.write_text(json.dumps({'status': 'acked'}), encoding='utf-8')
+    app._relay_screen_status_mtime_ns = -1
+    label.Label_Match._refresh_relay_screen_status(app)
+    assert app._logistics_clock_warning == ''
+
+
 @pytest.mark.parametrize('known_date', [False, True])
 def test_clock_band_is_yellow_has_no_action_and_keeps_other_terminal_warning(monkeypatch, known_date):
     diagnostic = {'status_code': 401, 'error_code': 'stale_timestamp'}
