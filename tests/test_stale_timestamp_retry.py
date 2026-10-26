@@ -528,9 +528,16 @@ def test_public_write_failure_keeps_runtime_status_and_since(tmp_path, monkeypat
         return atomic(path, value)
 
     monkeypatch.setattr(runtime, '_write_json_atomic', fail_public_only)
+    atomic(config.runtime_status_path, {
+        'scan_terminal_blocked_count': 1, 'scan_terminal_blocked_record_count': 2,
+    })
     status = runtime._write_runtime_status(
         config, status='existing_terminal_blocked', disk={}, queue={},
     )
     assert status['status'] == 'existing_terminal_blocked'
     assert Path(config.runtime_status_path).is_file()
+    assert status['upload_block_since'].endswith('Z')
     assert caplog.text.count('upload_block_status_write_failed') == 1
+    later = runtime._write_runtime_status(config, status='idle', disk={}, queue={})
+    assert later['upload_block_since'] == status['upload_block_since']
+    assert caplog.text.count('upload_block_status_write_failed') == 2
