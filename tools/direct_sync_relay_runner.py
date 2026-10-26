@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -134,6 +135,35 @@ def _clear_source_file_failure(config: DirectSyncRuntimeConfig, source_file: Pat
         conn.execute("DELETE FROM direct_sync_source_scan_failures WHERE source_file_path=?",
                      (_source_state_key(source_file),))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _clear_vanished_source_failures(config: DirectSyncRuntimeConfig, scanned_files: list[Path]) -> None:
+    """Drop failure entries whose original is neither scanned now nor on disk.
+
+    A file that still exists (deferred this round, renamed to another pattern,
+    unreadable parent) keeps its entry; nothing here deletes or moves a file.
+    """
+    scanned = {_source_state_key(path) for path in scanned_files}
+    conn = _scan_state_connect(config.db_path)
+    try:
+        keys = [row["source_file_path"] for row in conn.execute(
+            "SELECT source_file_path FROM direct_sync_source_scan_failures").fetchall()]
+        vanished = []
+        for key in keys:
+            if key in scanned:
+                continue
+            try:
+                os.lstat(key)
+            except (FileNotFoundError, NotADirectoryError):
+                vanished.append(key)
+            except OSError:
+                continue
+        for key in vanished:
+            conn.execute("DELETE FROM direct_sync_source_scan_failures WHERE source_file_path=?", (key,))
+        if vanished:
+            conn.commit()
     finally:
         conn.close()
 
@@ -651,6 +681,7 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                 args.max_enqueue_files,
                 args.min_source_file_age_seconds,
             )
+            _clear_vanished_source_failures(config, source_files)
             for source_file in source_files:
                 if enqueued_count >= max_enqueue_files:
                     break
