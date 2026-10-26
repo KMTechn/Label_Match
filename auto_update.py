@@ -1734,6 +1734,7 @@ def _initial_ready_lock(control: Path, operator_sid: str):
 def _apply_prepared_once(control: Path) -> int:
 
     """SYSTEM applies code only; the operator bootstrap launches the trial."""
+    from user_relay import RELAY_NORMAL_STOP_TIMEOUT_SECONDS, _log_wait_elapsed
     import time
     from Label_Match import _sha256_file as file_sha256
 
@@ -1944,18 +1945,26 @@ def _apply_prepared_once(control: Path) -> int:
                 raise ValueError("rollback requires a pending trial")
             # An inherited window supplies no supervised failure evidence.
             state = {**state, "phase": "UNKNOWN"}
+        state = {**state, "normal_stop_started_at": state.get("normal_stop_started_at") or now_utc()}
         write_json_durable(control / "transition.json", state)
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        with update_lock(control, policy["operator_sid"]):
-            if not writer_processes(process_snapshot(control), own_pid=os.getpid()):
-                settled = settle_trial_failure(control, state, policy)
-                if settled.get("retained_candidate"):
-                    return 20
-                raise _RollbackReadyPending
-        time.sleep(0.25)
-    write_json_durable(control / "transition.json", {**state, "phase": "UNKNOWN", "reason": "candidate normal stop could not be proven"})
-    return 20
+    elapsed_started = time.monotonic()
+    elapsed_status = 'UNKNOWN'
+    try:
+        remaining = RELAY_NORMAL_STOP_TIMEOUT_SECONDS - (_utc(now_utc()) - _utc(state["normal_stop_started_at"])).total_seconds()
+        deadline = time.monotonic() + min(RELAY_NORMAL_STOP_TIMEOUT_SECONDS, max(0.0, remaining))
+        while time.monotonic() < deadline:
+            with update_lock(control, policy["operator_sid"]):
+                if not writer_processes(process_snapshot(control), own_pid=os.getpid()):
+                    elapsed_status = 'ABSENT'
+                    settled = settle_trial_failure(control, state, policy)
+                    if settled.get("retained_candidate"):
+                        return 20
+                    raise _RollbackReadyPending
+            time.sleep(0.25)
+        write_json_durable(control / "transition.json", {**state, "phase": "UNKNOWN", "reason": "candidate normal stop could not be proven"})
+        return 20
+    finally:
+        _log_wait_elapsed('candidate_normal_stop', elapsed_started, elapsed_status)
 
 
 @writer_sink("auto_update_create_protected_stage")
@@ -3817,6 +3826,7 @@ def _bootstrap_awaiting_apply_decision(state, claim_status) -> bool:
 def bootstrap_supervision_deadline(state, *, started: float, now: float, utc_now: str,
                                    claim_status=None) -> float:
     """Observe durable stage clocks without reopening any of their windows."""
+    from user_relay import RELAY_NORMAL_STOP_TIMEOUT_SECONDS
     if _bootstrap_awaiting_apply_decision(state, claim_status):
         return started + 480
     phase = (state or {}).get("phase")
@@ -3826,7 +3836,7 @@ def bootstrap_supervision_deadline(state, *, started: float, now: float, utc_now
     elif phase == "ROLLBACK_PENDING_READY":
         timestamp, window = state.get("rollback_at", state.get("applied_at")), READY_WINDOW_SECONDS
     elif phase in {"ROLLBACK_PENDING", "UNKNOWN"}:
-        timestamp, window = state.get("normal_stop_started_at"), 60
+        timestamp, window = state.get("normal_stop_started_at"), RELAY_NORMAL_STOP_TIMEOUT_SECONDS
     stage_end = now + (window - (_utc(utc_now) - _utc(timestamp)).total_seconds()) if timestamp else started
     return min(started + 480, max(started + STARTUP_WAIT_SECONDS, stage_end + 15))
 

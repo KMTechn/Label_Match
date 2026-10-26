@@ -6,7 +6,7 @@ $Script:LabelWriterFenceTupleVersion = 'label-match-deployment-session-authority
 $Script:LabelWriterFenceSessionMutexPrefix = 'Local\KMTech.LabelMatch.DeploymentSession.'
 $Script:LabelWriterFenceAdmissionMutexName = 'Local\KMTech.LabelMatch.WriterAdmission.v1'
 $Script:LabelWriterFenceAdmissionProductionRoot = ''
-$Script:LabelWriterFenceInventorySha256 = '2ff323117359203b7bc7cbeb026614b66b5db46ac13bfa0cf9e344b48b83b7fa'
+$Script:LabelWriterFenceInventorySha256 = '20529a05e598e0a9a0de30b9e2b4b3fec4899e3f038fd68213e803c77da55f27'
 $Script:LabelWriterFenceInstalledIdentity = $null
 $Script:LabelWriterFenceMaximumBytes = 262144
 $Script:LabelWriterFenceActiveFields = @(
@@ -592,7 +592,7 @@ function Stop-LabelWriterFence {
         [string]$SessionId,
         [string]$AttemptId,
         [string]$ReplacementTransactionId,
-        [int]$TimeoutMilliseconds = 90000
+        [int]$TimeoutMilliseconds = 120000
     )
     $lease = Enter-LabelWriterAdmission $ControlRoot $TimeoutMilliseconds
     try {

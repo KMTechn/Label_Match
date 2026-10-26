@@ -1767,3 +1767,9 @@ relay가 direct-sync 자식을 기다리는 한도(RELAY_DIRECT_SYNC_PROCESS_TIM
 정지 표지의 게시·되읽기·표지 lease 정리에는 기존 `user_relay_stop_request` 쓰기 허가를 유지한다. relay instance의 종료를 기다리는 동안에는 그 허가를 놓아 relay가 마지막 STOPPED 상태를 기록하고 instance lease를 해제할 수 있게 한다. marker 계보·해시·입력/출력·기한과 다른 쓰기 허가 규칙은 유지한다.
 
 설치 시작 시 검증된 사용자 relay의 직접 전송 자식은 즉시 거절하지 않고 같은 150초 정상 정지 안에서 종료를 기다린다. 부모 PID·생성 시각·사용자 SID·세션·비승격·실행 파일과 코드 경로·direct-sync 모드가 모두 맞아야 하며, 불명확하거나 관련 없는 writer는 기존처럼 거절한다. 정지 뒤 모든 writer의 부재를 다시 확인한다.
+
+
+### relay 정지 및 설치 대기 상한 (sub-690)
+
+10/27 sub-690: 사용자 제거·교체 봉쇄·후보 정상 종료는 relay 자식 한도+30초(현재150초)를 공유하고, 후보 종료의 원 normal_stop_started_at과 감독 창도 같은 한도에 묶는다. 승인된 설치 대기는120초(relay 정지·봉쇄150초), 초과 시 기존 실패/UNKNOWN과 강제 종료0을 유지한다. 각 기다림의 종료 로그는 stderr의 event/elapsed_ms/status 한 줄이며 기존 stdout 증명과 실패 판정은 유지한다.
+bootstrap 정상 종료 뒤 relay 소유 재조회도 원 부모 마감 안의120초이며 생존 표본2초는 그대로다.
