@@ -1241,7 +1241,6 @@ def _fresh_persistent_owner(
     return {"process_id": process_id, "updated_at": updated.isoformat()}
 
 
-@writer_sink("user_relay_stop_request")
 def request_user_relay_stop(
     direct_sync_root: str | os.PathLike[str],
     *,
@@ -1253,43 +1252,46 @@ def request_user_relay_stop(
         [str | os.PathLike[str]], Any
     ] = _acquire_relay_lease,
 ) -> dict[str, Any]:
-    timeout_seconds = max(0.0, float(timeout_seconds))
-    wait_deadline = time.monotonic() + timeout_seconds
-    if deadline is None:
-        deadline = wait_deadline if timeout_seconds > 0 else time.monotonic() + 1.5
-    wait_deadline = min(wait_deadline, deadline)
-    root = Path(direct_sync_root).expanduser().resolve()
-    stop_path = user_relay_stop_path(root)
-    request_id = uuid.uuid4().hex
-    requested_at = _now()
-    marker_lease = marker_lease_factory(root / "user-relay-stop-marker")
-    if marker_lease is None:
-        raise UserRelayError("relay stop marker is being changed by another process")
-    try:
-        if stop_path.exists():
-            marker_payload = build_successor_marker(
-                stop_path,
-                request_id=request_id,
-                requested_at=requested_at,
+    with writer_admission("user_relay_stop_request"):
+        timeout_seconds = max(0.0, float(timeout_seconds))
+        wait_deadline = time.monotonic() + timeout_seconds
+        if deadline is None:
+            deadline = wait_deadline if timeout_seconds > 0 else time.monotonic() + 1.5
+        wait_deadline = min(wait_deadline, deadline)
+        root = Path(direct_sync_root).expanduser().resolve()
+        stop_path = user_relay_stop_path(root)
+        request_id = uuid.uuid4().hex
+        requested_at = _now()
+        marker_lease = marker_lease_factory(root / "user-relay-stop-marker")
+        if marker_lease is None:
+            raise UserRelayError("relay stop marker is being changed by another process")
+        try:
+            if stop_path.exists():
+                marker_payload = build_successor_marker(
+                    stop_path,
+                    request_id=request_id,
+                    requested_at=requested_at,
+                )
+            else:
+                marker_payload = {
+                    "schema_version": STOP_MARKER_V1,
+                    "request_id": request_id,
+                    "requested_at": requested_at,
+                }
+            _write_machine_json_atomic(stop_path, marker_payload, deadline=deadline)
+            marker_value, _marker_raw, marker_hash = read_stop_marker(stop_path)
+            if marker_value != marker_payload:
+                raise UserRelayError("relay stop marker readback differs")
+        except StopMarkerLineageError as exc:
+            raise UserRelayError(f"relay stop marker lineage is invalid: {exc}") from exc
+        finally:
+            close = getattr(marker_lease, "close", None) or getattr(
+                marker_lease, "release", None
             )
-        else:
-            marker_payload = {
-                "schema_version": STOP_MARKER_V1,
-                "request_id": request_id,
-                "requested_at": requested_at,
-            }
-        _write_machine_json_atomic(stop_path, marker_payload, deadline=deadline)
-        marker_value, _marker_raw, marker_hash = read_stop_marker(stop_path)
-        if marker_value != marker_payload:
-            raise UserRelayError("relay stop marker readback differs")
-    except StopMarkerLineageError as exc:
-        raise UserRelayError(f"relay stop marker lineage is invalid: {exc}") from exc
-    finally:
-        close = getattr(marker_lease, "close", None) or getattr(
-            marker_lease, "release", None
-        )
-        if callable(close):
-            close()
+            if callable(close):
+                close()
+    # The relay needs admission for its final STOPPED write before releasing
+    # this instance lease. Waiting here must leave that admission available.
     lease_key = root / "user-relay-instance"
     while True:
         lease = lease_factory(lease_key)

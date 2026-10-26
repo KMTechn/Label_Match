@@ -5592,6 +5592,39 @@ function Assert-LabelInstallerRelayPreimageSession([object[]]$Expected,[string]$
     return @($live)
 }
 
+function Test-LabelInstallerRelayChild($Writer,[object[]]$Expected,[string]$CodeRoot,[string]$SubjectSid) {
+    # A command-line match alone cannot authorize an unrelated writer.
+    try {
+        if($Expected.Count -ne 1){return $false}
+        $parent=@(Assert-LabelInstallerRelayPreimageSession $Expected $SubjectSid)
+        if($parent.Count -ne 1 -or [int]$Writer.ProcessId -le 0 -or
+            [int]$Writer.ProcessId -eq [int]$parent[0].ProcessId -or
+            [int]$Writer.ParentProcessId -ne [int]$parent[0].ProcessId -or
+            $null -eq $Writer.CreationDate -or
+            ([DateTime]$Writer.CreationDate).ToUniversalTime() -le ([DateTime]$parent[0].CreationDate).ToUniversalTime()){
+            return $false
+        }
+        $python=Join-Path $CodeRoot 'runtime/python.exe'
+        $pythonw=Join-Path $CodeRoot 'runtime/pythonw.exe'
+        $frozen=Join-Path $CodeRoot 'Label_Match.exe'
+        $executable=[string]$Writer.ExecutablePath
+        if((Same ([string]$parent[0].ExecutablePath) $pythonw) -and (Same $executable $python)){
+            $prefix='{0} -I -B {1} --label-match-direct-sync-relay ' -f
+                (Arg $python),(Arg (Join-Path $CodeRoot 'app/label_match_relay_entry.py'))
+        }elseif((Same ([string]$parent[0].ExecutablePath) $frozen) -and (Same $executable $frozen)){
+            $prefix='{0} --label-match-direct-sync-relay ' -f (Arg $frozen)
+        }else{return $false}
+        $command=Normalize-RelayExecutableQuoting ([string]$Writer.CommandLine) $executable
+        if(-not $command.StartsWith($prefix,[StringComparison]::Ordinal)){return $false}
+        $security=Get-CanonicalRelaySecurity ([int]$Writer.ProcessId)
+        $caller=Get-CanonicalRelaySecurity $PID
+        if([string]$security.sid -cne $SubjectSid -or [bool]$security.elevated -or
+            [int]$security.integrity_rid -ne 8192 -or [int]$security.session_id -le 0 -or
+            [int]$security.session_id -ne [int]$caller.session_id){return $false}
+        return $true
+    }catch{return $false}
+}
+
 function Stop-LabelInstallerRelayPreimage([object[]]$Expected,[string]$StateRoot,[string]$CodeRoot,[string]$SubjectSid) {
     [void](Assert-LabelInstallerRelayPreimageSession $Expected $SubjectSid)
     if($Expected.Count -eq 0){return}
@@ -5599,15 +5632,16 @@ function Stop-LabelInstallerRelayPreimage([object[]]$Expected,[string]$StateRoot
 import json, pathlib, sys
 root, state = map(pathlib.Path, sys.argv[1:3])
 sys.path[:0] = [str(root / 'app'), str(root / 'app/site-packages')]
-from user_relay import request_user_relay_stop
-proof = request_user_relay_stop(state, timeout_seconds=15.0)
+from user_relay import RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS, request_user_relay_stop
+proof = request_user_relay_stop(state, timeout_seconds=RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS + 30)
 if proof['status'] != 'ABSENT':
     raise RuntimeError('candidate relay did not stop normally')
 print(json.dumps(proof, sort_keys=True))
 '@
     $bytes=[Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n","`n"))
+    Write-Host '작업 앱이 서버 보내기를 마치기를 기다리는 중'
     $output=Invoke-LabelPinnedProbe -Python (Join-Path $CodeRoot 'runtime/python.exe') -ProbeBytes $bytes `
-        -ExpectedSha256 'b0944e7a09135c3079da4c115fea3609434841a94739fa5615ab88e6254d4529' `
+        -ExpectedSha256 '027301c5dfff852ac414805a9eb67fc361d0b8a0960ebb8e5aa613759b9110f8' `
         -ProbeArguments @($CodeRoot,$StateRoot) -FailureMessage 'Installer normal relay stop failed: '
     $proof=($output -join "`n")|ConvertFrom-Json
     if([string]$proof.status -cne 'ABSENT'){throw 'Installer normal relay stop is unproven.'}
@@ -5624,15 +5658,16 @@ function Stop-LabelRollbackCandidateRelay {
 import json, pathlib, sys
 root, state = map(pathlib.Path, sys.argv[1:3])
 sys.path[:0] = [str(root / 'app'), str(root / 'app/site-packages')]
-from user_relay import request_user_relay_stop
-proof = request_user_relay_stop(state, timeout_seconds=15.0)
+from user_relay import RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS, request_user_relay_stop
+proof = request_user_relay_stop(state, timeout_seconds=RELAY_DIRECT_SYNC_PROCESS_TIMEOUT_SECONDS + 30)
 if proof['status'] != 'ABSENT':
     raise RuntimeError('candidate relay did not stop normally')
 print(json.dumps(proof, sort_keys=True))
 '@
     $bytes = [Text.Encoding]::UTF8.GetBytes($probe.Replace("`r`n","`n"))
+    Write-Host '작업 앱이 서버 보내기를 마치기를 기다리는 중'
     $output = Invoke-LabelPinnedProbe -Python (Join-Path $source 'runtime/python.exe') -ProbeBytes $bytes `
-        -ExpectedSha256 'b0944e7a09135c3079da4c115fea3609434841a94739fa5615ab88e6254d4529' -ProbeArguments @($source,$defaultDirectSyncRoot) -FailureMessage 'Candidate relay protection failed: '
+        -ExpectedSha256 '027301c5dfff852ac414805a9eb67fc361d0b8a0960ebb8e5aa613759b9110f8' -ProbeArguments @($source,$defaultDirectSyncRoot) -FailureMessage 'Candidate relay protection failed: '
     $audit.rollback.new_relay_stop = $output | ConvertFrom-Json
     if (@(Relays).Count -ne 0) { throw 'Candidate relay process absence is unproven.' }
 }
@@ -7046,7 +7081,8 @@ try {
 $old = @(Relays)
 $Script:LabelInstallerHadRelayPreimage=($old.Count -gt 0)
 foreach($writer in @(UnquiescedProductWriters)){
-    if(@($old | Where-Object {$_.ProcessId -eq $writer.ProcessId -and $_.CreationDate -eq $writer.CreationDate}).Count -ne 1){
+    if(@($old | Where-Object {$_.ProcessId -eq $writer.ProcessId -and $_.CreationDate -eq $writer.CreationDate}).Count -ne 1 -and
+        -not (Test-LabelInstallerRelayChild $writer $old $lifecycleInstalled $generationSubjectSid)){
         throw 'An unrelated product writer prevents installation.'
     }
 }
