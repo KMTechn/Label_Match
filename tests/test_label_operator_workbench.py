@@ -787,7 +787,7 @@ def test_relay_screen_status_follows_relay_files_and_keeps_state_on_torn_read(
     )
     app._refresh_relay_screen_status()
     assert label.cget("text") == RELAY_STOPPED_TEXT
-    assert label.cget("style") == "Error.TLabel"
+    assert label.cget("style") == "Warning.TLabel"
 
     # A save rewrites the status file without the lease: the database keeps it.
     write_status('{"status": "enqueued", "runtime_lease": {}}', 2_000_000_000)

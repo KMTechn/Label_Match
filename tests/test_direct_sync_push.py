@@ -2041,7 +2041,7 @@ def test_drain_retries_missing_spooled_file(tmp_path):
 
     assert result is not None
     assert result.success is False
-    assert result.retryable is False
+    assert result.retryable is True
     assert result.error_code == "spooled_file_missing"
     assert session.calls == []
     with sqlite3.connect(db_path) as conn:
