@@ -133,8 +133,8 @@ def test_scan_reload_publishes_on_owner_thread_without_replaying_or_resetting(mo
     app._tk_shutdown_requested = shutdown
     callbacks.pop(0)()
     app._load_items_data.assert_called_once()
-    assert app._load_items_data.call_args.kwargs['show_errors'] is False
-    assert isinstance(app._load_items_data.call_args.kwargs['read_retry'], app_module.StartupReadRetry)
+    # A scan-time reload is one read; startup's sleep budget ends at startup.
+    app._load_items_data.assert_called_once_with(show_errors=False)
     assert app.items_data == ({} if shutdown else items)
     assert app.current_set_info is original_set
     assert app.current_set_info['raw'] == []
@@ -142,6 +142,118 @@ def test_scan_reload_publishes_on_owner_thread_without_replaying_or_resetting(mo
         assert app._phs_label_guidance_notice is None
         assert app._items_reload_in_progress is False
         assert app._retry_locked_item_catalog() is False
+
+
+def test_scan_reload_locked_reads_wait_for_the_next_scan_without_sleep(monkeypatch):
+    app = app_module.Label_Match.__new__(app_module.Label_Match)
+    app.items_data = {}
+    app._items_read_locked = True
+    original_set = {'raw': [], 'marker': 'preserve'}
+    app.current_set_info = original_set
+    app._render_operator_workbench = Mock()
+    callbacks = []
+    app.after = lambda delay, callback: callbacks.append(callback)
+
+    class Worker:
+        def __init__(self, *, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    reader = Mock(side_effect=[locked(32), locked(32),
+                              io.StringIO('Item Code,Item Name,Spec\n123,Part,S1\n')])
+    sleeps = Mock()
+    monkeypatch.setattr(app_module.threading, 'Thread', Worker)
+    monkeypatch.setattr(app_module, 'open', reader, raising=False)
+    monkeypatch.setattr(app_module.time, 'sleep', sleeps)
+    monkeypatch.setattr(app_module, 'get_verified_catalog_snapshot', lambda path: None)
+    monkeypatch.setattr(app_module, 'requires_verified_catalog_snapshot', lambda path: False)
+    for attempt in range(1, 4):
+        assert app._retry_locked_item_catalog() is True
+        callbacks.pop(0)()
+        assert reader.call_count == attempt
+        sleeps.assert_not_called()
+        assert app.current_set_info is original_set
+        assert original_set['raw'] == []
+        if attempt < 3:
+            assert app.items_data == {}
+            assert app._items_read_locked is True
+            assert app._phs_label_guidance_notice is not None
+    assert app.items_data['123']['Item Name'] == 'Part'
+    assert app._retry_locked_item_catalog() is False
+
+
+@pytest.mark.parametrize('release', [True, False])
+def test_constructor_template_read_shares_the_profile_startup_budget(monkeypatch, tmp_path, release):
+    import json
+    from pathlib import Path
+    import logistics_runtime_profile as profiles
+
+    class StartupReachedDataManager(Exception):
+        pass
+
+    profile_path = tmp_path / 'profile.json'
+    profile_path.write_text('{}', encoding='utf-8')
+    template = tmp_path / 'template.json'
+    template.write_text('{"ui_settings": {"base_font_size": 15}}', encoding='utf-8')
+    settings_path = tmp_path / 'config' / 'settings.json'
+    original_bytes = Path.read_bytes
+    original_open = open
+    profile_reads = Mock(side_effect=[locked(32), locked(32), b'{}'])
+    template_reads = Mock(side_effect=([locked(32), None] if release else locked(32)))
+    sleeps = Mock()
+    writes = []
+
+    def read_bytes(path):
+        return profile_reads() if path == profile_path else original_bytes(path)
+
+    def read_file(path, *args, **kwargs):
+        if Path(path) == template:
+            template_reads()
+        return original_open(path, *args, **kwargs)
+
+    def client(*, probe_required, read_retry):
+        assert probe_required is False
+        assert profiles._read_profile(profile_path, read_retry=read_retry) == {}
+        return None
+
+    def publish(path, settings):
+        writes.append(settings)
+        Path(path).write_text(json.dumps(settings), encoding='utf-8')
+
+    def data_manager(*args, **kwargs):
+        assert kwargs['read_retry'].remaining == 0
+        raise StartupReachedDataManager
+
+    monkeypatch.setattr(Path, 'read_bytes', read_bytes)
+    monkeypatch.setattr(app_module, 'open', read_file, raising=False)
+    monkeypatch.setattr(app_module.time, 'sleep', sleeps)
+    monkeypatch.setattr(app_module, 'package_client_from_env', client)
+    monkeypatch.setattr(app_module.tk.Tk, '__init__', lambda self: setattr(self, 'tk', Mock()))
+    monkeypatch.setattr(app_module.Label_Match, 'title', lambda self: '')
+    monkeypatch.setitem(app_module.LABEL_MATCH_SCREEN_HOST, 'active', False)
+    monkeypatch.setattr(app_module, '_label_match_capture_startup_request', lambda: None)
+    monkeypatch.setattr(app_module, '_label_match_prepare_capture_startup', lambda *args: None)
+    monkeypatch.setattr(app_module, '_label_match_startup_trace', lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, 'logistics_runtime_required', lambda: False)
+    monkeypatch.setattr(app_module, '_default_label_match_settings_path', lambda: str(settings_path))
+    monkeypatch.setattr(app_module, 'resource_path', lambda path: str(template))
+    monkeypatch.setattr(app_module, 'prepare_user_directory', lambda path: Path(path).mkdir(parents=True, exist_ok=True))
+    monkeypatch.setattr(app_module.label_worker_roster, '_atomic_write', publish)
+    monkeypatch.setattr(app_module.Label_Match, '_resolve_configured_save_path', lambda self: str(tmp_path / 'data'))
+    monkeypatch.setattr(app_module.Label_Match, '_update_save_directory', lambda self: setattr(self, 'save_directory', self.custom_save_path))
+    monkeypatch.setattr(app_module, '_label_match_local_log_id', lambda: 'test-worker')
+    monkeypatch.setattr(app_module, '_open_label_data_manager', data_manager)
+    app = app_module.Label_Match.__new__(app_module.Label_Match)
+    with pytest.raises(StartupReachedDataManager if release else OSError):
+        app_module.Label_Match.__init__(app)
+    assert sleeps.call_args_list == [((1,),)] * 3
+    assert profile_reads.call_count == 3
+    assert template_reads.call_count == 2
+    assert len(writes) == int(release)
+    assert settings_path.exists() is release
+    assert template.read_text(encoding='utf-8') == '{"ui_settings": {"base_font_size": 15}}'
 
 
 @pytest.mark.parametrize('failure,result', [

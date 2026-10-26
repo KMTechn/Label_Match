@@ -7225,8 +7225,11 @@ class Label_Match(tk.Tk):
                 and os.path.normcase(os.path.abspath(template_path))
                 != os.path.normcase(os.path.abspath(self.app_settings_path))
             ):
-                with open(template_path, encoding="utf-8-sig") as handle:
-                    settings = _label_match_sanitize_worker_settings(json.load(handle))
+                def read_template():
+                    with open(template_path, encoding="utf-8-sig") as handle:
+                        return _label_match_sanitize_worker_settings(json.load(handle))
+                read_retry = self.__dict__.get('_startup_read_retry')
+                settings = read_template() if read_retry is None else read_retry(read_template)
                 # Packaged settings are a template, not this PC's worker history.
                 for field in ("worker_name", "worker_history", "worker_id", "recent_worker_ids"):
                     settings.pop(field, None)
@@ -8529,8 +8532,7 @@ class Label_Match(tk.Tk):
 
         def read():
             try:
-                result_queue.put(self._load_items_data(
-                    show_errors=False, read_retry=StartupReadRetry()))
+                result_queue.put(self._load_items_data(show_errors=False))
             except Exception:
                 # Verified-snapshot failures still cannot use disk fallback.
                 result_queue.put(None)
