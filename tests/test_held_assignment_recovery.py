@@ -78,6 +78,7 @@ def _scan(config, source):
 def _run_cli(tmp_path, monkeypatch, source, server, wire, *, single=False, source_glob=None):
     from tests.test_direct_sync_relay_runner import runner_args
     credentials = _credentials()
+    monkeypatch.setattr(runtime, 'load_credentials_from_json', lambda *a, **kw: credentials)
     args = runner_args(tmp_path, scan_dir=source.parent, producer_install_id=wire['producer_install_id'],
                        source_host_id=wire['source_host_id'], producer_id=credentials.producer_id,
                        key_id=credentials.key_id, secret=credentials.secret.decode('utf-8'))
@@ -333,3 +334,39 @@ def test_narrow_scan_pattern_does_not_treat_an_existing_original_as_missing(tmp_
     assert _authority_row(database)['status'] == 'ACTIVE'
     assert _authority_row(database)['assigned_relay_id'] == 'original'
     assert len(server.source_calls) == 1
+
+
+@pytest.mark.parametrize('failure_type', [OSError, RuntimeError, KeyboardInterrupt, SystemExit])
+def test_real_repair_copy_failure_isolates_original_and_updates_scan_status(tmp_path, monkeypatch, capsys, failure_type):
+    database, config, source, server, held, wire, body = _seed(tmp_path, monkeypatch)
+    other = source.with_name('포장실작업이벤트로그_zz-other.csv')
+    other.write_bytes(body)
+    before = _row(database)
+    original_copy = push._copy_file_atomic
+    def denied(copy_source, destination):
+        if copy_source == Path(before['source_file_path']):
+            raise failure_type('synthetic repair copy failure')
+        return original_copy(copy_source, destination)
+    with monkeypatch.context() as blocked:
+        blocked.setattr(push, '_copy_file_atomic', denied)
+        if not issubclass(failure_type, Exception):
+            with pytest.raises(failure_type):
+                _run_cli(tmp_path, monkeypatch, source, server, wire)
+            assert _row(database) == before
+            assert dict(_authority_row(database)) == held
+            return
+        _run_cli(tmp_path, monkeypatch, source, server, wire)
+    capsys.readouterr()
+    assert _row(database) == before
+    assert dict(_authority_row(database)) == held
+    with sqlite3.connect(database) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM direct_sync_relay_batches').fetchone()[0] == 2
+    public = json.loads((Path(__import__('os').environ['LOCALAPPDATA']) / 'KMTech/Label_Match/upload_block_status.json').read_text(encoding='utf-8'))
+    assert public['blocked_files'] == 2
+    assert public['blocked_records'] == 2
+    status = json.loads((tmp_path / 'runtime/status.json').read_text(encoding='utf-8'))
+    assert str(source) in status['scan_terminal_blocked_source_files']
+    assert len(server.source_calls) == 1
+    _scan(config, source)
+    _, recovered = _data_path_cycle(database, server, 3, tmp_path)
+    assert recovered.success is True

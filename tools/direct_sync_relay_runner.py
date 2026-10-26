@@ -790,6 +790,11 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                     elif terminal_blocked_record_count is not None:
                         terminal_blocked_record_count += count
                     continue
+                except Exception:
+                    attempted_count += 1
+                    terminal_blocked_sources.append(str(source_file))
+                    terminal_blocked_record_count = None
+                    continue
                 if delta is None:
                     no_new_count += 1
                     continue
