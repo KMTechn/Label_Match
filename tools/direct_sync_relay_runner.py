@@ -30,6 +30,10 @@ TERMINAL_DELTA_BLOCK_STATUSES = {"failed_permanent", "operator_review"}
 SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
+class _SourceSnapshotChanged(OSError):
+    """A moving source is retried by the existing transient scan path."""
+
+
 class ExistingTerminalDeltaBlocked(Exception):
     def __init__(self, source_file: str, start_byte: int = 0, source_stamp=None):
         super().__init__(source_file)
@@ -501,7 +505,11 @@ def _build_delta_source_file(config: DirectSyncRuntimeConfig, source_file: Path,
 
     delta_content = complete_delta_body if start_byte == 0 else header + complete_delta_body
     delta_hash = hashlib.sha256(delta_content).hexdigest()
-    if _source_stamp(source_file) != before or (_held_range is not None and delta_hash != expected_hash):
+    if _source_stamp(source_file) != before:
+        if _held_range is not None:
+            raise _SourceSnapshotChanged()
+        return None
+    if _held_range is not None and delta_hash != expected_hash:
         return None
     delta_source = (
         Path(config.spool_dir)

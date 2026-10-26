@@ -370,3 +370,28 @@ def test_real_repair_copy_failure_isolates_original_and_updates_scan_status(tmp_
     _scan(config, source)
     _, recovered = _data_path_cycle(database, server, 3, tmp_path)
     assert recovered.success is True
+
+
+
+def test_append_during_recovery_waits_for_next_scan_without_operator_review(tmp_path, monkeypatch):
+    database, config, source, server, held, wire, body = _seed(tmp_path, monkeypatch)
+    original_stamp = runner._source_stamp
+    seen = []
+    def append_during_validation(path):
+        if path == source:
+            seen.append(True)
+            if len(seen) == 2:
+                with source.open('a', encoding='utf-8', newline='') as stream:
+                    csv.writer(stream).writerow(['2026-10-26T00:01:00Z', 'test', 'APP_START', '{}'])
+        return original_stamp(path)
+    monkeypatch.setattr(runner, '_source_stamp', append_during_validation)
+    _scan(config, source)
+    assert _authority_row(database)['status'] == 'ACTIVE'
+    assert _row(database)['status'] == push.RELAY_STATUS_FAILED_PERMANENT
+    assert json.loads(_row(database)['metadata_json']) == wire
+    assert len(server.source_calls) == 1
+    _scan(config, source)
+    _, recovered = _data_path_cycle(database, server, 3, tmp_path)
+    assert recovered.success is True
+    assert Path(_row(database)['spooled_file_path']).read_bytes() == body
+    assert server.source_calls[-1]['idempotency_key'] == wire['idempotency_key']
