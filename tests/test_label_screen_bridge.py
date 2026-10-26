@@ -539,3 +539,32 @@ def test_screen_runner_passes_bounded_before_exit_and_release_version(monkeypatc
     assert passed["before_exit"]("SHELL_START_FAILED", 0) is True
     assert waits == [120, 0]
     assert passed["root"] == label_match_screen.PARTS
+
+
+def _conn_app(**fields):
+    base = {"_logistics_connection_observation": (None, True), "_logistics_pending_transmissions": 0}
+    base.update(fields)
+    return types.SimpleNamespace(**base)
+
+
+CONN_STATE_APPS = {
+    "review": {"_logistics_admin_review_count": 2},
+    "offline": {"_logistics_connection_observation": (None, False)},
+    "late": {"_logistics_pending_transmissions": 3, "_logistics_oldest_pending_age": 700},
+    "first": {"_logistics_connection_observation": None},
+    "ok": {},
+}
+
+
+@pytest.mark.parametrize("state", list(CONN_STATE_APPS))
+def test_web_screen_server_line_appends_the_unsent_file_count_only_when_positive(state):
+    from label_screen_bridge import _conn
+    plain = _conn(_conn_app(**CONN_STATE_APPS[state]), Label_Match)
+    assert plain["state"] == state and "기록 파일" not in plain["label"]
+    for payload in ({"scan_file_error_count": 0}, {}, None):
+        zero = _conn(_conn_app(_relay_screen_status_payload=payload, **CONN_STATE_APPS[state]), Label_Match)
+        assert zero == plain
+    shown = _conn(_conn_app(_relay_screen_status_payload={"scan_file_error_count": 2}, **CONN_STATE_APPS[state]),
+                  Label_Match)
+    assert shown["label"] == plain["label"] + " · 기록 파일 2개 안 올라감"
+    assert (shown["state"], shown["last_ok_at"]) == (plain["state"], plain["last_ok_at"])
