@@ -799,6 +799,7 @@ def _conn(app, module):
         state, label = "first", words["checking"][0]
     else:
         state, label = "ok", words["normal"][0] + suffix
+    label += module._label_match_scan_file_error_suffix(app.__dict__.get("_relay_screen_status_payload"))
     return {"state": state, "label": label, "last_ok_at": last_ok}
 
 
