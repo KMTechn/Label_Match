@@ -310,7 +310,7 @@ if ($null -ne $script:lateStream) { $script:lateStream.Dispose() }
     script = script.replace('__INVENTORY__', inventory.relative_to(root).as_posix())
     monkeypatch.setattr(helper, 'REMOVAL_SCRIPT', script)
     result = _run_removal(root, tmp_path, install=False)
-    assert 'REMOVAL_FILE_OBSERVATION_UNKNOWN' in ' | '.join(result['first_causes'])
+    assert 'REMOVAL_FILE_OBSERVATION_UNKNOWN' in result['first_error']
     assert not result['first_marker'] and result['first_inventory']
     assert inventory.read_bytes() == raw and locked.exists()
     monkeypatch.undo()

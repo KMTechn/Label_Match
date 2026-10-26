@@ -330,3 +330,4 @@ v2.0.107 조립: 앱 판·자료 판·하한 모두 107. field-update-feed 원�
 G41/G45: 일반 복구 증명이 검사한 행으로 relay를 하나로 유지하고, 지정된 복구 상태에서 relay만 남았으면 같은 검증 경계로 GUI 하나를 시작한다. [일반 GUI 복구 cohort](contracts.md#ordinary-recovery-gui-cohort)와 ROLLBACK_PENDING의 앞 판·일반 relay·자료 세대 증명 조건을 따른다.
 
 - 제거가 뒤 단계에서 실패하면 제거 전 내용 소유 코드·control·바로가기를 원위치로 복원하고 실패를 반환한다. 복원도 실패하면 removal-evidence/<attempt>/rollback.json에 설치 손상을 남기고 승인 새 판 재설치를 안내한다. 자료·기존 evidence는 보존하며, 옛 제거 잔재에 대한 설치·U/stop/소스 증명 거절은 유지한다. current 없음+policy 잔재의 새 복구는 이번 범위 밖이며 PC를 멈추고 자료·증거를 보존해 별도 지원 절차를 따른다(sub-681, 레인 ANSWER-3).
+- 제거의 작업 보상은 이번 제거로 바뀐 Enabled·삭제된 자기 작업만 복원한다. 같은 상태의 relay는 정지 검사·재쓰기 없이 두고, 외부 바로가기 부모 메타·옮기지 않은 파일은 보상하지 않는다. 성공 제거·성공 보상 및 보존 준비 실패 뒤 이번 임시 사본을 정리하며, 정리 실패는 결과를 바꾸지 않고 「정리 미완료」로 알린다(sub-712, 레인 ANSWER-2).

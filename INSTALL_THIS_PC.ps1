@@ -1702,6 +1702,9 @@ function Invoke-LabelOfficialLegacyTaskTransition([string]$Mode,[string]$Directo
         }
         $current=Get-LabelOfficialLegacyTaskSnapshot
         if($null -eq $current -or $current.fingerprint.sha256 -cne $fingerprint.sha256){throw 'LEGACY_RELAY_RESTORE_DEFINITION_UNPROVEN'}
+        # A failed disable can leave the task running and entirely unchanged.
+        # No stop proof or mutation is needed when its saved state already holds.
+        if($current.enabled -eq $enabled){return}
         Assert-LabelOfficialLegacyTaskStopped $current.name
         # Enabled-only restoration preserves stored task credentials. No registration/deletion.
         if($current.enabled -ne $enabled){
@@ -1873,7 +1876,7 @@ function Remove-LabelScheduledTasks($Folder, [string]$EvidenceRoot, [string]$Cur
         $name = [string]$task.TaskName
         $native = $Folder.GetTask($name)
         $transaction=Get-Variable -Name removalPreimage -ValueOnly -ErrorAction SilentlyContinue
-        if($null -ne $transaction){[void]$transaction.tasks.Add(@{name=$name;xml=[string]$native.Xml;sddl=[string]$native.GetSecurityDescriptor(7);legacy=$false})}
+        if($null -ne $transaction){[void]$transaction.tasks.Add(@{name=$name;xml=[string]$native.Xml;sddl=[string]$native.GetSecurityDescriptor(7);legacy=$false;enabled=[bool]$native.Enabled})}
         Write-LabelStartupUpdateRecord -Path (Join-Path $EvidenceRoot ($name + '.json')) -Payload @{
             name=$name;xml=$native.Xml;sddl=$native.GetSecurityDescriptor(7)
         }
@@ -1887,7 +1890,7 @@ function Remove-LabelScheduledTasks($Folder, [string]$EvidenceRoot, [string]$Cur
     if ($null -ne $legacy) {
         Write-LabelStartupUpdateRecord -Path (Join-Path $EvidenceRoot 'legacy-task.json') -Payload $legacy
         $transaction=Get-Variable -Name removalPreimage -ValueOnly -ErrorAction SilentlyContinue
-        if($null -ne $transaction){$native=$Folder.GetTask('direct-sync-relay-label-match-current-pc');[void]$transaction.tasks.Add(@{name='direct-sync-relay-label-match-current-pc';xml=[string]$native.Xml;sddl=[string]$native.GetSecurityDescriptor(7);legacy=$false})}
+        if($null -ne $transaction){$native=$Folder.GetTask('direct-sync-relay-label-match-current-pc');[void]$transaction.tasks.Add(@{name='direct-sync-relay-label-match-current-pc';xml=[string]$native.Xml;sddl=[string]$native.GetSecurityDescriptor(7);legacy=$true;enabled=[bool]$legacy.Enabled})}
         Remove-OwnedLegacyTask 'direct-sync-relay-label-match-current-pc'
     }
     if (@(Get-LabelSupportedStartupTasks $Current).Count -ne 0) { throw 'REMOVAL_TASK_ABSENCE_NOT_PROVEN' }
@@ -2323,11 +2326,22 @@ function Remove-LabelEmptiedParents([string]$Path, [string[]]$Directories) {
 
 function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]]$ExcludeProcessIds = @(), [string[]]$AdditionalRetainedPaths = @(), [hashtable]$WorkerPartProof = $null, [object[]]$AdditionalPreimageFiles = @(), [scriptblock]$BeforeRemoval = $null, [scriptblock]$AfterRemoval = $null) {
 
+    function Clear-RemovalFilePreimage($Saved) {
+        $unfinished=$false
+        # Only names allocated by this Save, never recursive evidence cleanup.
+        foreach($copy in $Saved.copies){
+            try{[IO.File]::Delete((Get-LabelRemovalIoPath $copy))}catch{$unfinished=$true}
+        }
+        try{if([IO.Directory]::Exists($Saved.backup_root)){[IO.Directory]::Delete($Saved.backup_root)}}catch{$unfinished=$true}
+        if($unfinished){Write-Warning '정리 미완료' -WarningAction Continue}
+    }
     # This preimage contains only the existing content-owned removal plan and
     # verified shortcut paths. Business roots and opaque files are never copied.
     function Save-RemovalFilePreimage($Plan, [object[]]$ExtraFiles) {
-        $saved = @{files=[Collections.ArrayList]::new();tasks=[Collections.ArrayList]::new();directories=@();evidence=$evidence}
         $backupRoot=Join-Path $evidence '.restore-preimage'
+        $saved = @{files=[Collections.ArrayList]::new();tasks=[Collections.ArrayList]::new();directories=@();evidence=$evidence;
+            copies=[Collections.ArrayList]::new();backup_root=$backupRoot}
+        try{
         [void][IO.Directory]::CreateDirectory((Get-LabelRemovalIoPath $backupRoot))
         $rows=@($Plan.artifacts | ForEach-Object {@{path=$_;allowed_hash=''}})+@($ExtraFiles | Where-Object {$null -ne $_})
         $seen=@{}
@@ -2341,20 +2355,31 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
             $item=Get-Item -LiteralPath $io -Force -ErrorAction Stop
             if($item.PSIsContainer){throw 'REMOVAL_PREIMAGE_FILE_REQUIRED'}
             $backup=Join-Path $backupRoot ([string]$saved.files.Count)
+            [void]$saved.copies.Add($backup)
             [IO.File]::Copy($io,(Get-LabelRemovalIoPath $backup),$false)
+            [IO.File]::SetAttributes((Get-LabelRemovalIoPath $backup),[IO.FileAttributes]::Normal)
             $digest=[Security.Cryptography.SHA256]::Create();$reader=$null
             try{$reader=[IO.File]::OpenRead((Get-LabelRemovalIoPath $backup));$hash=([BitConverter]::ToString($digest.ComputeHash($reader))).Replace('-','').ToLowerInvariant()}
             finally{if($null -ne $reader){$reader.Dispose()};$digest.Dispose()}
             if(-not(Test-LabelRemovalFile $path $hash)){throw 'REMOVAL_PREIMAGE_READBACK_DIFFERS'}
             $acl=if(-not $testOverride){Get-Acl -LiteralPath $io -ErrorAction Stop}else{$null}
             [void]$saved.files.Add(@{path=$path;backup=$backup;sha256=$hash;allowed_hash=[string]$row.allowed_hash;
+                planned=($path -in $Plan.artifacts);evidence_name=[string]$row.evidence_name;
                 acl=$acl;attributes=$item.Attributes;written=$item.LastWriteTimeUtc;created=$item.CreationTimeUtc})
         }
         $directories=@($Plan.directories | Where-Object {
             $directoryPrefix=([string]$_).TrimEnd('\')+'\'
             @($saved.files | Where-Object {$_.path.StartsWith($directoryPrefix,[StringComparison]::OrdinalIgnoreCase)}).Count -gt 0
         })+@($saved.files | ForEach-Object {Split-Path -Parent $_.path})
+        $management=Join-Path $application '관리용'
+        if([IO.Directory]::Exists($management)){
+            $item=Get-Item -LiteralPath $management -Force -ErrorAction Stop
+            if(-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                @([IO.Directory]::EnumerateFileSystemEntries($management)).Count -eq 0){$directories+= $management}
+        }
         foreach($path in @($directories | Sort-Object -Unique)){
+            # Public Desktop/Start Menu parents are shared, never ours to restore.
+            if(-not $path.StartsWith($application.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){continue}
             Assert-LabelRemovalBoundary $path
             if(-not(Test-Path -LiteralPath (Get-LabelRemovalIoPath $path) -PathType Container)){continue}
             $item=Get-Item -LiteralPath (Get-LabelRemovalIoPath $path) -Force -ErrorAction Stop
@@ -2362,6 +2387,7 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
                 attributes=$item.Attributes;written=$item.LastWriteTimeUtc;created=$item.CreationTimeUtc}
         }
         return $saved
+        }catch{$saveFailure=$_;Clear-RemovalFilePreimage $saved;throw $saveFailure}
     }
     function Restore-RemovalFilePreimage($Saved, $OriginalFailure) {
         $failures=[Collections.ArrayList]::new()
@@ -2386,6 +2412,12 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
         }
         foreach($file in $Saved.files){
             try{
+                $prefix=$application.TrimEnd('\')+'\'
+                $moved=if($file.path.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){Join-Path $evidence $file.path.Substring($prefix.Length)}else{''}
+                if($file.evidence_name){$moved=Join-Path $evidence $file.evidence_name}
+                # Planned files are changed only by an atomic move into this
+                # attempt. An untouched, possibly locked source needs no read/write.
+                if(($file.planned -or $file.evidence_name) -and -not [IO.File]::Exists((Get-LabelRemovalIoPath $moved))){continue}
                 Assert-LabelRemovalBoundary $file.path
                 $io=Get-LabelRemovalIoPath $file.path
                 if(Test-Path -LiteralPath $io -ErrorAction Stop){
@@ -2393,8 +2425,6 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
                     if(-not $file.allowed_hash -or -not(Test-LabelRemovalFile $file.path $file.allowed_hash)){throw 'REMOVAL_RESTORE_CONFLICT'}
                 }
                 if(-not(Test-LabelRemovalFile $file.backup $file.sha256)){throw 'REMOVAL_PREIMAGE_DAMAGED'}
-                $prefix=$application.TrimEnd('\')+'\'
-                $moved=if($file.path.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){Join-Path $evidence $file.path.Substring($prefix.Length)}else{''}
                 if($moved -and -not(Test-Path -LiteralPath $io) -and (Test-Path -LiteralPath (Get-LabelRemovalIoPath $moved))){
                     if(-not(Test-LabelRemovalFile $moved $file.sha256)){throw 'REMOVAL_EVIDENCE_CHANGED'}
                     [IO.File]::Move((Get-LabelRemovalIoPath $moved),$io)
@@ -2408,6 +2438,9 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
         foreach($task in $Saved.tasks){
             try{
                 if($task.ContainsKey('official')){
+                    $current=Get-LabelOfficialLegacyTaskSnapshot
+                    if($null -ne $current -and $current.enabled -eq $task.official.enabled -and
+                        $current.fingerprint.sha256 -ceq $task.official.fingerprint.sha256){continue}
                     Invoke-LabelOfficialLegacyTaskTransition 'Restore' $task.directory $task.official.xml_sha256
                     continue
                 }
@@ -2417,18 +2450,34 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
                     if($cause.HResult -ne -2147024894){throw}
                 }
                 if($null -eq $present){
-                    [void]$TaskFolder.RegisterTask($task.name,$task.xml,6,$null,$null,0,$task.sddl)
+                    Register-ScheduledTask -TaskName $task.name -Xml $task.xml -Force -ErrorAction Stop | Out-Null
                     $present=$TaskFolder.GetTask($task.name)
-                }elseif([string]$present.Xml -cne $task.xml -and -not $task.legacy){throw 'REMOVAL_RESTORE_TASK_CONFLICT'}
-                if($task.legacy){$present.Enabled=$task.enabled}
-                if([string]$present.Xml -cne $task.xml -or [string]$present.GetSecurityDescriptor(7) -cne $task.sddl){throw 'REMOVAL_RESTORE_TASK_READBACK_DIFFERS'}
+                    $present.SetSecurityDescriptor($task.sddl,0)
+                }
+                if($task.legacy){
+                    $expected=[xml]$task.xml
+                    $expected.Task.Settings.Enabled='false'
+                    $current=Get-OwnedLegacyTaskRetirementSnapshot $task.name
+                    if($null -eq $current -or $current.Definition -cne $expected.OuterXml){throw 'REMOVAL_RESTORE_TASK_CONFLICT'}
+                    if($current.Enabled -ne $task.enabled){
+                        if($task.enabled){Enable-ScheduledTask -TaskName $task.name -TaskPath '\' -ErrorAction Stop | Out-Null}
+                        else{Disable-ScheduledTask -TaskName $task.name -TaskPath '\' -ErrorAction Stop | Out-Null}
+                    }
+                    $after=Get-OwnedLegacyTaskRetirementSnapshot $task.name
+                    if($null -eq $after -or $after.Enabled -ne $task.enabled -or $after.Definition -cne $expected.OuterXml){throw 'REMOVAL_RESTORE_TASK_READBACK_DIFFERS'}
+                }else{
+                    Assert-LabelStartupUpdateTaskDefinition ([xml]$present.Xml) ([xml]$task.xml)
+                    if([bool]$present.Enabled -ne $task.enabled){throw 'REMOVAL_RESTORE_TASK_READBACK_DIFFERS'}
+                }
+                if([string]$present.GetSecurityDescriptor(7) -cne $task.sddl){throw 'REMOVAL_RESTORE_TASK_READBACK_DIFFERS'}
             }catch{[void]$failures.Add($_.Exception.GetType().FullName)}
         }
         foreach($directory in @($Saved.directories | Sort-Object {$_.path.Length} -Descending)){
             try{
                 $io=Get-LabelRemovalIoPath $directory.path
-                [IO.Directory]::SetCreationTimeUtc($io,$directory.created);[IO.Directory]::SetLastWriteTimeUtc($io,$directory.written)
-                [IO.File]::SetAttributes($io,$directory.attributes)
+                if([IO.Directory]::GetCreationTimeUtc($io) -ne $directory.created){[IO.Directory]::SetCreationTimeUtc($io,$directory.created)}
+                if([IO.Directory]::GetLastWriteTimeUtc($io) -ne $directory.written){[IO.Directory]::SetLastWriteTimeUtc($io,$directory.written)}
+                if([IO.File]::GetAttributes($io) -ne $directory.attributes){[IO.File]::SetAttributes($io,$directory.attributes)}
             }catch{[void]$failures.Add($_.Exception.GetType().FullName)}
         }
         if($failures.Count){
@@ -2439,6 +2488,7 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
             $damage.Data['removal_installation_damaged']=$true
             throw $damage
         }
+        Clear-RemovalFilePreimage $Saved
     }
     $current = Get-StrictFullPath $InstallRoot 'removal current'
     if ((Split-Path -Leaf $current) -cne 'current') { throw 'REMOVAL_CURRENT_PATH_INVALID' }
@@ -2463,7 +2513,15 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
     $localRollback=$true
     if(Test-Path -LiteralPath (Join-Path $application 'update-control\worker-pending.json') -PathType Leaf){
         $menu=if($testOverride){Join-Path $env:PROGRAMDATA 'StartMenu'}else{[Environment]::GetFolderPath('CommonPrograms')}
-        $AdditionalPreimageFiles+=@{path=(Join-Path $menu 'KMTech 포장.lnk');allowed_hash=''}
+        $candidate=Join-Path $menu 'KMTech 포장.lnk'
+        if(Test-Path -LiteralPath $candidate -PathType Leaf){
+            Assert-LabelRemovalBoundary $candidate
+            $link=(New-Object -ComObject WScript.Shell).CreateShortcut($candidate)
+            if((Test-SamePath $link.TargetPath (Join-Path $current 'runtime\pythonw.exe')) -and
+                $link.Arguments -ceq ('-I -B "'+(Join-Path $current 'app\main.py')+'"') -and (Test-SamePath $link.WorkingDirectory $current)){
+                $AdditionalPreimageFiles+=@{path=$candidate;allowed_hash='';evidence_name='machine-shortcut.lnk'}
+            }
+        }
     }
     $removalPreimage=if($localRollback){Save-RemovalFilePreimage $plan $AdditionalPreimageFiles}else{$null}
     try {
@@ -2481,7 +2539,10 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
             $arguments = '-I -B "' + (Join-Path $current 'app\main.py') + '"'
             if ((Test-SamePath $shortcut.TargetPath (Join-Path $current 'runtime\pythonw.exe')) -and
                 $shortcut.Arguments -ceq $arguments -and (Test-SamePath $shortcut.WorkingDirectory $current)) {
-                Invoke-LabelAtomicReplace -Source $shortcutPath -Destination (Join-Path $evidence 'machine-shortcut.lnk') -Mode Move
+                $savedLink=@($removalPreimage.files | Where-Object {$_.path -ieq $shortcutPath})
+                if($savedLink.Count -eq 1 -and (Test-LabelRemovalFile $shortcutPath $savedLink[0].sha256)){
+                    Invoke-LabelAtomicReplace -Source $shortcutPath -Destination (Join-Path $evidence 'machine-shortcut.lnk') -Mode Move
+                }
             }
         }
     }
@@ -2550,6 +2611,7 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
     $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$marker.lifecycle_state -cne 'REMOVED') { throw 'REMOVAL_MARKER_READBACK_FAILED' }
     if($null -ne $AfterRemoval){& $AfterRemoval}
+    Clear-RemovalFilePreimage $removalPreimage
     return @{status='PASS';lifecycle_state='REMOVED';evidence_root=$evidence;retained_paths=@($remaining.retained_paths)}
     } catch {
         $removalFailure=$_

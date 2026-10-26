@@ -41,7 +41,9 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public class RemovalTask {
     public string Xml="<Task><Fixture/></Task>";
+    public bool Enabled=true;
     public string GetSecurityDescriptor(int flags) { return "fixture-sddl"; }
+    public void SetSecurityDescriptor(string sddl,int flags) { }
     public void Stop(int flags) { }
 }
 public class RemovalFolder {
@@ -79,6 +81,16 @@ function Get-LabelSupportedStartupTasks { param($Root)
 }
 function Get-ScheduledTask { return @() }
 function Get-OwnedLegacyTaskRetirementSnapshot { return $null }
+function Register-ScheduledTask {
+    param($TaskName,$Xml,[switch]$Force,$ErrorAction)
+    [void]$folder.RegisterTask($TaskName,$Xml,6,$null,$null,0,'fixture-sddl')
+}
+function Enable-ScheduledTask { throw 'Unexpected task enable in the startup-only fixture' }
+function Disable-ScheduledTask { throw 'Unexpected task disable in the startup-only fixture' }
+function Assert-LabelStartupUpdateTaskDefinition {
+    param([xml]$Actual,[xml]$Expected)
+    if($Actual.OuterXml -cne $Expected.OuterXml){throw 'Fixture task definition differs'}
+}
 function Get-CimInstance {
     if ($script:processScenario -eq 'process-unknown') { return @() }
     if ($script:processScenario -eq 'process-live') { return [pscustomobject]@{ProcessId=124;ParentProcessId=0;CreationDate=[datetime]::UtcNow;ExecutablePath=(Join-Path $Root 'versions\fixture\runtime\python.exe');CommandLine='fixture'} }
