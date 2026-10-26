@@ -64,6 +64,7 @@ def test_product_written_large_backlog_replays_exactly_once_after_two_restarts(p
     # bytes in the old inline format; no malformed or padded audit input.
     records = records_for(app, 8939)
     manager = app.data_manager
+    assert manager.flush(timeout=5)  # Drain scan setup before blocking audit appends.
     original_open = manager._open_file
 
     def csv_unavailable(path, mode, *args, **kwargs):
@@ -221,7 +222,7 @@ def test_held_checkpoint_replays_segments_without_rewriting_originals(
                                   'duplicate', 'truncated', 'shorter', 'reordered'])
 @pytest.mark.parametrize('reopen', [False, True], ids=['live-writer', 'restart'])
 def test_changed_csv_falls_back_to_the_original_full_row_verdict(packaging, damage, reopen):
-    """Proof mismatches retain the old per-key verdict and exact CSV bytes."""
+    """Keep per-key verdicts; a torn proven prefix must never be auto-trimmed."""
     import io
     import os
 
@@ -270,6 +271,18 @@ def test_changed_csv_falls_back_to_the_original_full_row_verdict(packaging, dama
         assert len(changed) == len(original)
         os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
     manager = restart(app) if reopen else app.data_manager
+    if damage == 'truncated':
+        assert not manager.replay_audit_events()
+        assert manager._audit_outbox == records
+        assert path.read_bytes() == changed
+        assert not list(path.parent.glob(path.name + '.held-*'))
+        assert manager._writer_errors
+        assert all('감사 CSV 증명 앞부분' in str(error) for error in manager._writer_errors)
+        with pytest.raises(RuntimeError, match='감사 CSV 증명 앞부분'):
+            manager.close(timeout=5)
+        app.data_manager = lm.DataManager(app.save_directory, manager.process_name,
+                                         'NEXT-SHIFT', manager.unique_id)
+        return
     # Literal reference to the old writer: scan every row per pending key,
     # reject only same-key/different-content, otherwise fsync or append.
     legacy_failed, legacy_bytes = set(), changed

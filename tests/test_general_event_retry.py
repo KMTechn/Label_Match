@@ -290,10 +290,12 @@ def test_failure_after_append_keeps_original_in_memory_without_appending_again(t
 
     @contextmanager
     def append_then_fail(path, mode, *args, **kwargs):
-        attempts.append(path)
+        if mode in ('a', 'a+'):
+            attempts.append(path)
         with open(path, mode, *args, **kwargs) as stream:
             yield stream
-        raise OSError('synthetic failure after context close')
+        if mode in ('a', 'a+'):
+            raise OSError('synthetic failure after context close')
 
     manager = manager_for(tmp_path, append_then_fail)
     try:

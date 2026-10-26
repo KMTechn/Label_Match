@@ -281,6 +281,7 @@ class DataManager:
                     else:
                         file_context = self._open_file(filepath, 'a', newline='', encoding='utf-8-sig')
                 with self._audit_csv_lock, file_context as f:
+                    self._repair_csv_tail_unlocked(f, filepath)
                     index = None
                     if audit_key:
                         index = self._audit_csv_index(f, filepath)
@@ -414,6 +415,61 @@ class DataManager:
             return proof['rows'] == max(0, len(rows)-1) and proof['last_row_sha256'] == last_hash
         except (KeyError, TypeError, ValueError, csv.Error):
             return False
+    def _repair_csv_tail_unlocked(self, stream, filepath):
+        """Preserve a torn suffix before trimming it under the CSV writer lock."""
+        stream.flush()
+        with self._open_file(filepath, 'r+b') as raw:
+            size = raw.seek(0, os.SEEK_END)
+            if not size:
+                return
+            raw.seek(size - 1)
+            terminated = raw.read(1) == b'\n'
+            line_end, cursor = size, size - int(terminated)
+            line_nul = False
+            keep = 0
+            while cursor:
+                start = max(0, cursor - 4096)
+                raw.seek(start)
+                chunk = raw.read(cursor - start)
+                newline = chunk.rfind(b'\n')
+                line_nul |= b'\0' in chunk[newline + 1:]
+                if newline < 0:
+                    cursor = start
+                    continue
+                if terminated and not line_nul:
+                    keep = line_end
+                    break
+                line_end = start + newline + 1
+                cursor = line_end - 1
+                terminated, line_nul = True, False
+            else:
+                if terminated and not line_nul:
+                    keep = line_end
+            if keep == size:
+                return
+            root = Path(self.save_directory).absolute()
+            relative = Path(filepath).absolute().relative_to(root).as_posix()
+            previous = self._audit_csv_indexes.get(filepath)
+            proofs = [self._audit_csv_prefixes.get(relative)]
+            if previous is not None:
+                proofs.append(self._csv_prefix(previous))
+            for proof in proofs:
+                if isinstance(proof, dict) and type(proof.get('size')) is int and proof['size'] > keep:
+                    raise ValueError('감사 CSV 증명 앞부분과 잘린 끝이 겹칩니다: ' + relative)
+            raw.seek(keep)
+            fragment = raw.read()
+            archive = Path(filepath).with_name(
+                Path(filepath).name + '.held-' + hashlib.sha256(fragment).hexdigest())
+            if not os.path.lexists(archive):
+                write_checked_bytes(archive, fragment, allowed_root=root, replace=False)
+            if read_checked_bytes(archive, allowed_root=root) != fragment:
+                raise ValueError('CSV tail evidence differs: ' + relative)
+            raw.truncate(keep)
+            raw.flush()
+            os.fsync(raw.fileno())
+            self._audit_csv_indexes.pop(filepath, None)
+            stream.seek(0, os.SEEK_END)
+            print(f'CSV 잘린 끝 보존: {relative}: {size - keep} bytes: {archive.name}')
     def _audit_csv_index(self, stream, filepath):
         """Validate a prefix once, then index only this writer's durable appends."""
         signature = self._csv_signature(stream)
@@ -461,6 +517,7 @@ class DataManager:
                     # the same full-row verdict, retaining only affected keys.
                     self._audit_csv_indexes.pop(filepath)
                     with self._open_file(filepath, 'a+', newline='', encoding='utf-8-sig') as stream:
+                        self._repair_csv_tail_unlocked(stream, filepath)
                         index = self._audit_csv_index(stream, filepath)
                         for key, row in expected.items():
                             previous = index['keys'].get(key)
