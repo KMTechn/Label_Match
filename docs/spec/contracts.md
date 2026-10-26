@@ -2,6 +2,8 @@
 
 ## 업로드 시계·일시 오류와 막힘 상태 (w9firstupdsub636)
 
+spool/본문 읽기에서 FileNotFoundError와 잠금 외 OSError는 기존 failed_permanent로 해당 행만 닫고 K/N·보내기 띠에 반영한다. PermissionError 또는 winerror 5/32/33만 retry_wait이며, 앞선 POST 가능 행의 terminal 전환은 기존 배정과 runtime 다섯 칸을 보존한다. 같은 원본 terminal 앞 구간을 건너뛰지 않으며 포장의 24 h 나이 gate는 소실 행 때문에 다른 새 enqueue를 막지 않는다(w9firstupdsub693, ANSWER-1).
+
 업로드의 비JSON HTTP 400–599(401 포함)는 재시도한다. `response.json()` 예외일 때만 내부 receipt에 `_local_response_parse_failed=true`, 업로드/실행 상태와 last_result에 `response_parse_failed=true`를 둔다. 정상 파싱한 배열·문자열은 기존 객체 검증을 따른다. JSON 업로드 4xx 중 401을 제외하고 `committed` 칸 자체가 없으면 재시도한다. 서버 정본 `producer_ingest.py@9d16cd59:error_payload:3574–3589`는 오류에도 `committed`를 항상 포함한다. JSON 401은 stale만, JSON 5xx도 committed/receipt 보호가 우선이다. 2xx 불명·3xx 보호는 유지한다. lease API에는 비JSON 복구·파싱 표지만 적용하며 JSON `committed` 누락 규칙을 적용하지 않는다.
 
 재시도 때 서버 `committed:false` 명시 거절이나 요청 전 로컬 실패가 확정된 경우만 실제 행 배정을 같은 트랜잭션에서 풀고 runtime 다섯 필드를 제거한다. 메타데이터가 없거나 실제 배정이 없으면 release를 부르지 않는다. 응답 유실·파싱 불능 등 전송/응답이 모호하면 같은 행의 재시도 권한을 보존한다. 해제된 권한은 유효 기간 안에서 다른 행에 재배정하고 만료 뒤에는 기존 새 발급 경로를 따른다.
@@ -9,7 +11,7 @@
 
 스캔의 일반 `enqueue_error`는 해당 파일을 `scan_enqueue_errors=[{source_file,error_code}]`에 기록하고 다음 파일과 안전한 drain을 계속한다. `scan_failed_source_file`은 첫 실패를 유지한다. 한 파일이라도 실패하면 `scan_status=enqueue_error`, CLI 종료 코드는 2다. pause·디스크·runtime 실패의 기존 정지와 같은 원본 terminal 앞 구간 보호는 유지한다.
 
-업로드와 행별 runtime lease 준비의 HTTP 401 중 오류 코드가 정확히 `stale_timestamp`인 응답은 기존 `retry_wait`로 남긴다. 다른 JSON 자격 401과 committed/receipt 불일치 검토는 기존 보호를 유지한다. 연결 거절·DNS·TLS·소켓/읽기/연결 시간 초과, 미커밋 408·429·5xx, 서버 요청 전의 로컬 OSError와 spool 읽기 OSError도 기존 간격·다음 시도·횟수 정책으로 다시 시도한다. spool hash/길이 불일치는 내용 문제이므로 기존 terminal을 유지한다. 서버 응답 뒤 생긴 모호한 예외를 단순 로컬 실패로 바꾸지 않는다.
+업로드와 행별 runtime lease 준비의 HTTP 401 중 오류 코드가 정확히 `stale_timestamp`인 응답은 기존 `retry_wait`로 남긴다. 다른 JSON 자격 401과 committed/receipt 불일치 검토는 기존 보호를 유지한다. 연결 거절·DNS·TLS·소켓/읽기/연결 시간 초과, 미커밋 408·429·5xx, 서명·TLS 준비의 로컬 OSError와 spool/본문의 일시 잠금도 기존 간격·다음 시도·횟수 정책으로 다시 시도한다. spool hash/길이 불일치는 내용 문제이므로 기존 terminal을 유지한다. 서버 응답 뒤 생긴 모호한 예외를 단순 로컬 실패로 바꾸지 않는다.
 
 시계 거절 뒤 PC UTC가 행의 마지막 실패/갱신 시각보다 뒤로 갔으면 해당 stale retry_wait만 다음 claim에서 다시 고른다. 정상 시간 진행의 backoff와 다른 오류의 due는 그대로다. 서명은 매 요청 현재 PC UTC로 새로 만들며 저장된 HTTP 서명이나 서버 Date로 서명 시각을 바꾸지 않는다. 옛 terminal 행의 자동 복구는 하지 않는다.
 

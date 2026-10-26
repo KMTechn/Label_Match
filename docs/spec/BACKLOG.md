@@ -1,3 +1,4 @@
+- w9firstupdsub693: spool 소실·잠금 외 I/O 오류는 기존 terminal·K/N·띠로 격리하고 잠금만 재시도한다. ACK 유실 가능 행의 배정·runtime 다섯 칸과 같은 원본 앞 구간을 보존하며, 포장 24 h 뒤 다른 새 enqueue 지속을 검증한다.
 - 화 밤 v2.0.126 재서명(w9firstupdsub636): stale 401·미커밋 일시 HTTP/네트워크·서버 전 로컬 OSError를 재시도하며 Date/시계 rollback 회복, 한 칸 보내기 경고, CSV 레코드 N/K와 공통 upload_block_status 상태를 추가한다. committed/receipt·내용 불일치·같은 원본 앞 구간의 보호를 유지한다. 옛 terminal 자동 복구 0; 본사 원격 CLI와 다음 회차 되읽기로 풀며 실제 창/설치/현장 수용은 레인 회차다.
 - 화 밤 v2.0.126 재서명(w9firstupdsub674): 불완전 일시 응답의 runtime 검토 코드가 권한 전체를 막지 않게 하고, ACK 유실 뒤 로컬 실패에도 원 행의 배정·runtime 다섯 필드를 보존한다. 첫 요청 전 로컬 실패·명시 미커밋 거절의 해제와 committed/receipt 검토 보호는 유지한다.
 - 11/15 후보: 앞 구간이 막힌 원본을 스스로 새 파일로 갈아타는 방안은 순서·중복·원장 의미를 설계한 뒤 검토한다. 11/1 판에는 넣지 않는다.

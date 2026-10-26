@@ -904,6 +904,26 @@ def _redact_remote_error_payload(
     return redact_runtime_secrets(redact_value(dict(payload)))
 
 
+def _spool_read_is_retryable(exc: OSError) -> bool:
+    if isinstance(exc, FileNotFoundError):
+        return False
+    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32, 33}
+
+
+def _spool_read_error_result(exc: OSError, *, relay_id: str = "") -> UploadResult:
+    return UploadResult(
+        success=False,
+        status_code=0,
+        committed=False,
+        retryable=_spool_read_is_retryable(exc),
+        receipt={"client_batch_id": relay_id} if relay_id else {},
+        error_code="spooled_file_missing" if isinstance(exc, FileNotFoundError) else "spooled_file_unreadable",
+        error_message=f"spooled file cannot be read: {exc}",
+        _runtime_token_unconsumed=True,
+        _transient_rejection=True,
+    )
+
+
 def _transport_error_result(exc: Exception, *, request_not_started: bool = False) -> UploadResult:
     return UploadResult(
         success=False,
@@ -1399,8 +1419,10 @@ def upload_source_file(
         except OSError:
             return result
     request_started = False
+    source_opened = False
     try:
         with Path(plan.source_file_path).open("rb") as handle:
+            source_opened = True
             if before_post is not None:
                 before_post()
             request_kwargs: dict[str, Any] = {
@@ -1427,7 +1449,10 @@ def upload_source_file(
     except RelayLeaseLostBeforeSourcePost:
         raise
     except Exception as exc:
-        result = _transport_error_result(exc, request_not_started=not request_started)
+        if isinstance(exc, OSError) and not request_started and not source_opened:
+            result = _spool_read_error_result(exc)
+        else:
+            result = _transport_error_result(exc, request_not_started=not request_started)
     else:
         result = _upload_response_result(plan, response, credentials=credentials, headers=headers)
     return _with_upload_status_artifact(plan, result, status_dir)
@@ -2347,6 +2372,12 @@ def _set_relay_status(
             RELAY_STATUS_FAILED_PERMANENT,
             RELAY_STATUS_OPERATOR_REVIEW,
         }
+        # ANSWER-1: local spool loss cannot resolve a prior missing ACK.
+        preserve_spool_binding = (
+            authority_action == "preserve"
+            and status == RELAY_STATUS_FAILED_PERMANENT
+            and error_code in {"spooled_file_missing", "spooled_file_unreadable", "source_file_unreadable"}
+        )
         if cursor.rowcount == 1 and (
             runtime_lease is not None or authority_action or terminal_runtime_metadata
         ):
@@ -2443,6 +2474,7 @@ def _set_relay_status(
                 )
             if (
                 terminal_runtime_metadata
+                and not preserve_spool_binding
                 and runtime_metadata is not None
                 and "runtime_request_token" in runtime_metadata
             ):
@@ -2450,7 +2482,7 @@ def _set_relay_status(
                     "UPDATE direct_sync_relay_batches SET metadata_json=? WHERE relay_id=?",
                     (canonical_json(scrub_terminal_runtime_metadata(runtime_metadata)), relay_id),
                 )
-            elif terminal_runtime_metadata and token_in_metadata:
+            elif terminal_runtime_metadata and token_in_metadata and not preserve_spool_binding:
                 conn.execute(
                     "UPDATE direct_sync_relay_batches SET metadata_json=? WHERE relay_id=?",
                     (
@@ -2638,23 +2670,17 @@ def drain_one_relay_batch(
     try:
         spooled_hash, spooled_bytes = _read_file_digest(Path(row.spooled_file_path))
     except OSError as exc:
-        error_code = "spooled_file_missing" if isinstance(exc, FileNotFoundError) else "spooled_file_unreadable"
-        retry_after = _retry_after_seconds(row.attempt_count, retry_base_seconds, row.relay_id)
-        result = UploadResult(
-            success=False,
-            status_code=0,
-            committed=False,
-            retryable=True,
-            receipt={"client_batch_id": row.relay_id},
-            error_code=error_code,
-            error_message=f"spooled file cannot be read: {exc}",
-        )
+        result = _spool_read_error_result(exc, relay_id=row.relay_id)
+        next_attempt_at = ""
+        if result.retryable:
+            retry_after = _retry_after_seconds(row.attempt_count, retry_base_seconds, row.relay_id)
+            next_attempt_at = (datetime.now(timezone.utc) + timedelta(seconds=retry_after)).isoformat().replace('+00:00', 'Z')
         _set_claimed_relay_status(
             row,
             db_path=db_path,
-            status=RELAY_STATUS_RETRY_WAIT,
+            status=RELAY_STATUS_RETRY_WAIT if result.retryable else RELAY_STATUS_FAILED_PERMANENT,
             receipt=result.receipt,
-            next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=retry_after)).isoformat().replace('+00:00', 'Z'),
+            next_attempt_at=next_attempt_at,
             error_code=result.error_code,
             error_message=result.error_message,
             runtime_credentials=credentials,
@@ -2953,7 +2979,9 @@ def drain_one_relay_batch(
             error_message=result.error_message,
             runtime_credentials=credentials,
             runtime_authority_action=(
-                "release" if result._runtime_token_unconsumed else "operator_review"
+                "preserve" if prior_runtime_assignment and result.status_code == 0
+                and result.error_code in {"spooled_file_missing", "spooled_file_unreadable"}
+                else "release" if result._runtime_token_unconsumed else "operator_review"
             ),
         )
     return result
