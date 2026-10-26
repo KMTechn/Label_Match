@@ -656,10 +656,16 @@ def _initialize_outbox_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _admit_recovery_storage_readonly(db_path) -> None:
+    from package_recovery_ledger import admit_recovery_storage_readonly
+    admit_recovery_storage_readonly(db_path)
+
+
 class PackageOutbox(_PackageOutbox):
     """Keep the existing constructor and resolve facade hooks when called."""
 
     def __init__(self, db_path: str | Path):
+        _admit_recovery_storage_readonly(db_path)
         super().__init__(
             db_path,
             utc_now=lambda: utc_now(),
@@ -681,6 +687,7 @@ class PackageCancellationOutbox:
         self.db_path = str(Path(db_path))
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        _admit_recovery_storage_readonly(self.db_path)
         self.initialize()
 
     @contextmanager

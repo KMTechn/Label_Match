@@ -11,10 +11,17 @@ from tests.test_recovery_storage_and_main import fail_recovery_query, logical_sn
 
 
 def _files(path):
+    """DB and WAL bytes and mtime; for -shm only existence and size.
+
+    SQLite's shared-memory index is reader bookkeeping: any read-only reader
+    updates one read-mark byte in it. It is derived, not store content.
+    """
     out = {}
     for suffix in ("", "-wal", "-shm"):
         item = f"{path}{suffix}"
-        if os.path.exists(item):
+        if suffix == "-shm":
+            out[suffix] = os.path.getsize(item) if os.path.exists(item) else None
+        elif os.path.exists(item):
             with open(item, "rb") as handle:
                 out[suffix] = (handle.read(), os.stat(item).st_mtime_ns)
         else:
