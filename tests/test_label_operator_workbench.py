@@ -781,6 +781,10 @@ def test_relay_screen_status_follows_relay_files_and_keeps_state_on_torn_read(
             )
 
     db_path = _write_relay_db(tmp_path, lease={"status": "OPERATOR_REVIEW"}, rows=("pending",))
+    # This checks relay-state caching; the ten-minute send band has separate coverage.
+    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute("UPDATE direct_sync_relay_batches SET created_at=?",
+                     (datetime.now(timezone.utc).isoformat(),))
     write_status(
         '{"status": "runtime_error", "runtime_lease": {"status": "operator_review"}}',
         1_000_000_000,
