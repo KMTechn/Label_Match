@@ -286,6 +286,7 @@ v2.0.104 후보는 인수 없이 새 화면(셸 v3.16.2)을 엽니다. 비상 `-
 7. 앱을 닫았다 켜서 하던 트레이가 이어지는지 본다.
 
 ### 8-3. 업데이트 길 (지금 판 위에 다음 판 설치) — 필수
+- stock portable ZIP은 [공식 변환 도구](../../tools/make_canonical_update_packet.py)로 모든 파일에 `Label_Match/`를 붙인 canonical 업데이트 꾸러미와 1:1 SHA256 영수증을 만든다. 원소 바이트·순서·시각·압축 방식·외부 속성을 보존하며, 사용법과 실패 산출물 보존 규칙은 [운영 절차](operations.md#canonical-update-packet)를 따른다. stock ZIP 자체는 canonical archive 정책에 맞지 않는다.
 - **길(코드)**:
   1. 건강한 고정 판 A와 활성 판 B를 보존한다.
   2. 다음 판 C를 `versions/C` 에 넣고 전환한다(`INSTALL_CANONICAL_PORTABLE.ps1:3606`, `auto_update.py:770`).
