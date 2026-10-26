@@ -79,7 +79,8 @@ def accepted(row):
             metadata['source_host_id'] + '/label_match/label_match_events/' + row.relative_path
         ),
         'committed': True, 'status': 'accepted', 'projection_disposition': 'COMPLETE',
-        'totals': {'inserted': 1, 'replayed': 0, 'quarantined': 0, 'errors': 0},
+        'retryable': False, 'next_retry_after': None,
+        'totals': {'inserted': metadata['row_count'], 'replayed': 0, 'quarantined': 0, 'errors': 0},
     })
 
 
@@ -255,6 +256,7 @@ def test_screen_poll_connects_clock_warning_and_automatic_clear(tmp_path):
         _render_relay_screen_status=lambda _state: None,
         _render_logistics_connection=lambda *_args: None,
         _render_logistics_progress=lambda: None,
+        _refresh_relay_screen_status=lambda: None,
         after=lambda *_args: 'next-poll',
     )
     status_path.write_text(json.dumps({
