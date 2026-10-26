@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize('engine', ['powershell', 'pwsh'])
-def test_emergency_link_failure_does_not_block_other_uninstall_stages(tmp_path, engine):
+def test_emergency_link_failure_stops_later_uninstall_stages(tmp_path, engine):
     executable = shutil.which(engine)
     assert executable is not None
     child = subprocess.run([executable, '-NoProfile', '-NonInteractive',

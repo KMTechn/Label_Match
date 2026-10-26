@@ -844,3 +844,5 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - w9firstupdsub513 / relay 감사 고침 완료: 성공 bootstrap의 첫 rc 0 뒤 최대 2.0초·0.1초 간격 owner 재조회(부모 기한 안), 진단 전체 예외 격리, 업데이트 복구·되돌림 기존 코드 유지, RUNNING 뒤 정상 종료 사본 제외, headless RUNNING 전후 표기·정상 정지 정합. ANSWER-1 적용, 판 올림 0.
 
 - 재설치 밤 목록 — P3(레인21:4x 판정): terminal 만료 뒤 옛 판을 계속 실행하는 흐름과 되풀이 횟수 막이 없음은 이번 고침에서 그대로 두고 밤 재설치 목록에 남긴다.
+
+- 제거가 뒤 단계에서 실패하면 제거 전 내용 소유 코드·control·바로가기를 원위치로 복원하고 실패를 반환한다. 복원도 실패하면 removal-evidence/<attempt>/rollback.json에 설치 손상을 남기고 승인 새 판 재설치를 안내한다. 자료·기존 evidence는 보존하며, 옛 제거 잔재에 대한 설치·U/stop/소스 증명 거절은 유지한다. current 없음+policy 잔재의 새 복구는 이번 범위 밖이며 PC를 멈추고 자료·증거를 보존해 별도 지원 절차를 따른다(sub-681, 레인 ANSWER-3).

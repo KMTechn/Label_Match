@@ -56,6 +56,10 @@ trap {
     }
     $publicReason='INSTALLER_FAILED';$publicGuidance=''
     for($cause=$_.Exception;$null -ne $cause;$cause=$cause.InnerException){
+        if($cause.Data['removal_installation_damaged'] -eq $true){
+            $publicGuidance='설치 손상: 자료를 보존한 상태로 승인된 새 판을 다시 설치하세요.'
+            break
+        }
         if($cause.Data['label_installer_reason_code'] -ceq 'MACHINE_REMOVAL_WORKER_PART_PENDING'){
             $publicReason='MACHINE_REMOVAL_WORKER_PART_PENDING'
             $publicGuidance='작업자 계정으로 먼저 제거(사용자 몫)를 실행한 뒤 다시 시도하세요.'
@@ -1860,12 +1864,16 @@ function Remove-LabelScheduledTasks($Folder, [string]$EvidenceRoot, [string]$Cur
     catch { throw 'Refusing to remove a historical task with different ownership/command.' }
     if($null -ne $official){
         $directory=Join-Path $EvidenceRoot 'official-legacy-relay'
+        $transaction=Get-Variable -Name removalPreimage -ValueOnly -ErrorAction SilentlyContinue
+        if($null -ne $transaction){[void]$transaction.tasks.Add(@{official=$official;directory=$directory})}
         Invoke-LabelOfficialLegacyTaskTransition 'Disable' $directory $official.xml_sha256
     }
 
     foreach ($task in @(Get-LabelSupportedStartupTasks $Current)) {
         $name = [string]$task.TaskName
         $native = $Folder.GetTask($name)
+        $transaction=Get-Variable -Name removalPreimage -ValueOnly -ErrorAction SilentlyContinue
+        if($null -ne $transaction){[void]$transaction.tasks.Add(@{name=$name;xml=[string]$native.Xml;sddl=[string]$native.GetSecurityDescriptor(7);legacy=$false})}
         Write-LabelStartupUpdateRecord -Path (Join-Path $EvidenceRoot ($name + '.json')) -Payload @{
             name=$name;xml=$native.Xml;sddl=$native.GetSecurityDescriptor(7)
         }
@@ -1878,6 +1886,8 @@ function Remove-LabelScheduledTasks($Folder, [string]$EvidenceRoot, [string]$Cur
     $legacy = Get-OwnedLegacyTaskRetirementSnapshot 'direct-sync-relay-label-match-current-pc'
     if ($null -ne $legacy) {
         Write-LabelStartupUpdateRecord -Path (Join-Path $EvidenceRoot 'legacy-task.json') -Payload $legacy
+        $transaction=Get-Variable -Name removalPreimage -ValueOnly -ErrorAction SilentlyContinue
+        if($null -ne $transaction){$native=$Folder.GetTask('direct-sync-relay-label-match-current-pc');[void]$transaction.tasks.Add(@{name='direct-sync-relay-label-match-current-pc';xml=[string]$native.Xml;sddl=[string]$native.GetSecurityDescriptor(7);legacy=$false})}
         Remove-OwnedLegacyTask 'direct-sync-relay-label-match-current-pc'
     }
     if (@(Get-LabelSupportedStartupTasks $Current).Count -ne 0) { throw 'REMOVAL_TASK_ABSENCE_NOT_PROVEN' }
@@ -2311,7 +2321,125 @@ function Remove-LabelEmptiedParents([string]$Path, [string[]]$Directories) {
     }
 }
 
-function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]]$ExcludeProcessIds = @(), [string[]]$AdditionalRetainedPaths = @(), [hashtable]$WorkerPartProof = $null) {
+function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]]$ExcludeProcessIds = @(), [string[]]$AdditionalRetainedPaths = @(), [hashtable]$WorkerPartProof = $null, [object[]]$AdditionalPreimageFiles = @(), [scriptblock]$BeforeRemoval = $null, [scriptblock]$AfterRemoval = $null) {
+
+    # This preimage contains only the existing content-owned removal plan and
+    # verified shortcut paths. Business roots and opaque files are never copied.
+    function Save-RemovalFilePreimage($Plan, [object[]]$ExtraFiles) {
+        $saved = @{files=[Collections.ArrayList]::new();tasks=[Collections.ArrayList]::new();directories=@();evidence=$evidence}
+        $backupRoot=Join-Path $evidence '.restore-preimage'
+        [void][IO.Directory]::CreateDirectory((Get-LabelRemovalIoPath $backupRoot))
+        $rows=@($Plan.artifacts | ForEach-Object {@{path=$_;allowed_hash=''}})+@($ExtraFiles | Where-Object {$null -ne $_})
+        $seen=@{}
+        foreach($row in $rows){
+            $path=[string]$row.path
+            if($seen.ContainsKey($path)){continue};$seen[$path]=$true
+            Assert-LabelRemovalBoundary $path
+            $io=Get-LabelRemovalIoPath $path
+            if(-not(Test-Path -LiteralPath $io -ErrorAction Stop)){continue}
+            if($Plan.hashes.ContainsKey($path) -and -not(Test-LabelRemovalFile $path $Plan.hashes[$path])){continue}
+            $item=Get-Item -LiteralPath $io -Force -ErrorAction Stop
+            if($item.PSIsContainer){throw 'REMOVAL_PREIMAGE_FILE_REQUIRED'}
+            $backup=Join-Path $backupRoot ([string]$saved.files.Count)
+            [IO.File]::Copy($io,(Get-LabelRemovalIoPath $backup),$false)
+            $digest=[Security.Cryptography.SHA256]::Create();$reader=$null
+            try{$reader=[IO.File]::OpenRead((Get-LabelRemovalIoPath $backup));$hash=([BitConverter]::ToString($digest.ComputeHash($reader))).Replace('-','').ToLowerInvariant()}
+            finally{if($null -ne $reader){$reader.Dispose()};$digest.Dispose()}
+            if(-not(Test-LabelRemovalFile $path $hash)){throw 'REMOVAL_PREIMAGE_READBACK_DIFFERS'}
+            $acl=if(-not $testOverride){Get-Acl -LiteralPath $io -ErrorAction Stop}else{$null}
+            [void]$saved.files.Add(@{path=$path;backup=$backup;sha256=$hash;allowed_hash=[string]$row.allowed_hash;
+                acl=$acl;attributes=$item.Attributes;written=$item.LastWriteTimeUtc;created=$item.CreationTimeUtc})
+        }
+        $directories=@($Plan.directories | Where-Object {
+            $directoryPrefix=([string]$_).TrimEnd('\')+'\'
+            @($saved.files | Where-Object {$_.path.StartsWith($directoryPrefix,[StringComparison]::OrdinalIgnoreCase)}).Count -gt 0
+        })+@($saved.files | ForEach-Object {Split-Path -Parent $_.path})
+        foreach($path in @($directories | Sort-Object -Unique)){
+            Assert-LabelRemovalBoundary $path
+            if(-not(Test-Path -LiteralPath (Get-LabelRemovalIoPath $path) -PathType Container)){continue}
+            $item=Get-Item -LiteralPath (Get-LabelRemovalIoPath $path) -Force -ErrorAction Stop
+            $saved.directories+=@{path=$path;acl=$(if(-not $testOverride){Get-Acl -LiteralPath (Get-LabelRemovalIoPath $path) -ErrorAction Stop}else{$null});
+                attributes=$item.Attributes;written=$item.LastWriteTimeUtc;created=$item.CreationTimeUtc}
+        }
+        return $saved
+    }
+    function Restore-RemovalFilePreimage($Saved, $OriginalFailure) {
+        $failures=[Collections.ArrayList]::new()
+        # A success marker belongs to this attempt only when its evidence matches.
+        try{
+            if(Test-Path -LiteralPath $markerPath -PathType Leaf){
+                $marker=Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if([string]$marker.lifecycle_state -ceq 'REMOVED' -and [string]$marker.evidence_root -ceq $evidence){
+                    [IO.File]::Delete((Get-LabelRemovalIoPath $markerPath))
+                }
+            }
+        }catch{[void]$failures.Add($_.Exception.GetType().FullName)}
+        foreach($directory in @($Saved.directories | Sort-Object {$_.path.Length})){
+            try{
+                Assert-LabelRemovalBoundary $directory.path
+                $io=Get-LabelRemovalIoPath $directory.path
+                if(-not[IO.Directory]::Exists($io)){
+                    [void][IO.Directory]::CreateDirectory($io)
+                    if($null -ne $directory.acl){Set-Acl -LiteralPath $io -AclObject $directory.acl -ErrorAction Stop}
+                }
+            }catch{[void]$failures.Add($_.Exception.GetType().FullName)}
+        }
+        foreach($file in $Saved.files){
+            try{
+                Assert-LabelRemovalBoundary $file.path
+                $io=Get-LabelRemovalIoPath $file.path
+                if(Test-Path -LiteralPath $io -ErrorAction Stop){
+                    if(Test-LabelRemovalFile $file.path $file.sha256){continue}
+                    if(-not $file.allowed_hash -or -not(Test-LabelRemovalFile $file.path $file.allowed_hash)){throw 'REMOVAL_RESTORE_CONFLICT'}
+                }
+                if(-not(Test-LabelRemovalFile $file.backup $file.sha256)){throw 'REMOVAL_PREIMAGE_DAMAGED'}
+                $prefix=$application.TrimEnd('\')+'\'
+                $moved=if($file.path.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){Join-Path $evidence $file.path.Substring($prefix.Length)}else{''}
+                if($moved -and -not(Test-Path -LiteralPath $io) -and (Test-Path -LiteralPath (Get-LabelRemovalIoPath $moved))){
+                    if(-not(Test-LabelRemovalFile $moved $file.sha256)){throw 'REMOVAL_EVIDENCE_CHANGED'}
+                    [IO.File]::Move((Get-LabelRemovalIoPath $moved),$io)
+                }else{[IO.File]::Copy((Get-LabelRemovalIoPath $file.backup),$io,$true)}
+                if($null -ne $file.acl){Set-Acl -LiteralPath $io -AclObject $file.acl -ErrorAction Stop}
+                [IO.File]::SetCreationTimeUtc($io,$file.created);[IO.File]::SetLastWriteTimeUtc($io,$file.written)
+                [IO.File]::SetAttributes($io,$file.attributes)
+                if(-not(Test-LabelRemovalFile $file.path $file.sha256)){throw 'REMOVAL_RESTORE_READBACK_DIFFERS'}
+            }catch{[void]$failures.Add($_.Exception.GetType().FullName)}
+        }
+        foreach($task in $Saved.tasks){
+            try{
+                if($task.ContainsKey('official')){
+                    Invoke-LabelOfficialLegacyTaskTransition 'Restore' $task.directory $task.official.xml_sha256
+                    continue
+                }
+                $present=$null
+                try{$present=$TaskFolder.GetTask($task.name)}catch{
+                    $cause=$_.Exception;while($null -ne $cause.InnerException){$cause=$cause.InnerException}
+                    if($cause.HResult -ne -2147024894){throw}
+                }
+                if($null -eq $present){
+                    [void]$TaskFolder.RegisterTask($task.name,$task.xml,6,$null,$null,0,$task.sddl)
+                    $present=$TaskFolder.GetTask($task.name)
+                }elseif([string]$present.Xml -cne $task.xml -and -not $task.legacy){throw 'REMOVAL_RESTORE_TASK_CONFLICT'}
+                if($task.legacy){$present.Enabled=$task.enabled}
+                if([string]$present.Xml -cne $task.xml -or [string]$present.GetSecurityDescriptor(7) -cne $task.sddl){throw 'REMOVAL_RESTORE_TASK_READBACK_DIFFERS'}
+            }catch{[void]$failures.Add($_.Exception.GetType().FullName)}
+        }
+        foreach($directory in @($Saved.directories | Sort-Object {$_.path.Length} -Descending)){
+            try{
+                $io=Get-LabelRemovalIoPath $directory.path
+                [IO.Directory]::SetCreationTimeUtc($io,$directory.created);[IO.Directory]::SetLastWriteTimeUtc($io,$directory.written)
+                [IO.File]::SetAttributes($io,$directory.attributes)
+            }catch{[void]$failures.Add($_.Exception.GetType().FullName)}
+        }
+        if($failures.Count){
+            try{Write-LabelStartupUpdateRecord -Path (Join-Path $evidence 'rollback.json') -Payload @{
+                status='ROLLBACK_FAILED';installation_damaged=$true;business_data_and_registration_preserved=$true;
+                failure_types=@($failures | Sort-Object -Unique)}}catch{}
+            $damage=[InvalidOperationException]::new('설치 손상: 자료를 보존한 상태로 승인된 새 판을 다시 설치하세요.',$OriginalFailure.Exception)
+            $damage.Data['removal_installation_damaged']=$true
+            throw $damage
+        }
+    }
     $current = Get-StrictFullPath $InstallRoot 'removal current'
     if ((Split-Path -Leaf $current) -cne 'current') { throw 'REMOVAL_CURRENT_PATH_INVALID' }
     $application = Get-StrictFullPath (Split-Path -Parent $current) 'removal application'
@@ -2330,6 +2458,16 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
     New-Item -ItemType Directory -Path $evidenceParent -Force | Out-Null
     $evidence = Join-Path $evidenceParent ([Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $evidence | Out-Null
+    $plan = Get-LabelRemovalArtifacts $application
+    if (Test-Path -LiteralPath $markerPath) { $plan.artifacts += $markerPath }
+    $localRollback=$true
+    if(Test-Path -LiteralPath (Join-Path $application 'update-control\worker-pending.json') -PathType Leaf){
+        $menu=if($testOverride){Join-Path $env:PROGRAMDATA 'StartMenu'}else{[Environment]::GetFolderPath('CommonPrograms')}
+        $AdditionalPreimageFiles+=@{path=(Join-Path $menu 'KMTech 포장.lnk');allowed_hash=''}
+    }
+    $removalPreimage=if($localRollback){Save-RemovalFilePreimage $plan $AdditionalPreimageFiles}else{$null}
+    try {
+    if($null -ne $BeforeRemoval){& $BeforeRemoval}
     if ($null -eq $TaskFolder -and -not $testOverride) { throw 'REMOVAL_TASK_OBSERVATION_UNKNOWN' }
     if ($null -ne $TaskFolder) { Remove-LabelScheduledTasks $TaskFolder $evidence $current }
     # The admin entry owns only the fixed portable shortcut. Preserve legacy
@@ -2348,14 +2486,12 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
         }
     }
     Assert-LabelRemovalQuiescent $application $ExcludeProcessIds
-    $plan = Get-LabelRemovalArtifacts $application
     $workerRemovalProof = if ($null -ne $WorkerPartProof) {
         @{proof=$WorkerPartProof.proof;worker_run_present=$WorkerPartProof.run_present}
     } else { $null }
     if ($null -ne $workerRemovalProof) {
         $plan.decisions += @{path='application';disposition=('WORKER_PART_'+$workerRemovalProof.proof);worker_run_present=$workerRemovalProof.worker_run_present}
     }
-    if (Test-Path -LiteralPath $markerPath) { $plan.artifacts += $markerPath }
     $changedMetadataRoots = @(); $cleanupRetained = @()
     foreach ($path in $plan.artifacts) {
         $prefix = $application.TrimEnd('\') + '\'
@@ -2413,7 +2549,13 @@ function Invoke-LabelConvergentRemoval([string]$InstallRoot, $TaskFolder, [int[]
     }
     $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$marker.lifecycle_state -cne 'REMOVED') { throw 'REMOVAL_MARKER_READBACK_FAILED' }
+    if($null -ne $AfterRemoval){& $AfterRemoval}
     return @{status='PASS';lifecycle_state='REMOVED';evidence_root=$evidence;retained_paths=@($remaining.retained_paths)}
+    } catch {
+        $removalFailure=$_
+        if($null -ne $removalPreimage){Restore-RemovalFilePreimage $removalPreimage $removalFailure}
+        throw $removalFailure
+    }
 }
 
 
@@ -2558,47 +2700,30 @@ if ($Uninstall.IsPresent) {
         if (-not $testOverride) { Assert-ProtectedCodeAncestors $application }
         $folder = $null
         if (-not $testOverride) { $scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\') }
-        $emergencyRemovalFailure = $null
-        $emergencyEvidenceFailure = $null
-        $emergencyRetainedPaths = @()
-        try { Remove-LabelEmergencyShortcut $installRootFull }
-        catch {
-            $emergencyRemovalFailure = $_
-            $emergencyPath = Get-LabelEmergencyShortcutPath $installRootFull
-            foreach ($path in @($emergencyPath, (Split-Path -Parent $emergencyPath))) {
-                if(Test-Path -LiteralPath $path -ErrorAction Stop){$emergencyRetainedPaths += $path}
+        $removalFiles=@(@{path=(Get-LabelEmergencyShortcutPath $installRootFull);allowed_hash=''})
+        if ($WorkerShortcutRecordPath -and (Test-Path -LiteralPath $WorkerShortcutRecordPath -PathType Leaf)) {
+            Assert-LabelRemovalBoundary $WorkerShortcutRecordPath
+            $shortcutRecord=Get-Content -LiteralPath $WorkerShortcutRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if([string]$shortcutRecord.schema -cne 'label-match-worker-shortcuts-v1' -or
+                -not(Test-SamePath ([string]$shortcutRecord.install_root) $installRootFull) -or
+                -not[bool]$shortcutRecord.common_only -or [bool]$shortcutRecord.user_only){throw 'Worker shortcut restoration record differs.'}
+            $commonFolders=@([Environment]::GetFolderPath('CommonDesktopDirectory'),[Environment]::GetFolderPath('CommonPrograms'))
+            foreach($entry in @($shortcutRecord.entries)){
+                $path=[IO.Path]::GetFullPath([string]$entry.path)
+                if([IO.Path]::GetExtension($path) -ine '.lnk' -or @($commonFolders | Where-Object {$path.StartsWith($_.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)}).Count -ne 1){throw 'Recorded shortcut escaped its known folder.'}
+                $removalFiles+=@{path=$path;allowed_hash=[string]$entry.original_sha256}
             }
-            try {
-                $emergencyEvidenceRoot = Join-Path $application 'removal-evidence'
-                Assert-LabelRemovalBoundary $emergencyEvidenceRoot
-                [void][IO.Directory]::CreateDirectory($emergencyEvidenceRoot)
-                Write-LabelStartupUpdateRecord -Path (Join-Path $emergencyEvidenceRoot ('emergency-failure-'+[guid]::NewGuid().ToString('N')+'.json')) -Payload @{
-                    schema='label-match-emergency-removal-failure-v1'; status='FAILED';
-                    exception_type=$emergencyRemovalFailure.Exception.GetType().FullName;
-                    hresult=$emergencyRemovalFailure.Exception.HResult; retained_paths=@($emergencyRetainedPaths)
-                }
-            } catch {$emergencyEvidenceFailure=$_}
-            Write-Warning '포장 비상 바로 가기를 지우지 못했습니다. 나머지 제거를 계속합니다.'
         }
-        try {
-        if ($WorkerShortcutRecordPath) {
-            Invoke-LabelWorkerShortcutOperation $installRootFull 'Restore' $WorkerShortcutRecordPath `
-                $VerifiedWorkerShortcutHelperPath $ExpectedWorkerShortcutHelperSha256
+        # Emergency cleanup is part of the same preimage as code and control.
+        # Its failure stops here; no later removal stage may continue.
+        $beginRemoval={ Remove-LabelEmergencyShortcut $installRootFull }
+        $finishRemoval={
+            if ($WorkerShortcutRecordPath) {
+                Invoke-LabelWorkerShortcutOperation $installRootFull 'Restore' $WorkerShortcutRecordPath `
+                    $VerifiedWorkerShortcutHelperPath $ExpectedWorkerShortcutHelperSha256
+            }
         }
-        $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder -AdditionalRetainedPaths $emergencyRetainedPaths -WorkerPartProof $removalWorkerPartProof
-        } catch {
-            if ($null -eq $emergencyRemovalFailure) { throw }
-            $causes = @($emergencyRemovalFailure.Exception)
-            if($null -ne $emergencyEvidenceFailure){$causes += $emergencyEvidenceFailure.Exception}
-            $causes += $_.Exception
-            $combined = [AggregateException]::new('UNINSTALL_MULTIPLE_FAILURES',[Exception[]]$causes)
-            $combined.Data['emergency_retained_paths'] = $emergencyRetainedPaths
-            throw $combined
-        }
-        if($null -ne $emergencyEvidenceFailure){
-            throw [AggregateException]::new('UNINSTALL_EMERGENCY_EVIDENCE_FAILED',[Exception[]]@($emergencyRemovalFailure.Exception,$emergencyEvidenceFailure.Exception))
-        }
-        if ($null -ne $emergencyRemovalFailure) { throw $emergencyRemovalFailure }
+        $removed = Invoke-LabelConvergentRemoval -InstallRoot $installRootFull -TaskFolder $folder -WorkerPartProof $removalWorkerPartProof -AdditionalPreimageFiles $removalFiles -BeforeRemoval $beginRemoval -AfterRemoval $finishRemoval
         'uninstall_status=PASS_CODE_REMOVED_STATE_PRESERVED'
         'application_root_status=RETAINED_FOR_EVIDENCE_AND_RETAINED_ITEMS'
         if ($testOverride) { 'system_task_status=NOT_TESTED' } else { 'system_task_status=ABSENT' }

@@ -1,5 +1,8 @@
 ﻿param([string]$Root,[ValidateSet('none','link','directory')][string]$EmergencyFault='none')
 $ErrorActionPreference='Stop'
+if($PSVersionTable.PSEdition -ceq 'Desktop'){
+    $env:PSModulePath=Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/Modules'
+}
 $repo=Split-Path -Parent $PSScriptRoot
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'INSTALL_THIS_PC.ps1'),[ref]$tokens,[ref]$errors)
@@ -29,9 +32,11 @@ try{
     $link.WorkingDirectory=$installRootFull;$link.Save()
 }finally{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
 if(-not[IO.File]::Exists($linkPath)){throw 'REAL_EMERGENCY_SHORTCUT_NOT_CREATED'}
+[IO.File]::WriteAllBytes((Join-Path $Root 'emergency-preimage.bin'),[IO.File]::ReadAllBytes($linkPath))
 # Native privilege/scheduler discovery is a seam; file/link removal and marker
 # publication use the actual installer functions. No bootstrap is loaded.
 function Assert-ProtectedCodeAncestors([string]$Path){}
+function Assert-LabelMachineRemovalWorkerPart {param($InstallRoot,$WorkerAccount) return @{proof='ACCOUNT_UNAVAILABLE';run_present=$false}}
 function Get-LabelOfficialLegacyTaskSnapshot {return $null}
 function Get-LabelSupportedStartupTasks([string]$Path){return @()}
 function Get-OwnedLegacyTaskRetirementSnapshot([string]$Name){return $null}

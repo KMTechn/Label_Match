@@ -1,4 +1,4 @@
-param([string]$HostRoot,[string]$FixtureRoot,[int]$ChildExit,[switch]$WriterFails)
+﻿param([string]$HostRoot,[string]$FixtureRoot,[int]$ChildExit,[switch]$WriterFails)
 $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $tree=[Management.Automation.Language.Parser]::ParseFile((Join-Path $HostRoot 'INSTALL_CANONICAL_PORTABLE.ps1'),[ref]$tokens,[ref]$errors)
