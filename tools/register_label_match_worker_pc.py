@@ -2485,7 +2485,7 @@ def _reattach_local_preflight(args, manifest, credential, possession_key):
         from logistics_runtime_profile import load_logistics_runtime_profile
         from tools.install_logistics_runtime_profile import unprotect_current_user_secret
         profile_payload = document("profile")
-        existing = load_logistics_runtime_profile(
+        existing = load_logistics_runtime_profile(read_retry=None,
             required=True, profile_path=profile, decryptor=unprotect_current_user_secret)
         if (
             profile_payload.get("credential_scope") != "current_user"

@@ -722,11 +722,11 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/label_workbench_history.py': ('214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8',
                                     'c13374045a746ac633796eb863061791a4ca9db4d1da1977c0c4b1f0fb908553'),
  'app/logistics_runtime_profile.py': ('a5d6e73f0a64233c1dacd006d3b724da0b5a88eeb818b93d90f396af0664057f',
-                                      'eff9288974f0530726bd9aa55336202d46a7526ee699e23835129c36a37c97f6'),
+                                      '1ae136ff57f8a3a1d2156f0b79238865674b1e696025171eb82288ff7f4e6aae'),
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   'd38e7d12dadbc8faee203a2d95d3b1994ff187b20e20236d91bbe099551f561b'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '429dd8921e57abb701bdd3e75c757df372953718335b8abdafb2db63952a48b6'),
+                              '0b65aa622107c9803a35d24b51fcdb79e0f7f30c55d83fe8cf1a6b053cb98f54'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            '65523a25bba6917614a63862f79eccded6f49d13ad47f5b3faef7b85abebb3b5'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
@@ -742,7 +742,7 @@ legacy_label_replacements = {'app/label_data_manager.py': ('95887ca72e74aa258ba0
  'app/writer_session_fence.py': ('8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c',
                                  '02fd807a13fdfb0c1f97b41d958d03a7d93d5583bd83f5e2e8f49f7f5f3fa5ba'),
  'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122',
-                                                    '4e6f0b2c64a26bab3fd81352c12a828946533d3a6f3f535cb33ff3b8ab4f9649'),
+                                                    'c04335def8be14af8d279019ef4e67b59324a0055b89a5c1638c9cd95ce8948e'),
  'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7',
                                         'e89d9226dbf0f8bbc4f5320fc3aa2c01846e69e7a8c8df2acba7494541fb6ae4'),
  'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e',
@@ -788,7 +788,7 @@ scan_input_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   'd38e7d12dadbc8faee203a2d95d3b1994ff187b20e20236d91bbe099551f561b'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '429dd8921e57abb701bdd3e75c757df372953718335b8abdafb2db63952a48b6'),
+                              '0b65aa622107c9803a35d24b51fcdb79e0f7f30c55d83fe8cf1a6b053cb98f54'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            '65523a25bba6917614a63862f79eccded6f49d13ad47f5b3faef7b85abebb3b5'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
@@ -831,7 +831,7 @@ nextfix_companions = {'app/label_data_manager.py': ('95887ca72e74aa258ba07584e1d
  'app/package_command_draft.py': ('7f296c95fbcdfdd117eb275068fcb59e3dcc91f63112fb0e7b8fc421a2a3e151',
                                   'd38e7d12dadbc8faee203a2d95d3b1994ff187b20e20236d91bbe099551f561b'),
  'app/package_logistics.py': ('818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1',
-                              '429dd8921e57abb701bdd3e75c757df372953718335b8abdafb2db63952a48b6'),
+                              '0b65aa622107c9803a35d24b51fcdb79e0f7f30c55d83fe8cf1a6b053cb98f54'),
  'app/package_outbox.py': ('39b09189d4afddcb4bf937a8d300573391281092b6e62ac828ef41f1f72b6437',
                            '65523a25bba6917614a63862f79eccded6f49d13ad47f5b3faef7b85abebb3b5'),
  'app/package_outbox_processor.py': ('4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79',
@@ -865,7 +865,7 @@ current_user_profile_replacements = {
     'app/tools/install_logistics_runtime_profile.py': ('7be760a5e49054740b495e62d48da98259b7e40eb288d1a46604cf8201994122', '4e6f0b2c64a26bab3fd81352c12a828946533d3a6f3f535cb33ff3b8ab4f9649'),
     'app/label_match_single_instance.py': ('3c69b65c5091c9d55bd28bebacad2a1fae5801a663cc7f762dacf1c3c68043e7', 'e89d9226dbf0f8bbc4f5320fc3aa2c01846e69e7a8c8df2acba7494541fb6ae4'),
     'app/current_user_onboarding.py': ('323c4100d3ee0d32077232be2656209daa581f9e19ca018d3e840009d03dc26e', 'd52cff6948b65d012f196c9ee5b573ce522b342712a9325f6d5983daf86aee12'),
-    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', 'eff9288974f0530726bd9aa55336202d46a7526ee699e23835129c36a37c97f6'),
+    'app/logistics_runtime_profile.py': ('2cd3fe00a34e79a6c12a995f74ba99515f88fff4e9bef50e844ab02dc59da1ed', '1ae136ff57f8a3a1d2156f0b79238865674b1e696025171eb82288ff7f4e6aae'),
 }
 # Exact writer bytes from the same accepted profile/scan preimages; their
 # inventory pins differ. No additional release direction is admitted.
@@ -893,7 +893,7 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/label_admin_pin.py': ({'8e5fb578366c38012792f5a3213310d6d442e4ff68202edf84e4983872f13bf0'},
                             '640cbe999fb5aae53f524875d7a71124d770aa7a9f859a97a87c12f64cc63069'),
  'app/package_logistics.py': ({'818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'},
-                              '429dd8921e57abb701bdd3e75c757df372953718335b8abdafb2db63952a48b6'),
+                              '0b65aa622107c9803a35d24b51fcdb79e0f7f30c55d83fe8cf1a6b053cb98f54'),
  'app/package_outbox_processor.py': ({'4589f804c3d57e56ad93066d83d8c122b3d3eec9510aee9c2152375f8c0c3f79'},
                                      '08123e220ec31d341edecba55715c4c20521de7042520c281d2e1d31fc8121dc'),
  'app/phs_label_workflow.py': ({'c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c'},
@@ -1183,7 +1183,7 @@ if roster_transition:
     installed_sources = [new_request if row == old_request else row for row in installed_sources]
 f5_retirement_replacements = {
     'app/phs_label_workflow.py': ({'c1746fe550017bccdf8b8fd6b98ed1438cd49b5878d98328cceec7d6cb6edd7c', '0d44faf4128286d49fc4285d26b9901d563c86eba0fe62d669c53a4a382c7b7d'}, '390353c7acd2104d1b7a6c86ad74e80163b72b8469d51ba4ae83bfe9f8eaef71'),
-    'app/package_logistics.py': ({'4585720051d266fa077005456b0da590b273ad8ab29bc5391cff2e6aa9f74224', '818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'}, '429dd8921e57abb701bdd3e75c757df372953718335b8abdafb2db63952a48b6'),
+    'app/package_logistics.py': ({'4585720051d266fa077005456b0da590b273ad8ab29bc5391cff2e6aa9f74224', '818a1d7fa228e125c30c23f6950b6d579c69c22fda1bd9f2d9aded9e9b4201a1'}, '0b65aa622107c9803a35d24b51fcdb79e0f7f30c55d83fe8cf1a6b053cb98f54'),
     'app/label_workbench_history.py': ({'6f07e89f69d66bb979abaef58aa4ff514fb839756bc9f4b5b727b5c0cf4d2022', '214ee81fdc36cfc51d6b59c15ee69f4f5057ebfc899eced18f7b61c0daff50f8'}, 'c13374045a746ac633796eb863061791a4ca9db4d1da1977c0c4b1f0fb908553'),
 }
 f5_retirement_transition = all(

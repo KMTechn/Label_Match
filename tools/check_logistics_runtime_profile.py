@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
         __import__("failure_redaction").emit_support_failure(exc)
         return 2
     try:
-        profile = load_logistics_runtime_profile(
+        profile = load_logistics_runtime_profile(read_retry=None,
             required=not args.optional,
             profile_path=args.profile_path,
         )

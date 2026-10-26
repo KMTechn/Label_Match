@@ -312,6 +312,9 @@ from phs_label_workflow import (
     normalize_packaging_phs_label_evidence,
 )
 from logistics_runtime_profile import (
+    StartupReadRetry,
+    startup_read_retry,
+    finish_startup_read_retry,
     legacy_label_transition_enabled,
     logistics_runtime_required,
 )
@@ -574,9 +577,10 @@ def label_match_test_tools_enabled(*, run_tests: bool = False) -> bool:
     return bool(run_tests) or _label_match_explicit_automated_test_mode()
 
 
-def label_match_startup_package_client():
+def label_match_startup_package_client(*, read_retry=None):
     """Load the protected profile without probing the network before Tk."""
-    return package_client_from_env(probe_required=False)
+    options = {} if read_retry is None else {'read_retry': read_retry}
+    return package_client_from_env(probe_required=False, **options)
 
 
 def _label_match_capture_startup_request():
@@ -3816,12 +3820,15 @@ if APP_VERSION != CURRENT_VERSION:
     raise RuntimeError("자료 세대 판과 앱 판이 다릅니다. 검증된 같은 판을 다시 설치하세요.")
 
 
-def _open_label_data_manager(save_directory, *args, **kwargs):
+def _open_label_data_manager(save_directory, *args, read_retry=None, **kwargs):
     from direct_sync_runtime import prepare_credentials_from_json
     app_root = _label_match_runtime_app_root()
     paths = resolve_current_user_onboarding_paths(app_root)
     if paths.credential_path.is_file():
-        prepare_credentials_from_json(paths.credential_path, app_root=app_root)
+        options = {} if read_retry is None else {'read_retry': read_retry}
+        prepare_credentials_from_json(paths.credential_path, app_root=app_root, **options)
+    if read_retry is not None:
+        kwargs['read_retry'] = read_retry
     return record_user_data_open(
         _label_match_runtime_app_root(), (Path(save_directory),),
         opener=lambda: DataManager(save_directory, *args, **kwargs),
@@ -4634,6 +4641,7 @@ class DataManager(_DataManager):
         unique_id,
         *,
         authenticated_admin=False,
+        read_retry=None,
     ):
         super().__init__(
             save_dir,
@@ -4648,6 +4656,7 @@ class DataManager(_DataManager):
             current_state_filename=self._current_state_filename,
             durable_event_types=self._durable_event_types,
             csv_safe_cell=self._csv_safe_cell,
+            read_retry=read_retry,
         )
 
 WORKER_UNDECIDED_LABEL = "작업자 미정"
@@ -5123,7 +5132,9 @@ class Label_Match(tk.Tk):
         # Resolve/decrypt the protected machine profile before Tcl, but let the
         # durable outbox own network retries so recovery stays available while
         # the server is unreachable.
-        startup_package_logistics_client = label_match_startup_package_client()
+        self.__dict__['_startup_read_retry'] = startup_read_retry()
+        startup_package_logistics_client = label_match_startup_package_client(
+            read_retry=self.__dict__['_startup_read_retry'])
         startup_logistics_required = logistics_runtime_required()
         capture_startup_request = _label_match_capture_startup_request()
         capture_startup_geometry = (
@@ -5206,7 +5217,7 @@ class Label_Match(tk.Tk):
             app_settings_path=getattr(self, "app_settings_path", ""),
             save_directory=getattr(self, "save_directory", ""),
         )
-        self.app_settings = self._load_app_settings()
+        self.app_settings = self._load_app_settings(read_retry=self._startup_read_retry)
         _label_match_startup_trace("app_init_after_load_settings")
         self.custom_save_path = self._resolve_configured_save_path()
         self._update_save_directory()
@@ -5241,6 +5252,7 @@ class Label_Match(tk.Tk):
             WORKER_UNDECIDED_LABEL,  # no blank owner before the first pick
             self.unique_id,
             authenticated_admin=False,
+            read_retry=self._startup_read_retry,
         )
         package_outbox_path = os.path.join(self.save_directory, "package_logistics_outbox.sqlite3")
         self.package_outbox = PackageOutbox(package_outbox_path)
@@ -5459,6 +5471,7 @@ class Label_Match(tk.Tk):
                 on_admitted=self._on_deferred_validation_lane_admitted,
                 submit_task=self._submit_deferred_validation_lane_task,
             )
+            finish_startup_read_retry()
             _label_match_startup_trace("app_init_complete")
         except BaseException as error:
             try:
@@ -6730,7 +6743,9 @@ class Label_Match(tk.Tk):
                 # The scheduled outbox worker retries this projection without
                 # changing the already-committed local completion.
                 print(f"포장 확인 필요 이벤트 로컬 복구 오류: {exc}")
-            items_data = self._load_items_data()
+            read_retry = self.__dict__.get('_startup_read_retry')
+            items_data = (self._load_items_data() if read_retry is None
+                          else self._load_items_data(read_retry=read_retry))
             loaded_data = {
                 "items": items_data,
                 "catalog_unconfirmed": catalog_unconfirmed,
@@ -7285,8 +7300,11 @@ class Label_Match(tk.Tk):
                 and os.path.normcase(os.path.abspath(template_path))
                 != os.path.normcase(os.path.abspath(self.app_settings_path))
             ):
-                with open(template_path, encoding="utf-8-sig") as handle:
-                    settings = _label_match_sanitize_worker_settings(json.load(handle))
+                def read_template():
+                    with open(template_path, encoding="utf-8-sig") as handle:
+                        return _label_match_sanitize_worker_settings(json.load(handle))
+                read_retry = self.__dict__.get('_startup_read_retry')
+                settings = read_template() if read_retry is None else read_retry(read_template)
                 # Packaged settings are a template, not this PC's worker history.
                 for field in ("worker_name", "worker_history", "worker_id", "recent_worker_ids"):
                     settings.pop(field, None)
@@ -7299,10 +7317,12 @@ class Label_Match(tk.Tk):
     def _resolve_configured_save_path(self):
         return resolve_data_scope(settings=self.app_settings)
 
-    def _load_app_settings(self):
+    def _load_app_settings(self, *, read_retry=None):
         try:
-            with open(self.app_settings_path, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
+            def read_settings():
+                with open(self.app_settings_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            loaded = read_settings() if read_retry is None else read_retry(read_settings)
             sanitized = _label_match_sanitize_worker_settings(loaded)
             if sanitized != loaded:
                 temporary = f"{self.app_settings_path}.migrate-{os.getpid()}"
@@ -8518,7 +8538,7 @@ class Label_Match(tk.Tk):
                 except Exception:
                     self.entry.focus_set()
 
-    def _load_items_data(self):
+    def _load_items_data(self, *, show_errors=True, read_retry=None):
         items_path = os.environ.get(ACTIVE_PATH_ENV) or resource_path(os.path.join("assets", self.FILES.ITEMS))
         verified_payload = get_verified_catalog_snapshot(items_path)
         if requires_verified_catalog_snapshot(items_path):
@@ -8543,20 +8563,73 @@ class Label_Match(tk.Tk):
                     },
                 ) from exc
         try:
-            with open(items_path, 'r', encoding='utf-8-sig') as f:
-                return carrier_identity.item_catalog_view(csv.DictReader(f))
+            def read_items():
+                with open(items_path, 'r', encoding='utf-8-sig') as f:
+                    return carrier_identity.item_catalog_view(csv.DictReader(f))
+            items = read_items() if read_retry is None else read_retry(read_items)
+            self._items_read_locked = False
+            return items
         except FileNotFoundError:
-            if not self.run_tests:
+            self._items_read_locked = False
+            if show_errors and not self.run_tests:
                 messagebox.showwarning("기준 정보 파일 없음", f"""품목 정보 파일이 없어 품목명을 표시할 수 없습니다\n현장 관리자에게 알리세요\n코드: assets · {self.FILES.ITEMS}""")
             return {}
         except Exception as e:
+            self._items_read_locked = isinstance(e, PermissionError) or (
+                isinstance(e, OSError) and getattr(e, 'winerror', None) in (5, 32, 33)
+            )
             print(f"기준 정보 로드 기술 진단: {e}")
-            if not self.run_tests:
+            if show_errors and not self.run_tests:
                 messagebox.showerror(
                     "기준 정보 로드 오류",
                     '품목 정보를 불러오지 못했습니다\n현장 관리자에게 알리세요',
                 )
             return {}
+
+    def _retry_locked_item_catalog(self):
+        """Keep an unavailable local catalog out of unregistered-item checks."""
+        if self.items_data or not (
+            self.__dict__.get('_items_read_locked')
+            or self.__dict__.get('_items_reload_in_progress')
+        ):
+            return False
+        if self.__dict__.get('_items_reload_in_progress'):
+            return True
+        notice = WorkflowNotice(
+            title='기준 정보 로드 오류',
+            message='품목 정보를 불러오지 못했습니다\n현장 관리자에게 알리세요',
+            kind='startup_warning', tone='warning',
+        )
+        self._phs_label_guidance_notice = notice
+        self._render_operator_workbench()
+        self._items_reload_in_progress = True
+        result_queue = queue.Queue()
+
+        def read():
+            try:
+                result_queue.put(self._load_items_data(show_errors=False))
+            except Exception:
+                # Verified-snapshot failures still cannot use disk fallback.
+                result_queue.put(None)
+
+        def poll():
+            if self.__dict__.get('_tk_shutdown_requested'):
+                return
+            try:
+                items = result_queue.get_nowait()
+            except queue.Empty:
+                self.after(100, poll)
+                return
+            if items:
+                self.items_data = items
+                if self.__dict__.get('_phs_label_guidance_notice') is notice:
+                    self._phs_label_guidance_notice = None
+            self._items_reload_in_progress = False
+            self._render_operator_workbench()
+
+        threading.Thread(target=read, name='label-match-item-read', daemon=True).start()
+        self.after(100, poll)
+        return True
 
     def _record_app_close_failure(self, context, result):
         try:
@@ -16520,6 +16593,9 @@ class Label_Match(tk.Tk):
                 is_test_code = test_tools_enabled and any(
                     marker in raw_input for marker in ["DEMO", "VALID-", "TEST_"]
                 )
+                if not is_test_code and self._retry_locked_item_catalog():
+                    consume_input()
+                    return
                 
                 if not is_test_code and len(raw_input) != MASTER_LABEL_LENGTH and not carrier_identity.item_lookup(self.items_data, raw_input):
                     self._handle_input_error(
@@ -25031,6 +25107,7 @@ def _run_label_match_application(*, relay_reuse_report=None, verified_hold=None)
     except Exception:
         pass
     app = Label_Match(startup_report=relay_reuse_report) if window_first else Label_Match()
+    finish_startup_read_retry()
     screen_cleanup = False
     try:
         if relay_reuse_report is not None:

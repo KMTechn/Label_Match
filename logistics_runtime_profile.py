@@ -10,11 +10,56 @@ import os
 import re
 import stat
 import sys
+import time
+import threading
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit, urlunsplit
+
+
+class StartupReadRetry:
+    """One startup's three one-second waits, shared by pure file readers."""
+
+    def __init__(self):
+        self.remaining = 3
+        self._lock = threading.Lock()
+
+    def finish(self):
+        with self._lock:
+            self.remaining = 0
+
+    def __call__(self, read):
+        while True:
+            try:
+                return read()
+            except OSError as exc:
+                with self._lock:
+                    if self.remaining == 0 or not (
+                        isinstance(exc, PermissionError)
+                        or getattr(exc, 'winerror', None) in (5, 32, 33)
+                    ):
+                        raise
+                    self.remaining -= 1
+                time.sleep(1)
+
+
+_startup_read_retry = StartupReadRetry()
+
+
+def startup_read_retry():
+    """Return this process's shared startup budget, including before __init__."""
+    return _startup_read_retry
+
+
+def finish_startup_read_retry():
+    """Close both default and already-injected readers before business work."""
+    _startup_read_retry.finish()
+
+
+def _default_profile_read_retry(read):
+    return _startup_read_retry(read)
 
 
 PROFILE_CONTRACT_VERSION = "km-logistics-runtime-profile-v1"
@@ -637,7 +682,7 @@ def assert_path_has_no_reparse_components(
     return path
 
 
-def _read_profile(path: Path) -> dict[str, Any]:
+def _read_profile(path: Path, *, read_retry=_default_profile_read_retry) -> dict[str, Any]:
     def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in pairs:
@@ -649,7 +694,7 @@ def _read_profile(path: Path) -> dict[str, Any]:
         return result
 
     try:
-        raw = path.read_bytes()
+        raw = path.read_bytes() if read_retry is None else read_retry(path.read_bytes)
     except OSError as exc:
         raise LogisticsRuntimeConfigurationError("machine logistics profile could not be read") from exc
     if not raw or len(raw) > MAX_PROFILE_BYTES:
@@ -780,6 +825,7 @@ def load_logistics_runtime_profile(
     environ: Mapping[str, str] | None = None,
     decryptor: Callable[[bytes], str] | None = None,
     data_admission: Callable[..., object] | None = None,
+    read_retry=_default_profile_read_retry,
 ) -> LogisticsRuntimeProfile | None:
     values = _runtime_environment(environ)
     if (
@@ -815,7 +861,7 @@ def load_logistics_runtime_profile(
         if required_value or explicit_path:
             raise LogisticsRuntimeConfigurationError("machine logistics profile is missing")
         return None
-    profile = _read_profile(path)
+    profile = _read_profile(path, read_retry=read_retry)
     if "bearer_token" in profile:
         raise LogisticsRuntimeConfigurationError(
             "plaintext bearer_token is forbidden in the machine profile"
@@ -829,7 +875,8 @@ def load_logistics_runtime_profile(
         protected_roots += (Path(selected_ca).parent,)
     admit(app_root, protected_roots, environ=values)
     try:
-        encrypted = secret_path.read_bytes()
+        encrypted = (secret_path.read_bytes() if read_retry is None
+                     else read_retry(secret_path.read_bytes))
     except OSError as exc:
         raise LogisticsRuntimeConfigurationError("DPAPI bearer token file could not be read") from exc
     if not encrypted or len(encrypted) > MAX_SECRET_BYTES:

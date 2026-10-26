@@ -86,7 +86,8 @@ def test_allowed_profile_reader_uses_the_same_selected_path_as_generation_guard(
     admitted, loaded = [], []
     monkeypatch.setattr(generation, "check_user_data_open", lambda _root, roots=(): admitted.extend(roots))
     monkeypatch.setattr(generation, "record_user_data_open", lambda _root, roots: admitted.extend(roots))
-    def loader(*, required, profile_path):
+    def loader(*, required, profile_path, read_retry):
+        assert read_retry is None
         loaded.append(Path(profile_path))
         return None
     monkeypatch.setattr(check, "load_logistics_runtime_profile", loader)
