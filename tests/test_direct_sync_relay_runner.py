@@ -1748,3 +1748,58 @@ def test_runner_honors_operator_pause_before_scan_enqueue(tmp_path, capsys):
     assert "direct_sync_relay_status=paused_by_operator" in output
     assert "direct_sync_scan_enqueued_count=0" in output
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"] == {}
+
+
+def _scan_error_count(tmp_path):
+    status = json.loads((tmp_path / "runtime" / "status.json").read_text(encoding="utf-8"))
+    return status["scan_file_error_count"], status["scan_file_errors"]
+
+
+def test_runner_failure_entry_of_a_deleted_original_is_cleared_without_touching_other_files(
+    tmp_path, capsys, monkeypatch
+):
+    disable_scan_drain(monkeypatch)
+    gone = write_label_csv(tmp_path / "sync", name="포장실작업이벤트로그_gone.csv")
+    args = runner_args(tmp_path, scan_dir=gone.parent)
+    config = runner._build_config(runner.build_parser().parse_args(args))
+    runner._record_source_file_failure(config, gone, "source_file_read_failed")
+    other = write_label_csv(gone.parent, name="포장실작업이벤트로그_other.csv")
+    other_bytes = other.read_bytes()
+    gone.unlink()
+    main(args)
+    capsys.readouterr()
+    assert _scan_error_count(tmp_path) == (0, [])
+    assert other.read_bytes() == other_bytes
+    assert sorted(path.name for path in gone.parent.iterdir()) == [other.name]
+
+
+def test_runner_failure_entry_of_a_renamed_original_is_cleared_but_the_file_stays(
+    tmp_path, capsys, monkeypatch
+):
+    disable_scan_drain(monkeypatch)
+    source = write_label_csv(tmp_path / "sync", name="포장실작업이벤트로그_old.csv")
+    args = runner_args(tmp_path, scan_dir=source.parent)
+    config = runner._build_config(runner.build_parser().parse_args(args))
+    runner._record_source_file_failure(config, source, "source_file_read_failed")
+    renamed = source.with_name("rotated.txt")
+    source.rename(renamed)
+    main(args)
+    capsys.readouterr()
+    assert _scan_error_count(tmp_path) == (0, [])
+    assert renamed.exists() and not source.exists()
+
+
+def test_runner_failure_entry_of_an_existing_original_deferred_this_round_stays(
+    tmp_path, capsys, monkeypatch
+):
+    disable_scan_drain(monkeypatch)
+    source = write_label_csv(tmp_path / "sync", name="포장실작업이벤트로그_young.csv")
+    args = runner_args(tmp_path, scan_dir=source.parent) + ["--min-source-file-age-seconds", "3600"]
+    config = runner._build_config(runner.build_parser().parse_args(args))
+    runner._record_source_file_failure(config, source, "source_file_read_failed")
+    before = source.read_bytes()
+    main(args)
+    capsys.readouterr()
+    count, errors = _scan_error_count(tmp_path)
+    assert count == 1 and errors[0]["source_name"] == source.name
+    assert source.read_bytes() == before
