@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 import auto_update
+from tests._bounded_powershell import run as run_bounded
 
 
 def _source():
@@ -22,10 +23,12 @@ def _supervisor(source):
 
 
 def _powershell(script):
-    completed = subprocess.run([
+    completed = run_bounded([
         auto_update.system_executable("WindowsPowerShell/v1.0/powershell.exe"),
         "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script,
-    ], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    ], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW,
+        timeout=auto_update.APPLY_PROGRESS_TIMEOUT)
+    assert completed.owned_descendants_after == 0
     assert completed.returncode == 0
     return json.loads(completed.stdout)
 
@@ -48,7 +51,7 @@ try { $ignored = & { BODY } } catch { $status='UNKNOWN' }
     (tmp_path / "wall-evidence.json").write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
     assert result["status"] == "UNKNOWN"
     # Real wall observation, separate from the model's ten-second wait argument.
-    assert result["seconds"] >= 10
+    assert 10 <= result["seconds"] < auto_update.APPLY_PROGRESS_TIMEOUT
 
 
 @pytest.mark.parametrize("case", ["complete", "timeout", "empty", "failed", "failed-before-ready", "wrong-marker", "wrong-pid", "other-generation"])

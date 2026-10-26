@@ -13,6 +13,7 @@ import pytest
 
 import auto_update
 from tools.refresh_atomic_replace_declarations import CONSUMERS
+from tests._bounded_powershell import run as run_bounded
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -154,9 +155,9 @@ def test_app_atomic_calls_are_centralized_and_shared_copies_byte_pinned():
             Calls().visit(ast.parse(source))
     assert seen_tests == named_tests
     assert forbidden == []
-    child = subprocess.run([shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-File",
+    child = run_bounded([shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-File",
         str(ROOT / "tests/lm_atomic_guard.ps1"), "-HostRoot", str(ROOT)],
-        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=auto_update.APPLY_PROGRESS_TIMEOUT)
     assert child.returncode == 0
     assert json.loads(child.stdout)["status"] == "PASS"
 
@@ -180,9 +181,9 @@ def test_atomic_powershell_body_pin_rejects_caller_drift(tmp_path, consumer):
 
 @pytest.mark.parametrize('engine', ['powershell.exe', 'pwsh.exe'])
 def test_powershell_atomic_overlap_bound_and_pinned_callers(tmp_path, engine):
-    result = subprocess.run([shutil.which(engine), '-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+    result = run_bounded([shutil.which(engine), '-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
         '-File', str(ROOT / 'tests/lm_atomic_replace.ps1'), '-HostRoot', str(ROOT), '-FixtureRoot', str(tmp_path)],
-        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=auto_update.APPLY_PROGRESS_TIMEOUT)
     (tmp_path / 'atomic.stdout').write_bytes(result.stdout)
     (tmp_path / 'atomic.stderr').write_bytes(result.stderr)
     assert result.returncode == 0
@@ -194,11 +195,11 @@ def test_powershell_atomic_overlap_bound_and_pinned_callers(tmp_path, engine):
 @pytest.mark.parametrize('scenario', ['slow', 'blocked', 'reuse'])
 @pytest.mark.parametrize('source', ['INSTALL_THIS_PC.ps1', *CONSUMERS])
 def test_powershell_type_preparation_preserves_native_deadline(tmp_path, engine, scenario, source):
-    result = subprocess.run([shutil.which(engine), '-NoLogo', '-NoProfile', '-NonInteractive',
+    result = run_bounded([shutil.which(engine), '-NoLogo', '-NoProfile', '-NonInteractive',
         '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File',
         str(ROOT / 'tests/lm_atomic_type_preparation.ps1'), '-HostRoot', str(ROOT),
         '-SourceFile', str(ROOT / source), '-FixtureRoot', str(tmp_path), '-Scenario', scenario],
-        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=auto_update.APPLY_PROGRESS_TIMEOUT)
     (tmp_path / 'preparation.stdout').write_bytes(result.stdout)
     (tmp_path / 'preparation.stderr').write_bytes(result.stderr)
     assert result.returncode == 0

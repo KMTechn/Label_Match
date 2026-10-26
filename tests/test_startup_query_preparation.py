@@ -6,6 +6,9 @@ import subprocess
 
 import pytest
 
+import auto_update
+from tests._bounded_powershell import run as run_bounded
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -24,12 +27,15 @@ def test_actual_query_child_preparation_and_query_budgets(tmp_path, engine, scen
         '-QuerySeconds', str(query)]
     if scenario == 'missing-ready':
         command.append('-ExitBeforeReady')
-    child = subprocess.run(command, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    child = run_bounded(command, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+                        timeout=auto_update.APPLY_PROGRESS_TIMEOUT)
     (tmp_path / 'query.stdout').write_bytes(child.stdout)
     (tmp_path / 'query.stderr').write_bytes(child.stderr)
     assert child.returncode == 0
+    assert child.owned_descendants_after == 0
     assert not child.stderr
     row = json.loads(child.stdout)
+    assert row['seconds'] < auto_update.APPLY_PROGRESS_TIMEOUT
     assert row['status'] == expected
     assert row['declarations'] == (0 if scenario == 'missing-ready' else 1)
     if scenario == 'slow':
