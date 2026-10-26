@@ -547,18 +547,20 @@ def test_runner_scan_source_invalid_utf8_csv_writes_enqueue_error(tmp_path, caps
     )
     args = runner_args(tmp_path, scan_dir=sync_dir)
 
-    assert main(args) == 1
+    assert main(args) == 2
     output = capsys.readouterr().out
-    assert "direct_sync_relay_status=enqueue_error" in output
+    assert "direct_sync_relay_status=idle" in output
     assert "direct_sync_scan_status=enqueue_error" in output
     assert "direct_sync_scan_attempted_count=1" in output
     assert f"direct_sync_scan_failed_source_file={bad_csv}" in output
     status = json.loads((tmp_path / "runtime" / "status.json").read_text(encoding="utf-8"))
-    assert status["status"] == "enqueue_error"
-    assert status["error_code"] == "direct_sync_source_file_error"
-    assert "UnicodeDecodeError" in status["error_message"]
+    assert status["status"] == "idle"
+    assert status['scan_enqueue_errors'] == [
+        {'source_file': str(bad_csv), 'error_code': 'direct_sync_source_file_error'}]
+    events = [json.loads(line) for line in (tmp_path / 'logs/relay.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert any('UnicodeDecodeError' in event.get('error_message', '') for event in events)
     assert relay_queue_status(tmp_path / "relay.sqlite3")["counts"] == {}
-    assert drain_calls == []
+    assert len(drain_calls) == 1
 
 
 def test_runner_scan_source_watermark_does_not_advance_before_ack(tmp_path, capsys, monkeypatch):
