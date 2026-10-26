@@ -282,6 +282,7 @@ class PackageOutbox:
         finally:
             # Refusal must not move committed WAL content into the database.
             if refused:
+                conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
                 conn.close()
             else:
                 close_sqlite_connection(conn)
