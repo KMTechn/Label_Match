@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from direct_sync_runtime import DirectSyncRuntimeConfig, enqueue_completed_source_file, run_relay_once, utc_now_text, prepare_credentials_from_json  # noqa: E402
 from writer_session_fence import writer_sink  # noqa: E402
+from direct_sync_push import _connect_relay_db, _held_spool_rows, _held_runtime_backlog_rows, _held_spool_request_matches, _set_held_spool_review, _repair_relay_spool_for_existing_row, close_sqlite_connection
 
 
 ALLOWED_SOURCE_PREFIX = "포장실작업이벤트로그_"
@@ -59,6 +60,82 @@ def _count_blocked_source_records(source_file: Path, start_byte: int, expected_s
         return count if _source_stamp(source_file) == before else None
     except (OSError, UnicodeError, csv.Error):
         return None
+
+
+def _held_runtime_backlog(config, source_files, terminal_sources=()):
+    held, waiting = _held_runtime_backlog_rows(config.db_path)
+    if not held:
+        return None
+    originals = {_source_delta_key(Path(path)): Path(path) for path in (*source_files, *terminal_sources)}
+    groups = {}
+    for row in waiting:
+        path = Path(row['source_file_path'])
+        original = originals.get(path.parent.name)
+        key = path.parent.name if '_scan_delta_inputs' in path.parts else str(path.resolve())
+        if original is None and '_scan_delta_inputs' not in path.parts:
+            original = path
+        group = groups.setdefault(key, {'source': original, 'ranges': []})
+        bounds = _parse_delta_range(row['relative_path'], original) if original is not None else None
+        if bounds is None and original is not None and original == path:
+            bounds = (0, row['byte_length'])
+        group['ranges'].append((*bounds, row['content_sha256']) if bounds is not None else None)
+    # Independent terminal sources still contribute their original suffix once.
+    for source in terminal_sources:
+        path = Path(source)
+        key = _source_delta_key(path)
+        if key not in groups:
+            try:
+                _read_source_scan_state(config.db_path, path)
+            except ExistingTerminalDeltaBlocked as blocked:
+                groups[key] = {'source': path, 'ranges': [], 'start': blocked.start_byte}
+    total = 0
+    known = []
+    for group in groups.values():
+        source, ranges = group['source'], group['ranges']
+        if source is None or any(value is None for value in ranges):
+            total = None
+            continue
+        known.append(str(source))
+        try:
+            stamp = _source_stamp(source)
+            if any(_delta_content_sha256_for_range(source, start, end) != digest for start, end, digest in ranges):
+                total = None
+                continue
+            start = min((value[0] for value in ranges), default=group.get('start', 0))
+            count = _count_blocked_source_records(source, start, stamp)
+        except OSError:
+            count = None
+        total = total + count if total is not None and count is not None else None
+    return len(groups), total, known
+
+
+def _terminal_source_backlog(config, sources):
+    blocked, counts = [], []
+    for source in sources:
+        try:
+            _read_source_scan_state(config.db_path, source)
+        except ExistingTerminalDeltaBlocked as error:
+            blocked.append(str(source))
+            counts.append(_count_blocked_source_records(source, error.start_byte, error.source_stamp))
+        except OSError:
+            blocked.append(str(source))
+            counts.append(None)
+    return len(blocked), None if any(count is None for count in counts) else sum(counts), blocked
+
+
+def _review_missing_held_originals(config, source_files):
+    originals = {_source_delta_key(Path(path)) for path in source_files}
+    conn = _connect_relay_db(config.db_path)
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        for row in _held_spool_rows(conn):
+            path = Path(row['source_file_path'])
+            if (('_scan_delta_inputs' in path.parts and path.parent.name not in originals)
+                    or ('_scan_delta_inputs' not in path.parts and not path.is_file())):
+                _set_held_spool_review(conn, row)
+        conn.commit()
+    finally:
+        close_sqlite_connection(conn)
 
 
 def _validate_source_glob(pattern: str) -> str:
@@ -339,9 +416,64 @@ def _complete_line_prefix(data: bytes) -> bytes:
     return data[: last_newline + 1]
 
 
-def _build_delta_source_file(config: DirectSyncRuntimeConfig, source_file: Path) -> tuple[Path, str, int] | None:
+def _repair_held_assignments_before_scan(config, source_file, *, administrator=False):
+    conn = _connect_relay_db(config.db_path)
+    repaired = []
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        for row in _held_spool_rows(conn):
+            if row['next_attempt_at'] and row['next_attempt_at'] > utc_now_text():
+                continue
+            bounds = _parse_delta_range(row['relative_path'], source_file)
+            direct_source = Path(row['source_file_path']).resolve() == source_file.resolve()
+            if bounds is None and direct_source:
+                bounds = (0, row['byte_length'])
+            if bounds is None or (not direct_source and Path(row['source_file_path']).parent.name != _source_delta_key(source_file)):
+                continue
+            try:
+                delta = _build_delta_source_file(config, source_file, _held_range=(*bounds, row['content_sha256']))
+            except OSError:
+                continue
+            if delta is not None:
+                authority = conn.execute('SELECT * FROM direct_sync_runtime_authority WHERE assigned_relay_id=?',
+                                         (row['relay_id'],)).fetchone()
+                if authority is None or not _held_spool_request_matches(row, authority):
+                    _set_held_spool_review(conn, row)
+                    continue
+                if (administrator and authority is not None and authority['status'] == 'OPERATOR_REVIEW'
+                        and authority['last_error_code'] == row['last_error_code']):
+                    conn.execute("UPDATE direct_sync_runtime_authority SET status='ACTIVE',last_error_code=NULL,updated_at=? WHERE assigned_relay_id=? AND status='OPERATOR_REVIEW' AND last_error_code=?",
+                                 (utc_now_text(), row['relay_id'], row['last_error_code']))
+                    authority = conn.execute('SELECT status FROM direct_sync_runtime_authority WHERE assigned_relay_id=?',
+                                             (row['relay_id'],)).fetchone()
+                if authority is not None and authority['status'] == 'ACTIVE':
+                    _repair_relay_spool_for_existing_row(conn, existing=row, source_path=delta[0], spool_dir=config.spool_dir)
+                    if direct_source:
+                        conn.execute('UPDATE direct_sync_relay_batches SET source_file_path=? WHERE relay_id=?',
+                                     (str(source_file), row['relay_id']))
+                    conn.execute("UPDATE direct_sync_relay_batches SET status='pending' WHERE relay_id=? AND status IN ('pending','failed_permanent')",
+                                 (row['relay_id'],))
+                    repaired.append(row['relay_id'])
+            else:
+                _set_held_spool_review(conn, row)
+        conn.commit()
+    finally:
+        close_sqlite_connection(conn)
+    return repaired
+
+
+def _build_delta_source_file(config: DirectSyncRuntimeConfig, source_file: Path, *, _held_range=None) -> tuple[Path, str, int] | None:
+    if _held_range is None and Path(config.db_path).is_file():
+        _repair_held_assignments_before_scan(config, source_file)
+    before = _source_stamp(source_file)
     source_size = source_file.stat().st_size
-    sent_byte_count, sent_prefix_sha256 = _read_source_scan_state(config.db_path, source_file)
+    if _held_range is not None:
+        sent_byte_count, source_size, expected_hash = _held_range
+        if _delta_content_sha256_for_range(source_file, sent_byte_count, source_size) != expected_hash:
+            return None
+        sent_prefix_sha256 = _file_prefix_sha256(source_file, sent_byte_count)
+    else:
+        sent_byte_count, sent_prefix_sha256 = _read_source_scan_state(config.db_path, source_file)
     if sent_byte_count > 0:
         replaced_or_truncated = not sent_prefix_sha256 or source_size < sent_byte_count
         if not replaced_or_truncated:
@@ -358,7 +490,7 @@ def _build_delta_source_file(config: DirectSyncRuntimeConfig, source_file: Path)
         data_start = handle.tell()
         start_byte = sent_byte_count if sent_byte_count >= data_start else 0
         handle.seek(start_byte)
-        delta_body = handle.read()
+        delta_body = handle.read(source_size - start_byte)
 
     complete_delta_body = _complete_line_prefix(delta_body)
     if not complete_delta_body.strip():
@@ -369,6 +501,8 @@ def _build_delta_source_file(config: DirectSyncRuntimeConfig, source_file: Path)
 
     delta_content = complete_delta_body if start_byte == 0 else header + complete_delta_body
     delta_hash = hashlib.sha256(delta_content).hexdigest()
+    if _source_stamp(source_file) != before or (_held_range is not None and delta_hash != expected_hash):
+        return None
     delta_source = (
         Path(config.spool_dir)
         / "_scan_delta_inputs"
@@ -596,12 +730,25 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
         except (OSError, sqlite3.DatabaseError, ValueError) as exc:
             status = _write_scan_runtime_error(config, exc)
     elif args.enqueue_source_file:
-        status = enqueue_completed_source_file(
-            config,
-            source_file_path=args.enqueue_source_file,
-            relative_path=args.relative_path,
-            credential_input=credential_input,
-        )
+        repaired = _repair_held_assignments_before_scan(config, Path(args.enqueue_source_file), administrator=True)
+        held, _ = _held_runtime_backlog_rows(config.db_path)
+        matching = [row for row in held if (
+            _parse_delta_range(row['relative_path'], Path(args.enqueue_source_file)) is not None
+            or Path(row['source_file_path']).resolve() == Path(args.enqueue_source_file).resolve())]
+        if repaired or matching:
+            status = run_relay_once(config, target_relay_id=repaired[0] if repaired else '', credential_input=credential_input)
+            if status.get('status') == 'acked':
+                sources, _ = _scan_source_files(str(Path(args.enqueue_source_file).parent), args.source_glob, args.max_enqueue_files, 0)
+                status['scan_terminal_blocked_count'], status['scan_terminal_blocked_record_count'], blocked = _terminal_source_backlog(config, sources)
+                status['scan_terminal_blocked_source_files'] = blocked
+                _persist_scan_runtime_status(config, status)
+        else:
+            status = enqueue_completed_source_file(
+                config,
+                source_file_path=args.enqueue_source_file,
+                relative_path=args.relative_path,
+                credential_input=credential_input,
+            )
     elif args.scan_source_dir:
         try:
             max_enqueue_files = max(0, int(args.max_enqueue_files or 0))
@@ -620,6 +767,8 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                 args.max_enqueue_files,
                 args.min_source_file_age_seconds,
             )
+            review_sources, _ = _scan_source_files(args.scan_source_dir, [], args.max_enqueue_files, 0)
+            _review_missing_held_originals(config, review_sources)
             for source_file in source_files:
                 if enqueued_count >= max_enqueue_files:
                     break
@@ -787,6 +936,10 @@ def main(argv: list[str] | None = None, *, credential_input=None) -> int:
                 if targeted_drain_results:
                     relay_status["targeted_drain_results"] = targeted_drain_results
                 status = relay_status
+            backlog = _held_runtime_backlog(config, review_sources, terminal_blocked_sources)
+            if backlog is not None:
+                status['scan_terminal_blocked_count'], status['scan_terminal_blocked_record_count'], sources = backlog
+                status['scan_terminal_blocked_source_files'] = sources
         except (OSError, sqlite3.DatabaseError, ValueError) as exc:
             status = _write_scan_runtime_error(config, exc)
         if "scan_status" in status:

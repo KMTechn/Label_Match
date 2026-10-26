@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from direct_sync_push import (
+    _connect_relay_db_readonly,
+    _held_runtime_backlog_rows,
     DEFAULT_PRODUCER_ROLE,
     DEFAULT_RETRY_SECONDS,
     DEFAULT_SOURCE_SYSTEM,
@@ -560,6 +562,15 @@ def _queue_backpressure_report(
         for status in (RELAY_STATUS_PENDING, RELAY_STATUS_RETRY_WAIT, RELAY_STATUS_LEASED)
     )
     oldest_active = str(queue.get("oldest_active_created_at") or "")
+    held, waiting = _held_runtime_backlog_rows(config.db_path)
+    if held:
+        ignored = {row['relay_id'] for row in waiting}
+        connection = _connect_relay_db_readonly(config.db_path)
+        try:
+            eligible = connection.execute("SELECT relay_id,created_at FROM direct_sync_relay_batches WHERE status IN ('pending','leased','retry_wait')").fetchall()
+            oldest_active = min((str(row['created_at']) for row in eligible if row['relay_id'] not in ignored), default='')
+        finally:
+            connection.close()
     oldest_age_seconds = 0
     reasons: list[str] = []
     if max_count > 0 and active_count >= max_count:
@@ -715,6 +726,8 @@ def _publish_upload_block_status(config: DirectSyncRuntimeConfig, payload: dict[
             review = True
         elif lease.get('status') == 'ACTIVE' and lease.get('server_grant_accepted') is True:
             review = False
+    if (payload.get('status') == 'acked' and (payload.get('last_result') or {}).get('success') is True):
+        review = False
     now = utc_now_text()
     since = payload.get('upload_block_since') if 'upload_block_since' in payload else previous.get('since')
     if files or review:
