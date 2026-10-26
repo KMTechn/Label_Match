@@ -844,3 +844,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - w9firstupdsub513 / relay 감사 고침 완료: 성공 bootstrap의 첫 rc 0 뒤 최대 2.0초·0.1초 간격 owner 재조회(부모 기한 안), 진단 전체 예외 격리, 업데이트 복구·되돌림 기존 코드 유지, RUNNING 뒤 정상 종료 사본 제외, headless RUNNING 전후 표기·정상 정지 정합. ANSWER-1 적용, 판 올림 0.
 
 - 재설치 밤 목록 — P3(레인21:4x 판정): terminal 만료 뒤 옛 판을 계속 실행하는 흐름과 되풀이 횟수 막이 없음은 이번 고침에서 그대로 두고 밤 재설치 목록에 남긴다.
+- w9firstupdsub652 / 포장 126: 공용 `data_generation` 표지 바꿔치기가 잠김(오류 5·32)이면 1초(50ms 간격) 다시 시도하도록 Python·PowerShell 모두 고쳤다(이적과 바이트 같음). 공용 판 표지 `0.3.8+w9.1`.
