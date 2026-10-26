@@ -2017,7 +2017,7 @@ def test_drain_rejects_changed_producer_credentials_without_upload(tmp_path):
     assert json.loads(current["receipt_json"]) == {"client_batch_id": row.relay_id}
 
 
-def test_drain_marks_missing_spooled_file_failed_permanent(tmp_path):
+def test_drain_retries_missing_spooled_file(tmp_path):
     _manifest, manifest_path = make_manifest(tmp_path)
     csv_path = write_csv(tmp_path)
     credentials = make_credentials()
@@ -2050,7 +2050,7 @@ def test_drain_marks_missing_spooled_file_failed_permanent(tmp_path):
             "SELECT status, last_error_code, receipt_json FROM direct_sync_relay_batches WHERE relay_id = ?",
             (row.relay_id,),
         ).fetchone()
-    assert current["status"] == RELAY_STATUS_FAILED_PERMANENT
+    assert current["status"] == RELAY_STATUS_RETRY_WAIT
     assert current["last_error_code"] == "spooled_file_missing"
     assert json.loads(current["receipt_json"]) == {"client_batch_id": row.relay_id}
 
