@@ -56,7 +56,8 @@ def test_fenced_support_record_still_requires_ordinary_recovery(monkeypatch, tmp
     monkeypatch.setattr(updates, "emit_support_record", lambda *a, **kw: None)
     monkeypatch.setattr(updates, "assert_ordinary_recovery", refuse_recovery)
     monkeypatch.setattr(updates, "launch_version", lambda *a, **kw: pytest.fail("unsafe recovery"))
-    with pytest.raises(ValueError) as caught:
-        updates.start_current(tmp_path, {"staging_root": str(tmp_path)}, {"phase": "FAILED"},
-                              {"sha": "1" * 40}, [], code="UPDATE_APPLY_NO_PROGRESS")
-    assert caught.value is error
+    guidance = []
+    monkeypatch.setattr(updates, "emit_progress_guidance", lambda: guidance.append(True))
+    assert updates.start_current(tmp_path, {"staging_root": str(tmp_path)}, {"phase": "FAILED"},
+                                 {"sha": "1" * 40}, [], code="UPDATE_APPLY_NO_PROGRESS") == 20
+    assert guidance == [True]

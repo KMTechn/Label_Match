@@ -5,6 +5,8 @@ import time
 
 import pytest
 
+import auto_update as updates
+
 import user_relay
 
 
@@ -834,7 +836,8 @@ def _system_confirmation_case(tmp_path, monkeypatch, failures, *, busy_seconds=0
 
     clock, attempts, observations, released = [0.0], [], [], []
     state = {"schema": updates.SCHEMA, "phase": "APPLIED_PENDING_READY", "previous_sha": "a" * 40,
-             "candidate_sha": "b" * 40, "nonce": "unit-nonce", "transition_id": "unit-transition"}
+             "candidate_sha": "b" * 40, "nonce": "unit-nonce", "transition_id": "unit-transition",
+             "applied_at": "2026-10-01T00:00:00+00:00"}
     control, stage = tmp_path / "control", tmp_path / "stage"
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "operator"))
     monkeypatch.setattr(updates, "fixed_helper", lambda *_a, **_kw: None)
@@ -849,6 +852,7 @@ def _system_confirmation_case(tmp_path, monkeypatch, failures, *, busy_seconds=0
     monkeypatch.setattr(updates, "new_apply_claim", lambda: {})
     monkeypatch.setattr(updates, "process_snapshot", lambda *_: [])
     monkeypatch.setattr(updates.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(updates, "now_utc", lambda: "2026-10-01T00:00:00+00:00")
     monkeypatch.setattr(updates.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
 
     @contextmanager
@@ -879,7 +883,7 @@ def test_system_confirmation_acquisition_busy_retries_with_the_original_deadline
     case = _system_confirmation_case(tmp_path, monkeypatch, [RuntimeError(BUSY), RuntimeError(BUSY)])
     assert case.run() == 0
     assert len(case.attempts) == 4
-    assert case.observations == [240.0]
+    assert case.observations == [float(updates.READY_WINDOW_SECONDS)]
     assert case.released == [1, 4]
 
 
@@ -902,7 +906,7 @@ def test_system_confirmation_body_errors_are_never_pending(tmp_path, monkeypatch
     assert len(case.attempts) == 2 and case.released == [1, 2]
 
 
-@pytest.mark.parametrize("elapsed", [240, 241])
+@pytest.mark.parametrize("elapsed", [updates.READY_WINDOW_SECONDS, updates.READY_WINDOW_SECONDS + 1])
 def test_system_confirmation_busy_after_deadline_keeps_the_original_error(tmp_path, monkeypatch, elapsed):
     original = RuntimeError(BUSY)
     case = _system_confirmation_case(tmp_path, monkeypatch, [original], busy_seconds=elapsed)
@@ -914,7 +918,7 @@ def test_system_confirmation_busy_after_deadline_keeps_the_original_error(tmp_pa
 
 def test_system_confirmation_busy_cannot_renew_the_confirmation_window(tmp_path, monkeypatch):
     original = RuntimeError(BUSY)
-    case = _system_confirmation_case(tmp_path, monkeypatch, [original] * 3, busy_seconds=100)
+    case = _system_confirmation_case(tmp_path, monkeypatch, [original] * 3, busy_seconds=updates.READY_WINDOW_SECONDS / 3 + 20)
     with pytest.raises(RuntimeError) as caught:
         case.run()
     assert caught.value is original
@@ -1207,7 +1211,7 @@ def test_initial_pending_acquisition_busy_uses_journal_window_and_protected_rere
     busy = RuntimeError("update mutex ownership is busy")
     case = _initial_confirmation_case(tmp_path, monkeypatch, [busy, busy, None], phase=phase)
     assert case.run() == 0
-    assert case.observations == [180.0]
+    assert case.observations == [updates.READY_WINDOW_SECONDS - 60.0]
     assert len(case.attempts) == 4
     assert False in case.reads and True in case.reads
 
@@ -1215,7 +1219,7 @@ def test_initial_pending_acquisition_busy_uses_journal_window_and_protected_rere
 @pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"])
 def test_initial_pending_expired_journal_cannot_open_another_window(tmp_path, monkeypatch, phase):
     busy = RuntimeError("update mutex ownership is busy")
-    case = _initial_confirmation_case(tmp_path, monkeypatch, [busy], phase=phase, age=240)
+    case = _initial_confirmation_case(tmp_path, monkeypatch, [busy], phase=phase, age=updates.READY_WINDOW_SECONDS)
     with pytest.raises(RuntimeError) as caught:
         case.run()
     assert caught.value is busy and len(case.attempts) == 1 and not case.observations
@@ -1249,7 +1253,7 @@ def test_initial_acquired_body_busy_is_not_retried(tmp_path, monkeypatch):
 @pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"])
 def test_initial_busy_retries_cannot_renew_journal_deadline(tmp_path, monkeypatch, phase):
     busy = RuntimeError("update mutex ownership is busy")
-    case = _initial_confirmation_case(tmp_path, monkeypatch, [busy]*8, phase=phase, age=239, busy_seconds=0.5)
+    case = _initial_confirmation_case(tmp_path, monkeypatch, [busy]*8, phase=phase, age=updates.READY_WINDOW_SECONDS - 1, busy_seconds=0.5)
     with pytest.raises(RuntimeError) as caught:
         case.run()
     assert caught.value is busy and len(case.attempts) == 2 and case.clock[0] == 1.25
@@ -1257,7 +1261,7 @@ def test_initial_busy_retries_cannot_renew_journal_deadline(tmp_path, monkeypatc
 
 def test_initial_retry_does_not_start_an_acquisition_at_the_journal_deadline(tmp_path, monkeypatch):
     busy = RuntimeError("update mutex ownership is busy")
-    case = _initial_confirmation_case(tmp_path, monkeypatch, [busy]*8, age=239, busy_seconds=0.75)
+    case = _initial_confirmation_case(tmp_path, monkeypatch, [busy]*8, age=updates.READY_WINDOW_SECONDS - 1, busy_seconds=0.75)
     with pytest.raises(RuntimeError) as caught:
         case.run()
     assert caught.value is busy and len(case.attempts) == 1 and case.clock[0] == 1.0
@@ -1490,12 +1494,12 @@ def test_nonce_startup_busy_retries_only_original_durable_window(tmp_path,monkey
 @pytest.mark.parametrize('mismatch',['nonce','transition','time','format','unreadable','environment_nonce','expired'])
 def test_nonce_startup_invalid_or_expired_context_keeps_original_busy_fallback(tmp_path,monkeypatch,mismatch):
     case=_startup_trial_case(tmp_path,monkeypatch,[RuntimeError(BUSY)],
-        age=240 if mismatch=='expired' else 60,mismatch=mismatch)
+        age=updates.READY_WINDOW_SECONDS if mismatch=='expired' else 60,mismatch=mismatch)
     assert case.run()==37 and len(case.attempts)==1 and case.bootstraps==[True]
 
 
 def test_nonce_startup_cannot_renew_window_after_repeated_busy(tmp_path,monkeypatch):
-    case=_startup_trial_case(tmp_path,monkeypatch,[RuntimeError(BUSY)],age=239,busy_seconds=0.5)
+    case=_startup_trial_case(tmp_path,monkeypatch,[RuntimeError(BUSY)],age=updates.READY_WINDOW_SECONDS - 1,busy_seconds=0.5)
     assert case.run()==37 and len(case.attempts)==2 and case.clock[0]==pytest.approx(1.1)
 
 

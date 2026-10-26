@@ -35,9 +35,19 @@ READY_CHECKS = (
 RELAY_READY_CHECKS = ("relay_initialized", *READY_CHECKS[1:])
 
 
-APPLY_PROGRESS_TIMEOUT = 60
+APPLY_PROGRESS_TIMEOUT = 120
+APPLY_REQUEST_PROGRESS_TIMEOUT = 60
 STARTUP_WAIT_SECONDS = 240
-READY_WINDOW_SECONDS = 240
+READY_WINDOW_SECONDS = 900
+# The bootstrap decision wait must outlast one whole READY window plus the
+# normal-stop and settle tail it always had (the former 480 = 240 + 240).
+BOOTSTRAP_OBSERVATION_CAP_SECONDS = READY_WINDOW_SECONDS + 240
+# A transient failure of one candidate sha gets another chance; the failed
+# list (permanent) is only for confirmed rejections.
+RETRY_ATTEMPT_LIMIT = 3
+RETRY_WINDOW_SECONDS = 24 * 60 * 60
+UPDATE_RETRY_REVIEW_REQUIRED = 'UPDATE_RETRY_REVIEW_REQUIRED'
+RETRY_REVIEW_MESSAGE = '업데이트를 세 번 시도했지만 끝내지 못했습니다 — 지금 판으로 작업은 그대로 할 수 있습니다 · 하루 뒤 저절로 다시 시도합니다 · 현장 관리자에게 알리세요'
 # Maximum shared by the parent, independent bootstrap and installer relay waits.
 # A parented bootstrap reserves result time inside its inherited absolute deadline.
 RELAY_PREPARE_SECONDS = 600
@@ -154,7 +164,10 @@ def _relay_preparation_deadline(parent_deadline, parent_pid) -> _RelayPreparatio
 
 def support_record(fields=None, *, stage):
     from failure_redaction import public_record
-    return public_record({**dict(fields or {}), "stage": stage})
+    values = {**dict(fields or {}), "stage": stage}
+    if values.get("reason_code") == UPDATE_RETRY_REVIEW_REQUIRED:
+        values["guidance"] = RETRY_REVIEW_MESSAGE
+    return public_record(values)
 
 
 def emit_support_record(fields, *, stage, policy=None):
@@ -211,6 +224,7 @@ def prepare_transition(
     *, previous_sha: str, candidate_sha: str, packet_sha256: str,
     forward_pin: str, rollback_pin: str, transition_id: str, nonce: str,
     now: str, failed_shas: list[str] | None = None,
+    retry_shas: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     previous_sha = _sha(previous_sha)
     candidate_sha = _sha(candidate_sha)
@@ -222,7 +236,7 @@ def prepare_transition(
     if candidate_sha in failures:
         raise ValueError("a failed version must not be reapplied")
     _utc(now)
-    return {
+    prepared = {
         "schema": SCHEMA, "phase": "PREPARED",
         "previous_sha": previous_sha, "candidate_sha": candidate_sha,
         "packet_sha256": _sha(packet_sha256, length=64),
@@ -232,6 +246,9 @@ def prepare_transition(
         "nonce": _sha(nonce, length=32), "started_at": now,
         "failed_shas": failures, "trial_pid": None,
     }
+    if isinstance(retry_shas, Mapping) and retry_shas:
+        prepared["retry_shas"] = dict(retry_shas)
+    return prepared
 
 
 def apply_transition(
@@ -361,14 +378,116 @@ def confirm_transition(
     return {**transition, "phase": "ROLLED_BACK" if rollback else "CONFIRMED", "confirmed_at": now}
 
 
-def request_rollback(transition: Mapping[str, Any], *, reason: str) -> dict[str, Any]:
+def record_retry_chance(transition: Mapping[str, Any], sha: str, *, now: str) -> tuple[dict[str, Any], bool]:
+    """Count one transient failure of ``sha``; return the new retry record and
+    whether the sha has used up its chances inside the retry window."""
+    sha = _sha(sha)
+    current = _utc(now)
+    entries: dict[str, Any] = {}
+    raw = transition.get("retry_shas")
+    for key, entry in (raw.items() if isinstance(raw, Mapping) else ()):
+        try:
+            _sha(key)
+            age = (current - _utc(entry["first_at"])).total_seconds()
+            if 0 <= age < RETRY_WINDOW_SECONDS and type(entry["attempts"]) is int and entry["attempts"] >= 1:
+                _utc(entry["last_at"])
+                entries[key] = {"attempts": entry["attempts"], "first_at": entry["first_at"], "last_at": entry["last_at"]}
+        except (ValueError, KeyError, TypeError):
+            continue
+    prior = entries.get(sha)
+    attempts = (prior["attempts"] if prior else 0) + 1
+    entries[sha] = {"attempts": attempts, "first_at": prior["first_at"] if prior else now, "last_at": now}
+    return entries, attempts >= RETRY_ATTEMPT_LIMIT
+
+
+def _transient_preparation_error(error: BaseException) -> bool:
+    """Unknown failures get a bounded retry; only proved rejections are final."""
+    return getattr(error, "_preparation_rejection", False) is not True
+
+
+def _preparation_rejection(message: str) -> ValueError:
+    error = ValueError(message)
+    error._preparation_rejection = True
+    return error
+
+
+@contextmanager
+def _authenticated_preparation(sha: str):
+    """Carry only the verified manifest identity through local validation errors."""
+    sha = _sha(sha)
+    try:
+        yield
+    except ValueError as error:
+        error._preparation_signed_sha = sha
+        raise
+
+
+def _permanent_preparation_sha(error: BaseException) -> str:
+    try:
+        return _sha(getattr(error, "_preparation_signed_sha", None))
+    except ValueError:
+        return ""
+
+
+def _retry_review_required(state: Mapping[str, Any] | None) -> bool:
+    entries = (state or {}).get("retry_shas")
+    if not isinstance(entries, Mapping) or (state or {}).get("preparation_retry_pending") is True:
+        return False
+    if (state or {}).get("reason_code") == "UPDATE_PREPARATION_FAILED":
+        selected = [entry for entry in entries.values() if isinstance(entry, Mapping)
+                    and entry.get("last_at") == state.get("deferred_at")]
+    else:
+        selected = [entries.get((state or {}).get("candidate_sha"))]
+    for entry in selected:
+        try:
+            if (type(entry["attempts"]) is int and entry["attempts"] >= RETRY_ATTEMPT_LIMIT
+                    and 0 <= (_utc(now_utc()) - _utc(entry["first_at"])).total_seconds() < RETRY_WINDOW_SECONDS):
+                return True
+        except (ValueError, TypeError, KeyError):
+            pass
+    return False
+
+
+def _preparation_retry_due(state: Mapping[str, Any] | None, sha: str) -> bool:
+    """Use the existing retry journal; restarting cannot reopen its interval."""
+    if ((state or {}).get("preparation_retry_pending") is True
+            or (not sha and (state or {}).get("reason_code") == "UPDATE_PREPARATION_FAILED")):
+        try:
+            if (_utc(now_utc()) - _utc(state["deferred_at"])).total_seconds() < READY_WINDOW_SECONDS:
+                return False
+        except (ValueError, KeyError, TypeError):
+            return False  # A malformed protected clock cannot reopen this wait.
+    raw = (state or {}).get("retry_shas")
+    entry = raw.get(sha) if isinstance(raw, Mapping) else None
+    if not isinstance(entry, Mapping):
+        return True
+    try:
+        now = _utc(now_utc())
+        age = (now - _utc(entry["first_at"])).total_seconds()
+        if not 0 <= age < RETRY_WINDOW_SECONDS:
+            return True
+        if type(entry["attempts"]) is not int or entry["attempts"] < 1:
+            return True
+        return (entry["attempts"] < RETRY_ATTEMPT_LIMIT
+                and (now - _utc(entry["last_at"])).total_seconds() >= READY_WINDOW_SECONDS)
+    except (ValueError, KeyError, TypeError):
+        return True  # Match record_retry_chance's handling of invalid entries.
+
+
+def request_rollback(transition: Mapping[str, Any], *, reason: str, transient: bool = False,
+                     now: str | None = None) -> dict[str, Any]:
     if transition.get("phase") != "APPLIED_PENDING_READY":
         raise ValueError("rollback requires a pending trial")
     failures = list(transition.get("failed_shas", []))
     candidate = _sha(transition.get("candidate_sha"))
-    if candidate not in failures:
+    extra: dict[str, Any] = {}
+    permanent = True
+    if transient:
+        extra["retry_shas"], _ = record_retry_chance(transition, candidate, now=now or now_utc())
+        permanent = False
+    if permanent and candidate not in failures:
         failures.append(candidate)
-    return {**transition, "phase": "ROLLBACK_PENDING", "reason": str(reason), "failed_shas": failures}
+    return {**transition, "phase": "ROLLBACK_PENDING", "reason": str(reason), "failed_shas": failures, **extra}
 
 
 def rollback_transition(
@@ -1099,14 +1218,14 @@ def verify_prepared_packet(
     if signature_path.stat().st_size > 16384:
         raise ValueError("update signature is oversized")
     verify_update_manifest_signature(manifest, signature_path.read_bytes(), key_config)
-    candidate = update_candidate_from_private_manifest(manifest, current_version=current_version, expected_channel=channel)
-    if candidate is None or candidate["archive"].get("layout") != "canonical_portable":
-        raise ValueError("update is not a targeted canonical portable candidate")
-    packet = stage / "packet.zip"
-    _assert_no_reparse_components(packet)
-    if packet.stat().st_size != manifest["artifact"]["size_bytes"] or file_sha256(packet) != candidate["sha256"]:
-        raise ValueError("prepared packet size or SHA256 differs")
-    _sha(manifest.get("source_commit"))
+    with _authenticated_preparation(manifest.get("source_commit")):
+        candidate = update_candidate_from_private_manifest(manifest, current_version=current_version, expected_channel=channel)
+        if candidate is None or candidate["archive"].get("layout") != "canonical_portable":
+            raise ValueError("update is not a targeted canonical portable candidate")
+        packet = stage / "packet.zip"
+        _assert_no_reparse_components(packet)
+        if packet.stat().st_size != manifest["artifact"]["size_bytes"] or file_sha256(packet) != candidate["sha256"]:
+            raise ValueError("prepared packet size or SHA256 differs")
     return manifest, candidate
 
 
@@ -1183,7 +1302,7 @@ def prepared_marker_sha256(policy: Mapping[str, Any] | None) -> str | None:
 
 
 @contextmanager
-def update_lock(control: Path, operator_sid: str, *, trial: bool = False, abandoned_check=None):
+def update_lock(control: Path, operator_sid: str, *, trial: bool = False, abandoned_check=None, timeout_ms: int = 5000):
     """One cross-session mutex shared by SYSTEM and the installed operator SID."""
     import ctypes
     from ctypes import wintypes
@@ -1218,7 +1337,7 @@ def update_lock(control: Path, operator_sid: str, *, trial: bool = False, abando
         raise OSError(ctypes.get_last_error(), "update mutex cannot be opened")
     acquired = False
     try:
-        result = kernel.WaitForSingleObject(handle, 5000)
+        result = kernel.WaitForSingleObject(handle, timeout_ms)
         acquired = result in {0, 0x80}
         if result == 0x80:
             if abandoned_check is None or trial:
@@ -1465,16 +1584,25 @@ def apply_prepared(control: Path) -> int:
                        "deferred_at": now_utc(), "reason_code": "UPDATE_PREPARATION_FAILED",
                        "reason": type(error).__name__, "launch_failure_details": launch_failure_details(error, include_original=True)}
             marker_sha256 = prepared_marker_sha256(policy)
-            if not_applied and marker_sha256:
-                if (state or {}).get("failed_prepared_sha256") == marker_sha256 and (state or {}).get("phase") == "DEFERRED":
-                    return 0
-                failure["failed_prepared_sha256"] = marker_sha256
+            failure.pop("preparation_retry_pending", None)
+            if not_applied:
                 try:
-                    marker = read_json(Path(policy["staging_root"]) / "prepared.json")
-                    failed_sha = _sha(marker.get("source_commit"))
-                    failure["failed_shas"] = sorted(set(failure.get("failed_shas", [])) | {failed_sha})
-                except (OSError, ValueError, TypeError):
-                    pass  # Malformed hints are quarantined by their exact bytes.
+                    failed_sha = _sha(read_json(Path(policy["staging_root"]) / "prepared.json").get("source_commit"))
+                except (OSError, ValueError, KeyError, TypeError):
+                    failed_sha = ""
+                if _transient_preparation_error(error):
+                    failure.pop("failed_prepared_sha256", None)
+                    if failed_sha:
+                        failure["retry_shas"], _ = record_retry_chance(
+                            state or {}, failed_sha, now=failure["deferred_at"])
+                    else:
+                        failure["preparation_retry_pending"] = True
+                else:
+                    if marker_sha256:
+                        failure["failed_prepared_sha256"] = marker_sha256
+                    signed_sha = _permanent_preparation_sha(error)
+                    if signed_sha:
+                        failure["failed_shas"] = sorted(set(failure.get("failed_shas", [])) | {signed_sha})
             write_json_durable(control / ("failure-" + uuid.uuid4().hex + ".json"), failure)
             write_json_durable(control / "transition.json", failure)
         return 0 if not_applied else 20
@@ -1502,25 +1630,39 @@ def authorize_prepared_replay(control: Path, policy: Mapping[str, Any], state: M
     """Reauthenticate a durable PREPARED record after an interrupted apply."""
     active = read_json(control / "active.json")
     if active.get("sha") != state.get("previous_sha"):
-        raise ValueError("prepared replay differs from the active pointer")
+        raise _preparation_rejection("prepared replay differs from the active pointer")
     protected = Path(state["prepared_packet_root"])
     if (protected.parent != control or re.fullmatch(r"packet-[0-9a-f]{32}", protected.name) is None):
-        raise ValueError("prepared replay packet is outside protected storage")
+        raise _preparation_rejection("prepared replay packet is outside protected storage")
     previous = version_bundle(control, state["previous_sha"])
     target = version_bundle(control, state["candidate_sha"])
     for bundle in (previous, target):
         fixed_helper(control, "Verify", code_root=bundle)
-    current, candidate = version_manifest(previous), version_manifest(target)
+    current = version_manifest(previous)
     key = read_json(control.parent / "current/app/update-manifest-key-config.json")["manifest_public_key"]
-    manifest, packet = verify_prepared_packet(protected, key_config=key,
-        current_version=current["version"], channel=policy["channel"])
-    if packet["sha256"] != state["packet_sha256"]:
-        raise ValueError("prepared replay packet differs")
-    pins = authorize_feed_transition(manifest, current=current, candidate=candidate)
-    if pins[:2] != (state["forward_pin"], state["rollback_pin"]):
-        raise ValueError("prepared replay direction differs")
-    if candidate["source_commit"] in state.get("failed_shas", []):
-        raise ValueError("a failed version must not be reapplied")
+    try:
+        manifest, packet = verify_prepared_packet(protected, key_config=key,
+            current_version=current["version"], channel=policy["channel"])
+    except ValueError as error:
+        error._preparation_rejection = True
+        raise
+    with _authenticated_preparation(manifest["source_commit"]):
+        try:
+            candidate = version_manifest(target)
+        except ValueError as error:
+            error._preparation_rejection = True
+            raise
+        if packet["sha256"] != state["packet_sha256"]:
+            raise _preparation_rejection("prepared replay packet differs")
+        try:
+            pins = authorize_feed_transition(manifest, current=current, candidate=candidate)
+        except ValueError as error:
+            error._preparation_rejection = True
+            raise
+        if pins[:2] != (state["forward_pin"], state["rollback_pin"]):
+            raise _preparation_rejection("prepared replay direction differs")
+        if candidate["source_commit"] in state.get("failed_shas", []):
+            raise _preparation_rejection("a failed version must not be reapplied")
 
 
 class _RollbackReadyPending(Exception):
@@ -1699,6 +1841,17 @@ def defer_stopped_relay(control: Path, policy: Mapping[str, Any], state) -> bool
 def _initial_ready_lock(control: Path, operator_sid: str):
     """An unlocked journal supplies only the existing pending window's bound."""
     from contextlib import ExitStack
+
+    def pending_deadline():
+        budget = optional_record(control / "transition.json")
+        phase = (budget or {}).get("phase")
+        if phase not in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
+            return None
+        anchor = budget["rollback_at" if phase == "ROLLBACK_PENDING_READY" else "applied_at"]
+        sampled_at = time.monotonic()
+        remaining = READY_WINDOW_SECONDS - (_utc(now_utc()) - _utc(anchor)).total_seconds()
+        return sampled_at + max(0.0, min(READY_WINDOW_SECONDS, remaining))
+
     deadline = None
     last_busy = None
     while True:
@@ -1713,19 +1866,16 @@ def _initial_ready_lock(control: Path, operator_sid: str):
                 last_busy = error
                 if deadline is None:
                     try:
-                        budget = optional_record(control / "transition.json")
-                        phase = (budget or {}).get("phase")
-                        if phase not in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}:
+                        deadline = pending_deadline()
+                        if deadline is None:
                             raise error
-                        anchor = budget["rollback_at" if phase == "ROLLBACK_PENDING_READY" else "applied_at"]
-                        sampled_at = time.monotonic()
-                        remaining = READY_WINDOW_SECONDS - (_utc(now_utc()) - _utc(anchor)).total_seconds()
-                        deadline = sampled_at + max(0.0, min(READY_WINDOW_SECONDS, remaining))
                     except Exception:
                         raise error
                 if time.monotonic() >= deadline:
                     raise
             else:
+                if deadline is None:
+                    deadline = pending_deadline()
                 yield deadline
                 return
         time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
@@ -1824,19 +1974,36 @@ def _apply_prepared_once(control: Path) -> int:
             create_protected_stage(protected)
             for name in ("manifest.json", "manifest.sig", "packet.zip", "prepared.json"):
                 copy_prepared_file(stage / name, protected / name, expected_owner_sid=policy["operator_sid"])
-            manifest, candidate = verify_prepared_packet(protected, key_config=key, current_version=current["version"], channel=policy["channel"])
+            try:
+                manifest, candidate = verify_prepared_packet(protected, key_config=key, current_version=current["version"], channel=policy["channel"])
+            except ValueError as error:
+                error._preparation_rejection = True
+                raise
             sha = manifest["source_commit"]
             if sha in (state or {}).get("failed_shas", []):
                 return 0
-            extracted = protected / "extracted"
-            extract_prepared_code(protected / "packet.zip", extracted, candidate["archive"])
-            target = extracted / "Label_Match"
-            candidate_manifest = version_manifest(target)
-            if candidate_manifest["source_commit"] != sha or candidate_manifest["version"] != manifest["version"]:
-                raise ValueError("signed target SHA differs from the packet")
-            if file_sha256(target / "app/update-manifest-key-config.json") != file_sha256(control.parent / "current/app/update-manifest-key-config.json"):
-                raise ValueError("candidate signing key differs from the installed key")
-            forward, rollback, rollback_pair, pin_authority, data_api_evidence = authorize_feed_transition(manifest, current=current, candidate=candidate_manifest)
+            with _authenticated_preparation(sha):
+                extracted = protected / "extracted"
+                try:
+                    extract_prepared_code(protected / "packet.zip", extracted, candidate["archive"])
+                except ValueError as error:
+                    error._preparation_rejection = True
+                    raise
+                target = extracted / "Label_Match"
+                try:
+                    candidate_manifest = version_manifest(target)
+                except ValueError as error:
+                    error._preparation_rejection = True
+                    raise
+                if candidate_manifest["source_commit"] != sha or candidate_manifest["version"] != manifest["version"]:
+                    raise _preparation_rejection("signed target SHA differs from the packet")
+                if file_sha256(target / "app/update-manifest-key-config.json") != file_sha256(control.parent / "current/app/update-manifest-key-config.json"):
+                    raise _preparation_rejection("candidate signing key differs from the installed key")
+                try:
+                    forward, rollback, rollback_pair, pin_authority, data_api_evidence = authorize_feed_transition(manifest, current=current, candidate=candidate_manifest)
+                except ValueError as error:
+                    error._preparation_rejection = True
+                    raise
             # The fixed helper validates the portable tree and writes its own
             # integrity record. It never imports or executes candidate code.
             fixed_helper(control, "Verify", code_root=target)
@@ -1849,7 +2016,7 @@ def _apply_prepared_once(control: Path) -> int:
                 write_json_durable(control / "transition.json", {**(state or {}), "schema": SCHEMA,
                     "phase": "DEFERRED", "deferred_at": now_utc(), "reason_code": "UPDATE_GENERATION_UNKNOWN"})
                 return 0
-            state = prepare_transition(previous_sha=active["sha"], candidate_sha=sha, packet_sha256=candidate["sha256"], forward_pin=forward, rollback_pin=rollback, transition_id=uuid.uuid4().hex, nonce=uuid.uuid4().hex, now=now_utc(), failed_shas=(state or {}).get("failed_shas", []))
+            state = prepare_transition(previous_sha=active["sha"], candidate_sha=sha, packet_sha256=candidate["sha256"], forward_pin=forward, rollback_pin=rollback, transition_id=uuid.uuid4().hex, nonce=uuid.uuid4().hex, now=now_utc(), failed_shas=(state or {}).get("failed_shas", []), retry_shas=(state or {}).get("retry_shas"))
             state = {**state, "rollback_pair": rollback_pair, "pin_authority": pin_authority, "policy_sha256": file_sha256(control / "policy.json"), "data_api_evidence": data_api_evidence, "prepared_packet_root": str(protected), "generation_before": generation_before, "generation_previous_release": current, "generation_candidate_release": candidate_manifest}
             write_json_durable(control / "transition.json", state)
             if defer_stopped_relay(control, policy, state):
@@ -1938,12 +2105,18 @@ def _apply_prepared_once(control: Path) -> int:
             write_json_durable(control / "transition.json", {**state, "phase": "FAILED", "reason": "previous version readiness failed"})
             return 20
         if opened_here:
-            state = request_rollback(state, reason="candidate startup failed or readiness timed out")
+            # Readiness failure, including a failed launch or early exit, is unknown
+            # without verification evidence and consumes only a bounded retry chance.
+            state = request_rollback(state, reason="candidate startup failed or readiness timed out",
+                                     transient=True, now=now_utc())
         else:
             if state["phase"] != "APPLIED_PENDING_READY":
                 raise ValueError("rollback requires a pending trial")
-            # An inherited window supplies no supervised failure evidence.
+            # Keep inherited uncertainty for the generation decision. Every failed
+            # READY attempt consumes the same bounded retry chance exactly once.
             state = {**state, "phase": "UNKNOWN"}
+            state["retry_shas"], _ = record_retry_chance(
+                state, state["candidate_sha"], now=now_utc())
         write_json_durable(control / "transition.json", state)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -2503,6 +2676,8 @@ def trial_context(app_root: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]
 def prepared_pending(control: Path, policy: Mapping[str, Any], state: Mapping[str, Any] | None) -> bool:
     if not policy.get("feed_url"):
         return False
+    if (state or {}).get("preparation_retry_pending") is True and not _preparation_retry_due(state, ""):
+        return False
     path = Path(policy["staging_root"]) / "prepared.json"
     if (state and state.get("phase") == "DEFERRED" and state.get("failed_prepared_sha256")
             and state["failed_prepared_sha256"] == prepared_marker_sha256(policy)):
@@ -2510,7 +2685,7 @@ def prepared_pending(control: Path, policy: Mapping[str, Any], state: Mapping[st
     try:
         marker = optional_record(path)
     except (OSError, ValueError):
-        return path.exists()  # A corrupt hint still requests SYSTEM verification.
+        return path.exists() and _preparation_retry_due(state, "")  # Verify when the saved wait permits.
     if marker is None:
         return False
     try:
@@ -2518,7 +2693,8 @@ def prepared_pending(control: Path, policy: Mapping[str, Any], state: Mapping[st
     except ValueError:
         return True
     active = read_json(control / "active.json")
-    return sha != active["sha"] and sha not in (state or {}).get("failed_shas", [])
+    return (sha != active["sha"] and sha not in (state or {}).get("failed_shas", [])
+            and _preparation_retry_due(state, sha))
 
 
 def prepare_feed_packet(app_root: Path) -> dict[str, Any]:
@@ -3105,6 +3281,40 @@ def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> 
 
 
 @contextmanager
+def startup_update_lock(control: Path, policy: Mapping[str, Any]):
+    """Bound ordinary startup contention without changing trial ownership."""
+    from contextlib import ExitStack
+    started = time.monotonic()
+    limit = started + APPLY_PROGRESS_TIMEOUT
+    acquired = False
+    with ExitStack() as stack:
+        while True:
+            if apply_claim_status(control) in {"LIVE", "UNKNOWN"}:
+                limit = started + 240
+            remaining = limit - time.monotonic()
+            try:
+                stack.enter_context(update_lock(control, policy["operator_sid"],
+                    timeout_ms=max(0, min(5000, int(remaining * 1000))),
+                    abandoned_check=lambda: _verify_abandoned_update(control, policy)))
+                acquired = True
+                break
+            except RuntimeError as error:
+                if str(error) != "update mutex ownership is busy":
+                    raise
+                if time.monotonic() >= limit:
+                    break
+                time.sleep(min(0.1, max(0, limit - time.monotonic())))
+        try:
+            if sys.stderr is not None and "--apply-prepared" not in sys.argv:
+                print(json.dumps({"stage": "update_lock_wait",
+                    "elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
+                    "acquired": acquired}), file=sys.stderr)
+        except Exception:
+            pass
+        yield acquired
+
+
+@contextmanager
 def _startup_trial_lock(control, policy, *, role):
     """Wait only for this nonce trial's remaining durable READY window."""
     from contextlib import ExitStack
@@ -3177,11 +3387,22 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
             except Exception:
                 pass
         return 20
-    with _startup_trial_lock(control, policy, role=role):
+    trial_relay = role == "relay" and bool(os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE"))
+    ownership = (_startup_trial_lock(control, policy, role=role) if trial_relay
+                 else startup_update_lock(control, policy))
+    with ownership as acquired:
         state = optional_record(control / "transition.json")
         active = read_json(control / "active.json")
         release = version_manifest(app_root.parent)
         sha = release["source_commit"]
+        if not trial_relay and not acquired:
+            if (sha == active["sha"] and startup_action(state, prepared_present=False) == "START_CURRENT"
+                    and (not (state or {}).get("retained_candidate") or sha == recovery_sha(state, pointer_sha=sha))
+                    and current_generation_status(control, policy, sha) == "ALLOW"):
+                emit_support_record({"reason_code": "UPDATE_LOCK_WAIT_EXPIRED", "exit_code": 0}, stage="update_apply", policy=policy)
+                return None
+            emit_progress_guidance()
+            return 20
         if (sha == active["sha"] and state and (state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
                 or (state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True
                     and _retained_confirmation_allowed(state, active)))):
@@ -3592,7 +3813,7 @@ def _bootstrap_retained_candidate(control, policy, state, active, arguments, *, 
     return 0
 
 
-def start_current(control: Path, policy: Mapping[str, Any], state, active, arguments, *, code: str, report_once: bool = False, deadline: float | None = None, _ownership=None) -> int:
+def start_current(control: Path, policy: Mapping[str, Any], state, active, arguments, *, code: str, report_once: bool = False, deadline: float | None = None, _ownership=None, _recovery_started_at: str | None = None) -> int:
     """Reuse ordinary launch and publish only the E9 allowlisted support fields."""
     if state and state.get("phase") == "ROLLBACK_PENDING":
         # Only recovery_writer_result carries the proved relay boundary. A task
@@ -3616,6 +3837,8 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
                 return reused
         # Non-relay writers retain the original launch admission, including
         # its exact parent-lifetime exception; reuse grants no new authority.
+    if _retry_review_required(state):
+        code = UPDATE_RETRY_REVIEW_REQUIRED
     report = support_record({"reason_code": code,
         "transition_code": (state or {}).get("failure_decision", {}).get("code", code),
         "retained_candidate": (state or {}).get("retained_candidate") is True}, stage="update_apply")
@@ -3628,13 +3851,20 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
             previous = optional_record(report_path)
         if not (report_once and previous and previous.get("reason_code") == code
                 and previous.get("apply_claim_sha256") == report["apply_claim_sha256"]):
-            write_json_durable(report_path, report)
+            if code == UPDATE_RETRY_REVIEW_REQUIRED:
+                emit_support_record(report, stage="update_apply", policy=policy)
+            else:
+                write_json_durable(report_path, report)
     except (OSError, ValueError, TypeError, WriterFenceError):
         # A support sink failure cannot turn a safe ordinary launch into a stop.
         emit_support_record({"reason_code": "REPORT_UNAVAILABLE"}, stage="update_apply")
-    started_at = now_utc()
+    started_at = _recovery_started_at if _recovery_started_at is not None else now_utc()
     if state and state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY"}:
-        assert_ordinary_recovery(control, policy, active["sha"], started_at)
+        try:
+            assert_ordinary_recovery(control, policy, active["sha"], started_at)
+        except (OSError, ValueError, TypeError, KeyError):
+            emit_progress_guidance()
+            return 20
     if deadline is None:
         deadline = time.monotonic() + RELAY_PREPARE_SECONDS
     pid = None
@@ -3818,7 +4048,7 @@ def bootstrap_supervision_deadline(state, *, started: float, now: float, utc_now
                                    claim_status=None) -> float:
     """Observe durable stage clocks without reopening any of their windows."""
     if _bootstrap_awaiting_apply_decision(state, claim_status):
-        return started + 480
+        return started + BOOTSTRAP_OBSERVATION_CAP_SECONDS
     phase = (state or {}).get("phase")
     timestamp, window = None, 0
     if phase == "APPLIED_PENDING_READY":
@@ -3828,7 +4058,7 @@ def bootstrap_supervision_deadline(state, *, started: float, now: float, utc_now
     elif phase in {"ROLLBACK_PENDING", "UNKNOWN"}:
         timestamp, window = state.get("normal_stop_started_at"), 60
     stage_end = now + (window - (_utc(utc_now) - _utc(timestamp)).total_seconds()) if timestamp else started
-    return min(started + 480, max(started + STARTUP_WAIT_SECONDS, stage_end + 15))
+    return min(started + BOOTSTRAP_OBSERVATION_CAP_SECONDS, max(started + STARTUP_WAIT_SECONDS, stage_end + 15))
 
 
 def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
@@ -3992,7 +4222,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                         return start_current(control, policy, state, active, arguments,
                                              code=UPDATE_RELAY_STOP_REQUESTED, deadline=relay_deadline, _ownership=bootstrap_ownership)
                     requested_at = now_utc()
-                    progress_deadline = time.monotonic() + APPLY_PROGRESS_TIMEOUT
+                    progress_deadline = time.monotonic() + APPLY_REQUEST_PROGRESS_TIMEOUT
                     try:
                         request_apply_task(control, policy)
                     except Exception:
@@ -4124,9 +4354,29 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                     role=role, deadline=relay_deadline, state=state, claim_status=claim_status, _ownership=bootstrap_ownership)
                 if writer_result is not None:
                     return writer_result
-    assert_ordinary_recovery(control, policy, active["sha"], now_utc())
-    result = start_current(control, policy, optional_record(control / "transition.json"), active,
-                           arguments, code="UPDATE_APPLY_NO_PROGRESS", deadline=relay_deadline)
+    with ExitStack() as bootstrap_ownership:
+        bootstrap_ownership.enter_context(update_lock(control, policy["operator_sid"],
+            abandoned_check=lambda: _verify_abandoned_update(control, policy)))
+        active = read_json(control / "active.json")
+        state = optional_record(control / "transition.json")
+        try:
+            rows = writer_processes(process_snapshot(control), own_pid=os.getpid())
+            boundary = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
+            if boundary:
+                if _utc(boundary) >= _utc(now_utc()):
+                    raise ValueError("ordinary recovery boundary is not in the past")
+            else:
+                # Match ordinary relay reuse: an existing cohort predates this
+                # request. Re-prove every writer; this grants no parent exception.
+                boundary = (min(rows, key=lambda row: _utc(row.get("created_at")))["created_at"]
+                            if rows else now_utc())
+            assert_ordinary_recovery(control, policy, active["sha"], boundary)
+        except (OSError, ValueError, TypeError, KeyError):
+            emit_progress_guidance()
+            return 20
+        result = start_current(control, policy, state, active, arguments,
+            code="UPDATE_APPLY_NO_PROGRESS", deadline=relay_deadline,
+            _ownership=bootstrap_ownership, _recovery_started_at=boundary)
     emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS", "exit_code": result}, stage="update_apply", policy=policy)
     return result
 

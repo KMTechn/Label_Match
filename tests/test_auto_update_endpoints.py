@@ -342,7 +342,8 @@ def test_retained_failed_candidate_next_signed_update_finishes(endpoint, monkeyp
     assert facts['candidate_is_next'] and facts['retained_failed_still_present'] and facts['reverse_targets_retained']
     assert facts['phase'] == ('CONFIRMED' if ready_succeeds else 'ROLLED_BACK')
     assert facts['audit_applied'] is ready_succeeds
-    assert facts['next_failed'] is (not ready_succeeds)
+    assert facts['next_failed'] is False
+    assert after.get('retry_shas', {}).get(hot, {}).get('attempts', 0) == (0 if ready_succeeds else 1)
     assert facts['startup_gates_allowed']
 
 
@@ -390,7 +391,9 @@ def test_missing_packaged_key_schema_exits_then_failed_recovery_can_start_previo
     assert exits == [1] and after['phase'] == 'FAILED'
     assert phases.index('ROLLBACK_PENDING_READY') < phases.index('FAILED')
     assert updates.read_json(control / 'active.json')['sha'] == NEW
-    assert after['failed_shas'] == [hot]
+    # The child exit supplies no signature/hash/inspection rejection evidence.
+    assert after['failed_shas'] == []
+    assert after['retry_shas'][hot]['attempts'] == 1
     assert not (stage / 'ready.json').exists()
     # End this unit's accelerated observation clock before the fresh user start.
     monkeypatch.setattr(time, 'monotonic', time.perf_counter)

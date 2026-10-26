@@ -34,7 +34,7 @@ def _prepare_world(*, record_present=True, apply_at=260, claim="LIVE"):
 
     def advance(seconds):
         target = round(world.clock + seconds, 9)
-        events = [value for value in (apply_at if not applied else None, 480)
+        events = [value for value in (apply_at if not applied else None, world.ns["BOOTSTRAP_OBSERVATION_CAP_SECONDS"])
             if value is not None and world.clock < value <= target]
         world.clock = min(events) if events else target
         if apply_at is not None and world.clock >= apply_at and not applied:
@@ -76,7 +76,7 @@ def _prepare_world(*, record_present=True, apply_at=260, claim="LIVE"):
     world.spawn = observed_spawn
     world.time.sleep = advance
     rc = world.ns["_bootstrap"](MemoryPath("/memory/current/app"), [], role="gui")
-    return dict(returncode=rc, exit_clock=world.clock, initial_record_present=record_present,
+    return dict(preparation_end=world.ns["RELAY_PREPARE_SECONDS"], cap=world.ns["BOOTSTRAP_OBSERVATION_CAP_SECONDS"], returncode=rc, exit_clock=world.clock, initial_record_present=record_present,
         applied_at=applied, confirmed_at=confirmed_at, calls=calls,
         phase=world.state["phase"] if str(world.control / "transition.json") in world.files else None)
 
@@ -88,7 +88,7 @@ def test_live_prepare_after240_applies_and_opens_this_gui(tmp_path, record_prese
     assert facts["returncode"] == 0 and facts["phase"] == "CONFIRMED"
     assert facts["applied_at"] == [260] and facts["confirmed_at"] == [410]
     assert len(facts["calls"]) == 2 and facts["calls"][0]["at"] >= 260
-    assert facts["exit_clock"] < 480
+    assert facts["exit_clock"] < facts["cap"]
 
 
 def test_absent_prepare_does_not_extend_the_original240(tmp_path):
@@ -101,7 +101,9 @@ def test_absent_prepare_does_not_extend_the_original240(tmp_path):
 def test_live_prepare_still_stops_at480_without_popen(tmp_path):
     facts = _prepare_world(apply_at=None)
     (tmp_path / "live-prepare-cap-proof.json").write_text(json.dumps(facts), encoding="utf-8")
-    assert facts["returncode"] == 20 and facts["exit_clock"] == 480
+    assert facts["returncode"] == 20
+    assert facts["preparation_end"] <= facts["exit_clock"] < facts["preparation_end"] + 1
+    assert facts["phase"] == "PREPARED"
     assert not facts["calls"] and not facts["applied_at"]
 
 
@@ -110,6 +112,6 @@ def test_live_loss_after_extension_exits_while_root_stays_busy(tmp_path, claim):
     facts = _decision_world(decision_at=None, boundary_claim=claim, boundary_at=256)
     (tmp_path / "live-loss-proof.json").write_text(json.dumps(facts), encoding="utf-8")
     assert facts["returncode"] == 20
-    assert facts["exit_clock"] == (256.1 if claim == "UNKNOWN" else 256)
+    assert facts["preparation_end"] <= facts["exit_clock"] < facts["preparation_end"] + 1
     assert facts["ordinary_popen"] == facts["trial_popen"] == 0
-    assert facts["phase"] == "ROLLBACK_PENDING" and not facts["decided_at"]
+    assert facts["phase"] == "APPLIED_PENDING_READY" and not facts["pending_at"] and not facts["decided_at"]

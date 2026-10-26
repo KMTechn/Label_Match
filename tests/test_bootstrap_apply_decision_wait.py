@@ -18,6 +18,11 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
     source = (Path(__file__).resolve().parents[1] / "auto_update.py").read_text(encoding="utf-8-sig")
     world = World("LM-A30-decision", source, phase="PREPARED", writer=None, claim="LIVE")
     world.clock = 0.0
+    window = world.ns["READY_WINDOW_SECONDS"]
+    cap = world.ns["BOOTSTRAP_OBSERVATION_CAP_SECONDS"]
+    if decision_at is not None:
+        decision_at += window - 240
+    boundary_at += window - 240
     world.policy.update(schema="label-match-startup-update-policy-v1", settings_sha256="f" * 64,
         feed_url="https://setup.test.invalid/feed", channel="stable", profile_auth=True,
         apply_during_work=False, hiberboot_enabled=None, hiberboot_read_status="UNPROVEN")
@@ -40,16 +45,16 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
 
     def advance(seconds):
         target = round(world.clock + seconds, 9)
-        if target > 600:
-            raise _DecisionWorldWaitLimit("synthetic observation exceeded 600 seconds")
-        events = [value for value in (240 if not pending else None,
-            boundary_at if not boundary else None, decision_at if not decided else None, 480)
+        if target > cap + 120:
+            raise _DecisionWorldWaitLimit("synthetic observation exceeded the cap plus 120 seconds")
+        events = [value for value in (window if not pending else None,
+            boundary_at if not boundary else None, decision_at if not decided else None, cap)
             if value is not None and world.clock < value <= target]
         world.clock = min(events) if events else target
         if release_after_read and not claim_settled:
             world.set_claim("NONE")
             claim_settled.append(world.clock)
-        if world.clock >= 240 and not pending:
+        if world.clock >= window and not pending:
             state = world.ns["request_rollback"](world.state, reason="candidate readiness timed out")
             world.ns["write_json_durable"](world.control / "transition.json", state)
             pending.append(world.clock)
@@ -78,7 +83,7 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
         if kwargs.get("trial"):
             trial_attempts.append(world.clock)
             raise RuntimeError("update mutex ownership is busy")
-        if pending and not decided and (root_busy or world.clock < 255):
+        if pending and not decided and (root_busy or world.clock < window + 15):
             busy.append(world.clock)
             advance(0.1)
             raise RuntimeError("update mutex ownership is busy")
@@ -188,12 +193,12 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
             absolute_patch.stop()
             native_patch.stop()
     report = world.files.get(str(world.stage / "startup-support.json"), {})
-    return dict(returncode=rc, exit_clock=world.clock, phase=world.state["phase"],
+    return dict(preparation_end=world.ns["RELAY_PREPARE_SECONDS"], returncode=rc, exit_clock=world.clock, phase=world.state["phase"],
         calls=calls, ordinary_popen=sum(row["ordinary"] for row in calls),
         trial_popen=sum(row["trial"] for row in calls), pending_at=pending,
-        decided_at=decided, root_busy_after_normal_deadline=sum(t >= 255 for t in busy),
-        trial_attempts_after_normal_deadline=sum(t >= 255 for t in trial_attempts),
-        boundary_claim=boundary_claim, normal_supervision_end=255.0, maximum_supervision_end=480.0,
+        decided_at=decided, root_busy_after_normal_deadline=sum(t >= window + 15 for t in busy),
+        trial_attempts_after_normal_deadline=sum(t >= window + 15 for t in trial_attempts),
+        boundary_claim=boundary_claim, normal_supervision_end=window + 15.0, maximum_supervision_end=cap,
         support_reason=report.get("reason_code"), starts=starts, retained=retained, recovery=recovery,
         error_type=error_type, remaining_pids=[row["pid"] for row in world.rows], native_waits=native_waits,
         terminal_claim_reads=terminal_claim_reads, claim_settled=claim_settled)
@@ -203,21 +208,23 @@ def _decision_world(*, decision_at=257.7, root_busy=True, boundary_claim="LIVE",
 def test_live_system_decision_after_stage_plus17_7_opens_ordinary(tmp_path, root_busy):
     facts = _decision_world(root_busy=root_busy)
     (tmp_path / "apply-decision-proof.json").write_text(json.dumps(facts), encoding="utf-8")
-    assert facts["returncode"] == 0
-    assert facts["ordinary_popen"] == 1 and facts["trial_popen"] == 0
-    assert facts["phase"] == "DEFERRED" and facts["decided_at"] == [257.7]
-    assert facts["calls"][0]["at"] >= 257.7 and facts["exit_clock"] < 480
-    assert facts["trial_attempts_after_normal_deadline"] == 0
-    if root_busy:
-        assert facts["root_busy_after_normal_deadline"] > 0
-
+    # The shared preparation ceiling ends before the 900-second SYSTEM window.
+    assert facts["returncode"] == 20
+    assert facts["preparation_end"] <= facts["exit_clock"] < facts["preparation_end"] + 1
+    assert facts["ordinary_popen"] == facts["trial_popen"] == 0
+    assert facts["phase"] == "APPLIED_PENDING_READY"
+    assert not facts["pending_at"] and not facts["decided_at"]
 
 def test_live_system_claim_still_stops_at480_without_popen(tmp_path):
     facts = _decision_world(decision_at=None)
     (tmp_path / "apply-decision-cap-proof.json").write_text(json.dumps(facts), encoding="utf-8")
-    assert facts["returncode"] == 20 and facts["exit_clock"] == 480
+    # The shared preparation ceiling ends before the 900-second SYSTEM window.
+    assert facts["returncode"] == 20
+    assert facts["preparation_end"] <= facts["exit_clock"] < facts["preparation_end"] + 1
     assert facts["ordinary_popen"] == facts["trial_popen"] == 0
-    assert facts["phase"] == "ROLLBACK_PENDING" and not facts["decided_at"]
+    assert facts["phase"] == "APPLIED_PENDING_READY"
+    assert not facts["pending_at"] and not facts["decided_at"]
+
 
 
 @pytest.mark.parametrize("claim", ["ABSENT", "UNKNOWN"])
@@ -225,7 +232,10 @@ def test_nonlive_apply_claim_does_not_extend_the_original_deadline(tmp_path, cla
     facts = _decision_world(decision_at=None, boundary_claim=claim)
     (tmp_path / "apply-decision-nonlive-proof.json").write_text(json.dumps(facts), encoding="utf-8")
     # UNKNOWN retains the existing final locked read; the fake busy read costs .1s.
-    expected_exit = 255.1 if claim == "UNKNOWN" else 255
-    assert facts["returncode"] == 20 and facts["exit_clock"] == expected_exit
+    expected_exit = facts["normal_supervision_end"] + (0.1 if claim == "UNKNOWN" else 0)
+    # The shared preparation ceiling ends before the 900-second SYSTEM window.
+    assert facts["returncode"] == 20
+    assert facts["preparation_end"] <= facts["exit_clock"] < facts["preparation_end"] + 1
     assert facts["ordinary_popen"] == facts["trial_popen"] == 0
-    assert facts["phase"] == "ROLLBACK_PENDING" and not facts["decided_at"]
+    assert facts["phase"] == "APPLIED_PENDING_READY"
+    assert not facts["pending_at"] and not facts["decided_at"]

@@ -903,7 +903,7 @@ remote_transport_replacements = {'app/direct_sync_push.py': ({'21bf3ba0500879209
  'app/sealed_transfer_exchange.py': ({'f0452daf434ae11710a9e5cfa825478d9ceb552fadc804be269e5e0b2d26fca2'},
                                      'b98ade7d58c3b05d6d543e50235a6511829074718bde16d56bda4f7a6b47d3a2'),
  'app/user_relay.py': ({'07291437ab724a9512332b25666099f13170af2f12f5f62328ea6af54cad96e7'},
-                       'cfae82612d7cdddf723a68384ae25a8f02df9a3bbae8ca3c4936a5e2f1a8cf25'),
+                       '597ea5b6fffa4e6e7a6342082db615f261ca6192badd1451d6bc666482d95ee2'),
  'app/writer_session_fence.py': ({'7e26bf0c1cddd87df8fdffb5921887f8034976269308c8d5920543c30ba38ce1', '825d5337385e3870ab4d83db1b63d9dea4d1fc9e9c528d7948415ca20256ae87', '8e3a3dcacca554f255ca41a0b70a208f237595b34dc8e7aa5db5b2c6fdf6c73c', '96d32f3eab331cc14ccef610a5523d938ff34372f0ba1cfd9a5a6f9d779ee3ce', 'b38cd124a736dfd2d020b0401b409f95049ee99444795cd5fe13f309bbaf42b7', 'da8873b44fd4fc8c69cc21b17f7e53695630c807d70b48c4ab653a26e73d1a50'},
                                  '02fd807a13fdfb0c1f97b41d958d03a7d93d5583bd83f5e2e8f49f7f5f3fa5ba')}
 remote_transport_transition = (

@@ -75,7 +75,7 @@ def test_system_apply_waits_for_first_ready_after_the_old_cutoff(tmp_path, monke
 def test_initial_wait_keeps_the_existing_anchor_past_120(tmp_path, monkeypatch, phase):
     case = _initial_confirmation_case(tmp_path, monkeypatch, [RuntimeError(BUSY), None], phase=phase, age=150)
     assert case.run() == 0
-    assert case.observations == [90.0]
+    assert case.observations == [updates.READY_WINDOW_SECONDS - 150.0]
 
 
 @pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"])
@@ -110,13 +110,13 @@ def test_inherited_rollback_remaining_window_is_not_clipped_at_120(tmp_path, mon
     case = _initial_confirmation_case(tmp_path, monkeypatch, [RuntimeError(BUSY), None],
                                       phase="ROLLBACK_PENDING_READY", age=20)
     assert case.run() == 0
-    assert case.observations == [220.0]
+    assert case.observations == [updates.READY_WINDOW_SECONDS - 20.0]
 
 
 def _assert_one_window(tree):
     constants = [n for n in tree.body if isinstance(n, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id == "READY_WINDOW_SECONDS" for t in n.targets)]
-    assert len(constants) == 1 and ast.literal_eval(constants[0].value) == 240
+    assert len(constants) == 1 and ast.literal_eval(constants[0].value) == 900
     expected = {"wait_for_rollback_ready": 1, "_apply_prepared": 1, "_initial_ready_lock": 2,
                 "_apply_prepared_once": 1, "_startup_trial_lock": 2}
     for name, references in expected.items():

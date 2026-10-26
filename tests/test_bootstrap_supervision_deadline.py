@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.recovery_memory_world import World, MemoryPath
+import auto_update as updates
 
 
 def _delayed_apply(role, preparation):
@@ -127,8 +128,8 @@ def test_preparation220_keeps_the_original_ready_window_and_confirms(tmp_path, r
 
 
 def test_preparation470_hits_the_absolute480_cap_before_launch_and_rolls_back(tmp_path):
-    facts = _delayed_apply("relay", 470)
+    facts = _delayed_apply("relay", updates.BOOTSTRAP_OBSERVATION_CAP_SECONDS - 10)
     (tmp_path / "supervision-cap-proof.json").write_text(json.dumps(facts), encoding="utf-8")
     assert facts["bootstrap_rc"] == 20 and facts["trial_launches"] == facts["candidate_launches"] == facts["candidate_rows_before_system"] == 0
     assert facts["phase"] == "ROLLED_BACK" and facts["failed_candidate"]
-    assert facts["final_clock"] == facts["ready_deadline"] == 710
+    assert facts["final_clock"] == facts["ready_deadline"] == updates.BOOTSTRAP_OBSERVATION_CAP_SECONDS - 10 + updates.READY_WINDOW_SECONDS

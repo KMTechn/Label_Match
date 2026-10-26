@@ -2,6 +2,10 @@
 - w9firstupdsub594: 설치기 원자 게시의 1초 기한에서 최초 Add-Type 준비를 제외하고 실제 파일 교체·재시도의 기한과 원래 실패를 보존한다(PS5.1·PS7 RED→GREEN).
 - w9firstupdsub594 Observe: 레인 ANSWER-5·6대로 형식 준비 20초와 준비 표지 뒤 질의·출력 10초를 나누며 기존 native ordinary/SID 판정·UNKNOWN·자식 회수를 유지한다.
 - v2.0.125: 재서명 판 번호 올림 — 코디 판정 10/26 13:12 · 바이트가 다르면 번호도 다르게.
+- 10/27 sub-710: 기동 실패·조기 종료를 UNKNOWN 다시 기회 예산으로 처리하고, 초기 잠금 비경합의 상속 READY 창도 원 applied_at·rollback_at 마감을 유지한다. sub-708 P2-1·P2-2 재현과 정본 선언 write→check 근거: work/program/w9firstupd/sub-710/RESULT.md.
+- 10/27 sub-695: READY900 검토 P1-1 두 앱 도우미의 죽은 분류 제거·선언 갱신, P2-2 서명된 SHA만 영구 거절·공간 부족/설치판 오류 다시 기회; P2-1 CA 전용 failed-support PS 함수는 포장에 없음. RED→GREEN·선언·호출자 근거는 work/program/w9firstupd/sub-695/RESULT.md. P3 메모는 11/15 후속으로 보존한다.
+- 10/26 sub-659 (P1·123/126): 후보·되돌림 READY 900초 / bootstrap 상한 1140초, 준비 중 일시 실패는 마지막 시도+900초 / 24시간 내 3회 예산을 같은 retry_shas로 보존한다. 소진/모르는 예외로 SHA를 영구 거절하지 않으며 관리자 안내 뒤 24시간 경계에서 자동 재시도한다. 확정 거절·UNKNOWN 복구 경계는 유지한다. 포장 실패 JSON은 최근 20개만 남긴다. 새 계약 시험·직접 호출자 바탕 대조·선언 write→check 근거: work/program/w9firstupd/sub-659/RESULT.md. 실제 설치·현장 확인은 별도 회차다.
+
 - v2.0.124: 첫 설정 bootstrap 생존 중 소유자 mutex 바쁨을 기존 마감까지 다시 확인하고 일반 조회 예외에 고정 지원 코드를 남김. SYSTEM 업데이트 확인창 획득 busy도 기존120초 안에서만 pending으로 재시도함. rollback READY 확인창도 기존 timeout_seconds(기본120초) while 안의 획득 busy만 재시도함. 재개한 APPLIED_PENDING_READY/ROLLBACK_PENDING_READY의 최초 SYSTEM 획득도 journal의 원120초 안에서만 exact busy를 재시도하며, 잠금 전 판독은 시간 상한에만 쓰고 획득 뒤 재판독·증명을 유지함. abandoned·다른/본문 오류·마감 뒤 busy와 기존 증명·fail-closed/UNKNOWN 처리는 유지함.
 현재 포장124 제품fa05a706과 별도 관측호환하네스bd471ed6의 ZIP13fcc9f3c7ef에서 공식19·자연17′을 확인하고 기존 사슬을 진행 중이다. 578 P2는 독립검토581에서 닫혔으며, 첫 품목표581 P2 두 건(응답 뒤 본문 오류 재시도와 sleep/본문 예산)을 별도 작은 제품 커밋으로 보완한다. ANSWER38대로 첫 기본·검증cache없음 길만 stream/응답표지·잠 앞뒤 남은20초·전체40초를 돌려받은 조각 경계에서만 확인하는 협조중단(아주 느린 연속 입력은 더 늦어질 수 있음·조용히 멈춘 읽기는10초)을 쓰며 명시timeout·인증cache·미등록 길은 기존값/한번이다. 새 보완 커밋 뒤 ZIP/사슬 증거 처리는 레인 판정 전이며, 현재 소스의 통과를 새 소스 수용으로 세지 않는다. UI9·scrollTop0은 UI blob 동일 증거로 유지하고 최종 문서 수용은 모든 실제 회차 뒤로 둔다.
 - 첫 품목표 협조 중단의 버퍼링 한계 — P3(레인05:3x): 전체40초는 돌려받은 조각 경계에서만 확인한다. urllib3/BufferedReader가 조각을 모으는 동안 아주 느리게 끊임없이 보내면 더 늦어질 수 있고, 조용히 멈춘 읽기는 기존10초로 끊긴다. 코드/타이머/소켓 중단 장치는 바꾸지 않으며 엄밀한40초·50초 상한으로 보지 않는다.
@@ -848,3 +852,4 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 - w9firstupdsub513 / relay 감사 고침 완료: 성공 bootstrap의 첫 rc 0 뒤 최대 2.0초·0.1초 간격 owner 재조회(부모 기한 안), 진단 전체 예외 격리, 업데이트 복구·되돌림 기존 코드 유지, RUNNING 뒤 정상 종료 사본 제외, headless RUNNING 전후 표기·정상 정지 정합. ANSWER-1 적용, 판 올림 0.
 
 - 재설치 밤 목록 — P3(레인21:4x 판정): terminal 만료 뒤 옛 판을 계속 실행하는 흐름과 되풀이 횟수 막이 없음은 이번 고침에서 그대로 두고 밤 재설치 목록에 남긴다.
+- 10/26 sub-692: 마지막 bootstrap fallback의 기존 relay/gui 생성 시각 거짓 거절과 일반 복구 ValueError 전파를 고침. 역할·SHA 거절은 안내·20, RED→GREEN 및 정본 선언 근거는 work/program/w9firstupd/sub-692/RESULT.md. retained keep-relay 시험 모델은 별도 레인 판단.

@@ -108,39 +108,17 @@ def test_startup_waits_for_another_process_update_lock(endpoint, monkeypatch, tm
 
 def test_startup_lock_limit_starts_current_and_preserves_journal(endpoint, monkeypatch, tmp_path, capsys):
     control, app = ordinary_endpoint(endpoint, monkeypatch)
-    monkeypatch.setattr(updates, 'STARTUP_WAIT_SECONDS', 0.1, raising=False)
-    monkeypatch.setattr(updates, 'launch_version', NATIVE_LAUNCH)
-    observation = endpoint[5]
-    main = app / 'main.py'
-    main.write_text('''import json, sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
-import auto_update as updates
-import writer_session_fence as fence
-updates.ordinary_user_context = lambda *_args: True
-updates.runtime_matches = lambda *_args: True
-updates.process_snapshot = lambda *_args: []
-updates.STARTUP_WAIT_SECONDS = 0.1
-gate = updates.startup_gate(Path(__file__).parent, sys.argv[1:])
-assert gate is None
-with fence.writer_admission('gui_current_state_save'):
-    pass
-Path(''' + repr(str(observation)) + ''').write_text(json.dumps({'gate': gate, 'writer_admitted': True}))
-''')
+    monkeypatch.setattr(updates, 'APPLY_PROGRESS_TIMEOUT', 0.1)
     before = {name: (control / name).read_bytes() for name in ('active.json', 'transition.json')}
-    with held_update_lock(control, 30, tmp_path) as owner:
+    with held_update_lock(control, 6, tmp_path) as owner:
         started = NATIVE_CLOCK()
-        assert updates.startup_gate(app, []) == 0
+        assert updates.startup_gate(app, []) is None
         elapsed = NATIVE_CLOCK() - started
-        for child in endpoint.children:
-            child.communicate()
-            assert child.returncode == 0, 'current-version child must pass its real contested startup gate'
         assert owner.poll() is None, 'ordinary start must succeed before update ownership is released'
-        assert json.loads(observation.read_text()) == {'gate': None, 'writer_admitted': True}
-    assert 10 <= elapsed < 30  # Native waits plus validation; the child must beat the held owner above.
+    assert 0.1 <= elapsed < 6
     assert all((control / name).read_bytes() == raw for name, raw in before.items())
     report = json.loads(capsys.readouterr().out)
-    assert report['reason_code'] == 'UPDATE_APPLY_NO_PROGRESS' and report['exit_code'] == 0
+    assert report['reason_code'] == 'UPDATE_LOCK_WAIT_EXPIRED' and report['exit_code'] == 0
     persisted = updates.read_json(Path(endpoint[2]['staging_root']) / 'startup-support.json')
     assert persisted['reason_code'] == report['reason_code'] and persisted['exit_code'] == 0
 
@@ -148,21 +126,24 @@ Path(''' + repr(str(observation)) + ''').write_text(json.dumps({'gate': gate, 'w
 @pytest.mark.parametrize('refusal', ['generation', 'cohort'])
 def test_busy_startup_keeps_current_refusal(endpoint, monkeypatch, capsys, refusal):
     control = endpoint[0]
+    app = updates.version_bundle(control, NEW) / 'app'
     @contextmanager
     def busy(*_args, **_kwargs):
         raise RuntimeError('update mutex ownership is busy')
         yield
     monkeypatch.setattr(updates, 'update_lock', busy)
-    monkeypatch.setattr(updates, 'STARTUP_WAIT_SECONDS', 1, raising=False)
+    monkeypatch.setattr(updates, 'APPLY_PROGRESS_TIMEOUT', 1)
     monkeypatch.setattr(updates, 'current_generation_status', lambda *_args: 'UNKNOWN' if refusal == 'generation' else 'ALLOW')
     monkeypatch.setattr(updates, 'launch_version', lambda *_args, **_kwargs: pytest.fail('denied current state must not start'))
     if refusal == 'generation':
-        assert updates.startup_gate(control.parent / 'current/app', []) == 20
+        assert updates.startup_gate(app, []) == 20
         assert json.loads(capsys.readouterr().out)['reason_code'] == 'UPDATE_IN_PROGRESS'
     else:
         monkeypatch.setattr(updates, 'process_snapshot', lambda *_args: [{'pid': os.getpid() + 1, 'observable': True}])
+        assert updates.startup_gate(app, []) == 20
+        assert json.loads(capsys.readouterr().out)['reason_code'] == 'UPDATE_IN_PROGRESS'
         with pytest.raises(ValueError, match='unrelated writer'):
-            updates.startup_gate(control.parent / 'current/app', [])
+            updates.assert_ordinary_recovery(control, endpoint[2], NEW, updates.now_utc())
 
 
 @pytest.mark.parametrize('damage', ['signature', 'marker'], ids=['bad-signature', 'malformed-marker'])

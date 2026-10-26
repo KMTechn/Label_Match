@@ -1,3 +1,25 @@
+준비 실패의 영구 목록에는 서명 검증을 통과한 대상 SHA만 넣는다. 서명 실패나 표지 불일치는 서명되지 않은 표지 SHA를 영구 거절하지 않으며, 설치된 판 manifest를 읽지 못하면 모름으로 다시 기회를 준다. 고정 helper에서 원인이 확인되지 않는 실패도 모름으로 취급한다(sub-695).
+
+업데이트 bootstrap 마지막 fallback도 일반 복구와 같은 상속 경계 또는 관측한 기존 writer의 생성 시각을 사용한다(sub-692). 같은 active SHA·작업자·일반 권한·relay/gui 역할 증명을 유지하고 거절은 진행 안내·20으로 끝낸다. 그 경계는 후속 start_current 검사와 자식 실행에도 전달하며 sub-659의 재시도 간격·예산은 유지한다.
+
+### 업데이트 확인 창 15분과 일시 실패의 다시 기회 (sub-659)
+
+후보와 되돌림의 READY 확인 창은 원래 `applied_at`·`rollback_at`부터 각각 900초(15분)다. 부트스트랩 감독 상한은 시작+1140초(900+240)이며, 재시작으로 원래 단계 시각을 바꾸지 않는다.
+
+READY 시간 초과와 준비 중 시간 초과(Observe 20/10초 초과·정지 관찰 넘김 포함), 파일 잠김, 전송·망 오류, 일시 디스크 오류와 공간 없음(winerror 112/ENOSPC)은 같은 SHA의 `retry_shas`에 시도 수와 첫·마지막 시각을 보존한다. 준비 단계의 같은 SHA 재요청은 마지막 시도부터 900초 뒤에만 가능하다. 24시간 안 세 번째 실패 뒤에는 같은 SHA를 그 예산의 끝까지 보류한다. SHA를 영구 거절하지 않으며, `first_at+24h` 뒤 새 예산으로 자동 재시도한다. 원 실패 증거는 보존한다. 서명·해시·manifest 검증, 점검 F의 실패 증거만 즉시 확정 거절이다. 시험 앱 기동 실패·조기 종료와 모르는 예외는 제한된 다시 기회를 얻는다(sub-710 의도 변경: 기동 실패·이미 종료의 영구 거절을 UNKNOWN 예산으로 바꿈). 포인터 변경이 불확실한 실패는 기존 UNKNOWN/복구 경계를 유지한다.
+
+24시간 새 예산이 900초 간격보다 우선한다. 두 경계가 겹치면 한 번 이른 시도가 가능하며, 만료된 항목은 기존처럼 버리고 attempts=1의 새 예산을 시작한다.
+
+bootstrap 실제 대기는 min(공유 준비 600초, 감독 1140초)이며, 받은 부모 절대 마감도 넘기지 않는다. 900초 창의 결정은 SYSTEM 결정자가 맡는다. 부모·bootstrap·설치기의 공유 준비 상한은 600초로 유지한다.
+
+이어받은 READY 창은 초기 잠금을 즉시 잡아도 원 `applied_at`·`rollback_at`부터의 마감을 쓴다. 원 마감 뒤 READY는 확인으로 세지 않으며, 후보 창의 시간 초과·조기 종료·명시 기동 실패는 같은 재시도 예산에 한 번 센다. UNKNOWN과 기존 세대 판정·정상 종료/부재 증명·포인터 선택은 유지한다.
+
+준비 표지의 SHA 자체를 일시적으로 못 읽으면 `preparation_retry_pending: true`와 기존 `deferred_at`으로 900초를 보존한다. 신원을 알기 전에는 SHA별 예산을 차감하지 않고, 재시작도 같은 시각을 따른다. 성공한 새 전환에는 이 표지를 넘기지 않는다.
+
+3회 소진의 다음 일반 시작은 기존 판으로 작업을 계속하며 `UPDATE_RETRY_REVIEW_REQUIRED`와 다음 안내를 기존 시작 지원 경로에 남긴다: 「업데이트를 세 번 시도했지만 끝내지 못했습니다 — 지금 판으로 작업은 그대로 할 수 있습니다 · 하루 뒤 저절로 다시 시도합니다 · 현장 관리자에게 알리세요」. 되돌림 READY 뒤에도 같다. 별도 해제 명령이나 영구 표지는 만들지 않는다.
+
+포장의 사용자 relay가 만든 `update-preparation-failure-<32자리 hex>.json`은 최근 20개만 보존한다. 다른 이름의 파일은 정리하지 않는다. 실제 설치·업데이트 및 현장 READY 실측은 이 단위 시험 단계의 검증 범위 밖이다.
+
 # Label_Match 운영·복구·검증
 
 relay 파일 오류 격리(w9firstupdsub591): 큐 SQLite의 추가 표 `direct_sync_source_scan_failures`가 원본별 최초 실패 시각을 유지하며 기존 scan state/큐 표와 분리되어 옛 판의 읽기를 바꾸지 않는다. 기존 relay 상태 JSON은 `scan_file_error_count`와 `scan_file_errors:[{source_name, first_failed_at, error_code}]`를 게시한다(이름만·원문/경로 없음). 파일 오류만 남으면 `scan_status=scan_file_errors`로 다음 파일·drain을 계속하고 최종 status/rc는 drain 결과다. 성공 enqueue/dedupe(기존 ACK 행 포함) 때, 또는 원본이 스캔 대상에도 디스크에도 없어졌을 때(삭제·이름 바뀜; 파일을 지우거나 옮기지 않고 목록 항목만 정리) 목록에서 빼며, 디스크에 있는 원본은 이번 바퀴 유예·미완결이어도 유지한다. 기존 relay label과 공통 바닥 줄, 새 웹 화면 서버 줄(`label_screen_bridge._conn`의 `label`; state·JS/CSS/contract 불변)은 n>0일 때만 ` · 기록 파일 n개 안 올라감`을 붙인다. 고정 코드는 `source_csv_utf8_invalid`·`source_file_read_failed`·`source_delta_write_failed`이고, 큐/목록 판독·공용 spool/status/log·설정·디스크 용량/장치·미분류 오류 및 기존 terminal·역압·운영자 중지의 전역 처리/우선순위를 유지한다.
@@ -91,9 +113,9 @@ ANSWER-15: root 안 부재 증명→Popen→native PID/birth 보관(필요한 cl
 
 재개한 APPLIED_PENDING_READY/ROLLBACK_PENDING_READY에서 확인창 고리 전에 들어가는 최초 SYSTEM lock 획득도 journal의 applied_at/rollback_at에서 시작한 원240초 안에서만 exact busy를 재시도한다. 잠금 전 journal 판독은 대기 상한에만 쓰며 판독 실패·마감 경과는 즉시 fail-closed다. 획득 뒤 journal 재판독과 원래 증명은 그대로 실행하고, 최초 대기에 쓴 시간을 확인창이나 rollback 확인창에서 새로 더하지 않는다. 같은 마감과 native5초 대기·READY/writer/generation/pointer 조건을 유지한다. abandoned·다른 오류·본문 오류·마감 뒤 busy와 while 뒤 최종 lock은 원래 처리 그대로다.
 
-bootstrap 감독 기한은 보호 journal의 적용 시각(applied_at)과 되돌림 시각(rollback_at)에 다시 맞춘다. 초기 감독 예산은 진입 후240초이고, 적용/되돌림 READY 단계의 기존 종료 시각에15초를 더해 관측하되 진입 후480초를 상한으로 삼는다. READY240초 자체는 해당 applied_at/rollback_at 닻을 유지한다. GUI 바로 가기의 사용자 시작 bootstrap도 같은 식을 사용하므로 사용자가 보는 시작 중 감독 예산은 기존 최대240초에서 최대480초까지 늘 수 있다(진행 중 OS I/O의 실제 wall 지연은 별도).
+bootstrap 감독 기한은 보호 journal의 적용 시각(applied_at)과 되돌림 시각(rollback_at)에 다시 맞춘다. 초기 감독 예산은 진입 후240초이고, 적용/되돌림 READY 단계의 기존 종료 시각에15초를 더해 관측하되 진입 후1140초를 상한으로 삼는다. READY240초 자체는 해당 applied_at/rollback_at 닻을 유지한다. GUI 바로 가기의 사용자 시작 bootstrap도 같은 식을 사용하므로 사용자가 보는 시작 중 감독 예산은 기존 최대240초에서 최대1140초까지 늘 수 있다(진행 중 OS I/O의 실제 wall 지연은 별도).
 
-단계 감독 기한 뒤에도 SYSTEM apply claim이 LIVE이고 전환이 PREPARED·APPLIED_PENDING_READY·ROLLBACK_PENDING·ROLLBACK_PENDING_READY이거나 transition 기록이 없으면 같은 bootstrap이 진입 후480초까지 기다린다. 연장 중에는 root 잠금이 busy인 반복에서도 매 poll마다 claim·phase를 잠금 밖에서 다시 읽는다. 결정 전 phase에서 LIVE가 소멸하면 기존 마지막 읽기 길로 가고, terminal 결정 기록을 읽었어도 claim이 LIVE/UNKNOWN이면 원래 연장 기한(진입 후480초)을 유지한 채 claim 종료를 기다린다. claim이 끝나면 잠금 아래 기존 결정 분기로 이어져 retained 검사·relay 재사용과 UPDATE_TERMINAL_RECOVERED 지원 코드를 보존한다. terminal의 원래240초 식으로 연장 기한을 덮지 않으며480초에 닿으면 기존 마지막 읽기 길로 간다. LM native update_lock은 내부 재시도 없이 최대5초 대기 뒤 busy를 반환하므로 같은 바깥 자격 검사를 다시 지난다. 잠금 획득 뒤 원래 journal과 권한을 재확인하며, PREPARED/기록 없음 뒤 적용이 끝나면 기존 적용/READY 시계 안에서 원래 trial·확인 흐름으로 이어진다. READY 종료 뒤 결정을 기다리는 동안에는 새 trial을 시작하지 않는다. UNKNOWN·ABSENT claim의 대기 창과 relay 시도는 늘리지 않는다. GUI 준비 안내 감독 예산 최악480초이며 READY240·정상 종료60·단계끝+15와 최대480의 기존 값은 그대로다.
+단계 감독 기한 뒤에도 SYSTEM apply claim이 LIVE이고 전환이 PREPARED·APPLIED_PENDING_READY·ROLLBACK_PENDING·ROLLBACK_PENDING_READY이거나 transition 기록이 없으면 같은 bootstrap이 진입 후1140초까지 기다린다. 연장 중에는 root 잠금이 busy인 반복에서도 매 poll마다 claim·phase를 잠금 밖에서 다시 읽는다. 결정 전 phase에서 LIVE가 소멸하면 기존 마지막 읽기 길로 가고, terminal 결정 기록을 읽었어도 claim이 LIVE/UNKNOWN이면 원래 연장 기한(진입 후1140초)을 유지한 채 claim 종료를 기다린다. claim이 끝나면 잠금 아래 기존 결정 분기로 이어져 retained 검사·relay 재사용과 UPDATE_TERMINAL_RECOVERED 지원 코드를 보존한다. terminal의 원래240초 식으로 연장 기한을 덮지 않으며1140초에 닿으면 기존 마지막 읽기 길로 간다. LM native update_lock은 내부 재시도 없이 최대5초 대기 뒤 busy를 반환하므로 같은 바깥 자격 검사를 다시 지난다. 잠금 획득 뒤 원래 journal과 권한을 재확인하며, PREPARED/기록 없음 뒤 적용이 끝나면 기존 적용/READY 시계 안에서 원래 trial·확인 흐름으로 이어진다. READY 종료 뒤 결정을 기다리는 동안에는 새 trial을 시작하지 않는다. UNKNOWN·ABSENT claim의 대기 창과 relay 시도는 늘리지 않는다. GUI 준비 안내 감독 예산 최악1140초이며 READY240·정상 종료60·단계끝+15와 최대1140의 기존 값은 그대로다.
 
 첫 품목표 동기화는 중앙 등록 프로필이 있고 현재 신원·서버 URL로 기존 인증 검증기가 primary/recovery cache를 유효하다고 확인하지 못한 기본 timeout 경로에서만 2.0초를10초로 높인다. CSV만 유효한 캐시는 검증 캐시로 세지 않는다. 응답을 하나도 못 받은 연결·TLS 악수·첫 응답 기다림 실패만 최대2회 더 시도하며 사이는0.25초다. 첫 전송 시도 시작의 단조 시계를 기준으로 전체 예산40초를 두고, 잠 앞뒤 모두 다음 시도에 필요한 연결10초+읽기10초의 남은 창20초 이상일 때만 다시 시도한다. 상태줄·헤더를 받은 뒤의 본문 읽기 오류와 HTTP 오류·CSV/인증 검증 실패는 다시 시도하지 않는다. 이 기본 경로만 stream으로 본문을 조각으로 읽고, 전체40초를 넘으면 다음 조각 경계에서 끊어 응답/Session을 닫는 협조 중단이다. 전체40초는 돌려받은 조각 경계에서만 확인한다. urllib3/BufferedReader가 조각 하나를 모을 때까지 기다릴 수 있어 아주 느리게 끊임없이 보내면 더 늦어질 수 있으며, 조용히 멈추면 읽기 기다림10초로 끊긴다. 따라서 엄밀한40초 또는50초 상한으로 보지 않는다. 쓸 수 있는 인증 cache가 있거나 프로필이 없는 bundled/비인증 경로는 기존timeout2.0초/한 번을 유지하며 끊김 때 연결·읽기 합의 명목 최악은약4초+이름 풀이이다. 기본값2.0이 아닌 명시 timeout은 값 그대로·한 번이며 새 예산/재시도를 적용하지 않는다. 인증·TLS·신원/서버 결속·실패 지원 코드는 기존 판정을 유지한다.
 
