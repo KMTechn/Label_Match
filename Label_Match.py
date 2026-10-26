@@ -14280,7 +14280,8 @@ class Label_Match(tk.Tk):
             api_error is not None
             and (
                 api_error.retryable is True
-                or int(api_error.status_code) in {408, 425, 429, 500, 502, 503, 504}
+                or int(api_error.status_code) in {408, 425, 429}
+                or 500 <= int(api_error.status_code) < 600
             )
         ):
             code = (
