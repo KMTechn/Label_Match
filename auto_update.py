@@ -37,14 +37,16 @@ RELAY_READY_CHECKS = ("relay_initialized", *READY_CHECKS[1:])
 
 APPLY_PROGRESS_TIMEOUT = 60
 STARTUP_WAIT_SECONDS = 240
-READY_WINDOW_SECONDS = 600
+READY_WINDOW_SECONDS = 900
 # The bootstrap decision wait must outlast one whole READY window plus the
 # normal-stop and settle tail it always had (the former 480 = 240 + 240).
 BOOTSTRAP_OBSERVATION_CAP_SECONDS = READY_WINDOW_SECONDS + 240
 # A transient failure of one candidate sha gets another chance; the failed
-# list (permanent) is for confirmed rejections and for an exhausted budget.
+# list (permanent) is only for confirmed rejections.
 RETRY_ATTEMPT_LIMIT = 3
 RETRY_WINDOW_SECONDS = 24 * 60 * 60
+UPDATE_RETRY_REVIEW_REQUIRED = 'UPDATE_RETRY_REVIEW_REQUIRED'
+RETRY_REVIEW_MESSAGE = '업데이트를 세 번 시도했지만 끝내지 못했습니다 — 지금 판으로 작업은 그대로 할 수 있습니다 · 하루 뒤 저절로 다시 시도합니다 · 현장 관리자에게 알리세요'
 # Maximum shared by the parent, independent bootstrap and installer relay waits.
 # A parented bootstrap reserves result time inside its inherited absolute deadline.
 RELAY_PREPARE_SECONDS = 600
@@ -161,7 +163,10 @@ def _relay_preparation_deadline(parent_deadline, parent_pid) -> _RelayPreparatio
 
 def support_record(fields=None, *, stage):
     from failure_redaction import public_record
-    return public_record({**dict(fields or {}), "stage": stage})
+    values = {**dict(fields or {}), "stage": stage}
+    if values.get("reason_code") == UPDATE_RETRY_REVIEW_REQUIRED:
+        values["guidance"] = RETRY_REVIEW_MESSAGE
+    return public_record(values)
 
 
 def emit_support_record(fields, *, stage, policy=None):
@@ -394,6 +399,65 @@ def record_retry_chance(transition: Mapping[str, Any], sha: str, *, now: str) ->
     return entries, attempts >= RETRY_ATTEMPT_LIMIT
 
 
+def _transient_preparation_error(error: BaseException) -> bool:
+    """Unknown failures get a bounded retry; only proved rejections are final."""
+    import errno
+    if getattr(error, "winerror", None) == 112 or getattr(error, "errno", None) == errno.ENOSPC:
+        return False
+    return getattr(error, "_preparation_rejection", False) is not True
+
+
+def _preparation_rejection(message: str) -> ValueError:
+    error = ValueError(message)
+    error._preparation_rejection = True
+    return error
+
+
+def _retry_review_required(state: Mapping[str, Any] | None) -> bool:
+    entries = (state or {}).get("retry_shas")
+    if not isinstance(entries, Mapping) or (state or {}).get("preparation_retry_pending") is True:
+        return False
+    if (state or {}).get("reason_code") == "UPDATE_PREPARATION_FAILED":
+        selected = [entry for entry in entries.values() if isinstance(entry, Mapping)
+                    and entry.get("last_at") == state.get("deferred_at")]
+    else:
+        selected = [entries.get((state or {}).get("candidate_sha"))]
+    for entry in selected:
+        try:
+            if (type(entry["attempts"]) is int and entry["attempts"] >= RETRY_ATTEMPT_LIMIT
+                    and 0 <= (_utc(now_utc()) - _utc(entry["first_at"])).total_seconds() < RETRY_WINDOW_SECONDS):
+                return True
+        except (ValueError, TypeError, KeyError):
+            pass
+    return False
+
+
+def _preparation_retry_due(state: Mapping[str, Any] | None, sha: str) -> bool:
+    """Use the existing retry journal; restarting cannot reopen its interval."""
+    if ((state or {}).get("preparation_retry_pending") is True
+            or (not sha and (state or {}).get("reason_code") == "UPDATE_PREPARATION_FAILED")):
+        try:
+            if (_utc(now_utc()) - _utc(state["deferred_at"])).total_seconds() < READY_WINDOW_SECONDS:
+                return False
+        except (ValueError, KeyError, TypeError):
+            return False  # A malformed protected clock cannot reopen this wait.
+    raw = (state or {}).get("retry_shas")
+    entry = raw.get(sha) if isinstance(raw, Mapping) else None
+    if not isinstance(entry, Mapping):
+        return True
+    try:
+        now = _utc(now_utc())
+        age = (now - _utc(entry["first_at"])).total_seconds()
+        if not 0 <= age < RETRY_WINDOW_SECONDS:
+            return True
+        if type(entry["attempts"]) is not int or entry["attempts"] < 1:
+            return True
+        return (entry["attempts"] < RETRY_ATTEMPT_LIMIT
+                and (now - _utc(entry["last_at"])).total_seconds() >= READY_WINDOW_SECONDS)
+    except (ValueError, KeyError, TypeError):
+        return True  # Match record_retry_chance's handling of invalid entries.
+
+
 def request_rollback(transition: Mapping[str, Any], *, reason: str, transient: bool = False,
                      now: str | None = None) -> dict[str, Any]:
     if transition.get("phase") != "APPLIED_PENDING_READY":
@@ -403,7 +467,8 @@ def request_rollback(transition: Mapping[str, Any], *, reason: str, transient: b
     extra: dict[str, Any] = {}
     permanent = True
     if transient:
-        extra["retry_shas"], permanent = record_retry_chance(transition, candidate, now=now or now_utc())
+        extra["retry_shas"], _ = record_retry_chance(transition, candidate, now=now or now_utc())
+        permanent = False
     if permanent and candidate not in failures:
         failures.append(candidate)
     return {**transition, "phase": "ROLLBACK_PENDING", "reason": str(reason), "failed_shas": failures, **extra}
@@ -1295,6 +1360,12 @@ def _run_fixed_helper(control: Path, mode: str, *, code_root: Path | None = None
     completed = subprocess.run(arguments, capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if completed.returncode:
         error = RuntimeError("fixed update helper failed: " + mode + "; " + safe_update_text(completed.stderr))
+        error._preparation_timeout = mode == "Observe" and "STARTUP_QUERY_TIMEOUT_UNKNOWN" in (completed.stderr or "")
+        error._preparation_rejection = bool(re.search(
+            r"\bSTARTUP_UPDATE_(?:FILE_PIN_DIFFERS|PORTABLE_MANIFEST_DIFFERS|WRITER_INVENTORY_DIFFERS|"
+            r"PACKET_HAS_INSTALL_RECORD|VERSION_DIRECTORY_DIFFERS|VERSION_OUTSIDE_PROTECTED_ROOT|"
+            r"FIXED_BOOTSTRAP_REQUIRED|OPERATOR_DIFFERS|POLICY_OVERSIZED|SYSTEM_REQUIRED|"
+            r"PREVIOUS_RECORD_MISSING|APPLY_HAS_NO_USER_CODE_ARGUMENT)\b", completed.stderr or ""))
         error.child_output = child_failure_output(completed)
         from failure_redaction import try_write_failure_evidence
         error.cause_code = "INSTALLER_FAILED"
@@ -1503,16 +1574,24 @@ def apply_prepared(control: Path) -> int:
                        "deferred_at": now_utc(), "reason_code": "UPDATE_PREPARATION_FAILED",
                        "reason": type(error).__name__, "launch_failure_details": launch_failure_details(error, include_original=True)}
             marker_sha256 = prepared_marker_sha256(policy)
-            if not_applied and marker_sha256:
-                if (state or {}).get("failed_prepared_sha256") == marker_sha256 and (state or {}).get("phase") == "DEFERRED":
-                    return 0
-                failure["failed_prepared_sha256"] = marker_sha256
+            failure.pop("preparation_retry_pending", None)
+            if not_applied:
                 try:
-                    marker = read_json(Path(policy["staging_root"]) / "prepared.json")
-                    failed_sha = _sha(marker.get("source_commit"))
-                    failure["failed_shas"] = sorted(set(failure.get("failed_shas", [])) | {failed_sha})
+                    failed_sha = _sha(read_json(Path(policy["staging_root"]) / "prepared.json").get("source_commit"))
                 except (OSError, ValueError, TypeError):
-                    pass  # Malformed hints are quarantined by their exact bytes.
+                    failed_sha = ""
+                if _transient_preparation_error(error):
+                    failure.pop("failed_prepared_sha256", None)
+                    if failed_sha:
+                        failure["retry_shas"], _ = record_retry_chance(
+                            state or {}, failed_sha, now=failure["deferred_at"])
+                    else:
+                        failure["preparation_retry_pending"] = True
+                else:
+                    if marker_sha256:
+                        failure["failed_prepared_sha256"] = marker_sha256
+                    if failed_sha:
+                        failure["failed_shas"] = sorted(set(failure.get("failed_shas", [])) | {failed_sha})
             write_json_durable(control / ("failure-" + uuid.uuid4().hex + ".json"), failure)
             write_json_durable(control / "transition.json", failure)
         return 0 if not_applied else 20
@@ -1540,25 +1619,33 @@ def authorize_prepared_replay(control: Path, policy: Mapping[str, Any], state: M
     """Reauthenticate a durable PREPARED record after an interrupted apply."""
     active = read_json(control / "active.json")
     if active.get("sha") != state.get("previous_sha"):
-        raise ValueError("prepared replay differs from the active pointer")
+        raise _preparation_rejection("prepared replay differs from the active pointer")
     protected = Path(state["prepared_packet_root"])
     if (protected.parent != control or re.fullmatch(r"packet-[0-9a-f]{32}", protected.name) is None):
-        raise ValueError("prepared replay packet is outside protected storage")
+        raise _preparation_rejection("prepared replay packet is outside protected storage")
     previous = version_bundle(control, state["previous_sha"])
     target = version_bundle(control, state["candidate_sha"])
     for bundle in (previous, target):
         fixed_helper(control, "Verify", code_root=bundle)
-    current, candidate = version_manifest(previous), version_manifest(target)
+    try:
+        current, candidate = version_manifest(previous), version_manifest(target)
+    except ValueError as error:
+        error._preparation_rejection = True
+        raise
     key = read_json(control.parent / "current/app/update-manifest-key-config.json")["manifest_public_key"]
-    manifest, packet = verify_prepared_packet(protected, key_config=key,
-        current_version=current["version"], channel=policy["channel"])
+    try:
+        manifest, packet = verify_prepared_packet(protected, key_config=key,
+            current_version=current["version"], channel=policy["channel"])
+    except ValueError as error:
+        error._preparation_rejection = True
+        raise
     if packet["sha256"] != state["packet_sha256"]:
-        raise ValueError("prepared replay packet differs")
+        raise _preparation_rejection("prepared replay packet differs")
     pins = authorize_feed_transition(manifest, current=current, candidate=candidate)
     if pins[:2] != (state["forward_pin"], state["rollback_pin"]):
-        raise ValueError("prepared replay direction differs")
+        raise _preparation_rejection("prepared replay direction differs")
     if candidate["source_commit"] in state.get("failed_shas", []):
-        raise ValueError("a failed version must not be reapplied")
+        raise _preparation_rejection("a failed version must not be reapplied")
 
 
 class _RollbackReadyPending(Exception):
@@ -1854,7 +1941,11 @@ def _apply_prepared_once(control: Path) -> int:
                 return 0  # A late task defers; it never stops an existing application.
             active = read_json(control / "active.json")
             fixed_helper(control, "Verify", code_root=version_bundle(control, active["sha"]))
-            current = version_manifest(version_bundle(control, active["sha"]))
+            try:
+                current = version_manifest(version_bundle(control, active["sha"]))
+            except ValueError as error:
+                error._preparation_rejection = True
+                raise
             key = read_json(control.parent / "current/app/update-manifest-key-config.json")["manifest_public_key"]
             # Copy user-owned bytes, then authenticate the protected copy. No path,
             # executable or command supplied by the prepared marker is executed.
@@ -1862,18 +1953,30 @@ def _apply_prepared_once(control: Path) -> int:
             create_protected_stage(protected)
             for name in ("manifest.json", "manifest.sig", "packet.zip", "prepared.json"):
                 copy_prepared_file(stage / name, protected / name, expected_owner_sid=policy["operator_sid"])
-            manifest, candidate = verify_prepared_packet(protected, key_config=key, current_version=current["version"], channel=policy["channel"])
+            try:
+                manifest, candidate = verify_prepared_packet(protected, key_config=key, current_version=current["version"], channel=policy["channel"])
+            except ValueError as error:
+                error._preparation_rejection = True
+                raise
             sha = manifest["source_commit"]
             if sha in (state or {}).get("failed_shas", []):
                 return 0
             extracted = protected / "extracted"
-            extract_prepared_code(protected / "packet.zip", extracted, candidate["archive"])
+            try:
+                extract_prepared_code(protected / "packet.zip", extracted, candidate["archive"])
+            except ValueError as error:
+                error._preparation_rejection = True
+                raise
             target = extracted / "Label_Match"
-            candidate_manifest = version_manifest(target)
+            try:
+                candidate_manifest = version_manifest(target)
+            except ValueError as error:
+                error._preparation_rejection = True
+                raise
             if candidate_manifest["source_commit"] != sha or candidate_manifest["version"] != manifest["version"]:
-                raise ValueError("signed target SHA differs from the packet")
+                raise _preparation_rejection("signed target SHA differs from the packet")
             if file_sha256(target / "app/update-manifest-key-config.json") != file_sha256(control.parent / "current/app/update-manifest-key-config.json"):
-                raise ValueError("candidate signing key differs from the installed key")
+                raise _preparation_rejection("candidate signing key differs from the installed key")
             forward, rollback, rollback_pair, pin_authority, data_api_evidence = authorize_feed_transition(manifest, current=current, candidate=candidate_manifest)
             # The fixed helper validates the portable tree and writes its own
             # integrity record. It never imports or executes candidate code.
@@ -2547,6 +2650,8 @@ def trial_context(app_root: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]
 def prepared_pending(control: Path, policy: Mapping[str, Any], state: Mapping[str, Any] | None) -> bool:
     if not policy.get("feed_url"):
         return False
+    if (state or {}).get("preparation_retry_pending") is True and not _preparation_retry_due(state, ""):
+        return False
     path = Path(policy["staging_root"]) / "prepared.json"
     if (state and state.get("phase") == "DEFERRED" and state.get("failed_prepared_sha256")
             and state["failed_prepared_sha256"] == prepared_marker_sha256(policy)):
@@ -2554,7 +2659,7 @@ def prepared_pending(control: Path, policy: Mapping[str, Any], state: Mapping[st
     try:
         marker = optional_record(path)
     except (OSError, ValueError):
-        return path.exists()  # A corrupt hint still requests SYSTEM verification.
+        return path.exists() and _preparation_retry_due(state, "")  # Verify when the saved wait permits.
     if marker is None:
         return False
     try:
@@ -2562,7 +2667,8 @@ def prepared_pending(control: Path, policy: Mapping[str, Any], state: Mapping[st
     except ValueError:
         return True
     active = read_json(control / "active.json")
-    return sha != active["sha"] and sha not in (state or {}).get("failed_shas", [])
+    return (sha != active["sha"] and sha not in (state or {}).get("failed_shas", [])
+            and _preparation_retry_due(state, sha))
 
 
 def prepare_feed_packet(app_root: Path) -> dict[str, Any]:
@@ -3660,6 +3766,8 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
                 return reused
         # Non-relay writers retain the original launch admission, including
         # its exact parent-lifetime exception; reuse grants no new authority.
+    if _retry_review_required(state):
+        code = UPDATE_RETRY_REVIEW_REQUIRED
     report = support_record({"reason_code": code,
         "transition_code": (state or {}).get("failure_decision", {}).get("code", code),
         "retained_candidate": (state or {}).get("retained_candidate") is True}, stage="update_apply")
@@ -3672,7 +3780,10 @@ def start_current(control: Path, policy: Mapping[str, Any], state, active, argum
             previous = optional_record(report_path)
         if not (report_once and previous and previous.get("reason_code") == code
                 and previous.get("apply_claim_sha256") == report["apply_claim_sha256"]):
-            write_json_durable(report_path, report)
+            if code == UPDATE_RETRY_REVIEW_REQUIRED:
+                emit_support_record(report, stage="update_apply", policy=policy)
+            else:
+                write_json_durable(report_path, report)
     except (OSError, ValueError, TypeError, WriterFenceError):
         # A support sink failure cannot turn a safe ordinary launch into a stop.
         emit_support_record({"reason_code": "REPORT_UNAVAILABLE"}, stage="update_apply")

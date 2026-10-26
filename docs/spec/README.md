@@ -1,3 +1,5 @@
+후보·되돌림 READY 확인 창은 15분(900초), bootstrap 감독 상한은 1140초다. 준비 중 일시 실패의 같은 SHA는 마지막 시도 900초 뒤 다시 기회를 얻으며, 24시간 안 세 번째 실패 뒤 그 예산이 끝날 때까지 보류하며 하루 뒤 자동 재시도한다([운영](operations.md)).
+
 # 포장 목표 명세 (Label_Match)
 
 v2.0.124 화면 고정은 웹 6ced39fb4056488575e04e17059c0e3e90bd83f2의 exporter 사본 76개 파일(parts fingerprint c83ed483720e2b61)을 고정한다. 다리 글·원문 코드·교환 두 칸·품목별 전체 제품 수와 부분 제출 확인 뒤 즉시 release를 반영했다. M124(10/15 18:03 확정): SET_HOLD·F5_HOLD·SUPPORT_HANDOFF·PHS_LOOKUP 네 동작은 작업자가 PIN 없이 한다. 일반 RECHECK와 격리 파일 복원은 섞인 시트/처리기이므로 기준일에는 관리자 PIN을 유지한다. L04 작업자 재조회와 L05 관리자 복원을 다른 시트·action으로 나누는 일은 첫 업데이트에서 w9mgrui가 설계한다. sheets.*.pin은 메뉴 묶음·표시이며 인증 방식을 새로 정하지 않는다. admin·cancel_completed는 기존 모양, 완료 취소는 kind:form과 P7의 기존 승인을 유지한다. 셸 v3.16.3.1을 고정한다.
