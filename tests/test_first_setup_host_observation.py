@@ -11,6 +11,7 @@ from tests import _first_setup_host as host
 
 def test_host_private_compatibility_uses_the_product_packaged_key_loader(tmp_path, monkeypatch):
     import Label_Match as product
+    assert Path(product.__file__).resolve() == Path(__file__).resolve().parents[1] / 'Label_Match.py'
     import label_data_generation as generation
     from kmtech_zero_pe import P256KeyPair
     from tests.test_update_manifest import canonical_manifest
@@ -34,6 +35,7 @@ def test_host_private_compatibility_uses_the_product_packaged_key_loader(tmp_pat
 
 def test_host_private_compatibility_preserves_real_configured_key_priority(tmp_path, monkeypatch):
     import Label_Match as product
+    assert Path(product.__file__).resolve() == Path(__file__).resolve().parents[1] / 'Label_Match.py'
     import label_data_generation as generation
     from kmtech_zero_pe import P256KeyPair
     from tests.test_update_manifest import canonical_manifest

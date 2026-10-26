@@ -47,7 +47,20 @@ def stock_layouts(tmp_path_factory):
         source=ROOT if revision == 'candidate' else work/revision/'source'
         if revision != 'candidate':generator.snapshot(revision,source)
         package=work/revision/'package'
-        files=generator.application_layout(source,package)
+        import_path = sys.path[:]
+        imported_modules = sys.modules.copy()
+        try:
+            files=generator.application_layout(source,package)
+        finally:
+            sys.path[:] = import_path
+            for name, module in tuple(sys.modules.items()):
+                origin = getattr(module, '__file__', None)
+                if not origin or not Path(origin).resolve().is_relative_to(work.resolve()):
+                    continue
+                if name in imported_modules:
+                    sys.modules[name] = imported_modules[name]
+                else:
+                    sys.modules.pop(name, None)
         policy_tree=ast.parse((source/'auto_update.py').read_text(encoding='utf-8-sig'))
         policy=next(node for node in policy_tree.body if isinstance(node,ast.FunctionDef) and node.name=='policy_from_settings')
         policy_scope={'Mapping':Mapping,'Any':Any,'re':re}
