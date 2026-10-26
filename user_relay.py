@@ -9,6 +9,7 @@ import json
 import ntpath
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -151,6 +152,24 @@ def _preserve_failure_evidence(path: Path, error: BaseException) -> dict[str, An
         evidence.update(failure_evidence_status="FAILED",
                         failure_evidence_error_details=launch_failure_details(evidence_error))
     return evidence
+
+
+UPDATE_PREPARATION_FAILURE_KEEP = 20
+_UPDATE_PREPARATION_FAILURE_NAME = re.compile(r"update-preparation-failure-[0-9a-f]{32}\.json")
+
+
+def _prune_update_preparation_failures(logs: Path, *, keep: int = UPDATE_PREPARATION_FAILURE_KEEP) -> None:
+    """Keep the newest failure evidence files; only files of this exact name shape go."""
+    try:
+        entries = []
+        for entry in logs.iterdir():
+            if _UPDATE_PREPARATION_FAILURE_NAME.fullmatch(entry.name) and entry.is_file() and not entry.is_symlink():
+                entries.append((entry.stat().st_mtime_ns, entry.name, entry))
+        entries.sort(key=lambda item: (item[0], item[1]))
+        for _, _, entry in entries[:max(0, len(entries) - keep)]:
+            entry.unlink(missing_ok=True)
+    except OSError:
+        pass  # Housekeeping never replaces the original update-preparation failure.
 
 
 def user_relay_status_path(direct_sync_root: str | os.PathLike[str]) -> Path:
@@ -1130,6 +1149,7 @@ def _runtime_cycle(
         error = update_preparation
         failure_path = direct_sync_root / "logs" / ("update-preparation-failure-" + uuid.uuid4().hex + ".json")
         failure_evidence = _preserve_failure_evidence(failure_path, error)
+        _prune_update_preparation_failures(failure_path.parent)
         update_preparation = {"status": "DEFERRED", "error_type": type(error).__name__,
                               "launch_failure_details": launch_failure_details(error),
                               **failure_evidence}
