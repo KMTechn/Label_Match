@@ -38,7 +38,10 @@ if($selection.until){
         $node.Extent.Text.Replace("`r`n","`n").Replace("`r","`n").StartsWith($suffix)
     },$true))
     if($ends.Count -ne 1){throw 'installer initialization end is ambiguous'}
-    $transactions=@($transactions | Where-Object {[Object]::ReferenceEquals($_.Parent,$ends[0].Parent)})
+    $transactions=@($transactions | Where-Object {
+        $_.Parent.Extent.StartOffset -eq $ends[0].Parent.Extent.StartOffset -and
+        $_.Parent.Extent.EndOffset -eq $ends[0].Parent.Extent.EndOffset
+    })
 }
 if($transactions.Count -ne 1){throw 'installer transaction marker is ambiguous'}
 $markerStatement=$transactions[0]

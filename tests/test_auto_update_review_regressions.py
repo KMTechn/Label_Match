@@ -173,11 +173,10 @@ def bootstrap_fixture(monkeypatch, tmp_path):
         transition_id="6" * 32, nonce="7" * 32, now=stamp,
     ), writers_absent=True, packet_verified=True, durable_prepared=True, now=stamp)
     policy = {"operator_sid": "operator", "staging_root": str(tmp_path)}
-    from tests.test_auto_update_endpoints import SID
     import current_user_onboarding
     from user_relay import user_relay_status_path
 
-    policy.update(operator_sid=SID, operator_local_app_data=str(tmp_path / "operator-local"))
+    policy.update(operator_local_app_data=str(tmp_path / "operator-local"))
     direct = tmp_path / "ordinary-direct-sync"
     ordinary_rows = []
 
@@ -196,7 +195,7 @@ def bootstrap_fixture(monkeypatch, tmp_path):
                     ordinary_user=True, process_id=pid, updated_at=at,
                     code_root=str(updates.version_bundle(control, sha) / "app"))
                 ordinary_rows[:] = [dict(pid=pid, observable=True, role="relay", sha=sha,
-                    sid=SID, ordinary_user=True, created_at=at)]
+                    sid=policy["operator_sid"], ordinary_user=True, created_at=at)]
             return pid
         return observed
 
@@ -210,6 +209,7 @@ def bootstrap_fixture(monkeypatch, tmp_path):
         return updates.confirm_transition(rollback, ready, process_matches=True,
             relay_matches=True, now=at, active={"sha": rollback["previous_sha"]})
 
+    records.clock = _clock_time
     records.observe_launcher = observe_launcher
     records.previous_ready = previous_ready
     monkeypatch.setattr(current_user_onboarding, "resolve_current_user_onboarding_paths",
@@ -255,7 +255,7 @@ def test_trial_launch_failure_waits_and_starts_previous_code(monkeypatch, tmp_pa
             records["active.json"] = {"sha": old}
         else:
             records["transition.json"] = {**records["transition.json"], "phase": "ROLLED_BACK"}
-    monkeypatch.setattr(time, "sleep", system_recovery)
+    monkeypatch.setattr(records.clock, "sleep", system_recovery)
     assert updates.bootstrap(tmp_path / "app", [], role="gui") == 0
     assert calls[-2:] == [(old, "gui"), (old, "relay")]
     assert calls.count((new, failed_role)) == 1
@@ -270,7 +270,7 @@ def test_failed_trial_keeps_unknown_and_never_launches_previous_code(monkeypatch
     monkeypatch.setattr(updates, "launch_version", fail)
     # B1 consults the writer census after supervision settles; this fixture has none.
     monkeypatch.setattr(updates, "process_snapshot", lambda _: [])
-    monkeypatch.setattr(time, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
+    monkeypatch.setattr(records.clock, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
     assert updates.bootstrap(tmp_path / "app", [], role="gui") == 20
     assert calls == [new]
     assert records["active.json"]["sha"] == new
@@ -292,7 +292,7 @@ def test_existing_trial_claim_requires_live_bound_processes(monkeypatch, tmp_pat
     rows = [] if change == "missing" else [gui] if change == "missing_relay" else [gui, relay]
     monkeypatch.setattr(updates, "process_snapshot", lambda _: rows)
     monkeypatch.setattr(updates, "launch_version", lambda *a, **k: pytest.fail("stale claim launched code"))
-    monkeypatch.setattr(time, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
+    monkeypatch.setattr(records.clock, "sleep", lambda _: records["transition.json"].update(phase="UNKNOWN"))
     # B1 keeps a rejected trial rejected, but an existing ordinary writer owns
     # work after supervision settles. With no writer and unknown G, keep 20.
     # e78 stops after an observed trial settles UNKNOWN with a non-ABSENT
