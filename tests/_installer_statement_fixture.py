@@ -27,11 +27,27 @@ if(@($parseErrors).Count){throw 'installer syntax is invalid'}
 $selection=Get-Content -LiteralPath $MarkerPath -Raw | ConvertFrom-Json
 $prefix=$selection.marker.TrimStart().Replace("`r`n","`n").Replace("`r","`n")
 $transactions=@($tree.FindAll({param($node)
-    $node -is [Management.Automation.Language.TryStatementAst] -and
+    $node -is [Management.Automation.Language.AssignmentStatementAst] -and
     $node.Extent.Text.Replace("`r`n","`n").Replace("`r","`n").StartsWith($prefix)
 },$true))
 if($transactions.Count -ne 1){throw 'installer transaction marker is ambiguous'}
-[IO.File]::WriteAllText($BodyPath,$transactions[0].Extent.Text,[Text.UTF8Encoding]::new($false))
+$markerStatement=$transactions[0]
+$owner=@($tree.EndBlock.Statements | Where-Object {
+    $_.Extent.StartOffset -le $markerStatement.Extent.StartOffset -and
+    $_.Extent.EndOffset -ge $markerStatement.Extent.EndOffset
+})
+if($owner.Count -ne 1){throw 'installer transaction owner is ambiguous'}
+if($owner[0] -eq $markerStatement){
+    $selected=@($tree.EndBlock.Statements | Where-Object {$_.Extent.StartOffset -ge $markerStatement.Extent.StartOffset})
+}else{
+    $selected=@($markerStatement.Parent.Statements | Where-Object {$_.Extent.StartOffset -ge $markerStatement.Extent.StartOffset})
+    $selected+=@($tree.EndBlock.Statements | Where-Object {$_.Extent.StartOffset -gt $owner[0].Extent.EndOffset})
+}
+$body=($selected | ForEach-Object {$_.Extent.Text}) -join "`n"
+$bodyTokens=$null;$bodyErrors=$null
+$null=[Management.Automation.Language.Parser]::ParseInput($body,[ref]$bodyTokens,[ref]$bodyErrors)
+if(@($bodyErrors).Count){throw 'fixture transaction syntax is invalid'}
+[IO.File]::WriteAllText($BodyPath,$body,[Text.UTF8Encoding]::new($false))
 @{matches=$transactions.Count} | ConvertTo-Json -Compress
 """, encoding='utf-8')
         result = run_bounded([shutil.which('pwsh'), '-NoLogo', '-NoProfile', '-File',
