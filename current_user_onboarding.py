@@ -487,45 +487,33 @@ def resolve_current_user_onboarding_paths(
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> dict[str, str]:
-    from failure_redaction import redact_json_for_sink, assert_machine_metadata_text, public_diagnostic_tree
-    from report_publication import prepare_report, DIAGNOSTIC_FIELDS, report_io, flush_report_counter, protect_diagnostic, UNAVAILABLE
+    from failure_redaction import redact_json_for_sink, _redact_json_tree, assert_machine_metadata_text
+    from report_publication import prepare_report, DIAGNOSTIC_FIELDS, record_publication, _anonymous_diagnostics
+
     def render(value):
         return json.dumps(redact_json_for_sink(dict(value)), ensure_ascii=False,
                           indent=2, sort_keys=True) + "\n"
+
     def fallback_render(value):
         text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         assert_machine_metadata_text(text, environ=os.environ)
         return text
-    def fallback_tree(value):
-        if isinstance(value, dict):
-            result = {}
-            for key, item in value.items():
-                child = fallback_tree(item)
-                def project():
-                    if key == "server_error_code" and isinstance(child, str) and child:
-                        from failure_redaction import public_record
-                        if "server_error_code" not in public_record({key: child}):
-                            return public_diagnostic_tree({"message": child})
-                    projected = public_diagnostic_tree({key: child})
-                    return projected[key] if key in projected else projected
-                # Project one field at a time so diagnostic envelopes never
-                # replace sibling registration, origin or setup state fields.
-                result[key] = protect_diagnostic(project, fallback=lambda: UNAVAILABLE,
-                    unavailable_codes=("REPORT_UNAVAILABLE", "PRODUCT_METADATA_SECRET_VALUE_REFUSED"),
-                    record_failure=False)
-            return result
-        if isinstance(value, (list, tuple)):
-            return [fallback_tree(item) for item in value]
-        return value
+
+    def fallback_payload():
+        # Reuse the original string/key redaction once, before replacing only
+        # diagnostic values rejected by the final strict validator.
+        tree, _ = _redact_json_tree(dict(payload), os.environ, diagnostic_fallback=True)
+        return _anonymous_diagnostics(tree, diagnostic=True)
+
     prepared = prepare_report(
-        payload, render=render, fallback_render=fallback_render, fallback_tree=fallback_tree,
-        path=path, diagnostic_fields=DIAGNOSTIC_FIELDS,
+        payload, render=render, fallback_render=fallback_render, fallback_payload=fallback_payload,
+        diagnostic_fields=DIAGNOSTIC_FIELDS, replace_strings=False,
         unavailable_codes=("REPORT_UNAVAILABLE", "PRODUCT_METADATA_SECRET_VALUE_REFUSED"),
     )
-    flush_report_counter(prepared, path=path,
+    reference = _write_json_bytes_atomic(path, prepared.text)
+    record_publication(prepared, path=path,
         writer=lambda counter, counts: _write_machine_json_atomic(counter, counts, environ={}))
-    with report_io(prepared, required=True):
-        return _write_json_bytes_atomic(path, prepared.text)
+    return reference
 
 
 def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any], *,
@@ -2004,74 +1992,76 @@ def remove_current_user_setup(
         "machine_code_removal_requires_elevation": True,
         "failure": "",
     }
-    try:
-        failures = []
-        first_failure = None
-        for step, key, callback, arguments in (
-            ("run", "relay_autostart", autostart_remover, ()),
-            ("relay", "relay_process", relay_stopper, (paths.direct_sync_root,)),
-            ("task", "scheduled_task", scheduled_task_remover, (paths.app_root,)),
-        ):
-            if step == "task" and report.get("relay_process", {}).get("status") != "ABSENT":
-                report[key] = {"status": "NOT_TESTED_RELAY_UNPROVEN"}
-                continue
-            try:
-                report[key] = dict(callback(*arguments))
-                status = str(report[key].get("status") or "")
-                if status in {"", "UNKNOWN"}:
-                    raise CurrentUserOnboardingError(
-                        f"current-user {step} removal result is UNKNOWN",
-                        report_path=paths.removal_report_path, status="UNKNOWN",
-                    )
-                if status != "ABSENT":
-                    raise ValueError(f"current-user {step} absence was not proven")
-            except Exception as exc:
-                from failure_redaction import protected_failure_details
-                if first_failure is None:
-                    first_failure = exc
-                failures.append({"step": step, "error_type": type(exc).__name__,
-                                 "failure": str(exc)[:500],
-                                 "status": getattr(exc, "status", "FAILED"),
-                                 **protected_failure_details(exc, environ)})
-        if failures:
-            report["removal_failures"] = failures
-            status = "UNKNOWN" if any(item["status"] == "UNKNOWN" for item in failures) else "FAILED"
-            raise CurrentUserOnboardingError(
-                "current-user removal remains incomplete: " + "; ".join(
-                    item["step"] + ": " + item["failure"] for item in failures),
-                report_path=paths.removal_report_path, status=status,
-            ) from first_failure
-        report.update({"status": "PASS_DATA_PRESERVED", "completed_at": _now()})
-        settled = settle_dead_installer_fence()
-        if settled is not None:
-            report["abandoned_fence_settled"] = settled
-        _write_json_atomic(paths.removal_report_path, report)
-        return report
-    except CurrentUserOnboardingError as exc:
-        report.update(
-            {
-                "status": exc.status,
-                "failure": str(exc)[:500],
-                "error_type": exc.__class__.__name__,
-            }
-        )
-        _publish_failure_report(paths.removal_report_path, report, exc)
-        raise
-    except Exception as exc:
-        report.update(
-            {
-                "status": "FAILED",
-                "failure": str(exc)[:500],
-                "error_type": exc.__class__.__name__,
-            }
-        )
-        failure = CurrentUserOnboardingError(
-            f"Label_Match current-user removal failed: {exc}",
-            report_path=paths.removal_report_path,
-        )
-        failure.__cause__ = exc
-        _publish_failure_report(paths.removal_report_path, report, failure)
-        raise failure from exc
+    from report_publication import report_attempt
+    with report_attempt():
+        try:
+            failures = []
+            first_failure = None
+            for step, key, callback, arguments in (
+                ("run", "relay_autostart", autostart_remover, ()),
+                ("relay", "relay_process", relay_stopper, (paths.direct_sync_root,)),
+                ("task", "scheduled_task", scheduled_task_remover, (paths.app_root,)),
+            ):
+                if step == "task" and report.get("relay_process", {}).get("status") != "ABSENT":
+                    report[key] = {"status": "NOT_TESTED_RELAY_UNPROVEN"}
+                    continue
+                try:
+                    report[key] = dict(callback(*arguments))
+                    status = str(report[key].get("status") or "")
+                    if status in {"", "UNKNOWN"}:
+                        raise CurrentUserOnboardingError(
+                            f"current-user {step} removal result is UNKNOWN",
+                            report_path=paths.removal_report_path, status="UNKNOWN",
+                        )
+                    if status != "ABSENT":
+                        raise ValueError(f"current-user {step} absence was not proven")
+                except Exception as exc:
+                    from failure_redaction import protected_failure_details
+                    if first_failure is None:
+                        first_failure = exc
+                    failures.append({"step": step, "error_type": type(exc).__name__,
+                                     "failure": str(exc)[:500],
+                                     "status": getattr(exc, "status", "FAILED"),
+                                     **protected_failure_details(exc, environ, _report_path=paths.removal_report_path)})
+            if failures:
+                report["removal_failures"] = failures
+                status = "UNKNOWN" if any(item["status"] == "UNKNOWN" for item in failures) else "FAILED"
+                raise CurrentUserOnboardingError(
+                    "current-user removal remains incomplete: " + "; ".join(
+                        item["step"] + ": " + item["failure"] for item in failures),
+                    report_path=paths.removal_report_path, status=status,
+                ) from first_failure
+            report.update({"status": "PASS_DATA_PRESERVED", "completed_at": _now()})
+            settled = settle_dead_installer_fence()
+            if settled is not None:
+                report["abandoned_fence_settled"] = settled
+            _write_json_atomic(paths.removal_report_path, report)
+            return report
+        except CurrentUserOnboardingError as exc:
+            report.update(
+                {
+                    "status": exc.status,
+                    "failure": str(exc)[:500],
+                    "error_type": exc.__class__.__name__,
+                }
+            )
+            _publish_failure_report(paths.removal_report_path, report, exc)
+            raise
+        except Exception as exc:
+            report.update(
+                {
+                    "status": "FAILED",
+                    "failure": str(exc)[:500],
+                    "error_type": exc.__class__.__name__,
+                }
+            )
+            failure = CurrentUserOnboardingError(
+                f"Label_Match current-user removal failed: {exc}",
+                report_path=paths.removal_report_path,
+            )
+            failure.__cause__ = exc
+            _publish_failure_report(paths.removal_report_path, report, failure)
+            raise failure from exc
 
 
 def _default_app_root() -> Path:

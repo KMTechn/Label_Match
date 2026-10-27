@@ -19,28 +19,37 @@ def test_counter_failure_never_changes_report_result(tmp_path, error_type):
     def fail_counter(path, value):
         raise error_type("synthetic-counter-failure")
     prepared = publication.prepare_report({"detail": "synthetic-diagnostic"},
-        render=refused, fallback_render=json.dumps, path=target,
-        counter_writer=fail_counter)
+        render=refused, fallback_render=json.dumps, unavailable_codes=("REPORT_UNAVAILABLE",))
+    assert publication.failure_count(target) == 0
+    target.write_text(prepared.text, encoding="utf-8")
+    publication.record_publication(prepared, path=target, writer=fail_counter)
     assert prepared.unavailable
     assert publication.failure_count(target) == 1
 
 
 def test_counter_writer_runs_outside_count_lock(tmp_path):
     ownership = []
-    publication.prepare_report({}, render=refused, fallback_render=json.dumps,
-        path=tmp_path / "diagnostic.json",
-        counter_writer=lambda path, value: ownership.append(publication._LOCK._is_owned()))
+    target = tmp_path / "diagnostic.json"
+    prepared = publication.prepare_report({}, render=refused, fallback_render=json.dumps,
+        unavailable_codes=("REPORT_UNAVAILABLE",))
+    assert ownership == [] and publication.failure_count(target) == 0
+    target.write_text(prepared.text, encoding="utf-8")
+    publication.record_publication(prepared, path=target,
+        writer=lambda path, value: ownership.append(publication._LOCK._is_owned()))
     assert ownership == [False]
 
 
 def test_directory_counter_does_not_accumulate_process_files(tmp_path, monkeypatch):
     def write_counter(path, value):
         path.write_text(json.dumps(value), encoding="utf-8")
+    target = tmp_path / "diagnostic.json"
     for process in (31001, 31002):
         with monkeypatch.context() as change:
             change.setattr(os, "getpid", lambda: process)
-            publication.prepare_report({}, render=refused, fallback_render=json.dumps,
-                path=tmp_path / "diagnostic.json", counter_writer=write_counter)
+            prepared = publication.prepare_report({}, render=refused, fallback_render=json.dumps,
+                unavailable_codes=("REPORT_UNAVAILABLE",))
+            target.write_text(prepared.text, encoding="utf-8")
+            publication.record_publication(prepared, path=target, writer=write_counter)
     files = list(tmp_path.glob(".report-unavailable-count*.json"))
     assert len(files) == 1
     assert files[0].name == ".report-unavailable-count.json"
@@ -51,7 +60,8 @@ def test_empty_and_nonstring_diagnostics_keep_their_types():
     value = {"failure": None, "message": 0, "stdout": False, "stderr": [],
              "detail": {}, "stdout_tail": "", "stderr_tail": "synthetic-diagnostic"}
     prepared = publication.prepare_report(value, render=refused,
-        fallback_render=json.dumps, diagnostic_fields=publication.DIAGNOSTIC_FIELDS)
+        fallback_render=json.dumps, diagnostic_fields=publication.DIAGNOSTIC_FIELDS,
+        unavailable_codes=("REPORT_UNAVAILABLE",))
     result = json.loads(prepared.text)
     assert result == {**value, "stderr_tail": publication.UNAVAILABLE}
 
@@ -103,13 +113,20 @@ def test_fallback_keeps_public_projection_and_anonymous_diagnostics(tmp_path, mo
     assert publication.failure_count(target) == 1
 
 
-def test_pathless_removal_diagnostic_refusal_is_counted(monkeypatch):
+def test_removal_diagnostic_refusal_counts_after_path_publication(tmp_path, monkeypatch):
     import failure_redaction
-    monkeypatch.setattr(failure_redaction, "redact_for_sink", lambda *args: refused(None))
-    before = publication.failure_count()
-    result = failure_redaction.protected_failure_details(RuntimeError("synthetic-original"))
-    assert result == {"failure_traceback": publication.UNAVAILABLE}
-    assert publication.failure_count() == before + 1
+    import current_user_onboarding as onboarding
+    target = tmp_path / "current_user_removal.json"
+    with publication.report_attempt():
+        with monkeypatch.context() as change:
+            change.setattr(failure_redaction, "redact_for_sink", lambda *args, **kwargs: refused(None))
+            result = failure_redaction.protected_failure_details(RuntimeError("synthetic-original"), _report_path=target)
+        assert result == {"failure_traceback": publication.UNAVAILABLE}
+        assert publication.failure_count(target) == 0
+        with onboarding.writer_admission(onboarding.ONBOARDING_WRITER_SOURCE):
+            onboarding._write_json_atomic(target, {"status": "FAILED", **result})
+    assert publication.failure_count(target) == 1
+    assert json.loads((tmp_path / ".report-unavailable-count.json").read_text(encoding="utf-8"))["count"] == 1
 
 
 def test_actual_label_metadata_refusal_is_handled_at_publication(tmp_path, monkeypatch):
@@ -130,16 +147,14 @@ def test_actual_label_metadata_refusal_is_handled_at_publication(tmp_path, monke
     assert publication.failure_count(target) == 1
 
 
-def test_fallback_still_refuses_mandatory_machine_collision(tmp_path, monkeypatch):
+def test_fallback_keeps_redacted_mandatory_machine_string(tmp_path, monkeypatch):
     import current_user_onboarding as onboarding
-    synthetic = "4826"
-    monkeypatch.setenv("KMTECH_TEST_API_TOKEN", synthetic)
+    monkeypatch.setenv("KMTECH_TEST_API_TOKEN", "4826")
     target = tmp_path / "current_user_onboarding.json"
-    old = b'{"status":"READY","invocation":"prior"}\n'
-    target.write_bytes(old)
-    payload = {"status": "READY", "message": 4826, "hostname": synthetic}
+    target.write_bytes(b'{"status":"READY","invocation":"prior"}\n')
     with onboarding.writer_admission(onboarding.ONBOARDING_WRITER_SOURCE):
-        with pytest.raises(ValueError, match="PRODUCT_METADATA_SECRET_VALUE_REFUSED"):
-            onboarding._write_json_atomic(target, payload)
-    assert target.read_bytes() == old
-    assert publication.failure_count(target) == 0
+        onboarding._write_json_atomic(target, {"status": "READY", "message": 4826, "hostname": "4826"})
+    raw = target.read_text(encoding="utf-8")
+    assert json.loads(raw) == {"status": "READY", "message": publication.UNAVAILABLE, "hostname": publication.UNAVAILABLE}
+    assert "4826" not in raw and "KMTECH_TEST_API_TOKEN" not in raw
+    assert publication.failure_count(target) == 1
