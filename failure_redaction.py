@@ -155,6 +155,8 @@ def protected_failure_details(error, environ=None, *, _report_path=None):
 
 def public_diagnostic_tree(value):
     """Preserve machine-consumed audit structure, allowing only diagnostic fields."""
+    from report_publication import UNAVAILABLE
+    safe_messages = set(RULES["safe_messages"]) | {UNAVAILABLE}
     if isinstance(value, dict):
         text_keys = {"message", "last_line", "inner_exception_message", "stdout", "stderr", "exception_chain"}
         if "returncode" in value and ("stdout" in value or "stderr" in value):
@@ -164,7 +166,7 @@ def public_diagnostic_tree(value):
                           if key in ("stdout", "stderr") and item else public_diagnostic_tree(item))
                     for key, item in value.items()}
         free_text = any(value.get(key) and not (isinstance(value[key], str) and
-                        (value[key] in RULES["safe_messages"] or value[key] in RULES["allowed_codes"]))
+                        (value[key] in safe_messages or value[key] in RULES["allowed_codes"]))
                         for key in text_keys)
         if free_text or (text_keys.intersection(value) and "full_exception_trace" in value):
             candidate = {"status": "FAILED", "reason_code": "INSTALLER_FAILED", "guidance": RULES["safe_messages"][0]}
@@ -181,7 +183,7 @@ def public_diagnostic_tree(value):
             return public_record(candidate)
         result = {}
         for key, item in value.items():
-            if key in ("failure", "error", "error_message", "reason", "blocked_reason", "message_ko", "registration_report_summary_error") and isinstance(item, str) and item and item not in RULES["allowed_codes"] and item not in RULES["safe_messages"]:
+            if key in ("failure", "error", "error_message", "reason", "blocked_reason", "message_ko", "registration_report_summary_error") and isinstance(item, str) and item and item not in RULES["allowed_codes"] and item not in safe_messages:
                 result[key] = public_diagnostic_tree({"message": item})
             else:
                 result[key] = public_diagnostic_tree(item)

@@ -487,8 +487,8 @@ def resolve_current_user_onboarding_paths(
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> dict[str, str]:
-    from failure_redaction import redact_json_for_sink, assert_machine_metadata_text
-    from report_publication import prepare_report, DIAGNOSTIC_FIELDS
+    from failure_redaction import redact_json_for_sink, assert_machine_metadata_text, public_diagnostic_tree
+    from report_publication import prepare_report, DIAGNOSTIC_FIELDS, report_io, flush_report_counter, protect_diagnostic, UNAVAILABLE
     def render(value):
         return json.dumps(redact_json_for_sink(dict(value)), ensure_ascii=False,
                           indent=2, sort_keys=True) + "\n"
@@ -496,12 +496,36 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> dict[str, str]
         text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         assert_machine_metadata_text(text, environ=os.environ)
         return text
+    def fallback_tree(value):
+        if isinstance(value, dict):
+            result = {}
+            for key, item in value.items():
+                child = fallback_tree(item)
+                def project():
+                    if key == "server_error_code" and isinstance(child, str) and child:
+                        from failure_redaction import public_record
+                        if "server_error_code" not in public_record({key: child}):
+                            return public_diagnostic_tree({"message": child})
+                    projected = public_diagnostic_tree({key: child})
+                    return projected[key] if key in projected else projected
+                # Project one field at a time so diagnostic envelopes never
+                # replace sibling registration, origin or setup state fields.
+                result[key] = protect_diagnostic(project, fallback=lambda: UNAVAILABLE,
+                    unavailable_codes=("REPORT_UNAVAILABLE", "PRODUCT_METADATA_SECRET_VALUE_REFUSED"),
+                    record_failure=False)
+            return result
+        if isinstance(value, (list, tuple)):
+            return [fallback_tree(item) for item in value]
+        return value
     prepared = prepare_report(
-        payload, render=render, fallback_render=fallback_render, path=path,
-        diagnostic_fields=DIAGNOSTIC_FIELDS,
-        counter_writer=lambda counter, counts: _write_machine_json_atomic(counter, counts, environ={}),
+        payload, render=render, fallback_render=fallback_render, fallback_tree=fallback_tree,
+        path=path, diagnostic_fields=DIAGNOSTIC_FIELDS,
+        unavailable_codes=("REPORT_UNAVAILABLE", "PRODUCT_METADATA_SECRET_VALUE_REFUSED"),
     )
-    return _write_json_bytes_atomic(path, prepared.text)
+    flush_report_counter(prepared, path=path,
+        writer=lambda counter, counts: _write_machine_json_atomic(counter, counts, environ={}))
+    with report_io(prepared, required=True):
+        return _write_json_bytes_atomic(path, prepared.text)
 
 
 def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any], *,

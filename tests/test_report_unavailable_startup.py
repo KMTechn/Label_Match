@@ -50,7 +50,7 @@ def test_report_redaction_does_not_fail_actual_onboarding(tmp_path, monkeypatch,
     assert paths.ledger_path.is_file()
     from report_publication import failure_count, UNAVAILABLE
     assert failure_count(paths.onboarding_report_path) == 1
-    counters = list(paths.status_dir.glob('.report-unavailable-count-*.json'))
+    counters = list(paths.status_dir.glob('.report-unavailable-count.json'))
     assert len(counters) == 1
     assert json.loads(counters[0].read_bytes()) == {'count': 1}
     assert persisted['relay_autostart']['message'] == UNAVAILABLE
@@ -77,13 +77,17 @@ def test_registration_receipt_diagnostic_preserves_ready_and_origin(tmp_path, mo
     app = tmp_path / "app"
     app.mkdir()
     environment = support._environment(tmp_path)
+    synthetic_machine = "synthetic-registration-machine-collision"
+    environment["KMTECH_TEST_MACHINE_TOKEN"] = synthetic_machine
+    monkeypatch.setenv("KMTECH_TEST_MACHINE_TOKEN", synthetic_machine)
     environment['KMTECH_TEST_API_TOKEN'] = '4826'
     monkeypatch.setenv('KMTECH_TEST_API_TOKEN', '4826')
     paths = onboarding.resolve_current_user_onboarding_paths(app, environ=environment)
     def register(selected):
         support._ready_state(selected)
         receipt = json.loads(selected.registration_report_path.read_bytes())
-        receipt.update(base_url='https://synthetic.invalid', detail=4826)
+        receipt.update(base_url='https://synthetic.invalid', failure="4826")
+        receipt["hostname"] = synthetic_machine
         registration_writer._write_registration_report(selected.registration_report_path, receipt)
         return 0
     result = onboarding.onboard_current_user(app, environ=environment,
@@ -163,7 +167,7 @@ def test_two_report_refusals_keep_one_actual_first_setup(tmp_path, monkeypatch):
         raw = path.read_text(encoding='utf-8')
         assert '4826' not in raw and 'KMTECH_TEST_API_TOKEN' not in raw
     assert failure_count(paths.onboarding_report_path) == 2
-    assert json.loads(next(paths.status_dir.glob('.report-unavailable-count-*.json')).read_bytes()) == {'count': 2}
+    assert json.loads(next(paths.status_dir.glob('.report-unavailable-count.json')).read_bytes()) == {'count': 2}
     assert json.loads(paths.onboarding_report_path.read_bytes())['status'] == 'READY'
 
 
