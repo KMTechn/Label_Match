@@ -139,10 +139,18 @@ def emit_public_failure(error, stage, *, prefix="LABEL_MATCH_INSTALLER_FAILURE",
           file=sys.stderr if stream is None else stream, flush=True)
 
 
-def protected_failure_details(error, environ=None):
+def protected_failure_details(error, environ=None, *, _report_path=None):
     import traceback
-    return {"failure_traceback": redact_for_sink(
-        "".join(traceback.TracebackException.from_exception(error).format()), environ)}
+    from report_publication import protect_diagnostic, UNAVAILABLE
+    def count_writer(path, counts):
+        from current_user_onboarding import _write_machine_json_atomic
+        _write_machine_json_atomic(path, counts, environ={})
+    return protect_diagnostic(
+        lambda: {"failure_traceback": redact_for_sink(
+            "".join(traceback.TracebackException.from_exception(error).format()), environ)},
+        fallback=lambda: {"failure_traceback": UNAVAILABLE}, path=_report_path,
+        counter_writer=count_writer,
+    )
 
 
 def public_diagnostic_tree(value):

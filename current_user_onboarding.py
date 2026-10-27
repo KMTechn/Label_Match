@@ -487,10 +487,21 @@ def resolve_current_user_onboarding_paths(
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> dict[str, str]:
-    from failure_redaction import redact_json_for_sink
-    serialized = json.dumps(redact_json_for_sink(dict(payload)), ensure_ascii=False,
-                            indent=2, sort_keys=True) + "\n"
-    return _write_json_bytes_atomic(path, serialized)
+    from failure_redaction import redact_json_for_sink, assert_machine_metadata_text
+    from report_publication import prepare_report, DIAGNOSTIC_FIELDS
+    def render(value):
+        return json.dumps(redact_json_for_sink(dict(value)), ensure_ascii=False,
+                          indent=2, sort_keys=True) + "\n"
+    def fallback_render(value):
+        text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        assert_machine_metadata_text(text, environ=os.environ)
+        return text
+    prepared = prepare_report(
+        payload, render=render, fallback_render=fallback_render, path=path,
+        diagnostic_fields=DIAGNOSTIC_FIELDS,
+        counter_writer=lambda counter, counts: _write_machine_json_atomic(counter, counts, environ={}),
+    )
+    return _write_json_bytes_atomic(path, prepared.text)
 
 
 def _write_machine_json_atomic(path: Path, payload: Mapping[str, Any], *,
@@ -517,11 +528,12 @@ def _write_json_bytes_atomic(path: Path, serialized: str) -> dict[str, str]:
 
 def _publish_failure_report(path: Path, report: Mapping[str, Any], error: BaseException) -> None:
     from failure_redaction import protected_failure_details
+    from report_publication import report_attempt
     error._failure_report_ref = None
     try:
-        with writer_admission(ONBOARDING_WRITER_SOURCE):
+        with report_attempt(), writer_admission(ONBOARDING_WRITER_SOURCE):
             error._failure_report_ref = _write_json_atomic(path, {
-                **report, **protected_failure_details(error),
+                **report, **protected_failure_details(error, _report_path=path),
             })
     except Exception:
         # A secondary publication failure must not replace the original cause.

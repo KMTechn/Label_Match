@@ -250,12 +250,27 @@ def _write_registration_report(path, report):
     # Keep status/identity/recovery binding fields intact. Only free diagnostic
     # notices leave this report for same-attempt existing private evidence.
     from failure_redaction import public_diagnostic_tree
-    public = public_diagnostic_tree(report)
-    server_code=public.get("server_error_code")
-    if isinstance(server_code, str) and server_code:
-        from failure_redaction import public_record
-        if "server_error_code" not in public_record({"server_error_code":server_code}):
-            public["server_error_code"]=public_diagnostic_tree({"message":server_code})
+    from failure_redaction import assert_machine_metadata_text
+    from report_publication import prepare_report, DIAGNOSTIC_FIELDS
+    def metadata(value):
+        text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+        assert_machine_metadata_text(text, environ=os.environ)
+        return text
+    def render(value):
+        public = public_diagnostic_tree(value)
+        server_code = public.get("server_error_code")
+        if isinstance(server_code, str) and server_code:
+            from failure_redaction import public_record
+            if "server_error_code" not in public_record({"server_error_code": server_code}):
+                public["server_error_code"] = public_diagnostic_tree({"message": server_code})
+        return metadata(public)
+    prepared = prepare_report(
+        report, render=render, fallback_render=metadata, path=path,
+        diagnostic_fields=DIAGNOSTIC_FIELDS,
+        counter_writer=_write_json,
+        unavailable_codes=("REPORT_UNAVAILABLE", "PRODUCT_METADATA_SECRET_VALUE_REFUSED"),
+    )
+    public = json.loads(prepared.text)
     _write_json(path, public)
     return public
 
