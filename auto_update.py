@@ -3351,9 +3351,16 @@ def _accept_busy_startup_proof(app_root: Path, control: Path, state, *, role: st
     assert_ordinary_recovery(control, policy, sha, deferred_at,
                              allow_relay_parent=role == "relay")
     assert_version_writer(app_root, source="gui_settings_save", environ=os.environ)
-    _accept_startup_proof(app_root, control, policy, state,
-                          read_json(control / "active.json"), sha, role=role,
-                          remember=True, allow_relay_parent=role == "relay")
+    global _STARTUP_ADMISSION
+    _STARTUP_ADMISSION = None
+    try:
+        _accept_startup_proof(app_root, control, policy, state,
+                              read_json(control / "active.json"), sha, role=role,
+                              remember=True, allow_relay_parent=role == "relay")
+    except Exception:
+        # Remembering another read cannot revoke the two completed proofs.
+        # First setup still requires an issued proof at its own boundary.
+        _STARTUP_ADMISSION = None
     return policy
 
 
