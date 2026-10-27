@@ -4,6 +4,8 @@ import pytest
 import auto_update as updates
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 @pytest.mark.parametrize("launch", ["helper", "lifecycle"])
 def test_powershell_children_use_process_bypass(tmp_path, monkeypatch, launch):
     import subprocess
@@ -292,6 +294,7 @@ def test_failed_preparation_defers_but_failed_activation_remains_unknown(monkeyp
 @pytest.mark.parametrize("failure_mode", ["exit", "launch_error", "timeout"])
 def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(monkeypatch, tmp_path, failure_mode):
     """Exercise the apply loop/journal with synthetic process and crypto adapters."""
+    _clock_time = _isolated_update_time(monkeypatch)
     import json
     import time
     from contextlib import nullcontext
@@ -360,8 +363,8 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
     monkeypatch.setattr(updates, "process_snapshot", snapshot)
     if failure_mode == "timeout":
         ticks = iter(range(0, 1000000))
-        monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_clock_time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(_clock_time, "sleep", lambda _seconds: None)
     original_policy = (control / "policy.json").read_bytes()
     original_marker = marker.read_bytes()
     assert updates.apply_prepared(control) == 0

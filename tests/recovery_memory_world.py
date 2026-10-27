@@ -24,6 +24,8 @@ import sys
 
 import types
 
+from user_relay import RELAY_NORMAL_STOP_TIMEOUT_SECONDS, _log_wait_elapsed
+
 SELECT = {'_sha', '_utc', 'startup_action', 'writer_processes', 'assert_ordinary_recovery',
           '_bootstrap', 'start_current', '_bootstrap_existing_writers', 'recovery_writer_result',
           '_launch_bootstrap_version', 'launch_version', 'startup_gate', '_startup_gate', 'startup_requires_bootstrap',
@@ -115,7 +117,7 @@ class World:
             for node in tree.body:
                 if isinstance(node, ast.Assign):
                     for target in node.targets:
-                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_WINDOW_SECONDS', 'BOOTSTRAP_OBSERVATION_CAP_SECONDS', 'RETRY_WINDOW_SECONDS', 'RETRY_ATTEMPT_LIMIT', 'UPDATE_RETRY_REVIEW_REQUIRED', 'RETRY_REVIEW_MESSAGE', 'READY_CHECKS', 'RELAY_READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT', 'RELAY_PREPARE_SECONDS', 'RELAY_PARENT_RESULT_RESERVE_SECONDS'}:
+                        if isinstance(target, ast.Name) and target.id in {'SCHEMA', 'READY_WINDOW_SECONDS', 'BOOTSTRAP_OBSERVATION_CAP_SECONDS', 'RETRY_WINDOW_SECONDS', 'RETRY_ATTEMPT_LIMIT', 'UPDATE_RETRY_REVIEW_REQUIRED', 'RETRY_REVIEW_MESSAGE', 'READY_CHECKS', 'RELAY_READY_CHECKS', 'STARTUP_WAIT_SECONDS', 'APPLY_PROGRESS_TIMEOUT', 'APPLY_REQUEST_PROGRESS_TIMEOUT', 'RELAY_PREPARE_SECONDS', 'RELAY_PARENT_RESULT_RESERVE_SECONDS'}:
                             if target.id in {'RELAY_READY_CHECKS', 'BOOTSTRAP_OBSERVATION_CAP_SECONDS', 'RETRY_WINDOW_SECONDS'}:
                                 constants[target.id] = eval(compile(ast.Expression(node.value),
                                     label + '/ready-checks', 'eval'),
@@ -257,7 +259,9 @@ class World:
             return types.SimpleNamespace(_machine_worker_context=lambda p: None,
                 resolve_current_user_onboarding_paths=lambda p:types.SimpleNamespace(direct_sync_root=MemoryPath('/memory')))
         if name == 'user_relay':
-            return types.SimpleNamespace(user_relay_status_path=lambda p:MemoryPath('/memory/relay-status.json'))
+            return types.SimpleNamespace(user_relay_status_path=lambda p:MemoryPath('/memory/relay-status.json'),
+                                         RELAY_NORMAL_STOP_TIMEOUT_SECONDS=RELAY_NORMAL_STOP_TIMEOUT_SECONDS,
+                                         _log_wait_elapsed=_log_wait_elapsed)
         if name == 'startup_check_report':
             return types.SimpleNamespace(observe=lambda *a, **kw: None)
         if name == 'kmtech_shared':

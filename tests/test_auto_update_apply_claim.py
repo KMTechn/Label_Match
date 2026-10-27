@@ -16,6 +16,8 @@ from tests.test_auto_update_endpoints import endpoint, assert_ordinary, hotfix_p
 from kmtech_shared import data_generation as generation
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 def own_claim():
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.GetCurrentProcess.restype = wintypes.HANDLE
@@ -55,10 +57,11 @@ def publish_completed_task(endpoint):
 
 @pytest.mark.parametrize('busy', [False, True])
 def test_e1_live_claim_waits_through_90_second_apply_then_starts_new(endpoint, monkeypatch, busy):
+    _clock_time = _isolated_update_time(monkeypatch)
     control = prepared_start(endpoint)
     observation = endpoint[5]
     clock = [0.0]
-    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(_clock_time, 'monotonic', lambda: clock[0])
     updates.write_json_durable(control/'apply-claim.json', own_claim())
     monkeypatch.setattr(updates, 'request_apply_task', lambda *_: None)
     def progress(_):
@@ -66,7 +69,7 @@ def test_e1_live_claim_waits_through_90_second_apply_then_starts_new(endpoint, m
         assert not observation.exists(), 'current code started while the apply owner was live'
         if clock[0] == 90.0:
             publish_completed_task(endpoint)
-    monkeypatch.setattr(time, 'sleep', progress)
+    monkeypatch.setattr(_clock_time, 'sleep', progress)
     if busy:
         @contextlib.contextmanager
         def owner_lock(*_args, **_kwargs):
@@ -114,13 +117,14 @@ def test_e1_absent_or_reused_apply_owner_starts_current(endpoint, monkeypatch, o
 
 
 def test_e1_unknown_owner_waits_existing_window_and_reports_progress(endpoint, monkeypatch, capsys, bootstrap_variant):
+    _clock_time = _isolated_update_time(monkeypatch)
     control = prepared_start(endpoint)
     clock = [0.0]
     updates.write_json_durable(control/'apply-claim.json', own_claim())
     monkeypatch.setattr(updates, 'native_process_identity', lambda *_: {'status': 'UNKNOWN'}, raising=False)
     monkeypatch.setattr(updates, 'request_apply_task', lambda *_: None)
-    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
-    monkeypatch.setattr(time, 'sleep', lambda _: clock.__setitem__(0, clock[0]+30.0))
+    monkeypatch.setattr(_clock_time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(_clock_time, 'sleep', lambda _: clock.__setitem__(0, clock[0]+30.0))
     assert updates.bootstrap(control.parent/'current/app', [], role='gui') == 20
     assert clock[0] == 240.0 and not endpoint[5].exists()
     report = json.loads(capsys.readouterr().out)
@@ -160,10 +164,11 @@ def test_e1_next_logon_system_replaces_absent_claim_and_applies(endpoint, monkey
 @pytest.mark.parametrize('phase', ['FAILED', 'UNKNOWN'])
 @pytest.mark.parametrize('guard', ['allow', 'writer', 'generation_unknown', 'generation_denied', 'prepared'])
 def test_b1_settled_trial_recovers_in_same_bootstrap(endpoint, monkeypatch, phase, guard, bootstrap_variant):
+    _clock_time = _isolated_update_time(monkeypatch)
     control, stage, policy, state, marker, observation = endpoint
     clock = [0.0]
-    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
-    monkeypatch.setattr(time, 'sleep', lambda _: clock.__setitem__(0, clock[0] + 30.0))
+    monkeypatch.setattr(_clock_time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(_clock_time, 'sleep', lambda _: clock.__setitem__(0, clock[0] + 30.0))
     protected = {}
     requests = []
 
@@ -201,17 +206,18 @@ def test_b1_settled_trial_recovers_in_same_bootstrap(endpoint, monkeypatch, phas
     'generation_unknown', 'generation_denied', 'prepared', 'claim_renewed', 'lock_busy',
 ])
 def test_b3_stale_unknown_claim_recovers_only_after_window_and_recheck(endpoint, monkeypatch, guard, bootstrap_variant):
+    _clock_time = _isolated_update_time(monkeypatch)
     control, stage, policy, state, marker, observation = endpoint
     updates.write_json_durable(control / 'transition.json', {**state, 'phase': 'FAILED'})
     claim_path = control / 'apply-claim.json'
     updates.write_json_durable(claim_path, own_claim() if guard == 'live' else {'schema': 'unsupported'})
     clock = [0.0]
-    wall = int(time.time())
-    monkeypatch.setattr(time, 'time', lambda: wall)
+    wall = int(_clock_time.time())
+    monkeypatch.setattr(_clock_time, 'time', lambda: wall)
     age = {'fresh': 60, 'boundary': 900, 'future': -60}.get(guard, 960)
     os.utime(claim_path, (wall - age, wall - age))
-    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
-    monkeypatch.setattr(time, 'sleep', lambda _: clock.__setitem__(0, clock[0] + 30.0))
+    monkeypatch.setattr(_clock_time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(_clock_time, 'sleep', lambda _: clock.__setitem__(0, clock[0] + 30.0))
     requests = []
     monkeypatch.setattr(updates, 'request_apply_task', lambda *_: requests.append(True))
     if guard == 'writer':

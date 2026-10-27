@@ -40,6 +40,8 @@ FEED_URL_CASES = [
 ]
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 @pytest.mark.parametrize("url,accepted", FEED_URL_CASES)
 def test_installer_embedded_and_runtime_feed_url_contract(url, accepted):
     source = (ROOT / "INSTALL_CANONICAL_PORTABLE.ps1").read_text(encoding="utf-8-sig")
@@ -162,6 +164,7 @@ if($script:settingsDigest -cne '{hashlib.sha256(raw).hexdigest()}'){{throw 'Poli
 
 
 def bootstrap_fixture(monkeypatch, tmp_path):
+    _clock_time = _isolated_update_time(monkeypatch)
     old, new = "1" * 40, "2" * 40
     stamp = "2026-10-02T00:00:00+00:00"
     state = updates.apply_transition(updates.prepare_transition(
@@ -181,7 +184,7 @@ def bootstrap_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(updates, "write_json_durable", lambda p, s: records.__setitem__(p.name, dict(s)))
     monkeypatch.setattr(updates, "request_apply_task", lambda *_: None)
     tick = iter(range(1000))
-    monkeypatch.setattr(time, "monotonic", lambda: next(tick))
+    monkeypatch.setattr(_clock_time, "monotonic", lambda: next(tick))
     return old, new, state, records
 
 

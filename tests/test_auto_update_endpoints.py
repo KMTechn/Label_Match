@@ -21,6 +21,8 @@ REPO = Path(updates.__file__).parent
 NATIVE_SLEEP = time.sleep
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 @pytest.fixture(params=["a63caecc881bad7e51887296be32ef702ae0a781", "e78023199d99e1878a5927139595dcf25088fdfa"], ids=["a63caec", "e780231"])
 def bootstrap_variant(monkeypatch, request):
     """Pin both committed UNKNOWN policies without modifying another worktree."""
@@ -51,6 +53,7 @@ class Endpoint(tuple):
 
 @pytest.fixture
 def endpoint(monkeypatch, tmp_path):
+    _clock_time = _isolated_update_time(monkeypatch)
     control, stage = tmp_path / "update-control", tmp_path / "stage"
     control.mkdir(); stage.mkdir()
     local = tmp_path / "local"
@@ -98,8 +101,8 @@ def endpoint(monkeypatch, tmp_path):
     monkeypatch.setattr(updates, "request_apply_task", lambda *_: updates.apply_prepared(control))
     # Time is an OS boundary. No production test hook is added.
     ticks = iter(range(0, 1000000))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    monkeypatch.setattr(_clock_time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(_clock_time, "sleep", lambda *_: None)
     child_source = '''import contextlib, json, os, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -225,11 +228,12 @@ def test_x7_terminal_recovery_reopens_prepared_path(endpoint):
 
 
 def test_retained_next_start_requests_system_and_applies_the_next_signed_packet(endpoint, monkeypatch):
+    _clock_time = _isolated_update_time(monkeypatch)
     control, _, _, state, marker, _ = endpoint
     import current_user_onboarding
     monkeypatch.setattr(current_user_onboarding, '_machine_worker_context', lambda *a: None)
     # A one-second tick would exhaust atomic publication before its first OS call.
-    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
+    monkeypatch.setattr(_clock_time, 'monotonic', _clock_time.perf_counter)
     generation.record_generation(marker, 'v2.0.99', app_id='Label_Match', subject_sid=SID, build_id=NEW)
     updates.write_json_durable(control / 'transition.json', {
         **state, 'phase': 'DEFERRED', 'retained_candidate': True,
@@ -277,10 +281,11 @@ def test_retained_next_start_requests_system_and_applies_the_next_signed_packet(
 @pytest.mark.parametrize('ready_succeeds', [True, False], ids=['B1-confirm', 'B2-rollback'])
 def test_retained_failed_candidate_next_signed_update_finishes(endpoint, monkeypatch, ready_succeeds):
     """Observe the full next transition, including its failed previous version."""
+    _clock_time = _isolated_update_time(monkeypatch)
     import current_user_onboarding
     control, stage, _, state, marker, _ = endpoint
     monkeypatch.setattr(current_user_onboarding, '_machine_worker_context', lambda *a: None)
-    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
+    monkeypatch.setattr(_clock_time, 'monotonic', _clock_time.perf_counter)
     generation.record_generation(marker, 'v2.0.99', app_id='Label_Match', subject_sid=SID, build_id=NEW)
     failed = updates.request_rollback(state, reason='candidate startup failed or readiness timed out')
     updates.write_json_durable(control / 'transition.json', failed)
@@ -289,7 +294,7 @@ def test_retained_failed_candidate_next_signed_update_finishes(endpoint, monkeyp
     assert retained['phase'] == 'DEFERRED' and retained['retained_candidate'] is True
     assert retained['failed_shas'] == [NEW]
     hot = hotfix_packet(endpoint, monkeypatch, base_sha=NEW)
-    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
+    monkeypatch.setattr(_clock_time, 'monotonic', _clock_time.perf_counter)
     written, requests, rows, gates = updates.write_json_durable, [], [], []
 
     def observe(path, value):
@@ -349,16 +354,17 @@ def test_retained_failed_candidate_next_signed_update_finishes(endpoint, monkeyp
 
 def test_missing_packaged_key_schema_exits_then_failed_recovery_can_start_previous(endpoint, monkeypatch):
     """Keep the observed refusal and recovery boundary as a negative regression."""
+    _clock_time = _isolated_update_time(monkeypatch)
     import current_user_onboarding
     control, stage, _, state, marker, _ = endpoint
     monkeypatch.setattr(current_user_onboarding, '_machine_worker_context', lambda *a: None)
-    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
+    monkeypatch.setattr(_clock_time, 'monotonic', _clock_time.perf_counter)
     generation.record_generation(marker, 'v2.0.99', app_id='Label_Match', subject_sid=SID, build_id=NEW)
     updates.write_json_durable(control / 'transition.json', {**state, 'phase': 'CONFIRMED'})
     hot = hotfix_packet(endpoint, monkeypatch, base_sha=NEW)
     written, exits, phases, offset = updates.write_json_durable, [], [], [0.0]
-    monkeypatch.setattr(time, 'monotonic', lambda: time.perf_counter() + offset[0])
-    monkeypatch.setattr(time, 'sleep', lambda _: offset.__setitem__(0, offset[0] + updates.READY_WINDOW_SECONDS + 1.0))
+    monkeypatch.setattr(_clock_time, 'monotonic', lambda: _clock_time.perf_counter() + offset[0])
+    monkeypatch.setattr(_clock_time, 'sleep', lambda _: offset.__setitem__(0, offset[0] + updates.READY_WINDOW_SECONDS + 1.0))
     native = getattr(subprocess.Popen, 'native', subprocess.Popen)
 
     def observe(path, value):
@@ -396,8 +402,8 @@ def test_missing_packaged_key_schema_exits_then_failed_recovery_can_start_previo
     assert after['retry_shas'][hot]['attempts'] == 1
     assert not (stage / 'ready.json').exists()
     # End this unit's accelerated observation clock before the fresh user start.
-    monkeypatch.setattr(time, 'monotonic', time.perf_counter)
-    monkeypatch.setattr(time, 'sleep', lambda *_: None)
+    monkeypatch.setattr(_clock_time, 'monotonic', _clock_time.perf_counter)
+    monkeypatch.setattr(_clock_time, 'sleep', lambda *_: None)
     # This fixture's GUI child checks admission and exits. Supply its native
     # relay OS peer so the unchanged ordinary RUNNING readback can also finish.
     peers, rows = [], []
@@ -1005,16 +1011,17 @@ def test_inherited_supervised_rollback_preserves_exact_failure_list(endpoint, ph
 @pytest.mark.parametrize("changed_phase,code,final_phase", [
     ("CONFIRMED", 0, "DEFERRED"), ("ROLLBACK_PENDING_READY", 20, "FAILED")])
 def test_inherited_expiry_preserves_other_system_phase_change(endpoint, monkeypatch, changed_phase, code, final_phase):
+    _clock_time = _isolated_update_time(monkeypatch)
     control, _, _, state, _, _ = endpoint
     state = {**state, "failed_shas": ["9" * 40]}
     updates.write_json_durable(control / "transition.json", state)
     pointer_before = (control / "active.json").read_bytes()
     clock = [0]
-    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(_clock_time, "monotonic", lambda: clock[0])
     def other_system(_):
         updates.write_json_durable(control / "transition.json", {**state, "phase": changed_phase})
         clock[0] = updates.READY_WINDOW_SECONDS
-    monkeypatch.setattr(time, "sleep", other_system)
+    monkeypatch.setattr(_clock_time, "sleep", other_system)
     written, phases = updates.write_json_durable, []
     def observe(path, value):
         written(path, value)

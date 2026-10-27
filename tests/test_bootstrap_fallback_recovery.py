@@ -13,8 +13,11 @@ PAST = "2026-10-25T10:00:00Z"
 PRESENT = "2026-10-26T10:00:00Z"
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 @pytest.fixture
 def fallback(monkeypatch, tmp_path):
+    _clock_time = _isolated_update_time(monkeypatch)
     control = tmp_path / "control"
     control.mkdir()
     sha = "a" * 40

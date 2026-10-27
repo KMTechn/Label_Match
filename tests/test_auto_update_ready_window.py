@@ -13,6 +13,8 @@ from tests.test_first_setup_owner_readback_mutex import (
 )
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 def _transition(phase):
     # Match prepare_transition's full base record, including its validated forms.
     record = dict(schema=updates.SCHEMA, phase=phase, previous_sha="a" * 40,
@@ -86,6 +88,7 @@ def test_relay_trial_can_acquire_after_120_with_the_original_anchor(tmp_path, mo
 
 
 def test_rollback_default_waits_for_first_ready_after_120(tmp_path, monkeypatch):
+    _clock_time = _isolated_update_time(monkeypatch)
     clock, writes = [0.0], []
     state = _transition("ROLLBACK_PENDING_READY")
     @contextmanager

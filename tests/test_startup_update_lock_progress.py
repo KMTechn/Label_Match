@@ -16,8 +16,11 @@ NATIVE_CLOCK = time.monotonic
 NATIVE_SLEEP = time.sleep
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 @pytest.fixture
 def waiting_startup(monkeypatch, tmp_path):
+    _clock_time = _isolated_update_time(monkeypatch)
     control = tmp_path / 'managed/update-control'
     app = control.parent / 'current/app'
     policy = {'operator_sid': 'S-1-5-21-727', 'staging_root': str(tmp_path / 'stage')}
@@ -70,12 +73,13 @@ def test_startup_progress_budget_is_120_seconds():
 
 
 def test_real_six_second_mutex_owner_does_not_abort_startup(waiting_startup, monkeypatch):
+    _clock_time = _isolated_update_time(monkeypatch)
     app, control, policy, records, _, world = waiting_startup
     policy['operator_sid'] = updates.current_process_sid()
     before = deepcopy(records)
     monkeypatch.setattr(updates, 'update_lock', NATIVE_LOCK)
-    monkeypatch.setattr(time, 'monotonic', NATIVE_CLOCK)
-    monkeypatch.setattr(time, 'sleep', NATIVE_SLEEP)
+    monkeypatch.setattr(_clock_time, 'monotonic', NATIVE_CLOCK)
+    monkeypatch.setattr(_clock_time, 'sleep', NATIVE_SLEEP)
     if hasattr(updates, 'bootstrap'):
         def still_busy(*_args, **_kwargs):
             with NATIVE_LOCK(control, policy['operator_sid']):

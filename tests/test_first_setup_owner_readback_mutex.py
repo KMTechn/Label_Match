@@ -13,6 +13,8 @@ import user_relay
 BUSY = "update mutex ownership is busy"
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 @pytest.mark.parametrize('role', ['gui', 'relay'])
 @pytest.mark.parametrize('new_prepared', [False, True])
 def test_retained_candidate_uses_the_existing_request_path_for_a_new_packet(role, new_prepared):
@@ -581,6 +583,7 @@ def test_terminal_exit_is_rechecked_under_root_before_the_existing_failure(tmp_p
                                     'claim', 'ready', 'pid_birth', 'pid_exit', 'deadline',
                                     'pid_birth_after_reacquire', 'pid_exit_after_reacquire'])
 def test_terminal_relay_readback_revalidates_every_protected_binding(tmp_path, monkeypatch, changed):
+    _clock_time = _isolated_update_time(monkeypatch)
     from contextlib import ExitStack, contextmanager
     import copy
     import auto_update as updates
@@ -776,6 +779,7 @@ def test_busy_is_not_ignored_if_bootstrap_exits_during_the_query():
 
 
 def test_busy_until_parent_deadline_remains_unproven(monkeypatch):
+    _clock_time = _isolated_update_time(monkeypatch)
     clock = [0.0]
     monkeypatch.setattr(user_relay.time, "monotonic", lambda: clock[0])
 
@@ -831,6 +835,7 @@ def test_owner_readback_support_code_survives_the_actual_public_record(capsys):
 
 def _system_confirmation_case(tmp_path, monkeypatch, failures, *, busy_seconds=0, body_error=None):
     """Enter the actual SYSTEM function with an already switched trial."""
+    _clock_time = _isolated_update_time(monkeypatch)
     from contextlib import contextmanager
     import auto_update as updates
 
@@ -927,6 +932,7 @@ def test_system_confirmation_busy_cannot_renew_the_confirmation_window(tmp_path,
 
 def _rollback_confirmation_case(tmp_path, monkeypatch, failures, *, busy_seconds=0,
                                 body_error=None, timeout_seconds=240):
+    _clock_time = _isolated_update_time(monkeypatch)
     from contextlib import contextmanager
     import auto_update as updates
 
@@ -1148,6 +1154,7 @@ def test_sync_timeout_observer_keeps_original_child_and_records_later_exit(tmp_p
 def _initial_confirmation_case(tmp_path, monkeypatch, failures, *, phase="APPLIED_PENDING_READY",
                                age=60, busy_seconds=5, unreadable=False, malformed=False,
                                body_error=None):
+    _clock_time = _isolated_update_time(monkeypatch)
     from contextlib import contextmanager
     from datetime import datetime, timedelta, timezone
     import auto_update as updates
@@ -1440,6 +1447,7 @@ def test_trial_observation_read_checks_take_no_product_lock_or_writer_admission(
 
 def _startup_trial_case(tmp_path, monkeypatch, errors, *, phase='APPLIED_PENDING_READY',
                         age=60, mismatch=None, busy_seconds=5):
+    _clock_time = _isolated_update_time(monkeypatch)
     from contextlib import contextmanager
     from datetime import datetime,timedelta,timezone
     import auto_update as updates
@@ -1523,6 +1531,7 @@ def test_nonce_startup_acquired_body_busy_is_never_retried(tmp_path,monkeypatch)
 
 @pytest.mark.parametrize('observe_seconds,changed',[(15,False),(30,False),(15,True),(15,'birth')])
 def test_existing_claim_bootstrap_releases_both_locks_for_observe_and_system(tmp_path,monkeypatch,observe_seconds,changed):
+    _clock_time = _isolated_update_time(monkeypatch)
     from contextlib import contextmanager
     import copy
     import auto_update as updates

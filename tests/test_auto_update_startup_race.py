@@ -27,6 +27,8 @@ NATIVE_SLEEP = time.sleep
 NATIVE_CLOCK = time.monotonic
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 @pytest.fixture
 def managed_onboarding(base_managed_onboarding, monkeypatch):
     paths, environment, control, helpers = base_managed_onboarding
@@ -77,13 +79,14 @@ with updates.update_lock(control, updates.current_process_sid()):
 
 
 def ordinary_endpoint(endpoint, monkeypatch):
+    _clock_time = _isolated_update_time(monkeypatch)
     control, _stage, policy, _state, _marker, _observation = endpoint
     updates.write_json_durable(control / 'active.json', {'schema': updates.SCHEMA, 'sha': OLD})
     updates.write_json_durable(control / 'transition.json', {'schema': updates.SCHEMA, 'phase': 'DEFERRED'})
     native_sid = updates.current_process_sid()
     monkeypatch.setattr(updates, 'update_lock', lambda root, _sid, **kwargs: NATIVE_LOCK(root, native_sid, **kwargs))
-    monkeypatch.setattr(time, 'sleep', NATIVE_SLEEP)
-    monkeypatch.setattr(time, 'monotonic', NATIVE_CLOCK)
+    monkeypatch.setattr(_clock_time, 'sleep', NATIVE_SLEEP)
+    monkeypatch.setattr(_clock_time, 'monotonic', NATIVE_CLOCK)
     monkeypatch.setattr(updates, "bootstrap_supervision_deadline",
         lambda state, *, started, now, utc_now, **_observation: started + updates.STARTUP_WAIT_SECONDS)
     monkeypatch.setattr(updates, 'launch_version', lambda *_args, **_kwargs: 99)

@@ -13,9 +13,12 @@ import current_user_onboarding as onboarding
 import user_relay
 
 
+from tests._update_clock_fixture import isolated_update_time as _isolated_update_time
+
 @pytest.mark.parametrize("returncode", [0, 7])
 @pytest.mark.parametrize("bootstrap", [False, True])
 def test_started_child_exit_without_running_fails_promptly(monkeypatch, returncode, bootstrap):
+    _clock_time = _isolated_update_time(monkeypatch)
     clock = [100.0]
     monkeypatch.setattr(user_relay.time, "monotonic", lambda: clock[0])
     child = SimpleNamespace(pid=42, poll=lambda: returncode)
@@ -39,6 +42,7 @@ def test_exited_bootstrap_keeps_proven_running_owner(monkeypatch):
 
 
 def test_live_unready_bootstrap_keeps_original_deadline(monkeypatch):
+    _clock_time = _isolated_update_time(monkeypatch)
     clock = [100.0]
     monkeypatch.setattr(user_relay.time, "monotonic", lambda: clock[0])
     with pytest.raises(user_relay.UserRelayError) as caught:
@@ -161,6 +165,7 @@ def test_main_diagnostic_keeps_original_exception(monkeypatch, tmp_path, diagnos
 
 
 def test_live_relay_without_running_keeps_timeout(monkeypatch, tmp_path):
+    _clock_time = _isolated_update_time(monkeypatch)
     clock = [100.0]
     monkeypatch.setattr(updates.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(updates.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
