@@ -229,7 +229,12 @@ def test_headless_late_exception_uses_running_history(monkeypatch, tmp_path, run
 def test_rollback_exit_retains_old_reason_and_rc(monkeypatch, tmp_path):
     import current_user_onboarding as onboarding
     monkeypatch.setattr(onboarding, "_machine_worker_context", lambda _: None)
-    monkeypatch.setattr(updates, "_relay_preparation_deadline", lambda *a: 100.0)
+    def make_preparation_deadline(*args, **kwargs):
+        assert set(kwargs) == {"defer_preparation"}
+        assert kwargs["defer_preparation"] is True
+        return 100.0
+
+    monkeypatch.setattr(updates, "_relay_preparation_deadline", make_preparation_deadline)
     monkeypatch.setattr(updates.time, "monotonic", lambda: 0.0)
     monkeypatch.setattr(updates.time, "sleep", lambda _: None)
     monkeypatch.setattr(updates, "control_root", lambda _: tmp_path)

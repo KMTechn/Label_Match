@@ -185,7 +185,12 @@ def test_bootstrap_stop_waits_for_live_or_unknown_mutator(monkeypatch, tmp_path)
         observed.append(value)
         return value
 
-    monkeypatch.setattr(auto_update, "_relay_preparation_deadline", lambda *_: time.monotonic() + 5)
+    def make_preparation_deadline(*args, **kwargs):
+        assert set(kwargs) == {"defer_preparation"}
+        assert kwargs["defer_preparation"] is True
+        return time.monotonic() + 5
+
+    monkeypatch.setattr(auto_update, "_relay_preparation_deadline", make_preparation_deadline)
     monkeypatch.setattr(onboarding, "_machine_worker_context", lambda *_: None)
     monkeypatch.setattr(auto_update, "control_root", lambda *_: tmp_path)
     monkeypatch.setattr(auto_update, "load_policy", lambda *_: {"operator_sid": "isolated"})

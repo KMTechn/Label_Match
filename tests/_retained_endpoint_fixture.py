@@ -62,12 +62,14 @@ def primary_observation(endpoint, *, role, start):
     matches = []
     for child in endpoint.children[start:]:
         path = observation_path(endpoint[-1], child.pid)
-        if path.exists():
-            value = json.loads(path.read_text(encoding="utf-8"))
-            if value["relay"] == (role == "relay") and not value.get("peer"):
-                matches.append(value)
-    assert matches, "the requested primary process did not publish its observation"
-    return matches[-1]
+        assert path.is_file(), "a launched child did not publish its observation"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        assert value["pid"] == child.pid
+        if not value.get("peer"):
+            matches.append(value)
+    assert len(matches) == 1, "exactly one non-peer primary process must publish an observation"
+    assert matches[0]["relay"] == (role == "relay")
+    return matches[0]
 
 
 def install_retained_endpoint(monkeypatch, updates, endpoint):

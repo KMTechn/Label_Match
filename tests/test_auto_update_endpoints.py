@@ -122,9 +122,15 @@ def endpoint(monkeypatch, tmp_path):
         command = [sys.executable, "-I", "-B", *command[3:]]
         if Path(command[3]).name == "label_match_relay_entry.py":
             command[3] = str(Path(kwargs["cwd"]) / "app/main.py")
+        child_role = "relay" if "--label-match-user-relay" in command else "gui"
         if getattr(value, "retained_ready", False):
             command.append("--endpoint-retained-ready")
+            if child_role == "relay" and any(
+                child.poll() is None and child.endpoint_role == "gui" for child in children
+            ):
+                command.append("--endpoint-peer-relay")
         child = popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+        child.endpoint_role = child_role
         communicate = child.communicate
         def finish(*a, **k):
             release.touch()
