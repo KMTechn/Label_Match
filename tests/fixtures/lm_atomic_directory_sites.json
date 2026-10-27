@@ -70,9 +70,9 @@
     "file": "INSTALL_THIS_PC.ps1"
   },
   {
-    "file": "INSTALL_THIS_PC.ps1",
-    "function": "Restore-RemovalFilePreimage",
     "sha256": "b589aebd354aedc3dc4a8c1b12dd16e7956350fed25698c1071df4d672fb2465",
-    "count": 1
+    "count": 1,
+    "file": "INSTALL_THIS_PC.ps1",
+    "function": "Restore-RemovalFilePreimage"
   }
 ]
