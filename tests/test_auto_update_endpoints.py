@@ -264,7 +264,7 @@ def test_e7_retained_candidate_starts_in_same_bootstrap(endpoint, monkeypatch, r
         _, error = child.communicate(timeout=30)
         assert child.returncode == 0, error[-1500:]
     assert updates.process_snapshot(control) == []
-    assert updates.current_generation_status(control, policy, NEW) == "EQUAL"
+    assert updates.current_generation_status(control, policy, NEW) == "ALLOW"
     assert_ordinary(endpoint, NEW, role=role, arguments=arguments, select_primary=True)
     result = json.loads(endpoint[-1].read_text())
     assert result["nonce_present"] is False
