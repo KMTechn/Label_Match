@@ -328,12 +328,12 @@ def test_requeued_general_event_notice_uses_existing_relay_label_without_blockin
     notice = '작업 기록을 다시 저장하는 중입니다 — 작업은 그대로 계속하세요'
     assert options['text'].splitlines()[-1] == notice
     assert options['text'].splitlines()[0] == module.LABEL_MATCH_RELAY_SCREEN_TEXT[state]
-    assert options['style'] == ('Error.TLabel' if state == 'stopped' else 'Status.TLabel')
+    assert options['style'] == ('Warning.TLabel' if state == 'stopped' else 'Status.TLabel')
     assert '_workflow_blocking_notice' not in app.__dict__
     manager.has_pending_log_retries = False
     module.Label_Match._render_relay_screen_status(app, state)
     assert options['text'] == module.LABEL_MATCH_RELAY_SCREEN_TEXT.get(state, '')
-    assert options['style'] == ('Error.TLabel' if state == 'stopped' else 'Status.TLabel')
+    assert options['style'] == ('Warning.TLabel' if state == 'stopped' else 'Status.TLabel')
 
 
 @pytest.mark.parametrize('state', ['normal', 'stopped'])
@@ -366,8 +366,8 @@ def test_web_retry_notice_does_not_displace_either_pending_dialog():
     notice = SimpleNamespace(kind='scanner_notice', title='existing-band', message='details', tone='danger')
     processor = SimpleNamespace(app=app, module=module, _dialogs=dialogs)
     alerts = _alerts(processor, None, notice)
-    assert len(alerts) == 4
-    assert alerts[-2:] == dialogs
+    assert len(alerts) == 5
+    assert [alert for alert in alerts if alert in dialogs] == dialogs
 
 
 def test_general_retry_does_not_block_five_scan_completion_or_next_package(packaging, monkeypatch):

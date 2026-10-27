@@ -249,7 +249,7 @@ def test_preflight_clock_warning_survives_scan_status_rewrite(tmp_path):
 
 def test_screen_poll_connects_clock_warning_and_automatic_clear(tmp_path):
     status_path = tmp_path / 'status.json'
-    app = SimpleNamespace(
+    app = SimpleNamespace(_resume_durable_log_retry=lambda: None,
         direct_sync_bootstrap_context={'runtime_status_path': str(status_path)},
         _process_app_stop_request=lambda: False,
         _read_logistics_transmission_summary=lambda _path: (0, None),
@@ -289,7 +289,7 @@ def test_clock_band_is_yellow_has_no_action_and_has_send_priority(monkeypatch, k
         assert ' · 이 PC ' not in text
     payload = {'clock_error': diagnostic, 'scan_terminal_blocked_count': 2,
                'scan_terminal_blocked_record_count': 7}
-    app = SimpleNamespace(_logistics_relay_state='stopped', _logistics_clock_warning=text,
+    app = SimpleNamespace(_render_save_status=lambda: None, _logistics_relay_state='stopped', _logistics_clock_warning=text,
                           _relay_screen_status_payload=payload)
     processor = SimpleNamespace(app=app, module=label, _dialogs=[])
     monkeypatch.setattr(bridge, '_pointer_pending', lambda _app: None)

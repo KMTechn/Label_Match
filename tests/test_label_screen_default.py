@@ -7,6 +7,10 @@ import pytest
 import writer_session_fence as fence
 ROOT = Path(__file__).resolve().parents[1]
 
+from _startup_timing_fixture import bind_startup_timing_namespace as _bind_startup_timing_namespace
+
+from _startup_timing_fixture import startup_body_namespace as _startup_body_namespace
+
 def entrypoint(monkeypatch, tmp_path, *, refused=None, update_result=None):
     import auto_update
     import current_user_onboarding
@@ -28,6 +32,7 @@ def entrypoint(monkeypatch, tmp_path, *, refused=None, update_result=None):
     namespace = dict(sys=sys, os=__import__('os'), Path=Path, __file__=str(ROOT / 'Label_Match.py'), LABEL_MATCH_NEW_SCREEN_ARGUMENT='--new-screen', LABEL_MATCH_SCREEN_HOST=host, _first_run_onboarding_enabled=lambda: False, _label_match_runtime_app_root=lambda: tmp_path, release_identity=lambda root: {}, dispatch_product_mode=lambda args: None, verify_factory_contract_startup=lambda: None, _startup_app_stop_requested=lambda: False, validate_pending_worker_install=lambda root: None, check_user_data_open=check, _label_match_startup_trace=lambda *args, **kwargs: None, _default_label_match_settings_path=lambda: tmp_path / 'settings.json', resolve_data_scope=lambda **kwargs: str(tmp_path), resource_path=lambda value: value, run_guarded_entrypoint=guard, _run_label_match_application=lambda **kwargs: calls.append('web' if host['requested'] else 'tk'), WriterFenceError=fence.WriterFenceError, CurrentUserOnboardingError=type('OnboardingRefused', (RuntimeError,), {}), DataGenerationError=type('DataRefused', (RuntimeError,), {}), ItemCatalogSyncError=type('CatalogRefused', (RuntimeError,), {}), _show_installation_recovery_required=lambda error: calls.append('refused'), ONBOARDING_EXIT_CODE=1)
     tree = ast.parse((ROOT / 'Label_Match.py').read_text(encoding='utf-8-sig'))
     main = next((node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'main'))
+    _bind_startup_timing_namespace(namespace)
     exec(compile(ast.Module(body=[main], type_ignores=[]), str(ROOT / 'Label_Match.py'), 'exec'), namespace)
     return (namespace['main'], calls, host)
 
@@ -76,7 +81,7 @@ def test_ui_selection_preserves_startup_order_and_settings(monkeypatch, tmp_path
     settings.write_bytes(b'{"unchanged":true}\n')
     before = settings.read_bytes()
     order = []
-    namespace = main.__globals__
+    namespace = _startup_body_namespace(main)
     def note(name, value=None):
         order.append(name)
         return value

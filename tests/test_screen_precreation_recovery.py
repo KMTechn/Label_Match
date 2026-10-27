@@ -12,6 +12,10 @@ import pytest
 from tests.test_label_screen_default import entrypoint
 
 
+from _startup_timing_fixture import bind_startup_timing_namespace as _bind_startup_timing_namespace
+
+from _startup_timing_fixture import startup_body_namespace as _startup_body_namespace
+
 @pytest.fixture
 def application(monkeypatch, tmp_path):
     main, _, host = entrypoint(monkeypatch, tmp_path)
@@ -39,6 +43,7 @@ def application(monkeypatch, tmp_path):
         _schedule_reused_relay_verification=lambda *a: calls.append("verify"),
         _label_match_startup_trace=lambda stage, **kw: calls.append(stage),
     )
+    _bind_startup_timing_namespace(module.__dict__)
     exec(compile(ast.Module(body=[body], type_ignores=[]), str(source), "exec"), module.__dict__)
     monkeypatch.setitem(sys.modules, module.__name__, module)
     import current_user_onboarding as onboarding
@@ -47,19 +52,16 @@ def application(monkeypatch, tmp_path):
     monkeypatch.setattr(update, "trial_context", lambda root: None)
     for name in ("publish_gui_ready", "trial_stop_requested", "confirmed_trial"):
         monkeypatch.setattr(update, name, lambda *a: False)
-    observation = types.ModuleType("startup_observation")
-    observation.observe_startup = lambda: None
-    monkeypatch.setitem(sys.modules, "startup_observation", observation)
     module.LABEL_MATCH_SCREEN_HOST = host
     host["requested"] = True
-    main.__globals__["_run_label_match_application"] = module._run_label_match_application
+    _startup_body_namespace(main)["_run_label_match_application"] = module._run_label_match_application
     def guarded(*a, **kw):
         calls.append("lease-enter")
         try:
             return module._run_label_match_application(relay_reuse_report={"start_path": "FAST_WINDOW_FIRST"})
         finally:
             calls.append("lease-exit")
-    main.__globals__["run_guarded_entrypoint"] = guarded
+    _startup_body_namespace(main)["run_guarded_entrypoint"] = guarded
     module._test_main = main
     return module, calls
 
