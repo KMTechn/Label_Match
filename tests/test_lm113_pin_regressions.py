@@ -144,7 +144,7 @@ $ast=[Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[re
 $fn=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Invoke-LabelConvergentRemoval'},$true)
 $assignment=$fn.Find({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$workerRemovalProof'},$true)
 $decision=$fn.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.Contains("disposition=('WORKER_PART_'+$"+'workerRemovalProof.proof)')},$true)
-$record=$fn.Find({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Write-LabelStartupUpdateRecord'},$true)
+$record=$fn.Find({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Write-LabelStartupUpdateRecord' -and $n.Extent.Text.Contains('worker_removal_proof=$workerRemovalProof')},$true)
 if($null -eq $assignment -or $null -eq $decision -or $null -eq $record){exit 3}
 $inputObject=Get-Content -LiteralPath $InputPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $WorkerPartProof=$inputObject.worker
