@@ -101,19 +101,19 @@ def test_prepared_start_preserves_existing_refusal(first_setup, monkeypatch, mod
     if refusal == 'system':
         monkeypatch.setattr(updates, 'ordinary_user_context', lambda *_args: False)
     arguments = [] if mode == 'gui' else ['--onboard-current-user', '--app-root', str(paths.app_root)]
-    try:
-        result = app.main(arguments)
-    except (ValueError, RuntimeError):
-        result = 20
-    assert result in {0, 20}
+    if mode == "gui" and refusal in {"other_sha", "generation"}:
+        with pytest.raises(ValueError):
+            app.main(arguments)
+    else:
+        expected = 0 if mode == "gui" and refusal in {"unapproved", "inactive_code"} else 20
+        assert app.main(arguments) == expected
     assert reached == []
 
 
 @pytest.mark.parametrize('phase', ['FAILED', 'UNKNOWN', 'APPLIED_PENDING_READY', 'ROLLBACK_PENDING_READY', 'ROLLBACK_PENDING'])
 def test_other_accepted_deferred_starts_share_the_same_proof(first_setup, monkeypatch, phase):
     paths, control, _reached = first_setup
-    state = {'schema': updates.SCHEMA, 'phase': phase, 'candidate_sha': NEW,
-             'previous_sha': NEW, 'nonce': 'b' * 32, 'transition_id': 'c' * 32}
+    state = {'schema': updates.SCHEMA, 'phase': phase, 'candidate_sha': NEW, 'previous_sha': NEW, 'nonce': 'b' * 32, 'transition_id': 'c' * 32}
     updates.write_json_durable(control / 'transition.json', state)
     monkeypatch.setenv('KMTECH_LM_UPDATE_DEFERRED_AT', updates.now_utc())
     monkeypatch.setattr(updates, 'apply_claim_status', lambda *_args: 'ABSENT')
@@ -132,8 +132,8 @@ def test_other_accepted_deferred_starts_share_the_same_proof(first_setup, monkey
 @pytest.mark.parametrize('changed_claim', [False, True])
 def test_trial_first_setup_rechecks_the_original_claim(first_setup, monkeypatch, phase, changed_claim):
     paths, control, _reached = first_setup
-    state = {'schema': updates.SCHEMA, 'phase': phase, 'candidate_sha': NEW,
-             'previous_sha': NEW, 'nonce': 'b' * 32, 'transition_id': 'c' * 32}
+    state = {'schema': updates.SCHEMA, 'phase': phase, 'candidate_sha': NEW if phase == "APPLIED_PENDING_READY" else OLD,
+             'previous_sha': OLD if phase == "APPLIED_PENDING_READY" else NEW, 'nonce': 'b' * 32, 'transition_id': 'c' * 32}
     updates.write_json_durable(control / 'transition.json', state)
     stage = Path(updates.load_policy(control)['staging_root'])
     claim = {'nonce': state['nonce'], 'transition_id': state['transition_id'], 'pid': os.getpid()}
@@ -148,7 +148,7 @@ def test_trial_first_setup_rechecks_the_original_claim(first_setup, monkeypatch,
         assert updates.resolve_lifecycle_context(control.parent, operation='register', startup=True)['from_commit'] == NEW
 
 
-@pytest.mark.parametrize('change', ['no_gate', 'generation', 'system', 'writer', 'journal'])
+@pytest.mark.parametrize('change', ["no_gate", "generation", "system", "writer", "journal", "pid", "module"])
 def test_registration_rechecks_start_proof_before_entering_setup(first_setup, monkeypatch, change):
     paths, control, _reached = first_setup
     state = {'schema': updates.SCHEMA, 'phase': 'PREPARED', 'previous_sha': NEW,
@@ -167,6 +167,11 @@ def test_registration_rechecks_start_proof_before_entering_setup(first_setup, mo
              'sid': updates.load_policy(control)['operator_sid'], 'role': 'relay', 'created_at': updates.now_utc()}])
     elif change == 'journal':
         updates.write_json_durable(control / 'transition.json', {**state, 'candidate_sha': '4' * 40})
+    elif change == "pid":
+        own_pid = os.getpid()
+        monkeypatch.setattr(updates.os, "getpid", lambda: own_pid + 1)
+    elif change == "module":
+        monkeypatch.setattr(updates, "__file__", str(control.parent / "current/app/auto_update.py"))
     with pytest.raises(ValueError):
         updates.resolve_lifecycle_context(control.parent, operation='register', startup=True)
 
@@ -181,3 +186,60 @@ def test_start_proof_does_not_change_manual_classification(first_setup, monkeypa
     assert updates.startup_gate(Path(paths.app_root) / 'app', []) is None
     with pytest.raises(ValueError):
         updates.resolve_lifecycle_context(control.parent, operation=operation)
+
+
+@pytest.mark.parametrize("phase", ["UNKNOWN", "FAILED", "PREPARED", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"])
+def test_distinct_candidate_keeps_phase_pointer_consistency(first_setup, monkeypatch, phase):
+    paths, control, _reached = first_setup
+    candidate = NEW if phase in {"PREPARED", "APPLIED_PENDING_READY"} else OLD
+    previous = OLD if candidate == NEW else NEW
+    state = {"schema": updates.SCHEMA, "phase": phase,
+             "candidate_sha": candidate, "previous_sha": previous,
+             "nonce": "a" * 32, "transition_id": "b" * 32}
+    updates.write_json_durable(control / "transition.json", state)
+    monkeypatch.setenv("KMTECH_LM_UPDATE_DEFERRED_AT", updates.now_utc())
+    before = {path: path.read_bytes() for path in control.iterdir() if path.is_file()}
+    assert updates.startup_gate(Path(paths.app_root) / 'app', []) is None
+    if phase == "PREPARED":
+        with pytest.raises(ValueError, match="pointer changed before"):
+            updates.resolve_lifecycle_context(control.parent, operation="register", startup=True)
+    else:
+        assert updates.resolve_lifecycle_context(control.parent, operation="register", startup=True)["from_commit"] == NEW
+    assert all(path.read_bytes() == content for path, content in before.items())
+
+
+_STARTUP_UPDATE_LOCK = updates.startup_update_lock
+
+
+def test_cli_abandoned_mutex_uses_public_recovery_handler(first_setup, monkeypatch, capsys):
+    paths, control, reached = first_setup
+    selected = Path(paths.app_root)
+    monkeypatch.setenv("KMTECH_LM_UPDATE_DEFERRED_AT", updates.now_utc())
+    # Exercise the actual lock wrapper; only the native mutex acquisition is replaced.
+    import contextlib
+    @contextlib.contextmanager
+    def abandoned_lock(_control, _sid, **kwargs):
+        kwargs["abandoned_check"]()
+        yield
+    monkeypatch.setattr(updates, "update_lock", abandoned_lock)
+    monkeypatch.setattr(updates, "apply_claim_status", lambda *_args: "NONE")
+    monkeypatch.setattr(updates, "startup_update_lock", _STARTUP_UPDATE_LOCK)
+    # An inconsistent durable record makes the real abandoned verifier fail.
+    state = updates.read_json(control / "transition.json")
+    updates.write_json_durable(control / "transition.json", {**state, "phase": "UNKNOWN"})
+    before = {path: path.read_bytes() for path in control.iterdir() if path.is_file()}
+    records = []
+    notices = []
+    monkeypatch.setattr(updates, "emit_support_record", lambda report, **_kwargs: records.append(report))
+    import startup_observation
+    monkeypatch.setattr(startup_observation, "show_visible_startup_messagebox",
+                        lambda *parts: notices.append(parts))
+    assert app.main(["--onboard-current-user", "--app-root", str(selected)]) == 20
+    output = capsys.readouterr()
+    assert any(row.get("reason_code") == "UPDATE_MUTEX_ABANDONED_RECOVERY_REQUIRED" for row in records)
+    assert updates.UPDATE_MUTEX_RECOVERY_MESSAGE in output.err
+    assert any("아무것도 지우지 말고" in part for parts in notices for part in parts)
+    assert "SUPPORTED_REMOVAL_REQUIRED" not in output.out
+    assert "지원 제거" not in output.out
+    assert reached == []
+    assert all(path.read_bytes() == content for path, content in before.items())

@@ -1099,7 +1099,10 @@ def resolve_lifecycle_context(root: Path, *, expected_from_commit: str | None = 
         raise ValueError("supported transition requires removal and reinstall")
     if expected_from_commit is not None and _sha(expected_from_commit) != active:
         raise ValueError("supported from identity differs")
-    if (not startup_proven and state.get("candidate_sha") is not None
+    # UNKNOWN/FAILED have no selected recovery version; an accepted ordinary
+    # start proves their active code without choosing or rewriting a pointer.
+    unselected_recovery = startup_proven and state.get("phase") in {"UNKNOWN", "FAILED"}
+    if (not unselected_recovery and state.get("candidate_sha") is not None
             and recovery_sha(state, pointer_sha=active) != active):
         raise ValueError("supported transition and pointer differ")
     # The selected Verify already authenticates the fixed bootstrap in
@@ -3196,6 +3199,8 @@ def manual_lifecycle_gate(control: Path, mode: str, *, app_root: Path | None = N
                                           role=role, remember=True)
         resolve_lifecycle_context(control.parent, operation="register", startup=True)
         return None
+    except UpdateMutexRecoveryRequired:
+        raise  # The public startup gate owns the existing recovery notice/record.
     except Exception as error:
         details = launch_failure_details(error, include_original=True)
     print(json.dumps({
