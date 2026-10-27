@@ -82,6 +82,10 @@ def notice_window(monkeypatch, tmp_path):
     monkeypatch.setattr(lm.tk, "Label", Widget)
     monkeypatch.setattr(lm.tk, "Button", Widget)
     monkeypatch.setattr(lm, "_label_match_startup_trace", trace)
+    def close_messagebox(_title, _message, *, parent, **_options):
+        parent.mainloop()
+        return "ok"
+    monkeypatch.setattr(lm.messagebox, "showerror", close_messagebox)
     return SimpleNamespace(parents=parents, traces=traces)
 
 
@@ -136,12 +140,13 @@ def expected_message(notice, tmp_path):
 def test_startup_notice_observes_official_request(monkeypatch, tmp_path, notice_window, notice):
     native_messages = []
 
-    def retry(title, message, *, parent):
+    def retry(title, message, *, parent, **_options):
         native_messages.append(message)
         parent.mainloop()
         return True  # A stop must override the native affirmative result.
 
     monkeypatch.setattr(lm.messagebox, "askretrycancel", retry)
+    monkeypatch.setattr(lm.messagebox, "showerror", retry)
     result = show_notice(notice, tmp_path)
     parents = notice_window.parents
 

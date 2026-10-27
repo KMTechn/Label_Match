@@ -11,7 +11,11 @@ import Label_Match as app_module
 @pytest.fixture(autouse=True)
 def fresh_startup_process_budget(monkeypatch):
     import logistics_runtime_profile as profiles
+    import startup_observation
     monkeypatch.setattr(profiles, '_startup_read_retry', profiles.StartupReadRetry(), raising=False)
+    # File-lock cases exercise the reader, with its standalone Tk owner replaced.
+    monkeypatch.setattr(startup_observation, 'show_visible_startup_messagebox',
+                        lambda title, message, *, dialog: dialog(title, message))
 
 
 def locked(kind):

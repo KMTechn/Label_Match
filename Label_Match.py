@@ -6814,6 +6814,11 @@ class Label_Match(tk.Tk):
         try:
             result = self.initial_load_queue.get_nowait()
             _label_match_startup_trace("initial_load_queue_result", keys=sorted(result.keys()))
+            if "item_load_notice" in result:
+                self._notify_item_load_error(*result["item_load_notice"])
+                if not self.__dict__.get("_tk_shutdown_requested", False):
+                    self._initial_load_after_id = self.after(0, self._process_initial_load_queue)
+                return
             if "catalog_error" in result:
                 # Keep Tk dialogs and retries on the owner thread.
                 if LABEL_MATCH_SCREEN_HOST["active"]:
@@ -8568,6 +8573,17 @@ class Label_Match(tk.Tk):
                 except Exception:
                     self.entry.focus_set()
 
+    def _notify_item_load_error(self, kind, title, message):
+        if threading.current_thread() is not threading.main_thread():
+            self.initial_load_queue.put({"item_load_notice": (kind, title, message)})
+            return
+        dialog = getattr(messagebox, "show" + kind)
+        if LABEL_MATCH_SCREEN_HOST["active"]:
+            dialog(title, message)
+        else:
+            from startup_observation import show_visible_startup_messagebox
+            show_visible_startup_messagebox(title, message, dialog=dialog)
+
     def _load_items_data(self, *, show_errors=True, read_retry=None):
         items_path = os.environ.get(ACTIVE_PATH_ENV) or resource_path(os.path.join("assets", self.FILES.ITEMS))
         verified_payload = get_verified_catalog_snapshot(items_path)
@@ -8602,7 +8618,7 @@ class Label_Match(tk.Tk):
         except FileNotFoundError:
             self._items_read_locked = False
             if show_errors and not self.run_tests:
-                messagebox.showwarning("기준 정보 파일 없음", f"""품목 정보 파일이 없어 품목명을 표시할 수 없습니다\n현장 관리자에게 알리세요\n코드: assets · {self.FILES.ITEMS}""")
+                self._notify_item_load_error("warning", "기준 정보 파일 없음", f"""품목 정보 파일이 없어 품목명을 표시할 수 없습니다\n현장 관리자에게 알리세요\n코드: assets · {self.FILES.ITEMS}""")
             return {}
         except Exception as e:
             self._items_read_locked = isinstance(e, PermissionError) or (
@@ -8610,8 +8626,8 @@ class Label_Match(tk.Tk):
             )
             print(f"기준 정보 로드 기술 진단: {e}")
             if show_errors and not self.run_tests:
-                messagebox.showerror(
-                    "기준 정보 로드 오류",
+                self._notify_item_load_error(
+                    "error", "기준 정보 로드 오류",
                     '품목 정보를 불러오지 못했습니다\n현장 관리자에게 알리세요',
                 )
             return {}
@@ -24932,32 +24948,23 @@ def _show_stoppable_startup_notice(title, message, *, warning=False):
 
 def _offer_item_catalog_startup_retry(error):
     context = get_catalog_attempt_context_from_error(error)
-    parent = None
     try:
         if _startup_app_stop_requested():
             return False
-        parent = tk.Tk()
-        parent.withdraw()
-        stop_state = _watch_startup_notice_stop(parent)
-        retry = messagebox.askretrycancel(
+        from startup_observation import show_visible_startup_messagebox
+        retry, stopped = show_visible_startup_messagebox(
             "회사 서버 품목 목록 확인 필요",
             (
                 f"""회사 서버 품목 목록을 사용할 수 없습니다\n연결을 확인하고 「다시 시도」를 누르세요. 또 안 되면 현장 관리자에게 알리세요\n자세히: {_item_catalog_profile_details_for_display(context)}\n코드: {error.cause_code}"""
             ),
-            parent=parent,
+            dialog=messagebox.askretrycancel, default="retry", prepare_root=_watch_startup_notice_stop,
         )
         if not retry:
             setattr(error, "_catalog_retry_dialog_shown", True)
-        return bool(retry) and not stop_state["stopped"]
+        return bool(retry) and not stopped
     except Exception:
         _label_match_startup_trace("item_catalog_retry_dialog_unavailable")
         return False
-    finally:
-        if parent is not None:
-            try:
-                parent.destroy()
-            except TclError:
-                pass
 
 
 def _item_catalog_cache_time_for_display(value):
