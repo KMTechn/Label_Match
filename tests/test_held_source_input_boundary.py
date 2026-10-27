@@ -49,13 +49,24 @@ def _capture_config(monkeypatch):
     return configs
 
 
+def _deny_held_repair_read(monkeypatch, source):
+    original = runner._build_delta_source_file
+
+    def fail_held_range(config, path, *, _held_range=None):
+        if path == source and _held_range is not None:
+            raise OSError('held source read refused')
+        return original(config, path, _held_range=_held_range)
+
+    monkeypatch.setattr(runner, '_build_delta_source_file', fail_held_range)
+
+
 @pytest.mark.parametrize('failure', ['locked', 'missing', 'oserror'])
 def test_single_held_source_read_failure_records_status_without_drain(
         tmp_path, monkeypatch, capsys, failure):
     database, config, source, server, held, wire, body = _seed(tmp_path, monkeypatch)
     configs = _capture_config(monkeypatch)
     before = _queue_rows(database)
-    calls_before = server.source_calls
+    calls_before = list(server.source_calls)
 
     def no_drain(*args, **kwargs):
         pytest.fail('single source read failure must stop before drain')
@@ -81,7 +92,7 @@ def test_single_held_source_read_failure_records_status_without_drain(
     assert source.read_bytes() == body if failure != 'missing' else not source.exists()
 
 
-@pytest.mark.parametrize('failure', ['locked', 'missing'])
+@pytest.mark.parametrize('failure', ['locked', 'missing', 'oserror'])
 def test_scan_held_source_read_failure_keeps_other_source_and_drain_running(
         tmp_path, monkeypatch, capsys, failure):
     database, config, source, server, held, wire, body = _seed(tmp_path, monkeypatch)
@@ -98,7 +109,10 @@ def test_scan_held_source_read_failure_keeps_other_source_and_drain_running(
 
     monkeypatch.setattr(runtime, 'run_relay_once', drain)
     with monkeypatch.context() as blocked:
-        _deny_source(blocked, source, failure)
+        if failure == 'oserror':
+            _deny_held_repair_read(blocked, source)
+        else:
+            _deny_source(blocked, source, failure)
         result = _run_cli(tmp_path, blocked, source, server, wire)
     captured = capsys.readouterr()
     assert 'Traceback' not in captured.err
@@ -111,8 +125,14 @@ def test_scan_held_source_read_failure_keeps_other_source_and_drain_running(
     assert drain_calls
     assert _authority_row(database)['assigned_relay_id'] == held['assigned_relay_id']
     assert healthy.read_bytes() == body
-    assert source.read_bytes() == body if failure == 'locked' else not source.exists()
-    assert result == 1  # The drain double does not ACK the targeted healthy row.
+    assert source.read_bytes() == body if failure != 'missing' else not source.exists()
+    if failure == 'oserror':
+        assert status['scan_status'] == 'existing_terminal_blocked'
+        assert dict(_authority_row(database)) == held
+        assert next(row for row in after if row['relay_id'] == held['assigned_relay_id']) == before[0]
+        assert result == 2  # The unreadable held range keeps its terminal block.
+    else:
+        assert result == 1  # The drain double does not ACK the targeted healthy row.
 
 
 @pytest.mark.parametrize('failure', ['locked', 'missing'])
