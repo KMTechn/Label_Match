@@ -44,6 +44,20 @@ def _canonical_user_setup(root, monkeypatch, active=NEW):
     paths.ledger_path.write_bytes(b"durable quantity=7; UNKNOWN=pending")
     return fixed, selected, environment, paths
 
+@pytest.fixture
+def ordinary_worker_setup(monkeypatch):
+    def prepare(root, active=NEW):
+        fixed, selected, environment, paths = _canonical_user_setup(root, monkeypatch, active)
+        control = update.installation_root(selected) / "update-control"
+        monkeypatch.setattr(
+            update, "process_security",
+            lambda _pid: dict(elevated=False, integrity_rid=8192, session_id=1,
+                             sid=update.load_policy(control)["operator_sid"]),
+        )
+        return fixed, selected, environment, paths
+    return prepare
+
+
 
 def _resume_user(root, environment, *, launcher=None, autostart=None):
     from tests.test_current_user_onboarding import (_profile_loader, _credential_loader,
@@ -59,9 +73,9 @@ def _resume_user(root, environment, *, launcher=None, autostart=None):
 
 @pytest.mark.parametrize("active", [OLD, NEW, CANDIDATE])
 @pytest.mark.parametrize("caller", ["owner", "active"])
-def test_supported_user_removal_then_registration_resumes_healthy_active(tmp_path, monkeypatch, active, caller):
+def test_supported_user_removal_then_registration_resumes_healthy_active(tmp_path, monkeypatch, active, caller, ordinary_worker_setup):
     from user_relay import user_relay_stop_path
-    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch, active)
+    fixed, selected, environment, paths = ordinary_worker_setup(tmp_path / "machine", active)
     root = fixed if caller == "owner" else selected
     original = {p: p.read_bytes() for p in (paths.identity_path, paths.producer_manifest_path,
         paths.credential_path, paths.logistics_profile_path, paths.ledger_path)}
@@ -79,9 +93,9 @@ def test_supported_user_removal_then_registration_resumes_healthy_active(tmp_pat
 
 
 @pytest.mark.parametrize("damage", ["missing", "root", "request", "hash", "unknown"])
-def test_managed_resume_preserves_marker_when_removal_proof_differs(tmp_path, monkeypatch, damage):
+def test_managed_resume_preserves_marker_when_removal_proof_differs(tmp_path, monkeypatch, damage, ordinary_worker_setup):
     from user_relay import user_relay_stop_path
-    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch)
+    fixed, selected, environment, paths = ordinary_worker_setup(tmp_path / "machine")
     onboarding.remove_current_user_setup(selected, environ=environment,
         autostart_remover=lambda: {"status": "ABSENT"}, scheduled_task_remover=lambda _p: {"status": "ABSENT"})
     marker = user_relay_stop_path(paths.direct_sync_root)
@@ -100,9 +114,9 @@ def test_managed_resume_preserves_marker_when_removal_proof_differs(tmp_path, mo
     assert marker.read_bytes() == raw
 
 
-def test_managed_resume_rechecks_exact_marker_before_release(tmp_path, monkeypatch):
+def test_managed_resume_rechecks_exact_marker_before_release(tmp_path, monkeypatch, ordinary_worker_setup):
     from user_relay import request_user_relay_stop, user_relay_stop_path
-    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch)
+    fixed, selected, environment, paths = ordinary_worker_setup(tmp_path / "machine")
     onboarding.remove_current_user_setup(fixed, environ=environment,
         autostart_remover=lambda: {"status": "ABSENT"}, scheduled_task_remover=lambda _p: {"status": "ABSENT"})
     def changed(_root):
@@ -114,9 +128,9 @@ def test_managed_resume_rechecks_exact_marker_before_release(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("active", [OLD, NEW])
-def test_managed_conflict_receipt_remains_bound_to_fixed_owner(tmp_path, monkeypatch, active):
+def test_managed_conflict_receipt_remains_bound_to_fixed_owner(tmp_path, monkeypatch, active, ordinary_worker_setup):
     from user_relay import request_user_relay_stop, user_relay_stop_path
-    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch, active)
+    fixed, selected, environment, paths = ordinary_worker_setup(tmp_path / "machine", active)
     stopped = request_user_relay_stop(paths.direct_sync_root, timeout_seconds=0)
     receipt = tmp_path / "receipt.json"
     receipt.write_text('{"status":"RESOLVED"}')
@@ -134,9 +148,9 @@ def test_managed_conflict_receipt_remains_bound_to_fixed_owner(tmp_path, monkeyp
     assert not user_relay_stop_path(paths.direct_sync_root).exists()
 
 
-def test_managed_resume_does_not_bypass_bad_conflict_receipt_with_normal_removal(tmp_path, monkeypatch):
+def test_managed_resume_does_not_bypass_bad_conflict_receipt_with_normal_removal(tmp_path, monkeypatch, ordinary_worker_setup):
     from user_relay import user_relay_stop_path
-    fixed, selected, environment, paths = _canonical_user_setup(tmp_path / "machine", monkeypatch)
+    fixed, selected, environment, paths = ordinary_worker_setup(tmp_path / "machine")
     onboarding.remove_current_user_setup(fixed, environ=environment,
         autostart_remover=lambda: {"status": "ABSENT"}, scheduled_task_remover=lambda _p: {"status": "ABSENT"})
     receipt = tmp_path / "receipt.json"
@@ -249,10 +263,9 @@ def test_removal_never_reads_control(tmp_path, monkeypatch, operation):
 
 
 @pytest.mark.parametrize("slot", ["current", "versions", "update-control", "removal-evidence", "removed.json"])
-def test_new_registration_rejects_machine_storage_before_writing(tmp_path, monkeypatch, slot):
-    app = tmp_path / "machine/current"
-    (app / "config").mkdir(parents=True)
-    local = tmp_path / "user"; local.mkdir()
+def test_new_registration_rejects_machine_storage_before_writing(tmp_path, monkeypatch, slot, ordinary_worker_setup):
+    _, app, _, _ = ordinary_worker_setup(tmp_path / "machine")
+    local = tmp_path / "new-user-local"; local.mkdir()
     environment = {"LOCALAPPDATA": str(local), "LABEL_MATCH_SAVE_DIR": str(tmp_path / "machine" / slot / "data")}
     with pytest.raises(ValueError, match="겹칩니다"):
         onboarding.onboard_current_user(app, environ=environment)
@@ -288,8 +301,8 @@ def test_direct_registration_defaults_are_outside_canonical_code(monkeypatch):
     registration._registration_storage_preflight(Namespace())
 
 
-def test_actual_user_removal_ignores_corrupt_machine_control_and_preserves_data(tmp_path, monkeypatch):
-    fixed, app, environment, paths = _canonical_user_setup(tmp_path / 'source', monkeypatch)
+def test_actual_user_removal_ignores_corrupt_machine_control_and_preserves_data(tmp_path, monkeypatch, ordinary_worker_setup):
+    fixed, app, environment, paths = ordinary_worker_setup(tmp_path / 'source')
     control = app.parent.parent / 'update-control'
     (control / 'policy.json').write_bytes(b'{"cut":')
     before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
@@ -297,3 +310,18 @@ def test_actual_user_removal_ignores_corrupt_machine_control_and_preserves_data(
     result = onboarding.remove_current_user_setup(app, environ=environment, autostart_remover=lambda: {'status': 'ABSENT'}, relay_stopper=lambda *_a: {'status': 'ABSENT'}, scheduled_task_remover=lambda *_a: {'status': 'ABSENT'})
     assert result['status'] == 'PASS_DATA_PRESERVED'
     assert all((path.read_bytes() == raw for path, raw in before.items()))
+
+
+@pytest.mark.parametrize("identity_error", ["elevated", "different-sid", "session-zero"])
+def test_managed_resume_keeps_worker_identity_guard(tmp_path, monkeypatch, ordinary_worker_setup, identity_error):
+    _, selected, environment, _ = ordinary_worker_setup(tmp_path / "machine")
+    identity = update.process_security(onboarding.os.getpid())
+    if identity_error == "elevated":
+        identity["elevated"] = True
+    elif identity_error == "different-sid":
+        identity["sid"] += "-1"
+    else:
+        identity["session_id"] = 0
+    monkeypatch.setattr(update, "process_security", lambda _pid: identity)
+    with pytest.raises(onboarding.CurrentUserOnboardingError, match="일반 사용자 세션"):
+        _resume_user(selected, environment)
