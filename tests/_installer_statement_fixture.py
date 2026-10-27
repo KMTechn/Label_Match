@@ -12,7 +12,8 @@ _OFFSETS = {}
 
 def top_level_transaction(installer: Path, source: str, scratch: Path) -> str:
     raw = installer.read_bytes().decode('utf-8-sig')
-    assert raw.replace('\r\n', '\n').replace('\r', '\n') == source
+    source_bom = 1 if source.startswith('\ufeff') else 0
+    assert raw.replace('\r\n', '\n').replace('\r', '\n') == source[source_bom:]
     identity = hashlib.sha256(raw.encode('utf-8')).hexdigest()
     if identity not in _OFFSETS:
         parser = scratch / 'installer-transaction-ast.ps1'
@@ -33,4 +34,4 @@ if($transactions.Count -ne 1){throw 'installer outer transaction is ambiguous'}
         assert isinstance(offset, int) and offset >= 0
         prefix = raw.encode('utf-16-le')[:offset * 2].decode('utf-16-le')
         _OFFSETS[identity] = len(prefix.replace('\r\n', '\n').replace('\r', '\n'))
-    return source[_OFFSETS[identity]:]
+    return source[_OFFSETS[identity] + source_bom:]
