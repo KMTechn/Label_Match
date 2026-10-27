@@ -478,7 +478,9 @@ $receiptSource = PortableInventory $source
 
 def _session_setup(candidate: Path, old: Path) -> str:
     source = INSTALLER.read_text(encoding="utf-8")
-    initialization = source[source.index("$writerSessionId ="): source.index("$mutated = $false")]
+    from tests._installer_statement_fixture import installer_session_initialization
+    initialization = installer_session_initialization(INSTALLER, source, candidate.parent / "session-fixture-compiler",
+        start='$writerSessionId =', end='$mutated = $false')
     return f"""
 $source = {_quote(candidate)}
 $install = {_quote(old)}

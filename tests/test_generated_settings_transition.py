@@ -49,7 +49,8 @@ _ACCEPTED_REPLACEMENT_ADDITIONS = {'06a474b46095fa044a0c46a045b3445cece1ee57': (
                                               'app/tools/register_label_match_worker_pc.py',
                                               'app/ui/parts/app/lm/index.html',
                                               'app/ui/parts/core/tokens.css',
-                                              'tools/failure_redaction.ps1'),
+                                              'tools/failure_redaction.ps1',
+                                              'app/label_match_product_host.py'),
  '4272c5601e035f6a111e493a4acfa5d8d182978f': ('app/carrier_identity_port.py',
                                               'app/config/app_settings.json',
                                               'app/direct_sync_operator.py',
@@ -68,11 +69,15 @@ _ACCEPTED_REPLACEMENT_ADDITIONS = {'06a474b46095fa044a0c46a045b3445cece1ee57': (
                                               'app/tools/register_label_match_worker_pc.py',
                                               'app/ui/parts/app/lm/index.html',
                                               'app/ui/parts/core/tokens.css',
-                                              'tools/failure_redaction.ps1'),
+                                              'tools/failure_redaction.ps1',
+                                              'app/label_match_product_host.py'),
  '464830d78a305acb7aa01a7a7afc9e72a924a5c9': ('app/config/app_settings.json',),
- '55cab723e215ab3ffd12ef7e3cc9e8d3c1569e8a': ('app/config/app_settings.json', 'app/failure_redaction.py'),
- '89155f17233fb1c8b5bae2a9e470832772a4d785': ('app/config/app_settings.json', 'app/failure_redaction.py'),
- 'd9160b6ab5dce3e7a0010679f4ae8f28077eea76': ('app/config/app_settings.json', 'app/failure_redaction.py'),
+ '55cab723e215ab3ffd12ef7e3cc9e8d3c1569e8a': ('app/config/app_settings.json',
+                                              'app/failure_redaction.py'),
+ '89155f17233fb1c8b5bae2a9e470832772a4d785': ('app/config/app_settings.json',
+                                              'app/failure_redaction.py'),
+ 'd9160b6ab5dce3e7a0010679f4ae8f28077eea76': ('app/config/app_settings.json',
+                                              'app/failure_redaction.py'),
  'e7b9075b2383889e77f524be7a1f0f80d7630033': ('app/carrier_identity_port.py',
                                               'app/config/app_settings.json',
                                               'app/direct_sync_operator.py',
@@ -91,7 +96,8 @@ _ACCEPTED_REPLACEMENT_ADDITIONS = {'06a474b46095fa044a0c46a045b3445cece1ee57': (
                                               'app/tools/register_label_match_worker_pc.py',
                                               'app/ui/parts/app/lm/index.html',
                                               'app/ui/parts/core/tokens.css',
-                                              'tools/failure_redaction.ps1')}
+                                              'tools/failure_redaction.ps1',
+                                              'app/label_match_product_host.py')}
 
 
 
@@ -107,6 +113,13 @@ def test_all_sixteen_generated_settings_additions_and_historical_before_pins():
     old = declarations(BEFORE_HELPER)
     before_fix = declarations(BEFORE_FIX)
     current = declarations()
+    # Canonical regeneration preserves historical Before pins after a feature revert.
+    historical_noops = declarations("3cc990e1")["startup_release_replacements"]
+    for revision in ('e7b9075b2383889e77f524be7a1f0f80d7630033', '4272c5601e035f6a111e493a4acfa5d8d182978f', '06a474b46095fa044a0c46a045b3445cece1ee57'):
+        relative = "app/label_match_product_host.py"
+        pair = current["startup_release_replacements"][revision][relative]
+        assert pair[0] == historical_noops[revision][relative][0]
+        assert pair[0] == pair[1]
     expected = {revision for revision, paths in old['startup_release_additions'].items() if SETTINGS in paths}
     actual = {revision for revision, paths in current['startup_release_additions'].items() if SETTINGS in paths}
     assert len(expected) == 16 and actual == expected

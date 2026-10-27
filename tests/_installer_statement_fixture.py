@@ -10,15 +10,16 @@ from tests._bounded_powershell import run as run_bounded
 _TRANSACTIONS = {}
 
 
-def installer_transaction(installer: Path, source: str, scratch: Path, *, marker: str) -> str:
+def _installer_statements(installer: Path, source: str, scratch: Path, *, marker: str, until=None) -> str:
     raw = installer.read_bytes().decode('utf-8-sig')
     assert raw.replace('\r\n', '\n').replace('\r', '\n') == source.removeprefix('\ufeff')
-    identity = hashlib.sha256((raw + marker).encode('utf-8')).hexdigest()
+    identity = hashlib.sha256((raw + marker + (until or '')).encode('utf-8')).hexdigest()
     if identity not in _TRANSACTIONS:
+        scratch.mkdir(parents=True, exist_ok=True)
         parser = scratch / 'installer-transaction-ast.ps1'
         selection = scratch / 'installer-transaction-marker.json'
         body = scratch / 'installer-transaction-body.ps1'
-        selection.write_text(json.dumps({'marker': marker}), encoding='utf-8')
+        selection.write_text(json.dumps({'marker': marker, 'until': until}), encoding='utf-8')
         parser.write_text("""param([string]$SourcePath,[string]$MarkerPath,[string]$BodyPath)
 $ErrorActionPreference='Stop'
 $tokens=$null;$parseErrors=$null
@@ -30,8 +31,23 @@ $transactions=@($tree.FindAll({param($node)
     $node -is [Management.Automation.Language.AssignmentStatementAst] -and
     $node.Extent.Text.Replace("`r`n","`n").Replace("`r","`n").StartsWith($prefix)
 },$true))
+if($selection.until){
+    $suffix=$selection.until.TrimStart().Replace("`r`n","`n").Replace("`r","`n")
+    $ends=@($tree.FindAll({param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Extent.Text.Replace("`r`n","`n").Replace("`r","`n").StartsWith($suffix)
+    },$true))
+    if($ends.Count -ne 1){throw 'installer initialization end is ambiguous'}
+    $transactions=@($transactions | Where-Object {[Object]::ReferenceEquals($_.Parent,$ends[0].Parent)})
+}
 if($transactions.Count -ne 1){throw 'installer transaction marker is ambiguous'}
 $markerStatement=$transactions[0]
+if($selection.until){
+    $selected=@($markerStatement.Parent.Statements | Where-Object {
+        $_.Extent.StartOffset -ge $markerStatement.Extent.StartOffset -and
+        $_.Extent.EndOffset -le $ends[0].Extent.StartOffset
+    })
+}else{
 $owner=@($tree.EndBlock.Statements | Where-Object {
     $_.Extent.StartOffset -le $markerStatement.Extent.StartOffset -and
     $_.Extent.EndOffset -ge $markerStatement.Extent.EndOffset
@@ -42,6 +58,7 @@ if($owner[0] -eq $markerStatement){
 }else{
     $selected=@($markerStatement.Parent.Statements | Where-Object {$_.Extent.StartOffset -ge $markerStatement.Extent.StartOffset})
     $selected+=@($tree.EndBlock.Statements | Where-Object {$_.Extent.StartOffset -gt $owner[0].Extent.EndOffset})
+}
 }
 $body=($selected | ForEach-Object {$_.Extent.Text}) -join "`n"
 $bodyTokens=$null;$bodyErrors=$null
@@ -58,3 +75,11 @@ if(@($bodyErrors).Count){throw 'fixture transaction syntax is invalid'}
         assert json.loads(result.stdout)['matches'] == 1
         _TRANSACTIONS[identity] = body.read_text(encoding='utf-8-sig')
     return _TRANSACTIONS[identity]
+
+
+def installer_transaction(installer: Path, source: str, scratch: Path, *, marker: str) -> str:
+    return _installer_statements(installer, source, scratch, marker=marker)
+
+
+def installer_session_initialization(installer: Path, source: str, scratch: Path, *, start: str, end: str) -> str:
+    return _installer_statements(installer, source, scratch, marker=start, until=end)

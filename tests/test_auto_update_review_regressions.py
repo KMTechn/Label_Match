@@ -201,8 +201,9 @@ def bootstrap_fixture(monkeypatch, tmp_path):
         return observed
 
     def previous_ready(rollback):
-        rollback = {**rollback, "trial_pid": 43}
-        at = rollback["trial_started_at"]
+        at = updates.now_utc()
+        rollback = {**rollback, "trial_pid": 43, "trial_sha": rollback["previous_sha"],
+            "trial_role": "relay", "trial_started_at": at}
         ready = {**{check: True for check in updates.RELAY_READY_CHECKS},
             "sha": rollback["previous_sha"], "pid": 43, "role": "relay",
             "nonce": rollback["nonce"], "transition_id": rollback["transition_id"], "ready_at": at}
