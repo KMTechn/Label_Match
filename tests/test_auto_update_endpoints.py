@@ -135,6 +135,13 @@ def endpoint(monkeypatch, tmp_path):
         lambda command, *, cwd, environment=None: subprocess.Popen(command, cwd=cwd, env=environment, creationflags=subprocess.CREATE_NO_WINDOW))
     value = Endpoint((control, stage, policy, state, marker, observation))
     value.children = children
+    current_wait = updates.wait_current_relay
+    def observe_native_relay(*args, **kwargs):
+        # Keep the virtual updater clock out of native import/startup scheduling.
+        # The actual wait/readback still checks every original predicate/deadline.
+        relay_snapshot(updates, policy, children)
+        return current_wait(*args, **kwargs)
+    monkeypatch.setattr(updates, "wait_current_relay", observe_native_relay)
     yield value
     for child in children:
         _, error = child.communicate(timeout=30)

@@ -318,7 +318,7 @@ if($env:LM_412_OPEN_FAIL -ceq '1'){
         monkeypatch.setattr(runtime, "load_credentials_from_json", lambda *a, **kw:
             ProducerCredentials("label-match-user-1", "isolated-key", "isolated-value", "https://isolated.invalid"))
         monkeypatch.setattr(runtime, "ensure_runtime_authority", lambda **kw:
-            SimpleNamespace(receipt={}, operator_review=False, error_code=""))
+            SimpleNamespace(receipt={}, operator_review=False, error_code="", status_code=200))
         monkeypatch.setattr(user_relay, "_application_command", lambda *a, **kw:
             [sys.executable, "-B", "isolated-host.py"])
         readiness = []
