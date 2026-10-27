@@ -879,3 +879,5 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 화면 셸 기준판: frame.css는 base 7297e63의 큰 글 메뉴 표시를 보존한 자동 병합본(sha256 `66258f79cb65ef01cf607578cc4ceb028e019c25b9f827387137545c7ef301b2`)이다. ui1028의 웹 00e66d79 단일 파일 바이트와 다르며, ui manifest commit은 셸 기준판 d8f82fa4를 뜻한다.
 - w9firstupdsub752: 배정 행 원본 복구의 파일 입력 오류와 일반 OSError는 단건 관리자 호출에서 상태·event·rc1로 남기고 drain하지 않는다. 스캔의 행별 건너뛰기와 원 배정·원본 보존을 유지한다.
 - v2.0.126: 승인 재료 12개·ui1028 조립. 데이터 하한 v2.0.126을 명시적으로 유지하며 기존 서명 호환 증명 모델을 보존한다.
+
+- 11/15 검토(ANSWER-17 #3): 이전 relay READY·G·writer 부재·서명 검증을 유지하면서 복구 완료 후 새 signed prepared를 같은 SYSTEM 호출에서 이어 적용할지 검토한다. 현재는 복구 호출을 ROLLED_BACK에서 끝내고 두 번째 호출이 새 준비물을 적용한다.
