@@ -339,7 +339,7 @@ def test_official_stop_waits_for_isolated_notice_process_exit(monkeypatch, tmp_p
     child_root = tmp_path / "child"
     child_root.mkdir()
     child = subprocess.Popen(
-        [sys.executable, "-B", str(Path(__file__).with_name("_startup_notice_stop_child.py")), str(child_root)],
+        [sys.executable, "-I", "-B", str(Path(__file__).with_name("_startup_notice_stop_child.py")), str(child_root)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW,
     )
     try:

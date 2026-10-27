@@ -387,7 +387,8 @@ def test_actual_update_gate_reports_after_ownership_and_keeps_bootstrap(
             yield
         finally:
             held.pop()
-    monkeypatch.setattr(update, "update_lock", lock)
+    monkeypatch.setattr(update, "update_lock",
+        lambda *args, timeout_ms=None, **kwargs: lock(*args, **kwargs))
     monkeypatch.setattr(update, "optional_record", lambda path: state)
     monkeypatch.setattr(update, "read_json", lambda path: {"sha": "b" * 40 if case == "build"
                                                         else diagnostic.identity["build_id"]})

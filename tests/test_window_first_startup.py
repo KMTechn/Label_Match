@@ -798,7 +798,7 @@ def test_hold_created_during_lease_response_blocks_following_source_post(tmp_pat
     monkeypatch.setattr(runtime, "_producer_manifest_identity", lambda _: {"status": "PASS", "producer_install_id": "install"})
     def lease(**_kwargs):
         create_startup_send_hold(root)
-        return SimpleNamespace(receipt={}, operator_review=False, error_code="")
+        return SimpleNamespace(receipt={}, operator_review=False, error_code="", status_code=200)
     monkeypatch.setattr(runtime, "ensure_runtime_authority", lease)
     monkeypatch.setattr(runtime, "drain_one_relay_batch", lambda **_: pytest.fail("source post after hold"))
     assert runtime.run_relay_once(config, credentials=object())["status"] == "DEFERRED"

@@ -95,45 +95,19 @@ def endpoint(monkeypatch, tmp_path):
                                     durable_prepared=True, now=updates.now_utc())
     updates.write_json_durable(control / "transition.json", state)
     monkeypatch.setattr(updates, "ordinary_user_context", lambda *_: True)
+    monkeypatch.setattr(updates, "process_security", lambda _pid: dict(
+        elevated=False, integrity_rid=8192, session_id=1, sid=SID))
     monkeypatch.setattr(updates, "fixed_helper", lambda *a, **k: "")
     monkeypatch.setattr(updates, "update_lock", lambda *a, **k: contextlib.nullcontext())
-    monkeypatch.setattr(updates, "process_snapshot", lambda *_: [])
+    from tests._ordinary_endpoint_fixture import relay_snapshot
+    monkeypatch.setattr(updates, "process_snapshot",
+        lambda *_: relay_snapshot(updates, policy, children))
     monkeypatch.setattr(updates, "request_apply_task", lambda *_: updates.apply_prepared(control))
     # Time is an OS boundary. No production test hook is added.
     ticks = iter(range(0, 1000000))
     monkeypatch.setattr(_clock_time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(_clock_time, "sleep", lambda *_: None)
-    child_source = '''import contextlib, json, os, sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.append(REPO_PATH)
-import auto_update as u
-import writer_session_fence as f
-from kmtech_shared import data_generation as g
-control = Path(CONTROL_PATH)
-policy = u.read_json(control / "policy.json")
-u.ordinary_user_context = lambda *_: True
-u.runtime_matches = lambda *_: True
-u.update_lock = lambda *a, **k: contextlib.nullcontext()
-u.process_snapshot = lambda *_: []
-u.request_bootstrap = lambda *a, **k: None
-sha = Path(__file__).parent.parent.name
-gate = u.startup_gate(Path(__file__).parent, sys.argv[1:])
-admitted = False
-if gate is None:
-    def no_inverse_lock(*a, **k):
-        raise AssertionError("writer admission must not reacquire update ownership")
-    u.update_lock = no_inverse_lock
-    with f.writer_admission("gui_current_state_save"):
-        admitted = True
-release = u.version_manifest(Path(__file__).parent.parent)
-observed = u.read_trial_generation(policy)
-decision = g.probe_downgrade([observed["marker_path"]], release["version"],
-    app_id="Label_Match", subject_sid=policy["operator_sid"], target_build_id=sha)
-Path(RESULT_PATH).write_text(json.dumps(dict(sha=sha, gate=gate, status=decision["status"],
-    ordinary=not bool(os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE")),
-    relay="--label-match-user-relay" in sys.argv, writer_admitted=admitted, pid=os.getpid())))
-'''
+    monkeypatch.setattr(_clock_time, "sleep", lambda *_: relay_snapshot(updates, policy, children))
+    child_source = 'import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\nsys.path.append(REPO_PATH)\nfrom tests._ordinary_endpoint_fixture import ordinary_child\nordinary_child(Path(__file__).parent, CONTROL_PATH, RESULT_PATH, sys.argv[1:])\n'
     observation = tmp_path / "ordinary-child.json"
     for sha in versions:
         source = child_source.replace("REPO_PATH", repr(str(REPO))).replace("CONTROL_PATH", repr(str(control))).replace("RESULT_PATH", repr(str(observation)))
@@ -142,8 +116,17 @@ Path(RESULT_PATH).write_text(json.dumps(dict(sha=sha, gate=gate, status=decision
     children = []
     popen = subprocess.Popen
     def native_launch(command, **kwargs):
+        release = observation.with_name("ordinary-release")
+        release.unlink(missing_ok=True)
         command = [sys.executable, "-I", "-B", *command[3:]]
+        if Path(command[3]).name == "label_match_relay_entry.py":
+            command[3] = str(Path(kwargs["cwd"]) / "app/main.py")
         child = popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+        communicate = child.communicate
+        def finish(*a, **k):
+            release.touch()
+            return communicate(*a, **k)
+        child.communicate = finish
         children.append(child)
         return child
     native_launch.native = popen

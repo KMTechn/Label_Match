@@ -390,12 +390,13 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
 
 def test_relay_logon_claims_one_headless_relay_with_existing_lm_user_roots(monkeypatch, tmp_path):
     from contextlib import nullcontext
-    import time
+    clock = _isolated_update_time(monkeypatch)
 
     control = tmp_path / "update-control"
     stage = tmp_path / "stage"
     control.mkdir(); stage.mkdir()
-    policy = dict(operator_sid="operator", staging_root=str(stage))
+    policy = dict(operator_sid="operator", staging_root=str(stage),
+                  operator_local_app_data=str(tmp_path / "local"))
     state = updates.apply_transition(prepared(), writers_absent=True, packet_verified=True, durable_prepared=True, now=NOW)
     bind_test_packet_settings(control, policy)
     updates.write_json_durable(control / "policy.json", policy)
@@ -413,7 +414,7 @@ def test_relay_logon_claims_one_headless_relay_with_existing_lm_user_roots(monke
     monkeypatch.setattr(updates, "launch_version", lambda _control, sha, args, **kwargs: launched.append((sha, args, kwargs)) or 42)
     def complete(_seconds):
         updates.write_json_durable(control / "transition.json", {**state, "phase": "CONFIRMED"})
-    monkeypatch.setattr(time, "sleep", complete)
+    monkeypatch.setattr(clock, "sleep", complete)
     assert updates.bootstrap(tmp_path / "app", ["--label-match-user-relay"], role="relay") == 0
     assert [args for _, args, _ in launched] == [["--label-match-user-relay"]]
     assert all(sha == NEW and settings["nonce"] == state["nonce"] for sha, _, settings in launched)

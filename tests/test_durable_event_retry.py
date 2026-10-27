@@ -29,6 +29,10 @@ def test_durable_preappend_retry_preserves_original_row_and_fsync(tmp_path, monk
     attempts = []
 
     def open_csv(path, mode, *args, **kwargs):
+        # The current writer also opens r+b to inspect an existing CSV tail.
+        # Inject/count only the original append operation under test.
+        if mode not in {'a', 'a+'}:
+            return open(path, mode, *args, **kwargs)
         attempts.append(time.monotonic())
         if blocked[0]:
             failed.set()
@@ -73,6 +77,10 @@ def test_durable_failure_after_append_is_sticky_without_retry(tmp_path, monkeypa
 
     @contextmanager
     def append_then_fail(path, mode, *args, **kwargs):
+        if mode not in {'a', 'a+'}:
+            with open(path, mode, *args, **kwargs) as stream:
+                yield stream
+            return
         attempts.append(path)
         with open(path, mode, *args, **kwargs) as stream:
             yield stream

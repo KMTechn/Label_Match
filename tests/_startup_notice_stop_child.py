@@ -11,6 +11,7 @@ os.environ["LABEL_MATCH_DIRECT_SYNC_ROOT"] = str(root / "relay")
 os.environ["TEMP"] = str(root)
 os.environ["TMP"] = str(root)
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import Label_Match as lm
 
 
