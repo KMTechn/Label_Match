@@ -68,5 +68,11 @@
     "sha256": "01732e3a2f354425721a765af5d4acd15f194801276c8368ab46a04ff59819c8",
     "reason": "Existing directory rename; exact AST extent pinned.",
     "file": "INSTALL_THIS_PC.ps1"
+  },
+  {
+    "file": "INSTALL_THIS_PC.ps1",
+    "function": "Restore-RemovalFilePreimage",
+    "sha256": "b589aebd354aedc3dc4a8c1b12dd16e7956350fed25698c1071df4d672fb2465",
+    "count": 1
   }
 ]
