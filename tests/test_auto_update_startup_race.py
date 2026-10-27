@@ -260,6 +260,7 @@ def test_gui_keeps_data_guard_after_deferred_startup_onboarding(portable_gui, mo
 
 
 def test_startup_onboarding_pending_phase_uses_existing_ordinary_recovery(managed_onboarding, monkeypatch, capsys):
+    # No prior startup_gate admission: preserve the existing UNKNOWN fallback.
     paths, environment, control, _helpers = managed_onboarding
     policy = updates.read_json(control / 'policy.json')
     policy.pop('staging_root')  # Legacy installation can still publish its console support record.
@@ -315,6 +316,7 @@ def test_startup_onboarding_preserves_existing_cohort_bound(managed_onboarding, 
 
 
 def test_manual_onboarding_keeps_unsettled_phase_refusal(managed_onboarding):
+    # Manual classification without an accepted startup proof remains strict.
     paths, environment, control, _helpers = managed_onboarding
     state = updates.read_json(control / 'transition.json')
     updates.write_json_durable(control / 'transition.json', {**state, 'phase': 'PREPARED'})

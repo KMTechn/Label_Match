@@ -1060,7 +1060,7 @@ def _supported_removal_artifacts(root: Path) -> list[Path]:
 
 
 def resolve_lifecycle_context(root: Path, *, expected_from_commit: str | None = None,
-                              operation: str = "inspect") -> dict[str, Any]:
+                              operation: str = "inspect", startup: bool = False) -> dict[str, Any]:
     if operation not in {"inspect", "install", "uninstall", "user_remove", "register"}:
         raise ValueError("supported lifecycle operation is malformed")
     fixed = root / "current"
@@ -1092,11 +1092,15 @@ def resolve_lifecycle_context(root: Path, *, expected_from_commit: str | None = 
     if pointer.get("schema") != SCHEMA or state.get("schema") != SCHEMA:
         raise ValueError("supported control identity differs")
     active = _sha(pointer.get("sha"))
-    if state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}:
+    startup_proven = (operation == "register" and startup
+                      and state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"}
+                      and _lifecycle_startup_proven(control, policy, pointer, state))
+    if state.get("phase") not in {"CONFIRMED", "ROLLED_BACK", "DEFERRED"} and not startup_proven:
         raise ValueError("supported transition requires removal and reinstall")
     if expected_from_commit is not None and _sha(expected_from_commit) != active:
         raise ValueError("supported from identity differs")
-    if state.get("candidate_sha") is not None and recovery_sha(state, pointer_sha=active) != active:
+    if (not startup_proven and state.get("candidate_sha") is not None
+            and recovery_sha(state, pointer_sha=active) != active):
         raise ValueError("supported transition and pointer differ")
     # The selected Verify already authenticates the fixed bootstrap in
     # Get-Authority / Assert-LabelStartupIntegrity before verifying the version.
@@ -2619,7 +2623,7 @@ def assert_version_writer(app_root: Path, *, source: str, environ: Mapping[str, 
     if control is None:
         return
     if source == "current_user_onboarding":
-        resolve_lifecycle_context(control.parent, operation="register")
+        resolve_lifecycle_context(control.parent, operation="register", startup=True)
         return
     if not runtime_matches(app_root):
         raise ValueError("writer must use its protected packet runtime")
@@ -3169,7 +3173,8 @@ def confirmed_trial(app_root: Path) -> bool:
                 and state.get("trial_sha") == sha and active.get("sha") == sha)
 
 
-def manual_lifecycle_gate(control: Path, mode: str) -> int | None:
+def manual_lifecycle_gate(control: Path, mode: str, *, app_root: Path | None = None,
+                          role: str = "gui") -> int | None:
     """User removal owns only its Run/relay; registration requires health."""
     if mode == "--remove-current-user-setup":
         return None
@@ -3179,7 +3184,17 @@ def manual_lifecycle_gate(control: Path, mode: str) -> int | None:
     if fence is not None and _delegation_matches(fence, source=source, environ=os.environ):
         return None
     try:
-        resolve_lifecycle_context(control.parent, operation="register")
+        if app_root is not None and (os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
+                                     or os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE")):
+            policy = load_policy(control)
+            with startup_update_lock(control, policy) as acquired:
+                if acquired:
+                    state = optional_record(control / "transition.json")
+                    active = read_json(control / "active.json")
+                    sha = version_manifest(app_root.parent)["source_commit"]
+                    _accept_startup_proof(app_root, control, policy, state, active, sha,
+                                          role=role, remember=True)
+        resolve_lifecycle_context(control.parent, operation="register", startup=True)
         return None
     except Exception as error:
         details = launch_failure_details(error, include_original=True)
@@ -3267,7 +3282,65 @@ def _refuse_abandoned_update(policy, *, role: str) -> int:
     return 20
 
 
+_STARTUP_ADMISSION = None
+
+
+def _startup_proof_binding(policy, active, state) -> str:
+    values = [policy, active, state, os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT"),
+              os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE")]
+    return hashlib.sha256(json.dumps(values, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _accept_startup_proof(app_root: Path, control: Path, policy, state, active,
+                          sha: str, *, role: str, remember: bool = False,
+                          allow_relay_parent: bool = False) -> bool:
+    """One read-only trial/defer decision, reused before first setup writes."""
+    if sha != active["sha"] or not ordinary_user_context(policy["operator_sid"]):
+        return False
+    accepted = False
+    if state and (state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
+                  or (state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True
+                      and _retained_confirmation_allowed(state, active))):
+        if os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE") == state["nonce"] and ordinary_user_context():
+            claim = optional_record(Path(policy["staging_root"]) / "trial.json")
+            accepted = bool(claim and claim.get("nonce") == state["nonce"]
+                            and claim.get("transition_id") == state["transition_id"]
+                            and (role == "relay" or claim.get("pid") == os.getpid()))
+    if not accepted:
+        deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
+        if deferred_at and (not state or state["phase"] in {
+                "PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN",
+                "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}):
+            _utc(deferred_at)
+            if state and (state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY",
+                                             "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}
+                          or (state["phase"] == "DEFERRED" and state.get("recovery_pending") is True)):
+                assert_ordinary_recovery(control, policy, sha, deferred_at,
+                                         allow_relay_parent=allow_relay_parent)
+            accepted = True
+    if accepted and remember:
+        global _STARTUP_ADMISSION
+        _STARTUP_ADMISSION = (os.getpid(), Path(app_root).resolve(), role,
+                              _startup_proof_binding(policy, active, state), allow_relay_parent)
+    return accepted
+
+
+def _lifecycle_startup_proven(control: Path, policy, active, state) -> bool:
+    proof = _STARTUP_ADMISSION
+    if proof is None or proof[0] != os.getpid():
+        return False
+    app_root, role, binding, allow_relay_parent = proof[1:]
+    if (control_root(app_root) != control or Path(__file__).resolve().parent != app_root
+            or binding != _startup_proof_binding(policy, active, state)):
+        return False
+    sha = version_manifest(app_root.parent)["source_commit"]
+    return _accept_startup_proof(app_root, control, policy, state, active, sha,
+                                 role=role, allow_relay_parent=allow_relay_parent)
+
+
 def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> int | None:
+    global _STARTUP_ADMISSION
+    _STARTUP_ADMISSION = None
     if arguments[:1] in (["--label-match-user-relay"], ["--label-match-direct-sync-relay"]):
         role = "relay"
     try:
@@ -3287,6 +3360,10 @@ def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> 
             assert_ordinary_recovery(control, policy, version_manifest(app_root.parent)["source_commit"], deferred_at,
                                      allow_relay_parent=role == "relay")
             assert_version_writer(app_root, source="gui_settings_save", environ=os.environ)
+            _accept_startup_proof(app_root, control, policy, state,
+                                  read_json(control / "active.json"),
+                                  version_manifest(app_root.parent)["source_commit"], role=role,
+                                  remember=True, allow_relay_parent=role == "relay")
             emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS", "exit_code": 0}, stage="update_apply", policy=policy)
             return None
         return bootstrap(app_root, arguments, role=role)
@@ -3389,7 +3466,7 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
     if control is None:
         return None
     if arguments and arguments[0] in {"--onboard-current-user", "--remove-current-user-setup", "--restore-current-user-lifecycle-after-replacement"}:
-        return manual_lifecycle_gate(control, arguments[0])
+        return manual_lifecycle_gate(control, arguments[0], app_root=app_root, role=role)
     policy = load_policy(control)
     if not ordinary_user_context(policy["operator_sid"]):
         if role == "gui":
@@ -3415,21 +3492,8 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
                 return None
             emit_progress_guidance()
             return 20
-        if (sha == active["sha"] and state and (state["phase"] in {"APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY"}
-                or (state.get("phase") == "DEFERRED" and state.get("retained_candidate") is True
-                    and _retained_confirmation_allowed(state, active)))):
-            if os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE") == state["nonce"] and ordinary_user_context():
-                claim = optional_record(Path(policy["staging_root"]) / "trial.json")
-                if claim and claim.get("nonce") == state["nonce"] and claim.get("transition_id") == state["transition_id"] and (role == "relay" or claim.get("pid") == os.getpid()):
-                    return None
-        deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
-        if sha == active["sha"] and deferred_at and (not state or state["phase"] in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}):
-            _utc(deferred_at)
-            if state and (state["phase"] in {"PREPARED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}
-                          or (state["phase"] == "DEFERRED" and state.get("recovery_pending") is True)):
-                assert_ordinary_recovery(control, policy, sha, deferred_at)
-            # Ordinary active-code admission only. The unchanged G guard still
-            # runs before data access; this grants no pointer or trial authority.
+        if _accept_startup_proof(app_root, control, policy, state, active, sha,
+                                 role=role, remember=True):
             return None
         prepared = prepared_pending(control, policy, state)
         reason = startup_bootstrap_reason(sha, active, state, prepared)

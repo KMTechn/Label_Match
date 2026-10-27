@@ -44,7 +44,7 @@ TEST_MODE_ENV = "KMTECH_LABEL_WRITER_TEST_MODE"
 
 # The code-derived scanner normalizes this literal to zero before hashing its
 # own source closure, so updating the pin is deterministic rather than cyclic.
-WRITER_INVENTORY_SHA256 = "e81b10bf8f9189fe8b0eac640e91d7f191f4a18a380664dba0e8b6b2f8cb6f8b"
+WRITER_INVENTORY_SHA256 = "41154154033d7a3dac6a22da3cff393a732309ca415016c2babfa851c6de9bcc"
 
 DELEGATION_TOKEN_ENV = "KMTECH_LABEL_WRITER_DELEGATION_TOKEN"
 DELEGATION_SESSION_ENV = "KMTECH_LABEL_WRITER_DELEGATION_SESSION_ID"
@@ -1106,10 +1106,10 @@ def _onboarding_lifecycle_scope(app_root: Any, *, recheck: bool = False) -> Iter
             if recheck:
                 from auto_update import load_policy, update_lock
                 with update_lock(control, load_policy(control)["operator_sid"]):
-                    context = resolve_lifecycle_context(managed, operation="register")
+                    context = resolve_lifecycle_context(managed, operation="register", startup=True)
                     observed = _lifecycle_digests(observed_control)
             else:
-                context = resolve_lifecycle_context(managed, operation="register")
+                context = resolve_lifecycle_context(managed, operation="register", startup=True)
         else:
             assert_version_writer(source_root, source="current_user_onboarding", environ=values)
         _WRITER_LOCAL.onboarding_lifecycle = {
