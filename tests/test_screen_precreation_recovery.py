@@ -18,6 +18,7 @@ from _startup_timing_fixture import startup_body_namespace as _startup_body_name
 
 @pytest.fixture
 def application(monkeypatch, tmp_path):
+    from logistics_runtime_profile import finish_startup_read_retry
     main, _, host = entrypoint(monkeypatch, tmp_path)
     source = Path.cwd() / "Label_Match.py"
     tree = ast.parse(source.read_text(encoding="utf-8-sig"))
@@ -42,6 +43,7 @@ def application(monkeypatch, tmp_path):
         _prepare_startup_catalog_attempt=lambda: (None, False),
         _schedule_reused_relay_verification=lambda *a: calls.append("verify"),
         _label_match_startup_trace=lambda stage, **kw: calls.append(stage),
+        finish_startup_read_retry=finish_startup_read_retry,
     )
     _bind_startup_timing_namespace(module.__dict__)
     exec(compile(ast.Module(body=[body], type_ignores=[]), str(source), "exec"), module.__dict__)

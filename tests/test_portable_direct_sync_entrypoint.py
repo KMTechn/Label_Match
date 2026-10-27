@@ -230,7 +230,8 @@ def test_fake_server_result_matches_application_dispatch(
     main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
     namespace = {"sys": sys, "Path": Path, "dispatch_product_mode": product_host.dispatch_product_mode,
                  "release_identity": lambda root: {}, "_label_match_runtime_app_root": lambda: ROOT,
-                 "__file__": str(ROOT / "Label_Match.py")}
+                 "__file__": str(ROOT / "Label_Match.py"),
+                 "_label_match_startup_trace": lambda *a, **kw: None}
     namespace["_first_run_onboarding_enabled"] = lambda: False
     constants = [node for node in tree.body if isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name) and target.id in {

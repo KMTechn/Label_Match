@@ -2,6 +2,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 import sys
+import traceback
 from types import SimpleNamespace
 import pytest
 import writer_session_fence as fence
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 from _startup_timing_fixture import bind_startup_timing_namespace as _bind_startup_timing_namespace
 
 from _startup_timing_fixture import startup_body_namespace as _startup_body_namespace
+from _startup_timing_fixture import bind_startup_exception_namespace as _bind_startup_exception_namespace
 
 def entrypoint(monkeypatch, tmp_path, *, refused=None, update_result=None):
     import auto_update
@@ -33,6 +35,8 @@ def entrypoint(monkeypatch, tmp_path, *, refused=None, update_result=None):
     tree = ast.parse((ROOT / 'Label_Match.py').read_text(encoding='utf-8-sig'))
     main = next((node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'main'))
     _bind_startup_timing_namespace(namespace)
+    _bind_startup_exception_namespace(namespace)
+    namespace.setdefault("traceback", traceback)
     exec(compile(ast.Module(body=[main], type_ignores=[]), str(ROOT / 'Label_Match.py'), 'exec'), namespace)
     return (namespace['main'], calls, host)
 
