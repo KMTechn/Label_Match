@@ -3533,8 +3533,15 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
                 return None
             emit_progress_guidance()
             return 20
-        if _accept_startup_proof(app_root, control, policy, state, active, sha,
-                                 role=role, remember=True):
+        try:
+            accepted = _accept_startup_proof(app_root, control, policy, state, active, sha,
+                                             role=role, remember=True)
+        except ValueError:
+            if not state or state.get("phase") != "ROLLBACK_PENDING":
+                raise
+            # An ineligible ordinary recovery belongs to bootstrap, not a proof.
+            accepted = False
+        if accepted:
             return None
         prepared = prepared_pending(control, policy, state)
         reason = startup_bootstrap_reason(sha, active, state, prepared)
