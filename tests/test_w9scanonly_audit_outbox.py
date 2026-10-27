@@ -306,6 +306,7 @@ def test_shortage_release_retries_with_one_original_audit(packaging, scanner_clo
     for value in (MASTER, products()[0], MASTER):
         scanner_clock[0] += 5
         scan(app, value)
+    assert app._request_scanner_shortage()
     assert app._partial_submit_confirm_state() is not None
     assert app._submit_partial_scanner()
     assert app.current_set_info.get("shortage_undo_snapshot")

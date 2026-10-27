@@ -682,6 +682,9 @@ def test_x2_retained_candidate_is_previous_for_next_signed_failure(endpoint, mon
     assert updates.read_json(control / "transition.json")["retained_candidate"] is True
     hot = hotfix_packet(endpoint, monkeypatch, base_sha=NEW)
     assert updates.apply_prepared(control) == 0
+    assert updates.read_json(control / "transition.json")["phase"] == "ROLLED_BACK"
+    assert updates.read_json(control / "active.json")["sha"] == NEW
+    assert updates.apply_prepared(control) == 0
     state = updates.read_json(control / "transition.json")
     assert state["candidate_sha"] == hot
     assert state["previous_sha"] == NEW
@@ -993,10 +996,9 @@ def test_deferred_recovery_precedes_next_signed_hotfix(endpoint, monkeypatch, ph
         if path == control / "active.json" and value.get("sha") == hot:
             raise SystemExit(0)
     monkeypatch.setattr(updates, "write_json_durable", observe)
-    if phase in {"UNKNOWN", "FAILED"}:
-        assert updates.apply_prepared(control) == 0
-        assert updates.read_json(control / "transition.json")["phase"] == "ROLLED_BACK"
-        assert updates.read_json(control / "active.json")["sha"] == OLD
+    assert updates.apply_prepared(control) == 0
+    assert updates.read_json(control / "transition.json")["phase"] == "ROLLED_BACK"
+    assert updates.read_json(control / "active.json")["sha"] == OLD
     with pytest.raises(SystemExit):
         updates.apply_prepared(control)
     assert decisions and set(decisions) == {OLD}

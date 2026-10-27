@@ -76,7 +76,14 @@ def recovery(tmp_path, monkeypatch):
         assert target == sha
         assert set(kwargs) == {"deferred_at", "relay_deadline"}
         assert kwargs["deferred_at"] == BOUNDARY
-        assert kwargs["relay_deadline"] == updates.RELAY_PREPARE_SECONDS
+        deadline = kwargs["relay_deadline"]
+        if isinstance(deadline, updates._RelayPreparationDeadline):
+            assert deadline <= updates.FIRST_SETUP_READY_SECONDS
+            # The real launcher starts preparation at this boundary (ANSWER-17).
+            assert deadline.begin_preparation() == updates.RELAY_PREPARE_SECONDS
+            assert deadline.begin_preparation() == updates.RELAY_PREPARE_SECONDS
+        else:
+            assert deadline == updates.RELAY_PREPARE_SECONDS
         assert arguments[0] in ("--label-match-user-relay", "--label-match-direct-sync-relay")
         launches.append({"deferred_at": kwargs["deferred_at"]})
         rows.append({**parent, "pid": parent["pid"] + 1,
