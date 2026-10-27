@@ -295,9 +295,20 @@ def test_system_restart_supervises_only_a_window_it_opens(endpoint, monkeypatch,
             observations.append(value)
     monkeypatch.setattr(updates, 'write_json_durable', observe)
     # Same interpreter: ownership must be local to each SYSTEM call.
+    resumed_at = updates.now_utc()
     assert updates.apply_prepared(control) == 0
+    finished_at = updates.now_utc()
     settled = updates.read_json(control/'transition.json')
     assert settled['phase'] == 'ROLLED_BACK'
-    assert settled['failed_shas'] == ([hot] if crash_phase == 'PREPARED' else [])
+    # ANSWER-15: READY timeout consumes a chance without blacklisting the SHA.
+    assert settled['failed_shas'] == []
+    first_at = settled['retry_shas'][hot]['first_at']
+    assert settled['retry_shas'] == {
+        hot: {'attempts': 1, 'first_at': first_at, 'last_at': first_at},
+    }
+    assert updates._utc(resumed_at) <= updates._utc(first_at) <= updates._utc(finished_at)
+    if crash_phase == 'PREPARED':
+        assert settled['reason'] == 'candidate startup failed or readiness timed out'
+    assert any(value['phase'] == 'APPLIED_PENDING_READY' for value in observations) is (crash_phase == 'PREPARED')
     assert any(value['phase'] == 'UNKNOWN' for value in observations) is (crash_phase == 'APPLIED_PENDING_READY')
     assert updates.read_json(control/'active.json')['sha'] == OLD
