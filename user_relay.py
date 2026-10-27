@@ -1550,13 +1550,19 @@ def _run_user_relay(args, app_root: Path, argv, *, credential_input=None) -> int
     ):
         directory.mkdir(parents=True, exist_ok=True)
     stop_path = user_relay_stop_path(direct_sync_root)
-    if stop_path.exists():
-        _record_relay_reason("RELAY_STOP_MARKER_PRESENT", app_root=app_root)
-        return 0
-    lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
-    if lease is None:
-        _record_relay_reason("RELAY_INSTANCE_LEASE_UNAVAILABLE", app_root=app_root)
-        return 0
+    lease_deadline = time.monotonic() + 2.0
+    while True:
+        if stop_path.exists():
+            _record_relay_reason("RELAY_STOP_MARKER_PRESENT", app_root=app_root)
+            return 0
+        lease = _acquire_relay_lease(direct_sync_root / "user-relay-instance")
+        if lease is not None:
+            break
+        remaining = lease_deadline - time.monotonic()
+        if remaining <= 0:
+            _record_relay_reason("RELAY_INSTANCE_LEASE_UNAVAILABLE", app_root=app_root)
+            return 0
+        time.sleep(min(0.1, remaining))
     try:
         from auto_update import prepare_feed_packet
 
