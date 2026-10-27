@@ -79,22 +79,36 @@ class _RelayPreparationUnavailable(RuntimeError):
 class _RelayPreparationDeadline(float):
     """One deadline and parent lifetime, shared without process-global state."""
 
-    def __new__(cls, value, *, parent_pid=None, parent_identity=None):
+    def __new__(cls, value, *, parent_pid=None, parent_identity=None,
+                preparation_started=None):
         instance = super().__new__(cls, value)
         instance.parent_pid = parent_pid
         instance.parent_identity = parent_identity
+        instance._preparation_started = preparation_started
         instance._failure_code = ""
         return instance
 
     def bounded_by(self, deadline: float):
         """Shorten a trial window without dropping the captured parent identity."""
         return type(self)(min(self, deadline), parent_pid=self.parent_pid,
-                          parent_identity=self.parent_identity)
+                          parent_identity=self.parent_identity,
+                          preparation_started=self._preparation_started)
+
+    def begin_preparation(self):
+        """Start the shared relay allowance once, within the absolute bound."""
+        if self._preparation_started is None:
+            return self
+        if self._preparation_started[0] is None:
+            self._preparation_started[0] = time.monotonic()
+        return self.bounded_by(self._preparation_started[0] + RELAY_PREPARE_SECONDS)
 
     def failure_code(self) -> str:
         if self._failure_code:
             return self._failure_code
-        if time.monotonic() >= self:
+        expires = float(self)
+        if self._preparation_started is not None and self._preparation_started[0] is not None:
+            expires = min(expires, self._preparation_started[0] + RELAY_PREPARE_SECONDS)
+        if time.monotonic() >= expires:
             self._failure_code = "UPDATE_APPLY_NO_PROGRESS"
         elif self.parent_pid is not None:
             try:
@@ -124,11 +138,12 @@ def _relay_prepare_result(deadline: float) -> int:
     return 0
 
 
-def _relay_preparation_deadline(parent_deadline, parent_pid) -> _RelayPreparationDeadline:
+def _relay_preparation_deadline(parent_deadline, parent_pid, *, defer_preparation=False) -> _RelayPreparationDeadline:
     entry = time.monotonic()
-    independent = entry + RELAY_PREPARE_SECONDS
+    independent = entry + (BOOTSTRAP_OBSERVATION_CAP_SECONDS if defer_preparation else RELAY_PREPARE_SECONDS)
+    preparation_started = [None] if defer_preparation else None
     if parent_deadline is None and parent_pid is None:
-        return _RelayPreparationDeadline(independent)
+        return _RelayPreparationDeadline(independent, preparation_started=preparation_started)
     try:
         if (parent_deadline is None or parent_pid is None
                 or isinstance(parent_deadline, bool) or isinstance(parent_pid, bool)
@@ -142,7 +157,7 @@ def _relay_preparation_deadline(parent_deadline, parent_pid) -> _RelayPreparatio
         raise _RelayPreparationUnavailable("UPDATE_PREPARATION_FAILED") from None
     value = min(independent, received - RELAY_PARENT_RESULT_RESERVE_SECONDS)
     if value <= entry:
-        return _RelayPreparationDeadline(value)
+        return _RelayPreparationDeadline(value, preparation_started=preparation_started)
     if pid != os.getppid():
         raise _RelayPreparationUnavailable("UPDATE_SUPERVISION_UNAVAILABLE")
     try:
@@ -159,7 +174,8 @@ def _relay_preparation_deadline(parent_deadline, parent_pid) -> _RelayPreparatio
     except (OSError, ValueError, TypeError, KeyError):
         raise _RelayPreparationUnavailable("UPDATE_SUPERVISION_UNAVAILABLE") from None
     return _RelayPreparationDeadline(value, parent_pid=pid,
-                                     parent_identity=parent["creation_identity"])
+                                     parent_identity=parent["creation_identity"],
+                                     preparation_started=preparation_started)
 
 
 def support_record(fields=None, *, stage):
@@ -3720,6 +3736,8 @@ def assert_ordinary_recovery(control: Path, policy: Mapping[str, Any], sha: str,
 
 def _launch_bootstrap_version(control: Path, sha: str, arguments: list[str], *, deadline: float, **kwargs) -> int:
     """Retry transient relay admission within this bootstrap's existing window."""
+    if isinstance(deadline, _RelayPreparationDeadline):
+        deadline = deadline.begin_preparation()
     while True:
         if isinstance(deadline, _RelayPreparationDeadline):
             failure = _relay_prepare_failure(deadline)
@@ -3751,6 +3769,8 @@ def _bootstrap_relay_snapshot(control, policy):
 
 def _bootstrap_relay_readback(control, policy, sha, readback, *, ownership=None, pid=None, started_at=None, deadline=None):
     """Release only bootstrap's root for read-only READY, then prove its binding again."""
+    if isinstance(deadline, _RelayPreparationDeadline):
+        deadline = deadline.begin_preparation()
     if ownership is None:
         return readback()
     expected = _bootstrap_relay_snapshot(control, policy)
@@ -4167,7 +4187,7 @@ def _bootstrap(app_root: Path, arguments: list[str], *, role: str,
                parent_deadline=None, parent_pid=None) -> int:
     from contextlib import ExitStack
     try:
-        relay_deadline = _relay_preparation_deadline(parent_deadline, parent_pid)
+        relay_deadline = _relay_preparation_deadline(parent_deadline, parent_pid, defer_preparation=True)
     except _RelayPreparationUnavailable as error:
         emit_support_record({"reason_code": error.code}, stage="update_apply")
         return 20
