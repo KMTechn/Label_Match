@@ -9,7 +9,7 @@ spool/본문 읽기에서 FileNotFoundError와 잠금 외 OSError는 기존 fail
 재시도 때 서버 `committed:false` 명시 거절이나 요청 전 로컬 실패가 확정된 경우만 실제 행 배정을 같은 트랜잭션에서 풀고 runtime 다섯 필드를 제거한다. 메타데이터가 없거나 실제 배정이 없으면 release를 부르지 않는다. 응답 유실·파싱 불능 등 전송/응답이 모호하면 같은 행의 재시도 권한을 보존한다. 해제된 권한은 유효 기간 안에서 다른 행에 재배정하고 만료 뒤에는 기존 새 발급 경로를 따른다.
 일시 응답의 분류는 상태 저장까지 유지하며 오류 코드만으로 권한 전체 검토를 다시 추론하지 않는다. 앞선 요청의 결과가 불명인 행은 다음 회차의 spool 읽기·요청 준비 실패에도 배정과 runtime 다섯 필드를 보존하고 같은 행을 재시도한다(w9firstupdsub674).
 
-스캔의 일반 `enqueue_error`는 해당 파일을 `scan_enqueue_errors=[{source_file,error_code}]`에 기록하고 다음 파일과 안전한 drain을 계속한다. `scan_failed_source_file`은 첫 실패를 유지한다. 한 파일이라도 실패하면 `scan_status=enqueue_error`, CLI 종료 코드는 2다. pause·디스크·runtime 실패의 기존 정지와 같은 원본 terminal 앞 구간 보호는 유지한다.
+스캔에서 코드가 `direct_sync_source_file_error`인 `enqueue_error`만 해당 파일을 `scan_enqueue_errors=[{source_file,error_code}]`에 기록하고 다음 파일과 안전한 drain을 계속한다. 일반 OSError·DirectSyncPushError의 `direct_sync_enqueue_error`는 전역 오류로 뒤 파일·drain을 멈추고 종료 코드 1을 반환한다. `scan_failed_source_file`은 첫 실패를 유지한다. 한 파일이라도 실패하면 `scan_status=enqueue_error`, CLI 종료 코드는 2다. pause·디스크·runtime 실패의 기존 정지와 같은 원본 terminal 앞 구간 보호는 유지한다.
 
 업로드와 행별 runtime lease 준비의 HTTP 401 중 오류 코드가 정확히 `stale_timestamp`인 응답은 기존 `retry_wait`로 남긴다. 다른 JSON 자격 401과 committed/receipt 불일치 검토는 기존 보호를 유지한다. 연결 거절·DNS·TLS·소켓/읽기/연결 시간 초과, 미커밋 408·429·5xx, 서명·TLS 준비의 로컬 OSError와 spool/본문의 일시 잠금도 기존 간격·다음 시도·횟수 정책으로 다시 시도한다. spool hash/길이 불일치는 내용 문제이므로 기존 terminal을 유지한다. 서버 응답 뒤 생긴 모호한 예외를 단순 로컬 실패로 바꾸지 않는다.
 
@@ -20,7 +20,7 @@ spool/본문 읽기에서 FileNotFoundError와 잠금 외 OSError는 기존 fail
 보내기 경고 영역은 한 칸이며 ① PC 시계 ② 원본 앞 구간 때문에 막힌 기록 ③ 기존 10분 초과 전송 대기 순서로 표시한다. 노랑이며 확인 단추·경고음·스캔 막이가 없다. 자동 끄기 마감 입력이 없으면 진한 노랑 전환은 하지 않는다. 다른 화면 경고는 그대로이고, 기존 네 경고와 보내기 경고를 함께 담도록 alerts 상한만 4→5로 늘린다. 새 보내기 경고가 없으면 기존 stopped 안내를 노랑으로 유지한다.
 
 - 시계: 「이 PC 시계가 회사 서버와 5분 넘게 달라 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요」 / 「찍은 기록은 이 PC에 그대로 있고, 시계를 맞추면 저절로 보내집니다」. Date가 있으면 같은 PC 지역 시각으로 「 · 이 PC HH:MM · 회사 서버 HH:MM」를 더하고, 알려진 막힘 N/K도 둘째 줄에 더한다.
-- 기록 막힘: 「회사 서버가 받지 않은 기록이 있어 그 뒤 기록 N건을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요」 / 「찍은 기록은 이 PC에 그대로 있습니다 · 막힌 기록 파일 K개」. N을 모르면 큰 줄의 숫자만 뺀다. N은 각 막힌 원본의 첫 terminal 구간 시작부터 EOF까지 CSV 데이터 레코드 수 합(header 제외·막힌 구간 포함)이다. 배치 수와 섞지 않는다. 스캔 회차에서만 새로 세고 다음 스캔까지 재시작에도 보존한다. 파일이 읽는 중 바뀌거나 CSV 해석/읽기에 실패하면 N은 미확인이다.
+- 기록 막힘: 「회사 서버가 받지 않은 기록이 있어 기록 N건을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요」 / 「찍은 기록은 이 PC에 그대로 있습니다 · 막힌 기록 파일 K개」. N을 모르면 큰 줄의 숫자만 뺀다. N은 각 막힌 원본의 첫 terminal 구간 시작부터 EOF까지 CSV 데이터 레코드 수 합(header 제외·막힌 구간 포함)이다. 배치 수와 섞지 않는다. 스캔 회차에서만 새로 세고 다음 스캔까지 재시작에도 보존한다. 파일이 읽는 중 바뀌거나 CSV 해석/읽기에 실패하면 N은 미확인이다.
 - 일반 전송 대기: 「회사 서버로 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요」 / 「찍은 기록은 이 PC에 그대로 있고, 연결이 돌아오면 저절로 보내집니다」.
 
 `%LOCALAPPDATA%\KMTech\Label_Match\upload_block_status.json`은 호스트 중계용 공통 상태 파일이다. 일곱 칸(`schema=1`, `app=LM`, `blocked_files`, `blocked_records`, `install_review`, `since`, `updated`)만 쓴다. N 미확인은 null이며 파일 이름·작업자 이름·서버 주소·기록 내용·자격 자료는 넣지 않는다. 선행 lease `operator_review`에서만 install_review=true, `ACTIVE`와 `server_grant_accepted=true`를 확인하면 false, 그 밖 회차는 직전 값을 유지한다. 개별 행의 검토나 stale 401로 설치 전체 검토를 만들지 않는다.

@@ -689,11 +689,11 @@ def test_send_band_priority_and_unknown_record_count():
     app = SimpleNamespace(_logistics_pending_transmissions=20, _logistics_oldest_pending_age=601)
     blocked = {'scan_terminal_blocked_count': 2, 'scan_terminal_blocked_record_count': 7}
     text = label._label_match_send_warning(app, blocked)
-    assert '기록 7건' in text
+    assert text == '회사 서버가 받지 않은 기록이 있어 기록 7건을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요\n찍은 기록은 이 PC에 그대로 있습니다 · 막힌 기록 파일 2개'
     assert '막힌 기록 파일 2개' in text
     assert '20' not in text  # queue batch counts are not record counts
     unknown = label._label_match_send_warning(app, {'scan_terminal_blocked_count': 2})
-    assert '기록을' in unknown and '7건' not in unknown
+    assert unknown == '회사 서버가 받지 않은 기록이 있어 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요\n찍은 기록은 이 PC에 그대로 있습니다 · 막힌 기록 파일 2개'
     generic = label._label_match_send_warning(app, {'scan_terminal_blocked_count': 0})
     assert generic == (
         '회사 서버로 기록을 보내지 못하고 있습니다 — 현장 관리자에게 알리세요\n'
