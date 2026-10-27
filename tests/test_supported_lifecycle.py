@@ -197,6 +197,7 @@ def test_owner_a_and_active_a_or_b_are_healthy_and_support_c(tmp_path, monkeypat
 
 @pytest.mark.parametrize("phase", ["PREPARED", "APPLIED_PENDING_READY", "ROLLBACK_PENDING", "ROLLBACK_PENDING_READY", "UNKNOWN", "FAILED"])
 def test_unsettled_install_refuses_without_mutation_but_removal_has_exit(tmp_path, monkeypatch, phase):
+    """Install classification receives no startup proof and remains strict."""
     _, _, control, _ = healthy(tmp_path, monkeypatch)
     (control / "transition.json").write_text(json.dumps(dict(schema=update.SCHEMA, phase=phase)))
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
