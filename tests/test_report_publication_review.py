@@ -158,3 +158,18 @@ def test_fallback_keeps_redacted_mandatory_machine_string(tmp_path, monkeypatch)
     assert json.loads(raw) == {"status": "READY", "message": publication.UNAVAILABLE, "hostname": publication.UNAVAILABLE}
     assert "4826" not in raw and "KMTECH_TEST_API_TOKEN" not in raw
     assert publication.failure_count(target) == 1
+
+
+def test_refused_non_diagnostic_scalar_preserves_prior_bytes_and_zero_count(tmp_path, monkeypatch):
+    import current_user_onboarding as onboarding
+    monkeypatch.setenv("KMTECH_TEST_API_TOKEN", "4826")
+    target = tmp_path / "current_user_onboarding.json"
+    old = b'{"status":"READY","invocation":"prior"}\n'
+    target.write_bytes(old)
+    payload = {"status": "READY", "message": 4826, "machine_ordinal": 4826}
+    with onboarding.writer_admission(onboarding.ONBOARDING_WRITER_SOURCE):
+        with pytest.raises(ValueError, match="^PRODUCT_METADATA_SECRET_VALUE_REFUSED$"):
+            onboarding._write_json_atomic(target, payload)
+    assert target.read_bytes() == old
+    assert publication.failure_count(target) == 0
+    assert not (tmp_path / ".report-unavailable-count.json").exists()
