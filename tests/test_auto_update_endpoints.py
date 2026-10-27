@@ -142,7 +142,7 @@ Path(RESULT_PATH).write_text(json.dumps(dict(sha=sha, gate=gate, status=decision
     children = []
     popen = subprocess.Popen
     def native_launch(command, **kwargs):
-        command = [sys.executable, "-B", *command[3:]]
+        command = [sys.executable, "-I", "-B", *command[3:]]
         child = popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
         children.append(child)
         return child
