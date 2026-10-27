@@ -183,6 +183,9 @@ def test_portable_runtime_import_probe_fails_closed_on_missing_module(
     tools.mkdir(parents=True)
     (app / "current_user_onboarding.py").write_text("VALUE = 1\n", encoding="utf-8")
     (app / "label_match_product_host.py").write_text("VALUE = 1\n", encoding="utf-8")
+    # Supply ordinary product-import prerequisites before testing the missing tool.
+    for module_name in ('current_user_onboarding', 'label_match_product_host', 'label_atomic_replace', 'label_match_instance_win32', 'label_native_policy', 'label_match_single_instance', 'label_match_screen', 'label_screen_bridge', 'label_match_relay_entry'):
+        (app / (module_name + ".py")).write_text("VALUE = 1\n", encoding="utf-8")
     source_tools = tmp_path / "source" / "tools"
     source_tools.mkdir(parents=True)
     first = source_tools / "first.py"
