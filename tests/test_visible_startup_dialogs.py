@@ -89,6 +89,10 @@ def test_catalog_retry_enter_and_owner_cleanup(monkeypatch, visible_owner):
     error = lm.ItemCatalogSyncError('offline', cause_code='REQUEST_FAILED_NO_CACHE')
     assert lm._offer_item_catalog_startup_retry(error) is True
     assert len(visible_owner.dialogs) == 1
+    assert visible_owner.dialogs[0][0] == '포장을 시작하지 못했습니다'
+    assert visible_owner.dialogs[0][1].split('\n')[0] == '회사 서버 품목 목록을 받지 못했습니다 — 연결을 확인하고 「다시 시도」를 누르세요 · 또 안 되면 현장 관리자에게 알리세요'
+    assert '\n자세히: ' in visible_owner.dialogs[0][1]
+    assert '\n코드: REQUEST_FAILED_NO_CACHE' in visible_owner.dialogs[0][1]
     assert visible_owner.dialogs[0][2]['default'] == 'retry'
     assert visible_owner.owners[0].destroyed
 
@@ -97,7 +101,10 @@ def test_update_mutex_notice_enter_and_owner_cleanup(monkeypatch, visible_owner)
     monkeypatch.setitem(lm.LABEL_MATCH_SCREEN_HOST, 'active', True)
     auto_update._show_update_mutex_recovery_notice()
     assert len(visible_owner.dialogs) == 1
-    assert visible_owner.dialogs[0][1] == auto_update.UPDATE_MUTEX_RECOVERY_MESSAGE
+    assert visible_owner.dialogs[0][:2] == (
+        '포장을 시작하지 못했습니다',
+        '업데이트가 끝나지 않은 채 멈춰 포장을 시작하지 못했습니다 — 아무것도 지우지 말고 현장 관리자에게 알리세요(본사 복구)',
+    )
     assert visible_owner.dialogs[0][2]['default'] == 'ok'
     assert visible_owner.owners[0].destroyed
 
@@ -155,14 +162,21 @@ def test_item_load_error_stays_on_owner_thread(monkeypatch, visible_owner, web, 
     assert scheduled == []
     assert not app.initial_load_queue.empty()
     app._process_initial_load_queue()
+    expected_message = (
+        '품목 정보 파일이 없어 품목을 확인할 수 없습니다 — 현장 관리자에게 알리세요\n코드: assets · Item.csv'
+        if isinstance(error, FileNotFoundError) else
+        '품목 정보를 읽지 못해 품목을 확인할 수 없습니다 — 다시 켜 보고, 또 나오면 현장 관리자에게 알리세요'
+    )
     assert len(scheduled) == 1
     assert scheduled[0][0] == threading.main_thread().name
     if web:
         assert len(bands) == 1
         assert bands[0][0] == threading.main_thread().name
+        assert bands[0][1][1:3] == ('품목 정보를 쓸 수 없습니다', expected_message)
         assert visible_owner.owners == []
     else:
         assert len(visible_owner.dialogs) == 1
+        assert visible_owner.dialogs[0][:2] == ('품목 정보를 쓸 수 없습니다', expected_message)
         assert visible_owner.owners[0].destroyed
         assert all(name == threading.main_thread().name for name in visible_owner.tk_threads)
 
@@ -195,3 +209,24 @@ def test_mutex_tk_failure_keeps_stderr_path_without_native_fallback(monkeypatch)
     monkeypatch.setattr(startup_observation, 'show_bounded_native_notice', native)
     auto_update._show_update_mutex_recovery_notice()
     native.assert_not_called()
+
+
+def test_changed_startup_messages_keep_original_support_text(monkeypatch, visible_owner, capsys):
+    monkeypatch.setattr(auto_update, '_record_abandoned_update', Mock())
+    auto_update._refuse_abandoned_update({}, role='relay')
+    stderr = capsys.readouterr().err
+    assert auto_update.UPDATE_MUTEX_RECOVERY_MESSAGE + ' [UPDATE_MUTEX_ABANDONED_RECOVERY_REQUIRED]' in stderr
+    lm._offer_item_catalog_startup_retry(lm.ItemCatalogSyncError('offline', cause_code='REQUEST_FAILED_NO_CACHE'))
+    assert '회사 서버 품목 목록을 사용할 수 없습니다\n연결을 확인하고 「다시 시도」를 누르세요. 또 안 되면 현장 관리자에게 알리세요' in capsys.readouterr().err
+    app = lm.Label_Match.__new__(lm.Label_Match)
+    app.run_tests = False
+    app._notify_item_load_error = Mock()
+    monkeypatch.setattr(lm, 'get_verified_catalog_snapshot', lambda path: None)
+    monkeypatch.setattr(lm, 'requires_verified_catalog_snapshot', lambda path: False)
+    for error, original in (
+        (FileNotFoundError('missing'), '품목 정보 파일이 없어 품목명을 표시할 수 없습니다\n현장 관리자에게 알리세요\n코드: assets · Item.csv'),
+        (OSError('unreadable'), '품목 정보를 불러오지 못했습니다\n현장 관리자에게 알리세요'),
+    ):
+        monkeypatch.setattr(lm, 'open', Mock(side_effect=error), raising=False)
+        assert app._load_items_data() == {}
+        assert original in capsys.readouterr().err

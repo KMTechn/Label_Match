@@ -8618,7 +8618,8 @@ class Label_Match(tk.Tk):
         except FileNotFoundError:
             self._items_read_locked = False
             if show_errors and not self.run_tests:
-                self._notify_item_load_error("warning", "기준 정보 파일 없음", f"""품목 정보 파일이 없어 품목명을 표시할 수 없습니다\n현장 관리자에게 알리세요\n코드: assets · {self.FILES.ITEMS}""")
+                print(f"품목 정보 파일이 없어 품목명을 표시할 수 없습니다\n현장 관리자에게 알리세요\n코드: assets · {self.FILES.ITEMS}", file=sys.stderr)
+                self._notify_item_load_error("warning", "품목 정보를 쓸 수 없습니다", f"품목 정보 파일이 없어 품목을 확인할 수 없습니다 — 현장 관리자에게 알리세요\n코드: assets · {self.FILES.ITEMS}")
             return {}
         except Exception as e:
             self._items_read_locked = isinstance(e, PermissionError) or (
@@ -8626,9 +8627,10 @@ class Label_Match(tk.Tk):
             )
             print(f"기준 정보 로드 기술 진단: {e}")
             if show_errors and not self.run_tests:
+                print('품목 정보를 불러오지 못했습니다\n현장 관리자에게 알리세요', file=sys.stderr)
                 self._notify_item_load_error(
-                    "error", "기준 정보 로드 오류",
-                    '품목 정보를 불러오지 못했습니다\n현장 관리자에게 알리세요',
+                    "error", "품목 정보를 쓸 수 없습니다",
+                    '품목 정보를 읽지 못해 품목을 확인할 수 없습니다 — 다시 켜 보고, 또 나오면 현장 관리자에게 알리세요',
                 )
             return {}
 
@@ -24952,10 +24954,14 @@ def _offer_item_catalog_startup_retry(error):
         if _startup_app_stop_requested():
             return False
         from startup_observation import show_visible_startup_messagebox
+        print(
+            f"회사 서버 품목 목록을 사용할 수 없습니다\n연결을 확인하고 「다시 시도」를 누르세요. 또 안 되면 현장 관리자에게 알리세요\n자세히: {_item_catalog_profile_details_for_display(context)}\n코드: {error.cause_code}",
+            file=sys.stderr,
+        )
         retry, stopped = show_visible_startup_messagebox(
-            "회사 서버 품목 목록 확인 필요",
+            "포장을 시작하지 못했습니다",
             (
-                f"""회사 서버 품목 목록을 사용할 수 없습니다\n연결을 확인하고 「다시 시도」를 누르세요. 또 안 되면 현장 관리자에게 알리세요\n자세히: {_item_catalog_profile_details_for_display(context)}\n코드: {error.cause_code}"""
+                f"""회사 서버 품목 목록을 받지 못했습니다 — 연결을 확인하고 「다시 시도」를 누르세요 · 또 안 되면 현장 관리자에게 알리세요\n자세히: {_item_catalog_profile_details_for_display(context)}\n코드: {error.cause_code}"""
             ),
             dialog=messagebox.askretrycancel, default="retry", prepare_root=_watch_startup_notice_stop,
         )

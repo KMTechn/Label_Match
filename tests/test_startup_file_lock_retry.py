@@ -51,12 +51,12 @@ def test_items_retry_only_file_locks(monkeypatch, kind, release):
     else:
         assert rows == {}
         assert app.__dict__.get('_items_read_locked') is True
-        assert errors.call_args.args[0] == '기준 정보 로드 오류'
+        assert errors.call_args.args[0] == '품목 정보를 쓸 수 없습니다'
 
 
 @pytest.mark.parametrize('error,title', [
-    (OSError(errno.EIO, 'disk error'), '기준 정보 로드 오류'),
-    (FileNotFoundError('absent'), '기준 정보 파일 없음'),
+    (OSError(errno.EIO, 'disk error'), '품목 정보를 쓸 수 없습니다'),
+    (FileNotFoundError('absent'), '품목 정보를 쓸 수 없습니다'),
 ])
 def test_items_other_errors_keep_existing_failure(monkeypatch, error, title):
     reader = Mock(side_effect=error)

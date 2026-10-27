@@ -1689,7 +1689,7 @@ G0: 기존 시작·경고·재시도·bootstrap 인계·기존 창 활성화와 
 
 `KMTECH_START_CHECK_TEST_CATEGORY`는 **시험 전용**이다. 위 고정 묶음 중 하나를 결과 JSON에 강제하며 실제 시작·종료 결정은 바꾸지 않는다. 기본은 꺼짐이다. 설치기·업데이트에서 설정하는 경로는 없다. 이 변수로 실제 거부 안내를 증명할 때도 기존 거부 조건을 함께 만든다.
 
-update mutex의 소유자가 강제 종료되어 버려짐을 받으면, 잠금을 보유한 채 `transition.json`·`active.json`과 기존 설치 Verify/판 신원/작업 존재를 확인한다. 확정된 설치가 일관되고 재판독도 같을 때만 시작을 이어 가며 `UPDATE_MUTEX_ABANDONED_VERIFIED`를 기록한다. 진행 중인 복구·상태 불일치·검증 실패는 rc 20, 「설치 복구 필요」 안내와 `UPDATE_MUTEX_ABANDONED_RECOVERY_REQUIRED`를 남긴다. 기록이나 안내 창 실패도 이 거부를 처리 안 된 예외로 바꾸지 않는다. 상태와 업무 자료는 보존한다. PHS 복구의 HTTP 대기 중 강제 종료는 기존 writer admission 관문에서 다음 시작 한 번 복구 안내 후, 두 번째 시작부터 정상 확인을 따른다.
+update mutex의 소유자가 강제 종료되어 버려짐을 받으면, 잠금을 보유한 채 `transition.json`·`active.json`과 기존 설치 Verify/판 신원/작업 존재를 확인한다. 확정된 설치가 일관되고 재판독도 같을 때만 시작을 이어 가며 `UPDATE_MUTEX_ABANDONED_VERIFIED`를 기록한다. 진행 중인 복구·상태 불일치·검증 실패는 rc 20, 「포장을 시작하지 못했습니다」 안내와 `UPDATE_MUTEX_ABANDONED_RECOVERY_REQUIRED`를 남긴다. 화면은 「업데이트가 끝나지 않은 채 멈춰 포장을 시작하지 못했습니다 — 아무것도 지우지 말고 현장 관리자에게 알리세요(본사 복구)」로 안내하고 stderr의 원래 「설치 복구 필요」 글과 코드는 보존한다. 기록이나 안내 창 실패도 이 거부를 처리 안 된 예외로 바꾸지 않는다. 상태와 업무 자료는 보존한다. PHS 복구의 HTTP 대기 중 강제 종료는 기존 writer admission 관문에서 다음 시작 한 번 복구 안내 후, 두 번째 시작부터 정상 확인을 따른다.
 
 ### 첫 업데이트 현장 차례
 

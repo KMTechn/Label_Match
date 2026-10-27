@@ -169,8 +169,9 @@ def test_phs_http_crash_notifies_first_start_only(tmp_path, monkeypatch, capsys)
     source = Path(updates.__file__).with_name("Label_Match.py")
     tree = ast.parse(source.read_text(encoding="utf-8"))
     selected = [node for node in tree.body if isinstance(node, ast.FunctionDef)
-                and node.name in {"main", "_show_installation_recovery_required", "_onboarding_refusal_codes"}]
-    assert len(selected) == 3
+                and node.name in {"main", "_show_installation_recovery_required", "_onboarding_refusal_codes",
+                                  "_startup_stop_checkpoint"}]
+    assert len(selected) == 4
     notices, traces, started = [], [], []
 
     def onboard(*_args, **_kwargs):
@@ -195,8 +196,14 @@ def test_phs_http_crash_notifies_first_start_only(tmp_path, monkeypatch, capsys)
         _run_label_match_application=lambda: started.append(True) or 0)
     from current_user_onboarding import CurrentUserOnboardingError
     from label_data_generation import DataGenerationError
+    from startup_timing import observe_startup_timing, startup_stop_scope, StartupStopRequested
+    from package_logistics import PackageLogisticsError
     namespace.update(CurrentUserOnboardingError=CurrentUserOnboardingError,
-                     DataGenerationError=DataGenerationError)
+                     DataGenerationError=DataGenerationError,
+                     observe_startup_timing=observe_startup_timing,
+                     startup_stop_scope=startup_stop_scope,
+                     StartupStopRequested=StartupStopRequested,
+                     PackageLogisticsError=PackageLogisticsError)
     monkeypatch.setattr(updates, "startup_gate", lambda *_a, **_k: None)
     constants = [node for node in tree.body if isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name) and target.id in {
@@ -209,7 +216,7 @@ def test_phs_http_crash_notifies_first_start_only(tmp_path, monkeypatch, capsys)
         assert namespace["main"]([]) == 20
         assert len(notices) == 1 and not started
         assert any(kw.get("guard_code") == "WRITER_GATE_ABANDONED" for _event, kw in traces)
-        assert "설치 복구 필요" in capsys.readouterr().err
+        assert "포장 다시 열기 — 한 번 더 여세요" in capsys.readouterr().err
         assert namespace["main"]([]) == 0
         assert len(notices) == 1 and started == [True]
     finally:
