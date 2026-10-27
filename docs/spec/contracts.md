@@ -1,5 +1,11 @@
 # Label_Match 데이터·통합 계약
 
+## Relay 진단 기록의 쓰기 허가 (w9firstupdsub753)
+
+runtime·runner·제품 host·관리자 작업 기록의 JSONL 덧붙이기는 공통 함수에서 기존 writer admission을 사용한다. 기록 전용 대기는 최대 0.5초이며 공통 허가 기본 5초와 mutex 이름·범위·중첩 규칙은 그대로다. 허가를 얻지 못하면 그 한 줄만 조용히 생략하고 프로세스 내부 카운트를 올린다. relay 주기·반환값·상태 파일·업무 자료는 기록 거절 때문에 중단하지 않는다. 파일 IO 오류는 기존 호출자의 오류 처리를 유지한다.
+
+기존 파일 이름·경로와 JSON 키·정렬·UTF-8/LF 형식을 보존한다. 중단된 마지막 줄이 LF로 끝나지 않으면 원래 바이트를 남기고 새 줄에서 다음 기록을 시작한다. 시작 허가 전 `Label_Match.py`의 초기 추적 로그는 이 경계의 대상이 아니다. 이 변경은 오늘 v2.0.126 ZIP 밖의 별도 가지이며, 포함하는 묶음에서 ZIP runtime 검증을 수행한다.
+
 ## 업로드 시계·일시 오류와 막힘 상태 (w9firstupdsub636)
 
 spool/본문 읽기에서 FileNotFoundError와 잠금 외 OSError는 기존 failed_permanent로 해당 행만 닫고 K/N·보내기 띠에 반영한다. PermissionError 또는 winerror 5/32/33만 retry_wait이며, 앞선 POST 가능 행의 terminal 전환은 기존 배정과 runtime 다섯 칸을 보존한다. 같은 원본 terminal 앞 구간을 건너뛰지 않으며 포장의 24 h 나이 gate는 소실 행 때문에 다른 새 enqueue를 막지 않는다(w9firstupdsub693, ANSWER-1).

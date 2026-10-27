@@ -143,12 +143,9 @@ def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
 
 
 def _append_jsonl(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    from direct_sync_runtime import _append_jsonl as append_runtime_jsonl
+
+    append_runtime_jsonl(path, payload)
 
 
 def _record_hosted_relay_failure(arguments: Sequence[str], error: Exception) -> None:
