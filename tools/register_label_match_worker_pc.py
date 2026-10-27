@@ -247,17 +247,17 @@ def _write_json(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> Non
 
 
 def _write_registration_report(path, report):
-    # Keep status/identity/recovery binding fields intact. Only free diagnostic
-    # notices leave this report for same-attempt existing private evidence.
+    # Keep status/identity/recovery bindings under the established projection.
     from failure_redaction import public_diagnostic_tree
     public = public_diagnostic_tree(report)
-    server_code=public.get("server_error_code")
+    server_code = public.get("server_error_code")
     if isinstance(server_code, str) and server_code:
         from failure_redaction import public_record
-        if "server_error_code" not in public_record({"server_error_code":server_code}):
-            public["server_error_code"]=public_diagnostic_tree({"message":server_code})
+        if "server_error_code" not in public_record({"server_error_code": server_code}):
+            public["server_error_code"] = public_diagnostic_tree({"message": server_code})
     _write_json(path, public)
     return public
+
 
 
 def _safe_token(value: str, fallback: str) -> str:

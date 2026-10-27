@@ -1,4 +1,6 @@
 """Installation failure sink contract; raw diagnostics stay in memory."""
+from contextvars import ContextVar
+
 import json
 import os
 from pathlib import Path
@@ -6,6 +8,8 @@ import re
 import hashlib
 import tempfile
 import argparse
+
+_ANONYMOUS_REPORT_TREE = ContextVar("anonymous_report_tree", default=False)
 
 RULES = json.loads((Path(__file__).parent / "tools/failure_redaction_rules.json").read_text(encoding="utf-8"))
 
@@ -139,14 +143,21 @@ def emit_public_failure(error, stage, *, prefix="LABEL_MATCH_INSTALLER_FAILURE",
           file=sys.stderr if stream is None else stream, flush=True)
 
 
-def protected_failure_details(error, environ=None):
+def protected_failure_details(error, environ=None, *, _report_path=None):
     import traceback
-    return {"failure_traceback": redact_for_sink(
-        "".join(traceback.TracebackException.from_exception(error).format()), environ)}
+    from report_publication import protect_diagnostic, UNAVAILABLE
+    return protect_diagnostic(
+        lambda: {"failure_traceback": redact_for_sink(
+            "".join(traceback.TracebackException.from_exception(error).format()), environ)},
+        fallback=lambda: {"failure_traceback": UNAVAILABLE}, path=_report_path,
+        unavailable_codes=("REPORT_UNAVAILABLE", "PRODUCT_METADATA_SECRET_VALUE_REFUSED"),
+    )
 
 
 def public_diagnostic_tree(value):
     """Preserve machine-consumed audit structure, allowing only diagnostic fields."""
+    from report_publication import UNAVAILABLE
+    safe_messages = set(RULES["safe_messages"]) | {UNAVAILABLE}
     if isinstance(value, dict):
         text_keys = {"message", "last_line", "inner_exception_message", "stdout", "stderr", "exception_chain"}
         if "returncode" in value and ("stdout" in value or "stderr" in value):
@@ -156,7 +167,7 @@ def public_diagnostic_tree(value):
                           if key in ("stdout", "stderr") and item else public_diagnostic_tree(item))
                     for key, item in value.items()}
         free_text = any(value.get(key) and not (isinstance(value[key], str) and
-                        (value[key] in RULES["safe_messages"] or value[key] in RULES["allowed_codes"]))
+                        (value[key] in safe_messages or value[key] in RULES["allowed_codes"]))
                         for key in text_keys)
         if free_text or (text_keys.intersection(value) and "full_exception_trace" in value):
             candidate = {"status": "FAILED", "reason_code": "INSTALLER_FAILED", "guidance": RULES["safe_messages"][0]}
@@ -173,7 +184,7 @@ def public_diagnostic_tree(value):
             return public_record(candidate)
         result = {}
         for key, item in value.items():
-            if key in ("failure", "error", "error_message", "reason", "blocked_reason", "message_ko", "registration_report_summary_error") and isinstance(item, str) and item and item not in RULES["allowed_codes"] and item not in RULES["safe_messages"]:
+            if key in ("failure", "error", "error_message", "reason", "blocked_reason", "message_ko", "registration_report_summary_error") and isinstance(item, str) and item and item not in RULES["allowed_codes"] and item not in safe_messages:
                 result[key] = public_diagnostic_tree({"message": item})
             else:
                 result[key] = public_diagnostic_tree(item)
@@ -370,8 +381,11 @@ def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
         copied = protected_until
     text = ''.join(parts) + text[copied:]
     text = re.sub(r'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"\',;]+', lambda match: match[1] + RULES['field'], text)
-    if notes:
+    if notes and not _ANONYMOUS_REPORT_TREE.get():
         text += "\n" + "\n".join(notes)
+    if _ANONYMOUS_REPORT_TREE.get():
+        from report_publication import _anonymous_diagnostics
+        text = _anonymous_diagnostics(text, diagnostic=True)
     if replacements and _replace_known_json_spellings(text, replacements)[1]:
         raise ValueError("REPORT_UNAVAILABLE")
     raw = text.encode("utf-8")
@@ -401,12 +415,13 @@ def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
     return protected
 
 
-def redact_json_for_sink(value, environ=None):
-    environ = os.environ if environ is None else environ
+def _redact_json_tree(value, environ, *, diagnostic_fallback=False):
+    from report_publication import DIAGNOSTIC_FIELDS, protect_diagnostic, UNAVAILABLE
+    diagnostic_fields = DIAGNOSTIC_FIELDS | {"failure_traceback", "traceback", "original_failure_text", "failure_details"}
     replacements = [(str(item), f"[REDACTED:{name}]") for name, item in
                     sorted(_secret_environment_entries(environ), key=lambda row: (-len(row[1]), row[0]))
                     if len(str(item or "")) >= 4]
-    def visit(value):
+    def visit(value, diagnostic=False):
         if isinstance(value, dict):
             result = {}
             for key, item in value.items():
@@ -418,12 +433,25 @@ def redact_json_for_sink(value, environ=None):
                             or (re.search(RULES["digest_suffix"], key)
                                 and not re.search(RULES["short_secret_digest"], key)))
                 sensitive = re.search(RULES["pattern"], key) or key.lower() in ("pin", "otp", "password")
-                result[safe_key] = RULES["field"] if sensitive and not metadata else visit(item)
+                result[safe_key] = RULES["field"] if sensitive and not metadata else visit(item, diagnostic or key in diagnostic_fields)
             return result
         if isinstance(value, (list, tuple)):
-            return [visit(item) for item in value]
+            return [visit(item, diagnostic) for item in value]
+        if diagnostic_fallback and diagnostic and isinstance(value, str):
+            return protect_diagnostic(
+                lambda: redact_for_sink(value, environ, _json_leaf=True),
+                fallback=lambda: UNAVAILABLE, unavailable_codes=("REPORT_UNAVAILABLE",))
         return redact_for_sink(value, environ, _json_leaf=True) if isinstance(value, str) else value
-    result = visit(value)
+    token = _ANONYMOUS_REPORT_TREE.set(diagnostic_fallback)
+    try:
+        return visit(value), replacements
+    finally:
+        _ANONYMOUS_REPORT_TREE.reset(token)
+
+
+def redact_json_for_sink(value, environ=None):
+    environ = os.environ if environ is None else environ
+    result, replacements = _redact_json_tree(value, environ)
     if replacements:
         serialized = json.dumps(result, ensure_ascii=False)
         protected, masked = _replace_known_json_spellings(serialized, replacements)
