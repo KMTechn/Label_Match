@@ -18,13 +18,19 @@ def ordinary_child(app, control, observation, arguments):
     policy = updates.read_json(control / "policy.json")
     updates.ordinary_user_context = lambda *_: True
     updates.runtime_matches = lambda *_: True
-    updates.update_lock = lambda *a, **k: contextlib.nullcontext()
+    normal_lock = lambda *a, **k: contextlib.nullcontext()
+    updates.update_lock = normal_lock
     updates.process_snapshot = lambda *_: []
     updates.request_bootstrap = lambda *a, **k: None
     updates.process_security = lambda _pid: dict(
         elevated=False, integrity_rid=8192, session_id=1, sid=policy["operator_sid"])
     peer = "--endpoint-peer-relay" in arguments
-    arguments = [v for v in arguments if v != "--endpoint-peer-relay"]
+    retained_ready = "--endpoint-retained-ready" in arguments
+    arguments = [v for v in arguments if v not in {"--endpoint-peer-relay", "--endpoint-retained-ready"}]
+    paths = None
+    if retained_ready:
+        from tests._retained_endpoint_fixture import configure_child_ready
+        paths = configure_child_ready(updates, policy, observation)
     sha = app.parent.name
     gate = updates.startup_gate(app, arguments)
     admitted = False
@@ -42,25 +48,39 @@ def ordinary_child(app, control, observation, arguments):
     relay = "--label-match-user-relay" in arguments
     trial = bool(os.environ.get("KMTECH_LM_UPDATE_TRIAL_NONCE"))
     result = dict(sha=sha, gate=gate, status=decision["status"], ordinary=not trial,
-                  relay=relay, writer_admitted=admitted, pid=os.getpid())
+                  relay=relay, writer_admitted=admitted, pid=os.getpid(),
+                  nonce_present=trial, peer=peer)
+    from tests._retained_endpoint_fixture import observation_path
+    observation_path(observation, os.getpid()).write_text(json.dumps(result), encoding="utf-8")
     if not peer:
         observation.write_text(json.dumps(result), encoding="utf-8")
-    if gate is not None or trial:
+    if gate is not None or (trial and not retained_ready):
         return
     stopped = observation.with_name("ordinary-release")
+    if retained_ready:
+        updates.update_lock = normal_lock
+    if trial and not relay:
+        from tests._retained_endpoint_fixture import publish_gui_after_running
+        publish_gui_after_running(updates, app, paths, stopped)
+        return
     if relay:
         import user_relay
         from current_user_onboarding import resolve_current_user_onboarding_paths
         paths = resolve_current_user_onboarding_paths(app)
+        metadata = dict(source_commit=sha, ordinary_user=True,
+                        process_id=os.getpid(), code_root=str(app))
+        if retained_ready:
+            metadata.update(updates.relay_ready_metadata(app))
         user_relay.run_persistent_relay_loop(
             lambda: {"status": "IDLE"},
             status_path=user_relay.user_relay_status_path(paths.direct_sync_root),
             stop_requested=stopped.exists,
-            metadata=dict(source_commit=sha, ordinary_user=True,
-                          process_id=os.getpid(), code_root=str(app)))
+            metadata=metadata)
     else:
         command = [sys.executable, "-I", "-B", str(app / "main.py"),
                    "--label-match-user-relay", "--endpoint-peer-relay"]
+        if retained_ready:
+            command.append("--endpoint-retained-ready")
         child = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW)
         assert child.wait() == 0
 

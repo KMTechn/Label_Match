@@ -122,6 +122,8 @@ def endpoint(monkeypatch, tmp_path):
         command = [sys.executable, "-I", "-B", *command[3:]]
         if Path(command[3]).name == "label_match_relay_entry.py":
             command[3] = str(Path(kwargs["cwd"]) / "app/main.py")
+        if getattr(value, "retained_ready", False):
+            command.append("--endpoint-retained-ready")
         child = popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
         communicate = child.communicate
         def finish(*a, **k):
@@ -169,13 +171,18 @@ def test_bootstrap_absolute_budget_expiry_refuses_without_starting(endpoint, mon
     assert all(path.read_bytes() == raw for path, raw in before.items())
 
 
-def assert_ordinary(endpoint, expected, *, role="gui", arguments=None):
+def assert_ordinary(endpoint, expected, *, role="gui", arguments=None, select_primary=False):
     control, _, _, _, _, observation = endpoint
+    first_child = len(endpoint.children)
     assert updates.bootstrap(control.parent / "current/app", arguments or [], role=role) == 0
     # Native Popen returns while launch ownership is held. Observe after it releases.
     for child in endpoint.children:
         _, error = child.communicate(timeout=30)
         assert child.returncode == 0, error[-1500:]
+    if select_primary:
+        from tests._retained_endpoint_fixture import primary_observation
+        selected = primary_observation(endpoint, role=role, start=first_child)
+        observation.write_text(json.dumps(selected), encoding="utf-8")
     assert observation.exists(), "next bootstrap did not launch any version"
     result = json.loads(observation.read_text())
     assert result["sha"] == expected
@@ -221,15 +228,47 @@ def test_x4_prepared_failure_launches_current(endpoint, monkeypatch, failure):
 
 
 @pytest.mark.parametrize("role", ["gui", "relay"])
-def test_e7_retained_candidate_starts_in_same_bootstrap(endpoint, role):
-    control, _, _, state, marker, _ = endpoint
+def test_e7_retained_candidate_starts_in_same_bootstrap(endpoint, monkeypatch, role):
+    control, stage, policy, state, marker, _ = endpoint
+    from tests._retained_endpoint_fixture import install_retained_endpoint, primary_observation
+    install_retained_endpoint(monkeypatch, updates, endpoint)
     generation.record_generation(marker, "v2.0.99", app_id="Label_Match", subject_sid=SID, build_id=NEW)
     # Start in the trial so this same bootstrap has saw_trial=True before
     # SYSTEM retains candidate. A fresh bootstrap alone misses the old E7 bug.
     updates.write_json_durable(control / "transition.json", state)
     arguments = ["--label-match-user-relay"] if role == "relay" else []
-    assert_ordinary(endpoint, NEW, role=role, arguments=arguments)
-    assert json.loads(endpoint[-1].read_text())["relay"] is False
+    requests = []
+    request = updates.request_apply_task
+
+    def observe_system(*args, **kwargs):
+        receipt = updates.optional_record(stage / "ready.json")
+        result = request(*args, **kwargs)
+        requests.append((receipt, updates.read_json(control / "transition.json")["phase"]))
+        return result
+
+    monkeypatch.setattr(updates, "request_apply_task", observe_system)
+    first_child = len(endpoint.children)
+    assert updates.bootstrap(control.parent / "current/app", arguments, role=role) == 0
+    primary = primary_observation(endpoint, role=role, start=first_child)
+    assert primary["sha"] == NEW and primary["gate"] is None
+    assert primary["nonce_present"] is True and primary["writer_admitted"] is True
+    assert updates.read_json(control / "transition.json")["phase"] == "CONFIRMED"
+    receipts = [receipt for receipt, phase in requests if receipt and phase == "CONFIRMED"]
+    assert receipts
+    receipt = receipts[-1]
+    assert (receipt["sha"], receipt["pid"], receipt["role"], receipt["nonce"]) == (
+        NEW, primary["pid"], role, state["nonce"])
+    assert all(receipt[check] is True for check in (
+        updates.RELAY_READY_CHECKS if role == "relay" else updates.READY_CHECKS))
+    for child in endpoint.children:
+        _, error = child.communicate(timeout=30)
+        assert child.returncode == 0, error[-1500:]
+    assert updates.process_snapshot(control) == []
+    assert updates.current_generation_status(control, policy, NEW) == "EQUAL"
+    assert_ordinary(endpoint, NEW, role=role, arguments=arguments, select_primary=True)
+    result = json.loads(endpoint[-1].read_text())
+    assert result["nonce_present"] is False
+    assert result["relay"] == (role == "relay")
 
 
 def test_x7_terminal_recovery_reopens_prepared_path(endpoint, monkeypatch):
