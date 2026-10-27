@@ -801,12 +801,12 @@ def _write_scan_runtime_error(config: DirectSyncRuntimeConfig, exc: Exception) -
         ),
     ]:
         path = Path(path_value)
-        path.parent.mkdir(parents=True, exist_ok=True)
         if path_value == config.log_path:
-            with path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-                handle.write("\n")
+            from direct_sync_runtime import _append_jsonl
+
+            _append_jsonl(path, payload)
         else:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -825,8 +825,6 @@ def _persist_scan_runtime_status(config: DirectSyncRuntimeConfig, status: dict) 
         json.dumps(status, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    log_path = Path(config.log_path)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
         "event": "relay_runner_scan_once",
         "app": "Label_Match",
@@ -835,9 +833,9 @@ def _persist_scan_runtime_status(config: DirectSyncRuntimeConfig, status: dict) 
         "generated_at": utc_now_text(),
     }
     entry.update(status)
-    with log_path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True))
-        handle.write("\n")
+    from direct_sync_runtime import _append_jsonl
+
+    _append_jsonl(config.log_path, entry)
 
 
 def build_parser() -> argparse.ArgumentParser:
