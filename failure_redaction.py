@@ -319,7 +319,9 @@ def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
             continue
         metadata_key = (re.search(RULES['path_suffix'], key)
                     or (re.search(RULES['digest_suffix'], key) and not re.search(RULES['short_secret_digest'], key)))
-        sensitive = re.search(RULES['pattern'], key) or key.lower() in ('pin', 'otp', 'password')
+        authorization_key = re.search('authorization', key, re.IGNORECASE)
+        sensitive = (re.search(RULES['pattern'], key) or key.lower() in ('pin', 'otp', 'password')
+                     or authorization_key)
         if not sensitive and not metadata_key:
             continue
         value_match = value_regex.match(text, match.end())
@@ -365,6 +367,19 @@ def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
             value = text[start:protected_until]
         if metadata_key or value in ('true', 'false', 'null') or value.strip("\"'").startswith('[REDACTED:'):
             continue
+        # Every scheme uses the existing opaque Bearer credential boundary.
+        # Only an indented CRLF continues a field; ordinary next lines stay intact.
+        if authorization_key and not structured and not value.startswith(('"', "'")):
+            tail = text[protected_until:]
+            credential = re.match(r"(?:[ \t]*\r\n[ \t]+|[ \t]+)[^\s\"',;]+", tail)
+            if credential is None:
+                # Retain legacy CRLF credentials when the entire next line is one token.
+                credential = re.match(r"\r\n(?P<credential>[^\s\"',;]+)(?=\r?\n|\Z)", tail)
+                if credential and re.match(r'[A-Za-z_][\w.-]*=',
+                                           credential['credential'].rstrip('=')):
+                    credential = None
+            if credential:
+                protected_until += credential.end()
         quote = '"' if structured else (value[0] if value.startswith(('"', "'")) else '')
         parts.extend((text[copied:match.start()], match['key'] + match['separator'] + quote + RULES['field'] + quote))
         copied = protected_until

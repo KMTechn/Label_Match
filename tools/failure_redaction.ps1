@@ -120,7 +120,8 @@ function ConvertTo-KmtechRedactedSinkText {
         if($key.StartsWith('[REDACTED:')){continue}
         $metadataKey=($key -match $rules.path_suffix -or
             ($key -match $rules.digest_suffix -and $key -notmatch $rules.short_secret_digest))
-        $sensitive=($key -match $rules.pattern -or $key -imatch '^(pin|otp|password)$')
+        $authorizationKey=$key -imatch 'authorization'
+        $sensitive=($key -match $rules.pattern -or $key -imatch '^(pin|otp|password)$' -or $authorizationKey)
         if (-not $sensitive -and -not $metadataKey) { continue }
         $valueMatch=$valueRegex.Match($Text,$match.Index+$match.Length)
         if (-not $valueMatch.Success) { continue }
@@ -159,6 +160,16 @@ function ConvertTo-KmtechRedactedSinkText {
         }
         if ($metadataKey -or $value -cin @('true','false','null') -or
             $value.Trim($quotes).StartsWith('[REDACTED:')) { continue }
+        # Match the common Python span for every scheme and formal continuation.
+        if($authorizationKey -and -not $structured -and -not ($value.StartsWith('"') -or $value.StartsWith("'"))){
+            $tail=$Text.Substring($protectedUntil)
+            $credential=[regex]::Match($tail,'^(?:[ \t]*\r\n[ \t]+|[ \t]+)[^\s"'',;]+')
+            if(-not $credential.Success){
+                $credential=[regex]::Match($tail,'^\r\n(?<credential>[^\s"'',;]+)(?=\r?\n|\z)')
+                if($credential.Success -and $credential.Groups['credential'].Value.TrimEnd([char[]]@('=')) -match '^[A-Za-z_][\w.-]*='){$credential=$null}
+            }
+            if($null -ne $credential -and $credential.Success){$protectedUntil+=$credential.Length}
+        }
         $replacement=if($structured){'"'+$rules.field+'"'}elseif($value.StartsWith('"') -or $value.StartsWith("'")){
             $value.Substring(0,1)+$rules.field+$value.Substring(0,1)
         }else{$rules.field}
