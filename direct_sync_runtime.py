@@ -11,7 +11,6 @@ import re
 import shutil
 import sqlite3
 import sys
-import threading
 import uuid
 from dataclasses import dataclass
 from contextlib import closing
@@ -45,13 +44,11 @@ from direct_sync_push import (
 )
 from direct_sync_operator import read_operator_pause
 from producer_runtime_client import ensure_runtime_authority, is_clock_rejection
-from writer_session_fence import writer_admission, writer_sink, WriterFenceError, WriterFencedError
+from writer_session_fence import writer_sink, WriterFencedError
 from startup_send_gate import startup_send_deferred, StartupGatedSession
 
 
 DEFAULT_WORKER_ID = "direct-sync-relay-label-match"
-_RELAY_LOG_DROPPED = 0
-_RELAY_LOG_COUNT_LOCK = threading.Lock()
 PRODUCTION_PROFILE_ENV_NAMES = ("APP_ENV", "ENV", "LABEL_MATCH_PRODUCTION", "DIRECT_SYNC_PRODUCTION")
 SECRET_REF_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 WINDOWS_RESERVED_DEVICE_NAMES = {
@@ -108,26 +105,13 @@ def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any])
 
 
 def _append_jsonl(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
-    """Append a diagnostic under the normal writer lease, or count its refusal."""
-    global _RELAY_LOG_DROPPED
-    try:
-        with writer_admission("relay_runtime_storage", timeout_seconds=0.5):
-            target = Path(path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("a+b") as handle:
-                handle.seek(0, os.SEEK_END)
-                if handle.tell():
-                    handle.seek(-1, os.SEEK_END)
-                    if handle.read(1) != b"\n":
-                        # Preserve an interrupted row and start the next one
-                        # separately; never rewrite historical log bytes.
-                        handle.write(b"\n")
-                handle.write((json.dumps(dict(payload), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
-                handle.flush()
-                os.fsync(handle.fileno())
-    except WriterFenceError:
-        with _RELAY_LOG_COUNT_LOCK:
-            _RELAY_LOG_DROPPED += 1
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _production_profile_enabled() -> bool:

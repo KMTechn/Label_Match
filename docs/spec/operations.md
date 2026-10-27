@@ -1,5 +1,3 @@
-포장 relay JSONL 기록은 기존 writer admission에서 최대 0.5초 기다리고, 거절되면 해당 줄만 생략하여 relay를 계속한다(sub-753). 기록 형식·경로·상태 파일과 relay 주기는 유지하며, 중단된 끝 줄은 보존하고 다음 줄을 분리한다. 별도 가지 `postcut/relaylog-admission-lm-126`에서 준비하며 오늘126 ZIP에는 넣지 않는다. 다른 사유로 다시 묶을 때 또는 11/15 묶음에서 ZIP runtime 팩을 수행한다. [기록 허가 계약](contracts.md#relay-진단-기록의-쓰기-허가-w9firstupdsub753)을 따른다.
-
 준비 실패의 영구 목록에는 서명 검증을 통과한 대상 SHA만 넣는다. 서명 실패나 표지 불일치는 서명되지 않은 표지 SHA를 영구 거절하지 않으며, 설치된 판 manifest를 읽지 못하면 모름으로 다시 기회를 준다. 고정 helper에서 원인이 확인되지 않는 실패도 모름으로 취급한다(sub-695).
 
 업데이트 bootstrap 마지막 fallback도 일반 복구와 같은 상속 경계 또는 관측한 기존 writer의 생성 시각을 사용한다(sub-692). 같은 active SHA·작업자·일반 권한·relay/gui 역할 증명을 유지하고 거절은 진행 안내·20으로 끝낸다. 그 경계는 후속 start_current 검사와 자식 실행에도 전달하며 sub-659의 재시도 간격·예산은 유지한다.

@@ -50,10 +50,13 @@ def _write_json_atomic(path: str | os.PathLike[str], payload: Mapping[str, Any])
 
 
 def _append_jsonl(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
-    # The runtime imports operator controls; defer this reverse edge until use.
-    from direct_sync_runtime import _append_jsonl as append_runtime_jsonl
-
-    append_runtime_jsonl(path, payload)
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _connect_relay_db(db_path: str | os.PathLike[str], *, read_only: bool = False) -> sqlite3.Connection:
