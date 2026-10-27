@@ -29,6 +29,71 @@ UNTRIMMED_REVISIONS = (
     '89155f17233fb1c8b5bae2a9e470832772a4d785',
 )
 
+# ANSWER-11: fixed independent historical model of accepted replacement paths.
+# Reviewed audit: sub-738/evidence/declaration-union-bounded-probe.json.
+_ACCEPTED_REPLACEMENT_ADDITIONS = {'06a474b46095fa044a0c46a045b3445cece1ee57': ('app/carrier_identity_port.py',
+                                              'app/config/app_settings.json',
+                                              'app/direct_sync_operator.py',
+                                              'app/direct_sync_push.py',
+                                              'app/direct_sync_runtime.py',
+                                              'app/failure_redaction.py',
+                                              'app/item_catalog_sync.py',
+                                              'app/label_data_manager.py',
+                                              'app/label_match_relay_entry.py',
+                                              'app/logistics_runtime_profile.py',
+                                              'app/package_outbox_processor.py',
+                                              'app/producer_runtime_client.py',
+                                              'app/tools/direct_sync_relay_runner.py',
+                                              'app/tools/failure_redaction.ps1',
+                                              'app/tools/install_logistics_runtime_profile.py',
+                                              'app/tools/register_label_match_worker_pc.py',
+                                              'app/ui/parts/app/lm/index.html',
+                                              'app/ui/parts/core/tokens.css',
+                                              'tools/failure_redaction.ps1'),
+ '4272c5601e035f6a111e493a4acfa5d8d182978f': ('app/carrier_identity_port.py',
+                                              'app/config/app_settings.json',
+                                              'app/direct_sync_operator.py',
+                                              'app/direct_sync_push.py',
+                                              'app/direct_sync_runtime.py',
+                                              'app/failure_redaction.py',
+                                              'app/item_catalog_sync.py',
+                                              'app/label_data_manager.py',
+                                              'app/label_match_relay_entry.py',
+                                              'app/logistics_runtime_profile.py',
+                                              'app/package_outbox_processor.py',
+                                              'app/producer_runtime_client.py',
+                                              'app/tools/direct_sync_relay_runner.py',
+                                              'app/tools/failure_redaction.ps1',
+                                              'app/tools/install_logistics_runtime_profile.py',
+                                              'app/tools/register_label_match_worker_pc.py',
+                                              'app/ui/parts/app/lm/index.html',
+                                              'app/ui/parts/core/tokens.css',
+                                              'tools/failure_redaction.ps1'),
+ '464830d78a305acb7aa01a7a7afc9e72a924a5c9': ('app/config/app_settings.json',),
+ '55cab723e215ab3ffd12ef7e3cc9e8d3c1569e8a': ('app/config/app_settings.json', 'app/failure_redaction.py'),
+ '89155f17233fb1c8b5bae2a9e470832772a4d785': ('app/config/app_settings.json', 'app/failure_redaction.py'),
+ 'd9160b6ab5dce3e7a0010679f4ae8f28077eea76': ('app/config/app_settings.json', 'app/failure_redaction.py'),
+ 'e7b9075b2383889e77f524be7a1f0f80d7630033': ('app/carrier_identity_port.py',
+                                              'app/config/app_settings.json',
+                                              'app/direct_sync_operator.py',
+                                              'app/direct_sync_push.py',
+                                              'app/direct_sync_runtime.py',
+                                              'app/failure_redaction.py',
+                                              'app/item_catalog_sync.py',
+                                              'app/label_data_manager.py',
+                                              'app/label_match_relay_entry.py',
+                                              'app/logistics_runtime_profile.py',
+                                              'app/package_outbox_processor.py',
+                                              'app/producer_runtime_client.py',
+                                              'app/tools/direct_sync_relay_runner.py',
+                                              'app/tools/failure_redaction.ps1',
+                                              'app/tools/install_logistics_runtime_profile.py',
+                                              'app/tools/register_label_match_worker_pc.py',
+                                              'app/ui/parts/app/lm/index.html',
+                                              'app/ui/parts/core/tokens.css',
+                                              'tools/failure_redaction.ps1')}
+
+
 
 def declarations(revision=None):
     raw = ((ROOT / 'INSTALL_CANONICAL_PORTABLE.ps1').read_bytes() if revision is None else
@@ -92,7 +157,8 @@ def test_all_sixteen_generated_settings_additions_and_historical_before_pins():
             ))
             and set(current["startup_release_replacements"][revision])
             == (set().union(*reviewed_parents)
-                | baseline_paths | scan_guard_paths)
+                | baseline_paths | scan_guard_paths
+                | set(_ACCEPTED_REPLACEMENT_ADDITIONS.get(revision, ())))
             and all(
                 current["startup_release_replacements"][revision][relative][0] == pair[0]
                 for parent in reviewed_parents
@@ -151,6 +217,13 @@ def test_actual_builder_fixture_matches_independent_generator_model(tmp_path, mo
     """Real build publishers; runtime/release qualification are fixture seams."""
     builder_output = tmp_path / "builder-output"
     model_output = tmp_path / "model-output"
+    # Bind the real current encoding API for this builder fixture only.
+    import importlib.util
+    specification = importlib.util.spec_from_file_location(
+        "tools.check_powershell_source_encoding", ROOT / "tools/check_powershell_source_encoding.py")
+    encoding_adapter = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(encoding_adapter)
+    monkeypatch.setitem(sys.modules, "tools.check_powershell_source_encoding", encoding_adapter)
     settings_raw, _ = stock._release_update_settings(APPROVED_SETTINGS)
     public_value = json.loads((ROOT / "tests/fixtures/lm_stock_public_update_key.json").read_bytes())["manifest_public_key"]
     public_config = public_value if isinstance(public_value, str) else json.dumps(public_value)

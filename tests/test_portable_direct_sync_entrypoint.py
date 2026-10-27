@@ -237,6 +237,8 @@ def test_fake_server_result_matches_application_dispatch(
                      "LABEL_MATCH_NEW_SCREEN_ARGUMENT", "LABEL_MATCH_SCREEN_HOST"}
                      for target in node.targets)]
     exec(compile(ast.Module(body=constants, type_ignores=[]), "application-constants", "exec"), namespace)
+    from tests._startup_timing_fixture import bind_startup_timing_namespace
+    bind_startup_timing_namespace(namespace)
     exec(compile(ast.Module(body=[main], type_ignores=[]), "application-main", "exec"), namespace)
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     monkeypatch.setattr(sys, "argv", ["main.py", *arguments])

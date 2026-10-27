@@ -358,7 +358,10 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
             updates.write_json_durable(stage / "trial.json", {"nonce": state["nonce"], "transition_id": state["transition_id"], "pid": 42})
             return [dict(pid=42, observable=True, sha=NEW, sid="S-1-5-21-455", role="gui", ordinary_user=True, created_at=LATER)]
         if state["phase"] == "ROLLBACK_PENDING_READY":
-            raise AssertionError("E6 must not launch another previous-version trial")
+            # ANSWER-12: the accepted READY contract also observes rollback.
+            from tests._rollback_ready_fixture import previous_relay_observation
+            return previous_relay_observation(updates, control, stage, state,
+                sid=policy["operator_sid"], now=LATER)
         return []  # Candidate writers are absent before rollback.
     monkeypatch.setattr(updates, "process_snapshot", snapshot)
     if failure_mode == "timeout":

@@ -95,14 +95,21 @@ def cohort(tmp_path, monkeypatch):
     monkeypatch.setattr(updates, "ordinary_user_context", lambda *_: True)
     monkeypatch.setattr(updates, "_run_fixed_helper", lambda *_a, **_k: _query(script))
     monkeypatch.setattr(updates, "current_generation_status", lambda *_: "ALLOW")
-    monkeypatch.setattr(updates, "assert_version_writer", lambda *_a, **_k: None)
+    actual_writer_proof = updates.assert_version_writer
+    monkeypatch.setattr(updates, "assert_version_writer",
+        lambda _root, **kwargs: actual_writer_proof(app, **kwargs))
+    monkeypatch.setattr(updates, "runtime_matches", lambda root: Path(root).resolve() == app.resolve())
     monkeypatch.setattr(updates, "native_process_identity", lambda *_: {"status": "LIVE", "creation_identity": "12345"})
-    monkeypatch.setattr(fence, "writer_admission", lambda *_a, **_k: contextlib.nullcontext())
     @contextlib.contextmanager
     def busy(*_a, **_k):
         raise RuntimeError("update mutex ownership is busy")
         yield
     monkeypatch.setattr(updates, "update_lock", busy)
+    actual_startup_lock = updates.startup_update_lock
+    # ANSWER-12: exercise the real outer busy/parent-proof path. Other tests
+    # which replace the OS lock still use the actual startup lock container.
+    monkeypatch.setattr(updates, "startup_update_lock",
+        lambda *a, **kw: busy() if updates.update_lock is busy else actual_startup_lock(*a, **kw))
     monkeypatch.setenv("KMTECH_LM_UPDATE_DEFERRED_AT", BOUNDARY)
     monkeypatch.delenv("KMTECH_LM_UPDATE_TRIAL_NONCE", raising=False)
     monkeypatch.setenv(PARENT_ENV, f"{parent_pid}:12345")

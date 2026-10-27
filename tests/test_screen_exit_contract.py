@@ -37,7 +37,8 @@ def test_shell_close_preserves_start_check_and_returns_integer(
     monkeypatch.setattr(single, "_write_instance_owner_notice", lambda lease: None)
     monkeypatch.setattr(single, "_try_update_shutdown_stall_notice", lambda *a, **k: None)
     lease = SimpleNamespace(owner=True, close=lambda: calls.append("lease_closed"))
-    namespace = module._test_main.__globals__
+    from tests._startup_timing_fixture import startup_body_namespace
+    namespace = startup_body_namespace(module._test_main)
     namespace["run_guarded_entrypoint"] = lambda start, **kw: single.run_guarded_entrypoint(
         start, **kw, acquire=lambda scope: lease)
     result = module._test_main([])
