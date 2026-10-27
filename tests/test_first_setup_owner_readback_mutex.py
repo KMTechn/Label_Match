@@ -457,8 +457,10 @@ def test_overlapping_terminal_bootstraps_share_one_live_relay_outside_root(tmp_p
     deadlines = {}
     native_lock, native_deadline = updates.update_lock, updates._relay_preparation_deadline
 
-    def make_deadline(*args):
-        value = native_deadline(*args)
+    def make_deadline(*args, **kwargs):
+        assert set(kwargs) == {"defer_preparation"}
+        assert kwargs["defer_preparation"] is True
+        value = native_deadline(*args, **kwargs)
         deadlines[threading.get_ident()] = value
         return value
 
@@ -1559,7 +1561,11 @@ def test_existing_claim_bootstrap_releases_both_locks_for_observe_and_system(tmp
         if (changed=='birth' and system) or writes:
             records[control/'transition.json']={**state,'phase':'CONFIRMED'}
     monkeypatch.setattr(updates.time,'sleep',sleep)
-    monkeypatch.setattr(updates,'_relay_preparation_deadline',lambda *a:updates._RelayPreparationDeadline(1000))
+    def make_preparation_deadline(*args, **kwargs):
+        assert set(kwargs) == {"defer_preparation"}
+        assert kwargs["defer_preparation"] is True
+        return updates._RelayPreparationDeadline(1000)
+    monkeypatch.setattr(updates, "_relay_preparation_deadline", make_preparation_deadline)
     monkeypatch.setattr(current_user_onboarding,'_machine_worker_context',lambda *a:None)
     monkeypatch.setattr(updates,'control_root',lambda *a:control)
     monkeypatch.setattr(updates,'load_policy',lambda *a:policy)
@@ -1637,8 +1643,11 @@ def test_overlapping_empty_observations_do_not_launch_two_trial_relays(tmp_path,
             ownership[name].release()
 
     monkeypatch.setattr(updates, 'update_lock', lock)
-    monkeypatch.setattr(updates, '_relay_preparation_deadline',
-                        lambda *args: updates._RelayPreparationDeadline(time.monotonic() + 60))
+    def make_preparation_deadline(*args, **kwargs):
+        assert set(kwargs) == {"defer_preparation"}
+        assert kwargs["defer_preparation"] is True
+        return updates._RelayPreparationDeadline(time.monotonic() + 60)
+    monkeypatch.setattr(updates, "_relay_preparation_deadline", make_preparation_deadline)
     monkeypatch.setattr(current_user_onboarding, '_machine_worker_context', lambda *args: None)
     monkeypatch.setattr(updates, 'control_root', lambda *args: control)
     monkeypatch.setattr(updates, 'load_policy', lambda *args: policy)

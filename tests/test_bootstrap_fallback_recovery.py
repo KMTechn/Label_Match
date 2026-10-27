@@ -26,7 +26,11 @@ def fallback(monkeypatch, tmp_path):
     rows, launches, guidance, readiness = [], [], [], []
     ticks = itertools.chain([0.0], itertools.repeat(updates.STARTUP_WAIT_SECONDS + 1.0))
     monkeypatch.setattr(updates.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(updates, "_relay_preparation_deadline", lambda *a: 2000.0)
+    def make_preparation_deadline(*args, **kwargs):
+        assert set(kwargs) == {"defer_preparation"}
+        assert kwargs["defer_preparation"] is True
+        return 2000.0
+    monkeypatch.setattr(updates, "_relay_preparation_deadline", make_preparation_deadline)
     monkeypatch.setattr(updates, "_relay_prepare_failure", lambda *a: None)
     monkeypatch.setattr(updates, "control_root", lambda *a: control)
     monkeypatch.setattr(updates, "load_policy", lambda *a: policy)

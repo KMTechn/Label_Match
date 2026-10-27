@@ -93,7 +93,7 @@ def test_every_relay_wait_uses_the_one_value():
     assert ast.unparse(shared) == "deadline"
 
 
-def test_installer_and_user_relay_use_the_same_value():
+def test_installer_and_user_relay_use_the_same_value(monkeypatch):
     import user_relay
     value = auto_update.RELAY_PREPARE_SECONDS
     ps = INSTALLER.read_text(encoding="utf-8")
@@ -128,7 +128,33 @@ def test_installer_and_user_relay_use_the_same_value():
                  if isinstance(node, ast.FunctionDef) and node.name == "_relay_preparation_deadline")
     assert auto_update.RELAY_PARENT_RESULT_RESERVE_SECONDS == 10
     assert "min(independent, received - RELAY_PARENT_RESULT_RESERVE_SECONDS)" in ast.unparse(child)
-    assert "independent = entry + RELAY_PREPARE_SECONDS" in ast.unparse(child)
+    independent = next(node.value for node in ast.walk(child)
+                       if isinstance(node, ast.Assign) and any(
+                           isinstance(target, ast.Name) and target.id == "independent"
+                           for target in node.targets))
+    assert ast.unparse(independent) == (
+        "entry + (BOOTSTRAP_OBSERVATION_CAP_SECONDS if defer_preparation else RELAY_PREPARE_SECONDS)"
+    )
+    assert auto_update.RELAY_PREPARE_SECONDS == 600
+    assert auto_update.BOOTSTRAP_OBSERVATION_CAP_SECONDS == 1140
+    from tests._update_clock_fixture import isolated_update_time
+    clock_module = isolated_update_time(monkeypatch)
+    now = [100.0]
+    monkeypatch.setattr(clock_module, "monotonic", lambda: now[0])
+    for waited in (100.0, 900.0):
+        now[0] = 100.0
+        deadline = auto_update._relay_preparation_deadline(None, None, defer_preparation=True)
+        absolute = 100.0 + auto_update.BOOTSTRAP_OBSERVATION_CAP_SECONDS
+        assert deadline == absolute
+        now[0] += waited
+        prepared = deadline.begin_preparation()
+        assert prepared == min(absolute, now[0] + auto_update.RELAY_PREPARE_SECONDS)
+        now[0] += 1
+        assert deadline.begin_preparation() == prepared
+        now[0] = float(prepared) - 1
+        assert auto_update._relay_prepare_failure(deadline) == ""
+        now[0] = float(prepared)
+        assert auto_update._relay_prepare_failure(deadline) == "UPDATE_APPLY_NO_PROGRESS"
 
 
 def _tree(root):

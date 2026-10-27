@@ -126,7 +126,7 @@ def test_bootstrap_stop_preflight_opens_current_role_without_request(tmp_path, m
     before = {p: p.read_bytes() for p in (control / "transition.json", control / "active.json", marker)}
     arguments = [] if role == "gui" else ["--label-match-user-relay"]
     if role == "relay":
-        from user_relay import StartupStopRequested
+        from startup_timing import StartupStopRequested
         with pytest.raises(StartupStopRequested):
             updates._bootstrap(control, arguments, role=role)
         assert updates.bootstrap(control, arguments, role=role) == 0
