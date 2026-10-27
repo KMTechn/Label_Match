@@ -28,6 +28,8 @@ def _deny_source(monkeypatch, source, failure):
 
     def locked(path, *args, **kwargs):
         if path == source:
+            if failure == 'oserror':
+                raise OSError('source read refused')
             raise PermissionError(errno.EACCES, 'source read refused')
         return original_open(path, *args, **kwargs)
 
@@ -47,7 +49,7 @@ def _capture_config(monkeypatch):
     return configs
 
 
-@pytest.mark.parametrize('failure', ['locked', 'missing'])
+@pytest.mark.parametrize('failure', ['locked', 'missing', 'oserror'])
 def test_single_held_source_read_failure_records_status_without_drain(
         tmp_path, monkeypatch, capsys, failure):
     database, config, source, server, held, wire, body = _seed(tmp_path, monkeypatch)
@@ -67,15 +69,16 @@ def test_single_held_source_read_failure_records_status_without_drain(
     assert 'Traceback' not in captured.err
     status = json.loads(Path(configs[0].runtime_status_path).read_text(encoding='utf-8'))
     assert status['status'] == 'runtime_error'
-    assert status['error_code'] == 'source_file_read_failed'
+    code = 'direct_sync_enqueue_error' if failure == 'oserror' else 'source_file_read_failed'
+    assert status['error_code'] == code
     events = [json.loads(line) for line in Path(configs[0].log_path).read_text(
         encoding='utf-8').splitlines()]
     assert events[-1]['event'] == 'enqueue_runtime_error'
-    assert events[-1]['error_code'] == 'source_file_read_failed'
+    assert events[-1]['error_code'] == code
     assert _queue_rows(database) == before
     assert dict(_authority_row(database)) == held
     assert server.source_calls == calls_before
-    assert source.read_bytes() == body if failure == 'locked' else not source.exists()
+    assert source.read_bytes() == body if failure != 'missing' else not source.exists()
 
 
 @pytest.mark.parametrize('failure', ['locked', 'missing'])

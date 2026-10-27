@@ -578,7 +578,7 @@ def _repair_held_assignments_before_scan(config, source_file, *, administrator=F
             try:
                 delta = _build_delta_source_file(config, source_file, _held_range=(*bounds, row['content_sha256']))
             except (OSError, SourceFileInputError) as exc:
-                if administrator and isinstance(exc, SourceFileInputError):
+                if administrator:
                     raise
                 continue
             if delta is not None:
@@ -774,6 +774,8 @@ def _write_enqueue_runtime_error(config: DirectSyncRuntimeConfig, exc: Exception
         code, message = exc.error_code, ''
     else:
         code, message = _runtime_error_details(exc)
+        if isinstance(exc, OSError):
+            code = 'direct_sync_enqueue_error'
     status = _write_runtime_status(
         config, status='runtime_error', queue=_safe_relay_queue_status(config.db_path),
         disk=_disk_pressure_report(config), error_code=code, error_message=message,
