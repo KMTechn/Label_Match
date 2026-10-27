@@ -604,8 +604,8 @@ try {{
 finally {{ Exit-LabelWriterAdmission $lease }}
 """, encoding="utf-8-sig")
         source = INSTALLER.read_text(encoding="utf-8")
-        from tests._installer_statement_fixture import top_level_transaction
-        transaction = top_level_transaction(INSTALLER, source, tmp_path)
+        from tests._installer_statement_fixture import installer_transaction
+        transaction = installer_transaction(INSTALLER, source, tmp_path, marker='$mutated = $false')
         launcher = tmp_path / "restore-relay.py"
         launcher.write_text(
             "import json, pathlib, subprocess, sys\n"
