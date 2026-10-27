@@ -32,13 +32,20 @@ def restore_move_site(root):
             or site.get("count") != 1
             or not re.fullmatch(r"[0-9a-f]{64}", site.get("sha256", ""))):
         raise ValueError("atomic restore declaration is invalid")
-    return site
+    return {
+        "function": site["function"],
+        "count": site["count"],
+        "sha256": site["sha256"],
+        "reason": "Approved same-volume removal restoration; exact AST extent pinned.",
+        "file": site["file"],
+    }
 
 
 def refresh_restore_catalog(root, *, check=False):
     expected = restore_move_site(root)
     path = root / RESTORE_CATALOG
-    entries = json.loads(path.read_text(encoding="utf-8-sig"))
+    raw = path.read_bytes()
+    entries = json.loads(raw.decode("utf-8-sig"))
     matching = [entry for entry in entries
                 if (entry.get("file"), entry.get("function"))
                 == (expected["file"], expected["function"])]
@@ -47,7 +54,10 @@ def refresh_restore_catalog(root, *, check=False):
     if not check:
         entries = [entry for entry in entries if entry not in matching]
         entries.append(expected)
-        path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8", newline="\n")
+        newline = "\r\n" if b"\r\n" in raw else "\n"
+        text = (json.dumps(entries, indent=2) + "\n").replace("\n", newline)
+        prefix = b"\xef\xbb\xbf" if raw.startswith(b"\xef\xbb\xbf") else b""
+        path.write_bytes(prefix + text.encode("utf-8"))
         matching = [expected]
     if matching != [expected]:
         raise ValueError("atomic restore declaration differs")
