@@ -171,7 +171,9 @@ def test_x1_x3_terminal_next_start_really_launches_allowed_version(endpoint, pha
     assert_ordinary(endpoint, NEW)
 
 
-def test_x1_x2_rollback_does_not_retest_confirmed_previous_ready(endpoint):
+def test_x1_x2_rollback_does_not_retest_confirmed_previous_ready(endpoint, monkeypatch):
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, endpoint[0], endpoint[2])
     control, _, _, _, _, _ = endpoint
     updates.apply_prepared(control)  # No bootstrap is present to publish READY.
     assert updates.read_json(control / "transition.json")["phase"] == "ROLLED_BACK"
@@ -209,7 +211,9 @@ def test_e7_retained_candidate_starts_in_same_bootstrap(endpoint, role):
     assert json.loads(endpoint[-1].read_text())["relay"] is False
 
 
-def test_x7_terminal_recovery_reopens_prepared_path(endpoint):
+def test_x7_terminal_recovery_reopens_prepared_path(endpoint, monkeypatch):
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, endpoint[0], endpoint[2])
     control, _, _, state, _, _ = endpoint
     updates.write_json_durable(control / "transition.json", {**state, "phase": "UNKNOWN"})
     assert updates.apply_prepared(control) == 0
@@ -430,6 +434,8 @@ def test_missing_packaged_key_schema_exits_then_failed_recovery_can_start_previo
 
 
 def test_x3_hung_writer_is_preserved_then_recovered_after_logon(endpoint, monkeypatch, bootstrap_variant):
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, endpoint[0], endpoint[2])
     control, _, _, state, _, _ = endpoint
     updates.write_json_durable(control / "transition.json", {**state, "phase": "UNKNOWN"})
     monkeypatch.setattr(updates, "process_snapshot", lambda *_: [{"pid": 456, "observable": False}])
@@ -677,7 +683,9 @@ def test_system_return_defers_to_ordinary_active_writer_without_confirmation(end
     assert updates.read_json(control / "active.json")["sha"] == NEW
 
 
-def test_system_return_with_no_writer_settles_once(endpoint):
+def test_system_return_with_no_writer_settles_once(endpoint, monkeypatch):
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, endpoint[0], endpoint[2])
     control, _, _, _, _, _ = endpoint
     assert updates.apply_prepared(control) == 0
     original = (control / "transition.json").read_bytes()
@@ -775,6 +783,8 @@ def test_e1_pointer_switch_and_ordinary_launch_exclude_competing_versions(endpoi
 
 
 def test_x3_real_hung_trial_remains_alive_until_logoff_then_next_start_works(endpoint, monkeypatch, bootstrap_variant):
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, endpoint[0], endpoint[2])
     control, stage, _, state, marker, _ = endpoint
     stop = control.parent / "logoff"
     native = subprocess.Popen.native
@@ -807,6 +817,8 @@ def test_x3_real_hung_trial_remains_alive_until_logoff_then_next_start_works(end
 @pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "UNKNOWN", "FAILED"])
 @pytest.mark.parametrize("advanced", [False, True])
 def test_deferred_recovery_settles_once_after_writer_exit(endpoint, monkeypatch, phase, advanced, bootstrap_variant):
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, endpoint[0], endpoint[2])
     control, stage, policy, state, marker, _ = endpoint
     failures = [NEW] if phase == "FAILED" else []
     updates.write_json_durable(control / "transition.json", {**state, "phase": phase,
@@ -936,6 +948,8 @@ def test_ordinary_recovery_rejects_each_unrelated_writer_condition(endpoint, mon
 @pytest.mark.parametrize("exit_kind", ["dead_trial", "timeout", "launch_failure"])
 @pytest.mark.parametrize("generation_case", ["unchanged", "advanced", "unknown"])
 def test_inherited_ready_failure_uses_unknown_then_generation_only(endpoint, monkeypatch, exit_kind, generation_case):
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, endpoint[0], endpoint[2])
     control, stage, _, state, marker, _ = endpoint
     if exit_kind == "dead_trial":
         state = updates.bind_trial(state, sha=NEW, pid=456, ordinary_user=True, now=updates.now_utc())
@@ -987,7 +1001,9 @@ def test_inherited_ready_can_still_confirm_valid_gui_and_relay(endpoint, monkeyp
 
 
 @pytest.mark.parametrize("phase", ["ROLLBACK_PENDING", "UNKNOWN"])
-def test_inherited_supervised_rollback_preserves_exact_failure_list(endpoint, phase):
+def test_inherited_supervised_rollback_preserves_exact_failure_list(endpoint, phase, monkeypatch):
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, endpoint[0], endpoint[2])
     control, _, _, state, _, _ = endpoint
     state = updates.request_rollback(state, reason="supervised candidate failure")
     updates.write_json_durable(control / "transition.json", {**state, "phase": phase})
