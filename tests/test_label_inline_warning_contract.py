@@ -377,7 +377,7 @@ def test_submission_block_keeps_all_five_scans_and_offers_retry_without_reset(
     assert app.current_set_info["parsed"] == scans
     assert "5/5 유지" in app._workflow_blocking_notice.title
     worker_message = app.workflow_notice_label.cget("text")
-    assert "로컬 완료 기록을 안전하게 저장하지 못했습니다" in worker_message
+    assert "이 PC에 완료 기록을 저장하지 못했습니다" in worker_message
     assert "서버 ACK 확인 필요" not in worker_message
     assert "서버 ACK 확인 필요" in capsys.readouterr().out
     assert app._workflow_notice_action_text == "저장 재시도"

@@ -273,6 +273,10 @@ def test_system_restart_supervises_only_a_window_it_opens(endpoint, monkeypatch,
     updates.write_json_durable(control/'transition.json', {**state, 'phase': 'FAILED'})
     updates.write_json_durable(control/'active.json', {'sha': OLD})
     hot = hotfix_packet(endpoint, monkeypatch)
+    if crash_phase == 'APPLIED_PENDING_READY':
+        assert updates.apply_prepared(control) == 0
+        assert updates.read_json(control/'transition.json')['phase'] == 'ROLLED_BACK'
+        assert updates.read_json(control/'active.json')['sha'] == OLD
     written = updates.write_json_durable
     def crash(path, value):
         written(path, value)
@@ -293,6 +297,10 @@ def test_system_restart_supervises_only_a_window_it_opens(endpoint, monkeypatch,
     monkeypatch.setattr(updates, 'write_json_durable', observe)
     # Same interpreter: ownership must be local to each SYSTEM call.
     assert updates.apply_prepared(control) == 0
+    if crash_phase == 'DEFERRED':
+        assert updates.read_json(control/'transition.json')['phase'] == 'ROLLED_BACK'
+        assert updates.read_json(control/'active.json')['sha'] == OLD
+        assert updates.apply_prepared(control) == 0
     settled = updates.read_json(control/'transition.json')
     assert settled['phase'] == 'ROLLED_BACK'
     assert settled['failed_shas'] == ([hot] if crash_phase == 'PREPARED' else [])

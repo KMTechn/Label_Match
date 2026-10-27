@@ -146,9 +146,9 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
         "task_name": "phs2-capture-validation",
         "busy_text": "현품표 저장 · 중앙 확인 중",
         "preserved_input_profile": "phs2-next",
-        "expected_headline": "이전 작업 처리 중 · 입력 보존",
+        "expected_headline": "이전 작업 처리 중 · 다시 스캔하세요",
         "expected_status": (
-            "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+            "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 다시 스캔하세요."
         ),
     },
     "f4_admitted_busy": {
@@ -166,9 +166,9 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
         "task_name": "f4-central-source-lookup",
         "busy_text": "제품 교체 · 회사 서버 확인 중",
         "preserved_input_profile": "f4-next",
-        "expected_headline": "이전 작업 처리 중 · 입력 보존",
+        "expected_headline": "이전 작업 처리 중 · 다시 스캔하세요",
         "expected_status": (
-            "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+            "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 다시 스캔하세요."
         ),
     },
     "f3_admitted_busy": {
@@ -186,9 +186,9 @@ M7_STATE_CONTRACT: dict[str, dict[str, Any]] = {
         "task_name": "f3-package-completion",
         "busy_text": "포장 완료 · 권한 확인 및 로컬 완료 저장 중",
         "preserved_input_profile": "f3-next",
-        "expected_headline": "이전 작업 처리 중 · 입력 보존",
+        "expected_headline": "이전 작업 처리 중 · 다시 스캔하세요",
         "expected_status": (
-            "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 입력을 보존했습니다."
+            "처리가 끝나지 않아 이번 입력은 접수하지 않았습니다. 다시 스캔하세요."
         ),
     },
     "central_submission_wait": {

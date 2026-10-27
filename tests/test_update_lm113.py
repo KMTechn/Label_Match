@@ -125,10 +125,18 @@ def test_bootstrap_stop_preflight_opens_current_role_without_request(tmp_path, m
     monkeypatch.setattr(updates, "write_json_durable", record)
     before = {p: p.read_bytes() for p in (control / "transition.json", control / "active.json", marker)}
     arguments = [] if role == "gui" else ["--label-match-user-relay"]
-    assert updates._bootstrap(control, arguments, role=role) == 0
-    assert writes == ["startup-support.json"]
-    assert updates.read_json(tmp_path / "staging/startup-support.json")["reason_code"] == "UPDATE_RELAY_STOP_REQUESTED"
-    assert launches[0][0][1:3] == (w.previous, arguments)
+    if role == "relay":
+        from user_relay import StartupStopRequested
+        with pytest.raises(StartupStopRequested):
+            updates._bootstrap(control, arguments, role=role)
+        assert updates.bootstrap(control, arguments, role=role) == 0
+        assert launches == []
+        assert writes == []
+    else:
+        assert updates._bootstrap(control, arguments, role=role) == 0
+        assert writes == ["startup-support.json"]
+        assert updates.read_json(tmp_path / "staging/startup-support.json")["reason_code"] == "UPDATE_RELAY_STOP_REQUESTED"
+        assert launches[0][0][1:3] == (w.previous, arguments)
     assert all(p.read_bytes() == value for p, value in before.items())
 
 

@@ -239,7 +239,7 @@ def test_submission_blocked_sample_forwards_one_notice_and_last_normal_scan():
     assert view.notice.message != notice.message
     assert "ACK" not in view.notice.message
     assert "readback" not in view.notice.message
-    assert "현재 세트를 유지" in view.notice.message
+    assert "현재 작업을 유지하고 다시 시도하세요" in view.notice.message
     assert view.last_normal_scan == "LAST-ACCEPTED"
 
 

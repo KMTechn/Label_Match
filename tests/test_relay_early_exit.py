@@ -29,7 +29,8 @@ def test_started_child_exit_without_running_fails_promptly(monkeypatch, returnco
         )
     assert caught.value.cause_code == "RELAY_EXITED_BEFORE_RUNNING"
     assert caught.value.exit_code == returncode
-    assert clock[0] == pytest.approx(104.0 if bootstrap and returncode == 0 else 102.0)
+    assert clock[0] == pytest.approx(100.0 + 2.0 + user_relay.RELAY_OWNER_READBACK_TIMEOUT_SECONDS
+                                            if bootstrap and returncode == 0 else 102.0)
 
 
 def test_exited_bootstrap_keeps_proven_running_owner(monkeypatch):

@@ -163,7 +163,7 @@ def test_bootstrap_absolute_budget_expiry_refuses_without_starting(endpoint, mon
     monkeypatch.setattr(updates, "load_policy", slow_policy)
     before = {path: path.read_bytes() for path in
               (control / "active.json", control / "transition.json", marker)}
-    assert updates.bootstrap(control.parent / "placeholder-app", [], role="gui") == 20
+    assert updates.bootstrap(control.parent / "current/app", [], role="gui") == 20
     assert endpoint.children == []
     assert not observation.exists()
     assert all(path.read_bytes() == raw for path, raw in before.items())
@@ -619,6 +619,9 @@ def test_x7_real_signed_hotfix_applies_after_terminal_recovery(endpoint, monkeyp
         if path == control / "active.json" and value.get("sha") == hot:
             raise SystemExit(0)  # Stop the headless OS harness after actual switch.
     monkeypatch.setattr(updates, "write_json_durable", observe)
+    assert updates.apply_prepared(control) == 0
+    assert updates.read_json(control / "transition.json")["phase"] == "ROLLED_BACK"
+    assert updates.read_json(control / "active.json")["sha"] == OLD
     with pytest.raises(SystemExit):
         updates.apply_prepared(control)
     assert updates.read_json(control / "active.json")["sha"] == hot
@@ -945,6 +948,10 @@ def test_deferred_recovery_precedes_next_signed_hotfix(endpoint, monkeypatch, ph
         if path == control / "active.json" and value.get("sha") == hot:
             raise SystemExit(0)
     monkeypatch.setattr(updates, "write_json_durable", observe)
+    if phase in {"UNKNOWN", "FAILED"}:
+        assert updates.apply_prepared(control) == 0
+        assert updates.read_json(control / "transition.json")["phase"] == "ROLLED_BACK"
+        assert updates.read_json(control / "active.json")["sha"] == OLD
     with pytest.raises(SystemExit):
         updates.apply_prepared(control)
     assert decisions and set(decisions) == {OLD}
@@ -1001,9 +1008,14 @@ def test_inherited_ready_failure_uses_unknown_then_generation_only(endpoint, mon
         if path == control / "transition.json":
             observations.append(value)
     monkeypatch.setattr(updates, "write_json_durable", observe)
+    expected_at = updates.now_utc()
+    monkeypatch.setattr(updates, "now_utc", lambda: expected_at)
     retained = generation_case != "unchanged"
     assert updates.apply_prepared(control) == (20 if retained else 0)
-    assert observations[0] == {**state, "phase": "UNKNOWN"}
+    assert observations[0] == {
+        **state, "phase": "UNKNOWN", "normal_stop_started_at": expected_at,
+        "retry_shas": {NEW: {"attempts": 1, "first_at": expected_at, "last_at": expected_at}},
+    }
     settled = updates.read_json(control / "transition.json")
     assert settled["failed_shas"] == []
     assert settled["phase"] == ("DEFERRED" if retained else "ROLLED_BACK")

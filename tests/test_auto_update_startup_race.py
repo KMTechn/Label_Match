@@ -173,7 +173,7 @@ def test_failed_prepared_packet_is_quarantined_once(endpoint, monkeypatch, damag
     assert not updates.prepared_pending(control, policy, updates.read_json(control / 'transition.json'))
     assert all((stage / name).read_bytes() == raw for name, raw in original.items())
     if damage == 'signature':
-        assert updates.read_json(control / 'transition.json')['failed_shas']
+        assert updates.read_json(control / 'transition.json').get('failed_shas', []) == []
         updates.write_json_durable(stage / 'prepared.json', {'source_commit': updates.read_json(stage / 'manifest.json')['source_commit'],
                                                           'prepared_at': updates.now_utc()})
         assert not updates.prepared_pending(control, policy, updates.read_json(control / 'transition.json'))
