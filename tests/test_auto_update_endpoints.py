@@ -76,6 +76,7 @@ def endpoint(monkeypatch, tmp_path):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((REPO / name.removeprefix("app/")).read_bytes())
         (bundle / "app/auto_update.py").write_bytes((REPO / "auto_update.py").read_bytes())
+        (bundle / "app/label_match_relay_entry.py").write_bytes((REPO / "label_match_relay_entry.py").read_bytes())
         (bundle / "INSTALL_THIS_PC.ps1").write_bytes((REPO / "INSTALL_THIS_PC.ps1").read_bytes())
         (bundle / "app/Label_Match.py").write_text(f'APP_VERSION = "{version}"\n')
         updates.write_json_durable(bundle / "portable-manifest.json", {
@@ -146,6 +147,26 @@ def endpoint(monkeypatch, tmp_path):
     for child in children:
         _, error = child.communicate(timeout=30)
         assert child.returncode == 0, error[-1500:]
+
+
+def test_bootstrap_absolute_budget_expiry_refuses_without_starting(endpoint, monkeypatch):
+    control, _, _, _, marker, observation = endpoint
+    clock = [100.0]
+    monkeypatch.setattr(updates.time, "monotonic", lambda: clock[0])
+    load = updates.load_policy
+
+    def slow_policy(root):
+        result = load(root)
+        clock[0] += updates.BOOTSTRAP_OBSERVATION_CAP_SECONDS + 1
+        return result
+
+    monkeypatch.setattr(updates, "load_policy", slow_policy)
+    before = {path: path.read_bytes() for path in
+              (control / "active.json", control / "transition.json", marker)}
+    assert updates.bootstrap(control.parent / "placeholder-app", [], role="gui") == 20
+    assert endpoint.children == []
+    assert not observation.exists()
+    assert all(path.read_bytes() == raw for path, raw in before.items())
 
 
 def assert_ordinary(endpoint, expected, *, role="gui", arguments=None):
