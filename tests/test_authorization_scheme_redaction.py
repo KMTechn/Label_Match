@@ -1,6 +1,7 @@
 import contextlib
 import hashlib
 import json
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -122,7 +123,9 @@ def test_adjacent_native_diagnostics_and_missing_credential(scheme):
     require_absent(material, safe)
     assert safe.startswith(prefix) and safe.endswith(suffix)
     incomplete = 'Authorization: ' + scheme + suffix
-    assert failure_redaction.redact_for_sink(incomplete, {}).endswith(suffix)
+    expected = (re.sub(r'^(\s*)\S+', lambda match: match[1] + failure_redaction.RULES['field'], suffix)
+                if scheme.lower() == 'bearer' else suffix)
+    assert failure_redaction.redact_for_sink(incomplete, {}).endswith(expected)
 
 
 def test_ordinary_scheme_words_remain():
@@ -137,7 +140,10 @@ def test_unindented_next_line_is_not_an_authorization_value(scheme, line_end):
                        'errno=5', 'winerror=32', 'exit_code=7'):
         suffix = line_end + diagnostic
         safe = failure_redaction.redact_for_sink('Authorization: ' + scheme + suffix, {})
-        assert safe.endswith(suffix)
+        # ANSWER-4 restores the legacy Bearer rule across every whitespace gap.
+        expected = (re.sub(r'^(\s*)\S+', lambda match: match[1] + failure_redaction.RULES['field'], suffix)
+                    if scheme.lower() == 'bearer' else suffix)
+        assert safe.endswith(expected)
 
 
 @pytest.mark.parametrize('engine', ('powershell', 'pwsh'))
@@ -198,10 +204,18 @@ foreach($case in $inputs){
     $nextLines=(ConvertTo-KmtechRedactedSinkText -Text ('Authorization: '+$case.scheme+$normalLine) -Environment @{}).EndsWith($normalLine) -and (ConvertTo-KmtechRedactedSinkText -Text ('Authorization: '+$case.scheme+$normalCrlf) -Environment @{}).EndsWith($normalCrlf)
     $assignmentLine="`r`nwinerror=87"
     $nextLines=$nextLines -and (ConvertTo-KmtechRedactedSinkText -Text ('Authorization: '+$case.scheme+$assignmentLine) -Environment @{}).EndsWith($assignmentLine)
+    if($case.scheme -ieq 'Bearer'){
+        $nextLines=$true
+        foreach($line in @($normalLine,$normalCrlf,$assignmentLine)){
+            $expected=[regex]::Replace($line,'^(\s*)\S+',('$1'+$Script:KmtechRedactionRules.field))
+            $nextLines=$nextLines -and (ConvertTo-KmtechRedactedSinkText -Text ('Authorization: '+$case.scheme+$line) -Environment @{}).EndsWith($expected)
+        }
+    }
     $commonLeak=@($case.fragments|Where-Object {$safe.Contains([string]$_)}).Count -gt 0
     $detailsLeak=@($case.fragments|Where-Object {$trace.Contains([string]$_)}).Count -gt 0
     $supportLeak=@($case.fragments|Where-Object {$readback.Contains([string]$_)}).Count -gt 0
-    $rows+=@{shape=$case.shape;scheme=$case.scheme;common_leak=$commonLeak;details_leak=$detailsLeak;support_leak=$supportLeak;diagnostics=($adjacent.StartsWith($prefix) -and $adjacent.EndsWith($suffix) -and $incomplete.EndsWith($suffix));native=($native.NativeErrorCode -eq 32 -and $details.child_exit_code -eq 7 -and $details.inner_exception_type -eq 'Win32Exception');sha=((Get-FileHash -LiteralPath $sink.path -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $sink.sha256);bounds=$bounds;next_lines=$nextLines}
+    $incompleteSuffix=if($case.scheme -ieq 'Bearer'){[regex]::Replace($suffix,'^(\s*)\S+',('$1'+$Script:KmtechRedactionRules.field))}else{$suffix}
+    $rows+=@{shape=$case.shape;scheme=$case.scheme;common_leak=$commonLeak;details_leak=$detailsLeak;support_leak=$supportLeak;diagnostics=($adjacent.StartsWith($prefix) -and $adjacent.EndsWith($suffix) -and $incomplete.EndsWith($incompleteSuffix));native=($native.NativeErrorCode -eq 32 -and $details.child_exit_code -eq 7 -and $details.inner_exception_type -eq 'Win32Exception');sha=((Get-FileHash -LiteralPath $sink.path -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $sink.sha256);bounds=$bounds;next_lines=$nextLines}
 }
 $ordinary='Basic is available; authentication uses the word Bearer'
 @{rows=$rows;ordinary=((ConvertTo-KmtechRedactedSinkText -Text $ordinary -Environment @{}) -ceq $ordinary)}|ConvertTo-Json -Depth 8 -Compress

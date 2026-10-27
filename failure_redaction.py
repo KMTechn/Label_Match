@@ -307,8 +307,13 @@ def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
     # Scan keys independently: an ordinary exception prefix must not consume
     # the assignment or mapping that follows it as an opaque value.
     key_pattern = r'''(?<![A-Za-z0-9_.-])(?P<key>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][\w.-]*)(?P<separator>\s*[:=]\s*)'''
-    value_pattern = r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+'''
+    # An embedded JSON string can spell a quoted assignment value as \"...\".
+    value_pattern = (r'''\\"(?:\\\\(?:\\.|[^"\\])|\\[^"\\]|[^"\\])*\\"|'''
+                     r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+''')
     value_regex = re.compile(value_pattern)
+    credential_pattern = r'''(?:\\[^\s"',;]|\\(?=[\s,;]|\Z)|[^\s\\"',;])+'''
+    credential_regex = re.compile(r'(?:[ \t]*\r\n[ \t]+|[ \t]+)(?P<credential>' + credential_pattern + ')')
+    next_line_regex = re.compile(r'\r\n(?P<credential>' + credential_pattern + r')(?=\r?\n|\Z)')
     parts = []
     copied = protected_until = 0
     for match in re.finditer(key_pattern, text):
@@ -319,7 +324,7 @@ def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
             continue
         metadata_key = (re.search(RULES['path_suffix'], key)
                     or (re.search(RULES['digest_suffix'], key) and not re.search(RULES['short_secret_digest'], key)))
-        authorization_key = re.search('authorization', key, re.IGNORECASE)
+        authorization_key = re.fullmatch(r'(?:[A-Za-z0-9]+-)*authorization|http_authorization', key, re.IGNORECASE)
         sensitive = (re.search(RULES['pattern'], key) or key.lower() in ('pin', 'otp', 'password')
                      or authorization_key)
         if not sensitive and not metadata_key:
@@ -367,24 +372,30 @@ def redact_for_sink(text, environ=None, *, redact_values=(), _json_leaf=False):
             value = text[start:protected_until]
         if metadata_key or value in ('true', 'false', 'null') or value.strip("\"'").startswith('[REDACTED:'):
             continue
-        # Every scheme uses the existing opaque Bearer credential boundary.
-        # Only an indented CRLF continues a field; ordinary next lines stay intact.
-        if authorization_key and not structured and not value.startswith(('"', "'")):
-            tail = text[protected_until:]
-            credential = re.match(r"(?:[ \t]*\r\n[ \t]+|[ \t]+)[^\s\"',;]+", tail)
+        # Leave the anchor for the legacy Bearer pass, including every whitespace gap.
+        if authorization_key and value.lower() == 'bearer':
+            continue
+        # Match at the current position without copying the remaining input.
+        if authorization_key and not structured and not value.startswith(('"', "'", r'\"')):
+            credential = credential_regex.match(text, protected_until)
             if credential is None:
                 # Retain legacy CRLF credentials when the entire next line is one token.
-                credential = re.match(r"\r\n(?P<credential>[^\s\"',;]+)(?=\r?\n|\Z)", tail)
+                credential = next_line_regex.match(text, protected_until)
                 if credential and re.match(r'[A-Za-z_][\w.-]*=',
                                            credential['credential'].rstrip('=')):
                     credential = None
+            # Leave a nested quoted assignment searchable by the key scanner.
+            if (credential and re.fullmatch(r'[A-Za-z_][\w.-]*=', credential['credential'])
+                    and text.startswith(('"', "'", r'\"', r"\'"), credential.end())):
+                credential = None
             if credential:
-                protected_until += credential.end()
-        quote = '"' if structured else (value[0] if value.startswith(('"', "'")) else '')
+                protected_until = credential.end()
+        quote = '"' if structured else (r'\"' if value.startswith(r'\"') else
+                                        (value[0] if value.startswith(('"', "'")) else ''))
         parts.extend((text[copied:match.start()], match['key'] + match['separator'] + quote + RULES['field'] + quote))
         copied = protected_until
     text = ''.join(parts) + text[copied:]
-    text = re.sub(r'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"\',;]+', lambda match: match[1] + RULES['field'], text)
+    text = re.sub(r'(?i)\b(Bearer\s+)(?!\[REDACTED:)' + credential_pattern, lambda match: match[1] + RULES['field'], text)
     if notes:
         text += "\n" + "\n".join(notes)
     if replacements and _replace_known_json_spellings(text, replacements)[1]:

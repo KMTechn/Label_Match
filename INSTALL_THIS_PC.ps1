@@ -247,7 +247,7 @@ if (-not (Get-Command ConvertTo-KmtechRedactedSinkText -CommandType Function -Er
         # Standalone removal still skips bootstrap/installed code helpers. Only
         # these exact packet diagnostics may load in its fresh process.
         $UninstallRedactionPins = [ordered]@{
-            'tools/failure_redaction.ps1' = '98d07d9447eb952482744635a01c751a1c3b344432ee77c1a7684e44ed43eb6a'
+            'tools/failure_redaction.ps1' = '405ac2b7cc8790fca7dc394cb9f750b7ddcff50c158fdbccd911b1fdc5874079'
             'tools/failure_redaction_rules.json' = '6900e9b01cbcd09cc20f74d8ed5c326d83c7f8ded9ee44b81e00674a9fb44833'
         }
         foreach ($relative in $UninstallRedactionPins.Keys) {

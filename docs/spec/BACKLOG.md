@@ -879,6 +879,8 @@ Move startup_timing after auto_update's isolated-entry path setup. Complete-app 
 화면 셸 기준판: frame.css 만 웹 00e66d79(menu label one flow · sha256 97c47d9b…) 바이트 · 나머지 셸 파일은 d8f82fa4 · ui manifest commit 은 셸 기준판 d8f82fa4 를 뜻함.
 - v2.0.126: 승인 재료 12개·ui1028 조립. 데이터 하한 v2.0.126을 명시적으로 유지하며 기존 서명 호환 증명 모델을 보존한다.
 
-10/27 sub-756: 포장 실패 세부의 Authorization 자격 값 가림을 Basic/Bearer/Token/Negotiate 등 스킴 무관 공통 Python·PowerShell 경계로 넓혔다. 정식 CRLF continuation만 잇고 일반 다음 줄은 넘지 않는다. Bearer·일반 스킴 단어·native 진단과 지원 기록 형식은 보존한다. RED/GREEN·PS5/PS7·바탕 대조 및 정본 지문 증거는 work/program/w9firstupd/sub-756/RESULT.md에 기록한다. 배포본 포함 시점은 레인 결정 몫이다.
+10/27 sub-756: 포장 실패 세부의 Authorization 헤더 자격 값 가림을 Basic/Bearer/Token/Negotiate 등 스킴 무관 공통 Python·PowerShell 경계로 넓혔다. Bearer는 기존 LF·CRLF·빈 줄 뒤 자격 값 가림을 유지하며, 다른 스킴은 정식 CRLF continuation을 잇는다. 안쪽 민감 키의 따옴표 값도 가리고 JSON escape 경계는 유지한다. 스킴 낱말 자체는 가려질 수 있다. 일반 스킴 단어·헤더 이름 밖 진단과 지원 기록 형식은 보존한다. RED/GREEN·PS5/PS7·바탕 대조 및 정본 지문 증거는 work/program/w9firstupd/sub-756/RESULT.md에 기록한다. ANSWER-4에 따라 126에는 넣지 않고 별도 가지의 11/15 몫으로 둔다.
 
-레인 ANSWER-3에 따라 스킴 바로 뒤 CRLF의 다음 줄 전체가 단일 불투명 자격이면 가리되 이름=값 할당 진단은 보존한다. 한 낱말뿐인 보통 진단의 과잉 가림은 자격 노출 방지를 위해 레인이 받아들였다.
+다른 스킴은 레인 ANSWER-3에 따라 바로 뒤 CRLF의 다음 줄 전체가 단일 불투명 자격이면 가리되 이름=값 할당 진단은 보존한다. 한 낱말뿐인 보통 진단의 과잉 가림은 자격 노출 방지를 위해 레인이 받아들였다. Bearer의 기존 공백 뒤 가림이 우선하는 것은 ANSWER-4를 따른다.
+
+ANSWER-5의 역슬래시 짝 문법으로 일반 역슬래시·JSON escaped slash 뒤 자격 조각과 끝의 escaped 역슬래시까지 가린다. 따옴표 escape 앞에서 멈추며 기존 공백·칸 구분자와 JSON 유효성은 유지한다.

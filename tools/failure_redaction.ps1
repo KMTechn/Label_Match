@@ -109,8 +109,11 @@ function ConvertTo-KmtechRedactedSinkText {
     }
     # Generated key/value grammar: ordinary prefixes leave their values searchable.
     $keyPattern = '(?<![A-Za-z0-9_.-])(?<key>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[A-Za-z_][\w.-]*)(?<separator>\s*[:=]\s*)'
-    $valuePattern = '\G(?:"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[^\s,;}]+)'
+    $valuePattern = '\G(?:\\"(?:\\\\(?:\\.|[^"\\])|\\[^"\\]|[^"\\])*\\"|"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[^\s,;}]+)'
     $valueRegex = [regex]::new($valuePattern)
+    $credentialPattern='(?:\\[^\s"'',;]|\\(?=[\s,;]|\z)|[^\s\\"'',;])+'
+    $credentialRegex=[regex]::new('\G(?:[ \t]*\r\n[ \t]+|[ \t]+)(?<credential>'+$credentialPattern+')')
+    $nextLineRegex=[regex]::new('\G\r\n(?<credential>'+$credentialPattern+')(?=\r?\n|\z)')
     $parts = [Text.StringBuilder]::new()
     $copied = 0; $protectedUntil = 0
     foreach ($match in [regex]::Matches($Text, $keyPattern)) {
@@ -120,7 +123,7 @@ function ConvertTo-KmtechRedactedSinkText {
         if($key.StartsWith('[REDACTED:')){continue}
         $metadataKey=($key -match $rules.path_suffix -or
             ($key -match $rules.digest_suffix -and $key -notmatch $rules.short_secret_digest))
-        $authorizationKey=$key -imatch 'authorization'
+        $authorizationKey=$key -imatch '^(?:[A-Za-z0-9]+-)*authorization$|^http_authorization$'
         $sensitive=($key -match $rules.pattern -or $key -imatch '^(pin|otp|password)$' -or $authorizationKey)
         if (-not $sensitive -and -not $metadataKey) { continue }
         $valueMatch=$valueRegex.Match($Text,$match.Index+$match.Length)
@@ -160,17 +163,23 @@ function ConvertTo-KmtechRedactedSinkText {
         }
         if ($metadataKey -or $value -cin @('true','false','null') -or
             $value.Trim($quotes).StartsWith('[REDACTED:')) { continue }
-        # Match the common Python span for every scheme and formal continuation.
-        if($authorizationKey -and -not $structured -and -not ($value.StartsWith('"') -or $value.StartsWith("'"))){
-            $tail=$Text.Substring($protectedUntil)
-            $credential=[regex]::Match($tail,'^(?:[ \t]*\r\n[ \t]+|[ \t]+)[^\s"'',;]+')
+        # Leave the anchor for the legacy Bearer pass across every whitespace gap.
+        if($authorizationKey -and $value -ieq 'Bearer'){continue}
+        # Match in place without copying the tail.
+        if($authorizationKey -and -not $structured -and -not ($value.StartsWith('"') -or $value.StartsWith("'") -or $value.StartsWith('\"'))){
+            $credential=$credentialRegex.Match($Text,$protectedUntil)
             if(-not $credential.Success){
-                $credential=[regex]::Match($tail,'^\r\n(?<credential>[^\s"'',;]+)(?=\r?\n|\z)')
+                $credential=$nextLineRegex.Match($Text,$protectedUntil)
                 if($credential.Success -and $credential.Groups['credential'].Value.TrimEnd([char[]]@('=')) -match '^[A-Za-z_][\w.-]*='){$credential=$null}
             }
-            if($null -ne $credential -and $credential.Success){$protectedUntil+=$credential.Length}
+            if($null -ne $credential -and $credential.Success -and $credential.Groups['credential'].Value -match '^[A-Za-z_][\w.-]*=$'){
+                $end=$credential.Index+$credential.Length
+                if($end -lt $Text.Length -and ($Text[$end] -in [char[]]@('"',"'") -or
+                    ($Text[$end] -eq [char]92 -and $end+1 -lt $Text.Length -and $Text[$end+1] -in [char[]]@('"',"'")))){$credential=$null}
+            }
+            if($null -ne $credential -and $credential.Success){$protectedUntil=$credential.Index+$credential.Length}
         }
-        $replacement=if($structured){'"'+$rules.field+'"'}elseif($value.StartsWith('"') -or $value.StartsWith("'")){
+        $replacement=if($structured){'"'+$rules.field+'"'}elseif($value.StartsWith('\"')){'\"'+$rules.field+'\"'}elseif($value.StartsWith('"') -or $value.StartsWith("'")){
             $value.Substring(0,1)+$rules.field+$value.Substring(0,1)
         }else{$rules.field}
         [void]$parts.Append($Text,$copied,$match.Index-$copied)
@@ -179,7 +188,7 @@ function ConvertTo-KmtechRedactedSinkText {
     }
     [void]$parts.Append($Text,$copied,$Text.Length-$copied)
     $Text=$parts.ToString()
-    $Text=[regex]::Replace($Text,'(?i)\b(Bearer\s+)(?!\[REDACTED:)[^\s"'',;]+',[Text.RegularExpressions.MatchEvaluator]{param($match) $match.Groups[1].Value+$rules.field})
+    $Text=[regex]::Replace($Text,('(?i)\b(Bearer\s+)(?!\[REDACTED:)'+$credentialPattern),[Text.RegularExpressions.MatchEvaluator]{param($match) $match.Groups[1].Value+$rules.field})
     if ($notes.Count) { $Text += [string][char]10 + ($notes -join [string][char]10) }
     if($hasKnown -and (Replace-KmtechJsonSpellings $Text).masked){throw 'REPORT_UNAVAILABLE'}
     $utf8 = [Text.UTF8Encoding]::new($false,$true)

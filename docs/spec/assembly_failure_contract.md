@@ -63,6 +63,8 @@ rollback 시험 입력은 조립 판의 phase stack 및 공식 옛 relay 조회 
 
 PS7 placement child의 보호 trace는 원 `CreateNew` handle과 보호 ACL, 첫 원인 가림, durable flush, UTF-8 SHA 및 원 phase/exit를 유지한다. .NET Core에서 없는 정적 `File.SetAccessControl` 대신 같은 ACL을 `Set-Acl -LiteralPath -AclObject -ErrorAction Stop`으로 적용한다. sub-315의 실제 PS5.1 두 사례는 보호 trace를 저장했으나 PS7 두 사례는 0바이트/참조 없음으로 실패한 근거를 보존했다. 교정 뒤 양쪽 엔진의 실제 파일/SHA 및 공개 셀·142·stock 검증은 sub-315 REPORT에 별도로 기록한다.
 
-10/27 sub-756: Authorization·Proxy-Authorization은 Basic/Bearer/Token/Negotiate 등 스킴과 무관하게 공통 Python·PowerShell 가림에서 불투명 자격 꼬리 전체를 처리한다. 들여쓴 CRLF continuation만 잇고 일반 다음 줄은 넘지 않는다. 인용 JSON·할당·접힌 줄과 깊은 원인/문맥·stdout/stderr·지원 파일에 같은 규칙을 적용한다. 자격 없는 일반 Basic/Bearer 문장과 뒤의 errno·winerror·exit_code, 공개 기록·잘림·길이 계약은 유지한다.
+10/27 sub-756: Authorization·Proxy-Authorization·X- 계열 헤더와 HTTP_AUTHORIZATION은 Basic/Bearer/Token/Negotiate 등 스킴과 무관하게 공통 Python·PowerShell 가림에서 불투명 자격 꼬리 전체를 처리한다. Bearer는 기존처럼 LF·CRLF·빈 줄을 포함한 공백 뒤의 자격 값도 가리며, 다른 스킴은 들여쓴 CRLF continuation을 잇는다. 인용 JSON의 escape 경계와 값의 따옴표를 유지하며 안쪽 민감 값도 가린다. 깊은 원인/문맥·stdout/stderr·지원 파일에 같은 규칙을 적용한다. 스킴 낱말 자체는 가려질 수 있다. 자격 없는 일반 Basic/Bearer 문장, 헤더 이름 밖의 authorization_status·proxy_authorization 다음 진단, 공개 기록·잘림·길이 계약은 유지한다.
 
-레인 ANSWER-3에 따라 스킴 바로 뒤 CRLF의 다음 줄 전체가 단일 불투명 자격이면 가리되 이름=값 할당 진단은 보존한다. 한 낱말뿐인 보통 진단의 과잉 가림은 자격 노출 방지를 위해 레인이 받아들였다.
+다른 스킴은 레인 ANSWER-3에 따라 바로 뒤 CRLF의 다음 줄 전체가 단일 불투명 자격이면 가리되 이름=값 할당 진단은 보존한다. 한 낱말뿐인 보통 진단의 과잉 가림은 자격 노출 방지를 위해 레인이 받아들였다. Bearer의 기존 공백 뒤 가림이 우선하는 것은 ANSWER-4를 따른다.
+
+ANSWER-5에 따라 자격 꼬리의 역슬래시는 다음 글자와 짝으로 읽고 따옴표 escape 앞에서만 멈춘다. 기존 공백·칸 구분자는 유지한다. 일반 역슬래시·JSON escaped slash 뒤 조각과 자격 끝의 escaped 역슬래시도 가리며, JSON 닫는 따옴표의 escape는 보존한다.
