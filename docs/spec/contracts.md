@@ -698,6 +698,8 @@ Run 및 GUI가 만든 bootstrap의 relay 실행은 `WriterFencedError` 중 `WRIT
 
 ### 원격 앱 멈춤과 SQLite 연결 정리
 
+시작 품목표 재시도·버려진 업데이트 mutex 복구 안내·옛 화면 품목 파일 로드 오류는 「포장 시작 안내」 주인 창을 deiconify→lift→잠깐 topmost→focus_force 순서로 앞세운 뒤 Tk messagebox를 연다(sub-741). 기본 단추는 품목표의 다시 시도 또는 안내의 확인이며, messagebox가 닫히면 주인 창도 정리한다. 업데이트 mutex 안내는 기존 Tk 실패 시 stderr 경로만 유지한다. 품목 파일 로드 일꾼은 Tk/after를 호출하지 않고 기존 초기 로드 큐에 안내를 넣는다. 메인 스레드의 after 처리에서 웹은 기존 messagebox 대체 띠로, 옛 화면은 보이는 주인 창으로 표시한다. 기존 공식 멈춤·취소 결과와 오류 문구는 유지한다.
+
 `user_relay.py --request-app-stop`은 같은 설치 소유자의 relay root `control/label_match_app.stop.json`에 작은 요청을 원자 저장하고 기존 relay stop을 요청한다. GUI는 별도 0.5초 감시에서 요청을 읽고 활성 입력·저장 대기·보류 처리·관리자 작업이 없으면 기존 `on_closing(_confirmed=True)`로 정상 닫기를 진행한다. 작업 중에는 요청 ID별로 이벤트 `멈춤 요청 미룸`과 현재 상태 checkpoint를 기록하고 종료 안내를 계속 표시하며 스캔을 유지한다. 기록 실패도 입력을 막지 않는다. 작업이 끝나도 자동 종료하지 않으며 현장 `[종료]`가 평소 닫기를 호출한다. 미룬 요청은 실제 Tk 종료 뒤 같은 ID만 정리하고 닫기 거절·후속 요청은 보존한다. 기존 확인 동작과 포인터 동의가 우선하며 종료 버튼은 스캐너 초점을 가져가지 않는다. CLI의 `REQUESTED`는 GUI 종료 증명이 아니고 relay의 `UNKNOWN`은 종료 확인 실패다.
 
 본창 이전의 등록 복구·시작 거절·첫 설정 오류·설치 확인 경고·품목 오류·품목 재시도·설치 mutex 복구 안내에도 0.5초 공식 멈춤 수신이 있다. 자기 창을 닫은 뒤 기존 startup trace의 `stage=APP_STOP_REQUESTED_CLOSE`·`message=멈춤 요청으로 닫힘`만 추가하며 trace 실패로 닫기를 막지 않는다. 등록 보고서·신원·업무 데이터는 바꾸지 않는다. 멈춤은 재시도/계속이 아닌 기존 안전 취소·종료이며 원래 rc/원인 code를 보존한다. Tk 생성 실패의 native 안내는 원 문구·OK·오류/경고 뜻을 유지하고 MessageBoxTimeoutW의 고정 30000ms로 닫힌다(공식 150초 안). 시간 초과·닫기는 확인이 아니며 설치 확인 경고도 업무 시작 없이 기존 시작 취소 rc 0으로 끝낸다. native 반환 뒤 유효한 멈춤 요청은 같은 trace와 안전 취소로 처리한다. bounded API 실패도 기존 dialog_unavailable·안전 rc/code로 돌아가며 무상한 재시도는 하지 않는다. 기존 중복 실행(5초)·화면 시작 실패(30초) native 안내는 수신 예외로, 자체 제한 뒤 끝난다. 실제 Windows 창 종료 수용은 별도 현장 회차로 확인한다.

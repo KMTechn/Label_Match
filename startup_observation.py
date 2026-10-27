@@ -153,6 +153,34 @@ def watch_startup_notice_stop(parent, *, stop_requested=None, trace=None):
     return state
 
 
+def show_visible_startup_messagebox(title, message, *, dialog=None, default="ok", prepare_root=None):
+    """Keep a small visible owner in front until its native Tk dialog closes."""
+    import tkinter as tk
+    from tkinter import messagebox
+
+    parent = tk.Tk()
+    try:
+        parent.title("포장 시작 안내")
+        parent.resizable(False, False)
+        tk.Label(parent, text=title, padx=16, pady=12).pack()
+        stop_state = (watch_startup_notice_stop if prepare_root is None else prepare_root)(parent)
+        parent.deiconify()
+        parent.lift()
+        parent.attributes("-topmost", True)
+        parent.focus_force()
+        parent.update_idletasks()
+        parent.after_idle(lambda: parent.attributes("-topmost", False))
+        result = (messagebox.showerror if dialog is None else dialog)(
+            title, message, parent=parent, default=default,
+        )
+        return result, stop_state["stopped"]
+    finally:
+        try:
+            parent.destroy()
+        except Exception:
+            pass
+
+
 def show_stoppable_startup_notice(title, message, *, prepare_root=None):
     """Return False only when Tk cannot be created, for the native fallback."""
     import tkinter as tk

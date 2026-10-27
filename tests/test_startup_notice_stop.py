@@ -82,6 +82,10 @@ def notice_window(monkeypatch, tmp_path):
     monkeypatch.setattr(lm.tk, "Label", Widget)
     monkeypatch.setattr(lm.tk, "Button", Widget)
     monkeypatch.setattr(lm, "_label_match_startup_trace", trace)
+    def close_messagebox(_title, _message, *, parent, **_options):
+        parent.mainloop()
+        return "ok"
+    monkeypatch.setattr(lm.messagebox, "showerror", close_messagebox)
     return SimpleNamespace(parents=parents, traces=traces)
 
 
@@ -118,12 +122,12 @@ def expected_message(notice, tmp_path):
     if notice == "integrity-warning":
         return lm.BOOTSTRAP_INTEGRITY_ABSENT_WARNING_MESSAGE
     if notice == "mutex-recovery":
-        return auto_update.UPDATE_MUTEX_RECOVERY_MESSAGE
+        return '업데이트가 끝나지 않은 채 멈춰 포장을 시작하지 못했습니다 — 아무것도 지우지 말고 현장 관리자에게 알리세요(본사 복구)'
     error = catalog_error()
     context = lm.get_catalog_attempt_context_from_error(error)
     details = lm._item_catalog_profile_details_for_display(context)
     if notice == "catalog-retry":
-        return ("회사 서버 품목 목록을 사용할 수 없습니다\n연결을 확인하고 「다시 시도」를 누르세요. "
+        return ("회사 서버 품목 목록을 받지 못했습니다 — 연결을 확인하고 「다시 시도」를 누르세요 · "
                 "또 안 되면 현장 관리자에게 알리세요\n자세히: " + details + "\n코드: " + error.cause_code)
     return ("품목 목록을 확인하지 못했습니다\n연결을 확인하고 다시 시도하세요\n코드: "
             + lm.ITEM_CATALOG_STARTUP_ERROR_MESSAGE + " · " + details + " · " + error.cause_code)
@@ -136,12 +140,13 @@ def expected_message(notice, tmp_path):
 def test_startup_notice_observes_official_request(monkeypatch, tmp_path, notice_window, notice):
     native_messages = []
 
-    def retry(title, message, *, parent):
+    def retry(title, message, *, parent, **_options):
         native_messages.append(message)
         parent.mainloop()
         return True  # A stop must override the native affirmative result.
 
     monkeypatch.setattr(lm.messagebox, "askretrycancel", retry)
+    monkeypatch.setattr(lm.messagebox, "showerror", retry)
     result = show_notice(notice, tmp_path)
     parents = notice_window.parents
 

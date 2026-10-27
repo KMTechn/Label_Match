@@ -3239,8 +3239,11 @@ def _verify_abandoned_update(control: Path, policy: Mapping[str, Any]) -> None:
 
 def _show_update_mutex_recovery_notice() -> None:
     try:
-        from startup_observation import show_stoppable_startup_notice
-        show_stoppable_startup_notice("설치 복구 필요", UPDATE_MUTEX_RECOVERY_MESSAGE)
+        from startup_observation import show_visible_startup_messagebox
+        show_visible_startup_messagebox(
+            "포장을 시작하지 못했습니다",
+            "업데이트가 끝나지 않은 채 멈춰 포장을 시작하지 못했습니다 — 아무것도 지우지 말고 현장 관리자에게 알리세요(본사 복구)",
+        )
     except Exception:
         pass  # The fixed stderr guidance remains available when Tk cannot open.
 

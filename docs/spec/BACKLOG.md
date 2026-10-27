@@ -1,4 +1,6 @@
+- 11/15 · w9firstupdsub744 ANSWER-1: tests/test_app_stop_lifecycle.py::test_catalog_retry_window_observes_request의 모의 창 callbacks fixture를 고친다. 기준 소스에서도 :86에 실패하며, 같은 함수의 공식 멈춤 우선 성질은 tests/test_visible_startup_dialogs.py::test_retry_official_stop_overrides_enter로 검증한다. 제품 고침 없이 후속 시험 정리로 둔다.
 - 첫 업데이트 relay 파일 오류 격리(w9firstupdsub591): 원본 읽기·UTF-8·소스 전용 delta 쓰기 오류는 원본을 보존하고 다음 파일과 drain을 계속한다. 큐 DB·공용 저장소·디스크·역압·운영자 중지·설정·미분류 오류는 기존 전역 처리를 유지한다. 최초 실패 시각·이름·고정 코드를 영속 보관하고 기존 상태 줄과 새 웹 화면 서버 줄에 `기록 파일 n개 안 올라감`을 표시하며 성공 enqueue/dedupe 뒤, 또는 원본이 스캔 대상·디스크에서 사라졌을 때 해제한다(파일은 지우거나 옮기지 않음). 헤더 검사·서버 key·완결 줄/ACK 오프셋 규칙은 그대로다.
+- w9firstupdsub741(P2, 고침): 시작 품목표 재시도·버려진 업데이트 mutex 복구·옛 화면 품목 파일 오류를 보이는 「포장 시작 안내」 주인 창 위에 표시한다. 배경 파일 오류는 Tk 호출 없이 기존 초기 로드 큐로 전달하고 메인 스레드의 after 처리에서 웹 오류 띠 또는 옛 화면 안내를 연다. 기본 단추·공식 멈춤·기존 오류 결과는 유지한다.
 - w9firstupdsub594: 설치기 원자 게시의 1초 기한에서 최초 Add-Type 준비를 제외하고 실제 파일 교체·재시도의 기한과 원래 실패를 보존한다(PS5.1·PS7 RED→GREEN).
 - w9firstupdsub594 Observe: 레인 ANSWER-5·6대로 형식 준비 20초와 준비 표지 뒤 질의·출력 10초를 나누며 기존 native ordinary/SID 판정·UNKNOWN·자식 회수를 유지한다.
 - w9firstupdsub673: stock ZIP의 파일 바이트·순서·시각·압축·외부 속성을 보존하는 저장소 빌드 단계 canonical 변환 도구와 1:1 SHA256 영수증을 추가했다. 125 stock은 재빌드하지 않고 변환하며, 126부터 공식 빌드 뒤 이 도구로 업데이트 꾸러미를 만든다. 도구 자체는 stock에 넣지 않는다([운영 절차](operations.md#canonical-update-packet)).
