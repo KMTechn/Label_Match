@@ -126,3 +126,42 @@ def test_report_failure_preserves_original_registration_failure(tmp_path, monkey
     raw = paths.onboarding_report_path.read_text(encoding='utf-8')
     assert 'REDACTED' not in raw and 'KMTECH_TEST_API_TOKEN' not in raw
     assert failure_count(paths.onboarding_report_path) == 1
+
+
+def test_two_report_refusals_keep_one_actual_first_setup(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from report_publication import failure_count, UNAVAILABLE
+    app = tmp_path / "app"
+    app.mkdir()
+    environment = support._environment(tmp_path)
+    paths = onboarding.resolve_current_user_onboarding_paths(app, environ=environment)
+    reports = [paths.status_dir / 'first-diagnostic.json', paths.status_dir / 'second-diagnostic.json']
+    calls = []
+    monkeypatch.setenv('KMTECH_TEST_API_TOKEN', '4826')
+    def register(selected):
+        calls.append(1)
+        support._ready_state(selected)
+        return 0
+    def launch(*args, **kwargs):
+        def report(path):
+            with onboarding.writer_admission(onboarding.ONBOARDING_WRITER_SOURCE):
+                onboarding._write_json_atomic(path, {'detail': 4826})
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(report, reports))
+        return support._relay_start(*args, **kwargs)
+    result = onboarding.onboard_current_user(app, environ=environment,
+        require_bootstrap_integrity=False, registration_runner=register,
+        profile_loader=support._profile_loader, credential_loader=support._credential_loader,
+        ledger_factory=support._ledger_factory, autostart_installer=support._autostart,
+        relay_launcher=launch, scheduled_task_remover=support._scheduled_task_absent,
+        legacy_task_quiescence_reader=support._legacy_task_quiescent)
+    assert result['status'] == 'READY'
+    assert calls == [1]
+    for path in reports:
+        decoded = json.loads(path.read_bytes())
+        assert UNAVAILABLE in decoded.values()
+        raw = path.read_text(encoding='utf-8')
+        assert '4826' not in raw and 'KMTECH_TEST_API_TOKEN' not in raw
+    assert failure_count(paths.onboarding_report_path) == 2
+    assert json.loads(next(paths.status_dir.glob('.report-unavailable-count-*.json')).read_bytes()) == {'count': 2}
+    assert json.loads(paths.onboarding_report_path.read_bytes())['status'] == 'READY'
