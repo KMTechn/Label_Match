@@ -2,6 +2,7 @@
 from contextlib import nullcontext
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -83,8 +84,20 @@ def test_actual_main_enters_first_setup(first_setup, monkeypatch, mode, phase, u
 
 @pytest.mark.parametrize('mode', ['gui', 'cli'])
 @pytest.mark.parametrize('refusal', ['unapproved', 'inactive_code', 'other_sha', 'generation', 'system'])
-def test_prepared_start_preserves_existing_refusal(first_setup, monkeypatch, mode, refusal):
+def test_prepared_start_preserves_existing_refusal(first_setup, monkeypatch, capsys, mode, refusal):
     paths, control, reached = first_setup
+    failures = []
+    describe_failure = updates.launch_failure_details
+
+    def observe_failure(error, **kwargs):
+        failures.append(error)
+        return describe_failure(error, **kwargs)
+
+    monkeypatch.setattr(updates, 'launch_failure_details', observe_failure)
+    expected_message = {
+        'other_sha': 'an earlier or unrelated writer prevents ordinary recovery',
+        'generation': 'ordinary recovery requires current data generation allowance',
+    }.get(refusal, 'supported transition requires removal and reinstall')
     state = updates.read_json(control / 'transition.json')
     updates.write_json_durable(control / 'transition.json', {**state, 'phase': 'PREPARED'})
     if refusal != 'unapproved':
@@ -102,11 +115,19 @@ def test_prepared_start_preserves_existing_refusal(first_setup, monkeypatch, mod
         monkeypatch.setattr(updates, 'ordinary_user_context', lambda *_args: False)
     arguments = [] if mode == 'gui' else ['--onboard-current-user', '--app-root', str(paths.app_root)]
     if mode == "gui" and refusal in {"other_sha", "generation"}:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='^' + re.escape(expected_message) + '$'):
             app.main(arguments)
     else:
         expected = 0 if mode == "gui" and refusal in {"unapproved", "inactive_code"} else 20
         assert app.main(arguments) == expected
+        if mode == 'cli':
+            output = capsys.readouterr()
+            records = [json.loads(line) for line in output.out.splitlines() if line.startswith('{')]
+            recovery = [record for record in records if record.get('status') == 'RECOVERY_REQUIRED']
+            assert [record.get('code') for record in recovery] == ['SUPPORTED_REMOVAL_REQUIRED']
+            assert len(failures) == 1
+            assert isinstance(failures[0], ValueError)
+            assert str(failures[0]) == expected_message
     assert reached == []
 
 
@@ -242,4 +263,27 @@ def test_cli_abandoned_mutex_uses_public_recovery_handler(first_setup, monkeypat
     assert "SUPPORTED_REMOVAL_REQUIRED" not in output.out
     assert "지원 제거" not in output.out
     assert reached == []
+    assert all(path.read_bytes() == content for path, content in before.items())
+
+
+@pytest.mark.parametrize('phase', ['APPLIED_PENDING_READY', 'ROLLBACK_PENDING_READY'])
+def test_trial_first_setup_rejects_phase_pointer_mismatch(first_setup, monkeypatch, phase):
+    paths, control, _reached = first_setup
+    candidate = OLD if phase == 'APPLIED_PENDING_READY' else NEW
+    previous = NEW if candidate == OLD else OLD
+    state = {
+        'schema': updates.SCHEMA,
+        'phase': phase,
+        'candidate_sha': candidate,
+        'previous_sha': previous,
+        'nonce': 'a' * 32,
+        'transition_id': 'b' * 32,
+    }
+    updates.write_json_durable(control / 'transition.json', state)
+    monkeypatch.setenv('KMTECH_LM_UPDATE_DEFERRED_AT', updates.now_utc())
+    monkeypatch.setattr(updates, 'apply_claim_status', lambda *_args: 'ABSENT')
+    before = {path: path.read_bytes() for path in control.iterdir() if path.is_file()}
+    assert updates.startup_gate(Path(paths.app_root) / 'app', []) is None
+    with pytest.raises(ValueError, match='^supported transition and pointer differ$'):
+        updates.resolve_lifecycle_context(control.parent, operation='register', startup=True)
     assert all(path.read_bytes() == content for path, content in before.items())

@@ -28,7 +28,7 @@ from user_relay import RELAY_NORMAL_STOP_TIMEOUT_SECONDS, _log_wait_elapsed
 
 SELECT = {'_sha', '_utc', 'startup_action', 'writer_processes', 'assert_ordinary_recovery',
           '_bootstrap', 'start_current', '_bootstrap_existing_writers', 'recovery_writer_result',
-          '_launch_bootstrap_version', 'launch_version', 'startup_gate', '_startup_gate', 'startup_requires_bootstrap',
+          '_launch_bootstrap_version', 'launch_version', 'startup_gate', '_startup_gate', '_accept_startup_proof', '_startup_proof_binding', 'startup_requires_bootstrap',
           '_apply_prepared_once', '_apply_prepared', 'complete_apply_claim', 'apply_claim_status',
           'new_apply_claim', 'settle_trial_failure', 'decide_trial_failure', 'persist_switch',
           'rollback_transition', 'wait_for_rollback_ready', 'observe_trial_ready', 'bind_trial',
