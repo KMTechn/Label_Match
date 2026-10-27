@@ -173,7 +173,47 @@ def bootstrap_fixture(monkeypatch, tmp_path):
         transition_id="6" * 32, nonce="7" * 32, now=stamp,
     ), writers_absent=True, packet_verified=True, durable_prepared=True, now=stamp)
     policy = {"operator_sid": "operator", "staging_root": str(tmp_path)}
-    records = {"transition.json": state, "active.json": {"sha": new}}
+    from tests.test_auto_update_endpoints import SID
+    import current_user_onboarding
+    from user_relay import user_relay_status_path
+
+    policy.update(operator_sid=SID, operator_local_app_data=str(tmp_path / "operator-local"))
+    direct = tmp_path / "ordinary-direct-sync"
+    ordinary_rows = []
+
+    class Records(dict):
+        pass
+
+    records = Records({"transition.json": state, "active.json": {"sha": new}})
+
+    def observe_launcher(launch):
+        def observed(control, sha, arguments, **kwargs):
+            pid = launch(control, sha, arguments, **kwargs)
+            phase = records["transition.json"]["phase"]
+            if arguments == ["--user-relay-worker-loop"] and phase in {"ROLLED_BACK", "CONFIRMED", "DEFERRED"}:
+                at = updates.now_utc()
+                records[user_relay_status_path(direct).name] = dict(status="RUNNING", source_commit=sha,
+                    ordinary_user=True, process_id=pid, updated_at=at,
+                    code_root=str(updates.version_bundle(control, sha) / "app"))
+                ordinary_rows[:] = [dict(pid=pid, observable=True, role="relay", sha=sha,
+                    sid=SID, ordinary_user=True, created_at=at)]
+            return pid
+        return observed
+
+    def previous_ready(rollback):
+        rollback = {**rollback, "trial_pid": 43}
+        at = rollback["trial_started_at"]
+        ready = {**{check: True for check in updates.RELAY_READY_CHECKS},
+            "sha": rollback["previous_sha"], "pid": 43, "role": "relay",
+            "nonce": rollback["nonce"], "transition_id": rollback["transition_id"], "ready_at": at}
+        return updates.confirm_transition(rollback, ready, process_matches=True,
+            relay_matches=True, now=at, active={"sha": rollback["previous_sha"]})
+
+    records.observe_launcher = observe_launcher
+    records.previous_ready = previous_ready
+    monkeypatch.setattr(current_user_onboarding, "resolve_current_user_onboarding_paths",
+        lambda *_: SimpleNamespace(direct_sync_root=direct))
+    monkeypatch.setattr(updates, "process_snapshot", lambda *_: list(ordinary_rows))
     monkeypatch.setattr(updates, "control_root", lambda _: tmp_path)
     monkeypatch.setattr(updates, "load_policy", lambda _: policy)
     monkeypatch.setattr(updates, "ordinary_user_context", lambda *_: True)
@@ -198,7 +238,7 @@ def test_trial_launch_failure_waits_and_starts_previous_code(monkeypatch, tmp_pa
         if sha == new and role == failed_role:
             raise OSError(5, "injected trial launch failure")
         return 42 if role == "gui" else 43
-    monkeypatch.setattr(updates, "launch_version", launch)
+    monkeypatch.setattr(updates, "launch_version", records.observe_launcher(launch))
     def system_recovery(_):
         if records["transition.json"]["phase"] == "APPLIED_PENDING_READY":
             failure = records["trial-failure.json"]
@@ -206,11 +246,11 @@ def test_trial_launch_failure_waits_and_starts_previous_code(monkeypatch, tmp_pa
             assert failure["transition_id"] == original["transition_id"]
             assert failure["failed_role"] == failed_role
             rollback = updates.rollback_transition(
-                updates.request_rollback(original, reason="injected child start failed"),
+                {**updates.request_rollback(original, reason="injected child start failed"), "failure_decision": {"selected_sha": old}},
                 writers_absent=True, previous_verified=True, durable_rollback=True,
                 nonce="8" * 32, now="2026-10-02T00:00:01+00:00",
             )
-            records["transition.json"] = rollback
+            records["transition.json"] = records.previous_ready(rollback)
             records["active.json"] = {"sha": old}
         else:
             records["transition.json"] = {**records["transition.json"], "phase": "ROLLED_BACK"}
