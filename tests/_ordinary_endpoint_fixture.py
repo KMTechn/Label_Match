@@ -85,3 +85,16 @@ def relay_snapshot(updates, policy, children, *, wait=time.sleep, clock=time.mon
         if not any(child.poll() is None for child in children) or clock() >= deadline:
             return []
         wait(0.01)
+
+
+def bind_child_release(child, observation):
+    """Connect a custom fixture launcher to the ordinary peer's owned lifetime."""
+    release = Path(observation).with_name("ordinary-release")
+    communicate = child.communicate
+
+    def finish(*args, **kwargs):
+        release.touch()
+        return communicate(*args, **kwargs)
+
+    child.communicate = finish
+    return child

@@ -588,6 +588,8 @@ def hotfix_packet(endpoint, monkeypatch, *, base_sha=OLD):
 @pytest.mark.parametrize("phase", ["FAILED", "UNKNOWN"])
 def test_x7_real_signed_hotfix_applies_after_terminal_recovery(endpoint, monkeypatch, phase):
     control, _, _, state, _, _ = endpoint
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, control, endpoint[2])
     updates.write_json_durable(control / "transition.json", {**state, "phase": phase})
     hot = hotfix_packet(endpoint, monkeypatch)
     written = updates.write_json_durable
@@ -604,6 +606,8 @@ def test_x7_real_signed_hotfix_applies_after_terminal_recovery(endpoint, monkeyp
 
 def test_x2_retained_candidate_is_previous_for_next_signed_failure(endpoint, monkeypatch):
     control, stage, _, _, marker, _ = endpoint
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, control, endpoint[2])
     generation.record_generation(marker, "v2.0.99", app_id="Label_Match", subject_sid=SID, build_id=NEW)
     assert updates.apply_prepared(control) == 20
     assert updates.read_json(control / "transition.json")["retained_candidate"] is True
@@ -716,12 +720,15 @@ def test_e1_pointer_switch_and_ordinary_launch_exclude_competing_versions(endpoi
     monkeypatch.setattr(updates, "update_lock", locked)
     monkeypatch.setattr(time, "sleep", lambda _: NATIVE_SLEEP(0.01))
     native = subprocess.Popen.native
-    children, rows, outcomes = [], [], []
+    children, rows, outcomes = endpoint.children, [], []
+    from tests._ordinary_endpoint_fixture import bind_child_release, relay_snapshot
     admitted = threading.Event()
     def launch(command, **kwargs):
         sha = Path(command[3]).parent.parent.name
-        child = native([sys.executable, "-B", *command[3:]], stdout=subprocess.PIPE,
+        observation.with_name("ordinary-release").unlink(missing_ok=True)
+        child = native([sys.executable, "-I", "-B", *command[3:]], stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, **kwargs)
+        bind_child_release(child, observation)
         children.append(child)
         rows.append(dict(pid=child.pid, observable=True, sha=sha, sid=SID, ordinary_user=True,
             role="relay" if "--label-match-user-relay" in command else "gui", created_at=updates.now_utc()))
@@ -729,7 +736,8 @@ def test_e1_pointer_switch_and_ordinary_launch_exclude_competing_versions(endpoi
             admitted.set()
         return child
     monkeypatch.setattr(subprocess, "Popen", launch)
-    monkeypatch.setattr(updates, "process_snapshot", lambda *_: [row for row, child in zip(rows, children) if child.poll() is None])
+    monkeypatch.setattr(updates, "process_snapshot", lambda *_: [*[row for row, child in zip(rows, children) if child.poll() is None],
+                    *relay_snapshot(updates, policy, children)])
     written = updates.write_json_durable
     def crash_after_switch(path, value):
         written(path, value)
@@ -894,6 +902,8 @@ def test_deferred_recovery_settles_once_after_writer_exit(endpoint, monkeypatch,
 @pytest.mark.parametrize("phase", ["APPLIED_PENDING_READY", "UNKNOWN", "FAILED"])
 def test_deferred_recovery_precedes_next_signed_hotfix(endpoint, monkeypatch, phase):
     control, _, _, state, _, _ = endpoint
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, control, endpoint[2])
     updates.write_json_durable(control / "transition.json", {**state, "phase": phase})
     hot = hotfix_packet(endpoint, monkeypatch)
     row = dict(pid=456, observable=True, sha=NEW, sid=SID, ordinary_user=True,

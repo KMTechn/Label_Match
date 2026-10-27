@@ -143,6 +143,8 @@ def test_e1_normal_apply_exit_durably_retires_only_its_claim(endpoint, monkeypat
 
 def test_e1_next_logon_system_replaces_absent_claim_and_applies(endpoint, monkeypatch):
     control = endpoint[0]
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, control, endpoint[2])
     updates.write_json_durable(control/'apply-claim.json', {**own_claim(), 'creation_identity': '0'})
     assert updates.apply_claim_status(control) == 'ABSENT'
     written, started = updates.write_json_durable, []
@@ -266,6 +268,8 @@ def test_b3_stale_unknown_claim_recovers_only_after_window_and_recheck(endpoint,
 @pytest.mark.parametrize('crash_phase', ['PREPARED', 'APPLIED_PENDING_READY'])
 def test_system_restart_supervises_only_a_window_it_opens(endpoint, monkeypatch, crash_phase):
     control, _, _, state, _, _ = endpoint
+    from tests._rollback_ready_fixture import install_previous_relay_observer
+    install_previous_relay_observer(monkeypatch, updates, control, endpoint[2])
     updates.write_json_durable(control/'transition.json', {**state, 'phase': 'FAILED'})
     updates.write_json_durable(control/'active.json', {'sha': OLD})
     hot = hotfix_packet(endpoint, monkeypatch)

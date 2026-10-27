@@ -302,6 +302,7 @@ def test_csv_fsync_failure_replays_the_same_row_and_preserves_original_error(pac
 
 def test_shortage_release_retries_with_one_original_audit(packaging, scanner_clock, monkeypatch):
     app, _ = packaging
+    app.progress_bar.configure = app.progress_bar.update
     for value in (MASTER, products()[0], MASTER):
         scanner_clock[0] += 5
         scan(app, value)
