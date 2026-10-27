@@ -373,10 +373,12 @@ def test_engine_candidate_exit_restarts_previous_version_without_reverting_data(
     assert updates.apply_prepared(control) == 0
     result = updates.read_json(control / "transition.json")
     assert result["phase"] == "ROLLED_BACK"
-    assert result["failed_shas"] == [NEW]
+    assert result["failed_shas"] == []
+    assert result["retry_shas"] == {NEW: {"attempts": 1, "first_at": LATER, "last_at": LATER}}
     assert updates.read_json(control / "active.json")["sha"] == OLD
     assert len(nonces) == (0 if failure_mode == "timeout" else 1)
-    assert result["trial_sha"] is None
+    assert result["trial_sha"] == result["previous_sha"]
+    assert result["trial_role"] == "relay"
     assert marker.read_bytes() == original_marker
     assert result["data_api_evidence"] == {"previous_data_api_sha256":"c"*64,"candidate_data_api_sha256":"d"*64,"consumer_bytes_equal":False}
     assert business.read_bytes() == b"original business state must not be restored or deleted"

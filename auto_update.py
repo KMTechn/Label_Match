@@ -3338,6 +3338,25 @@ def _lifecycle_startup_proven(control: Path, policy, active, state) -> bool:
                                  role=role, allow_relay_parent=allow_relay_parent)
 
 
+def _accept_busy_startup_proof(app_root: Path, control: Path, state, *, role: str, policy=None):
+    """Reuse the original busy-exit proofs before a deferred ordinary start."""
+    deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
+    if not deferred_at or (state and state.get("phase") not in {
+            "PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN",
+            "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}):
+        return None
+    if policy is None:
+        policy = load_policy(control)
+    sha = version_manifest(app_root.parent)["source_commit"]
+    assert_ordinary_recovery(control, policy, sha, deferred_at,
+                             allow_relay_parent=role == "relay")
+    assert_version_writer(app_root, source="gui_settings_save", environ=os.environ)
+    _accept_startup_proof(app_root, control, policy, state,
+                          read_json(control / "active.json"), sha, role=role,
+                          remember=True, allow_relay_parent=role == "relay")
+    return policy
+
+
 def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> int | None:
     global _STARTUP_ADMISSION
     _STARTUP_ADMISSION = None
@@ -3353,17 +3372,10 @@ def startup_gate(app_root: Path, arguments: list[str], *, role: str = "gui") -> 
         if str(error) != "update mutex ownership is busy":
             raise
         control = control_root(app_root)
-        deferred_at = os.environ.get("KMTECH_LM_UPDATE_DEFERRED_AT")
         state = optional_record(control / "transition.json") if control is not None else None
-        if deferred_at and control is not None and (not state or state.get("phase") in {"PREPARED", "CONFIRMED", "ROLLED_BACK", "DEFERRED", "FAILED", "UNKNOWN", "APPLIED_PENDING_READY", "ROLLBACK_PENDING_READY", "ROLLBACK_PENDING"}):
-            policy = load_policy(control)
-            assert_ordinary_recovery(control, policy, version_manifest(app_root.parent)["source_commit"], deferred_at,
-                                     allow_relay_parent=role == "relay")
-            assert_version_writer(app_root, source="gui_settings_save", environ=os.environ)
-            _accept_startup_proof(app_root, control, policy, state,
-                                  read_json(control / "active.json"),
-                                  version_manifest(app_root.parent)["source_commit"], role=role,
-                                  remember=True, allow_relay_parent=role == "relay")
+        policy = (_accept_busy_startup_proof(app_root, control, state, role=role)
+                  if control is not None else None)
+        if policy is not None:
             emit_support_record({"reason_code": "UPDATE_APPLY_NO_PROGRESS", "exit_code": 0}, stage="update_apply", policy=policy)
             return None
         return bootstrap(app_root, arguments, role=role)
@@ -3488,6 +3500,7 @@ def _startup_gate(app_root: Path, arguments: list[str], *, role: str) -> int | N
             if (sha == active["sha"] and startup_action(state, prepared_present=False) == "START_CURRENT"
                     and (not (state or {}).get("retained_candidate") or sha == recovery_sha(state, pointer_sha=sha))
                     and current_generation_status(control, policy, sha) == "ALLOW"):
+                _accept_busy_startup_proof(app_root, control, state, role=role, policy=policy)
                 emit_support_record({"reason_code": "UPDATE_LOCK_WAIT_EXPIRED", "exit_code": 0}, stage="update_apply", policy=policy)
                 return None
             emit_progress_guidance()
